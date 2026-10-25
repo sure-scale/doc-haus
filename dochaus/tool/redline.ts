@@ -5,6 +5,7 @@ import { docxodus } from "../lib/docxodus"
 import { recordRedlineProposal, withRedlineDocumentLock } from "../lib/redlines"
 import { draftingAttribution } from "../lib/docx-attribution"
 import { findPastListLabel } from "../lib/list-label"
+import { pendingRevisionAnchors, pendingRevisionRefusal } from "../lib/docx-amendments"
 
 // doc.haus redline tool. Proposes rewriting a whole clause — the paragraph a
 // search-document citation points at — as a tracked change a reviewer accepts or
@@ -127,7 +128,10 @@ function matterDocument(directory: string, file: string) {
 
 /** The paragraph `clause` locates, past a copied list number (findPastListLabel).
  * Accept rewrites the whole of the first paragraph holding the recorded
- * clause text. */
+ * clause text, untracked, so that paragraph is refused while it has a pending
+ * revision (the touch rule). */
 function locate(session: ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"]>, clause: string, replacement: string) {
-  return findPastListLabel(clause, replacement, text => session.findAllByText(text, { ignoreWhitespace: true }), id => session.getAnchorInfo(id)?.visibleText, { recorded: true, whole: true })
+  const located = findPastListLabel(clause, replacement, text => session.findAllByText(text, { ignoreWhitespace: true }), id => session.getAnchorInfo(id)?.visibleText, { recorded: true, whole: true })
+  const refused = located.targets.length && !located.error ? pendingRevisionRefusal(pendingRevisionAnchors(session), [located.targets[0]!.id], located.find, "proposed") : undefined
+  return refused ? { ...located, error: refused } : located
 }

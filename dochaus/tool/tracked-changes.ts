@@ -5,6 +5,7 @@ import { docxodus } from "../lib/docxodus"
 import { recordRedlineProposal, withRedlineDocumentLock } from "../lib/redlines"
 import { draftingAttribution } from "../lib/docx-attribution"
 import { findPastListLabel } from "../lib/list-label"
+import { pendingRevisionAnchors, pendingRevisionRefusal } from "../lib/docx-amendments"
 
 // doc.haus tracked-changes tool. Proposes a surgical find/replace edit to the
 // matter's canonical Word (.docx) document as a tracked change, attributed to an
@@ -103,7 +104,10 @@ function matterDocument(directory: string, file: string) {
 }
 
 /** Where `find` is in the document, past a copied list number (findPastListLabel).
- * Accept replaces the recorded text wherever it occurs. */
+ * Accept replaces the recorded text wherever it occurs, untracked, so an
+ * occurrence in a paragraph with a pending revision is refused (the touch rule). */
 function locate(session: ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"]>, find: string, replace: string) {
-  return findPastListLabel(find, replace, text => session.findAllByText(text), id => session.getAnchorInfo(id)?.visibleText, { recorded: true })
+  const located = findPastListLabel(find, replace, text => session.findAllByText(text), id => session.getAnchorInfo(id)?.visibleText, { recorded: true })
+  const refused = located.targets.length && !located.error ? pendingRevisionRefusal(pendingRevisionAnchors(session), located.targets.map(target => target.id), located.find, "proposed") : undefined
+  return refused ? { ...located, error: refused } : located
 }

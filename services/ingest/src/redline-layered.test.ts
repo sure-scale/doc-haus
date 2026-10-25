@@ -107,6 +107,22 @@ describe("layered redline on an uploaded markup", () => {
   })
 })
 
+// The chat tools' older proposals re-find their text and are baked untracked.
+// Inside their pending insertion that would store doc.haus's words as theirs.
+test("an older proposal in a paragraph with their pending change is refused at accept and left out of the preview", async () => {
+  const source = counterpartyMarkupDocx()
+  const older = (id: number, find_text: string, new_text: string): RedlineRow => ({ id, doc_path: COUNTERPARTY_MARKUP.name, doc_name: COUNTERPARTY_MARKUP.name,
+    scope: "phrase", find_text, old_text: find_text, new_text, author: AUTHOR, review_comment: "", anchor_id: null, created_at: 1, status: "pending", target_json: null })
+  const inside = older(1, "forty-five days of each", "sixty days of each")
+  await expect(bake(source, [inside])).rejects.toThrow(
+    "The change to \"forty-five days of each\" was not applied: that paragraph has a pending change by Avery Lindqvist. Accept or reject it under Their changes, then request edits again.")
+  expect(await buildRedlined(source, [inside])).toEqual(source)
+  // In a paragraph of theirs with no pending change, it bakes as before.
+  const baked = await bake(source, [older(2, "the Province", "the State")])
+  expect(await clause9(baked)).toBe(LAW)
+  expect(await revisions(baked)).toEqual(await revisions(source))
+})
+
 test("over HTTP an uploaded markup exports layered, and Accept keeps their changes listed", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(), "dochaus-redline-layered-"))
   const config = path.join(temporary, "config")

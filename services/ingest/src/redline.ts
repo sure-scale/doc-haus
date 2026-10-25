@@ -2,7 +2,7 @@ import { docxodus } from "./docxodus"
 import { compareDocxWithPointers, paragraphTargets, resolveParagraphTarget, withStableRevisionDates, type ParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import type { RedlineRow } from "./db"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { createDocxLocalization, applyDocxParagraphEdits, DocxTrackedRevisionsError, openRevision, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
+import { createDocxLocalization, applyDocxParagraphEdits, DocxTrackedRevisionsError, openRevision, pendingRevisionAnchors, pendingRevisionRefusal, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { createHash } from "node:crypto"
 import { draftingAttribution } from "../../../dochaus/lib/docx-attribution"
 import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphPositions, readDocxCommentParagraphs } from "../../../dochaus/lib/docx-comments"
@@ -21,15 +21,26 @@ type Session = ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"
 export class RedlinePreviewConflictError extends Error {}
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
+// A replay session's paragraphs with a pending revision, read once: its
+// untracked edits add none. Ingest's own install of the same Docxodus package
+// declares the session type again; the reader only calls the session's methods.
+const pendingRevisions = new WeakMap<Session, Map<string, string[]>>()
+const pendingIn = (session: Session) => pendingRevisions.get(session)
+  ?? pendingRevisions.set(session, pendingRevisionAnchors(session as unknown as Parameters<typeof pendingRevisionAnchors>[0])).get(session)!
+
 // Reproduce one proposal's edit on an open session. Returns an error message
 // (rather than throwing) when the anchor text can no longer be found — e.g. an
 // earlier proposal in the same replay already rewrote the passage this one
 // anchors to. Callers decide whether that is fatal: the redlined view skips the
 // row and renders the rest; accept must fail loudly rather than bake a partial set.
+// The edit is untracked, so it is refused in a paragraph with a pending revision
+// (the touch rule): there doc.haus's words would become that revision's author's.
 function applyProposal(session: Session, row: RedlineRow): { ok: true } | { ok: false; error: string } {
   if (row.scope === "clause") {
     const target = session.findByText(row.find_text, { ignoreWhitespace: true })
     if (!target) return { ok: false, error: `Clause no longer found for redline #${row.id}: ${JSON.stringify(row.find_text)}` }
+    const refused = pendingRevisionRefusal(pendingIn(session), [target.id], row.find_text, "applied")
+    if (refused) return { ok: false, error: refused }
     const result = session.replaceText(target.id, row.new_text)
     if (!result.success) return { ok: false, error: `Redline #${row.id} failed: ${result.error?.message ?? "unknown error"}` }
     return { ok: true }
@@ -37,6 +48,8 @@ function applyProposal(session: Session, row: RedlineRow): { ok: true } | { ok: 
 
   const targets = session.findAllByText(row.find_text)
   if (!targets.length) return { ok: false, error: `Text no longer found for redline #${row.id}: ${JSON.stringify(row.find_text)}` }
+  const refused = pendingRevisionRefusal(pendingIn(session), targets.map((t) => t.id), row.find_text, "applied")
+  if (refused) return { ok: false, error: refused }
   const results = targets.flatMap((t) => session.replaceTextRange(t.id, row.find_text, row.new_text))
   const failed = results.find((r) => !r.success)
   if (failed) return { ok: false, error: `Redline #${row.id} failed: ${failed.error?.message ?? "unknown error"}` }

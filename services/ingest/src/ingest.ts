@@ -268,10 +268,11 @@ async function ingestDocumentLocked(
   }
 }
 
-/** A saved Word file's pending tracked changes, with the notice that doc.haus
- * edits wait for them (document-versions.ts); nothing for a file without. With
- * a source's `markup`, the changes are counted as the viewer lists them, where
- * the lawyer reviews them; otherwise by their tags, resolved in Word. */
+/** A saved Word file's pending tracked changes, with the notice of how doc.haus
+ * edits meet them (document-versions.ts); nothing for a file without. With a
+ * source's `markup`, the changes are counted as the viewer lists them, where
+ * the lawyer reviews them and doc.haus edits go beside them; otherwise by their
+ * tags, resolved in Word before doc.haus edits the file. */
 export function versionNotice(name: string, bytes: Uint8Array, version: CapturedVersion | undefined, markup?: DocxMarkup) {
   const tracked = markup
     ? { count: markup.revisions.length, authors: markup.authors.filter((author) => author.revisions && author.name).map((author) => author.name) }

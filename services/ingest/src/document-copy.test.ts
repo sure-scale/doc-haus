@@ -16,7 +16,7 @@ async function fixture() {
       new CommentRangeStart(0), new TextRun({ text: "Keep the original wording.", bold: true }),
       new CommentRangeEnd(0), new TextRun({ children: [new CommentReference(0)] }),
       new InsertedTextRun({ id: 7, author: "Reviewer", date: "2020-01-01T00:00:00Z", text: "Existing revision" }),
-    ] })] }],
+    ] }), new Paragraph("Delivery is by courier.")] }],
   }))
   const original = path.join(directory, "original.docx")
   writeFileSync(original, bytes)
@@ -47,7 +47,8 @@ test("exact canonical copy registers a deliverable; source proposals stay on the
     expect(db.query("SELECT id, doc_path, status FROM redlines").all()).toEqual([{ id: proposal.id, doc_path: f.original, status: "pending" }])
     db.close()
     const tracked = (await import("../../../dochaus/tool/tracked-changes")).default
-    const result = await tracked.execute({ document: "negotiation.docx", find: "original", replace: "revised", comment: "Requested separate-copy edit.", author: "Reviewer" }, {
+    // In the paragraph without Reviewer's pending insertion (the touch rule).
+    const result = await tracked.execute({ document: "negotiation.docx", find: "courier", replace: "post", comment: "Requested separate-copy edit.", author: "Reviewer" }, {
       callID: "copy-call", sessionID: "copy-test", messageID: "copy-test", agent: "redliner", directory: f.directory, worktree: f.directory,
       abort: new AbortController().signal, metadata() {}, async ask(request) { expect(request.patterns).toEqual([path.join(f.directory, "negotiation.docx")]) },
     })

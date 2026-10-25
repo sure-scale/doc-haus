@@ -6,6 +6,7 @@ import { REVISION_ELEMENTS } from "./docx-comments"
 import { paragraphFields, refInstruction, runText, unlink } from "./docx-fields"
 import { docxodus } from "./docxodus"
 import { shownText } from "./list-label"
+import { normalizeUntrustedText } from "./untrusted-text"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const PT = "http://powertools.codeplex.com/2011"
@@ -382,6 +383,21 @@ export function pendingRevisionAnchors(session: Session) {
     if (authors) pending.set(id, authors)
   }
   return pending
+}
+
+/** The touch rule's refusal of an older chat-tool edit of `text` in these
+ * paragraphs (anchor ids, as findAllByText names them), given their session's
+ * pendingRevisionAnchors, in the words of Prepare's open item; undefined when
+ * none has a pending revision. `verb` says what did not happen to the change. */
+export function pendingRevisionRefusal(pending: Map<string, string[]>, anchors: string[], text: string, verb: "proposed" | "applied" | "made") {
+  const touched = anchors.filter(id => pending.has(id))
+  if (!touched.length) return
+  const names = [...new Set(touched.flatMap(id => pending.get(id)!).map(author => normalizeUntrustedText(author).text.trim()).filter(Boolean))]
+  const many = names.length > 1
+  // As Prepare lists them: three names, then a count.
+  const shown = names.length > 3 ? [...names.slice(0, 3), `${names.length - 3} other${names.length === 4 ? "" : "s"}`] : names
+  const by = shown.length ? ` by ${shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)}` : shown[0]}` : ""
+  return `The change to ${JSON.stringify(text)} was not ${verb}: that paragraph has ${many ? "pending changes" : "a pending change"}${by}. Accept or reject ${many ? "them" : "it"} under Their changes, then request edits again.`
 }
 
 function listedRevisions(session: Session) {
