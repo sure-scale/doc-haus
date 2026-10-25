@@ -83,6 +83,7 @@ async function open(state: ReturnType<typeof fixture>, width: number, height: nu
       return reply(state.matters[0])
     }
     if (method === "PUT" && pathname === `/matters/${matter.id}/grid`) { state.writes.push({ method, path: pathname, body: request.postDataJSON() }); return reply({ ok: true }) }
+    if (method === "POST" && pathname === `/matters/${matter.id}/grid/sources`) return reply(Object.fromEntries((request.postDataJSON() as { cells: { key: string }[] }).cells.map(cell => [cell.key, "verified"])))
     if (method !== "GET") { state.unexpected.push(`${method} ${pathname}`); return route.abort() }
     if (pathname === "/auth/reuse") return reply({ sources: [] })
     if (pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
@@ -97,6 +98,7 @@ async function open(state: ReturnType<typeof fixture>, width: number, height: nu
     if (/^\/matters\/[^/]+\/drafting-status$/.test(pathname)) return reply(null)
     if (/^\/matters\/[^/]+\/telemetry$/.test(pathname)) return reply({ current_activity: null, today: { cost_usd: 0, turns: 0 }, matter_total: { cost_usd: 0, turns: 0, sessions: 1, since_ts: timestamp }, current_session: null, rate_card_as_of: null, unknown_models: [] })
     if (pathname === `/matters/${matter.id}/grid`) return reply(grid)
+    if (pathname === `/matters/${matter.id}/documents/versions`) return reply({ name: url.searchParams.get("name"), document: null, versions: [], events: [], working_version: null })
     if (/^\/matters\/[^/]+\/answer-drafts\//.test(pathname)) return reply({ answers: {}, revision: 0 })
     if (pathname === `/matters/${matter.id}/documents/text`) return reply({ text: "From: Alex Example <alex@example.test>\nSubject: Services agreement instructions\n\nPlease use monthly invoicing and confirm the delivery timetable before sending the agreement. We would like to keep a clear approval process for any additional services." })
     if (pathname === "/jurisdictions") return reply(jurisdictions)
