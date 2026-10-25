@@ -24,7 +24,8 @@ import { numberDocxClauses, numberedList } from "../../lib/docx-numbering"
 import { linkCrossReferences } from "../../lib/docx-crossrefs"
 import { withTemplateStyleIds } from "../../lib/template-seed"
 import { presentDraft, type DraftPresentation } from "./draft-presentation"
-import { carryRevisionParagraphs, carryRevisionTables, draftedTablesNotes } from "./original-tables"
+import { carryRevisionParagraphs, carryRevisionTables, draftedTablesNotes, revisionOriginal } from "./original-tables"
+import { writeCounterpartyItems } from "./counterparty"
 import { checkChanges, parseJsonObject } from "./change-checks"
 import {
   checkDraft,
@@ -298,11 +299,13 @@ function baseStageInputs(directory: string, step: StepID, options: { repairConte
   const composed = composition ? [{ name: "package-composition", bytes: composition }] : []
   const stage = stepStage(step)
   const repairs = options.repairContext === false || !["change-plan", "change-prepare", "changes", "change-review"].includes(stage) ? undefined : documentRepairs(directory, document)
+  // Only with the other side's markup in the original it revises, so a run without one keeps its keys.
+  const counterparty = existsSync(leanFile(directory, `${document}/counterparty.json`)) ? [at("counterparty.json")] : []
   if (isReviewStage(stage)) return [{ name: "playbook-selection", bytes: JSON.stringify(plannedDocument(directory, document)?.playbook_review ?? null) }, file("request.md"), at("paragraphs.json"), sources, finished, acting, scope, ...composed]
   if (stage === "change-prepare") return [file("request.md"), entry, at("paragraphs.json"), at("change-plan.json"), answers, sources, finished, acting, scope, ...composed, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
-  if (stage === "change-review") return [...(repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-review-contract", bytes: "prepared-dependency-component-review-2-proposed-body" }] : []), { name: "review-contract", bytes: "phase-aware-owned-body-review-2" }, file("request.md"), entry, at("paragraphs.json"), at("changes.json"), at("change-plan.json"), at("change-preparation.json"), ...reviewStages(directory, document).map(stage => at(`${stage}.json`)), answers, sources, finished, acting, scope, ...composed, { name: "questions", bytes: keyedQuestions(directory) }, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
+  if (stage === "change-review") return [...(repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-review-contract", bytes: "prepared-dependency-component-review-2-proposed-body" }] : []), { name: "review-contract", bytes: "phase-aware-owned-body-review-2" }, file("request.md"), entry, at("paragraphs.json"), at("changes.json"), at("change-plan.json"), at("change-preparation.json"), ...reviewStages(directory, document).map(stage => at(`${stage}.json`)), ...counterparty, answers, sources, finished, acting, scope, ...composed, { name: "questions", bytes: keyedQuestions(directory) }, { name: "repairs", bytes: JSON.stringify(repairs ?? null) }]
   if (stage === "changes" || stage === "change-plan") {
-    return [...(stage === "changes" && repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-reconciliation-contract", bytes: "prepared-operation-components-1" }] : []), ...(stage === "change-plan" && repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-repair-contract", bytes: "one-assessment-source-adjudication-2" }] : []), file("request.md"), entry, ...(stage === "changes" ? [at("change-plan.json"), at("change-preparation.json")] : []), ...reviewStages(directory, document).map(stage => at(`${stage}.json`)),
+    return [...(stage === "changes" && repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-reconciliation-contract", bytes: "prepared-operation-components-1" }] : []), ...(stage === "change-plan" && repairs?.items.every(item => item.stage === "checklist-check") ? [{ name: "focused-repair-contract", bytes: "one-assessment-source-adjudication-2" }] : []), file("request.md"), entry, ...(stage === "changes" ? [at("change-plan.json"), at("change-preparation.json")] : []), ...reviewStages(directory, document).map(stage => at(`${stage}.json`)), ...counterparty,
       // Earlier documents' findings about this one; a later document's never key it.
       ...(stage === "change-plan" ? [{ name: "forwarded-findings", bytes: JSON.stringify(forwardedFindings(directory, document)) }] : []), at("paragraphs.json"), { name: "repairs", bytes: repairs ? JSON.stringify(repairs) : "" }, answers, sources,
       { name: "draft-items", bytes: JSON.stringify(readOpenItems(directory).filter(item =>
@@ -398,6 +401,8 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     const rows = (await paragraphRows(leanFile(directory, `${document}/body.docx`))).map(row => ({ ...row, ...rendered.attribution?.get(row.pid) }))
     if (!rows.length) return { issues: ["The document has no body paragraphs."], openItems: [], outputs: [] }
     writeLeanText(directory, `${document}/paragraphs.json`, `${JSON.stringify(rows, null, 2)}\n`)
+    // The other side's changes and comments in the original, which its change plan adjudicates.
+    await writeCounterpartyItems(directory, document, revisionOriginal(directory, document))
     return { ...check, outputs: stepOutputs(step) }
   }
   if (isReviewStage(stage)) {

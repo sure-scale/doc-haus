@@ -1,5 +1,7 @@
+import type { CounterpartyItem } from "../../lib/docx-markup"
 import { parseJsonObject } from "./change-checks"
 import { PID_REFERENCE, TOOL_SYNTAX_ISSUE, printedToolCall, record, type ParagraphRow } from "./checks"
+import { counterpartyFindings } from "./counterparty"
 import { requestedMemo } from "./deliverables"
 import { planActingFor, readLeanPlan, reviewStages, runPosture, type DocID } from "./plan"
 import { openItem, quoteFound, quoteMissItems, type SourceQuote } from "./quotes"
@@ -11,8 +13,10 @@ import { readLeanJson, shortHash, type OpenItem, type ReviewStageID } from "./st
 // when the request asks for a memo, the memo. The change plan of that document
 // adjudicates it when it is the reviewed document or one still to be drafted;
 // a finding for an earlier document, which is final by then, or for the memo
-// is disclosed in the notes. The register (register.ts) is a view over these
-// records and the change plans; nothing here is recorded twice.
+// is disclosed in the notes. The other side's changes and comments in the
+// original a document revises join its findings (counterparty.ts). The register
+// (register.ts) is a view over these records and the change plans; nothing here
+// is recorded twice.
 //
 // Each finding also says how far its change moves rights or risk toward one
 // party, measured against what a neutral, mid-market document of the kind,
@@ -31,8 +35,10 @@ export type FindingTarget = DocID | typeof MEMO_TARGET
 type ReviewFinding = { id: string; document: FindingTarget; pids?: string[]; origin: FindingOrigin; balance?: FindingBalance; favours?: string; finding: string; instead?: string; sources: SourceQuote[] }
 /** A playbook review also records its coverage of the guidance's positions. */
 type ReviewRecord = { findings: ReviewFinding[]; coverage?: string }
-/** A finding with the document and stage whose review raised it. */
-export type RaisedFinding = ReviewFinding & { raised_in: DocID; stage: ReviewStageID }
+/** A finding with the document and stage whose review raised it. One of
+ * stage and origin "counterparty" is the other side's change or comment in the
+ * original the document revises (counterparty.ts); no review reply can give it. */
+export type RaisedFinding = Omit<ReviewFinding, "origin"> & { origin: FindingOrigin | "counterparty"; raised_in: DocID; stage: ReviewStageID | "counterparty"; counterparty?: CounterpartyItem }
 
 export const REVIEW_FINDINGS_CONTRACT = 'Reply with exactly one JSON object: {"findings":[{"document":"id of the planned document the finding concerns; leave out for this document","pids":["pid of each paragraph of this draft the finding affects, or where missing wording belongs; leave out for another document"],"origin":"request|source_conflict|missing_fact|missing_protection|law|drafting","balance":"neutral|market|beyond_market","favours":"the party the change favours; leave out when neutral","finding":"what is wrong and why","instead":"what those paragraphs should say instead, in proposed wording where you can give it; leave out for a decision only the lawyer can make","sources":[{"source_id":"exact matter document name, request or approved authority URL","quote":"exact supporting words"}]}]}. ' +
   "origin says where the finding comes from: request (the draft departs from or misses what the request or the lawyer's answers ask), source_conflict (it misstates or conflicts with a matter source, or the sources disagree), missing_fact (it needs a fact or decision the matter does not give), missing_protection (it lacks a protection a careful drafter would include), law (its wording does not work under the governing law) or drafting (ambiguous, inconsistent or wrongly cross-referenced wording). " +
@@ -126,10 +132,11 @@ export function readReviewRecord(directory: string, document: DocID, stage: Revi
   return { findings, ...(typeof value.coverage === "string" ? { coverage: value.coverage } : {}) }
 }
 
-/** Every saved review finding of the run, by planned document and review stage. */
+/** Every saved review finding of the run, by planned document and review
+ * stage, each document's followed by its counterparty items. */
 export function raisedFindings(directory: string): RaisedFinding[] {
-  return (readLeanPlan(directory)?.documents ?? []).flatMap(({ id }) => reviewStages(directory, id).flatMap(stage =>
-    (readReviewRecord(directory, id, stage)?.findings ?? []).map(row => ({ ...row, raised_in: id, stage }))))
+  return (readLeanPlan(directory)?.documents ?? []).flatMap(({ id }) => [...reviewStages(directory, id).flatMap(stage =>
+    (readReviewRecord(directory, id, stage)?.findings ?? []).map(row => ({ ...row, raised_in: id, stage }))), ...counterpartyFindings(directory, id)])
 }
 
 /** Whether the run holds back beyond-market findings: it does unless it acts
@@ -140,7 +147,7 @@ export function holdsBeyondMarket(directory: string) {
 
 /** Origins the Posture never holds back: an instruction, a source the draft
  * misstates and a decision only the lawyer can make. */
-const KEPT_ORIGINS: FindingOrigin[] = ["request", "source_conflict", "missing_fact"]
+const KEPT_ORIGINS: RaisedFinding["origin"][] = ["request", "source_conflict", "missing_fact"]
 
 /** Where a finding goes: held back when the run holds back what goes beyond
  * market (`holds`) and the finding does, unless the firm's chosen guidance or
@@ -194,7 +201,7 @@ export function heldBackDispositions(directory: string, document: DocID) {
 }
 
 /** Why a held-back finding was not drafted: the side it favours and the run's Posture. */
-export function heldBackReason(directory: string, row: ReviewFinding) {
+export function heldBackReason(directory: string, row: RaisedFinding) {
   return `Not drafted: it favours ${row.favours ?? "one party"} beyond market practice, and ${planActingFor(directory).stated
     ? `the run's Posture is ${runPosture(directory) === "conservative" ? "Conservative" : "Balanced"}` : "the run acts for neither party"}.`
 }
@@ -215,7 +222,7 @@ export function findingItem(row: RaisedFinding, document?: DocID) {
 }
 
 /** A finding's text with what it says the document should say instead. */
-function findingDetail(row: ReviewFinding) {
+function findingDetail(row: RaisedFinding) {
   return row.instead ? `${row.finding} Instead: ${row.instead}` : row.finding
 }
 

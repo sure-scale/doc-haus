@@ -1,3 +1,4 @@
+import type { CounterpartyItem } from "../../lib/docx-markup"
 import { readChangePlan, type ChangeGroup } from "./change-pipeline"
 import { readChangeList, type ApplyResult } from "./checks"
 import { readLeanPlan, type DocID } from "./plan"
@@ -18,12 +19,14 @@ export type RegisterEntry = {
   id: string
   document: FindingTarget
   raised_in: DocID
-  stage: ReviewStageID
+  stage: ReviewStageID | "counterparty"
   pids?: string[]
-  origin: FindingOrigin
+  origin: FindingOrigin | "counterparty"
   basis: "authority" | "source" | "practice"
   finding: string
   instead?: string
+  /** For the other side's change or comment, the item it is, by source version and markup id. */
+  counterparty?: CounterpartyItem
   /** amended when an amendment for it was applied; not_amended when its group's
    * amendments were withheld, unapplied or never made; earlier_document when it
    * concerns a document already final, disclosed in the notes; held_back when
@@ -44,7 +47,8 @@ export function issueRegister(directory: string): { entries: RegisterEntry[] } {
   const holds = holdsBeyondMarket(directory)
   return { entries: raisedFindings(directory).map(row => {
     const base = { id: row.id, document: row.document, raised_in: row.raised_in, stage: row.stage, ...(row.pids ? { pids: row.pids } : {}),
-      origin: row.origin, basis: findingBasis(directory, row.sources), finding: row.finding, ...(row.instead ? { instead: row.instead } : {}), amendments: [] }
+      origin: row.origin, basis: findingBasis(directory, row.sources), finding: row.finding, ...(row.instead ? { instead: row.instead } : {}),
+      ...(row.counterparty ? { counterparty: row.counterparty } : {}), amendments: [] }
     const route = findingRoute(order, row, holds)
     if (route === "held") return { ...base, disposition: "held_back" as const, reason: heldBackReason(directory, row) }
     if (route === "memo") return { ...base, disposition: "memo" as const }
