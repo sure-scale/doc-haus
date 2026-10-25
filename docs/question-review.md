@@ -18,6 +18,13 @@ available with a visible explanation. Each recommendation carries checked
 quotations and an attributed explanation of their applicability; this is advice,
 not a certificate of legal support.
 
+Native question history takes human authority only from actual user messages
+and the native tool's structured successful answer arrays. Assistant-authored
+question wording and recommendations are separate context, never instructions
+attributed to the user. Saved advice is reused only for the same question scope
+and current supporting quotations; changed inputs clear its recommendation while
+retaining the unanswered card's offered option ids.
+
 Related questions can share a topic while retaining their own ids, choices and
 answers. The question card also lists earlier answers, including adopted advice,
 and lets the lawyer send an explicit correction through the existing ordered

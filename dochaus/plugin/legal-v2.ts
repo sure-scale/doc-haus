@@ -1,4 +1,4 @@
-import { reviewNativeQuestions } from "./legal/question-review"
+import { nativeQuestionHistory, reviewNativeQuestions } from "./legal/question-review"
 import { engineSessionPort } from "../workflows/lean/session-port"
 import type { QuestionReview } from "../workflows/lean/question-review"
 import { observeStartup, startupObservation } from "../lib/startup-observation"
@@ -129,15 +129,10 @@ export default Plugin.define({
           if (nativeQuestionReviews.size >= 512) nativeQuestionReviews.delete(nativeQuestionReviews.keys().next().value!)
           nativeQuestionReviews.set(event.sessionID, reviewed)
         }
-        // Exact native instructions and completed question answers, bounded to
-        // recent human context; all further source access is targeted.
-        const request = current.messages.flatMap(message => isProjectedUserAdmission(message)
-          ? message.parts.filter(part => part.type === "text" && typeof part.text === "string").map(part => part.text as string)
-          : message.parts.flatMap(part => part.type === "tool" && part.tool === "question" && typeof part.state === "object" && part.state !== null && "output" in part.state && typeof part.state.output === "string" ? [part.state.output] : []))
-          .slice(-8).join("\n\n").slice(-18_000)
+        const humanContext = nativeQuestionHistory(current.messages)
         const selected = current.session.model
         if (selected) await reviewNativeQuestions(directory, output.args, { sessions: engineSessionPort({ timeoutMs: 90_000 }), parentID: event.sessionID,
-          model: { providerID: selected.providerID, modelID: selected.modelID }, request, cleanupSession: true }, reviewed.reconsidered, reviewed.reviews)
+          model: { providerID: selected.providerID, modelID: selected.modelID }, ...humanContext, cleanupSession: true }, reviewed.reconsidered, reviewed.reviews)
       }
       event.input = output.args
     })

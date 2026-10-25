@@ -1,9 +1,39 @@
 import { Tool } from "@opencode/schema/tool"
+import { isProjectedUserAdmission } from "../../lib/engine-v2-projection"
 import { parallel } from "../../workflows/lean/checklist-flow"
 import { reviewProposedQuestion, sourceFactsFeedback, type QuestionReview, type QuestionReviewContext } from "../../workflows/lean/question-review"
 import type { Question } from "../../workflows/lean/state"
 
 type NativeQuestion = { question: string; header: string; options: { label: string; description: string }[]; multiple?: boolean }
+
+/** Native question content contains the assistant's question and advice as
+ * well as the user's answer. Only structured successful answers are authority;
+ * question wording remains a separate, explicitly non-authoritative context. */
+export function nativeQuestionHistory(messages: readonly unknown[]) {
+  const human: string[] = []
+  const context: { question: string; answers: string[] }[] = []
+  for (const message of messages) {
+    if (!record(message) || !Array.isArray(message.parts)) continue
+    if (isProjectedUserAdmission(message)) {
+      human.push(...message.parts.flatMap(part => record(part) && part.type === "text" && typeof part.text === "string" ? [part.text] : []))
+      continue
+    }
+    for (const part of message.parts) {
+      if (!record(part) || part.type !== "tool" || part.tool !== "question" || !record(part.state) || part.state.status !== "completed") continue
+      const state = part.state
+      if (!record(state.input) || !Array.isArray(state.input.questions) || !record(state.metadata) || !Array.isArray(state.metadata.answers)) continue
+      for (const [index, question] of state.input.questions.entries()) {
+        const answers: unknown = state.metadata.answers[index]
+        if (!isNativeQuestion(question) || !Array.isArray(answers) || !answers.every(answer => typeof answer === "string")) continue
+        const actual = (answers as string[]).filter(answer => answer.trim())
+        human.push(...actual)
+        context.push({ question: question.question, answers: actual })
+      }
+    }
+  }
+  return { request: human.slice(-8).join("\n\n").slice(-18_000),
+    questionContext: JSON.stringify(context.slice(-8)).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e").replaceAll("&", "\\u0026") }
+}
 
 /** Review a native question call before the native form exists. A source
  * finding is tool feedback to the asking agent, never a form submission. */
@@ -49,4 +79,8 @@ function isNativeQuestion(value: unknown): value is NativeQuestion {
   return typeof value === "object" && value !== null && "question" in value && typeof value.question === "string" &&
     "header" in value && typeof value.header === "string" && "options" in value && Array.isArray(value.options) &&
     value.options.every(option => typeof option === "object" && option !== null && typeof option.label === "string" && typeof option.description === "string")
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
 }

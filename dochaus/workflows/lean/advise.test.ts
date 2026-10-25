@@ -130,6 +130,21 @@ describe("advising asked questions", () => {
     expect(advised).toEqual({ ...FILES, advice: { recommendation: { option: "o2", rationale: "The request names no file.", basis: [{ source_id: "request", quote: "short supply note", relevance: "The request names the supplied note, not a file name." }] } } })
   })
 
+  test("a changed question scope or missing supporting quote clears cached recommendation while retaining option ids", async () => {
+    const directory = matter()
+    const advice = { options: [{ id: "o1", text: "Keep the supplied note" }, { id: "o2", text: "Seek new instructions" }],
+      recommendation: { option: "o1", rationale: "The request asks for the note.", basis: [{ source_id: "request", quote: "short supply note", relevance: "The original request names this document." }] } }
+    writeQuestions(directory, [{ ...QUESTION, advice }])
+    const model = scriptedModel({})
+    const changed = await adviseQuestions(directory, readLeanState(directory)!, "intake", { sessions: model.port }, [{ ...QUESTION, context: "A different document is now requested.", document: "d2" }])
+    expect(changed[0]!.advice).toEqual({ options: advice.options, unavailable: { reason: expect.stringContaining("changed") } })
+    writeLeanText(directory, "request.md", "Prepare a chronology.")
+    const sourceChanged = await adviseQuestions(directory, readLeanState(directory)!, "intake", { sessions: model.port }, [QUESTION])
+    expect(sourceChanged[0]!.advice).toHaveProperty("unavailable")
+    expect(sourceChanged[0]!.advice?.options).toEqual(advice.options)
+    expect(model.count(AGENT.advise)).toBe(0)
+  })
+
   test("when the advisor's retries run out the question is recorded as advisor_failed and intake stays blocked", async () => {
     // An unchecked reply is retried in its session; a runtime error ends the advice at once.
     const cases: [() => string, number][] = [[() => "I would pick thirty days.", 1 + LEAN_MAX_RETRIES], [() => { throw new Error("provider unavailable") }, 1]]
