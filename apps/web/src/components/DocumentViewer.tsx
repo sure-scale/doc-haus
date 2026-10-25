@@ -62,18 +62,34 @@ export default function DocumentViewer(props: Parameters<typeof WordDocumentView
 
 // On a narrow screen the versions list and the Tracked changes panel sit above
 // the page, so they come first in the markup too and the tab order follows what
-// the lawyer sees.
+// the lawyer sees. Moving a panel remounts it, so focus inside it goes back to
+// the same control once the window crosses the width.
 const NARROW = "(max-width: 720px)"
+const MOVED = "#document-markup, #document-versions"
+const controls = (panel: Element) => [...panel.querySelectorAll<HTMLElement>("button, a[href], input, select, textarea, summary, [tabindex]")]
 function useNarrow() {
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && Boolean(window.matchMedia?.(NARROW).matches))
+  const held = useRef<{ id: string; index: number } | null>(null)
   useEffect(() => {
     const query = window.matchMedia?.(NARROW)
     if (!query) return
-    const change = () => setNarrow(query.matches)
+    const change = () => {
+      const active = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      const panel = active?.closest(MOVED)
+      held.current = active && panel ? { id: panel.id, index: controls(panel).indexOf(active) } : null
+      setNarrow(query.matches)
+    }
     change()
     query.addEventListener("change", change)
     return () => query.removeEventListener("change", change)
   }, [])
+  useLayoutEffect(() => {
+    const target = held.current
+    held.current = null
+    if (!target) return
+    const panel = document.getElementById(target.id)
+    if (panel && !panel.contains(document.activeElement)) controls(panel)[target.index]?.focus()
+  }, [narrow])
   return narrow
 }
 

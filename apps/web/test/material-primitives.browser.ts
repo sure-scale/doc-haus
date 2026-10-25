@@ -40,7 +40,24 @@ function EmbeddedViewer({ onClose }) {
       h("iframe", { title: "Embedded source", srcDoc: '<!doctype html><html lang="en"><body><button type="button">Read next section</button></body></html>' })))
 }
 
+// Turns modal when the window narrows, as the documents drawer does.
+function Sheet() {
+  const panel = useRef(null)
+  const [compact, setCompact] = useState(() => matchMedia("(max-width: 700px)").matches)
+  useEffect(() => {
+    const query = matchMedia("(max-width: 700px)")
+    const update = () => setCompact(query.matches)
+    query.addEventListener("change", update)
+    return () => query.removeEventListener("change", update)
+  }, [])
+  useModalFocus(panel, compact, true)
+  return h("section", { ref: panel, "aria-label": "Documents sheet" },
+    h("button", { type: "button" }, "Sheet first"),
+    h("button", { type: "button" }, "Sheet second"))
+}
+
 function Harness() {
+  const [sheet, setSheet] = useState(false)
   const [picker, setPicker] = useState(false)
   const [native, setNative] = useState(false)
   const [viewer, setViewer] = useState(false)
@@ -49,6 +66,8 @@ function Harness() {
     h("button", { type: "button", onClick: () => setPicker(true) }, "Open picker"),
     h("button", { type: "button", onClick: () => setViewer(true) }, "Read source email"),
     h("button", { type: "button", onClick: () => setEmbedded(true) }, "Open embedded viewer"),
+    h("button", { type: "button", onClick: () => setSheet(value => !value) }, "Toggle sheet"),
+    sheet && h(Sheet),
     h("p", { id: "existing-description" }, "Existing help for this action."),
     h("div", { className: "tooltip-hover" },
       h(Tooltip, { label: "Additional context remains readable while you move the pointer onto this help." },
@@ -263,6 +282,29 @@ try {
   await expect(embedded).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Open embedded viewer" })).toBeFocused()
   console.log("PASS A viewer mounted after loading activates its focus trap; embedded content is reachable and Tab returns to the viewer.")
+
+  // Narrowing the window turns the sheet modal. Focus already in it stays put;
+  // under an open viewer the sheet leaves the viewer its focus and Tab, then
+  // takes focus when the viewer closes.
+  await page.getByRole("button", { name: "Toggle sheet" }).click()
+  await page.getByRole("button", { name: "Sheet second" }).focus()
+  await page.setViewportSize({ width: 600, height: 740 })
+  await expect(page.getByRole("button", { name: "Sheet second" })).toBeFocused()
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.getByRole("button", { name: "Open embedded viewer" }).click()
+  const overSheet = page.getByRole("dialog", { name: "Embedded document" })
+  await expect(overSheet.getByRole("button", { name: "Close", exact: true })).toBeFocused()
+  await page.setViewportSize({ width: 600, height: 740 })
+  await expect(overSheet.getByRole("button", { name: "Close", exact: true })).toBeFocused()
+  await page.keyboard.press("Tab")
+  await page.keyboard.press("Tab")
+  await expect(overSheet.getByRole("button", { name: "Close", exact: true })).toBeFocused()
+  await page.keyboard.press("Escape")
+  await expect(overSheet).toHaveCount(0)
+  await expect(page.getByRole("button", { name: "Sheet first" })).toBeFocused()
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.getByRole("button", { name: "Toggle sheet" }).click()
+  console.log("PASS A sheet that turns modal on a narrower window keeps the focus it has, stays beneath an open viewer and takes focus when the viewer closes.")
 
   await page.setViewportSize({ width: 375, height: 812 })
   await page.getByRole("button", { name: "Read source email" }).click()
