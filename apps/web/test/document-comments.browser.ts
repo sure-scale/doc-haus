@@ -129,6 +129,10 @@ try {
   assert.deepEqual(await linked(page), ["card#3", "pin#3", "text#3"])
   await page.mouse.move(2, 2)
   assert.deepEqual(await linked(page), [])
+  // A click on text no comment covers opens no thread.
+  await page.locator(".docx-render .comment-margin-content p").filter({ hasText: /^9\. Governing law/ }).click({ position: { x: 4, y: 4 } })
+  await page.waitForTimeout(500)
+  assert.equal(await page.evaluate(() => document.activeElement?.closest("#document-markup .markup-thread")?.getAttribute("data-comment-id") ?? null), null, "no thread takes focus")
   // A button opens its thread in the Comments tab and focuses the card; so does the commented text.
   await pins.nth(2).click()
   await page.waitForFunction(() => document.activeElement?.matches('#document-markup li.markup-thread[data-comment-id="3"]'))

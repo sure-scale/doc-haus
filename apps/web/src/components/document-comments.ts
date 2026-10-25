@@ -231,8 +231,9 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
     const pin = event.target.closest<HTMLElement>(".doc-comment-pin")
     const anchor = pin ? undefined : event.target.closest(".comment-highlight[data-comment-id]")
     if (anchor && document.getSelection()?.isCollapsed === false) return
-    const id = pin?.dataset.commentId ?? (anchor && threadOf(anchor))
-    if (id !== undefined && id !== "") pane(Number(id))
+    // Text outside every comment has no thread, not thread 0.
+    const id = pin ? pin.dataset.commentId : anchor ? threadOf(anchor) : undefined
+    if (id) pane(Number(id))
   }
   host.addEventListener("mouseover", over)
   host.addEventListener("mouseout", out)
