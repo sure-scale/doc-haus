@@ -25,6 +25,7 @@ import { ModalClose } from "./ModalHeader"
 import { CompareIcon } from "./CompareDialog"
 import VersionsPanel, { saveVersionFile, unavailableReason, useDocumentVersions, versionOrigin } from "./DocumentVersions"
 import MarkupPanel, { markupCount } from "./MarkupPanel"
+import ChangeTimeline from "./ChangeTimeline"
 import { citationPassage, focusCitationPassage, type CitationFocus } from "./citation-target"
 import { decorateMarkers, markerSummary, type MarkerCounts } from "./document-markers"
 import { useToast } from "./Toast"
@@ -664,6 +665,7 @@ function WordDocumentViewer({
               </div>
             )}
             {documentPreview}
+            <ChangeTimeline root={documentRef} html={html} markup={!shown && !markupPending && !markup.failed ? markup.data : undefined} revisions={!revisionNotice && !redlines.some((row) => !row.stale)} />
           </div>
           {!narrow && versionsPanel}
           {!narrow && markupPanel}
