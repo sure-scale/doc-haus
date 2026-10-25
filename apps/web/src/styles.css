@@ -770,6 +770,9 @@ li.list-row {
   position: relative;
   display: flex;
   flex-direction: column;
+  /* A button's set min-height lets it shrink to fit the list and cut off its
+     description; the list scrolls instead. */
+  flex-shrink: 0;
   gap: var(--space-1);
   text-align: left;
   padding: var(--space-3) 38px var(--space-3) 14px;

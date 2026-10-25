@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url"
 import type { Page } from "@playwright/test"
 import blockedQuestion from "../../../dochaus/workflows/lean/fixtures/status-blocked-question.json"
 import start from "../../../dochaus/workflows/lean/fixtures/start.json"
+import { CHAT_ASSISTANTS } from "../src/agents"
 
 const { chromium } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
 const directory = await mkdtemp(path.join(os.tmpdir(), "dochaus-chat-dialogs-"))
@@ -63,7 +64,7 @@ const server = Bun.serve({
       return json({ id: "matter", title: "Supply agreement", dir: "/matter", created_at: 1, documents: [{ id: 1, name: "Supply terms.docx", doc_path: "/matter/Supply terms.docx", created_at: 1, role: "source" }] })
     if (route === "GET /ingest/jurisdictions" || route === "GET /ingest/playbooks") return json([])
     if (route === "GET /ingest/workflows") return json({ dir: "/workflows", workflows: [] })
-    if (route === "GET /api/agent") return json({ data: ["qa", "redline", "research"].map(id => ({ id, description: id, mode: "primary" })) })
+    if (route === "GET /api/agent") return json({ data: CHAT_ASSISTANTS.map(({ name }) => ({ id: name, description: name, mode: "primary" })) })
     if (route === "GET /ingest/matters/matter/telemetry")
       return json({ current_activity: null, today: { cost_usd: 0, turns: 0 }, matter_total: { cost_usd: 0, turns: 0, sessions: 1, since_ts: 1 }, current_session: null, rate_card_as_of: null, unknown_models: [] })
     if (route === "GET /ingest/matters/matter/drafting-status") return json(drafting)
@@ -119,6 +120,12 @@ try {
       const picker = page.getByRole("dialog", { name: "Choose an assistant" })
       await picker.waitFor()
       assert.equal(await picker.getAttribute("aria-modal"), "true")
+      // Every option shows its whole description; a list taller than the window scrolls.
+      const clipped = await picker.locator(".assistant-option").evaluateAll(options =>
+        options.filter(option => option.scrollHeight > option.clientHeight + 1).map(option => option.querySelector(".assistant-name")?.textContent))
+      assert.deepEqual(clipped, [], "no assistant option is cut off")
+      await picker.locator(".picker-body").evaluate(body => body.scrollTo(0, body.scrollHeight))
+      await shot("assistant-picker-end")
       assert.ok(await focusWithin(page, ".picker-panel"), "focus moves into the picker")
       for (let step = 0; step < 6; step++) {
         await page.keyboard.press("Tab")
