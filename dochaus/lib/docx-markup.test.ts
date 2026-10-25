@@ -1,10 +1,11 @@
 import { afterEach, expect, test } from "bun:test"
+import { createHash } from "node:crypto"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Database } from "bun:sqlite"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
-import { readDocxMarkup, readMarkupComments } from "./docx-markup"
+import { counterpartyItems, readDocxMarkup, readMarkupComments } from "./docx-markup"
 import { currentDocumentView } from "./current-document-retrieval"
 import { exportDocxComments, readDocxCommentParagraphs } from "./docx-comments"
 import { renderMarkdownToDocx } from "./render"
@@ -79,6 +80,37 @@ test("both planted instructions are flagged on the item that carries them, their
     [` ${plantedDeletion}`, [["text", "instruction-override"]]],
     [plantedComment, [["text", "ai-directive"], ["text", "concealment"]]],
   ])
+})
+
+test("counterparty items are each content change and open thread, with author, place, folded replies and flags", async () => {
+  const bytes = counterpartyMarkupDocx()
+  const source = { name: COUNTERPARTY_MARKUP.name, sha256: createHash("sha256").update(bytes).digest("hex") }
+  const markup = await readDocxMarkup(bytes)
+  const items = counterpartyItems(source, markup)
+  const at = (paragraph: number, side?: "from" | "to") => ({ part: "body", paragraph, ...side ? { side } : {} })
+  expect(items.map(({ source: _, ref: __, date: ___, ...item }) => item)).toEqual([
+    { author: AVERY, change: "delete", text: "thirty", places: [at(1)] },
+    { author: AVERY, change: "insert", text: "forty-five", places: [at(1)] },
+    { author: MORGAN, change: "insert", text: "the first ", places: [at(2)] },
+    { author: AVERY, change: "move", text: `${NOTICES}¶`, places: [at(3, "from"), at(5, "to")] },
+    // Morgan's bold on clause 4 is formatting, not a point to answer.
+    { author: AVERY, change: "delete", text: ` ${plantedDeletion}`, places: [at(6)], flagged: ["instruction-override"] },
+    { author: AVERY, change: "insert", text: "on ten Business Days' notice at any time ", places: [at(7)] },
+    { author: MORGAN, change: "delete", text: "at any time ", places: [at(7)] },
+    { author: MORGAN, change: "delete", text: "¶", places: [at(8)] },
+    { author: MORGAN, change: "insert", text: "8. Waiver. No waiver is effective unless in writing.¶", places: [at(10)] },
+    { author: AVERY, change: "comment", text: "Our production lead time needs forty-five days.", quote: "forty-five", places: [at(1)],
+      replies: [{ author: MORGAN, date: dates[MORGAN], text: "Agreed if the Supplier confirms stock levels monthly." }] },
+    // Morgan's resolved note on clause 2 is settled and left out.
+    { author: AVERY, change: "comment", text: plantedComment, quote: "5. Term. This Agreement continues for two years.", places: [at(6)], flagged: ["ai-directive", "concealment"] },
+  ])
+  // Each joins its card by version and id.
+  expect(items.map(item => item.ref)).toEqual([...markup.revisions.filter(row => row.kind !== "format").map(row => ({ kind: "revision", id: row.id })), { kind: "comment", id: 0 }, { kind: "comment", id: 3 }])
+  expect(items.map(item => [item.source, item.date])).toEqual(items.map(item => [source, dates[item.author]]))
+  // A change in a numbered clause is placed by the number Word prints there.
+  const rendered = (await renderMarkdownToDocx("Terms.\n\n1. Supply.\n2. Price.\n3. Term.")).bytes
+  const numbered = repackaged(rendered, { "word/document.xml": xml => xml.replace("Term.</w:t></w:r>", `$&${inserted(90, AVERY, " Revised.")}`) })
+  expect(counterpartyItems(source, await readDocxMarkup(numbered)).map(item => item.places)).toEqual([[{ part: "body", paragraph: 4, label: "3." }]])
 })
 
 test("a zero-width character in a comment is stripped and reported, and cannot hide an instruction from the scan", async () => {

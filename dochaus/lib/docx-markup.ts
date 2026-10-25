@@ -83,6 +83,23 @@ export type MarkupComment = {
 }
 export type MarkupAuthor = { name: string; revisions: number; comments: number }
 export type DocxMarkup = { revisions: MarkupRevision[]; comments: MarkupComment[]; authors: MarkupAuthor[] }
+/** One change or open comment thread the other side made, as a register input. `source.sha256` names the
+ * version whose ids `ref` uses; a thread's `text`, `author`, `date` and place are its root comment's. */
+export type CounterpartyItem = {
+  source: { name: string; sha256: string }
+  ref: { kind: "revision"; id: string } | { kind: "comment"; id: number }
+  author: string
+  date: string | null
+  change: "insert" | "delete" | "move" | "comment"
+  text: string
+  replies?: { author: string; date: string | null; text: string }[]
+  /** A comment's anchor text. */
+  quote?: string
+  places: { part: MarkupRevision["scope"]; paragraph: number | null; label?: string; side?: "from" | "to" }[]
+  status?: Exclude<MarkupRevision["status"], "supported">
+  /** The untrusted-text rules the item's carried strings matched. */
+  flagged?: string[]
+}
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 // Anchor kinds that are paragraphs (h: heading, li: numbered list item).
@@ -109,6 +126,44 @@ export async function readDocxMarkup(bytes: Uint8Array): Promise<DocxMarkup> {
   for (const revision of revisions) author(revision.author).revisions++
   for (const comment of comments) author(comment.author).comments++
   return { revisions, comments, authors: [...authors.values()] }
+}
+
+// The negotiable points of a markup: each insert, delete (a paragraph mark's
+// included) and move outside comments' own text, then each unresolved thread
+// with its replies folded in. Format and structure changes and resolved threads
+// are left out. A reply joins the thread of a comment listed before it (Word
+// lists replies after their parent); any other comment starts its own thread.
+export function counterpartyItems(source: { name: string; sha256: string }, markup: DocxMarkup): CounterpartyItem[] {
+  // Initials are not carried, so their findings are not either.
+  const flagged = (findings: MarkupFinding[]) => {
+    const rules = [...new Set(findings.filter(finding => finding.field !== "initials").map(finding => finding.rule))]
+    return rules.length ? { flagged: rules } : {}
+  }
+  const units = markup.revisions.flatMap((revision): CounterpartyItem[] => {
+    const { kind } = revision
+    if (revision.scope === "comment" || kind === "format" || kind === "structure") return []
+    return [{
+      source, ref: { kind: "revision", id: revision.id }, author: revision.author, date: revision.date, change: kind, text: revision.text,
+      places: revision.locations.map(({ paragraph, label, side }) => ({ part: revision.scope, paragraph, ...label ? { label } : {}, ...side ? { side } : {} })),
+      ...revision.status === "supported" ? {} : { status: revision.status },
+      ...flagged(revision.findings),
+    }]
+  })
+  const threads: { root: MarkupComment; replies: MarkupComment[] }[] = [], member = new Map<number, (typeof threads)[number]>()
+  for (const comment of markup.comments) {
+    const joined = comment.parent === null ? undefined : member.get(comment.parent)
+    if (joined) joined.replies.push(comment)
+    else threads.push({ root: comment, replies: [] })
+    member.set(comment.id, joined ?? threads.at(-1)!)
+  }
+  const comments = threads.flatMap(({ root, replies }): CounterpartyItem[] => root.resolved === true ? [] : [{
+    source, ref: { kind: "comment", id: root.id }, author: root.author, date: root.date, change: "comment", text: root.text,
+    ...replies.length ? { replies: replies.map(({ author, date, text }) => ({ author, date, text })) } : {},
+    ...root.quote ? { quote: root.quote } : {},
+    places: [{ part: root.scope ?? "body", paragraph: root.paragraph, ...root.label ? { label: root.label } : {} }],
+    ...flagged([root, ...replies].flatMap(comment => comment.findings)),
+  }])
+  return [...units, ...comments]
 }
 
 // The revisions, and each list number by `${scope}:${paragraph}` for the parts
