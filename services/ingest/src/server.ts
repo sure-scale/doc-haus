@@ -49,7 +49,7 @@ import {
 import { EmbeddingModelUnavailableError, migrateEmbeddings } from "./embed"
 import { migrateSections, migrateStructure } from "./structure"
 import { pdfToDocx } from "./convert"
-import { buildRedlined, bake, redlineState, redlineStaleReason, RedlinePreviewConflictError } from "./redline"
+import { buildRedlined, bake, layeredRedline, redlineState, redlineStaleReason, RedlinePreviewConflictError } from "./redline"
 import { listMatters, createMatter, getMatter, renameMatter, deleteMatter, recordConflicts, matterDir, listJurisdictions, listPlaybooks, updatePlaybook, deletePlaybook, PlaybookError, PLAYBOOK_DIR, MatterValidationError, type Conflicts } from "./matter"
 import { listTemplates, templatePath, setTemplateDescription, removeTemplateDescription, TEMPLATES_DIR } from "./template"
 import { listWorkflows, createWorkflow, updateWorkflow, deleteWorkflow, NAME_RE, WORKFLOWS_DIR } from "./workflow"
@@ -67,7 +67,7 @@ import { documentAmendmentRoutes, acceptedWorkingDocxUpdate } from "./document-a
 import { documentMarkupRoutes } from "./document-markup"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { withParagraphPointers, withStableRevisionDates } from "../../../dochaus/lib/drafting-amendment"
-import { DocxTrackedRevisionsError } from "../../../dochaus/lib/docx-amendments"
+import { DocxTrackedRevisionsError, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { compareVersions } from "../../../dochaus/lib/version-compare"
 import { pendingRedlinesForDoc } from "../../../dochaus/lib/redlines"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
@@ -724,7 +724,8 @@ app.post("/matters/:id/documents/revisions", async (c) => {
       // part's text, whatever the parts (the tool saved the part in place first).
       const combined = await prepareCombinedFile(dir, target.docPath, { redaction: origin === "redaction" })
       // A lawyer's save is kept even with pending tracked changes; doc.haus edits
-      // on top of it then wait until they are resolved.
+      // on top of it then wait until they are resolved, except on an uploaded
+      // source, where they go beside them.
       const revision = await writeDocumentRevision(dir, target.name, bytes, [], priorSha256, false, { version, keepTracked: origin === "revision" })
       const rebuilt = await rebuildCombinedFile(combined)
       const purgeFailed = [revision, rebuilt].map((result) => result && "purge_failed" in result ? result.purge_failed : undefined).filter(Boolean).join(" ")
@@ -1045,7 +1046,7 @@ app.get("/matters/:id/redlines", async (c) => {
     const db = openDb(dir)
     try {
       const rows = listPendingRedlines(db, target.docPath)
-      const state = await redlineState(await Bun.file(target.docPath).bytes(),rows)
+      const state = await redlineState(await Bun.file(target.docPath).bytes(),rows,proposalRevisionOptions(dir,target.docPath))
       const protectedWord = Boolean(readWorkingDocx(dir,target.docPath))
       return c.json(rows.map((row) => {
         const stale_reason = redlineStaleReason(row,state,protectedWord)
@@ -1057,9 +1058,10 @@ app.get("/matters/:id/redlines", async (c) => {
   })
 })
 
-// The redlined view: the clean .docx compared against itself with every pending
-// proposal applied, so the viewer renders native tracked changes green/red. Falls
-// back to the clean bytes when nothing is pending. Stale proposals (the ones the
+// The redlined view: the saved .docx with every pending proposal applied as
+// native tracked changes, so the viewer renders them green/red (on an uploaded
+// source, written beside the tracked changes the file already holds). Falls
+// back to the saved bytes when nothing is pending. Stale proposals (the ones the
 // change list marks stale and refuses to accept) are left out: they cannot be
 // replayed against this revision, and they stay pending and visible as stale
 // until the reviewer rejects them. Nothing here changes a proposal's status.
@@ -1081,11 +1083,12 @@ app.get("/matters/:id/documents/redlined", async (c) => {
         db.close()
       }
     })()
-    const state = await redlineState(original, pending)
+    const options = pending.length ? proposalRevisionOptions(dir, target.docPath) : {}
+    const state = await redlineState(original, pending, options)
     const rows = pending.filter((row) => !redlineStaleReason(row, state, protectedWord))
     try {
-      const bytes = await buildRedlined(original, rows, state)
-      const disclosure = rows.length ? await sourceRevisionDisclosure(original) : undefined
+      const bytes = await buildRedlined(original, rows, state, options)
+      const disclosure = rows.length && !layeredRedline(rows, options) ? await sourceRevisionDisclosure(original) : undefined
       return new Response(new Uint8Array(bytes), {
         headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
           ...(disclosure ? { "X-DocHaus-Revision-Notice": encodeURIComponent(disclosure.message) } : {}) },
@@ -1228,7 +1231,9 @@ app.get("/matters/:id/compare", async (c) => {
 })
 
 // Accept a single redline: bake it into the canonical .docx (the new accepted
-// state, no tracked changes) and mark it accepted. Source revisions are
+// state, no tracked changes; on an uploaded source with pending revisions, its
+// edit stays a tracked change under the proposal's author, beside theirs, so the
+// saved file is the redline) and mark it accepted. Source revisions are
 // re-indexed; deliverable revisions remain outside source retrieval. Re-resolves
 // the anchor text against the live doc, so a clause an earlier accept already
 // rewrote fails loudly instead of corrupting.
@@ -1250,10 +1255,11 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
       const original = await Bun.file(current.doc_path).bytes()
       const prior = createHash("sha256").update(original).digest("hex")
       const working = readWorkingDocx(dir,current.doc_path)
-      const state = await redlineState(original,[current])
+      const options = proposalRevisionOptions(dir,current.doc_path)
+      const state = await redlineState(original,[current],options)
       const stale = redlineStaleReason(current,state,Boolean(working))
       if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
-      const baked = documentRevisionBytes(dir,current.doc_name,Buffer.from(await bake(original,[current],state))).bytes
+      const baked = documentRevisionBytes(dir,current.doc_name,Buffer.from(await bake(original,[current],state,options))).bytes
       redline = await prepareDeliveredRedline(dir,current.doc_path,baked)
       await writeDocumentRevision(dir,current.doc_name,baked,[current.id],prior,current.target_json != null,{version:acceptVersion(c,[current.id])})
     } catch (error) {
@@ -1317,10 +1323,11 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
       const original = await Bun.file(file).bytes()
       const prior = createHash("sha256").update(original).digest("hex")
       const working = readWorkingDocx(dir,file)
-      const state = await redlineState(original,rows)
+      const options = proposalRevisionOptions(dir,file)
+      const state = await redlineState(original,rows,options)
       const stale = rows.map((row) => redlineStaleReason(row,state,Boolean(working))).find(Boolean)
       if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
-      const baked = documentRevisionBytes(dir,name,Buffer.from(await bake(original,rows,state))).bytes
+      const baked = documentRevisionBytes(dir,name,Buffer.from(await bake(original,rows,state,options))).bytes
       redline = await prepareDeliveredRedline(dir,file,baked)
       await writeDocumentRevision(dir,name,baked,rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null),{version:acceptVersion(c,rows.map((row) => row.id))})
     } catch (error) {
@@ -1423,6 +1430,14 @@ function documentRevisionBytes(directory: string, name: string, input: Buffer, e
   const db = openDb(directory)
   const role = (() => { try { return getDocumentRole(db, path.join(directory, path.basename(name))) } finally { db.close() } })()
   return { role, bytes: !exact && role === "deliverable" && name.toLowerCase().endsWith(".docx") ? Buffer.from(withParagraphPointers(input)) : input }
+}
+
+/** How doc.haus's proposals read the registered document at `docPath`: an
+ * uploaded source keeps the other side's pending tracked changes and takes
+ * doc.haus's beside them; any other document refuses them (DocxRevisionOptions). */
+function proposalRevisionOptions(directory: string, docPath: string): DocxRevisionOptions {
+  const db = openDb(directory)
+  try { return getDocumentRole(db, docPath) === "source" ? { pendingRevisions: "layer" } : {} } finally { db.close() }
 }
 
 // Changes accepted into the body of a completed lean run are appended to that

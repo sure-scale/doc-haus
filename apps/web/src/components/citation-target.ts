@@ -37,7 +37,11 @@ export function citationPassage(text: string, excerpt: string) {
 }
 
 export function focusCitationPassage(root: HTMLElement, excerpt: string) {
-  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  // A citation is to the document's own text: the comments beside it, which on
+  // a narrow page sit between its paragraphs, and their markers are skipped.
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) => (node.parentElement?.closest(".comment-margin-note, .comment-marker") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+  })
   const nodes: { node: Text; start: number; end: number }[] = []
   const text: string[] = []
   let length = 0

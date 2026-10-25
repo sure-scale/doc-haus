@@ -4,6 +4,7 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { findPastListLabel } from "../lib/list-label"
+import { pendingRevisionAnchors, pendingRevisionRefusal } from "../lib/docx-amendments"
 import { assertDirectWorkingDocxWriteAllowed } from "../lib/working-docx"
 import { withArtifactMutationLocksAsync } from "../capabilities/artifacts/mutation-lock"
 
@@ -62,6 +63,10 @@ export default tool({
         const {find,replace,targets,error} = findPastListLabel(args.find!,args.replace!,(text) => session.findAllByText(text),(id) => session.getAnchorInfo(id)?.visibleText)
         if (!targets.length) return `Text not found in ${name}: ${JSON.stringify(args.find)}`
         if (error) return error
+        // The edit is untracked: in a paragraph with a pending revision it would
+        // become that revision's author's text (the touch rule).
+        const refused = pendingRevisionRefusal(pendingRevisionAnchors(session),targets.map((target) => target.id),find,"made")
+        if (refused) return refused
         const results = targets.flatMap((target) => session.replaceTextRange(target.id,find,replace))
         const failed = results.find((result) => !result.success)
         if (failed) return `Edit failed: ${failed.error?.message ?? JSON.stringify(failed.error)}`

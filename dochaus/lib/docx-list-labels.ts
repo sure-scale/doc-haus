@@ -24,7 +24,9 @@ import { docxodus } from "./docxodus"
 // numbered list, or one Docxodus cannot read, is returned as the same buffer,
 // so its text and offsets do not change. A file read without its numbers for a
 // failure is logged, and `unread` is called, so a reader that keeps the text
-// can read it again.
+// can read it again. A file the two count differently is the same each time it
+// is read, so ingest's text keeps it unlabelled; a reader that needs every
+// number (`complete`) is told it is unread too.
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const XML = "http://www.w3.org/XML/1998/namespace"
@@ -36,7 +38,7 @@ const NUM_PR = /<(?:[\w.-]+:)?numPr[\s/>]/
 // are containers (tables, rows, cells, columns, content controls, sections).
 const PARAGRAPHS = new Set(["p", "li", "h"])
 
-export async function writeListLabels(buffer: Buffer, unread?: () => void): Promise<Buffer> {
+export async function writeListLabels(buffer: Buffer, unread?: () => void, options: { complete?: boolean } = {}): Promise<Buffer> {
   try {
     const head = unzipSync(buffer, { filter: file => [BODY, NUMBERING, STYLES].includes(file.name) })
     const body = head[BODY] && strFromU8(head[BODY])
@@ -55,6 +57,7 @@ export async function writeListLabels(buffer: Buffer, unread?: () => void): Prom
     const paragraphs = Array.from(doc.getElementsByTagNameNS(W, "p"))
     if (paragraphs.length !== anchors.length) {
       console.warn("list labels not read", { reason: "paragraph_count_mismatch", docxodus_paragraphs: anchors.length, document_paragraphs: paragraphs.length })
+      if (options.complete) unread?.()
       return buffer
     }
     let written = 0

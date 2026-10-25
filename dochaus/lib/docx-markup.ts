@@ -2,6 +2,7 @@ import { DOMParser } from "@xmldom/xmldom"
 import type { RevisionListEntry } from "docxodus"
 import { strFromU8, unzipSync } from "fflate"
 import { docxodus } from "./docxodus"
+import { ourAuthors } from "./docx-attribution"
 import { readDocxComments } from "./docx-comments"
 import { detectInjection, normalizeUntrustedText } from "./untrusted-text"
 
@@ -32,7 +33,9 @@ import { detectInjection, normalizeUntrustedText } from "./untrusted-text"
 //   no commentsExtended entry for it. `quote` is the commented text as marked up,
 //   deleted text included, capped; `paragraph` counts its part's paragraphs as
 //   above, `label` is that paragraph's list number as a location's is, and
-//   `scope` names that part when it is a footnote or endnote.
+//   `scope` names that part when it is a footnote or endnote. `detached`: no
+//   part holds its reference any more (a rejected insertion or an accepted
+//   deletion took it), so Word shows it nowhere and it takes no reply.
 // - authors: each name with its counts, in order of first appearance; "" is a
 //   change or comment that names no author.
 export type MarkupField = "text" | "author" | "quote" | "initials"
@@ -79,10 +82,31 @@ export type MarkupComment = {
   label?: string
   /** Absent for a comment in the body. */
   scope?: "footnote" | "endnote"
+  /** No reference to it is left in any part; absent while one is. */
+  detached?: true
   findings: MarkupFinding[]
 }
 export type MarkupAuthor = { name: string; revisions: number; comments: number }
 export type DocxMarkup = { revisions: MarkupRevision[]; comments: MarkupComment[]; authors: MarkupAuthor[] }
+/** One change or open comment thread the other side made, as a register input. `source.sha256` names the
+ * version whose ids `ref` uses; a thread's `text`, `author`, `date` and place are its root comment's. */
+export type CounterpartyItem = {
+  source: { name: string; sha256: string }
+  ref: { kind: "revision"; id: string } | { kind: "comment"; id: number }
+  author: string
+  date: string | null
+  change: "insert" | "delete" | "move" | "comment"
+  text: string
+  /** A thread the other side answered: its root comment (on a reply, that reply) is ours. */
+  ours?: true
+  replies?: { author: string; date: string | null; text: string; ours?: true }[]
+  /** A comment's anchor text. */
+  quote?: string
+  places: { part: MarkupRevision["scope"]; paragraph: number | null; label?: string; side?: "from" | "to" }[]
+  status?: Exclude<MarkupRevision["status"], "supported">
+  /** The untrusted-text rules the item's carried strings matched. */
+  flagged?: string[]
+}
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 // Anchor kinds that are paragraphs (h: heading, li: numbered list item).
@@ -109,6 +133,51 @@ export async function readDocxMarkup(bytes: Uint8Array): Promise<DocxMarkup> {
   for (const revision of revisions) author(revision.author).revisions++
   for (const comment of comments) author(comment.author).comments++
   return { revisions, comments, authors: [...authors.values()] }
+}
+
+// The negotiable points of a markup: each insert, delete (a paragraph mark's
+// included) and move outside comments' own text, then each unresolved thread
+// with its replies folded in. Format and structure changes and resolved threads
+// are left out. A reply joins the thread of a comment listed before it (Word
+// lists replies after their parent); any other comment starts its own thread.
+// `ours` names our own side (by default every name doc.haus signs its redlines
+// and comments and the lawyer's accepted edits and replies with: the attorney,
+// the firm and doc.haus), matched trimmed and case-insensitively. A change, or a thread, all
+// of whose authors are ours is not the other side's and is left out; a thread
+// they answered keeps our root or replies, each marked `ours`.
+export function counterpartyItems(source: { name: string; sha256: string }, markup: DocxMarkup, ours: readonly string[] = ourAuthors()): CounterpartyItem[] {
+  // Initials are not carried, so their findings are not either.
+  const flagged = (findings: MarkupFinding[]) => {
+    const rules = [...new Set(findings.filter(finding => finding.field !== "initials").map(finding => finding.rule))]
+    return rules.length ? { flagged: rules } : {}
+  }
+  const names = new Set(ours.map(name => name.trim().toLowerCase()).filter(Boolean))
+  const own = (author: string) => names.has(author.trim().toLowerCase())
+  const units = markup.revisions.flatMap((revision): CounterpartyItem[] => {
+    const { kind } = revision
+    if (revision.scope === "comment" || kind === "format" || kind === "structure" || own(revision.author)) return []
+    return [{
+      source, ref: { kind: "revision", id: revision.id }, author: revision.author, date: revision.date, change: kind, text: revision.text,
+      places: revision.locations.map(({ paragraph, label, side }) => ({ part: revision.scope, paragraph, ...label ? { label } : {}, ...side ? { side } : {} })),
+      ...revision.status === "supported" ? {} : { status: revision.status },
+      ...flagged(revision.findings),
+    }]
+  })
+  const threads: { root: MarkupComment; replies: MarkupComment[] }[] = [], member = new Map<number, (typeof threads)[number]>()
+  for (const comment of markup.comments) {
+    const joined = comment.parent === null ? undefined : member.get(comment.parent)
+    if (joined) joined.replies.push(comment)
+    else threads.push({ root: comment, replies: [] })
+    member.set(comment.id, joined ?? threads.at(-1)!)
+  }
+  const comments = threads.flatMap(({ root, replies }): CounterpartyItem[] => root.resolved === true || [root, ...replies].every(comment => own(comment.author)) ? [] : [{
+    source, ref: { kind: "comment", id: root.id }, author: root.author, date: root.date, change: "comment", text: root.text, ...own(root.author) ? { ours: true as const } : {},
+    ...replies.length ? { replies: replies.map(({ author, date, text }) => ({ author, date, text, ...own(author) ? { ours: true as const } : {} })) } : {},
+    ...root.quote ? { quote: root.quote } : {},
+    places: [{ part: root.scope ?? "body", paragraph: root.paragraph, ...root.label ? { label: root.label } : {} }],
+    ...flagged([root, ...replies].flatMap(comment => comment.findings)),
+  }])
+  return [...units, ...comments]
 }
 
 // The revisions, and each list number by `${scope}:${paragraph}` for the parts
@@ -224,10 +293,17 @@ export async function readMarkupComments(bytes: Uint8Array, native = readDocxCom
   if (!listed.length) return []
   const ids = new Map(listed.map(row => [row.anchorId, row.id]))
   const { quotes, places } = commentRanges(bytes, new Set(listed.map(row => String(row.id))))
-  // The first native comment with each id, as a lookup.
-  const natives = new Map(native.map(comment => [comment.comment_id, comment] as const).reverse())
+  const referenced = commentReferences(bytes)
+  // Both readers list the comments part in order, comments that share an id
+  // included, so the nth row with an id is the nth native comment with it: each
+  // row's own text is the text screened, as the page shows it.
+  const natives = new Map<string, typeof native>()
+  for (const comment of native) natives.set(comment.comment_id, [...natives.get(comment.comment_id) ?? [], comment])
+  const seen = new Map<string, number>()
   return listed.map(row => {
-    const own = natives.get(String(row.id))
+    const at = seen.get(String(row.id)) ?? 0
+    seen.set(String(row.id), at + 1)
+    const own = natives.get(String(row.id))?.[at]
     // The range start places a comment; a reply often has only a reference.
     // The native markers are the body's; a note's come from the scan.
     const marker = MARKERS.map(kind => own?.markers.find(marker => marker.kind === kind && marker.xml_paragraph_index !== null)).find(Boolean)
@@ -249,9 +325,25 @@ export async function readMarkupComments(bytes: Uint8Array, native = readDocxCom
       paragraph,
       ...label ? { label } : {},
       ...place ? { scope: place.scope } : {},
+      ...referenced.has(row.id) ? {} : { detached: true as const },
       findings,
     }
   })
+}
+
+/** The ids of the comments whose reference is still in the document: in the
+ * body, a note, a header or a footer. A comment with none is detached. */
+export function commentReferences(bytes: Uint8Array) {
+  const ids = new Set<number>()
+  for (const content of Object.values(unzipSync(bytes, { filter: file => file.name.startsWith("word/") && file.name.endsWith(".xml") }))) {
+    const xml = strFromU8(content)
+    if (!xml.includes("commentReference")) continue
+    for (const node of Array.from(new DOMParser().parseFromString(xml, "application/xml").getElementsByTagNameNS(W, "commentReference"))) {
+      const id = node.getAttributeNS(W, "id") ?? ""
+      if (/^\d+$/.test(id)) ids.add(Number(id))
+    }
+  }
+  return ids
 }
 
 function screened(findings: MarkupFinding[], field: MarkupField, raw: string) {

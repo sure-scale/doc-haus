@@ -1,9 +1,13 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
-import { createDocxRevision, createDocxLocalization, applyDocxLocalization, applyDocxParagraphEdits } from "./docx-amendments"
+import { createDocxRevision, createDocxLocalization, applyDocxLocalization, applyDocxParagraphEdits, DocxTrackedRevisionsError, openRevision,
+  pendingRevisionAnchors, pendingRevisionParagraphs, verifyPreservation } from "./docx-amendments"
+import { paragraphTargets } from "./drafting-amendment"
 import { renderMarkdownToDocx } from "./render"
 import { docxodus } from "./docxodus"
+import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx } from "../test/support/counterparty-markup-fixture"
+import { revisionTablesOriginalDocx } from "../test/support/revision-tables-fixture"
 
 describe("revision-bound DOCX amendments", () => {
   let source: Uint8Array
@@ -399,5 +403,128 @@ describe("live cross-references", () => {
     // Without the fault both batches apply.
     expect((await createDocxRevision((await applyDocxParagraphEdits(source, [plain, number])).bytes)).paragraphs.map(row => row.text))
       .toEqual(expect.arrayContaining(["Nothing in this clause limits the Supplier.", "The Customer shall pay as set out in clause 2.2."]))
+  })
+})
+
+// Their markup stays pending while doc.haus edits other paragraphs: the layer
+// reader projects the accepted text, and a paragraph with any pending revision
+// is not edited.
+describe("layered edits on a counterparty markup", () => {
+  const source = counterpartyMarkupDocx()
+  const [AVERY, MORGAN] = COUNTERPARTY_MARKUP.reviewers as [string, string]
+  const layer = { pendingRevisions: "layer" } as const
+  const revisions = async (bytes: Uint8Array) => {
+    const session = (await docxodus()).openDocxSession(bytes, {})
+    try {
+      return session.listRevisions().map(row => ({ id: row.id, type: row.type, author: row.author, text: row.text, date: row.date, anchor: row.anchorId }))
+    } finally { session.close() }
+  }
+  const handle = (revision: { paragraphs: { paragraph_handle: string; text: string }[] }, prefix: string) =>
+    revision.paragraphs.find(row => row.text.startsWith(prefix))!.paragraph_handle
+  const clause9 = { id: "law", occurrence: 0, before_quote: "the Province", replacement: "the State" }
+
+  test("layer mode maps every paragraph, and names each paragraph with a pending change and its authors", async () => {
+    const revision = await createDocxRevision(source, layer)
+    expect(revision.paragraphs.map(row => [row.scope, row.text])).toEqual([
+      ["body", "1. Supply. The Supplier shall deliver the Goods within forty-five days of each Order."],
+      ["body", "2. Price. The Price is fixed for the first twelve months."],
+      ["body", "4. Liability. Neither party is liable for indirect loss."],
+      ["body", "3. Notices. Notices must be in writing."],
+      ["body", "5. Term. This Agreement continues for two years."],
+      ["body", "6. Audit. The Buyer may audit on ten Business Days' notice the Supplier's records."],
+      ["body", "7. Assignment. Neither party may assign"],
+      ["body", " without consent."],
+      ["body", "8. Waiver. No waiver is effective unless in writing."],
+      ["body", "9. Governing law. This Agreement is governed by the law of the Province."],
+      ...COUNTERPARTY_MARKUP.comments.map(comment => ["cmt", comment.text]),
+    ])
+    expect((await paragraphTargets(source, layer)).map(row => row.paragraph_handle))
+      .toEqual(revision.paragraphs.filter(row => row.scope === "body").map(row => row.paragraph_handle))
+    // Both ends of the move are pending; the paragraph after a deleted paragraph mark is not.
+    const pending = [["1", [AVERY]], ["2", [MORGAN]], ["4", [MORGAN]], ["3", [AVERY]], ["5", [AVERY]], ["6", [AVERY, MORGAN]], ["7", [MORGAN]], ["8", [MORGAN]]] as const
+    const byText = (rows: Map<string, string[]>, text: (key: string) => string) => [...rows].map(([key, authors]) => [text(key).match(/^\d+/)?.[0] ?? text(key), authors])
+    expect(byText(await pendingRevisionParagraphs(source), key => revision.paragraphs.find(row => row.paragraph_handle === key)!.text))
+      .toEqual(pending.map(([text, authors]) => [text, [...authors]]))
+    // The legacy tools' own session reaches the same paragraphs by anchor id.
+    const session = (await docxodus()).openDocxSession(source, {})
+    try {
+      const texts = new Map(session.grep("^[\\s\\S]*$", { scope: 63, whitespace: 0 }).map(match => [match.enclosingAnchor.id, match.text]))
+      expect(byText(pendingRevisionAnchors(session), key => texts.get(key)!)).toEqual(pending.map(([text, authors]) => [text, [...authors]]))
+    } finally { session.close() }
+  })
+
+  test("an accept-mode edit to clause 9 is written untracked and keeps their ten revisions", async () => {
+    const revision = await createDocxRevision(source, layer)
+    const output = await applyDocxParagraphEdits(source, [{ ...clause9, paragraph_handle: handle(revision, "9.") }], undefined, layer)
+    expect((await createDocxRevision(output.bytes, layer)).paragraphs[9]!.text)
+      .toBe("9. Governing law. This Agreement is governed by the law of the State.")
+    const before = await revisions(source)
+    expect(before).toHaveLength(10)
+    expect(await revisions(output.bytes)).toEqual(before)
+    expect(output.report.package_structure_verified).toBe(true)
+  })
+
+  test("an edit inside or beside their pending change is refused, and nothing is written", async () => {
+    const revision = await createDocxRevision(source, layer)
+    const law = { ...clause9, paragraph_handle: handle(revision, "9.") }
+    // Inside Avery's insertion an untracked edit would become her proposal.
+    const inside = { id: "lead-time", paragraph_handle: handle(revision, "1."), occurrence: 0, before_quote: "forty-five", replacement: "sixty" }
+    const beside = { id: "price-period", paragraph_handle: handle(revision, "2."), occurrence: 0, before_quote: "twelve months", replacement: "eighteen months" }
+    await expect(applyDocxParagraphEdits(source, [inside], undefined, layer)).rejects.toThrow("docx_pending_revision:lead-time")
+    await expect(applyDocxParagraphEdits(source, [law, beside], undefined, layer)).rejects.toThrow("docx_pending_revision:price-period")
+    const packet = await createDocxLocalization(source, [{ id: "lead-time", before_quote: "forty-five", replacement: "sixty" }], {}, layer)
+    const body = packet.candidates.find(row => row.paragraph.scope === "body")!
+    await expect(applyDocxLocalization(source, packet, [{ amendment_id: "lead-time", target_handle: body.target_handle }], layer))
+      .rejects.toThrow("docx_pending_revision:lead-time")
+  })
+
+  test("a tracked edit adds exactly two revisions under the author beside theirs and passes verification", async () => {
+    const author = "Jordan Example"
+    const tracked = { ...layer, revisionAuthor: author }
+    // Prepared on the accepted view; applied as native tracked changes.
+    expect(await createDocxRevision(source, tracked)).toEqual(await createDocxRevision(source, layer))
+    const packet = await createDocxLocalization(source, [{ id: "law", before_quote: "the Province", replacement: "the State" }], {}, layer)
+    const output = await applyDocxLocalization(source, packet, [{ amendment_id: "law", target_handle: packet.candidates[0]!.target_handle }], tracked)
+    expect(output.report.package_structure_verified).toBe(true)
+    const theirs = await revisions(source)
+    const after = await revisions(output.bytes)
+    expect(after.filter(row => row.author !== author)).toEqual(theirs)
+    const clause = after.find(row => row.author === author)!.anchor
+    // Whole words, as Word records an overtyped word, not the changed letters.
+    expect(after.filter(row => row.author === author).map(row => [row.type, row.text, row.anchor])).toEqual([["delete", "Province", clause], ["insert", "State", clause]])
+    expect((await createDocxRevision(output.bytes, layer)).paragraphs[9]!.text).toBe("9. Governing law. This Agreement is governed by the law of the State.")
+    expect(strFromU8(unzipSync(output.bytes)["word/settings.xml"]!)).toContain("<w:trackRevisions")
+    // Only Track Changes being switched on is tolerated in the settings part.
+    const zoomed = unzipSync(output.bytes)
+    zoomed["word/settings.xml"] = strToU8(strFromU8(zoomed["word/settings.xml"]!).replace("<w:trackRevisions", '<w:zoom w:percent="90"/><w:trackRevisions'))
+    const [a, b, c] = [await openRevision(source, tracked), await openRevision(output.bytes, tracked), await openRevision(zipSync(zoomed), tracked)]
+    try {
+      expect(() => verifyPreservation(a, b, new Set([9]))).not.toThrow()
+      expect(() => verifyPreservation(a, c, new Set([9]))).toThrow("docx_package_parts_changed")
+    } finally { [a, b, c].forEach(opened => opened.session.close()) }
+  })
+
+  test("a paragraph in a table row they inserted is pending, though Docxodus lists only the row", async () => {
+    const parts = unzipSync(revisionTablesOriginalDocx())
+    const xml = strFromU8(parts["word/document.xml"]!)
+    const row = xml.lastIndexOf("<w:tr>", xml.indexOf("Unit price")) + "<w:tr>".length
+    parts["word/document.xml"] = strToU8(`${xml.slice(0, row)}<w:trPr><w:ins w:id="901" w:author="${AVERY}" w:date="2026-10-20T09:00:00Z"/></w:trPr>${xml.slice(row)}`)
+    const inserted = zipSync(parts)
+    const revision = await createDocxRevision(inserted, layer)
+    expect([...(await pendingRevisionParagraphs(inserted))].map(([key, authors]) => [revision.paragraphs.find(row => row.paragraph_handle === key)!.text, authors]))
+      .toEqual([["Unit price", [AVERY]], ["0.14 per carton", [AVERY]]])
+    const session = (await docxodus()).openDocxSession(inserted, {})
+    try { expect([...pendingRevisionAnchors(session).values()]).toEqual([[AVERY], [AVERY]]) } finally { session.close() }
+    await expect(applyDocxParagraphEdits(inserted, [{ id: "price", paragraph_handle: handle(revision, "0.14"), occurrence: 0, before_quote: "0.14", replacement: "0.15" }],
+      undefined, layer)).rejects.toThrow("docx_pending_revision:price")
+  })
+
+  test("refuse mode, the default, still refuses their markup", async () => {
+    for (const options of [undefined, { pendingRevisions: "refuse" } as const]) {
+      await expect(createDocxRevision(source, options)).rejects.toBeInstanceOf(DocxTrackedRevisionsError)
+      await expect(createDocxLocalization(source, [{ id: "law", before_quote: "the Province", replacement: "the State" }], {}, options))
+        .rejects.toBeInstanceOf(DocxTrackedRevisionsError)
+      await expect(paragraphTargets(source, options)).rejects.toBeInstanceOf(DocxTrackedRevisionsError)
+    }
   })
 })

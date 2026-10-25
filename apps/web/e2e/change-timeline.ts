@@ -884,6 +884,11 @@ try {
   await step("10 at 400 px a tap opens the card on screen with Close; an outside tap and Close each close it", async () => {
     const phone = await openPage({ viewport: PHONE, hasTouch: true, isMobile: true }, true)
     const { render } = await openDocument(phone, SUPPLY)
+    // With Tracked changes open, a tap on commented text opens its thread there
+    // instead; the card's own touch behaviour is checked with the panel closed.
+    const toggle = phone.locator(".viewer-markup-toggle")
+    if (await toggle.getAttribute("aria-expanded") === "true") await toggle.tap()
+    await expect(phone.locator("#document-markup")).toHaveCount(0)
     const target = fortyFive(render), card = cardOf(phone), close = card.locator("button.change-timeline-close")
     const overflow = () => phone.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
     await target.tap()

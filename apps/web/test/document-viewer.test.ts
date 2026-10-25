@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import DocumentViewer, { citationStatus, combinedNotUpdatedNotice, DownloadActions, ExtractedText, notesNotUpdatedNotice, preparedNotice, redlineNotUpdatedNotice, staleExportNotice } from "../src/components/DocumentViewer"
+import DocumentViewer, { acceptedEditsHint, citationStatus, combinedNotUpdatedNotice, DownloadActions, ExtractedText, notesNotUpdatedNotice, preparedNotice, redlineNotUpdatedNotice, requestEditsLine, staleExportNotice } from "../src/components/DocumentViewer"
 import { acceptAllRedlines, acceptRedline, type Redline } from "../src/api/ingest/redlines"
 import { fetchDocumentText } from "../src/api/ingest/documents"
 import { citationPassage } from "../src/components/citation-target"
@@ -23,19 +23,42 @@ describe("document viewer downloads", () => {
     expect(buttons([])).toEqual([{ label: "Download", disabled: false }])
     expect(buttons([proposal(1, true)])).toEqual([{ label: "Download", disabled: false }])
     expect(buttons([proposal(1, true), proposal(2)])).toEqual([
-      { label: "Download", disabled: false }, { label: "More download options", disabled: false }, { label: "Download redline", disabled: false },
+      { label: "Download", disabled: false }, { label: "More download options", disabled: false }, { label: "Download with proposals", disabled: false },
     ])
     expect(buttons([proposal(2)], false)).toEqual([
-      { label: "Download", disabled: false }, { label: "More download options", disabled: false }, { label: "Download redline", disabled: true },
+      { label: "Download", disabled: false }, { label: "More download options", disabled: false }, { label: "Download with proposals", disabled: true },
     ])
   })
 
   test("stale proposals are named as excluded with the action that clears them", () => {
     expect(staleExportNotice([proposal(2)])).toBeUndefined()
     expect(staleExportNotice([proposal(1, true), proposal(2)])).toBe(
-      "1 stale proposal is left out of the tracked changes and the redline download. Reject it to clear it; prepare a fresh change list if the change is still needed.")
+      "1 stale proposal is left out of the preview and the download with proposals, and Accept all is unavailable until it is rejected. " +
+      "Reject it to clear it; prepare a fresh change list if the change is still needed.")
     expect(staleExportNotice([proposal(1, true), proposal(3, true)])).toStartWith("2 stale proposals are left out")
-    expect(staleExportNotice([proposal(1, true), proposal(3, true)])).toContain("Reject them to clear them")
+    expect(staleExportNotice([proposal(1, true), proposal(3, true)])).toContain("until they are rejected. Reject them to clear them")
+  })
+})
+
+describe("doc.haus's edits beside the file's tracked changes", () => {
+  test("Request edits says the tracked changes stay and names who accepted edits are marked as, never doc.haus itself", () => {
+    expect(requestEditsLine(0, "Pat Lawyer")).toBeUndefined()
+    expect(requestEditsLine(1, "Pat Lawyer")).toBe(
+      "The 1 tracked change already in this file stays as it is. Each proposal you accept is added beside it as a tracked change marked as Pat Lawyer.")
+    expect(requestEditsLine(3, "doc.haus")).toBe(
+      "The 3 tracked changes already in this file stay as they are. Each proposal you accept is added beside them as a tracked change.")
+    expect(requestEditsLine(3, null)).toEndWith("beside them as a tracked change.")
+  })
+
+  test("the proposals list says where accepted edits go only when the file holds someone else's tracked changes", () => {
+    const by = (...authors: string[]) => authors.map((author) => ({ author }))
+    expect(acceptedEditsHint(by("Morgan Okafor"), "Pat Lawyer")).toBe("Accepted edits go into the file as tracked changes under Pat Lawyer, beside theirs.")
+    // Only the lawyer's own earlier accepts, whatever the case or spacing: nothing of theirs to sit beside.
+    expect(acceptedEditsHint(by(" pat lawyer", "Pat Lawyer"), "Pat Lawyer")).toBeUndefined()
+    expect(acceptedEditsHint(by("Morgan Okafor"), "doc.haus")).toBe("Accepted edits go into the file as tracked changes, beside theirs.")
+    expect(acceptedEditsHint(by("doc.haus"), null)).toBeUndefined()
+    // Until the settings are read, it waits rather than guess whose changes are whose.
+    expect(acceptedEditsHint(by("Morgan Okafor"), undefined)).toBeUndefined()
   })
 })
 

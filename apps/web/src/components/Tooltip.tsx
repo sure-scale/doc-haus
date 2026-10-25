@@ -2,7 +2,9 @@ import { cloneElement, isValidElement, useId, useLayoutEffect, useRef, useState,
 import { createPortal } from "react-dom"
 
 // Portaled help stays clear of scroll clipping and works with keyboard focus.
-export function Tooltip({ label, children }: { label: string; children: ReactNode }) {
+// `describes`: the bubble names itself as the child's description; off where
+// the child already carries the same words in its own aria-describedby.
+export function Tooltip({ label, children, describes = true }: { label: string; children: ReactNode; describes?: boolean }) {
   const host = useRef<HTMLSpanElement>(null)
   const bubble = useRef<HTMLSpanElement>(null)
   const id = useId()
@@ -53,7 +55,7 @@ export function Tooltip({ label, children }: { label: string; children: ReactNod
   const child = isValidElement(children) ? children as ReactElement<{ "aria-describedby"?: string }> : null
   return (
     <span ref={host} style={{ display: "contents" }} onMouseEnter={() => { pointerWithin.current = true; show() }} onMouseLeave={leave} onFocus={show} onBlur={() => { if (!pointerWithin.current) hide() }}>
-      {child ? cloneElement(child, { "aria-describedby": [child.props["aria-describedby"], anchor ? id : undefined].filter(Boolean).join(" ") || undefined }) : children}
+      {child && describes ? cloneElement(child, { "aria-describedby": [child.props["aria-describedby"], anchor ? id : undefined].filter(Boolean).join(" ") || undefined }) : children}
       {anchor && createPortal(<span ref={bubble} id={id} role="tooltip" className="tip-bubble" onMouseEnter={() => { pointerWithin.current = true; cancelDismissal() }} onMouseLeave={leave} style={{ left: position.x, top: position.y, transform: "none", width: "max-content" }}>{label}</span>, host.current?.closest("dialog[open]") ?? document.body)}
     </span>
   )

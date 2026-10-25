@@ -1,0 +1,628 @@
+// Replies to the other side's comments (#200 scope 5) against a separately
+// started Vite server. The runner starts a real ingest service on
+// DOCHAUS_E2E_INGEST_PORT with a temporary data root and settings directory and
+// a saved attorney name, uploads the synthetic marked-up supply agreement with
+// its footnote comment (dochaus/test/support/counterparty-markup-fixture.ts) and
+// drives the Tracked changes panel's Comments tab: nothing drafts on open;
+// Draft replies drafts the three open threads at once, one is cancelled and
+// drafted again on its own; a draft with a [[…]] placeholder cannot be
+// approved until it is edited; two replies are approved, one draft is
+// discarded and brought back; Save saves one version with a rejected change
+// and the two replies under the lawyer's name; then, at phone width, the
+// remaining reply is approved and saved alone. A second upload has a comment
+// on a clause the other side inserted, its reference tracked with the
+// insertion: a reply to it with that clause rejected is refused on its thread
+// card and nothing is saved; saved without the reply, the comment says its
+// text was removed and offers no reply.
+// The ingest service's model calls reach a scripted engine
+// fixture here (one per thread, answers fixed by the thread's first comment);
+// browser engine traffic is intercepted and unexpected requests fail the run.
+// Screenshots and the JSON summary go beneath DOCHAUS_EVIDENCE_DIR.
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import os, { tmpdir } from "node:os"
+import path from "node:path"
+import type { Browser, Locator } from "@playwright/test"
+import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx } from "../../../dochaus/test/support/counterparty-markup-fixture"
+
+const { chromium, expect } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
+
+const baseURL = process.env.PLAYWRIGHT_BASE_URL
+const evidence = process.env.DOCHAUS_EVIDENCE_DIR
+const ingestPort = Number(process.env.DOCHAUS_E2E_INGEST_PORT)
+if (!baseURL || !evidence || !Number.isInteger(ingestPort) || ingestPort < 1024)
+  throw new Error("Set PLAYWRIGHT_BASE_URL, DOCHAUS_EVIDENCE_DIR and DOCHAUS_E2E_INGEST_PORT (the port Vite's /ingest proxy targets).")
+await mkdir(evidence, { recursive: true })
+
+const NAME = COUNTERPARTY_MARKUP.name
+const [AVERY_ROOT, MORGAN_REPLY, RESOLVED, PLANTED] = COUNTERPARTY_MARKUP.comments.map(comment => comment.text) as [string, string, string, string]
+const FOOTNOTE = COUNTERPARTY_MARKUP.footnoteComment.text
+const LAWYER = "Synthetic Reviewing Lawyer"
+const FLAG = "Contains text that looks like an instruction — doc.haus did not follow it."
+// The scripted drafts, by the thread's first comment.
+const DRAFTS: Record<string, { reply: string; open_items: string[] }> = {
+  [AVERY_ROOT]: {
+    reply: "We can agree to forty-five days if the Supplier reports its stock levels by [[reporting day]] each month.",
+    open_items: ["Confirm with the client which day of the month stock levels are reported."],
+  },
+  [PLANTED]: {
+    reply: "Clause 5 is unchanged on our side. Please confirm the two-year term is agreed.",
+    open_items: ["The comment contains text addressed to an AI assistant; it was not followed."],
+  },
+  [FOOTNOTE]: { reply: "Schedule 1 names the Province.", open_items: [] },
+}
+const EDITED = "We can agree to forty-five days if the Supplier reports its stock levels by the fifth Business Day of each month."
+// The upload whose comment sits on Morgan's inserted Waiver clause.
+const WAIVER_NAME = "supply-agreement-waiver.docx"
+const WAIVER_REPLY = "Our template uses the same waiver wording."
+
+const results: { step: string; status: "passed" | "failed"; error?: string }[] = []
+const pageErrors: string[] = []
+const consoleErrors: string[] = []
+const unexpected: string[] = []
+const engineRequests: { method: string; path: string }[] = []
+const stubbed: string[] = []
+const generated: { root: string; flagged: boolean; aborted: boolean }[] = []
+const draftRequests: { thread: number; decisions: number; base: string }[] = []
+const abortedDrafts: number[] = []
+const decisionRequests: { actor: string | undefined; body: { base_sha256: string; decisions: { id: string; decision: string }[]; replies?: { thread: number; text: string }[] } }[] = []
+let running = 0
+let mostAtOnce = 0
+// While set, drafts wait for it (or for their request to go).
+let gate: { opened: Promise<void>; open: () => void } | undefined
+
+// The service needs the engine for its model list (readiness) and the drafts'
+// stateless generate calls; anything else that reaches it is recorded.
+const engine = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, fetch: async (request) => {
+  const url = new URL(request.url)
+  if (request.method === "GET" && url.pathname === "/api/model")
+    return Response.json({ data: ["primary", "fast"].map(id => ({ providerID: "fixture", id, name: id, enabled: true })) })
+  if (request.method === "POST" && url.pathname === "/api/dochaus/generate") {
+    const { prompt } = await request.json() as { prompt: string }
+    const thread = JSON.parse(prompt.match(/<thread encoding="json">([\s\S]*?)<\/thread>/)?.[1] ?? "[]") as { text: string }[]
+    const row = { root: thread[0]?.text ?? "", flagged: prompt.includes("was flagged as instructions addressed to an AI"), aborted: false }
+    generated.push(row)
+    const draft = DRAFTS[row.root]
+    if (!draft) { unexpected.push(`generate for ${row.root}`); return new Response(null, { status: 500 }) }
+    running++
+    mostAtOnce = Math.max(mostAtOnce, running)
+    try {
+      if (gate) await Promise.race([gate.opened, new Promise(resolve => request.signal.addEventListener("abort", resolve, { once: true }))])
+      if (request.signal.aborted) { row.aborted = true; return new Response(null, { status: 499 }) }
+      return Response.json({ data: { text: JSON.stringify(draft), model: { providerID: "fixture", id: "scripted" }, elapsed_ms: 1, usage: null } })
+    } finally {
+      running--
+    }
+  }
+  unexpected.push(`engine fixture ${request.method} ${url.pathname}`)
+  return new Response(null, { status: 404 })
+} })
+
+const temporary = await mkdtemp(path.join(tmpdir(), "dochaus-counterparty-replies-e2e-"))
+const dataRoot = path.join(temporary, "data")
+const settings = path.join(temporary, "settings")
+await mkdir(path.join(dataRoot, "workspace", ".preferences"), { recursive: true })
+await mkdir(settings, { recursive: true })
+await writeFile(path.join(settings, "opencode.json"), JSON.stringify({ model: "fixture/primary", small_model: "fixture/fast" }))
+// The attorney name is saved: replies are signed with it and a thread the
+// lawyer answered last awaits nothing.
+await writeFile(path.join(dataRoot, "workspace", ".preferences", "preferences.json"), JSON.stringify({ firm: "Synthetic Firm", attorney: LAWYER }))
+const ingestURL = `http://127.0.0.1:${ingestPort}`
+const api = (route: string, init?: RequestInit) => fetch(`${ingestURL}${route}`, { ...init, signal: AbortSignal.timeout(120_000) })
+let ingest: ReturnType<typeof Bun.spawn> | undefined
+
+async function portFree(port: number) {
+  try { const server = Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } }); server.stop(true); return true }
+  catch { return false }
+}
+// Only explicit isolation settings reach the service: no inherited workspace,
+// runtime, engine address or credentials from the caller's environment.
+async function startIngest() {
+  if (!await portFree(ingestPort)) throw new Error(`Port ${ingestPort} is occupied; choose a free DOCHAUS_E2E_INGEST_PORT.`)
+  const log = Bun.file(path.join(temporary, "ingest.log"))
+  ingest = Bun.spawn([process.execPath, "run", "src/server.ts"], {
+    cwd: path.resolve(import.meta.dir, "../../../services/ingest"), stdout: log, stderr: log,
+    env: {
+      PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? temporary, TMPDIR: process.env.TMPDIR ?? tmpdir(),
+      DOCHAUS_DATA_ROOT: dataRoot, WORKSPACE_ROOT: path.join(dataRoot, "workspace"), DOCHAUS_RUNTIME_DIR: path.join(dataRoot, "runtime"), DOCHAUS_DIR: settings, INGEST_HOST: "127.0.0.1", INGEST_PORT: String(ingestPort),
+      OPENCODE_URL: `http://127.0.0.1:${engine.port}`, OPENCODE_SERVER_PASSWORD: "",
+      // The local embedding model's weights are the same everywhere; reuse the download.
+      DOCHAUS_MODEL_CACHE_DIR: process.env.DOCHAUS_MODEL_CACHE_DIR || path.join(os.homedir(), ".cache", "doc-haus", "models"),
+    },
+  })
+  const deadline = Date.now() + 30_000
+  while (!await fetch(`${ingestURL}/matters`).then(response => response.ok).catch(() => false)) {
+    if (ingest.exitCode !== null || Date.now() > deadline) throw new Error(`Isolated ingest did not start; see ${log.name}`)
+    await Bun.sleep(100)
+  }
+}
+async function stopIngest() {
+  if (!ingest) return
+  ingest.kill("SIGTERM")
+  await ingest.exited
+  ingest = undefined
+}
+
+let capture: ((name: string) => Promise<unknown>) | undefined
+async function step(name: string, run: () => Promise<void>) {
+  try { await run(); results.push({ step: name, status: "passed" }); console.log(`PASS ${name}`) }
+  catch (error) {
+    results.push({ step: name, status: "failed", error: error instanceof Error ? error.message : String(error) })
+    console.log(`FAIL ${name}`)
+    await capture?.(`failed-${name.split(" ")[0]}`).catch(() => undefined)
+    throw error
+  }
+}
+
+const file = { dir: "", matter: "" }
+let browser: Browser | undefined
+try {
+  await startIngest()
+  browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE })
+  const context = await browser!.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: "reduce" })
+  await context.addInitScript(() => sessionStorage.setItem("dh.launch-notice.v1", "accepted"))
+  const origin = new URL(baseURL).origin
+  // Engine traffic is answered here; ingest traffic continues through Vite's
+  // /ingest proxy to the isolated service.
+  await context.route("**/*", async route => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.origin !== origin) { unexpected.push(`${request.method()} ${request.url()}`); return route.abort() }
+    const reply = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) })
+    // The release update check runs git in the checkout; it is not part of this flow.
+    if (request.method() === "GET" && url.pathname === "/ingest/updates") {
+      stubbed.push("GET /ingest/updates")
+      return reply({ current: { version: 1, name: "Fixture", notes: "" }, available: false })
+    }
+    if (url.pathname.startsWith("/ingest/")) return route.continue()
+    if (!url.pathname.startsWith("/engine/")) return route.continue()
+    const pathname = url.pathname.slice("/engine".length)
+    engineRequests.push({ method: request.method(), path: pathname })
+    if (request.method() === "GET" && pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
+    if (request.method() === "POST" && pathname === "/api/dochaus/provider-test") return reply({ ok: true })
+    if (request.method() === "GET" && pathname === "/api/session") return reply({ data: [], cursor: { next: null, previous: null } })
+    if (request.method() === "GET" && pathname === "/api/agent") return reply({ location: { directory: file.dir }, data: [] })
+    // An idle event stream: left open, as the engine would hold it between events.
+    if (request.method() === "GET" && pathname === "/api/event") return
+    unexpected.push(`engine ${request.method()} ${pathname}${url.search}`)
+    return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not stubbed" }) })
+  })
+  const page = await context.newPage()
+  page.setDefaultTimeout(20_000)
+  page.on("pageerror", (error: Error) => pageErrors.push(error.message))
+  page.on("console", (message: { type: () => string; text: () => string }) => message.type() === "error" && consoleErrors.push(message.text()))
+  page.on("request", request => {
+    const pathname = new URL(request.url()).pathname
+    if (request.method() !== "POST") return
+    if (pathname.endsWith("/documents/markup/decisions")) decisionRequests.push({ actor: request.headers()["x-dochaus-actor"], body: request.postDataJSON() })
+    if (pathname.endsWith("/documents/markup/replies/draft")) {
+      const body = request.postDataJSON() as { thread: number; decisions?: unknown[]; base_sha256: string }
+      draftRequests.push({ thread: body.thread, decisions: body.decisions?.length ?? 0, base: body.base_sha256 })
+    }
+  })
+  page.on("requestfailed", request => {
+    if (new URL(request.url()).pathname.endsWith("/documents/markup/replies/draft") && /aborted/i.test(request.failure()?.errorText ?? ""))
+      abortedDrafts.push((request.postDataJSON() as { thread: number }).thread)
+  })
+  const shot = (name: string) => page.screenshot({ path: path.join(evidence, `${name}.png`) })
+  // Centred in the panel: scrolled only into view, a card's top sits under the pinned head.
+  const centre = (target: Locator) => target.evaluate(node => node.scrollIntoView({ block: "center" }))
+  // A tall window for the shot, so the whole card shows between the pinned head and foot.
+  const cardShot = async (card: Locator, name: string) => {
+    const size = page.viewportSize()!
+    await page.setViewportSize({ width: size.width, height: 1800 })
+    await centre(card)
+    await card.screenshot({ path: path.join(evidence, `${name}.png`) })
+    await page.setViewportSize(size)
+  }
+  capture = shot
+  const dialog = page.getByRole("dialog", { name: NAME, exact: true })
+  const panel = dialog.locator("#document-markup")
+  // Both tabs' panels are rendered; the one not chosen is hidden.
+  const shown = panel.locator('[role="tabpanel"]:not([hidden])')
+  const changes = shown.locator(".markup-list > li:not(.markup-thread)")
+  const threads = shown.locator(".markup-list > li.markup-thread")
+  const tab = (name: "Changes" | "Comments") => panel.getByRole("tab", { name: new RegExp(`^${name} \\d+$`) })
+  const toggle = dialog.getByRole("button", { name: /^Tracked changes \(\d+\)$/ })
+  // The save bar's line: how many changes are decided.
+  const progress = panel.locator(".markup-progress p")
+  const live = panel.locator(":scope > p.sr-only[role=status]")
+  const save = panel.getByRole("button", { name: "Save as new version", exact: true })
+  // A thread by its first comment, not a reply in it.
+  const thread = (text: string) => threads.filter({ has: page.locator(":scope > .markup-comment > .markup-comment-text", { hasText: text }) })
+  const replyArea = (text: string) => thread(text).getByRole("group", { name: /^Your reply to / })
+  const draftAll = shown.getByRole("button", { name: /^Draft replies to \d+ comments?$/ })
+  const draftingLine = shown.locator(".markup-draft-all .markup-reply-status")
+  // The state beside a thread's first comment: said to a screen reader while
+  // a reply is in hand, shown once the thread is resolved or its text removed.
+  const chip = (text: string) => thread(text).locator(":scope > .markup-comment .markup-state")
+  const [answered, planted, footnote] = [AVERY_ROOT, PLANTED, FOOTNOTE].map(replyArea) as [Locator, Locator, Locator]
+
+  async function openDocument(navigate = true, name = NAME) {
+    if (navigate) await page.goto(`${baseURL!.replace(/\/$/, "")}/matter/${file.matter}`)
+    const documents = page.locator(".sidebar").getByRole("button", { name: /^Documents(?: \d+)?$/ })
+    await expect(documents).toBeVisible()
+    if (await documents.getAttribute("aria-expanded") !== "true") await documents.click()
+    await page.getByRole("button", { name, exact: true }).click()
+    const opened = page.getByRole("dialog", { name, exact: true })
+    await expect(opened).toBeVisible()
+    // The first open loads the Word runtime; later renders are quick.
+    await expect(opened.locator(".docx-render:not(.docx-skeleton)")).toBeVisible({ timeout: 30_000 })
+    await expect(opened.locator("#document-markup")).toBeVisible()
+  }
+
+  async function threadReplies() {
+    const markup = await (await api(`/matters/${file.matter}/documents/markup?name=${encodeURIComponent(NAME)}`)).json() as { comments: { id: number; author: string; text: string; parent: number | null }[] }
+    return markup.comments.filter(comment => comment.author === LAWYER).map(({ parent, text }) => ({ parent, text }))
+  }
+
+  await step("1 upload the marked-up agreement with its footnote comment as a source", async () => {
+    const matter = await (await api("/matters", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Synthetic Counterparty Replies" }) })).json() as { id: string; dir: string }
+    expect(matter.dir.startsWith(dataRoot)).toBe(true)
+    Object.assign(file, { matter: matter.id, dir: matter.dir })
+    const source = new FormData(); source.append("file", new File([counterpartyMarkupDocx({ footnote: true })], NAME))
+    expect((await api(`/matters/${matter.id}/documents`, { method: "POST", body: source })).status).toBe(200)
+  })
+
+  await step("2 nothing drafts on open: each open thread offers Draft reply and Write a reply", async () => {
+    await openDocument()
+    await expect(toggle).toHaveAccessibleName("Tracked changes (14)")
+    // The file has changes, so the panel opens on them; nothing is decided yet.
+    await expect(tab("Changes")).toHaveAttribute("aria-selected", "true")
+    await expect(progress).toHaveText("0 of 10 decided")
+    await tab("Comments").click()
+    await expect(tab("Comments")).toHaveAccessibleName("Comments 4")
+    await expect(threads).toHaveCount(4)
+    await expect(draftAll).toHaveAccessibleName("Draft replies to 3 comments")
+    for (const area of [answered, planted, footnote]) {
+      await expect(area.getByRole("button", { name: "Draft reply", exact: true })).toBeVisible()
+      await expect(area.getByRole("button", { name: "Write a reply", exact: true })).toBeVisible()
+    }
+    for (const text of [AVERY_ROOT, PLANTED, FOOTNOTE]) await expect(chip(text)).toHaveText("Needs a reply")
+    // A resolved thread takes no reply here.
+    await expect(chip(RESOLVED)).toHaveText("Resolved")
+    await expect(thread(RESOLVED).getByRole("group", { name: /^Your reply to / })).toHaveCount(0)
+    expect(generated).toEqual([])
+    await shot("01-no-drafts")
+  })
+
+  await step("3 Draft replies drafts the three open threads at once; a cancelled draft never lands", async () => {
+    let open = () => {}
+    gate = { opened: new Promise<void>(resolve => { open = resolve }), open: () => open() }
+    await draftAll.click()
+    await expect(live).toHaveText("Drafting 3 replies…")
+    await expect(draftingLine).toHaveText("Drafting 3 replies…")
+    await expect(shown.getByRole("button", { name: "Cancel drafting", exact: true })).toBeFocused()
+    for (const area of [answered, planted, footnote]) await expect(area).toContainText("Drafting a reply…")
+    await expect.poll(() => generated.length).toBe(3)
+    expect(mostAtOnce).toBe(3)
+    // Every quoted string is read by the service; the browser sends ids and the decisions.
+    expect(draftRequests.map(row => row.thread).sort()).toEqual([0, 3, 4])
+    expect(draftRequests.every(row => row.decisions === 0)).toBe(true)
+    await shot("02-drafting")
+    await footnote.getByRole("button", { name: "Cancel", exact: true }).click()
+    await expect(footnote.getByRole("button", { name: "Draft reply", exact: true })).toBeFocused()
+    await expect(live).toHaveText("Drafting cancelled.")
+    await expect(draftingLine).toHaveText("Drafting 2 replies…")
+    // The browser ends the request. Vite's dev proxy does not pass that on to
+    // the service (the shipped stack calls ingest directly), so whether the
+    // model call stopped too is only recorded here.
+    await expect.poll(() => abortedDrafts).toEqual([4])
+    gate.open()
+    gate = undefined
+    await expect(answered.getByLabel("Your reply", { exact: true })).toHaveValue(DRAFTS[AVERY_ROOT]!.reply)
+    await expect(planted.getByLabel("Your reply", { exact: true })).toHaveValue(DRAFTS[PLANTED]!.reply)
+    // The cancelled draft never lands, even once its model call answers.
+    await expect.poll(() => generated.filter(row => row.root === FOOTNOTE).length).toBe(1)
+    await page.waitForTimeout(500)
+    await expect(footnote.getByLabel("Your reply", { exact: true })).toHaveCount(0)
+    await expect(live).toHaveText("2 draft replies ready — read each one, then approve it.")
+    await expect(shown.locator(".markup-drafted")).toHaveText("2 draft replies ready — read each one, then approve it.")
+    for (const text of [AVERY_ROOT, PLANTED]) await expect(chip(text)).toHaveText("Reply to approve")
+    await expect(chip(FOOTNOTE)).toHaveText("Needs a reply")
+    await expect(draftAll).toHaveAccessibleName("Draft replies to 1 comment")
+  })
+
+  await step("4 a draft lists what to check, and Approve reply waits until the bracketed part is filled", async () => {
+    await expect(answered.locator(".markup-open-items")).toContainText("Check before sending")
+    await expect(answered.locator(".markup-open-items")).toContainText(DRAFTS[AVERY_ROOT]!.open_items[0]!)
+    const approve = answered.getByRole("button", { name: "Approve reply", exact: true })
+    await expect(approve).toBeDisabled()
+    await expect(approve).toHaveAccessibleDescription("Fill the bracketed parts first.")
+    // The bracketed part is marked in the reply box; why Approve waits shows on hover.
+    await expect(answered.locator(".markup-composer-mirror mark")).toHaveText(["[[reporting day]]"])
+    await approve.hover()
+    await expect(page.getByRole("tooltip")).toHaveText("Fill the bracketed parts first.")
+    await page.mouse.move(0, 0)
+    await expect(page.getByRole("tooltip")).toHaveCount(0)
+    await cardShot(thread(AVERY_ROOT), "03-draft-with-open-items")
+    await shot("04-placeholder-blocks-approve")
+  })
+
+  await step("5 the flagged thread still drafts, with its flag repeated above the draft", async () => {
+    expect(generated.find(row => row.root === PLANTED)?.flagged).toBe(true)
+    expect(generated.filter(row => row.root !== PLANTED).every(row => !row.flagged)).toBe(true)
+    await expect(planted.locator(".markup-flag")).toHaveText(FLAG)
+    await expect(planted.locator(".markup-flag + .markup-composer")).toHaveCount(1)
+    await expect(planted.locator(".markup-open-items")).toContainText(DRAFTS[PLANTED]!.open_items[0]!)
+    await cardShot(thread(PLANTED), "05-flagged-thread-draft")
+  })
+
+  await step("6 one thread drafted on its own lands in its reply box with focus", async () => {
+    await footnote.getByRole("button", { name: "Draft reply", exact: true }).click()
+    await expect(footnote.getByLabel("Your reply", { exact: true })).toHaveValue(DRAFTS[FOOTNOTE]!.reply)
+    await expect(footnote.getByLabel("Your reply", { exact: true })).toBeFocused()
+    await expect(draftAll).toHaveCount(0)
+    expect(generated.filter(row => row.root === FOOTNOTE)).toHaveLength(2)
+  })
+
+  await step("7 edit the placeholder out and approve two replies", async () => {
+    await answered.getByLabel("Your reply", { exact: true }).fill(EDITED)
+    await expect(answered.getByText("Fill the bracketed parts first.")).toHaveCount(0)
+    await answered.getByRole("button", { name: "Approve reply", exact: true }).click()
+    await expect(answered).toContainText("Reply approved — added when you save")
+    await expect(answered.locator(".markup-reply-final")).toHaveText(EDITED)
+    await expect(answered.getByRole("button", { name: "Edit", exact: true })).toBeFocused()
+    await planted.getByRole("button", { name: "Approve reply", exact: true }).click()
+    await expect(planted.locator(".markup-reply-final")).toHaveText(DRAFTS[PLANTED]!.reply)
+    for (const text of [AVERY_ROOT, PLANTED]) await expect(chip(text)).toHaveText("Reply approved")
+    // Two approved replies to add, and the footnote's draft still to approve; approving one is enough to save.
+    await expect(progress).toHaveText("0 of 10 decided")
+    await expect(save).toBeEnabled()
+    await centre(thread(AVERY_ROOT))
+    await shot("06-approved")
+    await cardShot(thread(AVERY_ROOT), "06-approved-card")
+  })
+
+  await step("8 the replies survive a reload, approved ones still approved", async () => {
+    await page.reload()
+    await openDocument(false)
+    // The Comments tab is remembered for this document.
+    await expect(tab("Comments")).toHaveAttribute("aria-selected", "true")
+    await expect(answered.locator(".markup-reply-final")).toHaveText(EDITED)
+    await expect(planted.locator(".markup-reply-final")).toHaveText(DRAFTS[PLANTED]!.reply)
+    await expect(footnote.getByLabel("Your reply", { exact: true })).toHaveValue(DRAFTS[FOOTNOTE]!.reply)
+    // The same bytes: nothing was carried over, so no note says so.
+    await expect(panel.locator(".markup-notice")).toHaveCount(0)
+    await expect(panel.getByText("Carried over")).toHaveCount(0)
+    const stored = await page.evaluate(key => localStorage.getItem(key), `dh.markup-replies.v1/${encodeURIComponent(file.matter)}/${encodeURIComponent(NAME)}`)
+    expect(Object.keys((JSON.parse(stored!) as { replies: object }).replies).sort()).toEqual(["0", "3", "4"])
+  })
+
+  await step("9 discard a draft, then bring it back with Undo", async () => {
+    // Discard sits in the reply's More menu.
+    await footnote.getByRole("button", { name: "More reply actions", exact: true }).click()
+    await footnote.getByRole("group", { name: "Reply actions", exact: true }).getByRole("button", { name: "Discard", exact: true }).click()
+    await expect(footnote.locator(".markup-hint")).toHaveText("Draft discarded. Undo")
+    await expect(live).toHaveText("Draft discarded.")
+    await expect(footnote.getByRole("button", { name: "Draft reply", exact: true })).toBeFocused()
+    await expect(draftAll).toHaveAccessibleName("Draft replies to 1 comment")
+    await cardShot(thread(FOOTNOTE), "07-discarded-with-undo")
+    await footnote.getByRole("button", { name: "Undo", exact: true }).click()
+    await expect(footnote.getByLabel("Your reply", { exact: true })).toHaveValue(DRAFTS[FOOTNOTE]!.reply)
+    await expect(footnote.getByLabel("Your reply", { exact: true })).toBeFocused()
+  })
+
+  await step("10 save with one Reject: one version with the decision and the two approved replies", async () => {
+    await tab("Changes").click()
+    // The formatting change, by what its decision group names.
+    const formatting = changes.filter({ has: page.getByRole("group", { name: /^Your decision: Formatting changed by / }) })
+    await expect(formatting).toHaveCount(1)
+    await formatting.getByRole("radio", { name: "Reject", exact: true }).click()
+    await expect(formatting.getByRole("radio", { checked: true })).toHaveAccessibleName("Reject")
+    await expect(progress).toHaveText("1 of 10 decided")
+    await save.click()
+    const confirm = panel.getByRole("group", { name: "Save a new version", exact: true })
+    await expect(confirm.locator("p").first()).toHaveText(`This saves a new version of ${NAME} with 0 changes accepted, 1 rejected and 2 replies added as ${LAWYER}. ` +
+      "9 changes you have not decided stay as tracked changes. 1 draft reply is not approved, so it is not added. The current version stays in the history.")
+    await confirm.scrollIntoViewIfNeeded()
+    await shot("08-save-confirmation")
+    const applied = page.waitForResponse(response => new URL(response.url()).pathname.endsWith("/documents/markup/decisions"))
+    await confirm.getByRole("button", { name: "Save new version", exact: true }).click()
+    const response = await applied
+    expect(response.status()).toBe(200)
+    expect((await response.json() as { replies: { thread: number }[] }).replies.map(row => row.thread).sort()).toEqual([0, 3])
+    expect(decisionRequests).toHaveLength(1)
+    const [sent] = decisionRequests
+    expect(sent!.actor).toBe(LAWYER)
+    expect(sent!.body.decisions).toHaveLength(10)
+    expect(sent!.body.decisions.filter(row => row.decision === "reject")).toHaveLength(1)
+    // Only the approved replies, as edited; the unapproved draft stays here.
+    expect(sent!.body.replies).toEqual([{ thread: 0, text: EDITED }, { thread: 3, text: DRAFTS[PLANTED]!.reply }])
+    await expect(page.getByText("Saved as version 2: 0 accepted, 1 rejected, 9 left tracked; 2 replies added.", { exact: true })).toBeVisible()
+  })
+
+  await step("11 the threads end with the lawyer's replies; the unsent draft is kept", async () => {
+    await expect(toggle).toHaveAccessibleName("Tracked changes (13)", { timeout: 30_000 })
+    await tab("Comments").click()
+    const mine = thread(AVERY_ROOT).locator(".markup-replies > li")
+    await expect(mine).toHaveCount(2)
+    await expect(mine.nth(0)).toContainText(MORGAN_REPLY)
+    await expect(mine.nth(1)).toContainText(LAWYER)
+    await expect(mine.nth(1)).toContainText(EDITED)
+    await expect(thread(PLANTED).locator(".markup-replies > li")).toContainText(DRAFTS[PLANTED]!.reply)
+    // Answered last by the lawyer: no draft offered, a reply can still be written.
+    for (const area of [answered, planted]) {
+      await expect(area.getByRole("button", { name: "Draft reply", exact: true })).toHaveCount(0)
+      await expect(area.getByRole("button", { name: "Write a reply", exact: true })).toBeVisible()
+    }
+    await expect(footnote.getByLabel("Your reply", { exact: true })).toHaveValue(DRAFTS[FOOTNOTE]!.reply)
+    await expect(panel.getByText("Carried over")).toHaveCount(0)
+    await expect(draftAll).toHaveCount(0)
+    expect(await threadReplies()).toEqual([{ parent: 0, text: EDITED }, { parent: 3, text: DRAFTS[PLANTED]!.reply }])
+    await centre(thread(AVERY_ROOT))
+    await shot("09-after-apply-replies-threaded")
+    // A reply written by hand needs text before it can be approved.
+    await answered.getByRole("button", { name: "Write a reply", exact: true }).click()
+    const typed = answered.getByLabel("Your reply", { exact: true })
+    await expect(typed).toBeFocused()
+    await expect(answered.getByRole("button", { name: "Approve reply", exact: true })).toBeDisabled()
+    await expect(answered.getByRole("button", { name: "Approve reply", exact: true })).toHaveAccessibleDescription("Write the reply first.")
+    await typed.fill("Thank you.")
+    await expect(answered.getByRole("button", { name: "Approve reply", exact: true })).toBeEnabled()
+    await answered.getByRole("button", { name: "More reply actions", exact: true }).click()
+    await answered.getByRole("group", { name: "Reply actions", exact: true }).getByRole("button", { name: "Discard", exact: true }).click()
+    await expect(answered.getByRole("button", { name: "Write a reply", exact: true })).toBeFocused()
+  })
+
+  await step("12 the versions list shows the new version with the actor and its replies", async () => {
+    await dialog.getByRole("button", { name: /^Versions/ }).click()
+    const newest = dialog.locator(".versions-list > li").first()
+    await expect(newest).toContainText("Version 2")
+    await expect(newest.locator(".version-meta")).toHaveText(`Tracked changes decided · by ${LAWYER}`)
+    await expect(newest).toContainText("Tracked changes decided: 0 accepted, 1 rejected, 9 left tracked; 2 replies added")
+    const listed = await (await api(`/matters/${file.matter}/documents/versions?name=${encodeURIComponent(NAME)}`)).json() as { versions: { number: number; origin: string; actor: string }[] }
+    expect(listed.versions.map(row => [row.number, row.origin, row.actor])).toEqual([[2, "accept", LAWYER], [1, "upload", expect.any(String)]])
+    await shot("10-versions")
+    await toggle.click()
+    await expect(panel).toBeVisible()
+  })
+
+  await step("13 at phone width the last reply is approved and saved alone, with Save in reach", async () => {
+    await page.setViewportSize({ width: 400, height: 860 })
+    await page.evaluate(() => localStorage.setItem("dh.sidebar", "1"))
+    await openDocument()
+    await expect(panel).toBeInViewport()
+    await expect(tab("Comments")).toHaveAttribute("aria-selected", "true")
+    await centre(thread(FOOTNOTE))
+    await shot("11-phone-draft")
+    await expect(save).toBeDisabled()
+    await footnote.getByRole("button", { name: "Approve reply", exact: true }).click()
+    await expect(chip(FOOTNOTE)).toHaveText("Reply approved")
+    // No change decided and no draft left to approve.
+    await expect(progress).toHaveText("0 of 9 decided")
+    await shot("12-phone-approved")
+    await save.scrollIntoViewIfNeeded()
+    await expect(save).toBeEnabled()
+    expect(await save.evaluate(node => {
+      const box = node.getBoundingClientRect()
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+      return Boolean(hit && node.contains(hit))
+    })).toBe(true)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1)
+    await save.click()
+    const confirm = panel.getByRole("group", { name: "Save a new version", exact: true })
+    await expect(confirm.locator("p").first()).toHaveText(`This saves a new version of ${NAME} with 1 reply added as ${LAWYER}. 9 changes you have not decided stay as tracked changes. The current version stays in the history.`)
+    await shot("13-phone-save-confirmation")
+    await confirm.getByRole("button", { name: "Save new version", exact: true }).click()
+    await expect(page.getByText("Saved as version 3: 1 reply added.", { exact: true })).toBeVisible()
+    await expect(thread(FOOTNOTE).locator(".markup-replies > li")).toContainText(DRAFTS[FOOTNOTE]!.reply, { timeout: 30_000 })
+    expect(decisionRequests.at(-1)!.body.replies).toEqual([{ thread: 4, text: DRAFTS[FOOTNOTE]!.reply }])
+    expect(decisionRequests.at(-1)!.body.decisions.every(row => row.decision === "hold")).toBe(true)
+    const listed = await (await api(`/matters/${file.matter}/documents/versions?name=${encodeURIComponent(NAME)}`)).json() as { versions: { number: number; origin: string; actor: string; label: string | null }[] }
+    expect([listed.versions[0]!.number, listed.versions[0]!.origin, listed.versions[0]!.actor, listed.versions[0]!.label]).toEqual([3, "revision", LAWYER, "1 reply added"])
+    expect(await threadReplies()).toEqual([{ parent: 0, text: EDITED }, { parent: 3, text: DRAFTS[PLANTED]!.reply }, { parent: 4, text: DRAFTS[FOOTNOTE]!.reply }])
+    await centre(thread(FOOTNOTE))
+    await shot("14-phone-after-replies-only-save")
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1)
+  })
+
+  await step("14 colour schemes: a dark-scheme request and forced colours", async () => {
+    await page.setViewportSize({ width: 1440, height: 1000 })
+    // At this width the panel moves from above the page to beside it, so its
+    // cards are mounted afresh: wait for it there.
+    await expect(dialog.locator(".viewer-doc ~ #document-markup")).toBeVisible()
+    await footnote.scrollIntoViewIfNeeded()
+    await answered.getByRole("button", { name: "Write a reply", exact: true }).click()
+    await answered.getByLabel("Your reply", { exact: true }).fill("Noted, thank you. [[confirm with client]]")
+    await planted.getByRole("button", { name: "Write a reply", exact: true }).click()
+    await planted.getByLabel("Your reply", { exact: true }).fill("Noted.")
+    await planted.getByRole("button", { name: "Approve reply", exact: true }).click()
+    await centre(thread(AVERY_ROOT))
+    await page.emulateMedia({ colorScheme: "dark" })
+    await shot("15-dark-scheme-request")
+    await page.emulateMedia({ colorScheme: "light", forcedColors: "active" })
+    await shot("16-forced-colors")
+    await page.emulateMedia({ forcedColors: "none" })
+  })
+
+  // The second upload's panel, and Morgan's comment on the Waiver clause.
+  const waiverPanel = page.getByRole("dialog", { name: WAIVER_NAME, exact: true }).locator("#document-markup")
+  const waiverShown = waiverPanel.locator('[role="tabpanel"]:not([hidden])')
+  const waiverTab = (name: "Changes" | "Comments") => waiverPanel.getByRole("tab", { name: new RegExp(`^${name} \\d+$`) })
+  const waiverThread = waiverShown.locator(".markup-list > li.markup-thread").filter({ has: page.locator(":scope > .markup-comment > .markup-comment-text", { hasText: COUNTERPARTY_MARKUP.waiverComment.text }) })
+  const waiverReply = waiverThread.getByRole("group", { name: /^Your reply to / })
+  // Save, checking what the confirmation says it saves first.
+  const applyWaiver = async (status: number, saves: string) => {
+    await waiverPanel.getByRole("button", { name: "Save as new version", exact: true }).click()
+    const confirm = waiverPanel.getByRole("group", { name: "Save a new version", exact: true })
+    await expect(confirm.locator("p").first()).toHaveText(`This saves a new version of ${WAIVER_NAME} with ${saves} The current version stays in the history.`)
+    const applied = page.waitForResponse(response => new URL(response.url()).pathname.endsWith("/documents/markup/decisions"))
+    await confirm.getByRole("button", { name: "Save new version", exact: true }).click()
+    const response = await applied
+    expect(response.status()).toBe(status)
+    return await response.json() as { code?: string; thread?: number }
+  }
+  const phoneShot = async (target: Locator, name: string) => {
+    await page.setViewportSize({ width: 400, height: 860 })
+    await centre(target)
+    await shot(name)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1)
+    await page.setViewportSize({ width: 1440, height: 1000 })
+  }
+
+  await step("15 a reply on a clause the Save rejects is refused on its thread card, and nothing is saved", async () => {
+    const source = new FormData(); source.append("file", new File([counterpartyMarkupDocx({ waiver: true })], WAIVER_NAME))
+    expect((await api(`/matters/${file.matter}/documents`, { method: "POST", body: source })).status).toBe(200)
+    await openDocument(true, WAIVER_NAME)
+    await waiverTab("Comments").click()
+    await waiverReply.getByRole("button", { name: "Write a reply", exact: true }).click()
+    await waiverReply.getByLabel("Your reply", { exact: true }).fill(WAIVER_REPLY)
+    await waiverReply.getByRole("button", { name: "Approve reply", exact: true }).click()
+    await waiverTab("Changes").click()
+    const clause = waiverShown.locator(".markup-list > li:not(.markup-thread)").filter({ hasText: "8. Waiver." })
+    await clause.getByRole("radio", { name: "Reject", exact: true }).click()
+    await expect(waiverPanel.locator(".markup-progress p")).toHaveText("1 of 10 decided")
+    expect(await applyWaiver(422, `0 changes accepted, 1 rejected and 1 reply added as ${LAWYER}. 9 changes you have not decided stay as tracked changes.`))
+      .toMatchObject({ code: "anchor_removed", thread: COUNTERPARTY_MARKUP.waiverComment.id })
+    // The refusal is on the thread it names, on the Comments tab, with focus; Save carries none of it.
+    await expect(waiverTab("Comments")).toHaveAttribute("aria-selected", "true")
+    await expect(waiverThread).toHaveClass(/\bis-refused\b/)
+    const message = waiverThread.locator(".version-error")
+    await expect(message).toHaveText("Your decision removes the text this comment is on, so this reply can't be saved. Keep the change or drop the reply.")
+    await expect(message).toBeFocused()
+    await expect(waiverPanel.locator(".markup-apply .version-error")).toHaveCount(0)
+    await expect(waiverReply.locator(".markup-reply-final")).toHaveText(WAIVER_REPLY)
+    const listed = await (await api(`/matters/${file.matter}/documents/versions?name=${encodeURIComponent(WAIVER_NAME)}`)).json() as { versions: { origin: string }[] }
+    expect(listed.versions.map(row => row.origin)).toEqual(["upload"])
+    await centre(waiverThread)
+    await shot("17-reply-on-removed-text-refused")
+    await cardShot(waiverThread, "17-reply-on-removed-text-refused-card")
+    await phoneShot(waiverThread, "18-phone-reply-on-removed-text-refused")
+  })
+
+  await step("16 saved without the reply, the comment says its text was removed and offers no reply", async () => {
+    await waiverReply.getByRole("button", { name: "Remove", exact: true }).click()
+    await expect(waiverThread).not.toHaveClass(/\bis-refused\b/)
+    await applyWaiver(200, "0 changes accepted and 1 rejected. 9 changes you have not decided stay as tracked changes.")
+    await expect(page.getByText("Saved as version 2: 0 accepted, 1 rejected, 9 left tracked.", { exact: true })).toBeVisible()
+    await expect(waiverThread.locator(":scope > .markup-comment .markup-state")).toHaveText("Text removed", { timeout: 30_000 })
+    await expect(waiverThread).toContainText("The text this comment was on is no longer in the document, so it takes no reply here.")
+    await expect(waiverReply).toHaveCount(0)
+    await expect(waiverThread.getByRole("button", { name: "Draft reply", exact: true })).toHaveCount(0)
+    // Only the two open threads still placed in the text are offered a draft.
+    await expect(waiverShown.getByRole("button", { name: /^Draft replies to \d+ comments?$/ })).toHaveAccessibleName("Draft replies to 2 comments")
+    const markup = await (await api(`/matters/${file.matter}/documents/markup?name=${encodeURIComponent(WAIVER_NAME)}`)).json() as { comments: { id: number; detached?: boolean }[] }
+    expect(markup.comments.filter(comment => comment.detached).map(comment => comment.id)).toEqual([COUNTERPARTY_MARKUP.waiverComment.id])
+    await centre(waiverThread)
+    await shot("19-detached-comment")
+    await cardShot(waiverThread, "19-detached-comment-card")
+    await phoneShot(waiverThread, "20-phone-detached-comment")
+  })
+
+  await step("no page errors or unexpected requests", async () => {
+    expect(pageErrors).toEqual([])
+    expect(unexpected).toEqual([])
+  })
+}
+finally {
+  await writeFile(path.join(evidence, "counterparty-replies-results.json"), JSON.stringify({
+    results, pageErrors, consoleErrors, unexpected, stubbed: [...new Set(stubbed)],
+    engineEndpoints: Object.entries(Object.groupBy(engineRequests, row => `${row.method} ${row.path}`)).map(([endpoint, rows]) => ({ endpoint, count: rows!.length })),
+    generated: generated.map(({ root, flagged, aborted }) => ({ thread: root.slice(0, 32), flagged, aborted })), mostAtOnce, draftRequests, abortedDrafts,
+    decisionRequests: decisionRequests.map(({ actor, body }) => ({ actor, decisions: body.decisions.length, replies: body.replies?.map(row => row.thread) ?? [] })),
+  }, null, 2) + "\n")
+  await browser?.close().catch(() => undefined)
+  await stopIngest().catch(error => console.error(error))
+  engine.stop(true)
+  await rm(temporary, { recursive: true, force: true })
+}

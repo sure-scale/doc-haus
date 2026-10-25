@@ -7,6 +7,8 @@ import { DRAFTING_STOPPED_REASON } from "../../lib/drafting-update-admission"
 import { PROVIDER_STOP_MESSAGES, providerStopKind, type ProviderStopKind } from "../../lib/provider-stop"
 import { existsSync, readFileSync, rmSync } from "node:fs"
 import { runChangeReconciliation } from "./change-reconciliation"
+import { writeCounterpartyItems } from "./counterparty"
+import { revisionOriginal } from "./original-tables"
 import { focusedChecklistRepairs, runFocusedRepairAdjudication } from "./checklist-repair-adjudication"
 import { classifyChecklistFinding } from "./checklist-classify"
 import { checklistFindingRecovery } from "./checklist-contract"
@@ -252,6 +254,10 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       if (paused()) return { state: settlePause(directory, state), paused: true }
       if (preferencesChanged()) return { state, restart: true }
     }
+    // The other side's markup a change plan adjudicates is read from the
+    // original as it is when the plan is keyed: deciding their changes
+    // rewrites it, during a run as at any other time.
+    if (stage === "change-plan" && document) await writeCounterpartyItems(directory, document, revisionOriginal(directory, document))
     // The first draft can write the plan its own key reads; its key is then
     // taken again once the plan is saved.
     const keyed = performance.now()

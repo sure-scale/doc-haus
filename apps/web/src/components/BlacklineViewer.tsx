@@ -16,6 +16,7 @@ import {
 import { humanizeError } from "../api/ingest/errors"
 import { fileStem } from "./CompareDialog"
 import { DOCX_RENDER_OPTIONS, ViewerTitle } from "./DocumentViewer"
+import { decorateComments } from "./document-comments"
 import { ModalClose } from "./ModalHeader"
 import useModalFocus from "./useModalFocus"
 import backdropClose from "./backdropClose"
@@ -109,6 +110,12 @@ export default function BlacklineViewer({ matterId, params, focus, onClose }: { 
     for (const mark of root.querySelectorAll<HTMLElement>("ins[data-author], del[data-author]"))
       mark.classList.toggle("is-untracked", mark.dataset.author === author)
   }, [html, comparison])
+
+  // Comments beside the page as Word's cards, as in the document viewer.
+  useEffect(() => {
+    const root = page.current?.querySelector<HTMLElement>(".docx-render:not(.docx-skeleton)")
+    if (html && root) return decorateComments(root)
+  }, [html])
 
   const showChange = (hunk: ChangeHunk) => {
     const root = page.current?.querySelector<HTMLElement>(".docx-render:not(.docx-skeleton)")
@@ -630,7 +637,8 @@ function blockText(block: Element, drop: string) {
 // Scroll the painted blackline to a change's paragraph, flash it and move
 // focus there, as a click in Word's revisions list does.
 function focusChange(root: HTMLElement, hunk: ChangeHunk) {
-  const blocks = [...root.querySelectorAll<HTMLElement>(BLOCKS)].filter((block) => !block.querySelector(BLOCKS))
+  // The page's own paragraphs: a comment's, which on a narrow page sit between them, are left out.
+  const blocks = [...root.querySelectorAll<HTMLElement>(BLOCKS)].filter((block) => !block.querySelector(BLOCKS) && !block.closest(".comment-margin-note"))
   const index = changeBlock(
     blocks.map((block) => ({ before: blockText(block, "ins"), after: blockText(block, "del"), marked: !!block.querySelector("ins, del") })),
     hunk,

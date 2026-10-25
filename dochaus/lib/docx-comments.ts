@@ -41,6 +41,21 @@ export function readDocxCommentParagraphs(bytes: Uint8Array) {
   }))
 }
 
+/** The same rows, each with its members' positions among the body's w:p
+ * elements (empty and deleted-only paragraphs counted, as readDocxComments'
+ * xml_paragraph_index counts them): the accepted row of a paragraph known by
+ * its position. Kept off readDocxCommentParagraphs, whose rows checklist
+ * document records copy whole. */
+export function readDocxCommentParagraphPositions(bytes: Uint8Array) {
+  const parts = unzipSync(bytes)
+  if (!parts[BODY]) throw new Error("invalid_docx_package")
+  const body = parse(strFromU8(parts[BODY]))
+  const positions = new Map(elements(body, W, "p").map((paragraph, index) => [paragraph, index]))
+  return acceptedParagraphs(body).map(row => ({
+    paragraph_index: row.index, paragraph_text: row.text, pids: row.pids, xml_paragraph_indexes: row.nodes.map(node => positions.get(node)!),
+  }))
+}
+
 /** Reads actual tracked text from the exported OOXML package. The accepted
  * clean body is a separate artifact and cannot establish redline presence. */
 export function readDocxRevisionText(bytes: Uint8Array) {
@@ -51,14 +66,16 @@ export function readDocxRevisionText(bytes: Uint8Array) {
   return { inserted_text: text(["ins", "moveTo"]), deleted_text: text(["del", "moveFrom"]) }
 }
 
+/** The WordprocessingML elements Word writes for a tracked revision. */
+export const REVISION_ELEMENTS = ["ins", "del", "moveFrom", "moveTo", "rPrChange", "pPrChange", "tblPrChange", "trPrChange", "tcPrChange", "sectPrChange", "tblGridChange", "numberingChange"] as const
+
 /** Counts actual revision elements in the main Word body only. These are
  * package observations, not a judgment that a comparison or legal review is complete. */
 export function readDocxRevisionProperties(bytes: Uint8Array) {
   const parts = unzipSync(bytes)
   if (!parts[BODY]) throw new Error("invalid_docx_package")
   const body = parse(strFromU8(parts[BODY]))
-  const names = ["ins", "del", "moveFrom", "moveTo", "rPrChange", "pPrChange", "tblPrChange", "trPrChange", "tcPrChange", "sectPrChange", "tblGridChange", "numberingChange"]
-  return { part: BODY, revision_elements: Object.fromEntries(names.map(name => [name, elements(body, W, name).length])) }
+  return { part: BODY, revision_elements: Object.fromEntries(REVISION_ELEMENTS.map(name => [name, elements(body, W, name).length])) }
 }
 
 /** Read native comment text separately from current body text. Anchor records

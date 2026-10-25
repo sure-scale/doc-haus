@@ -211,7 +211,7 @@ async function open(state: Fixture, width: number, height: number) {
     if (pathname === `${prefix}/documents/text` && name === EMAIL) { state.texts++; return reply({ text: EMAIL_TEXT, injection: null }) }
     if (pathname === `${prefix}/redlines`) return reply(name === NAME ? (state.opts.redlines ?? []) : [])
     if (pathname === `${prefix}/documents/amendments`) return reply(null)
-    // Their changes (#200): these synthetic Word files carry no tracked changes or comments.
+    // Tracked changes (#200): these synthetic Word files carry no tracked changes or comments.
     if (pathname === `${prefix}/documents/markup`) return reply({ name, version: { id: "fixture", number: 1, sha256: "" }, current: true, revisions: [], comments: [], authors: [] })
     if (pathname === `${prefix}/compare`) {
       state.compares.push(url.search)
@@ -301,7 +301,7 @@ try {
         // On a narrow screen the list sits above the page, and comes first in the tab order too.
         await expect(reader.locator(".viewer-body > *").first()).toHaveClass(width <= 720 ? /versions-panel/ : /viewer-doc/)
         await expect(row(4)).toContainText("Current")
-        await expect(row(4)).toContainText("Changes accepted")
+        await expect(row(4)).toContainText("doc.haus proposals accepted")
         await expect(row(3)).toContainText("Saved from Word · by Pat Reviewer")
         await expect(row(3)).toContainText("Counterparty markup")
         await expect(row(2)).toContainText("Redacted")

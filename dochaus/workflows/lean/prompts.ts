@@ -10,6 +10,7 @@ import { finalBodyParagraphs, readChangeList, readParagraphs, type ApplyResult, 
 import { reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type StepID } from "./plan"
 import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
+import { escapeTagOpeners } from "../../lib/untrusted"
 import { readRepairRound, changesRepairSections, notesRepair } from "./repairs"
 import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings, reviewText } from "./review-findings"
 import { disclosableItems } from "./stages"
@@ -394,8 +395,11 @@ function documentSections(directory: string, document: DocID, items: OpenItem[])
   ]
 }
 
+/** Open items as their blocks list them. An item's detail can carry a review
+ * finding no plan adjudicated, the other side's words included, so every "<"
+ * in it is escaped (escapeTagOpeners) and cannot close the block. */
 function openItemLines(items: OpenItem[]) {
-  return items.map(item => `- ${item.id}: ${item.detail}`).join("\n")
+  return items.map(item => `- ${item.id}: ${escapeTagOpeners(item.detail)}`).join("\n")
 }
 
 function attribute(text: string) {

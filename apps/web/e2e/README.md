@@ -81,12 +81,62 @@ bun apps/web/e2e/counterparty-markup.ts
 
 It starts the real ingest service on a temporary data root, uploads the
 synthetic marked-up agreement as a source and the same bytes as a deliverable,
-then filters to one reviewer, sets the shown changes to Reject, accepts the
-other reviewer's replace, reloads to check the kept drafts, gives the attorney
-name once and applies. The new version must list its actor, held changes and
-both flagged items must remain, and the deliverable must offer no panel. The
+and opens the Tracked changes panel: Changes lists every change undecided and
+Comments holds the threads. While the panel is open the page shows a pin per
+thread instead of margin cards, and a pin opens its thread on Comments. It filters Changes to one reviewer, rejects the
+shown changes with Reject all shown, accepts the other reviewer's replace, reloads to
+check the kept drafts, gives the attorney name once and saves. The new version
+must list its actor, the undecided changes and both flagged items must remain,
+and the deliverable must offer no panel. The
 source's embeddings use the local model from `DOCHAUS_MODEL_CACHE_DIR` (default
 the per-user cache); no engine or provider is contacted.
+
+Run the replies to their comments (#200) the same way:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:5221 \
+DOCHAUS_E2E_INGEST_PORT=4922 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-replies-evidence \
+bun apps/web/e2e/counterparty-replies.ts
+```
+
+It uploads the agreement with its footnote comment against the real ingest
+service, whose model calls go to a local engine fixture with scripted drafts.
+On the Comments tab it drafts the open threads together, cancels one, checks
+that Approve reply waits for the bracketed part, edits and approves two
+replies, discards and restores one, and saves them with one Reject as one
+version. At 400 px it saves the last reply alone. A second upload's comment
+sits on a clause the other side inserted: a reply to it with that clause
+rejected is refused on the thread's card, and once saved without the reply the
+comment shows its text was removed and offers no reply.
+
+Run what follows a Save in Tracked changes (#200, #198) the same way:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:5231 \
+DOCHAUS_E2E_INGEST_PORT=4932 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-markup-followups-evidence \
+bun apps/web/e2e/counterparty-followups.ts
+```
+
+It uploads three copies of a synthetic agreement whose clauses Word numbers,
+with a tracked deletion of a clause another clause cites, against the real
+ingest service. Accepting the deletion must show the broken reference above
+the page with an info toast, and viewing a kept version must end it; rejecting
+it must show nothing; a check that could not run (forced in the browser) must
+show one muted line. A reply written by hand to the marked-up supply agreement
+and saved with no decision must be listed by the replies it added, not as a
+save from Word. A fresh copy of that agreement, with a drafting run's issue
+register delivered beside it, must show the run's answer on each change and open
+thread: edited in response, suggested, left for the lawyer to decide or no
+edit made, with its reason, which names the run's document by its title. Each
+tag's full sentence is captured on hover. After a Save that accepts one of their changes and
+rejects another, the cards it leaves must keep those answers, marked as the
+run's on version 1, after a reload too. A copy with a doc.haus proposal accepted
+into it holds the lawyer's own two edits beside their ten changes: the save bar
+must read "0 of 10 decided", accepting an own edit must not move it, and the
+confirmation must still count the own edit left tracked.
+Each state is captured at desktop and 400 px.
 
 Run the change timeline card acceptance (#297) the same way, with its own ports:
 

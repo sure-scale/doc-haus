@@ -19,15 +19,17 @@ import {
 import { convertPdfToDocx, documentContentUrl, fetchDocumentText, locatePdfPassage, matterDocumentKind, type PdfPassagePage } from "../api/ingest/documents"
 import type { CompareParams } from "../api/ingest/compare"
 import { fetchVersionBytes, type DocumentVersion, type RestoreResult } from "../api/ingest/versions"
-import { fetchDocumentMarkup, MarkupRefusedError, type DocumentMarkup } from "../api/ingest/markup"
+import { fetchDocumentMarkup, MarkupRefusedError, type DocumentMarkup, type MarkupDecisionResult, type MarkupRevision } from "../api/ingest/markup"
+import { getPreferences } from "../api/ingest/preferences"
 import { formatDateTime } from "../lib/format"
 import { ModalClose } from "./ModalHeader"
 import { CompareIcon } from "./CompareDialog"
 import VersionsPanel, { saveVersionFile, unavailableReason, useDocumentVersions, versionOrigin } from "./DocumentVersions"
-import MarkupPanel, { markupCount } from "./MarkupPanel"
+import MarkupPanel, { ConsistencyNotice, markupCount } from "./MarkupPanel"
 import ChangeTimeline from "./ChangeTimeline"
 import { citationPassage, focusCitationPassage, type CitationFocus } from "./citation-target"
 import { decorateMarkers, markerSummary, type MarkerCounts } from "./document-markers"
+import { commentDecoration, decorateComments } from "./document-comments"
 import { removeUnsafeLinkTargets } from "./docx-links"
 import { useToast } from "./Toast"
 import useModalFocus from "./useModalFocus"
@@ -56,8 +58,9 @@ export default function DocumentViewer(props: Parameters<typeof WordDocumentView
   return <WordDocumentViewer {...props} />
 }
 
-// On a narrow screen the versions list and their changes sit above the page, so
-// they come first in the markup too and the tab order follows what the lawyer sees.
+// On a narrow screen the versions list and the Tracked changes panel sit above
+// the page, so they come first in the markup too and the tab order follows what
+// the lawyer sees.
 const NARROW = "(max-width: 720px)"
 function useNarrow() {
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && Boolean(window.matchMedia?.(NARROW).matches))
@@ -147,6 +150,9 @@ function WordDocumentViewer({
   // change list, so they survive closing the viewer. The count line is derived
   // from the refetched list; the open items stay until the next Prepare.
   const [preparation,setPreparation] = useState<PreparedChanges | null>(null)
+  // The name doc.haus's changes carry: the saved attorney, else the firm, else
+  // doc.haus, as ingest records it; null when the settings could not be read.
+  const [reviser,setReviser] = useState<string | null>()
   // Bumped after an accept/reject resolves so the load effect re-runs — the
   // document re-renders and the change list shrinks without duplicating fetch logic.
   const [reload, setReload] = useState(0)
@@ -170,6 +176,8 @@ function WordDocumentViewer({
   const returnFocus = useRef<string>(undefined)
   const [unavailable, setUnavailable] = useState<Record<string, string>>({})
   const [versionStatus, setVersionStatus] = useState<string>()
+  // What the last Apply in Tracked changes says to check (#198), until the next action.
+  const [consistency, setConsistency] = useState<MarkupDecisionResult["consistency"]>()
   const [pdfVersionUrl, setPdfVersionUrl] = useState<string>()
   const markUnavailable = (id: string, reason: string) => setUnavailable((current) => ({ ...current, [id]: reason }))
   // The other side's tracked changes and comments in an uploaded Word source
@@ -189,6 +197,11 @@ function WordDocumentViewer({
   // Set by the toggle, so opening the panel on a narrow screen scrolls to it.
   const revealMarkup = useRef(false)
   const markupWasShown = useRef(false)
+  // Set by the panel's close button, so focus goes back to the toggle.
+  const markupClosed = useRef(false)
+  // A comment chosen in the page, for the panel to open; seq lets the same one again.
+  const [revealComment, setRevealComment] = useState<{ thread: number; seq: number }>()
+  const revealSeq = useRef(0)
   const markupItems = markup.data ? markupCount(markup.data) : 0
   // Keep React from resetting the HTML when passage status or viewer controls
   // re-render. The citation effect owns only its temporary text highlights.
@@ -250,8 +263,8 @@ function WordDocumentViewer({
         // Not covered (400 not Word, 404 not an uploaded source): nothing to offer, nothing to say.
         if (cause instanceof MarkupRefusedError && (cause.status === 400 || cause.status === 404)) return setMarkup({ key })
         const failed = cause instanceof MarkupRefusedError && cause.status === 422
-          ? "Their changes in this file could not be read. Resolve them in Word, or save it in Word and upload it again."
-          : "Their changes in this file could not be loaded."
+          ? "The tracked changes and comments in this file could not be read. Resolve them in Word, or save it in Word and upload it again."
+          : "The tracked changes and comments in this file could not be loaded."
         setMarkup((current) => ({ data: current.data, key, failed }))
       },
     )
@@ -260,7 +273,7 @@ function WordDocumentViewer({
     }
   }, [isDocx, matterId, name, markupKey])
 
-  // Their changes open by default once, when the file has some and doc.haus
+  // Tracked changes opens by default once, when the file has some and doc.haus
   // has no proposals of its own waiting on it. A failed first reading waits
   // for its Retry.
   useEffect(() => {
@@ -268,6 +281,22 @@ function WordDocumentViewer({
     markupDefaulted.current = true
     if (markupItems > 0 && !redlines.length && !versionsOpen) setMarkupOpen(true)
   }, [html, shown, markup.key, markup.failed, markup.data, markupItems, redlines.length, versionsOpen])
+
+  // Read once the file's tracked changes meet doc.haus's: the request opens, or
+  // proposals are listed. Read then, not on opening, so a name just saved in
+  // Settings shows; without it the lines name no one. Comments on the page
+  // need it too, to show the lawyer's own in the brand colour, and read it
+  // again after each save, which may have recorded a name.
+  const reviserNeeded = (Boolean(markup.data?.revisions.length) && (editing || redlines.length > 0)) || /class="[^"]*\bcomment-margin-note\b/.test(html ?? "")
+  useEffect(() => {
+    if (!reviserNeeded) return
+    let cancelled = false
+    getPreferences().then(
+      (prefs) => !cancelled && setReviser(prefs.attorney?.trim() || prefs.firm?.trim() || "doc.haus"),
+      () => !cancelled && setReviser(null),
+    )
+    return () => { cancelled = true }
+  }, [reviserNeeded, reload])
 
   // A PDF's older version is read once and shown from memory, so a copy that
   // cannot be served is reported here rather than as an error page in the frame.
@@ -300,6 +329,7 @@ function WordDocumentViewer({
   // screen, brings the page into view.
   function show(version: DocumentVersion | undefined) {
     setVersionStatus(undefined)
+    setConsistency(undefined)
     setShown(version)
     if (narrow) documentRef.current?.closest(".viewer-doc")?.scrollIntoView({ block: "start" })
   }
@@ -324,6 +354,7 @@ function WordDocumentViewer({
   function restored(result: RestoreResult) {
     setShown(undefined)
     setVersionStatus(result.notice)
+    setConsistency(undefined)
     setReload((value) => value + 1)
     onChanged?.()
   }
@@ -350,7 +381,7 @@ function WordDocumentViewer({
       toggleVersions()
     }} />
   )
-  // One side panel at a time: their changes replace the versions list and
+  // One side panel at a time: Tracked changes replaces the versions list and
   // doc.haus's proposals while open. Never over an older version.
   const markupShown = markupOpen && !versionsOpen && !shown && markupItems > 0
   const markupToggle = !shown && markupItems > 0 && (
@@ -367,13 +398,20 @@ function WordDocumentViewer({
       markup={markup.data}
       loading={markupPending || markup.failed !== undefined}
       proposalsPending={redlines.length}
-      onApplied={() => {
+      onApplied={(result) => {
+        setConsistency(result.consistency)
         setReload((value) => value + 1)
         onChanged?.()
       }}
       onRefetch={() => setReload((value) => value + 1)}
+      reveal={revealComment}
+      onRevealed={() => setRevealComment(undefined)}
       // doc.haus's own proposals come first: closing this panel shows them.
       onShowProposals={() => setMarkupOpen(false)}
+      onClose={() => {
+        markupClosed.current = true
+        setMarkupOpen(false)
+      }}
     />
   )
   // Where the toggle or the panel would be: above the page on a narrow screen,
@@ -395,13 +433,23 @@ function WordDocumentViewer({
     if (narrow) modalRef.current?.querySelector("#document-markup")?.scrollIntoView({ block: "start" })
   }, [markupShown, narrow])
 
-  // When the panel goes with focus inside it (Apply left nothing to list),
-  // focus moves to the Versions toggle, which is always there, not the page.
+  // Closed by its own close button, the panel hands focus to the toggle that
+  // opens it again. When it goes otherwise with focus inside it (Apply left
+  // nothing to list), focus moves to the Versions toggle, which is always
+  // there, not the page.
   useEffect(() => {
     const was = markupWasShown.current
     markupWasShown.current = markupShown
+    const closed = markupClosed.current
+    markupClosed.current = false
     const root = modalRef.current
-    if (!was || markupShown || !root || root.contains(document.activeElement)) return
+    if (!was || markupShown || !root) return
+    const toggle = closed ? root.querySelector<HTMLElement>(".viewer-markup-toggle") : null
+    if (toggle) {
+      toggle.focus()
+      return
+    }
+    if (root.contains(document.activeElement)) return
     root.querySelector<HTMLElement>(".viewer-versions-toggle")?.focus()
   }, [markupShown])
   const versionBanner = shown && (
@@ -420,6 +468,19 @@ function WordDocumentViewer({
   useEffect(() => {
     setMarkers(html && documentRef.current ? decorateMarkers(documentRef.current) : undefined)
   }, [html])
+
+  // Comments beside the page as Word's cards, each author in the panel's
+  // colour. An older version's comments are coloured by the names it shows.
+  // While the panel lists them the page shows a button by each commented
+  // paragraph instead, which opens its thread there.
+  const commentPane = markupShown && Boolean(markup.data)
+  const comments = useMemo(() => ({
+    ...commentDecoration(shown ? undefined : markup.data, reviser),
+    onReveal: commentPane ? (thread: number) => setRevealComment({ thread, seq: ++revealSeq.current }) : undefined,
+  }), [shown, markup.data, reviser, commentPane])
+  useEffect(() => {
+    if (html && documentRef.current) return decorateComments(documentRef.current, comments)
+  }, [html, comments])
 
   useEffect(() => {
     setPassage(undefined)
@@ -463,6 +524,7 @@ function WordDocumentViewer({
   }, [])
 
   async function resolve(action: () => Promise<AcceptResult | void>, key: number | "all") {
+    setConsistency(undefined)
     setBusy(key)
     setError(undefined)
     try {
@@ -479,6 +541,7 @@ function WordDocumentViewer({
   }
 
   async function prepare() {
+    setConsistency(undefined)
     setBusy("prepare")
     setError(undefined)
     try {
@@ -489,9 +552,9 @@ function WordDocumentViewer({
     finally {setBusy(undefined)}
   }
 
-  // Download either the redlined .docx — the pending changes that can still be
-  // accepted, as native Word tracked changes, to send to counsel — or the current
-  // accepted Word file exactly as stored. Pending proposals never block the latter.
+  // Download either the saved Word file exactly as stored, with what has been
+  // accepted, or a copy that also shows doc.haus's proposals not yet accepted as
+  // tracked changes. Pending proposals never block the former.
   async function download(tracked: boolean) {
     setError(undefined)
     try {
@@ -506,13 +569,17 @@ function WordDocumentViewer({
     )
     const a = document.createElement("a")
     a.href = url
-    a.download = tracked ? `${name.replace(/\.docx$/i, "")} (tracked changes).docx` : name
+    a.download = tracked ? `${name.replace(/\.docx$/i, "")} (with proposals).docx` : name
     a.click()
     URL.revokeObjectURL(url)
     } catch(cause) {setError(cause instanceof Error ? cause.message : String(cause))}
   }
   const staleNotice = staleExportNotice(redlines)
   const prepared = preparation && preparedNotice(preparation.redline_ids, redlines)
+  // Request edits on an uploaded markup keeps its tracked changes pending (#200).
+  const revisions = !shown ? markup.data?.revisions ?? [] : []
+  const layered = requestEditsLine(revisions.length, reviser)
+  const acceptedHint = acceptedEditsHint(revisions, reviser)
 
   // Convert this PDF into an editable .docx sibling, index it, and swap the viewer
   // onto the new document so it can be redlined like any other contract.
@@ -550,7 +617,6 @@ function WordDocumentViewer({
               >
                 {converting ? "Converting..." : "Convert to DOCX"}
               </button>
-              <span className="viewer-bar-divider" aria-hidden="true" />
               <ModalClose onClose={onClose} />
             </div>
           </div>
@@ -637,7 +703,6 @@ function WordDocumentViewer({
                 </div>
               </details>
             )}
-            <span className="viewer-bar-divider" aria-hidden="true" />
             <ModalClose onClose={onClose} />
           </div>
         </div>
@@ -648,10 +713,12 @@ function WordDocumentViewer({
           <div className="viewer-doc">
             {versionBanner}
             {versionStatus && <p role="status" className="version-status">{versionStatus}</p>}
+            {consistency && <ConsistencyNotice consistency={consistency} />}
             {!narrow && markupNotice}
             {citation && !shown && <p role="status">{citationStatus(citation.section, passage)}</p>}
             {editing && !shown && <div id="document-edit-request" className="change-card document-edit-request">
               <label htmlFor="document-edit-instructions">Describe the changes you want to review</label>
+              {layered && <p className="muted">{layered}</p>}
               <textarea id="document-edit-instructions" value={instructions} maxLength={24000} disabled={busy !== undefined}
                 onChange={(event) => setInstructions(event.target.value)} rows={4} style={{width:"100%"}} />
               <button className="primary" onClick={prepare} disabled={busy !== undefined || !instructions.trim()}>{busy === "prepare" ? "Preparing changes…" : "Prepare changes"}</button>
@@ -679,7 +746,7 @@ function WordDocumentViewer({
             <aside className="changes-panel">
               <div className="changes-head">
                 <span className="changes-count">
-                  <strong>{redlines.length}</strong> pending change{redlines.length === 1 ? "" : "s"}
+                  <strong>{redlines.length}</strong> proposal{redlines.length === 1 ? "" : "s"} to review
                 </span>
                 <div className="changes-actions">
                   <button
@@ -698,6 +765,7 @@ function WordDocumentViewer({
                   </button>
                 </div>
               </div>
+              {acceptedHint && <p className="changes-hint muted">{acceptedHint}</p>}
               {redlines.map((r) => (
                 <div
                   className={`change-card${r.id === focusId ? " focused" : ""}`}
@@ -856,7 +924,6 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose, onChanged
           <ViewerTitle name={name} kind={kind === "zip" ? "Zip file · list of files, read-only" : `${kind === "eml" || kind === "msg" ? "Email" : "Excel spreadsheet"} · extracted text, read-only`} />
           <div className="viewer-bar-actions">
             <VersionsToggle open={versionsOpen} count={versions.data?.versions.length} onToggle={toggleVersions} />
-            <span className="viewer-bar-divider" aria-hidden="true" />
             <ModalClose onClose={onClose} />
           </div>
         </div>
@@ -898,7 +965,7 @@ export function ExtractedText({ kind, text, match, markRef }: {
   )
 }
 
-// The current accepted Word file is always downloadable. A redline download is
+// The saved Word file is always downloadable. A download with proposals is
 // offered only while some pending proposal can still render as tracked changes.
 export function DownloadActions({ redlines, preview, onDownload, version }: {
   redlines: Redline[]
@@ -908,7 +975,7 @@ export function DownloadActions({ redlines, preview, onDownload, version }: {
   version?: number
 }) {
   // Labels are visually hidden on narrow screens, so the two downloads need
-  // distinct glyphs: a plain arrow, and a document with a pen for tracked changes.
+  // distinct glyphs: a plain arrow, and a document with a pen for the proposals.
   const download = (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M12 4v11" />
@@ -916,7 +983,7 @@ export function DownloadActions({ redlines, preview, onDownload, version }: {
       <path d="M5 20h14" />
     </svg>
   )
-  const downloadTitle = "Download the current accepted Word file without pending changes"
+  const downloadTitle = "Download the saved Word file. Proposals you have not accepted are left out."
   if (version !== undefined || !redlines.some((row) => !row.stale)) {
     return (
       <button onClick={() => onDownload(false)} title={version !== undefined ? `Download version ${version} exactly as kept` : downloadTitle}>
@@ -933,8 +1000,8 @@ export function DownloadActions({ redlines, preview, onDownload, version }: {
       onClick={() => onDownload(false)}
       toggleLabel="More download options"
       items={[{
-        label: "Download redline",
-        title: "Download as a Word file with the pending changes as tracked changes",
+        label: "Download with proposals",
+        title: "Download as a Word file that shows doc.haus's proposals you have not accepted yet, as tracked changes",
         disabled: !preview,
         onSelect: () => onDownload(true),
         icon: (
@@ -950,15 +1017,44 @@ export function DownloadActions({ redlines, preview, onDownload, version }: {
   )
 }
 
-// Stale proposals stay listed until the reviewer rejects them, but the tracked-
-// changes preview and redline download leave them out: they target an earlier
-// Word revision. Say so, and name the action that actually clears them.
+// Stale proposals stay listed until the reviewer rejects them, but the preview
+// and the download with proposals leave them out, and Accept all waits for
+// them: they target an earlier Word revision. Say so, and name the action that
+// actually clears them.
 export function staleExportNotice(redlines: Redline[]) {
   const stale = redlines.filter((row) => row.stale).length
   if (!stale) return
   const one = stale === 1
-  return `${one ? "1 stale proposal is" : `${stale} stale proposals are`} left out of the tracked changes and the redline download. ` +
+  return `${one ? "1 stale proposal is" : `${stale} stale proposals are`} left out of the preview and the download with proposals, ` +
+    `and Accept all is unavailable until ${one ? "it is" : "they are"} rejected. ` +
     `Reject ${one ? "it" : "them"} to clear ${one ? "it" : "them"}; prepare a fresh change list if the change is still needed.`
+}
+
+// The name Accept writes doc.haus's edits under, when it is a person's or the
+// firm's: doc.haus's own name, or none read, is not repeated.
+function reviserName(reviser: string | null | undefined) {
+  return reviser && reviser !== "doc.haus" ? reviser : undefined
+}
+
+// Request edits on a file with tracked changes: they stay, and each accepted
+// proposal is written beside them as a tracked change under the reviser.
+export function requestEditsLine(tracked: number, reviser: string | null | undefined) {
+  if (!tracked) return
+  const one = tracked === 1
+  const name = reviserName(reviser)
+  return `${one ? "The 1 tracked change already in this file stays as it is" : `The ${tracked} tracked changes already in this file stay as they are`}. ` +
+    `Each proposal you accept is added beside ${one ? "it" : "them"} as a tracked change${name ? ` marked as ${name}` : ""}.`
+}
+
+// Beside doc.haus's proposals, once the reviser is read: where an accepted edit
+// goes, when the file holds the other side's tracked changes (any not under
+// the reviser's own name).
+export function acceptedEditsHint(revisions: Pick<MarkupRevision, "author">[], reviser: string | null | undefined) {
+  if (reviser === undefined) return
+  const own = (reviser || "doc.haus").trim().toLowerCase()
+  if (!revisions.some((revision) => revision.author.trim().toLowerCase() !== own)) return
+  const name = reviserName(reviser)
+  return `Accepted edits go into the file as tracked changes${name ? ` under ${name}` : ""}, beside theirs.`
 }
 
 // Prepare's batch counted against the refetched change list: accepted, rejected
@@ -1020,8 +1116,9 @@ export function combinedNotUpdatedNotice(result: AcceptResult | void) {
   return `The combined file was not updated${reason ? `: ${reason}` : ""}.`
 }
 
-// Opens and closes the versions list beside the document. The count stays
-// with the label, both read out; on a narrow screen the button is its icon.
+// Opens and closes the versions list beside the document. Two or more
+// versions are counted with the label, both read out; a single version is not.
+// On a narrow screen the button is its icon.
 function VersionsToggle({ open, count, onToggle }: { open: boolean; count?: number; onToggle: () => void }) {
   return (
     <button type="button" className="viewer-versions-toggle" aria-expanded={open} aria-controls={open ? "document-versions" : undefined} onClick={onToggle}
@@ -1032,16 +1129,17 @@ function VersionsToggle({ open, count, onToggle }: { open: boolean; count?: numb
         <path d="M12 7v5l3 2" />
       </svg>
       <span className="viewer-action-label">
-        Versions{count ? <span className="viewer-versions-count"> {count}</span> : null}
+        Versions{count && count > 1 ? <>{" "}<span className="viewer-versions-count">{count}</span></> : null}
       </span>
     </button>
   )
 }
 
-// Opens and closes the other side's changes beside the document, counted the
-// way the panel lists them: one per change and one per comment thread. On a
-// phone the label is hidden and the count stays as a badge on the icon (the
-// label still names the button), so it reads as their changes, not "add".
+// Opens and closes the file's tracked changes and comments beside the
+// document, counted the way the panel lists them: one per change and one per
+// comment thread. The count shows as a small badge beside the label, and on a
+// phone, where the label is hidden, on the icon, so it reads as tracked
+// changes, not "add". The label carries it in brackets for screen readers.
 function MarkupToggle({ open, count, onToggle }: { open: boolean; count: number; onToggle: () => void }) {
   return (
     <button type="button" className="viewer-markup-toggle" aria-expanded={open} aria-controls={open ? "document-markup" : undefined} onClick={onToggle}
@@ -1051,7 +1149,7 @@ function MarkupToggle({ open, count, onToggle }: { open: boolean; count: number;
         <path d="M8 8h8M8 12h5" />
       </svg>
       <span className="viewer-action-label">
-        Their changes<span className="viewer-versions-count"> ({count})</span>
+        Tracked changes<span className="sr-only"> ({count})</span>
       </span>
       <span className="viewer-markup-badge" aria-hidden="true">{count}</span>
     </button>
@@ -1089,7 +1187,7 @@ export function ViewerTitle({ name, kind, pending = 0, markers }: { name: string
         <span className="viewer-title-name" title={name}>{name}</span>
         <span className="viewer-title-meta">
           {kind}
-          {pending > 0 && <span className="viewer-title-pending">{pending} pending change{pending === 1 ? "" : "s"}</span>}
+          {pending > 0 && <span className="viewer-title-pending">{pending} proposal{pending === 1 ? "" : "s"} to review</span>}
           {markers && <span className="viewer-title-markers">{markers}</span>}
         </span>
       </span>

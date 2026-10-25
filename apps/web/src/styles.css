@@ -3526,11 +3526,6 @@ button.linklike:hover:not(:disabled) {
   font-size: 13px;
 }
 
-/* Margin comments need gutter width — relax the measure when they exist. */
-.docx-render:has(.comment-margin-column:not(:empty)) {
-  max-width: 980px;
-}
-
 /* Tracked changes: insertion as a green highlighter pass, deletion struck quiet.
    Docxodus emits <ins>/<del> for revisions; the class forms cover prefixed output. */
 .docx-render ins,
@@ -3551,11 +3546,35 @@ button.linklike:hover:not(:disabled) {
   opacity: 0.85;
 }
 
-/* Only the margin comment column is amber. Docxodus wraps the whole document in
-   a .comment-margin-container layout div, so a greedy [class*="comment"] selector
-   would tint all body text — scope strictly to the comment column. */
+/* Comments beside the page, as Word's comment cards: one card per thread in
+   the margin, the author's initials in the colour the Tracked changes panel
+   gives them, replies inside the card, resolved threads greyed with a label.
+   Docxodus's own notes are restyled here; document-comments.ts adds the
+   initials, dates and flags, and on a narrow page moves each card under its
+   paragraph. Docxodus wraps the whole document in .comment-margin-container,
+   so a greedy [class*="comment"] selector would restyle the body text: every
+   rule names the comment classes exactly. The measure is relaxed for the
+   margin wherever the cards sit, so moving them never changes the width.
+   While the Tracked changes panel lists the comments, as Word's Comments
+   pane does, the cards are hidden, the page keeps its own width and each
+   commented paragraph has a comment button in its right margin. */
+.docx-render:not([data-comments="pane"]):has(.comment-margin-note) {
+  max-width: 980px;
+}
+
+.docx-render[data-comments="pane"] .comment-margin-column {
+  display: none;
+}
+
+.docx-render .comment-margin-container {
+  gap: var(--space-5);
+}
+
 .docx-render .comment-margin-column {
-  color: var(--warn);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 264px;
 }
 
 /* With no comments Docxodus still emits an empty margin column that reserves its
@@ -3563,6 +3582,258 @@ button.linklike:hover:not(:disabled) {
    empty so the document content flexes to full width. */
 .docx-render .comment-margin-column:empty {
   display: none;
+}
+
+.docx-render .comment-margin-note {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+  cursor: default;
+  transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.docx-render .comment-margin-note:focus-visible {
+  outline: 2px solid var(--md-sys-state-focus);
+  outline-offset: 2px;
+}
+
+.docx-render .comment-margin-note.is-linked {
+  border-color: var(--comment-tone, var(--border-strong));
+  box-shadow: 0 0 0 1px var(--comment-tone, var(--border-strong)), var(--shadow-sm);
+}
+
+/* Who and when, as the panel's byline: initials, the name in bold, the date
+   and time under it, Resolved at the right. */
+.docx-render .comment-margin-note-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--space-2);
+  margin: 0 0 6px;
+  font-size: inherit;
+}
+
+.docx-render .comment-margin-note-header > .markup-avatar {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+
+.docx-render .comment-margin-author {
+  grid-column: 2;
+  grid-row: 1;
+  font-weight: 700;
+  color: var(--text);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.docx-render .comment-margin-note-header > :is(.comment-margin-date, .doc-comment-time) {
+  grid-column: 2;
+  grid-row: 2;
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.docx-render .comment-margin-note-header:has(> .doc-comment-time) > .comment-margin-date,
+.docx-render .comment-margin-backref {
+  display: none;
+}
+
+.docx-render .comment-resolved-badge {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  align-self: start;
+  padding: 1px 8px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+}
+
+.docx-render .comment-margin-note-body {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.docx-render .comment-margin-note-body p {
+  margin: 0;
+}
+
+.docx-render .comment-margin-note-body p + p {
+  margin-top: 4px;
+}
+
+.docx-render .comment-margin-note .doc-comment-flag {
+  margin-top: var(--space-2);
+}
+
+/* Replies in the card, each under a hairline with its own small initials. */
+.docx-render .comment-margin-replies {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.docx-render .comment-margin-note.comment-margin-reply {
+  padding: var(--space-2) 0 0;
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--border-soft);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* A resolved thread: greyed, and labelled, not only faded. */
+.docx-render .comment-resolved {
+  opacity: 1;
+}
+
+.docx-render .comment-margin-note.comment-resolved:not(.comment-margin-reply) {
+  background: var(--bg-sunken);
+  box-shadow: none;
+}
+
+.docx-render .comment-resolved :is(.comment-margin-author, .comment-margin-note-body) {
+  color: var(--text-secondary);
+}
+
+.docx-render .comment-resolved .markup-avatar {
+  opacity: 0.6;
+}
+
+/* The commented text: a light tint of its author's colour and a thin
+   underline, stronger while its card is hovered or focused; a resolved
+   thread's only a dashed rule. */
+.docx-render .comment-highlight[data-comment-id] {
+  background: color-mix(in srgb, var(--comment-tone, var(--border-strong)) 9%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--comment-tone, var(--border-strong)) 55%, transparent);
+  cursor: inherit;
+}
+
+.docx-render .comment-highlight.comment-resolved[data-comment-id] {
+  background: none;
+  border-bottom: 1px dashed var(--border-strong);
+}
+
+.docx-render .comment-highlight[data-comment-id].is-linked {
+  background: color-mix(in srgb, var(--comment-tone, var(--border-strong)) 22%, transparent);
+  border-bottom: 2px solid var(--comment-tone, var(--border-strong));
+}
+
+/* With the panel open: the commented text opens its thread there, and a
+   button beside its paragraph does too. Several on one paragraph sit side by
+   side, three to a row (a page's right margin holds three), and the paragraph
+   keeps the height of any rows below its first, so they never reach the next
+   paragraph's. On a phone's narrow margin they stand in one column. In a table
+   cell they stand in one column inside the cell's right edge. */
+.docx-render[data-comments="pane"] .comment-highlight[data-comment-id] {
+  cursor: pointer;
+}
+
+.docx-render .doc-comment-block {
+  --pin-rows: round(up, var(--pin-count, 1) / 3, 1);
+  position: relative;
+  min-height: calc((var(--pin-rows) - 1) * 28px + min(26px, (var(--pin-rows) - 1) * 26px));
+}
+
+/* Sized past the app's button minimums (taller on touch screens), which
+   would cover the next line's button; 24px is still a full touch target. */
+.docx-render .doc-comment-block > .doc-comment-pin {
+  position: absolute;
+  top: calc(2px + round(down, var(--pin-index, 0) / 3, 1) * 28px);
+  left: calc(100% + 8px + mod(var(--pin-index, 0), 3) * 28px);
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  line-height: 0;
+  color: var(--comment-tone, var(--text-secondary));
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-out), background-color var(--duration-fast) var(--ease-out);
+}
+
+/* A cell keeps room for its buttons, one column of them, beside its text. */
+.docx-render :is(td, th).doc-comment-block {
+  padding-right: 30px;
+  height: calc(var(--pin-count, 1) * 28px);
+}
+
+.docx-render :is(td, th).doc-comment-block > .doc-comment-pin {
+  top: calc(2px + var(--pin-index, 0) * 28px);
+  left: auto;
+  right: 2px;
+}
+
+.docx-render .doc-comment-pin:is(:hover, .is-linked) {
+  border-color: var(--comment-tone, var(--border-strong));
+  background: color-mix(in srgb, var(--comment-tone, var(--border-strong)) 12%, var(--panel));
+}
+
+.docx-render .doc-comment-pin:focus-visible {
+  outline: 2px solid var(--md-sys-state-focus);
+  outline-offset: 2px;
+}
+
+.docx-render .doc-comment-pin.is-resolved {
+  color: var(--muted);
+}
+
+/* A phone's page margin is narrower than the desktop's. */
+@container docx-page (max-width: 560px) {
+  .docx-render .doc-comment-block {
+    --pin-rows: var(--pin-count, 1);
+  }
+
+  .docx-render .doc-comment-block > .doc-comment-pin {
+    top: calc(2px + var(--pin-index, 0) * 28px);
+    left: calc(100% + 1px);
+    width: 22px;
+    height: 22px;
+  }
+}
+
+/* A narrow page: the cards under their paragraph, full width. */
+.docx-render .doc-comment-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-4);
+  line-height: 1.45;
+}
+
+@media (forced-colors: active) {
+  .docx-render .comment-margin-note:not(.comment-margin-reply) { border: 1px solid CanvasText; }
+  .docx-render .comment-margin-note.comment-margin-reply { border-top: 1px solid CanvasText; }
+  .docx-render .comment-margin-note.is-linked { outline: 2px solid Highlight; outline-offset: 1px; }
+  .docx-render .comment-resolved-badge { border: 1px solid CanvasText; }
+  .docx-render .comment-highlight[data-comment-id] { border-bottom: 1px solid CanvasText; }
+  .docx-render .comment-highlight.comment-resolved[data-comment-id] { border-bottom-style: dashed; }
+  .docx-render .comment-highlight[data-comment-id].is-linked { outline: 2px solid Highlight; border-bottom-width: 2px; }
+  .docx-render .doc-comment-pin { color: ButtonText; background: ButtonFace; border: 1px solid ButtonText; }
+  .docx-render .doc-comment-pin:is(:hover, .is-linked) { outline: 2px solid Highlight; outline-offset: 1px; }
 }
 
 /* Loading: the sheet develops in place — same .docx-render chrome, so there is

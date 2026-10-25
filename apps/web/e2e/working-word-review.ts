@@ -294,7 +294,7 @@ try {
   const acceptAll = dialog.getByRole("button", { name: "Accept all", exact: true })
   const staleReason = "The paragraph this change targets has changed since it was prepared. Prepare a fresh change list."
   const exportRefusal = "A proposal no longer resolves against this Word revision."
-  const staleNotice = "1 stale proposal is left out of the tracked changes and the redline download. Reject it to clear it; prepare a fresh change list if the change is still needed."
+  const staleNotice = "1 stale proposal is left out of the preview and the download with proposals, and Accept all is unavailable until it is rejected. Reject it to clear it; prepare a fresh change list if the change is still needed."
   const working = () => readWorkingDocx(file.dir, file.path)?.source_sha256
   const resolved = (action: "accept" | "reject") => page.waitForResponse((response: { url: () => string }) => new RegExp(`/redlines/\\d+/${action}$`).test(new URL(response.url()).pathname))
   async function openDocument(navigate = true) {
@@ -347,7 +347,7 @@ try {
 
   await step("3 request edits and prepare three proposals without changing the Word file", async () => {
     await prepare(FIRST, "3 proposed changes ready for review.")
-    await expect(dialog.locator(".changes-count")).toHaveText("3 pending changes")
+    await expect(dialog.locator(".changes-count")).toHaveText("3 proposals to review")
     await expect(cards).toHaveCount(3)
     await expect(cards.nth(0)).toContainText("within seven days")
     await expect(cards.nth(1)).toContainText("Three percent")
@@ -357,8 +357,8 @@ try {
     expect(await current()).toBe(hashes.seeded)
     expect(working()).toBeUndefined()
     // The tracked-changes export carries every proposal over the intact structure.
-    const [download] = await Promise.all([page.waitForEvent("download"), (async () => { await dialog.getByRole("button", { name: "More download options", exact: true }).click(); await dialog.getByRole("button", { name: "Download redline", exact: true }).click() })()])
-    expect(download.suggestedFilename()).toBe("synthetic-services-agreement (tracked changes).docx")
+    const [download] = await Promise.all([page.waitForEvent("download"), (async () => { await dialog.getByRole("button", { name: "More download options", exact: true }).click(); await dialog.getByRole("button", { name: "Download with proposals", exact: true }).click() })()])
+    expect(download.suggestedFilename()).toBe("synthetic-services-agreement (with proposals).docx")
     await download.saveAs(path.join(evidence, "03-tracked-changes.docx"))
     const redline = inspect(await Bun.file(path.join(evidence, "03-tracked-changes.docx")).bytes())
     expect(redline.insertions).toBeGreaterThanOrEqual(2)
@@ -424,7 +424,7 @@ try {
 
   await step("6 with only a stale proposal pending, Download returns the accepted Word file and the redline export leaves the stale change out", async () => {
     // No pending proposal can render as tracked changes, so only Download is offered.
-    await expect(dialog.getByRole("button", { name: "Download redline", exact: true })).toHaveCount(0)
+    await expect(dialog.getByRole("button", { name: "Download with proposals", exact: true })).toHaveCount(0)
     await expect(dialog.getByRole("status").filter({ hasText: "stale proposal" })).toHaveText(staleNotice)
     await expect(dialog.getByText(exportRefusal, { exact: false })).toHaveCount(0)
     const content = page.waitForResponse((response: { url: () => string }) => new URL(response.url()).pathname.endsWith("/documents/content"))

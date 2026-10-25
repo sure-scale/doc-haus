@@ -119,7 +119,7 @@ function OutputRow({
         </div>
       </div>
       {pending ? (
-        <span className="redline-badge" title={`${pending} pending change${pending === 1 ? "" : "s"} to review`}>
+        <span className="redline-badge" title={`${pending} proposal${pending === 1 ? "" : "s"} to review`}>
           {pending}
         </span>
       ) : null}

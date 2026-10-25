@@ -57,17 +57,17 @@ function decideInOrder(dx: Docxodus, bytes: Uint8Array, decisions: ReadonlyMap<s
     const byId = new Map(listed.map(entry => [entry.id, entry]))
     for (const id of decisions.keys())
       if (!byId.has(id))
-        throw new MarkupDecisionError("unknown_revision", "This change is no longer in the document. Hold it to apply the other decisions.", id)
+        throw new MarkupDecisionError("unknown_revision", "This change is no longer in the document. Leave it tracked to apply the other decisions.", id)
     const decision = (entry: RevisionListEntry) => decisions.get(entry.id) ?? "hold"
     const unsupported = listed.find(entry => decision(entry) !== "hold" && entry.resolutionStatus !== "supported")
     if (unsupported)
-      throw new MarkupDecisionError("unsupported_revision", "One of the decided changes cannot be resolved here. Hold it and resolve it in Word.", unsupported.id)
+      throw new MarkupDecisionError("unsupported_revision", "One of the decided changes cannot be resolved here. Leave it tracked and resolve it in Word.", unsupported.id)
     const promoted = new Set(first)
     const order = [...first.map(id => byId.get(id)!), ...listed.filter(entry => !promoted.has(entry.id))]
     const outcomes = new Map<string, MarkupOutcome>()
     const resolve = (entry: RevisionListEntry, id: string) => decision(entry) === "accept" ? session.acceptRevision(id) : session.rejectRevision(id)
     const failed = (entry: RevisionListEntry) =>
-      new MarkupDecisionError("decision_failed", `This change could not be ${decision(entry)}ed here. Nothing was changed; hold it to apply the other decisions, and resolve it in Word.`, entry.id)
+      new MarkupDecisionError("decision_failed", `This change could not be ${decision(entry)}ed here. Nothing was changed; leave it tracked to apply the other decisions, and resolve it in Word.`, entry.id)
     // Each by its listed id; a change whose id is gone waits until the others are done.
     const moved: RevisionListEntry[] = []
     for (const entry of order) {

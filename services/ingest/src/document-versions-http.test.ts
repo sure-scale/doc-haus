@@ -251,7 +251,7 @@ test("an agent's edit and a lawyer's save with tracked changes are kept as versi
   expect(await saved.json()).toMatchObject({
     version: { number: 4, origin: "revision" },
     tracked_changes: { count: 1, authors: ["Pat Reviewer"] },
-    notice: "Saved as version 4, with 1 tracked change by Pat Reviewer; review them in the viewer before doc.haus edits it.",
+    notice: "Saved as version 4, with 1 tracked change by Pat Reviewer; review it in the viewer. doc.haus adds its edits beside it.",
   })
   expect(await observe(AGREEMENT)).toEqual(tracked)
 

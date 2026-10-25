@@ -27,6 +27,13 @@ export function draftingAttribution() {
   return { author: attorney || firm || "doc.haus", company: firm || "doc.haus" }
 }
 
+/** Every name doc.haus can sign with: the saved attorney, the firm and doc.haus
+ * itself. What it signed before an attorney was saved stays our side's after.
+ * An attorney's earlier name, before a rename, is not remembered. */
+export function ourAuthors(preferences = readFirmPreferences()) {
+  return [...new Set([identityText(preferences.attorney), identityText(preferences.firm), "doc.haus"].filter(Boolean))]
+}
+
 /** Stamp a newly generated file, never an existing source document. Only package
  * properties change: historical revision and comment authors stay untouched. */
 export function withGeneratedDocxAttribution(bytes: Uint8Array, identity = draftingAttribution()) {

@@ -144,9 +144,12 @@ export function mapClauses(root: ParentNode, markup: Pick<DocumentMarkup, "revis
     const painted = new Set([...idsOf[index]!].flatMap((id) => threadOf.get(id) ?? []))
     const mine = threads.filter((thread) => painted.has(thread))
     if (!own.length && !mine.length) return
-    // The paragraph's own or first inner mark, else the changed container it opens.
+    // The paragraph's own or first inner mark, else the changed container it
+    // opens. A comment marker is hidden (zero size), so it is never the Tab
+    // stop: a comment with no range has its paragraph instead.
     const container = paragraph.parentElement?.closest(CONTAINERS)
-    const mark = paragraph.matches(TARGETS) ? paragraph : paragraph.querySelector(TARGETS) ?? (container?.querySelector(PARAGRAPHS) === paragraph ? container : null)
+    const inner = [...paragraph.querySelectorAll(TARGETS)].find((node) => !node.matches("a.comment-marker"))
+    const mark = paragraph.matches(TARGETS) ? paragraph : inner ?? (container?.querySelector(PARAGRAPHS) === paragraph ? container : mine.length ? paragraph : null)
     if (!(mark instanceof HTMLElement)) return
     const labelled = own.flatMap((revision) => revision.locations).find((place) => place.paragraph === ordinal && listLabel(place))
       ?? mine.map((thread) => thread.root).find((comment) => comment.paragraph === ordinal && starts.get(comment.id) === ordinal && listLabel(comment))

@@ -472,15 +472,18 @@ export function trackedChanges(name: string, bytes: Uint8Array) {
 }
 
 /** What a save of a version with pending tracked changes tells the lawyer:
- * the version is kept, and doc.haus edits wait until the changes are resolved,
- * in the viewer (an uploaded source, #200) or in Word. */
+ * the version is kept. On an uploaded source (#200) the changes are reviewed
+ * in the viewer and doc.haus edits go beside them; otherwise doc.haus edits
+ * wait until they are resolved in Word. */
 export function trackedChangesNotice(number: number, tracked: { count: number; authors: string[] }, where: "viewer" | "word") {
   const changes = `${tracked.count} tracked change${tracked.count === 1 ? "" : "s"}`
   const by = tracked.authors.length ? ` by ${listNames(tracked.authors)}` : ""
-  return `Saved as version ${number}, with ${changes}${by}; ${where === "viewer" ? "review them in the viewer" : "resolve them in Word"} before doc.haus edits it.`
+  return `Saved as version ${number}, with ${changes}${by}; ${where === "viewer"
+    ? `review ${tracked.count === 1 ? "it" : "them"} in the viewer. doc.haus adds its edits beside ${tracked.count === 1 ? "it" : "them"}.`
+    : "resolve them in Word before doc.haus edits it."}`
 }
 
-function listNames(names: string[]) {
+export function listNames(names: string[]) {
   const shown = names.slice(0, 3)
   const rest = names.length - shown.length
   const items = rest > 0 ? [...shown, `${rest} other${rest === 1 ? "" : "s"}`] : shown

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, spyOn, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { realpathSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
@@ -8,9 +8,16 @@ import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { DOMParser } from "@xmldom/xmldom"
 import { strFromU8, unzipSync } from "fflate"
+import * as listLabels from "../../../dochaus/lib/docx-list-labels"
 import type { MarkupAuthor, MarkupComment, MarkupRevision } from "../../../dochaus/lib/docx-markup"
 import { recordRedlineProposal } from "../../../dochaus/lib/redlines"
-import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx } from "../../../dochaus/test/support/counterparty-markup-fixture"
+import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx, numberedMarkupDocx } from "../../../dochaus/test/support/counterparty-markup-fixture"
+import { counterpartyFindings, writeCounterpartyItems } from "../../../dochaus/workflows/lean/counterparty"
+import { readChangePlan } from "../../../dochaus/workflows/lean/change-pipeline"
+import { writeLeanPlan } from "../../../dochaus/workflows/lean/plan"
+import { issueRegister } from "../../../dochaus/workflows/lean/register"
+import { writeLeanText } from "../../../dochaus/workflows/lean/state"
+import { documentMarkupRoutes } from "./document-markup"
 import { docxodus } from "./docxodus"
 import { reconstructText } from "./structure"
 
@@ -28,11 +35,12 @@ type Decision = "accept" | "reject" | "hold"
 type View = { name: string; version: { id: string | null; number: number | null; sha256: string }; current: boolean
   revisions: MarkupRevision[]; comments: MarkupComment[]; authors: MarkupAuthor[] }
 type Row = { id: string; kind: string; family: string; author: string; date: string | null; decision: Decision; outcome: string }
+type Added = { thread: number; id: number }
 type Applied = { name: string; version: { id: string; number: number; origin: string; created: boolean }
-  counts: { accepted: number; rejected: number; held: number; consumed: number }; decisions: Row[]; notice?: string }
+  counts: { accepted: number; rejected: number; held: number; consumed: number }; decisions: Row[]; replies: Added[]; notice?: string }
 type Finding = { rule: string; detail: string; snippet?: string; charStart?: number }
 type History = { versions: Array<{ id: string; number: number; origin: string; actor: string; label: string | null }>
-  events: Array<{ kind: string; version_id: string | null; actor: string; detail: { markup: Row[] } | null }> }
+  events: Array<{ kind: string; version_id: string | null; actor: string; detail: { markup: Row[]; replies?: Added[] } | null }> }
 
 const [AVERY, MORGAN] = COUNTERPARTY_MARKUP.reviewers as [string, string]
 const { dates, plantedDeletion, plantedComment } = COUNTERPARTY_MARKUP
@@ -101,6 +109,11 @@ const decide = async (name: string, decisions: readonly Decision[], headers: Rec
 const content = async (name: string) => new Uint8Array(await (await matterRoute(`/documents/content?${query(name)}`)).arrayBuffer())
 const history = async (name: string) => await (await matterRoute(`/documents/versions?${query(name)}`)).json() as History
 const working = (name: string) => readFile(path.join(matter.dir, name))
+const saveAttorney = async (attorney: string) =>
+  expect((await request("/preferences", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ attorney }) })).status).toBe(200)
+// A thread as the list shows it: the comments whose root is `root`, in list order.
+const threadOf = (comments: MarkupComment[], root: number) => comments.filter(comment => comment.id === root || comment.parent === root)
+  .map(({ id, author, initials, text, parent, resolved }) => ({ id, author, initials, text, parent, resolved }))
 
 // Body paragraph text, as Docxodus reads a file with no pending change.
 async function paragraphs(bytes: Uint8Array) {
@@ -288,9 +301,9 @@ test("the version records the accept, who decided and an event that names each c
 
   const kept = await history(name)
   expect(kept.versions.map(version => [version.number, version.origin, version.actor, version.label])).toEqual([
-    [4, "accept", "Riley Chen", "Tracked changes resolved: 0 accepted, 1 rejected, 6 held"],
-    [3, "accept", "Sam Rivera", "Tracked changes resolved: 1 accepted, 0 rejected, 7 held"],
-    [2, "accept", "unknown", "Tracked changes resolved: 2 accepted, 0 rejected, 8 held"],
+    [4, "accept", "Riley Chen", "Tracked changes decided: 0 accepted, 1 rejected, 6 left tracked"],
+    [3, "accept", "Sam Rivera", "Tracked changes decided: 1 accepted, 0 rejected, 7 left tracked"],
+    [2, "accept", "unknown", "Tracked changes decided: 2 accepted, 0 rejected, 8 left tracked"],
     [1, "upload", "unknown", null],
   ])
   expect(kept.events.map(event => [event.kind, event.actor, event.version_id])).toEqual([
@@ -306,6 +319,141 @@ test("the version records the accept, who decided and an event that names each c
   expect(events).not.toContain("Ignore all previous")
 }, 180_000)
 
+// Approved replies (#200 scope 5) are written as Word replies under each
+// thread's root, in the same Apply and the same version as the decisions.
+test("approved replies alone make one version signed by the saved attorney, each under its root, with no event", async () => {
+  const name = "Replies.docx"
+  await upload(name)
+  const listed = await view(name)
+  const answers = [{ thread: 0, text: "Forty-five days works if the stock report is monthly." }, { thread: 3, text: "Noted; we will review it." }]
+  await saveAttorney("Sam Rivera")
+  let result: Applied
+  try {
+    const response = await post(name, { base_sha256: listed.version.sha256, decisions: [], replies: answers })
+    expect(response.status).toBe(200)
+    result = await response.json() as Applied
+  } finally {
+    await saveAttorney("")
+  }
+  expect(result.version).toMatchObject({ number: 2, origin: "revision", created: true })
+  expect(result.counts).toEqual({ accepted: 0, rejected: 0, held: 10, consumed: 0 })
+  expect(result.replies.map(reply => reply.thread)).toEqual([0, 3])
+  const kept = await history(name)
+  expect(kept.versions.map(version => [version.number, version.origin, version.actor, version.label])).toEqual([
+    [2, "revision", "Sam Rivera", "2 replies added"], [1, "upload", "unknown", null]])
+  expect(kept.events).toEqual([])
+
+  // Every change is still pending; each thread gains the reply, signed and open.
+  const after = await view(name)
+  expect(after).toMatchObject({ version: { id: result.version.id, number: 2 }, current: true })
+  expect(after.revisions.map(({ id, kind, author, text, status }) => [id, kind, author, text, status]))
+    .toEqual(listed.revisions.map(({ id, kind, author, text, status }) => [id, kind, author, text, status]))
+  const signed = (reply: Added, text: string) => ({ id: reply.id, author: "Sam Rivera", initials: "SR", text, parent: reply.thread, resolved: false })
+  expect(threadOf(after.comments, 0)).toEqual([...threadOf(listed.comments, 0), signed(result.replies[0]!, answers[0]!.text)])
+  expect(threadOf(after.comments, 3)).toEqual([...threadOf(listed.comments, 3), signed(result.replies[1]!, answers[1]!.text)])
+  expect(threadOf(after.comments, 2)).toEqual(threadOf(listed.comments, 2))
+}, 120_000)
+
+test("decisions and replies make one accept version; the event names the replies by id, and a held change stays beside its reply", async () => {
+  const name = "Answered.docx"
+  await upload(name)
+  const listed = await view(name)
+  // Morgan's "the first " accepted and Waiver clause rejected; Avery's "forty-five", under thread 0, held.
+  const decisions = listed.revisions.map((revision, at) => ({ id: revision.id, decision: (at === 2 ? "accept" : at === 9 ? "reject" : "hold") as Decision }))
+  const text = "We can live with forty-five days; confirm the stock report."
+  const response = await post(name, { base_sha256: listed.version.sha256, decisions, replies: [{ thread: 0, text }] }, { "x-dochaus-actor": "Riley Chen" })
+  expect(response.status).toBe(200)
+  const result = await response.json() as Applied
+  expect(result.version).toMatchObject({ number: 2, origin: "accept", created: true })
+  expect(result.counts).toEqual({ accepted: 1, rejected: 1, held: 8, consumed: 0 })
+  expect(result.replies).toEqual([{ thread: 0, id: expect.any(Number) }])
+
+  const kept = await history(name)
+  expect(kept.versions.map(version => [version.number, version.origin, version.actor, version.label])).toEqual([
+    [2, "accept", "Riley Chen", "Tracked changes decided: 1 accepted, 1 rejected, 8 left tracked; 1 reply added"], [1, "upload", "unknown", null]])
+  expect(kept.events.map(event => [event.kind, event.actor, event.version_id])).toEqual([["accept", "Riley Chen", kept.versions[0]!.id]])
+  expect(kept.events[0]!.detail!.replies).toEqual(result.replies)
+  expect(kept.events[0]!.detail!.markup.map(row => row.decision)).toEqual(decisions.map(row => row.decision))
+  expect(JSON.stringify(kept.events)).not.toContain(text)
+
+  const after = await view(name)
+  const commented = listed.revisions[1]!
+  expect(after.revisions.find(revision => revision.id === commented.id)).toMatchObject({ kind: "insert", author: AVERY, date: dates[AVERY], text: commented.text, status: "supported" })
+  expect(after.revisions).toHaveLength(8)
+  expect(threadOf(after.comments, 0)).toEqual([...threadOf(listed.comments, 0),
+    { id: result.replies[0]!.id, author: "Riley Chen", initials: "RC", text, parent: 0, resolved: false }])
+  expect((await projections(await content(name))).accepted.slice(0, 2)).toEqual([SUPPLY("forty-five"), PRICE_FIRST])
+}, 120_000)
+
+test("a reply to a resolved thread, to a reply or to no comment, an unsigned or empty reply, a stale base and an empty Apply write nothing", async () => {
+  const name = "Reply refusals.docx"
+  await upload(name)
+  const listed = await view(name)
+  const before = await working(name)
+  const refused = async (response: Response, status: number, code: string) => {
+    expect(response.status).toBe(status)
+    expect((await response.json() as { code?: string }).code).toBe(code)
+    expect(await working(name)).toEqual(before)
+    const kept = await history(name)
+    expect(kept.versions.map(version => version.origin)).toEqual(["upload"])
+    expect(kept.events).toEqual([])
+  }
+  const holds = listed.revisions.map(revision => ({ id: revision.id, decision: "hold" }))
+  const reply = (thread: number, text = "Agreed.") => ({ base_sha256: listed.version.sha256, decisions: holds, replies: [{ thread, text }] })
+  const signed = { "x-dochaus-actor": "Riley Chen" }
+  // No name sent and none saved: a Word comment is never signed "unknown".
+  await refused(await post(name, reply(0)), 422, "author_required")
+  await refused(await post(name, reply(2), signed), 409, "thread_resolved")
+  await refused(await post(name, reply(1), signed), 409, "thread_not_root")
+  await refused(await post(name, reply(99), signed), 409, "thread_not_found")
+  await refused(await post(name, reply(0, " \u200B\n "), signed), 422, "empty_reply")
+  await refused(await post(name, { ...reply(0), base_sha256: sha256(new TextEncoder().encode("another version")) }, signed), 409, "base_changed")
+  await refused(await post(name, { ...reply(0), replies: [] }, signed), 422, "nothing_decided")
+  expect((await post(name, { ...reply(0), replies: [{ thread: 0, text: "One." }, { thread: 0, text: "Two." }] }, signed)).status).toBe(400)
+  expect((await post(name, reply(0, "x".repeat(4_001)), signed)).status).toBe(400)
+}, 120_000)
+
+test("a reply to a comment the same Apply takes out of the document is refused on its thread; applied without it, the comment is detached and takes no reply", async () => {
+  // Morgan comments on the Waiver clause Morgan inserted; the comment's reference is tracked with the insertion.
+  const signed = { "x-dochaus-actor": "Riley Chen" }
+  const answer = { thread: 5, text: "Our template uses the same waiver wording." }
+  const waiver = (listed: View, decision: Decision) => listed.revisions.map(revision => ({ id: revision.id, decision: revision.text.startsWith(WAIVER) ? decision : "hold" }))
+  // Accepted, the clause keeps the comment's place and the reply is saved under it.
+  const kept = "Waiver kept.docx"
+  await upload(kept, counterpartyMarkupDocx({ waiver: true }))
+  const keptList = await view(kept)
+  const saved = await post(kept, { base_sha256: keptList.version.sha256, decisions: waiver(keptList, "accept"), replies: [answer] }, signed)
+  expect(saved.status).toBe(200)
+  expect((await saved.json() as Applied).replies).toEqual([{ thread: 5, id: expect.any(Number) }])
+
+  // Rejected, the clause goes with the reference: the Apply is refused on that thread and writes nothing.
+  const name = "Waiver rejected.docx"
+  await upload(name, counterpartyMarkupDocx({ waiver: true }))
+  const listed = await view(name)
+  expect(listed.comments.find(comment => comment.id === 5)).toMatchObject({ author: MORGAN, quote: WAIVER, resolved: false })
+  expect(listed.comments.filter(comment => comment.detached)).toEqual([])
+  const before = await working(name)
+  const refused = await post(name, { base_sha256: listed.version.sha256, decisions: waiver(listed, "reject"), replies: [answer] }, signed)
+  expect(refused.status).toBe(422)
+  expect(await refused.json()).toEqual({
+    error: "Your decision removes the text this comment is on, so this reply can't be saved. Keep the change or drop the reply.", code: "anchor_removed", thread: 5 })
+  expect(await working(name)).toEqual(before)
+  expect((await history(name)).versions.map(version => version.origin)).toEqual(["upload"])
+
+  // Without the reply the rejection applies, and the comment stays in the file with no place in its text.
+  expect((await post(name, { base_sha256: listed.version.sha256, decisions: waiver(listed, "reject") }, signed)).status).toBe(200)
+  const after = await view(name)
+  expect(after.comments.filter(comment => comment.detached).map(comment => comment.id)).toEqual([5])
+  // It takes no reply, applied or drafted.
+  const late = await post(name, { base_sha256: after.version.sha256, decisions: after.revisions.map(revision => ({ id: revision.id, decision: "hold" })), replies: [answer] }, signed)
+  expect(late.status).toBe(409)
+  expect(await late.json()).toMatchObject({ code: "thread_detached", thread: 5 })
+  const drafted = await matterRoute(`/documents/markup/replies/draft?${query(name)}`,
+    { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ base_sha256: after.version.sha256, thread: 5 }) })
+  expect(drafted.status).toBe(409)
+  expect((await drafted.json() as { code?: string }).code).toBe("thread_detached")
+}, 120_000)
+
 test("a deletion inside a rejected insertion is consumed whichever order the decisions come in, and so is a held one", async () => {
   const nested = (inner: Decision) => (_: MarkupRevision, at: number) => at === 6 ? "reject" : at === 7 ? inner : "hold"
   const outcomes = new Map<string, Row[]>()
@@ -318,7 +466,7 @@ test("a deletion inside a rejected insertion is consumed whichever order the dec
     const result = await response.json() as Applied
     expect(result.counts).toEqual({ accepted: 0, rejected: 1, held: 8, consumed: 1 })
     expect(result.decisions.slice(6, 8).map(row => [row.author, row.decision, row.outcome])).toEqual([[AVERY, "reject", "applied"], [MORGAN, inner, "consumed"]])
-    expect((await history(name)).versions[0]!.label).toBe("Tracked changes resolved: 0 accepted, 1 rejected, 8 held, 1 resolved with another change")
+    expect((await history(name)).versions[0]!.label).toBe("Tracked changes decided: 0 accepted, 1 rejected, 8 left tracked, 1 resolved with another change")
     expect((await projections(await content(name))).accepted[5]).toBe(AUDIT)
     outcomes.set(name, result.decisions)
   }
@@ -329,7 +477,7 @@ test("a deletion inside a rejected insertion is consumed whichever order the dec
 test("the injection report names the planted deletion and the planted comment", async () => {
   const uploaded = await upload("Planted.docx")
   expect(uploaded.tracked_changes).toEqual({ count: 10, authors: [AVERY, MORGAN] })
-  expect(uploaded.notice).toBe(`Saved as version 1, with 10 tracked changes by ${AVERY} and ${MORGAN}; review them in the viewer before doc.haus edits it.`)
+  expect(uploaded.notice).toBe(`Saved as version 1, with 10 tracked changes by ${AVERY} and ${MORGAN}; review them in the viewer. doc.haus adds its edits beside them.`)
   const text = await (await matterRoute(`/documents/text?${query("Planted.docx")}`)).json() as { injection: { findings: Finding[] } }
   expect(text.injection.findings).toEqual(uploaded.injection!.findings)
   // The deleted instruction is in the indexed text (#267), with its offsets.
@@ -362,6 +510,136 @@ test("the list refuses anything but a registered Word source, and reads a kept v
   expect(first.status).toBe(200)
   expect(await first.json()).toMatchObject({ version: listed.version, current: false, revisions: listed.revisions })
   expect((await markup(name, { version: crypto.randomUUID() })).status).toBe(404)
+}, 120_000)
+
+test("each change and thread the drafting run answered keeps its delivered answer while it is listed, after a partial Apply too", async () => {
+  const name = "Run answers.docx"
+  await upload(name)
+  const listed = await view(name)
+  expect(listed).not.toHaveProperty("responses")
+  // A run revising the uploaded bytes, with its change plan suggesting the
+  // first item and rejecting the rest. Its findings quote the source as the
+  // run read it: the inline labels of their changes and the line that counts
+  // them, which a later Apply changes.
+  writeLeanPlan(matter.dir, [{ title: "Supply Agreement", purpose: "Respond to the other side's markup.", parts: [{ heading: "Terms", scope: "The supply terms." }], mode: "revise", template: name }])
+  await writeCounterpartyItems(matter.dir, "d1", { name, bytes: await content(name) })
+  const [first, ...rest] = counterpartyFindings(matter.dir, "d1")
+  const read = indexedText(name)
+  const supply = SUPPLY(`[Tracked deletion by ${AVERY}: thirty][Tracked insertion by ${AVERY}: forty-five]`)
+  const count = read.match(/This Word file contains \d+ pending tracked changes by [^.\]]+, marked inline below\./)?.[0]
+  expect(read).toContain(supply)
+  expect(count).toBeDefined()
+  const finding = (disposition: string, detail: string, reason: string, resolves: string[], quote: string) =>
+    ({ disposition, kind: "suggestion", detail, reason, documents: ["d1"], sources: [{ source_id: name, quote }], limitations: [], resolves })
+  writeLeanText(matter.dir, "d1/change-plan.json", JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [], findings: [
+    finding("recommendation", "Take the longer delivery period.", "Forty-five days matches the Supplier's lead times.", [first!.id], supply),
+    finding("rejected", "Keep the draft's positions.", "Each is answered as drafted.", rest.map(row => row.id), count!),
+  ] }))
+  try {
+    // The run's final gate delivers its register, as the runner writes it.
+    expect(readChangePlan(matter.dir, "d1")).toBeDefined()
+    writeLeanText(matter.dir, "register.json", `${JSON.stringify(issueRegister(matter.dir), null, 2)}\n`)
+    const answered = await view(name) as View & { responses?: Record<string, { disposition: string; reason?: string; from_version?: number | null }> }
+    const cards = new Set([...answered.revisions.map(({ id }) => id), ...answered.comments.map(({ id }) => String(id))])
+    const ids = [first!, ...rest].map(row => String(row.counterparty!.ref.id))
+    expect(ids.length).toBeGreaterThan(2)
+    expect(ids.every(id => cards.has(id))).toBe(true)
+    expect(Object.keys(answered.responses ?? {}).toSorted()).toEqual(ids.toSorted())
+    const from_version = listed.version.number
+    expect(from_version).toBe(1)
+    expect(answered.responses![ids[0]!]).toEqual({ disposition: "recommendation", reason: "Forty-five days matches the Supplier's lead times.", from_version })
+    expect(ids.slice(1).every(id => answered.responses![id]!.disposition === "rejected")).toBe(true)
+    // A partial Apply, accepting the first answered change, rejecting
+    // Morgan's insertion and holding the rest, makes bytes the run never read:
+    // the plan's quotes are no longer in them. The changes and threads it
+    // leaves keep their ids and the answers the run delivered.
+    const rejected = String(rest.find(row => row.counterparty!.change === "insert" && row.counterparty!.text === "the first ")!.counterparty!.ref.id)
+    const decided = new Set([ids[0]!, rejected])
+    expect((await decide(name, listed.revisions.map(({ id }) => id === ids[0] ? "accept" : id === rejected ? "reject" : "hold"))).status).toBe(200)
+    expect(readChangePlan(matter.dir, "d1")).toBeUndefined()
+    const after = await view(name) as View & { responses?: Record<string, { disposition: string; reason?: string; from_version?: number }> }
+    expect(after.version.number).toBe(2)
+    expect(after.revisions.map(({ id }) => id)).toEqual(listed.revisions.map(({ id }) => id).filter(id => !decided.has(id)))
+    expect(after.comments.map(({ id }) => id)).toEqual(listed.comments.map(({ id }) => id))
+    const left = ids.filter(id => !decided.has(id))
+    expect(Object.keys(after.responses ?? {}).toSorted()).toEqual(left.toSorted())
+    for (const id of left) expect(after.responses![id]).toEqual({ disposition: "rejected", reason: "Each is answered as drafted.", from_version: from_version! })
+    // The kept version the run read still has every answer.
+    const kept = await (await markup(name, { version: listed.version.id! })).json() as { responses?: object }
+    expect(Object.keys(kept.responses ?? {}).toSorted()).toEqual(ids.toSorted())
+    // The answers are the delivered register's: with none delivered, the
+    // run's other files give none.
+    await rm(path.join(matter.dir, ".dochaus", "lean", "register.json"))
+    expect(await (await markup(name, { version: listed.version.id! })).json()).not.toHaveProperty("responses")
+  } finally {
+    await rm(path.join(matter.dir, ".dochaus", "lean"), { recursive: true, force: true })
+  }
+}, 120_000)
+
+test("a run's reason names the run's documents by their titles, never by their internal ids", async () => {
+  const name = "Run reasons.docx"
+  await upload(name)
+  writeLeanPlan(matter.dir, [
+    { title: "Supply Agreement", purpose: "Respond to the other side's markup.", parts: [{ heading: "Terms", scope: "The supply terms." }], mode: "revise", template: name },
+    { title: "Side Letter", purpose: "Record the agreed lead times.", parts: [{ heading: "Lead times", scope: "The agreed lead times." }] },
+  ])
+  await writeCounterpartyItems(matter.dir, "d1", { name, bytes: await content(name) })
+  const [first] = counterpartyFindings(matter.dir, "d1")
+  // Model text naming both planned documents by id, beside words that only
+  // contain one or differ in case.
+  writeLeanText(matter.dir, "d1/change-plan.json", JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [], findings: [{
+    disposition: "rejected", kind: "suggestion", detail: "Keep the delivery period.", documents: ["d1", "d2"], sources: [], limitations: ["The drafter's judgment."], resolves: [first!.id],
+    reason: "d1 already responds on the merits, and d2's lead times cover it (d10, ad1 and D1 are no document of this run).",
+  }] }))
+  writeLeanText(matter.dir, "register.json", `${JSON.stringify(issueRegister(matter.dir), null, 2)}\n`)
+  try {
+    const { responses } = await view(name) as View & { responses?: Record<string, { disposition: string; reason?: string }> }
+    expect(responses?.[String(first!.counterparty!.ref.id)]).toMatchObject({ disposition: "rejected",
+      reason: "“Supply Agreement” already responds on the merits, and “Side Letter”'s lead times cover it (d10, ad1 and D1 are no document of this run)." })
+  } finally {
+    await rm(path.join(matter.dir, ".dochaus", "lean"), { recursive: true, force: true })
+  }
+}, 120_000)
+
+// After Apply, the cross-references and defined terms (#198) of the version it
+// made, as a notice in the response, on the numbered services agreement
+// (numberedMarkupDocx): Avery deletes clause 7, which clause 5 cites, and
+// clause 2 already cites a clause 12 it never had.
+type Consistency = { status: "checked"; findings: { detail: string }[] } | { status: "not_checked" }
+/** Uploads the numbered agreement as `name` and applies `decision` to each of its listed changes. */
+async function decideNumbered(name: string, decision: Decision) {
+  await upload(name, numberedMarkupDocx())
+  const response = await decide(name, (await view(name)).revisions.map(() => decision))
+  expect(response.status).toBe(200)
+  return (await response.json() as Applied & { consistency: Consistency }).consistency
+}
+
+test("after Apply, the reference an accepted deletion broke is reported; with the deletion rejected, nothing is", async () => {
+  // Under Word's numbering, clause 8 becomes clause 7, and clause 5 now cites it.
+  expect(await decideNumbered("Renumbered.docx", "accept")).toEqual({ status: "checked", findings: [{ detail: expect.stringMatching(/^Clause 5 refers to clause 7\b.*which was clause 8 before/) }] })
+  // The same file with the deletion rejected: clause 2's reference to clause 12
+  // was there before the decisions, so it is not one to report.
+  expect(await decideNumbered("Unchanged.docx", "reject")).toEqual({ status: "checked", findings: [] })
+}, 120_000)
+
+test("a check that cannot read the clause numbers is reported as not checked, never as clean", async () => {
+  const name = "Unnumbered.docx"
+  await upload(name, numberedMarkupDocx())
+  const listed = await view(name)
+  // The route in this process over the service's matter, so the labeller can
+  // fail; the stub writer keeps the file as it was.
+  const routes = documentMarkupRoutes({ directory: () => matter.dir, locks: (_, file) => [path.basename(file)], write: async (_, written) => ({ name: written }) })
+  const unread = spyOn(listLabels, "writeListLabels").mockImplementation(async (buffer, unread) => { unread?.(); return buffer })
+  try {
+    const response = await routes.request(`/${matter.id}/documents/markup/decisions?${query(name)}`, {
+      method: "POST", headers: { "content-type": "application/json", "x-dochaus-actor": "Riley Chen" },
+      body: JSON.stringify({ base_sha256: listed.version.sha256, decisions: listed.revisions.map(({ id }) => ({ id, decision: "accept" })) }) })
+    expect(response.status).toBe(200)
+    expect((await response.json() as { consistency: Consistency }).consistency).toEqual({ status: "not_checked" })
+    expect(unread).toHaveBeenCalled()
+  } finally {
+    unread.mockRestore()
+  }
 }, 120_000)
 
 // Live check against the installed LibreOffice, skipped where it is absent: the

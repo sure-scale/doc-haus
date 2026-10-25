@@ -406,7 +406,10 @@ export default function ChangeTimeline({ root, html, markup, revisions }: {
       // The pane: the scrolling boxes outside the page (a table's own scroll
       // box would cramp the card), within the window.
       const pane = clips.filter((clip) => !root.current?.contains(clip)).map((clip) => clip.getBoundingClientRect())
-      placeCard(element, list.current, at, Math.max(0, ...pane.map((box) => box.top)), Math.min(innerHeight, ...pane.map((box) => box.bottom)))
+      // On a narrow screen the Tracked changes and Versions panels sit above
+      // the page in the same scroller; the card stays below them.
+      const column = root.current?.closest(".viewer-doc")?.getBoundingClientRect().top ?? 0
+      placeCard(element, list.current, at, Math.max(0, column, ...pane.map((box) => box.top)), Math.min(innerHeight, ...pane.map((box) => box.bottom)))
     }
     place(false)
     if (focusList.current) {
