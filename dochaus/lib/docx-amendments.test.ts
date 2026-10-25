@@ -504,6 +504,52 @@ describe("layered edits on a counterparty markup", () => {
     } finally { [a, b, c].forEach(opened => opened.session.close()) }
   })
 
+  // One requested change is one tracked change of whole words: an inserted
+  // sentence is not written as the next word deleted and inserted again.
+  test("a tracked insertion, deletion or one-word change is written as that change alone, beside theirs", async () => {
+    const author = "Jordan Example"
+    const tracked = { ...layer, revisionAuthor: author }
+    const theirs = await revisions(source)
+    for (const [before_quote, replacement, expected, text] of [
+      ["This Agreement", "Each party submits to the courts of the Province. This Agreement", [["insert", "Each party submits to the courts of the Province. "]],
+        "9. Governing law. Each party submits to the courts of the Province. This Agreement is governed by the law of the Province."],
+      // A new sentence that opens with the word the next one does is still inserted before it.
+      ["This Agreement is", "This clause binds the parties. This Agreement is", [["insert", "This clause binds the parties. "]],
+        "9. Governing law. This clause binds the parties. This Agreement is governed by the law of the Province."],
+      ["governed by the law of the Province.", "governed by the law.", [["delete", " of the Province"]],
+        "9. Governing law. This Agreement is governed by the law."],
+      ["the law of the Province", "the laws of the Province", [["delete", "law"], ["insert", "laws"]],
+        "9. Governing law. This Agreement is governed by the laws of the Province."],
+    ] as const) {
+      const packet = await createDocxLocalization(source, [{ id: "law", before_quote, replacement }], {}, layer)
+      const clause = packet.candidates.find(row => row.paragraph.text.startsWith("9."))!
+      const output = await applyDocxLocalization(source, packet, [{ amendment_id: "law", target_handle: clause.target_handle }], tracked)
+      expect(output.report.package_structure_verified).toBe(true)
+      const after = await revisions(output.bytes)
+      expect(after.filter(row => row.author !== author)).toEqual(theirs)
+      expect(after.filter(row => row.author === author).map(row => [row.type, row.text])).toEqual(expected.map(row => [...row]))
+      expect((await createDocxRevision(output.bytes, layer)).paragraphs[9]!.text).toBe(text)
+    }
+  })
+
+  test("a later tracked insertion stands beside doc.haus's own inserted sentence, never inside it", async () => {
+    const author = "Jordan Example"
+    const own = { ...layer, ownAuthors: [author], revisionAuthor: author }
+    const write = async (bytes: Uint8Array, before_quote: string, replacement: string) => {
+      const packet = await createDocxLocalization(bytes, [{ id: "law", before_quote, replacement }], {}, own)
+      const clause = packet.candidates.find(row => row.paragraph.text.startsWith("9."))!
+      return applyDocxLocalization(bytes, packet, [{ amendment_id: "law", target_handle: clause.target_handle }], own)
+    }
+    const first = (await write(source, "This Agreement", "Each party submits to the courts. This Agreement")).bytes
+    await expect(write(first, "submits to the courts", "submits irrevocably to the courts")).rejects.toThrow("docx_own_revision:law")
+    // Written as its own w:ins just after the first, which Docxodus lists with it.
+    const beside = await write(first, "This Agreement", "Both parties agree. This Agreement")
+    expect((await revisions(beside.bytes)).filter(row => row.author === author).map(row => [row.type, row.text]))
+      .toEqual([["insert", "Each party submits to the courts. Both parties agree. "]])
+    expect((await createDocxRevision(beside.bytes, layer)).paragraphs[9]!.text)
+      .toBe("9. Governing law. Each party submits to the courts. Both parties agree. This Agreement is governed by the law of the Province.")
+  })
+
   test("a paragraph in a table row they inserted is pending, though Docxodus lists only the row", async () => {
     const parts = unzipSync(revisionTablesOriginalDocx())
     const xml = strFromU8(parts["word/document.xml"]!)

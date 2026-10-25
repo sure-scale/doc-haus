@@ -914,7 +914,7 @@ test("on an uploaded markup with Word paragraph ids, each Accept keeps doc.haus'
     expect(exported.status).toBe(200)
     const redline = new Uint8Array(await exported.arrayBuffer())
     await kept(redline)
-    expect(await ours(redline)).toEqual([["delete","consent"],["insert","prior written consent"],["delete","Province"],["insert","State"]])
+    expect(await ours(redline)).toEqual([["insert","prior written "],["delete","Province"],["insert","State"]])
     expect(readDocxComments(redline).map((row) => row.text)).toEqual([...COUNTERPARTY_MARKUP.comments.map((row) => row.text),"Consent must be written."])
     expect(new Set(commentIds(redline)).size).toBe(commentIds(redline).length)
     expect(await matter.accept(second)).toBe(200)
@@ -922,10 +922,10 @@ test("on an uploaded markup with Word paragraph ids, each Accept keeps doc.haus'
     expect(await body(accepted)).toEqual((await body(markup)).map((text,ordinal) => ordinal === 9 ? "9. Governing law. This Agreement is governed by the law of the State."
       : ordinal === 7 ? " without prior written consent." : text))
     await kept(accepted)
-    expect(await ours(accepted)).toEqual([["delete","consent"],["insert","prior written consent"],["delete","Province"],["insert","State"]])
+    expect(await ours(accepted)).toEqual([["insert","prior written "],["delete","Province"],["insert","State"]])
     // Each accept numbers its revisions after every mark already in the package.
     expect(new Set(revisionMarkIds(accepted)).size).toBe(revisionMarkIds(accepted).length)
-    expect(revisionMarkIds(accepted)).toHaveLength(revisionMarkIds(markup).length+4)
+    expect(revisionMarkIds(accepted)).toHaveLength(revisionMarkIds(markup).length+3)
     expect(commentIds(accepted)).toEqual(commentIds(markup))
     const listed = (await (await ingest.request(`${matter.route}/documents/markup?name=working.docx`)).json() as {revisions:Array<{author:string}>}).revisions
     expect(listed.filter((row) => row.author !== "doc.haus")).toHaveLength(10)
@@ -957,7 +957,7 @@ test("on an uploaded markup with Word paragraph ids, each Accept keeps doc.haus'
     const twice = await Bun.file(matter.file).bytes()
     expect((await body(twice))[9]).toBe("9. Governing law. This Agreement is governed by the laws of the State.")
     await kept(twice)
-    expect(await ours(twice)).toEqual([["delete","consent"],["insert","prior written consent"],["delete","law"],["insert","laws"],["delete","Province"],["insert","State"]])
+    expect(await ours(twice)).toEqual([["insert","prior written "],["delete","law"],["insert","laws"],["delete","Province"],["insert","State"]])
     expect((await listedRevisions(twice)).filter((row) => row.author === "doc.haus" && /^(Province|State)$/.test(row.text)))
       .toEqual((await listedRevisions(saved)).filter((row) => row.author === "doc.haus" && /^(Province|State)$/.test(row.text)))
     expect(new Set(revisionMarkIds(twice)).size).toBe(revisionMarkIds(twice).length)
@@ -1045,7 +1045,7 @@ test("on an uploaded markup, a proposal whose paragraph gains their formatting c
     const exported = await ingest.request(`${matter.route}/documents/redlined?name=working.docx`)
     expect(exported.status).toBe(200)
     const ours = (await listedRevisions(new Uint8Array(await exported.arrayBuffer()))).filter((row) => row.author === "doc.haus").map((row) => [row.type,row.text])
-    expect(ours).toEqual([["delete","consent"],["insert","prior written consent"]])
+    expect(ours).toEqual([["insert","prior written "]])
     expect(await matter.accept(consent)).toBe(200)
     expect((await createDocxRevision(await Bun.file(matter.file).bytes(),{pendingRevisions:"layer"})).paragraphs[7]!.text).toBe(" without prior written consent.")
   } finally {
