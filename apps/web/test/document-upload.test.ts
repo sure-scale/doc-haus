@@ -48,7 +48,7 @@ test("an identical upload says which version it matches and that nothing was sav
 })
 
 test("a save kept with tracked changes keeps its notice in the row and the toast", () => {
-  const notice = "Saved as version 3, with 2 tracked changes by Pat Reviewer; resolve them in Word before doc.haus edits it."
+  const notice = "Saved as version 3, with 2 tracked changes by Pat Reviewer; review them in the viewer before doc.haus edits it."
   const result: IngestResult = { name: "Agreement.docx", docPath: "/m/Agreement.docx", sections: 4, chunks: 4, injection: null, version: { id: "v-3", number: 3, created: true }, notice }
   expect(uploadedToast(result)).toEqual({ kind: "warning", message: `Agreement.docx is ready (4 sections). ${notice}` })
   expect(row({ key: 6, file, status: "ready", notice })).toMatchObject({ status: notice, buttons: ["Dismiss"] })

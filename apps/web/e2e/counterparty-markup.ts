@@ -42,9 +42,13 @@ const hashes: Record<string, string> = {}
 let deliverableMarkupStatus: number | undefined
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
 
-// The service never needs the engine here; anything that reaches it is recorded.
+// The service needs the engine only for its model list (readiness); anything
+// else that reaches it is recorded.
 const engine = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request) => {
-  unexpected.push(`engine fixture ${request.method} ${new URL(request.url).pathname}`)
+  const url = new URL(request.url)
+  if (request.method === "GET" && url.pathname === "/api/model")
+    return Response.json({ data: ["primary", "fast"].map(id => ({ providerID: "fixture", id, name: id, enabled: true })) })
+  unexpected.push(`engine fixture ${request.method} ${url.pathname}`)
   return new Response(null, { status: 404 })
 } })
 
@@ -284,7 +288,8 @@ try {
     await expect(changes.filter({ hasText: "on ten Business Days' notice" })).toHaveCount(1)
     await expect(panel.getByText(FLAG, { exact: true })).toHaveCount(2)
     await expect(panel.getByText(`Recorded as ${LAWYER}`, { exact: true })).toBeVisible()
-    await expect(render).toContainText("within forty-five days")
+    // The viewer renders comment reference marks ("[0][1]") inline after the anchored word.
+    await expect(render).toContainText(/within\s+forty-five[^a-z]*days/)
     await expect(render).not.toContainText("thirty")
     await expect(render).not.toContainText("the first")
     hashes.applied = hash(await Bun.file(file.path).bytes())
