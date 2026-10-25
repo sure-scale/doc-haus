@@ -7,6 +7,7 @@ import { addCommentReplies, CommentReplyError, replyInitials, type CommentReply 
 import { commentReferences, counterpartyItems, readDocxMarkup, type CounterpartyItem, type DocxMarkup } from "../../../dochaus/lib/docx-markup"
 import type { RegisterEntry } from "../../../dochaus/workflows/lean/register"
 import { readLeanJson } from "../../../dochaus/workflows/lean/state"
+import { readLeanPlan } from "../../../dochaus/workflows/lean/plan"
 import { markupConsistency } from "../../../dochaus/workflows/lean/version-consistency"
 import { getDocumentRole, listPendingRedlines, openDb } from "./db"
 import { findVersionBySha, oneLine, readDocumentVersions, readVersion, readVersionBytes, sha256Hex, type VersionWrite } from "./document-versions"
@@ -219,7 +220,10 @@ async function readMarkup(name: string, bytes: Uint8Array): Promise<DocxMarkup |
  * run read one version; an Apply keeps the ids of the changes and comments it
  * leaves, so an item keeps its answer while it is listed with the same kind,
  * id, change, author and text. `from_version` is the number of the version
- * the run read. Undefined when no register was delivered or it answered none. */
+ * the run read. A reason is model text, which can name the run's documents by
+ * their internal ids ("d1 already responds…"); each id the run's plan lists,
+ * as a whole word, reads as that document's title in quotes. Undefined when
+ * no register was delivered or it answered none. */
 function runResponses(directory: string, name: string, markup: DocxMarkup) {
   const register = readLeanJson(directory, "register.json") as { entries?: RegisterEntry[] } | undefined
   const entries = (Array.isArray(register?.entries) ? register.entries : []).filter(({ counterparty }) => counterparty?.source?.name === name)
@@ -233,9 +237,13 @@ function runResponses(directory: string, name: string, markup: DocxMarkup) {
   }
   const answered = entries.filter(({ counterparty }) => listed.has(same(counterparty!)))
   if (!answered.length) return
+  const titles = new Map<string, string>((readLeanPlan(directory)?.documents ?? []).filter(({ title }) => title.trim()).map(({ id, title }) => [id, title.trim()]))
+  // A valid plan's ids are d1, d2, …: word characters only.
+  const ids = titles.size ? new RegExp(`\\b(?:${[...titles.keys()].join("|")})\\b`, "g") : undefined
+  const named = (text: string) => ids ? text.replace(ids, (id) => `“${titles.get(id)}”`) : text
   return Object.fromEntries(answered.map(({ counterparty, disposition, reason, amendments, question }) => {
     const from = read(counterparty!.source.sha256)
-    return [counterparty!.ref.id, { disposition, ...(reason ? { reason } : {}), ...(amendments.length ? { amendments } : {}), ...(question ? { question } : {}),
+    return [counterparty!.ref.id, { disposition, ...(reason ? { reason: named(reason) } : {}), ...(amendments.length ? { amendments } : {}), ...(question ? { question } : {}),
       ...(from === undefined ? {} : { from_version: from }) }]
   }))
 }

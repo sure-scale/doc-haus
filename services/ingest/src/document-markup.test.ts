@@ -576,6 +576,31 @@ test("each change and thread the drafting run answered keeps its delivered answe
   }
 }, 120_000)
 
+test("a run's reason names the run's documents by their titles, never by their internal ids", async () => {
+  const name = "Run reasons.docx"
+  await upload(name)
+  writeLeanPlan(matter.dir, [
+    { title: "Supply Agreement", purpose: "Respond to the other side's markup.", parts: [{ heading: "Terms", scope: "The supply terms." }], mode: "revise", template: name },
+    { title: "Side Letter", purpose: "Record the agreed lead times.", parts: [{ heading: "Lead times", scope: "The agreed lead times." }] },
+  ])
+  await writeCounterpartyItems(matter.dir, "d1", { name, bytes: await content(name) })
+  const [first] = counterpartyFindings(matter.dir, "d1")
+  // Model text naming both planned documents by id, beside words that only
+  // contain one or differ in case.
+  writeLeanText(matter.dir, "d1/change-plan.json", JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [], findings: [{
+    disposition: "rejected", kind: "suggestion", detail: "Keep the delivery period.", documents: ["d1", "d2"], sources: [], limitations: ["The drafter's judgment."], resolves: [first!.id],
+    reason: "d1 already responds on the merits, and d2's lead times cover it (d10, ad1 and D1 are no document of this run).",
+  }] }))
+  writeLeanText(matter.dir, "register.json", `${JSON.stringify(issueRegister(matter.dir), null, 2)}\n`)
+  try {
+    const { responses } = await view(name) as View & { responses?: Record<string, { disposition: string; reason?: string }> }
+    expect(responses?.[String(first!.counterparty!.ref.id)]).toMatchObject({ disposition: "rejected",
+      reason: "“Supply Agreement” already responds on the merits, and “Side Letter”'s lead times cover it (d10, ad1 and D1 are no document of this run)." })
+  } finally {
+    await rm(path.join(matter.dir, ".dochaus", "lean"), { recursive: true, force: true })
+  }
+}, 120_000)
+
 // After Apply, the cross-references and defined terms (#198) of the version it
 // made, as a notice in the response, on the numbered services agreement
 // (numberedMarkupDocx): Avery deletes clause 7, which clause 5 cites, and
