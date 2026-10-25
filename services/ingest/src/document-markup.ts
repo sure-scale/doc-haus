@@ -9,6 +9,7 @@ import { getDocumentRole, listPendingRedlines, openDb } from "./db"
 import { findVersionBySha, oneLine, readDocumentVersions, readVersion, readVersionBytes, sha256Hex, type VersionWrite } from "./document-versions"
 import { matterDocumentName, SourceDocumentConflictError } from "./ingest"
 import { applyMarkupDecisions, MarkupDecisionError, type MarkupDecision } from "./markup-decisions"
+import { markupReplyRoutes } from "./markup-replies"
 import { readDraftingPreferences } from "./preferences"
 import { readDocumentTarget } from "./registered-document"
 
@@ -153,6 +154,8 @@ export function documentMarkupRoutes(options: Options) {
     if (result instanceof Response) return result
     return c.json({ ...result.written, counts: result.counts, decisions: result.rows, replies: result.added })
   })
+
+  app.route("/", markupReplyRoutes(options))
 
   return app
 }

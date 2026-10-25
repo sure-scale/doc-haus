@@ -12,6 +12,7 @@ import { getDocumentRole, getMeta, getPreparedChanges, openDb, setMeta, setPrepa
 import { trackedChanges } from "./document-versions"
 import { draftingAttribution } from "../../../dochaus/lib/docx-attribution"
 import { retypedListLabel, withoutListLabel } from "../../../dochaus/lib/list-label"
+import { EngineGenerationError, generate } from "./engine-generate"
 
 export class DocumentAmendmentConflictError extends Error {}
 
@@ -53,7 +54,7 @@ export function documentAmendmentRoutes(options: { directory: (id: string) => st
     } catch(error) {
       console.warn("[document-amendments] preparation failed", diagnosticErrorMetadata(error))
       const reference = error && typeof error === "object" ? preparationReferences.get(error) : undefined
-      return c.json({error:error instanceof DocumentAmendmentConflictError ? error.message :
+      return c.json({error:error instanceof DocumentAmendmentConflictError || error instanceof EngineGenerationError ? error.message :
         error instanceof DocxTrackedRevisionsError ? "This Word file contains tracked changes. Accept or reject them in Word before preparing changes." : "Preparation could not be confirmed.",
         ...(reference ? {diagnostic_ref:reference,diagnostic_hint:"Inspect the latest private preparation diagnostic in this matter before trying again."} : {})},409)
     }
@@ -265,16 +266,6 @@ function object(value:unknown):Record<string,unknown> {return value && typeof va
 function data(value:unknown) {return JSON.stringify(value).replace(/</g,"\\u003c")}
 function hash(bytes:Uint8Array) {return createHash("sha256").update(bytes).digest("hex")}
 function pass(value:Awaited<ReturnType<typeof generate>>) {return {model:value.model,elapsed_ms:value.elapsed_ms,usage:value.usage}}
-async function generate(directory:string,prompt:string) {
-  const password = process.env.OPENCODE_SERVER_PASSWORD
-  const base = process.env.OPENCODE_URL ?? `http://127.0.0.1:${process.env.DOC_HAUS_ENGINE_PORT ?? "4097"}`
-  const response = await fetch(`${base}/api/dochaus/generate`,{method:"POST",headers:{"content-type":"application/json","x-opencode-directory":directory,
-    ...(password ? {authorization:`Basic ${btoa(`opencode:${password}`)}`} : {})},body:JSON.stringify({prompt}),signal:AbortSignal.timeout(480000)})
-  if (!response.ok) throw new DocumentAmendmentConflictError(`The configured legal generation failed (HTTP ${response.status}). No proposals were recorded.`)
-  const result = object(await response.json());const value=object(result.data)
-  if (typeof value.text !== "string" || !value.text) throw new DocumentAmendmentConflictError("Legal generation returned no text.")
-  return {text:value.text,model:value.model,elapsed_ms:value.elapsed_ms,usage:value.usage}
-}
 
 function preparationDiagnostic(directory:string,name:string) {
   const started = Date.now()
