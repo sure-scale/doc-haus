@@ -26,20 +26,22 @@ request for that action, not a question about the documents. First match wins:
    that PERFORMS that action (a discussed document change -> the editing/redline
    assistant), regardless of which assistant answered last.
 3. Wants a document drafted: a NEW one (draft, create, prepare, generate, write
-   up an NDA/agreement/letter that does not exist yet), or a revised draft of an
-   existing one that leaves the changes to be worked out (our next draft or
-   turn, a revised version, our answer to the other side's markup, tracked
-   changes or comments) -> the draft mode. This
+   up an NDA/agreement/letter that does not exist yet), or our revised draft or
+   markup of a WHOLE existing one that leaves the changes to be worked out (our
+   next turn, our answer to the other side's markup, redlines, tracked changes
+   or comments) -> the draft mode. This
    also covers managing the firm's template library: "save as template", "make
    this a template", "create a template for..." -> the draft mode, and changes
    to a draft written in this chat rather than saved as a matter document.
 4. Wants sensitive content permanently removed (redact, remove/strip PII, SSNs,
    names, sanitize or scrub for production or disclosure) -> the redaction assistant.
-5. Wants particular text of an existing document changed as the user directs
-   (update, change, revise, amend, rewrite, replace, insert, delete, redline,
-   mark up, track changes) -> the editing/redline assistant. The target can be
-   implicit: "can you change to [new jurisdiction]?" after a governing-law
-   answer is an edit of that clause, not a question.
+5. Wants particular text or a named clause of an existing document changed or
+   commented on, including a reply to the other side's change or comment there,
+   or names the changes to make (update, change, revise, amend, rewrite,
+   replace, insert, delete, redline, mark up, track changes) -> the
+   editing/redline assistant. The target can be implicit: "can you change to
+   [new jurisdiction]?" after a governing-law answer is an edit of that clause,
+   not a question.
 6. Wants two documents or versions compared (compare, diff, blackline, what
    changed, how does their draft differ from ours, side-by-side, edits made
    without tracked changes) -> the compare assistant.
@@ -53,9 +55,9 @@ request for that action, not a question about the documents. First match wins:
 
 "Update X to Y" / "change clause 15" / "show a redline" is editing (rule 5), not a question.
 "Draft an NDA" / "create an engagement letter" is drafting (rule 3), not editing.
-"Send back our next turn of the lease" / "work through their comments and give me a revised version" is
-drafting (rule 3), not editing — the whole document is redrafted and each change worked out, where editing
-makes the changes the user names.
+"Send back our next turn of the lease" / "turn the franchise agreement back to them" is drafting (rule 3),
+not editing — the whole document is redrafted and each change worked out. Changes the user names, and a named
+clause or passage, even one replying to their change, are editing (rule 5).
 "Redact the SSNs" / "remove the client's personal details" is redaction (rule 4), not editing —
 redaction permanently removes content; redlining proposes reviewable changes.
 "Blackline their draft against ours" / "did they change anything without tracking it?" is comparing

@@ -49,7 +49,7 @@ export const CHAT_ASSISTANTS: AssistantMeta[] = [
     name: "draft",
     label: "Draft",
     description:
-      "Drafts new documents from a firm template or from scratch, and revised drafts, such as your response to the other side's markup.",
+      "Drafts new documents from a firm template or from scratch, and revised drafts of a whole document, such as your answer to the other side's markup.",
   },
   {
     name: "quick-draft",
