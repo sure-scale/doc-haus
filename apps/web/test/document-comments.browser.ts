@@ -5,6 +5,9 @@
 // comments beside the page are Word-style cards: each author's initials and colour match the panel's, a resolved thread
 // says so, a screened comment is flagged, a card and its text light up together, and on a narrow page each card sits
 // under its paragraph (once) and goes back when the page widens, with citations still found across it.
+// Small synthetic files then cover the other side's tricks and crowded pages: a card shows no hidden character its
+// flag says was removed, a bookmark named like a comment's marker moves nothing, several buttons on one short clause
+// or in a table cell can each be clicked and cover no text, and a comment with no range leaves no invisible Tab stop.
 // Set PLAYWRIGHT_CHROMIUM_PATH=<chromium> when Playwright's own browser is missing; SCREENSHOT_DIR=<dir> saves one screenshot per state.
 import assert from "node:assert/strict"
 import { existsSync, statSync } from "node:fs"
@@ -380,6 +383,27 @@ try {
     }
   })
 
+  await check("a comment with no range leaves its paragraph, not an invisible marker, as the Tab stop for its history", async () => {
+    const comments = [{ id: 0, author: REVIEWERS[0]!, text: "Should notices allow email?" }]
+    const file = { bytes: wordFile([para(run("1. Notices must be in writing.") + reference(0)), para(run("2. This clause has no comment."))], comments), markup: listing(comments) }
+    const { page, errors } = await open({ width: 1440, height: 900 }, undefined, true, file)
+    await page.locator(".docx-render .change-timeline-mark").first().waitFor({ state: "attached" })
+    assert.deepEqual(await page.locator(".docx-render .comment-margin-content [tabindex='0']").evaluateAll(nodes => nodes.map(node => {
+      const box = node.getBoundingClientRect()
+      return `${node.tagName}:${box.width > 1 && box.height > 1}`
+    })), ["P:true"], "the paragraph is the one Tab stop, and it can be seen")
+    // From the viewer's Close button, Tab reaches the paragraph and opens its history.
+    await page.locator(".modal-close").first().focus()
+    let reached = ""
+    for (let step = 0; step < 10 && !reached; step++) {
+      await page.keyboard.press("Tab")
+      reached = await page.evaluate(() => document.activeElement?.closest(".comment-margin-content") ? document.activeElement.tagName : "")
+    }
+    assert.equal(reached, "P")
+    await page.locator(".change-timeline").waitFor({ state: "visible" })
+    assert.match(await page.locator(".change-timeline .change-timeline-place").textContent() ?? "", /Paragraph 1/)
+    assert.deepEqual(errors, [])
+  })
   assert.deepEqual(failures, [], "every crafted file's case passes")
 } finally {
   await browser.close()
