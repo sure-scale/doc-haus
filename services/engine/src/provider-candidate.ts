@@ -231,8 +231,16 @@ export function providerCandidates(options: {
   async function create(input: CandidateInput) {
     input = { ...input, options: candidateOptions(input) }
     for (const [id, entry] of sessions) if (entry.touched < Date.now() - 30 * 60_000) await close(id)
-    if (sessions.size + creating >= 4)
-      throw new ProviderCandidateError("Close an unfinished setup before starting another.")
+    // Each draft holds a native instance graph, so at most four exist. A page
+    // reloaded or closed mid-setup cannot discard its draft, so a new setup
+    // replaces the least recently used draft that is not being saved.
+    while (sessions.size + creating >= 4) {
+      let oldest: [string, Entry] | undefined
+      for (const item of sessions)
+        if (item[0] !== saving && (!oldest || item[1].touched < oldest[1].touched)) oldest = item
+      if (!oldest) throw new ProviderCandidateError("Close an unfinished setup before starting another.")
+      await close(oldest[0])
+    }
     creating++
     try {
       const { provider, integration } = await options.inspect(

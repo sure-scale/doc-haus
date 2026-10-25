@@ -101,13 +101,11 @@ type Options = {
   redlines?: unknown[]
   // How long the versions list takes to answer once a restore has been made.
   slowAfterRestore?: number
-  // Changes another session makes, one after each versions request in turn.
-  elsewhere?: ((state: Fixture) => void)[]
   // The first restore fails at the service.
   restoreFails?: boolean
 }
 type Fixture = {
-  opts: Options; docs: Record<string, Version[]>; outside: boolean; restoredOnce: boolean; listed: number; asked: string[]; texts: number; events: unknown[]
+  opts: Options; docs: Record<string, Version[]>; outside: boolean; restoredOnce: boolean; asked: string[]; texts: number; events: unknown[]
   restores: { path: string; body: unknown }[]; compares: string[]; uploads: { existing: string | null; duplicate: boolean }[]; unexpected: string[]; errors: string[]
 }
 function fixture(opts: Options = {}): Fixture {
@@ -116,7 +114,6 @@ function fixture(opts: Options = {}): Fixture {
     docs: initialVersions(),
     outside: Boolean(opts.changed),
     restoredOnce: false,
-    listed: 0,
     asked: [] as string[],
     texts: 0,
     events: [] as unknown[],
@@ -201,10 +198,7 @@ async function open(state: Fixture, width: number, height: number) {
       if (!list) return reply({ error: `${name} is not a document in this matter.` }, 404)
       if (name === NAME && state.restoredOnce && state.opts.slowAfterRestore) await new Promise((resolve) => setTimeout(resolve, state.opts.slowAfterRestore))
       const held = list.find((v) => v.current)
-      const answer = { name, document: held ? { id: `doc-${name}`, name, current_version: held.id } : null, versions: list, events: state.events, working_version: held && !(name === NAME && state.outside) ? held.id : null }
-      // What another session does next lands after this answer.
-      if (name === NAME) state.opts.elsewhere?.[state.listed++]?.(state)
-      return reply(answer)
+      return reply({ name, document: held ? { id: `doc-${name}`, name, current_version: held.id } : null, versions: list, events: state.events, working_version: held && !(name === NAME && state.outside) ? held.id : null })
     }
     const content = /^\/matters\/[^/]+\/documents\/versions\/([^/]+)\/content$/.exec(pathname)
     if (content) return bytes[content[1]!] ? word(bytes[content[1]!]!, content[1]!.startsWith("p-") ? "application/pdf" : undefined) : reply({ error: "The kept bytes of this version are missing or damaged.", code: "version_damaged" }, 409)
@@ -437,23 +431,33 @@ try {
     })
 
     await scenario(`the list follows versions made elsewhere (${size})`, async () => {
+      // Another session's changes are made at the step they belong to, not
+      // counted by versions requests: a development build reads the list twice
+      // on opening (React StrictMode), a production build once.
       const saved = (state: Fixture) => {
         const list = state.docs[NAME]!
         state.docs[NAME] = [version(5, { origin: "revision", actor: "Sam Partner", current: true }), ...list.map((v) => ({ ...v, current: false }))]
         bytes["v-5"] = bytes["v-4"]!
       }
-      const state = fixture({ elsewhere: [saved, restoredElsewhere] })
+      const state = fixture()
       const { page, context } = await open(state, width, height)
       try {
         const reader = await openDocument(page, NAME)
         await expect(reader.locator(".docx-render:not(.docx-skeleton)")).toBeVisible({ timeout: 30_000 })
-        // Another session saved a version after the viewer opened: opening the list shows it.
-        await reader.getByRole("button", { name: /^Versions/ }).click()
+        // The viewer has read the four versions there were when it opened.
+        const toggle = reader.getByRole("button", { name: /^Versions/ })
+        await expect(toggle).toHaveText("Versions 4")
+        // Another session saves a version after the viewer opened: opening the list shows it.
+        saved(state)
+        await toggle.click()
         const { list, row } = versionsOf(page, reader, NAME)
         await expect(list.getByRole("listitem")).toHaveCount(5)
         await expect(row(5)).toContainText("Saved from Word · by Sam Partner")
-        // Then another restored version 3, unseen here: the refusal brings the list up to date.
-        await row(3).getByRole("button", { name: "Restore version 3" }).click()
+        const restoreThree = row(3).getByRole("button", { name: "Restore version 3" })
+        await expect(restoreThree).toBeEnabled()
+        // Then another restores version 3, unseen here: the refusal brings the list up to date.
+        restoredElsewhere(state)
+        await restoreThree.click()
         await row(3).getByRole("group", { name: "Restore version 3" }).getByRole("button", { name: "Restore version 3" }).click()
         await expect(list.getByRole("listitem")).toHaveCount(6)
         await expect(row(3)).toContainText(`${NAME} already holds version 3.`)

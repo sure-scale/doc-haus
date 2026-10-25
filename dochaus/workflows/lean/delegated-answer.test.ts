@@ -31,6 +31,7 @@ const ADVICE: QuestionAdvice = {
   recommendation: { option: "o1", rationale: RATIONALE, basis: SUPPORT },
 }
 const QUESTION = "Should late delivery carry a remedy?"
+const BASIS = SUPPORT.map(row => ({ ...row, relevance: "The supplied terms fix the period for the supplier's delivery under this note and give no remedy for missing it." }))
 const ASKED: Question = { id: "q-late", stage: "intake", question: QUESTION, context: "The terms are silent.", status: "open", kind: "judgment", advice: ADVICE }
 const answered = (question: Question, words = DELEGATION): Question => ({ ...question, status: "answered", answer: words, answered_at: "2026-10-21T09:00:00.000Z" })
 
@@ -198,7 +199,7 @@ test("a question delegated in the lawyer's own words runs through the queue as a
     [AGENT.intake]: (_prompt, index) => index === 0
       ? JSON.stringify({ questions: [{ question: QUESTION, kind: "judgment", context: "The supplied terms are silent on late delivery." }] })
       : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms" }),
-    [AGENT.advise]: () => JSON.stringify({ options: [{ text: RECOMMENDED }, { text: OTHER }], recommendation: { option: 0, rationale: RATIONALE, basis: SUPPORT } }),
+    [AGENT.advise]: () => JSON.stringify({ options: [{ text: RECOMMENDED }, { text: OTHER }], recommendation: { option: 0, rationale: RATIONALE, basis: BASIS } }),
     [AGENT.answer]: prompt => JSON.stringify({ class: prompt.includes(DELEGATION) ? "delegated" : "answered" }),
   })
   const run = () => runLean(directory, { sessions: model.port })

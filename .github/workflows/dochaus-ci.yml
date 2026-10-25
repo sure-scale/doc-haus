@@ -149,6 +149,10 @@ jobs:
       - name: Test drafting preferences, research scope and connector consent
         working-directory: dochaus
         run: bun test test/drafting-preferences.test.ts workflows/lean/posture.test.ts test/research-scope.test.ts test/research-source-fetch.test.ts test/research-source-exa.test.ts test/research-mcp.test.ts
+      - name: Test lean question advice, delegation and checklist questions
+        working-directory: dochaus
+        # Synthetic matters through the real coordinator with a scripted model; no network.
+        run: bun test workflows/lean/decide-for-me-flow.test.ts workflows/lean/delegated-answer.test.ts workflows/lean/checklist-instruction-question.test.ts workflows/lean/checklist-conflict-question.test.ts
       - name: Test web model selection and proxy
         working-directory: apps/web
         run: bun test test --timeout 30000

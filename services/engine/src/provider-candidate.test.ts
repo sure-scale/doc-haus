@@ -410,3 +410,90 @@ test("clearing an optional cloud profile removes the override and preserves ship
   ).toEqual({ region: "us-east-1", profile: "synthetic-shipped-profile" })
   expect(policy.provider["amazon-bedrock"].options.profile).toBe("synthetic-old-profile")
 })
+
+test("a new setup replaces the least recently used abandoned draft, never the one being saved", async () => {
+  const legal = mkdtempSync(path.join(tmpdir(), "dochaus-candidate-abandoned-"))
+  const endpoint = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const body = await request.json()
+      return new Response(
+        `data: ${JSON.stringify({ id: "synthetic", object: "chat.completion.chunk", created: 1, model: body.model, choices: [{ index: 0, delta: { content: "OK" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      )
+    },
+  })
+  writeFileSync(path.join(legal, "opencode.json"), "{}")
+  try {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const baseline = yield* createProviderSetupSession({ legal, settings: {} })
+          const client = yield* Layer.build(
+            LLMClient.layer.pipe(Layer.provide(RequestExecutor.layer.pipe(Layer.provide(FetchHttpClient.layer)))),
+          )
+          const manager = providerCandidates({
+            legal,
+            credentials: baseline.credentials,
+            client: Context.get(client, LLMClient.Service),
+            settings: () => ({}),
+            inspect: (effect) => Effect.runPromise(baseline.provide(effect)),
+            reuse: credentialReuse({
+              directory: path.join(legal, "absent"),
+              targetDirectory: legal,
+              create: async () => {
+                throw new Error("Unexpected import")
+              },
+            }),
+          })
+          yield* Effect.promise(async () => {
+            const opened: string[] = []
+            const start = async (name: string) => {
+              const session = (await manager.handle("session", {
+                providerID: `synthetic-${name}`,
+                connection: { type: "host" },
+                local: { name, baseURL: `http://127.0.0.1:${endpoint.port}/v1`, modelIDs: ["primary"] },
+              })) as { sessionID: string }
+              opened.push(session.sessionID)
+              return session
+            }
+            const alive = (session: { sessionID: string }) =>
+              manager.handle("models", session).then(
+                () => true,
+                (error: Error) => {
+                  expect(error.message).toBe("Provider setup expired. Start again.")
+                  return false
+                },
+              )
+            try {
+              // Pages reloaded or closed mid-setup leave drafts nobody discards.
+              const abandoned = []
+              for (const name of ["reload-1", "reload-2", "reload-3", "reload-4"]) abandoned.push(await start(name))
+              const current = await start("current")
+              expect(await manager.handle("test", { ...current, modelID: "primary" })).toEqual({ ok: true })
+              expect(await manager.handle("save", { ...current, primary: "primary", fast: "primary" })).toEqual({})
+              // A concurrent setup keeps its own draft but cannot save over one in progress.
+              const second = await start("second")
+              expect(await manager.handle("test", { ...second, modelID: "primary" })).toEqual({ ok: true })
+              await expect(manager.handle("save", { ...second, primary: "primary", fast: "primary" })).rejects.toThrow(
+                "Another provider setup is being saved",
+              )
+              // Two more setups make the draft being saved the least recently used.
+              const later = [await start("third"), await start("fourth")]
+              const last = await start("last")
+              expect(await manager.handle("rollback", current)).toEqual({ ok: true })
+              expect(await Promise.all(abandoned.map(alive))).toEqual([false, false, false, false])
+              expect(await alive(second)).toBe(false)
+              expect(await Promise.all([current, ...later, last].map(alive))).toEqual([true, true, true, true])
+            } finally {
+              for (const id of opened) await manager.close(id)
+            }
+          })
+        }),
+      ).pipe(Effect.provide(quiet)),
+    )
+  } finally {
+    endpoint.stop(true)
+    rmSync(legal, { recursive: true, force: true })
+  }
+}, 60_000)

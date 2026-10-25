@@ -548,11 +548,14 @@ test("an instruction left open completes the run with one open gate question; re
   const idle = scriptedModel({})
   expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
   expect(idle.prompts).toHaveLength(0)
-  // A gate re-run asks the same question once, with the advice it already has.
+  // A gate re-run asks the same question once, with no advise call. Like any
+  // step that is not done, the re-run gate has no key, so its saved advice is
+  // not reused as checked: the advice says the inputs changed.
+  expect(question.advice).toEqual({ unavailable: { reason: "The scripted advisor recommends nothing." } })
   updateLeanStage(directory, readLeanState(directory)!, "gate", { status: "pending", input_sha: null, outputs: [], finished_at: null })
   expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
   expect(idle.prompts).toHaveLength(0)
-  expect(readQuestions(directory)).toEqual([question])
+  expect(readQuestions(directory)).toEqual([{ ...question, advice: { unavailable: { reason: expect.stringContaining("supporting inputs changed") } } }])
   // The saved plan is followed and the accepted draft kept: the answer reaches
   // the document through its review, and the checklist check receives it. The
   // instruction still reported open stays disclosed and its answered question
