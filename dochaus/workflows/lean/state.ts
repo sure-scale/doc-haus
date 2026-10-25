@@ -131,7 +131,7 @@ export type QuestionOption = { id: string; text: string }
  * recommended. `options` are the advisor's own, absent when the question has
  * options of its own. It is never an answer. */
 export type QuestionAdvice =
-  | { options?: QuestionOption[]; recommendation: { option: string; rationale: string; basis: { source_id: string; quote: string }[] } }
+  | { options?: QuestionOption[]; recommendation: { option: string; rationale: string; basis: { source_id: string; quote: string; relevance?: string }[] } }
   | { options?: QuestionOption[]; unavailable: { reason: string; reason_code?: "advisor_failed" } }
 
 export type Question = {
@@ -139,6 +139,8 @@ export type Question = {
   stage: StageID
   question: string
   context: string
+  /** Related questions share a topic, but keep separate ids and answers. */
+  group?: string
   /** The draft paragraph the question affects, when the asking stage named one. */
   pid?: string
   /** The document of that paragraph: the latest step that asked the question. */
@@ -334,7 +336,7 @@ export function writeQuestions(directory: string, questions: Question[]) {
  * answer, without how it is classified, offered or advised, or how or when it
  * was answered. */
 export function questionContent(question: Question) {
-  const { kind: _kind, mixed: _mixed, options: _options, advice: _advice, answer_kind: _answerKind, option_id: _optionID, answered_at: _answeredAt,
+  const { group: _group, kind: _kind, mixed: _mixed, options: _options, advice: _advice, answer_kind: _answerKind, option_id: _optionID, answered_at: _answeredAt,
     answer_class: _answerClass, lawyer_words: _lawyerWords, ...content } = question
   return content
 }
@@ -368,7 +370,7 @@ export function keepAskedQuestions(questions: Question[], items: OpenItem[], kep
     return [{
       id: question.id, stage: asker.stage, question: question.question, context: question.context,
       ...(asker.ref.pid ? { pid: asker.ref.pid } : {}), ...(asker.ref.document ? { document: asker.ref.document } : {}), status: question.status,
-      ...(question.kind ? { kind: question.kind } : {}), ...(question.mixed ? { mixed: question.mixed } : {}),
+      ...(question.group ? { group: question.group } : {}), ...(question.kind ? { kind: question.kind } : {}), ...(question.mixed ? { mixed: question.mixed } : {}),
       ...(question.options ? { options: question.options } : {}), ...(question.advice ? { advice: question.advice } : {}),
     }]
   })

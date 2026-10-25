@@ -25,7 +25,7 @@ const ADVISOR_FAILED = "No checked recommendation is available for this question
  * question asked again with the same words and code-given options keeps the
  * advice it was recorded with: an option id is resolved when the answer is
  * recorded, so the card the lawyer answers must not change under them. */
-export async function adviseQuestions(directory: string, state: LeanState, step: StepID, deps: LeanDeps, questions: Question[]): Promise<Question[]> {
+export async function adviseQuestions(directory: string, state: LeanState, step: StepID, deps: LeanDeps, questions: Question[], reviewed?: ReadonlyMap<string, { advice?: QuestionAdvice; group?: string }>): Promise<Question[]> {
   const recorded = readQuestions(directory)
   const answered = new Set(recorded.filter(question => question.status === "answered").map(question => question.id))
   const open = new Map(recorded.filter(question => question.status === "open" && question.advice).map(question => [question.id, question]))
@@ -33,14 +33,15 @@ export async function adviseQuestions(directory: string, state: LeanState, step:
     const earlier = open.get(question.id)
     return earlier && earlier.question === question.question && isDeepStrictEqual(earlier.options, question.options) ? earlier.advice : undefined
   })
-  const advised = questions.map((question, index) => kept[index] ? { ...question, advice: kept[index] } : question)
-  await parallel(questions.flatMap((question, index) => answered.has(question.id) || kept[index] ? [] : [index]), async index => {
-    advised[index] = { ...questions[index]!, advice: await adviseQuestion(directory, state, step, deps, questions[index]!) }
+  const cached = questions.map(question => reviewed?.get(JSON.stringify([question.question, question.context, question.kind])))
+  const advised = questions.map((question, index) => kept[index] ? { ...question, ...(open.get(question.id)?.group ? { group: open.get(question.id)!.group } : {}), advice: kept[index] } : cached[index]?.advice ? { ...question, ...cached[index] } : question)
+  await parallel(questions.flatMap((question, index) => answered.has(question.id) || kept[index] || cached[index]?.advice ? [] : [index]), async index => {
+    advised[index] = { ...questions[index]!, ...await adviseQuestion(directory, state, step, deps, questions[index]!) }
   })
   return advised
 }
 
-async function adviseQuestion(directory: string, state: LeanState, step: StepID, deps: LeanDeps, question: Question): Promise<QuestionAdvice> {
+export async function adviseQuestion(directory: string, state: LeanState, step: StepID, deps: LeanDeps, question: Question): Promise<{ advice: QuestionAdvice; group?: string }> {
   const agent = LEAN_STAGE_AGENTS.advise
   const at = { stage: stepStage(step), document: stepDocument(step) ?? undefined, step: `advise ${question.id}` }
   try {
@@ -51,16 +52,16 @@ async function adviseQuestion(directory: string, state: LeanState, step: StepID,
       const asked = performance.now()
       const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: index ? retryPrompt("advise", issues) : advisePrompt(directory, question) })
       const answered = performance.now()
-      const checked = checkAdvice(directory, question, reply)
+      const checked = checkAdvice(directory, question, reply, { requireRelevance: true })
       issues = checked.issues
       appendLeanEvent(directory, { ...at, event: "checker", attempt: index, issues, wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
-      if (checked.advice) return checked.advice
+      if (checked.advice) return { advice: checked.advice, ...(checked.group ? { group: checked.group } : {}) }
     }
   } catch {
     // A runtime error ends this question's advice; a pause or a settings
     // change is the runner's to act on once every advice job has settled.
   }
-  return { unavailable: { reason: ADVISOR_FAILED, reason_code: "advisor_failed" } }
+  return { advice: { unavailable: { reason: ADVISOR_FAILED, reason_code: "advisor_failed" } } }
 }
 
 export function advisePrompt(directory: string, question: Question) {
@@ -69,9 +70,10 @@ export function advisePrompt(directory: string, question: Question) {
   const updates = readLeanText(directory, "updated-notes.md")
   const acting = planActingFor(directory)
   const provenanceLine = provenanceMapLine(matterSourceIDs(directory), sourceProvenance(directory))
-  const basis = '"basis":[{"source_id":"request (the request, a later instruction or the lawyer\'s answers), an exact matter source name or an approved research URL","quote":"words copied exactly from that source"}]'
+  const basis = '"basis":[{"source_id":"request (the request, a later instruction or the lawyer\'s answers), an exact matter source name or an approved research URL","quote":"words copied exactly from that source","relevance":"why this passage applies to this question, party, document and conditions"}]'
   return [
-    "Advise the lawyer on ONE open question raised while drafting. You do not answer it; the lawyer decides. Set out the options the lawyer could realistically choose and recommend one only where the request, the lawyer's answers, the matter sources or approved research support it, quoting each supporting passage exactly. Use targeted search-document or read-document lookups for the evidence the question needs; do not read the whole matter.",
+    "Advise the lawyer on ONE open question raised while drafting. You do not answer it; the lawyer decides. Set out the options the lawyer could realistically choose and recommend one only where the request, the lawyer's answers, the matter sources or approved research support it, quoting each supporting passage exactly. Use targeted search-document or read-document lookups for the evidence the question needs; do not read the whole matter. Check that every passage applies to the affected document, represented party, version and conditions, including contrary passages and playbook exceptions; quotation existence alone is not support. State that connection in each basis passage's relevance. Reuse a matching topic from existing_topics when one exists. Give a short group topic in group (for example a neutral description of the matter point) so related questions can be considered together; never combine distinct decisions or change the question's meaning.",
+    tagged("existing_topics", [...new Set(readQuestions(directory).flatMap(row => row.group ? [row.group] : []))].join("\n") || "None. Reuse the same short topic for questions about the same point."),
     tagged("question", `Kind: ${question.kind ?? "not stated"}\n${question.question}`),
     ...(question.context ? [tagged("context", question.context)] : []),
     ...(paragraph ? [tagged("affected_paragraph", paragraph)] : []),
@@ -84,16 +86,17 @@ export function advisePrompt(directory: string, question: Question) {
     `Matter source names (use these exact names with search-document and read-document): ${JSON.stringify(matterSourceIDs(directory))}`,
     ...(provenanceLine ? [provenanceLine] : []),
     question.options
-      ? `Reply with one JSON object only: {"recommendation":{"option":0,"rationale":"why this option",${basis}}}, where "option" is the index of one of the options above; or, when no option is supported, {"unavailable":{"reason":"why no option can be recommended"}}. Do not return options of your own.`
-      : `Reply with one JSON object only: {"options":[{"text":"one option the lawyer could choose"}],"recommendation":{"option":0,"rationale":"why this option",${basis}}}, with 2 to 4 distinct options and "option" the 0-based index of the one recommended; or, when no option is supported, {"options":[],"unavailable":{"reason":"why no option can be recommended"}}, with no options or 2 to 4.`,
+      ? `Reply with one JSON object only, including "group":"short topic": {"recommendation":{"option":0,"rationale":"why this option",${basis}}}, where "option" is the index of one of the options above; or, when no option is supported, {"unavailable":{"reason":"why no option can be recommended"}}. Do not return options of your own.`
+      : `Reply with one JSON object only, including "group":"short topic": {"options":[{"text":"one option the lawyer could choose"}],"recommendation":{"option":0,"rationale":"why this option",${basis}}}, with 2 to 4 distinct options and "option" the 0-based index of the one recommended; or, when no option is supported, {"options":[],"unavailable":{"reason":"why no option can be recommended"}}, with no options or 2 to 4.`,
   ].join("\n\n")
 }
 
 /** The advice a reply gives `question`, or the issues for a retry. */
-export function checkAdvice(directory: string, question: Question, reply: string): { issues: string[]; advice?: QuestionAdvice } {
+export function checkAdvice(directory: string, question: Question, reply: string, options: { requireRelevance?: boolean; request?: string } = {}): { issues: string[]; advice?: QuestionAdvice; group?: string } {
   const parsed = parseJsonObject(reply)
   if (!parsed.ok) return { issues: [`Reply with one JSON object: ${parsed.error}.`] }
   const { options: offered, recommendation, unavailable } = parsed.value
+  const group = typeof parsed.value.group === "string" ? parsed.value.group.trim().slice(0, 120) : undefined
   if ((recommendation === undefined) === (unavailable === undefined)) return { issues: ['Return exactly one of "recommendation" or "unavailable".'] }
   const own = question.options ? { issues: offered === undefined ? [] : ['The question has its own options: leave out "options" and recommend one of them by its index.'] } : adviceOptions(offered, recommendation !== undefined)
   const choices = question.options ?? own.options
@@ -105,15 +108,15 @@ export function checkAdvice(directory: string, question: Question, reply: string
     if (choices && !(Number.isInteger(row.option) && (row.option as number) >= 0 && (row.option as number) < choices.length))
       issues.push(`"recommendation.option" must be the index, from 0, of one of the ${choices.length} options.`)
     if (typeof row.rationale !== "string" || !row.rationale.trim()) issues.push('"recommendation.rationale" must say why that option is recommended.')
-    const basis = basisIssues(directory, row.basis)
+    const basis = basisIssues(directory, row.basis, options.requireRelevance, options.request)
     issues.push(...basis.issues)
     if (issues.length || !choices) return { issues }
-    return { issues: [], advice: { ...kept, recommendation: { option: choices[row.option as number]!.id, rationale: (row.rationale as string).trim(), basis: basis.rows } } }
+    return { issues: [], ...(group ? { group } : {}), advice: { ...kept, recommendation: { option: choices[row.option as number]!.id, rationale: (row.rationale as string).trim(), basis: basis.rows } } }
   }
   const reason = record(unavailable) && typeof unavailable.reason === "string" ? unavailable.reason.trim() : ""
   if (!reason) issues.push('"unavailable.reason" must say why no option can be recommended.')
   if (issues.length) return { issues }
-  return { issues: [], advice: { ...kept, unavailable: { reason } } }
+  return { issues: [], ...(group ? { group } : {}), advice: { ...kept, unavailable: { reason } } }
 }
 
 /** The advisor's own options with code-assigned ids: 2 to 4 with a
@@ -132,15 +135,17 @@ function adviceOptions(value: unknown, recommended: boolean): { issues: string[]
 
 /** At least one supporting passage, each from the request, a matter source
  * or approved research, with non-blank words that source holds. */
-function basisIssues(directory: string, value: unknown): { issues: string[]; rows: { source_id: string; quote: string }[] } {
+export function basisIssues(directory: string, value: unknown, requireRelevance = false, request?: string): { issues: string[]; rows: { source_id: string; quote: string; relevance?: string }[] } {
   if (!Array.isArray(value) || !value.length) return { issues: ['"recommendation.basis" must list at least one {"source_id","quote"} passage supporting the recommendation.'], rows: [] }
   const sources = new Set([REQUEST_SOURCE, ...matterSourceIDs(directory), ...approvedResearch(directory).map(row => row.url)])
-  const rows = value.map(row => record(row) && typeof row.source_id === "string" && typeof row.quote === "string" ? { source_id: row.source_id.trim(), quote: row.quote } : undefined)
+  const rows = value.map(row => record(row) && typeof row.source_id === "string" && typeof row.quote === "string" ? { source_id: row.source_id.trim(), quote: row.quote, ...(typeof row.relevance === "string" && row.relevance.trim() ? { relevance: row.relevance.trim() } : {}) } : undefined)
   const issues = rows.flatMap((row, index) => {
     const at = `recommendation.basis[${index}]`
     if (!row || !sources.has(row.source_id)) return [`${at}.source_id must be "request", an exact matter source name or an approved research URL.`]
     if (!row.quote.trim()) return [`${at}.quote must be non-empty words copied exactly from that source.`]
-    return quoteFound(directory, row) ? [] : [quoteMissIssue(directory, at, row, "json")]
+    if (requireRelevance && !row.relevance) return [`${at}.relevance must explain how this passage supports this answer in the affected matter, document and conditions.`]
+    const found = request !== undefined && row.source_id === REQUEST_SOURCE ? normalize(request).includes(normalize(row.quote)) : quoteFound(directory, row)
+    return found ? [] : [quoteMissIssue(directory, at, row, "json")]
   })
   return { issues, rows: rows.filter(row => row !== undefined) }
 }

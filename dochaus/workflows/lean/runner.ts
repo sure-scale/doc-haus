@@ -1,4 +1,6 @@
 import { adviseQuestions } from "./advise"
+import { proposedFactQuestions, questionReviewKey, reviewProposedQuestion, sourceFactsFeedback, type QuestionReview } from "./question-review"
+import { parallel } from "./checklist-flow"
 import { classifyAnswers } from "./answer-class"
 import { runFocusedChangeReview } from "./focused-change-review"
 import { DRAFTING_STOPPED_REASON } from "../../lib/drafting-update-admission"
@@ -69,6 +71,7 @@ import {
   type LeanState,
   type OpenItem,
   type Question,
+  type StageID,
 } from "./state"
 
 // Lean drafting coordinator. It walks the run's steps in order (each planned
@@ -167,6 +170,10 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
   // A later return to the original value must not clear an observed change.
   // Once paused, no session or prompt starts and no reply is returned, even
   // one that arrives afterwards.
+  // In-memory only: one evidence reconsideration per originating native
+  // session; the native transcript preserves the feedback across recovery.
+  const reviewedSessions = new Set<string>()
+  const questionReviews = new Map<string, QuestionReview>()
   const deps: LeanDeps = { ...sourceDeps, sessions: { ...sourceDeps.sessions, createSession(input) {
     return paused() ? Promise.reject(new LeanPauseRequested()) : sourceDeps.sessions.createSession(input)
   }, async prompt(input) {
@@ -174,7 +181,20 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     if (preferencesChanged()) throw new ChecklistRefreshRestart()
     live.add(input.sessionID)
     try {
-      return await untilPaused(sourceDeps.sessions.prompt(pause ? { ...input, signal: pause } : input), pause)
+      const reply = await untilPaused(sourceDeps.sessions.prompt(pause ? { ...input, signal: pause } : input), pause)
+      const stage = input.agent === LEAN_STAGE_AGENTS.advise ? undefined : Object.entries(LEAN_STAGE_AGENTS).find(([, agent]) => agent === input.agent)?.[0] as StageID | undefined
+      const candidates = stage && !reviewedSessions.has(input.sessionID) ? proposedFactQuestions(directory, reply, stage) : []
+      if (!candidates.length) return reply
+      reviewedSessions.add(input.sessionID)
+      const findings: { question: string; source: NonNullable<QuestionReview["source"]> }[] = []
+      await parallel(candidates, async question => {
+        const review = await reviewProposedQuestion(directory, question, { sessions: deps.sessions, parentID: state.owner_session_id, model: state.model })
+        questionReviews.set(questionReviewKey(question), review)
+        if (review.source) findings.push({ question: question.question, source: review.source })
+      })
+      if (!findings.length || paused() || preferencesChanged()) return reply
+      appendLeanEvent(directory, { stage: stage!, event: "retry", step: "source evidence before question", session_id: input.sessionID, attempt: 1 })
+      return await untilPaused(sourceDeps.sessions.prompt({ ...input, text: sourceFactsFeedback(findings), ...(pause ? { signal: pause } : {}) }), pause)
     } catch (error) {
       const kind = providerStopKind(error)
       if (!kind) throw error
@@ -337,7 +357,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       return { state: writeLeanState(directory, { ...state, status: "failed", stop_reason: result.reason }) }
     }
     // Every question the step asks is advised before anything from the step is recorded.
-    const questions = result.questions && await adviseQuestions(directory, state, step, deps, result.questions.map(question => document ? { ...question, document } : question))
+    const questions = result.questions && await adviseQuestions(directory, state, step, deps, result.questions.map(question => document ? { ...question, document } : question), questionReviews)
     if (paused()) return { state: settlePause(directory, state), paused: true }
     if (preferencesChanged()) {
       state = updateLeanStage(directory, state, step, { status: "pending", ...unkeyed(step), outputs: [], finished_at: null })
