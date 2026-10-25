@@ -85,6 +85,7 @@ const css = (await Promise.all([
   "styles/design-documents.css", "styles/design-conversation.css", "styles/design-library.css", "styles/design-review.css",
 ].map(file => Bun.file(path.resolve(import.meta.dir, "../src", file)).text()))).join("\n")
 const calls: string[] = []
+const versionReads: string[] = []
 const server = Bun.serve({
   port: 0, hostname: "127.0.0.1", fetch(request) {
     const url = new URL(request.url), { pathname } = url
@@ -94,6 +95,11 @@ const server = Bun.serve({
       return file.startsWith(wasmDir + path.sep) && existsSync(file) && statSync(file).isFile() ? new Response(Bun.file(file)) : new Response("Not found", { status: 404 })
     }
     if (pathname === "/") return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${css}body{margin:0;padding:24px}</style><div id="root"></div><script type="module" src="/harness.js"></script></html>`, { headers: { "content-type": "text/html" } })
+    // The picker also lists the kept versions of the open file; this matter keeps none.
+    if (request.method === "GET" && pathname === "/ingest/matters/material/documents/versions") {
+      versionReads.push(url.searchParams.get("name") ?? "")
+      return Response.json({ name: url.searchParams.get("name"), document: null, versions: [], events: [], working_version: null })
+    }
     calls.push(`${request.method} ${pathname}?${url.searchParams}`)
     if (request.method === "GET" && pathname === "/ingest/matters/material/compare") {
       if (url.searchParams.get("right") === "Unavailable.docx") return Response.json({ error: "missing_document", message: "The later version is no longer available in this matter." }, { status: 404 })
@@ -130,7 +136,7 @@ try {
     await withinViewport(picker, width, height)
     await expect(picker.getByRole("button", { name: "Compare", exact: true })).toBeDisabled()
     const choices = await picker.getByRole("combobox", { name: "Other version" }).locator("option").allTextContents()
-    assert.deepEqual(choices, ["Choose a file…", "Counterparty response.docx", "Previous draft.docx"], "only other Word files appear, newest first")
+    assert.deepEqual(choices, ["Choose a version or file…", "Counterparty response.docx", "Previous draft.docx"], "only other Word files appear, newest first")
     await picker.getByRole("combobox", { name: "Other version" }).selectOption(params.right)
     await picker.locator("#compare-left-label").fill("  Sent version  ")
     await picker.locator("#compare-right-label").fill(" Returned version ")
@@ -203,6 +209,7 @@ try {
     console.log(`PASS ${width}px comparison picker payload/keyboard/bounds, synthetic Word blackline render/trap/restore, and API refusal state.`)
   }
   assert.ok(calls.length === 12 && calls.every(call => call.startsWith("GET /ingest/matters/material/compare?")), `only twelve expected read-only comparison responses: ${calls.join("\n")}`)
+  assert.ok(versionReads.length > 0 && versionReads.every(name => name === "Supplier agreement.docx"), `versions are read only for the open file: ${versionReads.join(", ")}`)
   assert.deepEqual(errors, [], "no browser errors or external requests")
 } finally {
   await browser.close()
