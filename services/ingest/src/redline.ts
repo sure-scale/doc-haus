@@ -2,7 +2,7 @@ import { docxodus } from "./docxodus"
 import { compareDocxWithPointers, paragraphTargets, resolveParagraphTarget, withStableRevisionDates, type ParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import type { RedlineRow } from "./db"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { createDocxLocalization, applyDocxParagraphEdits, DocxTrackedRevisionsError, openRevision, othersPending, pendingRevisionAnchors, pendingRevisionRefusal, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
+import { createDocxLocalization, applyDocxParagraphEdits, DocxTrackedRevisionsError, hasTrackedRevisions, openRevision, othersPending, pendingRevisionAnchors, pendingRevisionRefusal, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { createHash } from "node:crypto"
 import { draftingAttribution, ourAuthors } from "../../../dochaus/lib/docx-attribution"
 import { normalizeUntrustedText } from "../../../dochaus/lib/untrusted-text"
@@ -298,6 +298,10 @@ export type RedlineState = { sha256:string; targets:ParagraphTarget[]|null; trac
 // proposals stale rather than failing the whole change list.
 export async function redlineState(bytes:Uint8Array,rows:RedlineRow[],options:DocxRevisionOptions = {}):Promise<RedlineState> {
   const sha256 = createHash("sha256").update(bytes).digest("hex")
+  // An older proposal is baked untracked: beside tracked changes, only on an
+  // uploaded source; any other Word file with them refuses it, as Prepare does.
+  if (options.pendingRevisions !== "layer" && rows.some((row) => row.target_json == null) && hasTrackedRevisions(bytes))
+    return {sha256,targets:null,tracked:true}
   const bindings = rows.flatMap((row) => {try {return [binding(row)]} catch {return []}})
   if (!bindings.some((value) => value.version === 2 || value.source_sha256 !== sha256)) return {sha256,targets:[]}
   try {return {sha256,targets:await paragraphTargets(bytes,options)}}
@@ -313,7 +317,7 @@ function boundParagraph(value:ParagraphBinding,targets:ParagraphTarget[]) {
   return target?.sha256 === value.paragraph_sha256 ? target : undefined
 }
 export function redlineStaleReason(row:RedlineRow,state:RedlineState,protectedWord:boolean) {
-  if (row.target_json == null) return protectedWord ? "Prepare this older proposal against the current Word revision." : undefined
+  if (row.target_json == null) return protectedWord ? "Prepare this older proposal against the current Word revision." : state.tracked ? trackedChanges : undefined
   let value:ReturnType<typeof binding>
   try {value = binding(row)} catch {return "This proposal has an invalid Word revision binding. Prepare a fresh change list."}
   // No bound proposal applies to this revision, and a fresh change list cannot either.

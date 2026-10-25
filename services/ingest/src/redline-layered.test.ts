@@ -6,14 +6,14 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { DOMParser } from "@xmldom/xmldom"
 import { strFromU8, unzipSync, zipSync } from "fflate"
-import { createDocxLocalization, openRevision, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
+import { applyDocxLocalization, createDocxLocalization, openRevision, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
 import { readDocxComments } from "../../../dochaus/lib/docx-comments"
 import { assertLayeredRoundTrip } from "../../../dochaus/lib/redline-round-trip"
 import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
 import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx } from "../../../dochaus/test/support/counterparty-markup-fixture"
 import { openDb, type RedlineRow } from "./db"
 import { docxodus } from "./docxodus"
-import { bake, buildRedlined } from "./redline"
+import { bake, buildRedlined, redlineStaleReason, redlineState } from "./redline"
 
 // #200 scope 4: on an uploaded counterparty markup, doc.haus's proposals are
 // written into their file as native tracked changes beside theirs, in the
@@ -165,6 +165,20 @@ test("an older proposal beside doc.haus's own pending change is accepted, and on
   await expect(bake(ours, [older(2, "the State", "the Commonwealth")], undefined, layer)).rejects.toThrow(inside("the State"))
   const clause = "This Agreement is governed by the law of the State."
   await expect(bake(ours, [older(3, clause, "This Agreement is construed under the law of the State.", "clause")], undefined, layer)).rejects.toThrow(inside(clause))
+})
+
+// #299: on any Word file but an uploaded source, tracked changes make an older
+// proposal stale, as they refuse Request edits there: its untracked edit beside
+// doc.haus's own pending change would not show in a redline.
+test("an older proposal on a deliverable with doc.haus's own pending change is stale, and on a source it is not", async () => {
+  const clean = (await renderMarkdownToDocx("Governing law. This Agreement is governed by the law of the Province.")).bytes
+  const packet = await createDocxLocalization(clean, [{ id: "law", before_quote: "the Province", replacement: "the State" }], {}, layer)
+  const tracked = (await applyDocxLocalization(clean, packet, [{ amendment_id: "law", target_handle: packet.candidates[0]!.target_handle }], { ...layer, revisionAuthor: AUTHOR })).bytes
+  const row = older(1, "governed by", "construed under")
+  const stale = async (options: { pendingRevisions?: "layer" }) => redlineStaleReason(row, await redlineState(tracked, [row], options), false)
+  expect(await stale({})).toBe("This Word file contains tracked changes. Accept or reject them in Word before changes can be applied.")
+  expect(await stale(layer)).toBeUndefined()
+  expect(redlineStaleReason(row, await redlineState(clean, [row], {}), false)).toBeUndefined()
 })
 
 test("over HTTP an uploaded markup exports layered, and Accept keeps their changes listed and doc.haus's tracked", async () => {

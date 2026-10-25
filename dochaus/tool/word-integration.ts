@@ -4,7 +4,8 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { findPastListLabel } from "../lib/list-label"
-import { pendingRevisionAnchors, pendingRevisionRefusal } from "../lib/docx-amendments"
+import { hasTrackedRevisions, pendingRevisionAnchors, pendingRevisionRefusal, trackedRevisionsReason } from "../lib/docx-amendments"
+import { registeredWordSource } from "../lib/legal-db"
 import { assertDirectWorkingDocxWriteAllowed } from "../lib/working-docx"
 import { ourAuthors } from "../lib/docx-attribution"
 import { withArtifactMutationLocksAsync } from "../capabilities/artifacts/mutation-lock"
@@ -59,6 +60,9 @@ export default tool({
     const edit = await withArtifactMutationLocksAsync(ctx.directory,[file],async () => {
       assertDirectWorkingDocxWriteAllowed(ctx.directory,file)
       const original = await Bun.file(file).bytes()
+      // As Request edits: a Word file other than an uploaded source is refused
+      // while it has tracked changes, beside which this untracked edit would not show.
+      if (!registeredWordSource(ctx.directory,name) && hasTrackedRevisions(original)) return trackedRevisionsReason
       const session = (await docxodus()).openDocxSession(original,{})
       try {
         const {find,replace,targets,error} = findPastListLabel(args.find!,args.replace!,(text) => session.findAllByText(text),(id) => session.getAnchorInfo(id)?.visibleText)

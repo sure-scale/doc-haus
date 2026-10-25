@@ -1773,12 +1773,15 @@ test("only a body accept of a completed run touches its notes, and only while th
   try {
     await ingest.start("only")
 
-    // A proposal accepted on the run's redline is not a body change.
+    // A proposal on the run's redline is not a body change. The redline holds our
+    // tracked changes, beside which an untracked edit would not show, so Accept
+    // refuses it as change preparation does.
     const redline = await ingest.matter("Redline accept")
     await completedLeanRun(redline.dir)
     const redlineNotes = await Bun.file(path.join(redline.dir,notesName)).bytes()
     // Recorded directly: change preparation refuses a document with tracked changes.
     const redlineFile = path.join(redline.dir,"Supply note - redline.docx")
+    const redlineBytes = await Bun.file(redlineFile).bytes()
     const proposals = openDb(redline.dir)
     const onRedline = (() => {
       try {
@@ -1786,8 +1789,9 @@ test("only a body accept of a completed run touches its notes, and only while th
           [redlineFile,"Supply note - redline.docx","phrase","on delivery","on delivery","within fourteen days of delivery","Review","",null,Date.now()]).lastInsertRowid)
       } finally {proposals.close()}
     })()
-    expect(await redline.acceptResult(onRedline)).toEqual({status:200,body:{ok:true}})
-    expect(redline.status(onRedline)).toBe("accepted")
+    expect(await redline.acceptResult(onRedline)).toEqual({status:409,body:{error:"This Word file contains tracked changes. Accept or reject them in Word before changes can be applied."}})
+    expect(redline.status(onRedline)).toBe("pending")
+    expect(sha256(await Bun.file(redlineFile).bytes())).toBe(sha256(redlineBytes))
     expect(sha256(await Bun.file(path.join(redline.dir,notesName)).bytes())).toBe(sha256(redlineNotes))
 
     // A run that is no longer completed gets no addendum.

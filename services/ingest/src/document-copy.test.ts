@@ -47,15 +47,17 @@ test("exact canonical copy registers a deliverable; source proposals stay on the
     expect(db.query("SELECT id, doc_path, status FROM redlines").all()).toEqual([{ id: proposal.id, doc_path: f.original, status: "pending" }])
     db.close()
     const tracked = (await import("../../../dochaus/tool/tracked-changes")).default
-    // In the paragraph without Reviewer's pending insertion (the touch rule).
+    // The copy keeps Reviewer's pending insertion, and an edit to a deliverable
+    // would be baked untracked beside it, so the copy is refused as Request edits refuses it.
     const result = await tracked.execute({ document: "negotiation.docx", find: "courier", replace: "post", comment: "Requested separate-copy edit.", author: "Reviewer" }, {
       callID: "copy-call", sessionID: "copy-test", messageID: "copy-test", agent: "redliner", directory: f.directory, worktree: f.directory,
-      abort: new AbortController().signal, metadata() {}, async ask(request) { expect(request.patterns).toEqual([path.join(f.directory, "negotiation.docx")]) },
+      abort: new AbortController().signal, metadata() {}, async ask() { throw new Error("A refused edit asks for no approval.") },
     })
-    expect(result).toBeObject()
+    expect(result).toBe("This Word file contains tracked changes. Accept or reject them in Word before preparing changes.")
     const after = openDb(f.directory)
-    expect(Object.values(pendingRedlineCounts(after)).sort()).toEqual([1, 1])
+    expect(Object.values(pendingRedlineCounts(after))).toEqual([1])
     after.close()
+    expect(readFileSync(path.join(f.directory, "negotiation.docx"))).toEqual(Buffer.from(f.bytes))
     expect(readFileSync(f.original)).toEqual(Buffer.from(f.bytes))
   } finally { rmSync(f.directory, { recursive: true, force: true }) }
 })

@@ -5,7 +5,8 @@ import { docxodus } from "../lib/docxodus"
 import { recordRedlineProposal, withRedlineDocumentLock } from "../lib/redlines"
 import { draftingAttribution, ourAuthors } from "../lib/docx-attribution"
 import { findPastListLabel } from "../lib/list-label"
-import { pendingRevisionAnchors, pendingRevisionRefusal } from "../lib/docx-amendments"
+import { hasTrackedRevisions, pendingRevisionAnchors, pendingRevisionRefusal, trackedRevisionsReason } from "../lib/docx-amendments"
+import { registeredWordSource } from "../lib/legal-db"
 
 // doc.haus tracked-changes tool. Proposes a surgical find/replace edit to the
 // matter's canonical Word (.docx) document as a tracked change, attributed to an
@@ -36,8 +37,12 @@ export default tool({
     const author = args.author ?? draftingAttribution().author
     // Our side's names, as Accept counts them (ingest's redline.ts).
     const own = [...ourAuthors(), author]
+    // As Request edits: a Word file other than an uploaded source is refused
+    // while it has tracked changes, beside which an untracked edit would not show.
+    const bytes = await Bun.file(file).bytes()
+    if (!registeredWordSource(ctx.directory, path.basename(file)) && hasTrackedRevisions(bytes)) return trackedRevisionsReason
     const dx = await docxodus()
-    const session = dx.openDocxSession(await Bun.file(file).bytes(), {})
+    const session = dx.openDocxSession(bytes, {})
 
     const located = locate(session, args.find, args.replace, own)
     session.close()

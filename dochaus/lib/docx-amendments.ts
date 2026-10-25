@@ -409,6 +409,19 @@ function localize(opened: Opened, proposed: DocxAmendment[], limits: Limits) {
 export class DocxTrackedRevisionsError extends Error {
   constructor() { super("unsupported_existing_tracked_revisions") }
 }
+/** What Request edits tells the lawyer for DocxTrackedRevisionsError, and the
+ * older chat tools for the same file (hasTrackedRevisions). */
+export const trackedRevisionsReason = "This Word file contains tracked changes. Accept or reject them in Word before preparing changes."
+
+/** Whether a "refuse" reader (DocxRevisionOptions) refuses these bytes with
+ * DocxTrackedRevisionsError: a part holds a tracked insertion, deletion or move. */
+export function hasTrackedRevisions(bytes: Uint8Array) {
+  return trackedRevisions(xmlParts(unzipSync(new Uint8Array(bytes))))
+}
+const trackedRevisions = (documents: Record<string, Document>) =>
+  Object.values(documents).some(doc => ["ins", "del", "moveFrom", "moveTo"].some(name => elements(doc, name).length))
+const xmlParts = (parts: Record<string, Uint8Array>) => Object.fromEntries(Object.entries(parts).filter(([name]) => name.endsWith(".xml"))
+  .map(([name, bytes]) => [name, parse(strFromU8(bytes))]))
 
 // The touch rule. Its unit is one projection paragraph in any story, which is
 // pending when the native revision listing names it (both ends of a move
@@ -504,12 +517,10 @@ function pendingAuthors(listed: Set<string> | undefined, paragraph: Element) {
 
 export async function openRevision(source: Uint8Array, options: DocxRevisionOptions = {}) {
   const parts = unzipSync(source)
-  const documents = Object.fromEntries(Object.entries(parts).filter(([name]) => name.endsWith(".xml"))
-    .map(([name, bytes]) => [name, parse(strFromU8(bytes))]))
+  const documents = xmlParts(parts)
   if (!documents["word/document.xml"]) throw new Error("invalid_docx_package")
   const layer = options.pendingRevisions === "layer"
-  if (!layer && Object.values(documents).some(doc => ["ins", "del", "moveFrom", "moveTo"].some(name => elements(doc, name).length)))
-    throw new DocxTrackedRevisionsError()
+  if (!layer && trackedRevisions(documents)) throw new DocxTrackedRevisionsError()
   const dx = await docxodus()
   // The projection is the accepted text in either mode; render_inline changes
   // only how this session's edits are written.
