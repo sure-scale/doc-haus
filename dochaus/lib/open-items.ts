@@ -37,10 +37,11 @@ function highlightOpenItemsInDocumentXml(xml: string) {
  * own, shaded. Only a text that holds a marker is split; each piece keeps the
  * run's properties and its own share of the run's content (Word puts several
  * texts, breaks and tabs in one run), and a split text keeps its spaces. A run
- * with no marker is returned as it is. */
+ * with no marker, or shaded in a fill of its own (ownShading), is returned as
+ * it is. */
 function highlightRunOpenItems(run: string) {
   const start = RUN_START_RE.exec(run)?.[0]
-  if (!start || !run.endsWith("</w:r>")) return run
+  if (!start || !run.endsWith("</w:r>") || ownShading(/<w:shd\b[^>]*\bw:fill="([^"]*)"/.exec(start)?.[1] ?? "")) return run
   const content = run.slice(start.length, -"</w:r>".length)
   const pieces: string[] = []
   const piece = (prefix: string, inner: string) => {
@@ -114,8 +115,9 @@ export function shadedMarkerSpans(text: string) {
  * split at the marker's edge. In a paragraph `clear` accepts, open-item
  * shading outside the markers is removed too, so words a change wrote into a
  * marker's run, or a marker it made clause text, are not shaded as open.
- * Every other formatting, and shading of another fill, is kept. The bytes are
- * returned themselves when nothing changes. */
+ * Every other formatting is kept, and a run shaded in a fill of its own
+ * (ownShading) is left as it is. The bytes are returned themselves when
+ * nothing changes. */
 export function shadeOpenItemsInDocx(bytes: Uint8Array, clear: (paragraph: Element) => boolean = () => false) {
   const parts = unzipSync(bytes)
   const document = parts["word/document.xml"]
@@ -183,10 +185,11 @@ function withinDeletion(run: Element, paragraph: Element) {
 // `clearing`, its other content's open-item shading removed: split where that
 // changes, each piece keeping the run's properties and its own content.
 // Content showing no text goes with the content before it, or after it when
-// it comes first.
+// it comes first. A run shaded in a fill of its own is left as it is.
 function shadeRun({ run, content }: { run: Element; content: RunContent[] }, spans: ReturnType<typeof shadedMarkerSpans>, clearing: boolean) {
   const shading = runShading(run)
   const fill = (shading?.getAttributeNS(W, "fill") ?? "").toUpperCase()
+  if (ownShading(fill)) return false
   const current = shading?.getAttributeNS(W, "val") === "clear" ? fill : undefined
   // A piece's shading: undefined keeps the run's, "" removes it, a fill sets it.
   const outside = clearing && OPEN_ITEM_FILLS.has(fill) ? "" : undefined
@@ -272,6 +275,14 @@ function shadeRunElement(run: Element, fill: string) {
   shading.setAttributeNS(W, "w:fill", fill)
   properties.insertBefore(shading, child(properties, "rPrChange") ?? null)
   return true
+}
+
+// Whether a run's shading fill is one of its own, such as a lawyer's
+// highlight in a supplied original: not a marker fill and not "auto" (none).
+// The marker in such a run shows shaded already, so the run keeps it.
+function ownShading(fill: string) {
+  const upper = fill.toUpperCase()
+  return !!upper && upper !== "AUTO" && !OPEN_ITEM_FILLS.has(upper)
 }
 
 function markerFill(marker: string) {

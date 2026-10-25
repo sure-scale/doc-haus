@@ -168,6 +168,21 @@ describe("shadeOpenItemsInDocx", () => {
     expect(shadeOpenItemsInDocx(shaded)).toBe(shaded)
   })
 
+  test("leaves a run a lawyer shaded in a fill of their own as it is, its placeholder included", () => {
+    const own = `<w:shd w:val="clear" w:color="auto" w:fill="FFFF00"/>`
+    const docx = zipSync({
+      "word/document.xml": strToU8(
+        `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p>` +
+          `<w:r><w:rPr>${own}</w:rPr><w:t>[insert date]</w:t></w:r><w:r><w:t xml:space="preserve"> and </w:t></w:r>` +
+          `<w:r><w:rPr>${own}</w:rPr><w:t xml:space="preserve">due on [TBC] each year</w:t></w:r>` +
+          `</w:p></w:body></w:document>`,
+      ),
+    })
+
+    // Drafting's highlight and the end pass, the paragraph cleared or not, return the body itself.
+    for (const shaded of [highlightOpenItemsInDocx(docx), shadeOpenItemsInDocx(docx), shadeOpenItemsInDocx(docx, () => true)]) expect(shaded).toBe(docx)
+  })
+
   test("reads a tab or break in a tracked deletion as no text: it is not shaded and does not move the markers", () => {
     const docx = zipSync({
       "word/document.xml": strToU8(

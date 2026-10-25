@@ -312,6 +312,24 @@ describe("pointer-based paragraph amendments", () => {
     expect(await shaded(doc.out)).toEqual([...markers])
   })
 
+  // A drafting placeholder is a marker to the applier, as an open item is.
+  for (const [name, from, drafted, to, marker] of [
+    ["edit-inside-placeholder", "Delivery is on [insert the delivery date] at the warehouse.", "[insert the delivery date]",
+      "Delivery is on [insert the agreed delivery date] at the warehouse.", "[insert the agreed delivery date]"],
+    ["words-before-placeholder", "Delivery is on [insert date] at the warehouse.", "[insert date]",
+      "Delivery is on or before [insert date] at the warehouse.", "[insert date]"],
+    ["open-item-resolved-beside-placeholder", "Delivery takes place at [open item: delivery address] on [TBC].", "[TBC]",
+      "Delivery takes place at the main warehouse on [TBC].", "[TBC]"],
+  ] as const) test(`a placeholder an amendment edits in or beside stays whole in its shaded run, and the words written outside it are not shaded (${name})`, async () => {
+    const doc = await single(name, from)
+    const before = (await texts(doc.file)).get(doc.pid)!
+    expect(await shaded(doc.file)).toContain(drafted)
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amend(name, doc.pid, before, to)] })
+    expect(result.applied.map(row => row.mode)).toEqual(["code"])
+    expect((await texts(doc.out)).get(doc.pid)).toBe(to)
+    expect(await shaded(doc.out)).toEqual([marker])
+  })
+
   test("words an open item held that an amendment makes clause text are not shaded as open", async () => {
     const doc = await single("open-item-to-text", "The Buyer may reject the excess [open item: confirm that this regime is accepted, including that the Buyer may not reject a slight excess where unreasonable].")
     const before = (await texts(doc.file)).get(doc.pid)!
