@@ -281,7 +281,7 @@ try {
   await until(() => prompts.length === 1, "one new source conversation is created")
   const firstSession = prompts[0].id
   await page.waitForURL(`**draft=draft_1&session=${firstSession}`)
-  await page.getByRole("button", { name: "Answer", exact: true }).click()
+  // The asked question opens by itself.
   const question = page.getByRole("group", { name: "Intended use and position", exact: true })
   const recommended = question.getByRole("radio", { name: "Neutral terms (Recommended)", exact: true })
   const custom = question.getByRole("radio", { name: "Type your own", exact: true })
@@ -302,7 +302,7 @@ try {
   if (shots) await page.screenshot({ path: path.join(shots, "6-mobile-question.png") })
   await page.setViewportSize({ width: 1280, height: 950 })
   await page.reload()
-  await page.getByRole("button", { name: "Answer", exact: true }).click()
+  await customAnswer.waitFor()
   assert.equal(await customAnswer.inputValue(), answer, "unsent library answers survive reload")
   await page.getByRole("button", { name: "Send answers", exact: true }).click()
   await inlineReview.waitFor({ state: "visible" })
@@ -515,6 +515,11 @@ try {
   await conversations.getByRole("listitem").waitFor({ state: "visible" })
   assert.equal(await conversations.getByRole("listitem").count(), 1, "deleted conversation stays absent after reload")
   await page.getByRole("button", { name: "Use", exact: true }).waitFor()
+  // The running conversation's question opens by itself; closed, it waits in the dock.
+  const asked = page.getByRole("dialog", { name: "Questions for you", exact: true })
+  await asked.waitFor()
+  await page.keyboard.press("Escape")
+  await asked.waitFor({ state: "hidden" })
   const remaining = conversations.getByRole("listitem")
   await remaining.getByRole("button", { name: "Delete conversation for Services.docx", exact: true }).click()
   await remaining.getByRole("button", { name: "Confirm delete conversation for Services.docx", exact: true }).click()

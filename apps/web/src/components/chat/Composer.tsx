@@ -82,7 +82,8 @@ export default function Composer({
             // Leaving Auto drops the last routing so the chip does not keep showing
             // a resolved label under a manually-picked assistant.
             if (!isAuto(a)) setResolvedAgent(undefined)
-            inputRef.current?.focus()
+            // After the picker hands focus back to its button as it closes.
+            requestAnimationFrame(() => inputRef.current?.focus())
           }}
         />
         <WorkflowLauncher available={available} onLaunch={runWorkflow} workflows={workflows} />

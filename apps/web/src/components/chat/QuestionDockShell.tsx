@@ -33,9 +33,16 @@ export default function QuestionDockShell({
     if (!open && node.open) node.close()
   }, [open])
 
-  // The dialog closes once the last asked question is settled.
+  // A newly asked question opens the dialog, so the lawyer need not find the
+  // dock. It waits there instead while they type or another dialog is open, and
+  // one they closed stays closed until something new is asked. The dialog
+  // closes once the last asked question is settled.
+  const asked = useRef(0)
   useEffect(() => {
+    const more = count > asked.current
+    asked.current = count
     if (count === 0) setOpen(false)
+    else if (more && !occupied()) setOpen(true)
   }, [count])
 
   if (count === 0 && answeredCount === 0) return null
@@ -80,4 +87,18 @@ export default function QuestionDockShell({
       </dialog>
     </>
   )
+}
+
+// Whether the lawyer is typing (the focused field holds their words; an empty
+// one, such as the composer just sent from, does not count) or another dialog
+// holds the page.
+function occupied() {
+  const active = document.activeElement
+  const words =
+    active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+      ? active.value
+      : active instanceof HTMLElement && active.isContentEditable
+        ? active.textContent
+        : ""
+  return Boolean(words?.trim()) || document.querySelector("dialog[open], [aria-modal='true']") !== null
 }
