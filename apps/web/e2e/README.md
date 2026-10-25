@@ -103,8 +103,8 @@ bun apps/web/e2e/counterparty-replies.ts
 It uploads the agreement with its footnote comment against the real ingest
 service, whose model calls go to a local engine fixture with scripted drafts.
 On the Comments tab it drafts the open threads together, cancels one, checks
-that the comment written as instructions to an AI is refused on its card with
-no model call and answered by hand, checks
+that the comment written as instructions to an AI is left out of the drafts,
+says why in place of Draft reply and is answered by hand, checks
 that Approve reply waits for the bracketed part, edits and approves two
 replies, discards and restores one, and saves them with one Reject as one
 version. At 400 px it saves the last reply alone. A second upload's comment

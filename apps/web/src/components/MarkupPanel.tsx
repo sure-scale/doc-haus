@@ -296,6 +296,14 @@ export function flagNotes(findings: MarkupFinding[]) {
   return notes
 }
 
+// The comment a reply to `thread` answers.
+const latest = (thread: Thread) => thread.replies.at(-1) ?? thread.root
+// A comment whose own text or name screening flagged, as its card shows (the
+// text it is on aside): doc.haus drafts no reply to it, as the service refuses.
+const addressedToAI = (comment: MarkupComment) =>
+  comment.findings.some((finding) => (finding.field === "text" || finding.field === "author") && !HIDDEN.has(finding.rule))
+const NOT_DRAFTED = "This comment contains instructions addressed to an AI, so doc.haus does not draft a reply to it. You can write the reply yourself."
+
 // An author's colour anywhere in the panel; the lawyer's own is the brand's.
 const ToneContext = createContext<(name: string) => number | "self">(() => 0)
 // The number of the version on screen, which a run note from another version names.
@@ -747,7 +755,7 @@ export default function MarkupPanel({
   // Open threads in document order. One awaits a reply while its latest
   // comment is not the saved attorney's; only those are offered a draft.
   const open = threadList.filter(isOpen)
-  const awaiting = (thread: Thread) => !savedName || (thread.replies.at(-1) ?? thread.root).author.trim().toLowerCase() !== savedName.toLowerCase()
+  const awaiting = (thread: Thread) => !savedName || latest(thread).author.trim().toLowerCase() !== savedName.toLowerCase()
   const approved = open.filter((thread) => replies[thread.root.id]?.approved)
   const unapproved = open.filter((thread) => replies[thread.root.id] && !replies[thread.root.id]!.approved).length
   const decided = accepted > 0 || rejected > 0
@@ -785,7 +793,7 @@ export default function MarkupPanel({
   // edits are decided one by one.
   const shownDecidable = shownChangeList.filter((revision) => decidable(revision) && !yours(revision))
   const changesFiltered = Object.values(changeFilters).some(Boolean)
-  const undrafted = shownThreadList.filter((thread) => isOpen(thread) && awaiting(thread) && !replies[thread.root.id] && !drafting.includes(thread.root.id))
+  const undrafted = shownThreadList.filter((thread) => isOpen(thread) && awaiting(thread) && !addressedToAI(latest(thread)) && !replies[thread.root.id] && !drafting.includes(thread.root.id))
 
   // The reviewers each tab lists, in the file's order of authors.
   const authorChoices = (names: string[]) => {
@@ -1931,7 +1939,7 @@ type ReplyActions = Record<"draft" | "cancel" | "write" | "approve" | "edit" | "
 
 type ReplyAreaProps = {
   thread: Thread
-  // Offered a draft: its latest comment is not the lawyer's.
+  // Awaits a reply, and is offered a draft unless that comment is written as instructions to an AI: its latest comment is not the lawyer's.
   awaiting: boolean
   reply?: Reply
   drafting: boolean
@@ -1960,7 +1968,8 @@ function marked(text: string) {
 // next reply in the thread, with Edit and Remove). The box grows with its text
 // and marks the bracketed parts still to fill. The control the panel focuses
 // after an action carries data-reply-focus. A thread flagged for planted
-// instructions repeats its flag above the draft.
+// instructions repeats its flag above the draft; one whose latest comment is
+// such an instruction is offered Write a reply only, with why under it.
 function ReplyArea({ thread, awaiting, reply, drafting, steer, carried, you, undo, failure, disabled, canDraft, actions }: ReplyAreaProps) {
   const id = useId()
   const [steering, setSteering] = useState(steer !== "")
@@ -1969,6 +1978,8 @@ function ReplyArea({ thread, awaiting, reply, drafting, steer, carried, you, und
   const menuButton = useRef<HTMLButtonElement>(null)
   const steerInput = useRef<HTMLInputElement>(null)
   useDismiss(menu, menuWrap, () => setMenu(false))
+  const instructed = awaiting && addressedToAI(latest(thread))
+  const draftable = awaiting && !instructed
   const planted = [thread.root, ...thread.replies].flatMap((comment) => comment.findings).filter((finding) => !HIDDEN.has(finding.rule))
   const hold = !reply || reply.approved ? undefined : !reply.text.trim() ? "Write the reply first." : PLACEHOLDER.test(reply.text) ? "Fill the bracketed parts first." : undefined
   const steerNow = () => {
@@ -1976,7 +1987,7 @@ function ReplyArea({ thread, awaiting, reply, drafting, steer, carried, you, und
     setSteering(true)
     requestAnimationFrame(() => steerInput.current?.focus())
   }
-  const steerField = awaiting && steering && (
+  const steerField = draftable && steering && (
     <div className="markup-steer">
       <label htmlFor={`${id}-steer`}>Direction for the draft</label>
       <input id={`${id}-steer`} ref={steerInput} type="text" value={steer} maxLength={STEER_MAX} disabled={disabled} placeholder="For example: agree, or hold firm at 30 days"
@@ -2005,12 +2016,13 @@ function ReplyArea({ thread, awaiting, reply, drafting, steer, carried, you, und
         <>
           {undoLine}
           <div className="markup-composer is-empty">
-            <button type="button" className="markup-composer-write" data-reply-focus={awaiting ? undefined : true} disabled={disabled} onClick={actions.write}>Write a reply</button>
-            {awaiting && <button type="button" className="markup-draft-button" data-reply-focus disabled={!canDraft} onClick={actions.draft}><Icon name="pen" />Draft reply</button>}
+            <button type="button" className="markup-composer-write" data-reply-focus={draftable ? undefined : true} disabled={disabled} onClick={actions.write}>Write a reply</button>
+            {draftable && <button type="button" className="markup-draft-button" data-reply-focus disabled={!canDraft} onClick={actions.draft}><Icon name="pen" />Draft reply</button>}
           </div>
-          {awaiting && (
+          {draftable && (
             <button type="button" className="linklike markup-steer-toggle" aria-expanded={steering} onClick={() => setSteering(!steering)}>Steer…</button>
           )}
+          {instructed && <p className="markup-hint">{NOT_DRAFTED}</p>}
           {steerField}
         </>
       ) : reply.approved ? (
@@ -2060,8 +2072,8 @@ function ReplyArea({ thread, awaiting, reply, drafting, steer, carried, you, und
                     setMenu(false)
                     menuButton.current?.focus()
                   }}>
-                    {awaiting && <button type="button" className="markup-menu-item" disabled={!canDraft} onClick={() => { setMenu(false); actions.draft() }}>Redraft</button>}
-                    {awaiting && <button type="button" className="markup-menu-item" onClick={steerNow}>Steer…</button>}
+                    {draftable && <button type="button" className="markup-menu-item" disabled={!canDraft} onClick={() => { setMenu(false); actions.draft() }}>Redraft</button>}
+                    {draftable && <button type="button" className="markup-menu-item" onClick={steerNow}>Steer…</button>}
                     <button type="button" className="markup-menu-item is-reject" onClick={() => { setMenu(false); actions.discard() }}>Discard</button>
                   </div>
                 )}

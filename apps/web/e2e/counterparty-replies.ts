@@ -5,8 +5,8 @@
 // its footnote comment (dochaus/test/support/counterparty-markup-fixture.ts) and
 // drives the Tracked changes panel's Comments tab: nothing drafts on open;
 // Draft replies drafts the open threads at once, except the comment written as
-// instructions to an AI, which is refused on its card and answered by hand; one
-// is cancelled and drafted again on its own; a draft with a [[…]] placeholder
+// instructions to an AI, which offers Write a reply only, says why and is
+// answered by hand; one is cancelled and drafted again on its own; a draft with a [[…]] placeholder
 // cannot be approved until it is edited; two replies are approved, one draft is
 // discarded and brought back; Save saves one version with a rejected change
 // and the two replies under the lawyer's name; then, at phone width, the
@@ -264,7 +264,7 @@ try {
     expect((await api(`/matters/${matter.id}/documents`, { method: "POST", body: source })).status).toBe(200)
   })
 
-  await step("2 nothing drafts on open: each open thread offers Draft reply and Write a reply", async () => {
+  await step("2 nothing drafts on open: each open thread offers Write a reply, and Draft reply unless written as instructions to an AI", async () => {
     await openDocument()
     await expect(toggle).toHaveAccessibleName("Tracked changes (14)")
     // The file has changes, so the panel opens on them; nothing is decided yet.
@@ -273,11 +273,17 @@ try {
     await tab("Comments").click()
     await expect(tab("Comments")).toHaveAccessibleName("Comments 4")
     await expect(threads).toHaveCount(4)
-    await expect(draftAll).toHaveAccessibleName("Draft replies to 3 comments")
-    for (const area of [answered, planted, footnote]) {
+    // The comment written as instructions to an AI is left out of the drafts.
+    await expect(draftAll).toHaveAccessibleName("Draft replies to 2 comments")
+    for (const area of [answered, footnote]) {
       await expect(area.getByRole("button", { name: "Draft reply", exact: true })).toBeVisible()
       await expect(area.getByRole("button", { name: "Write a reply", exact: true })).toBeVisible()
     }
+    // Write a reply stays; why there is no draft stands in place of Draft reply.
+    await expect(planted.getByRole("button", { name: "Write a reply", exact: true })).toBeVisible()
+    await expect(planted.getByRole("button", { name: "Draft reply", exact: true })).toHaveCount(0)
+    await expect(planted.getByRole("button", { name: "Steer…", exact: true })).toHaveCount(0)
+    await expect(planted.locator(".markup-hint")).toHaveText(NOT_DRAFTED)
     for (const text of [AVERY_ROOT, PLANTED, FOOTNOTE]) await expect(chip(text)).toHaveText("Needs a reply")
     // A resolved thread takes no reply here.
     await expect(chip(RESOLVED)).toHaveText("Resolved")
@@ -290,16 +296,14 @@ try {
     let open = () => {}
     gate = { opened: new Promise<void>(resolve => { open = resolve }), open: () => open() }
     await draftAll.click()
-    await expect(live).toHaveText("Drafting 3 replies…")
-    await expect(shown.getByRole("button", { name: "Cancel drafting", exact: true })).toBeFocused()
-    // The comment written as instructions to an AI is refused on its card at once, with no model call.
-    await expect(planted.locator(".version-error")).toHaveText(NOT_DRAFTED)
+    await expect(live).toHaveText("Drafting 2 replies…")
     await expect(draftingLine).toHaveText("Drafting 2 replies…")
+    await expect(shown.getByRole("button", { name: "Cancel drafting", exact: true })).toBeFocused()
     for (const area of [answered, footnote]) await expect(area).toContainText("Drafting a reply…")
     await expect.poll(() => generated.length).toBe(2)
     expect(mostAtOnce).toBe(2)
     // Every quoted string is read by the service; the browser sends ids and the decisions.
-    expect(draftRequests.map(row => row.thread).sort()).toEqual([0, 3, 4])
+    expect(draftRequests.map(row => row.thread).sort()).toEqual([0, 4])
     expect(draftRequests.every(row => row.decisions === 0)).toBe(true)
     await shot("02-drafting")
     await footnote.getByRole("button", { name: "Cancel", exact: true }).click()
@@ -321,7 +325,7 @@ try {
     await expect(shown.locator(".markup-drafted")).toHaveText("1 draft reply ready — read it, then approve it.")
     await expect(chip(AVERY_ROOT)).toHaveText("Reply to approve")
     for (const text of [PLANTED, FOOTNOTE]) await expect(chip(text)).toHaveText("Needs a reply")
-    await expect(draftAll).toHaveAccessibleName("Draft replies to 2 comments")
+    await expect(draftAll).toHaveAccessibleName("Draft replies to 1 comment")
   })
 
   await step("4 a draft lists what to check, and Approve reply waits until the bracketed part is filled", async () => {
@@ -340,19 +344,16 @@ try {
     await shot("04-placeholder-blocks-approve")
   })
 
-  await step("5 the planted comment's Draft reply says why it drafts nothing, and its reply is written by hand under its flag", async () => {
+  await step("5 the planted comment offers Write a reply only and says why, and its reply is written by hand under its flag", async () => {
     expect(generated.filter(row => row.root === PLANTED)).toEqual([])
-    // Asked on its own, it says the same.
-    await planted.getByRole("button", { name: "Draft reply", exact: true }).click()
-    await expect(live).toHaveText("The reply was not drafted.")
-    await expect(planted.locator(".version-error")).toHaveText(NOT_DRAFTED)
-    expect(generated.filter(row => row.root === PLANTED)).toEqual([])
+    await expect(planted.locator(".markup-hint")).toHaveText(NOT_DRAFTED)
+    await expect(planted.locator(".version-error")).toHaveCount(0)
     await cardShot(thread(PLANTED), "05-flagged-comment-not-drafted")
-    // At phone width the panel sits above the page, mounted afresh: ask again there.
+    // At phone width the panel sits above the page, mounted afresh.
     await page.setViewportSize({ width: 400, height: 860 })
     await expect(dialog.locator("#document-markup ~ .viewer-doc")).toBeVisible()
-    await planted.getByRole("button", { name: "Draft reply", exact: true }).click()
-    await expect(planted.locator(".version-error")).toHaveText(NOT_DRAFTED)
+    await expect(planted.locator(".markup-hint")).toHaveText(NOT_DRAFTED)
+    await expect(planted.getByRole("button", { name: "Draft reply", exact: true })).toHaveCount(0)
     await centre(thread(PLANTED))
     await shot("05-phone-flagged-comment-not-drafted")
     expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1)
@@ -361,11 +362,16 @@ try {
     await planted.getByRole("button", { name: "Write a reply", exact: true }).click()
     const typed = planted.getByLabel("Your reply", { exact: true })
     await expect(typed).toBeFocused()
-    await expect(planted.locator(".version-error")).toHaveCount(0)
     await typed.fill(WRITTEN)
+    await expect(planted.locator(".markup-hint")).toHaveCount(0)
     await expect(planted.locator(".markup-flag")).toHaveText(FLAG)
     await expect(planted.locator(".markup-flag + .markup-composer")).toHaveCount(1)
     await expect(chip(PLANTED)).toHaveText("Reply to approve")
+    // Its More menu offers no Redraft or Steer, only Discard.
+    await planted.getByRole("button", { name: "More reply actions", exact: true }).click()
+    await expect(planted.getByRole("group", { name: "Reply actions", exact: true }).getByRole("button")).toHaveText(["Discard"])
+    await page.keyboard.press("Escape")
+    await expect(planted.getByRole("group", { name: "Reply actions", exact: true })).toHaveCount(0)
     await cardShot(thread(PLANTED), "05-flagged-comment-written-reply")
   })
 
@@ -621,8 +627,8 @@ try {
     await expect(waiverThread).toContainText("The text this comment was on is no longer in the document, so it takes no reply here.")
     await expect(waiverReply).toHaveCount(0)
     await expect(waiverThread.getByRole("button", { name: "Draft reply", exact: true })).toHaveCount(0)
-    // Only the two open threads still placed in the text are offered a draft.
-    await expect(waiverShown.getByRole("button", { name: /^Draft replies to \d+ comments?$/ })).toHaveAccessibleName("Draft replies to 2 comments")
+    // Of the two open threads still placed in the text, only the one not written as instructions to an AI is offered a draft.
+    await expect(waiverShown.getByRole("button", { name: /^Draft replies to \d+ comments?$/ })).toHaveAccessibleName("Draft replies to 1 comment")
     const markup = await (await api(`/matters/${file.matter}/documents/markup?name=${encodeURIComponent(WAIVER_NAME)}`)).json() as { comments: { id: number; detached?: boolean }[] }
     expect(markup.comments.filter(comment => comment.detached).map(comment => comment.id)).toEqual([COUNTERPARTY_MARKUP.waiverComment.id])
     await centre(waiverThread)
