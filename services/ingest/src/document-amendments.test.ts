@@ -985,6 +985,46 @@ test("on an uploaded markup, a same-paragraph sibling of an accepted proposal go
   }
 },120000)
 
+// Their next save can add a pending change that leaves a paragraph's text as it
+// was, such as formatting. The paragraph is theirs again until it is decided.
+test("on an uploaded markup, a proposal whose paragraph gains their formatting change goes stale with that reason, and the others stay valid and export", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-format-"))
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:"the Province",replacement:"the State",target_context:"governing law clause",reason:"Requested governing law update."},
+    {before_quote:"without consent",replacement:"without prior written consent",target_context:"assignment clause",reason:"Consent must be written."},
+  ],open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  const formatted = "The change to \"the Province\" can no longer be accepted: its paragraph now has a pending change by Morgan Okafor. Reject this proposal, decide that change under Their changes, then request edits again."
+  try {
+    await ingest.start("only")
+    const matter = await ingest.matter("Markup reformatted after preparing")
+    const markup = withParaIds(counterpartyMarkupDocx())
+    expect((await ingest.request(`${matter.route}/documents`,{method:"POST",body:wordForm(markup)})).status).toBe(200)
+    const [law,consent] = (await (await matter.prepare("Make the State's law govern and require written consent to assign.")).json() as {redline_ids:number[]}).redline_ids
+    expect(matter.bindings([law]).map((row) => "para_id" in row)).toEqual([true])
+    // Their saved version bolds clause 9 as a tracked formatting change: its text is unchanged.
+    const parts = unzipSync(await Bun.file(matter.file).bytes())
+    const clause9 = (await paragraphTargets(markup,{pendingRevisions:"layer"}))[9]!.para_id!
+    parts["word/document.xml"] = strToU8(strFromU8(parts["word/document.xml"]!).replace(new RegExp(`(<w:p\\b[^>]*w14:paraId="${clause9}"[^>]*><w:r>)`),
+      '$1<w:rPr><w:b/><w:rPrChange w:id="9100" w:author="Morgan Okafor" w:date="2026-10-22T09:00:00Z"><w:rPr/></w:rPrChange></w:rPr>'))
+    const saved = zipSync(parts,{mtime:new Date(1980,0,1)})
+    expect((await createDocxRevision(saved,{pendingRevisions:"layer"})).paragraphs[9]!.text).toBe((await createDocxRevision(markup,{pendingRevisions:"layer"})).paragraphs[9]!.text)
+    expect((await ingest.request(`${matter.route}/documents/revisions`,{method:"POST",body:wordForm(saved)})).status).toBe(200)
+    expect(await matter.pending()).toEqual([[law,true,formatted],[consent,undefined,undefined]])
+    expect(await matter.acceptResult(law)).toEqual({status:409,body:{error:formatted}})
+    expect(sha256(await Bun.file(matter.file).bytes())).toBe(sha256(saved))
+    // The export leaves it out and shows the other beside their changes.
+    const exported = await ingest.request(`${matter.route}/documents/redlined?name=working.docx`)
+    expect(exported.status).toBe(200)
+    const ours = (await listedRevisions(new Uint8Array(await exported.arrayBuffer()))).filter((row) => row.author === "doc.haus").map((row) => [row.type,row.text])
+    expect(ours).toEqual([["delete","consent"],["insert","prior written consent"]])
+    expect(await matter.accept(consent)).toBe(200)
+    expect((await createDocxRevision(await Bun.file(matter.file).bytes(),{pendingRevisions:"layer"})).paragraphs[7]!.text).toBe(" without prior written consent.")
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
 test("accepting paragraph-bound amendments to a numbered list paragraph and a table paragraph preserves numbering, tables, sibling paragraphs and untouched runs", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-numbered-"))
   const file = path.join(directory,"working.docx")

@@ -5,6 +5,8 @@ import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadat
 import { createDocxLocalization, applyDocxParagraphEdits, DocxTrackedRevisionsError, openRevision, pendingRevisionAnchors, pendingRevisionRefusal, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { createHash } from "node:crypto"
 import { draftingAttribution } from "../../../dochaus/lib/docx-attribution"
+import { normalizeUntrustedText } from "../../../dochaus/lib/untrusted-text"
+import { listNames } from "./document-versions"
 import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphPositions, readDocxCommentParagraphs } from "../../../dochaus/lib/docx-comments"
 import { assertLayeredRoundTrip, assertRedlineRoundTrip } from "../../../dochaus/lib/redline-round-trip"
 import { discloseSourceRevisions } from "../../../dochaus/lib/docx-revision-views"
@@ -310,7 +312,18 @@ export function redlineStaleReason(row:RedlineRow,state:RedlineState,protectedWo
   if (value.version === 1) return value.source_sha256 === state.sha256 ? undefined : "This proposal targets an earlier Word revision. Prepare a fresh change list."
   if (!state.targets) return "This Word revision cannot be read paragraph by paragraph. Prepare a fresh change list."
   // Never rebased: the pointed paragraph must still read exactly as prepared.
-  return boundParagraph(value,state.targets) ? undefined : paragraphChanged
+  const target = boundParagraph(value,state.targets)
+  if (!target) return paragraphChanged
+  // The touch rule (othersPending): a later pending change by anyone but the
+  // proposal's author holds the paragraph, one that leaves its text as it was
+  // (a formatting change) included.
+  const others = target.pending.filter((author) => author !== (row.author || draftingAttribution().author))
+  return others.length ? heldParagraph(row.find_text,others) : undefined
+}
+function heldParagraph(text:string,authors:string[]) {
+  const names = [...new Set(authors.map((author) => normalizeUntrustedText(author).text.trim()).filter(Boolean))]
+  const many = authors.length > 1
+  return `The change to ${JSON.stringify(text)} can no longer be accepted: its paragraph now has ${many ? "pending changes" : "a pending change"}${names.length ? ` by ${listNames(names)}` : ""}. Reject this proposal, decide ${many ? "those changes" : "that change"} under Their changes, then request edits again.`
 }
 // One all-or-nothing write. A version 1 row is located by its stored handle
 // through whole-revision localization of the version 1 rows. A version 2 row is

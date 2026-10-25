@@ -101,7 +101,9 @@ export async function paragraphTargets(bytes: Uint8Array, options: DocxRevisionO
       const id = paraId(paragraph.node)
       return [{ pid: pids.length === 1 && PID.test(pids[0]!) ? pids[0]! : null, pids,
         para_id: id && repeated.get(id)!.length === 1 ? id : null, ordinal,
-        paragraph_handle: view.paragraph_handle, sha256: createHash("sha256").update(view.text).digest("hex") }]
+        paragraph_handle: view.paragraph_handle, sha256: createHash("sha256").update(view.text).digest("hex"),
+        // A layer-mode reader's authors of the paragraph's pending revisions ("" for none named).
+        pending: paragraph.pending ?? [] }]
     })
   } finally {
     opened.session.close()
