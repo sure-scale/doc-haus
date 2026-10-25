@@ -73,9 +73,11 @@ export type MarkupDecisionResult = {
 // The service refused a request: the file changed since the list was read, a
 // change can no longer be decided here, doc.haus proposals are pending (409),
 // or nothing was accepted or rejected (422). `message` is the service's own
-// words; `code` is whatever reason string it sent, known to this build or not.
+// words; `code` is whatever reason string it sent, known to this build or not;
+// `ids` are the listed changes the refusal is about (`id`, then those it
+// `merged_with`), empty when it names none.
 export class MarkupRefusedError extends Error {
-  constructor(readonly status: number, readonly code: string | undefined, message: string) {
+  constructor(readonly status: number, readonly code: string | undefined, message: string, readonly ids: string[] = []) {
     super(message)
   }
 }
@@ -84,10 +86,11 @@ const route = (matterId: string, path: string, name: string) =>
   `${INGEST_URL}/matters/${encodeURIComponent(matterId)}/documents/markup${path}?name=${encodeURIComponent(name)}`
 
 async function refusal(res: Response, fallback: string) {
-  const body = (await res.json().catch(() => undefined)) as { error?: unknown; code?: unknown; reason?: unknown } | undefined
+  const body = (await res.json().catch(() => undefined)) as { error?: unknown; code?: unknown; reason?: unknown; id?: unknown; merged_with?: unknown } | undefined
   const code = typeof body?.code === "string" ? body.code : typeof body?.reason === "string" ? body.reason : undefined
   const message = typeof body?.error === "string" && body.error.trim() ? body.error : code ?? `${fallback} (${res.status})`
-  return new MarkupRefusedError(res.status, code, message)
+  const ids = [body?.id, ...(Array.isArray(body?.merged_with) ? body.merged_with : [])].filter((id): id is string => typeof id === "string" && id !== "")
+  return new MarkupRefusedError(res.status, code, message, [...new Set(ids)])
 }
 
 // The working file's markup. Refused (4xx) for a file it does not cover: a
@@ -102,6 +105,9 @@ export async function fetchDocumentMarkup(matterId: string, name: string): Promi
 // service, which records the saved attorney name instead.
 const HEADER_SAFE = /^[\x20-\x7e]+$/
 
+// Whether `actor` travels with the decisions itself, needing no saved name.
+export const actorSent = (actor: string) => HEADER_SAFE.test(actor.trim())
+
 export async function applyMarkupDecisions(
   matterId: string,
   name: string,
@@ -110,7 +116,7 @@ export async function applyMarkupDecisions(
 ): Promise<MarkupDecisionResult> {
   const headers: Record<string, string> = { "Content-Type": "application/json" }
   const who = actor?.trim()
-  if (who && HEADER_SAFE.test(who)) headers["x-dochaus-actor"] = who
+  if (who && actorSent(who)) headers["x-dochaus-actor"] = who
   const res = await fetch(route(matterId, "/decisions", name), { method: "POST", headers, body: JSON.stringify(body) })
   if (!res.ok) throw await refusal(res, `Could not apply the decisions to ${name}`)
   return (await res.json().catch(() => ({}))) as MarkupDecisionResult

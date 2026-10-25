@@ -199,12 +199,13 @@
 .markup-decision { display: flex; gap: 6px; margin-top: 10px; }
 .markup-choice { flex: 1; min-height: 32px; padding: 0; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .markup-choice:hover:not(:disabled) { border-color: var(--border-strong); background: var(--panel-hover); }
-.markup-choice.is-accept[aria-pressed="true"] { color: var(--text-on-accent); background: var(--accent); border-color: var(--accent); }
-.markup-choice.is-reject[aria-pressed="true"] { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-border); }
-.markup-choice.is-hold[aria-pressed="true"] { color: var(--text); background: var(--bg-sunken); border-color: var(--border-strong); }
+.markup-choice.is-accept[aria-checked="true"] { color: var(--text-on-accent); background: var(--accent); border-color: var(--accent); }
+.markup-choice.is-reject[aria-checked="true"] { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-border); }
+.markup-choice.is-hold[aria-checked="true"] { color: var(--text); background: var(--bg-sunken); border-color: var(--border-strong); }
 .markup-choice:disabled { opacity: .5; cursor: default; }
 .document-reader .markup-card.is-accept { padding-left: 14px; box-shadow: inset 3px 0 var(--accent); }
 .document-reader .markup-card.is-reject { padding-left: 14px; box-shadow: inset 3px 0 var(--danger); }
+.document-reader .markup-card.is-refused { outline: 1px solid var(--danger-border); outline-offset: -1px; }
 .markup-word { margin: var(--space-2) 0 0; font-size: 0.75rem; line-height: 1.45; color: var(--text-secondary); }
 .markup-quote { margin: 0 0 var(--space-2); padding: 4px var(--space-2); font-size: 0.8125rem; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-secondary); border-left: 2px solid var(--border-strong); }
 .markup-comment-text { margin: 0; font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }

@@ -1,6 +1,7 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react"
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import { humanizeError } from "../api/ingest/errors"
 import {
+  actorSent,
   applyMarkupDecisions,
   MarkupRefusedError,
   type DocumentMarkup,
@@ -18,9 +19,10 @@ import { useToast } from "./Toast"
 // (#200), beside the document. Every change starts on Hold; the lawyer marks
 // Accept or Reject, and Apply sends every decision at once, which saves one new
 // version. Held changes stay as tracked changes in it. Drafts of the decisions
-// are kept in this browser per version of the file, so closing the viewer
-// loses nothing. Every name, change, quote and comment is the other side's
-// text and renders as plain text.
+// are kept in this browser per document, so closing the viewer loses nothing,
+// and carry over to a new version of the file for the changes it still lists.
+// Every name, change, quote and comment is the other side's text and renders as
+// plain text.
 
 type Thread = { root: MarkupComment; replies: MarkupComment[] }
 type Item =
@@ -28,6 +30,11 @@ type Item =
   | { type: "thread"; thread: Thread; order: [number, number, number, number] }
 type Kind = "changes" | "formatting" | "comments"
 type Drafts = Record<string, Exclude<MarkupDecision, "hold">>
+// A refused Apply: the message, the service's code and the listed changes it
+// names, whose cards carry the message.
+type Refusal = { message: string; code?: string; ids: string[] }
+// Where focus goes once the panel has rendered: a change's decision, or Apply.
+type Focus = { card: string } | "apply"
 
 const KINDS: { value: Kind; label: string }[] = [
   { value: "changes", label: "Changes" },
@@ -127,6 +134,17 @@ function changeText(revision: MarkupRevision) {
   return wholeParagraph(revision) ? revision.text.slice(0, -1) : revision.text
 }
 
+const clip = (text: string, max = 48) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text)
+
+// The name of a change's decision group, told apart from every other card's:
+// what changed, who changed it and a short excerpt (its paragraph's when the
+// change has no text of its own, such as a paragraph break).
+export function decisionLabel(revision: MarkupRevision) {
+  const author = revision.author.trim()
+  const text = changeText(revision).replace(/\s*¶\s*/g, " ").trim() || revision.locations.find((place) => place.context.trim())?.context.trim() || ""
+  return `${changeLabel(revision)} ${author ? `by ${author}` : "with no author named"}${text ? `: “${clip(text.replace(/…$/, ""))}”` : ""}`
+}
+
 // Plain words for what screening found, once per kind of finding.
 export function flagNotes(findings: MarkupFinding[]) {
   const notes: string[] = []
@@ -135,23 +153,48 @@ export function flagNotes(findings: MarkupFinding[]) {
   return notes
 }
 
-// Drafts are kept per matter, document and version bytes: the ids belong to
-// one version's bytes, so a new version starts with every change on Hold.
-const draftKey = (matterId: string, name: string, sha256: string) =>
-  `dh.markup-decisions.v1/${encodeURIComponent(matterId)}/${encodeURIComponent(name)}/${sha256}`
+// Drafts are kept per matter and document with the bytes they were made on
+// (`base`). A tracked change keeps its id in a newer version while it is
+// unchanged, so a change still listed keeps its draft; the rest start on Hold.
+const draftKey = (matterId: string, name: string) =>
+  `dh.markup-decisions.v2/${encodeURIComponent(matterId)}/${encodeURIComponent(name)}`
 
-function readDrafts(key: string, revisions: MarkupRevision[]): Drafts {
-  const stored = readBrowserJSON(key)
-  if (!stored || typeof stored !== "object") return {}
-  const listed = new Set(revisions.filter(decidable).map((revision) => revision.id))
-  return Object.fromEntries(
-    Object.entries(stored as Record<string, unknown>).filter(
-      (entry): entry is [string, "accept" | "reject"] => listed.has(entry[0]) && (entry[1] === "accept" || entry[1] === "reject"),
-    ),
-  )
+export type StoredDrafts = { base: string; decisions: Record<string, unknown> }
+
+function readStored(key: string): StoredDrafts | undefined {
+  const stored = readBrowserJSON(key) as Partial<StoredDrafts> | null
+  if (!stored || typeof stored !== "object" || typeof stored.base !== "string" || !stored.decisions || typeof stored.decisions !== "object") return
+  return { base: stored.base, decisions: stored.decisions }
+}
+
+// The drafts a reading of the file takes from earlier ones: those for changes
+// it still lists. When the earlier drafts were made on other bytes, `carried`
+// names the ones kept and `dropped` counts decisions on changes now gone.
+export function carryDrafts(earlier: StoredDrafts | undefined, markup: Pick<DocumentMarkup, "version" | "revisions">): {
+  drafts: Drafts
+  carried: string[]
+  dropped: number
+} {
+  if (!earlier) return { drafts: {}, carried: [], dropped: 0 }
+  const listed = new Set(markup.revisions.filter(decidable).map((revision) => revision.id))
+  const decided = Object.entries(earlier.decisions).filter((entry): entry is [string, "accept" | "reject"] => entry[1] === "accept" || entry[1] === "reject")
+  const drafts: Drafts = Object.fromEntries(decided.filter(([id]) => listed.has(id)))
+  if (earlier.base === markup.version.sha256) return { drafts, carried: [], dropped: 0 }
+  return { drafts, carried: Object.keys(drafts), dropped: decided.length - Object.keys(drafts).length }
 }
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`
+
+// Plain words for a new reading of a file the lawyer had decided changes in.
+function carriedNote(name: string, carried: number, dropped: number, refused: boolean) {
+  if (!refused && !carried && !dropped) return undefined
+  return [
+    refused ? `${name} changed after this list was read, so nothing was applied.` : `${name} changed since these decisions were made.`,
+    carried && `${plural(carried, "decision")} carried over — check ${carried === 1 ? "it" : "them"} before applying.`,
+    dropped && `${plural(dropped, "decision")} could not be carried over and ${dropped === 1 ? "is" : "are"} back on Hold.`,
+    refused && !carried && "Decide the changes again.",
+  ].filter(Boolean).join(" ")
+}
 
 export default function MarkupPanel({
   matterId,
@@ -161,6 +204,7 @@ export default function MarkupPanel({
   proposalsPending = 0,
   onApplied,
   onRefetch,
+  onShowProposals,
 }: {
   matterId: string
   name: string
@@ -173,11 +217,21 @@ export default function MarkupPanel({
   onApplied: () => void
   // The service refused the batch: read the file and its markup again.
   onRefetch: () => void
+  // doc.haus's own proposals block applying: show them instead of this panel.
+  onShowProposals?: () => void
 }) {
   const sha256 = markup.version.sha256
-  const key = draftKey(matterId, name, sha256)
-  const [drafts, setDrafts] = useState<Drafts>(() => readDrafts(key, markup.revisions))
-  const [draftsKey, setDraftsKey] = useState(key)
+  const key = draftKey(matterId, name)
+  const [initial] = useState(() => carryDrafts(readStored(key), markup))
+  // The document and bytes the drafts belong to.
+  const [reading, setReading] = useState({ key, base: sha256 })
+  const [drafts, setDrafts] = useState<Drafts>(initial.drafts)
+  // Decisions carried over from other bytes, until the lawyer looks at each.
+  const [carried, setCarried] = useState<string[]>(initial.carried)
+  const [notice, setNotice] = useState(() => carriedNote(name, initial.carried.length, initial.dropped, false))
+  // The bytes decisions were just applied to: their drafts are done with.
+  const [appliedFrom, setAppliedFrom] = useState<string>()
+  const [undo, setUndo] = useState<{ drafts: Drafts; carried: string[]; decision: MarkupDecision; text: string }>()
   const [authors, setAuthors] = useState<string[]>([])
   const [kinds, setKinds] = useState<Kind[]>([])
   // undefined while loading; "" when no name is saved, so the bar asks once.
@@ -185,19 +239,37 @@ export default function MarkupPanel({
   const [nameDraft, setNameDraft] = useState("")
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string>()
+  const [refusal, setRefusal] = useState<Refusal>()
+  const [focus, setFocus] = useState<Focus>()
   const heading = useRef<HTMLHeadingElement>(null)
   const applyButton = useRef<HTMLButtonElement>(null)
+  const proposalsButton = useRef<HTMLButtonElement>(null)
+  const refusalText = useRef<HTMLParagraphElement>(null)
   const nameInput = useRef<HTMLInputElement>(null)
+  const cards = useRef(new Map<string, HTMLLIElement>())
+  const bulkButtons = useRef(new Map<MarkupDecision, HTMLButtonElement>())
   const ids = useId()
   const toast = useToast()
 
-  // A new reading of the file (another version, or the same bytes again) takes
-  // that version's drafts.
-  if (draftsKey !== key) {
-    setDraftsKey(key)
-    setDrafts(readDrafts(key, markup.revisions))
+  // A new reading of other bytes keeps the drafts for changes it still lists,
+  // and says so; one after this panel's own Apply starts afresh. Another
+  // document takes its own drafts.
+  if (reading.key !== key || reading.base !== sha256) {
+    const fresh = reading.key !== key
+    const next = carryDrafts(fresh ? readStored(key) : appliedFrom === reading.base ? undefined : { base: reading.base, decisions: drafts }, markup)
+    setReading({ key, base: sha256 })
+    setDrafts(next.drafts)
+    setCarried(next.carried)
+    setNotice(carriedNote(name, next.carried.length, next.dropped, !fresh && refusal?.code === "base_changed"))
+    setAppliedFrom(undefined)
+    setUndo(undefined)
+    setRefusal(undefined)
   }
+
+  useEffect(() => {
+    if (Object.keys(drafts).length) writeBrowserValue(key, JSON.stringify({ base: reading.base, decisions: drafts }))
+    else removeBrowserValue(key)
+  }, [key, reading.base, drafts])
 
   useEffect(() => {
     let cancelled = false
@@ -209,6 +281,24 @@ export default function MarkupPanel({
       cancelled = true
     }
   }, [])
+
+  // Focus waits for the render that shows its target: a refused change's
+  // chosen decision, or Apply once the file has been read again (the
+  // proposals button or the message while Apply cannot be used).
+  useEffect(() => {
+    if (!focus || busy) return
+    const card = typeof focus === "object" ? cards.current.get(focus.card) : undefined
+    if (card) {
+      card.scrollIntoView?.({ block: "center" })
+      const control = card.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]') ?? card.querySelector<HTMLElement>(".version-error")
+      control?.focus({ preventScroll: true })
+    } else {
+      if (loading) return
+      const target = [applyButton.current, proposalsButton.current, refusalText.current].find((element) => element && !(element as HTMLButtonElement).disabled) ?? heading.current
+      target?.focus()
+    }
+    setFocus(undefined)
+  })
 
   const items = useMemo(() => documentOrder(markup), [markup])
   const byAuthor = items.filter((item) => !authors.length || authorsOf(item).some((author) => authors.includes(author)))
@@ -225,26 +315,47 @@ export default function MarkupPanel({
     ? `Accept or reject doc.haus's ${plural(proposalsPending, "proposed change")} on this document first.`
     : !accepted && !rejected ? "Mark at least one change Accept or Reject to apply." : undefined
   const canApply = !blocked && !busy && !loading && attorney !== undefined
+  const proposalsFirst = proposalsPending > 0 || refusal?.code === "proposals_pending"
+  // A refusal is shown on the cards it names; otherwise, or while they are
+  // filtered out, beside Apply. The proposals line already says what a
+  // proposals refusal says once the proposals are known.
+  const shownIds = new Set(shown.flatMap((item) => (item.type === "change" ? [item.revision.id] : [])))
+  const onCards = !!refusal && refusal.ids.some((id) => shownIds.has(id))
+  const refusalShown = refusal && !onCards && !(refusal.code === "proposals_pending" && proposalsPending > 0) ? refusal.message : undefined
 
-  function decide(changes: MarkupRevision[], decision: MarkupDecision) {
-    setError(undefined)
+  function decide(changes: MarkupRevision[], decision: MarkupDecision, bulk?: string) {
     setConfirming(false)
     const next = { ...drafts }
     for (const revision of changes) {
       if (decision === "hold") delete next[revision.id]
       else next[revision.id] = decision
     }
+    const decided = new Set(changes.map((revision) => revision.id))
+    const unchanged = changes.every((revision) => (drafts[revision.id] ?? "hold") === decision)
     setDrafts(next)
-    if (Object.keys(next).length) writeBrowserValue(key, JSON.stringify(next))
-    else removeBrowserValue(key)
+    setCarried(carried.filter((id) => !decided.has(id)))
+    setUndo(bulk && !unchanged ? { drafts, carried, decision, text: bulk } : undefined)
+    // A change the refusal named is settled once the lawyer decides it again.
+    const left = refusal?.ids.filter((id) => !decided.has(id)) ?? []
+    setRefusal(left.length ? { ...refusal!, ids: left } : undefined)
+  }
+
+  function undoBulk() {
+    if (!undo) return
+    setDrafts(undo.drafts)
+    setCarried(undo.carried)
+    setUndo(undefined)
+    setConfirming(false)
+    bulkButtons.current.get(undo.decision)?.focus()
   }
 
   const toggle = <T,>(list: T[], value: T) => (list.includes(value) ? list.filter((entry) => entry !== value) : [...list, value])
 
   function review() {
-    setError(undefined)
+    setRefusal(undefined)
+    setUndo(undefined)
     if (!actor) {
-      setError("Add your name so it is recorded with these decisions.")
+      setRefusal({ message: "Add your name so it is recorded with these decisions.", ids: [] })
       nameInput.current?.focus()
       return
     }
@@ -257,9 +368,31 @@ export default function MarkupPanel({
     requestAnimationFrame(() => applyButton.current?.focus())
   }
 
+  // What a refused Apply shows, and where focus goes: the first change it
+  // names, with the filters cleared if they hide any it names, or Apply.
+  function refused(cause: unknown): Focus {
+    if (!(cause instanceof MarkupRefusedError)) {
+      setRefusal({ message: humanizeError(cause, "The decisions could not be applied. Try again."), ids: [] })
+      return "apply"
+    }
+    // The file or its changes moved on: read them again before another try.
+    if (cause.status === 409) onRefetch()
+    const named = cause.ids.filter((id) => markup.revisions.some((revision) => revision.id === id))
+    // The panel reads the file again itself; there is nothing to refresh.
+    const message = cause.code === "base_changed" ? `${name} changed after this list was read, so nothing was applied.` : cause.message
+    setRefusal({ message, code: cause.code, ids: named })
+    if (!named.length) return "apply"
+    if (!named.every((id) => shownIds.has(id))) {
+      setAuthors([])
+      setKinds([])
+    }
+    return { card: named[0]! }
+  }
+
   async function apply() {
     setBusy(true)
-    setError(undefined)
+    setRefusal(undefined)
+    let after: Focus | undefined
     try {
       let recorded = savedName
       if (!recorded) {
@@ -267,8 +400,16 @@ export default function MarkupPanel({
           recorded = (await savePreferences({ attorney: actor })).attorney?.trim() || actor
           setAttorney(recorded)
         } catch (cause) {
-          setError(`Your name could not be saved. ${humanizeError(cause)}`)
-          return
+          // The name still travels with the decisions; only one that cannot
+          // needs it saved first.
+          if (!actorSent(actor)) {
+            setConfirming(false)
+            setRefusal({ message: `Your name could not be saved, so it cannot be recorded with these decisions. ${humanizeError(cause)}`, ids: [] })
+            after = "apply"
+            return
+          }
+          recorded = actor
+          toast("warning", "Your name could not be saved in Settings; it is still recorded with these decisions.")
         }
       }
       const result = await applyMarkupDecisions(matterId, name, {
@@ -276,6 +417,10 @@ export default function MarkupPanel({
         decisions: listed.map((revision) => ({ id: revision.id, decision: drafts[revision.id] ?? "hold" })),
       }, recorded)
       removeBrowserValue(key)
+      setAppliedFrom(sha256)
+      setCarried([])
+      setNotice(undefined)
+      setUndo(undefined)
       setConfirming(false)
       const counts = result.counts ?? {}
       const tally = [
@@ -283,18 +428,18 @@ export default function MarkupPanel({
         `${counts.rejected ?? rejected} rejected`,
         `${counts.held ?? held} held`,
       ].join(", ")
+      // The tally names the held changes; the version's own notice about
+      // tracked changes left in it would only repeat them.
       toast("success", `${result.version ? `Saved as version ${result.version.number}` : "Saved a new version"}: ${tally}.`)
       if (counts.consumed) toast("info", `${plural(counts.consumed, "change was", "changes were")} resolved along with another change.`)
-      if (result.notice) toast("warning", result.notice)
       onApplied()
     } catch (cause) {
       setConfirming(false)
-      setError(cause instanceof MarkupRefusedError ? cause.message : humanizeError(cause, "The decisions could not be applied. Try again."))
-      // The file or its changes moved on: read them again before another try.
-      if (cause instanceof MarkupRefusedError && cause.status === 409) onRefetch()
+      after = refused(cause)
     } finally {
       setBusy(false)
-      heading.current?.focus()
+      if (after) setFocus(after)
+      else heading.current?.focus()
     }
   }
 
@@ -336,11 +481,19 @@ export default function MarkupPanel({
               Set {shownChanges.length === listed.length ? `all ${plural(shownChanges.length, "change")}` : `the ${plural(shownChanges.length, "shown change")}`} to
             </span>
             {DECISIONS.map((decision) => (
-              <button type="button" key={decision.value} className="icon-btn" disabled={busy} onClick={() => decide(shownChanges, decision.value)}>
+              <button type="button" key={decision.value} className="icon-btn" disabled={busy}
+                ref={(node) => { if (node) bulkButtons.current.set(decision.value, node); else bulkButtons.current.delete(decision.value) }}
+                onClick={() => decide(shownChanges, decision.value, `${plural(shownChanges.length, "change")} set to ${decision.label}.`)}>
                 {decision.label}
               </button>
             ))}
           </div>
+        )}
+        {undo && (
+          <p role="status">
+            {undo.text}{" "}
+            <button type="button" className="linklike" disabled={busy} onClick={undoBulk}>Undo</button>
+          </p>
         )}
       </div>
 
@@ -354,7 +507,14 @@ export default function MarkupPanel({
           {shown.map((item) =>
             item.type === "change" ? (
               <ChangeCard key={item.revision.id} revision={item.revision} decision={drafts[item.revision.id] ?? "hold"} disabled={busy}
-                onDecide={(decision) => decide([item.revision], decision)} />
+                carried={carried.includes(item.revision.id)}
+                failure={refusal?.ids.includes(item.revision.id) ? refusal.message : undefined}
+                cardRef={(node) => { if (node) cards.current.set(item.revision.id, node); else cards.current.delete(item.revision.id) }}
+                onDecide={(decision) => decide([item.revision], decision)}
+                onHold={() => {
+                  decide([item.revision], "hold")
+                  setFocus({ card: item.revision.id })
+                }} />
             ) : (
               <ThreadCard key={`comment-${item.thread.root.id}`} thread={item.thread} />
             ),
@@ -364,6 +524,7 @@ export default function MarkupPanel({
 
       {listed.length > 0 && (
         <div className="markup-apply">
+          {notice && <p className="markup-hint" role="status">{notice}</p>}
           <p className="markup-tally">
             {accepted} to accept · {rejected} to reject · {held} held
             {elsewhere > 0 && <span> · {elsewhere} to resolve in Word</span>}
@@ -379,6 +540,11 @@ export default function MarkupPanel({
             </div>
           )}
           {blocked && <p id={`${ids}-blocked`} className="markup-blocked">{blocked}</p>}
+          {proposalsFirst && onShowProposals && (
+            <button type="button" ref={proposalsButton} className="icon-btn" onClick={onShowProposals}>
+              Show doc.haus's proposals
+            </button>
+          )}
           {confirming ? (
             <div className="version-confirm" role="group" aria-label="Apply decisions" onKeyDown={(event) => {
               if (event.key !== "Escape" || busy) return
@@ -402,7 +568,7 @@ export default function MarkupPanel({
               Apply decisions…
             </button>
           )}
-          {error && <p className="version-error" role="alert">{error}</p>}
+          {refusalShown && <p ref={refusalText} tabIndex={-1} className="version-error" role="alert">{refusalShown}</p>}
         </div>
       )}
     </aside>
@@ -427,14 +593,18 @@ function Places({ revision }: { revision: MarkupRevision }) {
   const text = changeText(revision)
   const places = revision.locations.filter((place) => place.paragraph !== null || place.context)
   if (!places.length) return null
-  if (revision.kind === "move" && places.length > 1 && places.every((place) => place.paragraph !== null)) {
-    const numbers = places.map((place) => place.paragraph!)
-    return <p className="markup-place">Moved between {PART[revision.scope].toLowerCase()} {numbers.slice(0, -1).join(", ")} and {numbers.at(-1)}</p>
-  }
-  // The preview repeats a whole inserted or moved paragraph; it is left out then.
+  // The preview repeats a whole inserted or moved paragraph; it is left out
+  // then. A change with no text of its own (a paragraph break, a table row)
+  // shows its paragraph's.
   const preview = (context: string) => {
     const head = context.replace(/…$/, "")
-    return head && !text.startsWith(head) && !head.startsWith(text) ? context : ""
+    return head && (!text || (!text.startsWith(head) && !head.startsWith(text))) ? context : ""
+  }
+  // A move's places come in document order, which does not say which one it
+  // left; the document shows that.
+  if (revision.kind === "move" && places.length > 1 && places.every((place) => place.paragraph !== null && !preview(place.context))) {
+    const numbers = places.map((place) => place.paragraph!)
+    return <p className="markup-place">Old and new places: {PART[revision.scope].toLowerCase()}s {numbers.slice(0, -1).join(", ")} and {numbers.at(-1)}</p>
   }
   return (
     <>
@@ -451,37 +621,68 @@ function Places({ revision }: { revision: MarkupRevision }) {
   )
 }
 
-function ChangeCard({ revision, decision, disabled, onDecide }: {
+// One change: Accept, Reject and Hold are one radio group, a single Tab stop
+// whose arrow keys move and choose. A refused change carries the refusal and a
+// one-click Hold.
+function ChangeCard({ revision, decision, disabled, carried, failure, cardRef, onDecide, onHold }: {
   revision: MarkupRevision
   decision: MarkupDecision
   disabled: boolean
+  carried: boolean
+  failure?: string
+  cardRef: (node: HTMLLIElement | null) => void
   onDecide: (decision: MarkupDecision) => void
+  onHold: () => void
 }) {
+  const id = useId()
   const label = changeLabel(revision)
   const text = changeText(revision)
   const removes = revision.kind === "delete"
+  function step(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    const last = DECISIONS.length - 1
+    const moves: Record<string, number | undefined> = { ArrowRight: index + 1, ArrowDown: index + 1, ArrowLeft: index - 1, ArrowUp: index - 1, Home: 0, End: last }
+    const to = moves[event.key]
+    if (to === undefined) return
+    event.preventDefault()
+    const next = to > last ? 0 : to < 0 ? last : to
+    onDecide(DECISIONS[next]!.value)
+    event.currentTarget.parentElement?.querySelectorAll<HTMLElement>('[role="radio"]')[next]?.focus()
+  }
   return (
-    <li className={`change-card markup-card is-${decision}`}>
+    <li ref={cardRef} className={`change-card markup-card is-${decision}${failure ? " is-refused" : ""}`}>
       <div className="markup-card-head">
         <span className={`markup-kind is-${revision.kind}`}>{label}</span>
         <span className="change-author">{authorName(revision.author)}</span>
         {revision.date && <time dateTime={revision.date}>{formatDateTime(revision.date)}</time>}
+        {carried && <span className="version-tag">Carried over</span>}
       </div>
       {text && <div className={removes ? "change-old" : revision.kind === "insert" ? "change-new" : "markup-text"}>{text}</div>}
       {revision.family === "paragraph_mark" && revision.kind === "delete" && <p className="markup-hint">Accepting joins this paragraph with the next one.</p>}
+      {revision.kind === "format" && decidable(revision) && <p className="markup-hint">Accept keeps the new formatting; Reject restores the old.</p>}
       <Places revision={revision} />
       <Flags findings={revision.findings} />
       {decidable(revision) ? (
-        <div className="markup-decision" role="group" aria-label={`Decision on this change: ${label}`}>
-          {DECISIONS.map((option) => (
-            <button type="button" key={option.value} className={`markup-choice is-${option.value}`} aria-pressed={decision === option.value} disabled={disabled}
-              onClick={() => onDecide(option.value)}>
+        <div className="markup-decision" role="radiogroup" aria-label={decisionLabel(revision)} aria-describedby={failure ? `${id}-refused` : undefined}>
+          {DECISIONS.map((option, index) => (
+            <button type="button" role="radio" key={option.value} className={`markup-choice is-${option.value}`} aria-checked={decision === option.value}
+              tabIndex={decision === option.value ? 0 : -1} disabled={disabled} onClick={() => onDecide(option.value)} onKeyDown={(event) => step(event, index)}>
               {option.label}
             </button>
           ))}
         </div>
       ) : (
         <p className="markup-word"><strong>Resolve in Word.</strong> doc.haus cannot apply this change safely, so it stays as a tracked change.</p>
+      )}
+      {failure && (
+        <p className="version-error" role="alert" tabIndex={-1}>
+          <span id={`${id}-refused`}>{failure}</span>
+          {decision !== "hold" && (
+            <>
+              {" "}
+              <button type="button" className="linklike" disabled={disabled} onClick={onHold}>Hold this change</button>
+            </>
+          )}
+        </p>
       )}
     </li>
   )

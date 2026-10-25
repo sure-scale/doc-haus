@@ -159,7 +159,7 @@ try {
   const toggle = dialog.getByRole("button", { name: /^Their changes \(\d+\)$/ })
   const render = dialog.locator(".docx-render:not(.docx-skeleton)")
   const tally = panel.locator(".markup-tally")
-  const pressed = (card: ReturnType<typeof cards.nth>) => card.locator(".markup-decision [aria-pressed=true]")
+  const pressed = (card: ReturnType<typeof cards.nth>) => card.locator(".markup-decision [aria-checked=true]")
   const chip = (name: string) => panel.getByRole("group", { name: "Reviewers", exact: true }).getByRole("button", { name: new RegExp(`^${name} \\d+$`) })
   const change = (selector: string, text: string) => changes.filter({ has: page.locator(selector, { hasText: new RegExp(`^${text}$`) }) })
 
@@ -201,7 +201,7 @@ try {
     await expect(tally).toHaveText("0 to accept · 0 to reject · 10 held")
     // A move is one card with both places; formatting reads as such.
     await expect(changes.filter({ hasText: "Moved paragraph" })).toHaveCount(1)
-    await expect(changes.filter({ hasText: "Moved paragraph" })).toContainText("Moved between paragraph 3 and 5")
+    await expect(changes.filter({ hasText: "Moved paragraph" })).toContainText("Old and new places: paragraphs 3 and 5")
     await expect(changes.filter({ hasText: "Formatting changed" })).toHaveCount(1)
     await expect(changes.filter({ hasText: "Paragraph break deleted" })).toHaveCount(1)
     // Threads: the reply under its comment, the resolved note marked, the quote shown.
@@ -239,8 +239,8 @@ try {
     await chip(MORGAN).click()
     await chip(AVERY).click()
     await expect(changes).toHaveCount(5)
-    await change(".change-old", "thirty").getByRole("button", { name: "Accept", exact: true }).click()
-    await change(".change-new", "forty-five").getByRole("button", { name: "Accept", exact: true }).click()
+    await change(".change-old", "thirty").getByRole("radio", { name: "Accept", exact: true }).click()
+    await change(".change-new", "forty-five").getByRole("radio", { name: "Accept", exact: true }).click()
     await expect(pressed(change(".change-old", "thirty"))).toHaveText("Accept")
     await expect(pressed(change(".change-new", "forty-five"))).toHaveText("Accept")
     await expect(tally).toHaveText("2 to accept · 5 to reject · 3 held")
