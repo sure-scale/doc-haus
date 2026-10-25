@@ -180,14 +180,14 @@ export function layeredRedline(rows: RedlineRow[], options: DocxRevisionOptions)
 }
 
 // The other side's markup with the proposals written into it in place, as
-// native tracked changes under the proposals' author, and their review
-// comments. Their revisions and comments are kept as they are; comparison
-// would accept them. Track Changes is left on, as a returned redline travels.
+// native tracked changes each under its proposal's author, as Accept writes
+// them, and their review comments. Their revisions and comments are kept as
+// they are; comparison would accept them. Track Changes is left on, as a
+// returned redline travels.
 async function layeredExport(original: Uint8Array, rows: RedlineRow[], state: RedlineState | undefined, options: DocxRevisionOptions) {
-  const author = previewAuthor(rows)
-  const ownAuthors = ours(author)
+  const ownAuthors = ours(rows.map(rowAuthor))
   const baked = await bakeBound(original, rows, state, { ...options, ownAuthors })
-  const tracked = await bakeBound(original, rows, state, { ...options, ownAuthors, revisionAuthor: author })
+  const tracked = await bakeBound(original, rows, state, { ...options, ownAuthors, ...trackedAs(rows) })
   let output = tracked.bytes
   if (rows.some(row => row.review_comment.trim())) {
     // An edit keeps every w:p in place, so the edited paragraph's position in
@@ -216,8 +216,12 @@ async function bodyParagraphPositions(bytes: Uint8Array, options: DocxRevisionOp
 }
 
 // Our own side's names on a document: every name doc.haus signs with and the
-// proposals' recorded author. Their pending changes hold no paragraph.
-const ours = (author: string) => [...ourAuthors(), author]
+// proposals' recorded authors. Their pending changes hold no paragraph.
+const ours = (authors: readonly string[]) => [...ourAuthors(), ...authors]
+const rowAuthor = (row: RedlineRow) => row.author || draftingAttribution().author
+// Each proposal's edit tracked under its own recorded author.
+const trackedAs = (rows: RedlineRow[]) => ({ revisionAuthor: rowAuthor(rows[0]!),
+  amendmentAuthors: Object.fromEntries(rows.map((row) => [String(row.id), rowAuthor(row)])) })
 
 function previewAuthor(rows: RedlineRow[]) {
   const authors = [...new Set(rows.map(rowAuthor))]
@@ -243,13 +247,12 @@ export async function bake(original: Uint8Array, rows: RedlineRow[], state?: Red
   const bound = rows.some((row) => row.target_json != null)
   if (bound && rows.some((row) => row.target_json == null)) throw new Error("Revision-bound and older proposals require separate review. Prepare a fresh change list.")
   const write = async (ownAuthors?: readonly string[], tracked = false) => bound
-    ? (await bakeBound(original,rows,state,{...options,...ownAuthors ? {ownAuthors} : {},...tracked ? {revisionAuthor:rowAuthor(rows[0]!),
-      amendmentAuthors:Object.fromEntries(rows.map((row) => [String(row.id),rowAuthor(row)]))} : {}})).bytes
+    ? (await bakeBound(original,rows,state,{...options,...ownAuthors ? {ownAuthors} : {},...tracked ? trackedAs(rows) : {}})).bytes
     : bakeOlder(original,rows,tracked)
   try {
     if (options.pendingRevisions !== "layer" || !(await (await docxodus()).getRevisions(original)).length) return await write()
     // Every proposal's author is our side, whichever name it was prepared under.
-    const own = [...ourAuthors(),...rows.map(rowAuthor)]
+    const own = ours(rows.map(rowAuthor))
     const [plain,tracked] = [await write(own),await write(own,true)]
     await assertLayeredRoundTrip(tracked,original,plain)
     return tracked
@@ -259,7 +262,6 @@ export async function bake(original: Uint8Array, rows: RedlineRow[], state?: Red
     throw new RedlineAcceptConflictError(`The changes to ${JSON.stringify(first!.find_text)} and ${JSON.stringify(second!.find_text)} overlap, so Accept all cannot write both. Accept the one you want on its own, then reject the other and request that edit again.`)
   }
 }
-const rowAuthor = (row: RedlineRow) => row.author || draftingAttribution().author
 
 // Older proposals, replayed by their text; `tracked`, as native tracked changes
 // under each proposal's author.
@@ -341,7 +343,7 @@ export function redlineStaleReason(row:RedlineRow,state:RedlineState,protectedWo
   // The touch rule (othersPending): a later pending change by anyone but our
   // own side (every name doc.haus signs with, and the proposal's author) holds
   // the paragraph, one that leaves its text as it was (a formatting change) included.
-  const others = target.pending.length ? othersPending(target.pending,ours(row.author)) : []
+  const others = target.pending.length ? othersPending(target.pending,ours([row.author])) : []
   return others.length ? heldParagraph(row.find_text,others) : undefined
 }
 function heldParagraph(text:string,authors:string[]) {

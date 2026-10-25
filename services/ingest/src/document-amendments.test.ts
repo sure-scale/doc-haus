@@ -1119,6 +1119,13 @@ test("on an uploaded markup, Accept all writes proposals prepared under differen
     expect((await ingest.request("/preferences",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({attorney:"Riley Chen"})})).status).toBe(200)
     const named = await ids(all,"Say construed and require written consent to assign.")
     expect(await all.pending()).toEqual([first[0]!,...named].map((id) => [id,undefined,undefined]))
+    // The preview shows each proposal under its own name, as Accept all writes it.
+    const preview = await ingest.request(`${all.route}/documents/redlined?name=working.docx`)
+    expect(preview.status).toBe(200)
+    const previewed = new Uint8Array(await preview.arrayBuffer())
+    const commentAuthors = [...strFromU8(unzipSync(previewed)["word/comments.xml"]!).matchAll(/<w:comment\b[^>]*?\bw:author="([^"]*)"/g)].map((match) => match[1])
+    expect(readDocxComments(previewed).map((row,index) => [commentAuthors[index],row.text])).toEqual([...COUNTERPARTY_MARKUP.comments.map((row) => [row.author,row.text]),
+      ["doc.haus","Requested governing law update."],["Riley Chen","Requested wording."],["Riley Chen","Consent must be written."]])
 
     const response = await ingest.request(`${all.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
     expect({status:response.status,body:await response.json()}).toEqual({status:200,body:{ok:true,accepted:3}})
@@ -1131,6 +1138,8 @@ test("on an uploaded markup, Accept all writes proposals prepared under differen
     expect(by("doc.haus",after)).toEqual([["delete","Province"],["insert","State"]])
     expect(by("Riley Chen",after)).toEqual([["delete","consent"],["insert","prior written consent"],["delete","governed by"],["insert","construed under"]])
     expect(after.filter((row) => row.author !== "doc.haus" && row.author !== "Riley Chen")).toEqual(theirs)
+    const shown = (rows:Awaited<ReturnType<typeof listedRevisions>>) => rows.map((row) => [row.author,row.type,row.text])
+    expect(shown(after)).toEqual(shown(await listedRevisions(previewed)))
     expect(new Set(revisionMarkIds(accepted)).size).toBe(revisionMarkIds(accepted).length)
     expect([first[0]!,...named].map(all.status)).toEqual(["accepted","accepted","accepted"])
 
