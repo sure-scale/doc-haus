@@ -6,8 +6,7 @@ import { changedRange, openRevision } from "./docx-amendments"
 import { paragraphFields, refInstruction, runText, unlink } from "./docx-fields"
 import { amendmentSchema, amendmentParagraphs, amendmentText, ensureParagraphPointers, normalizeParagraphText, owningParagraph, paragraphPointers, paragraphSha256, type Amendment } from "./drafting-amendment"
 import { writeDurableBytes } from "./durable-json"
-import { FIELD_HIGHLIGHT_FILL, OPEN_ITEM_HIGHLIGHT_FILL, hasOpenItemMarker } from "./open-items"
-import { OPEN_ITEM_PATTERN } from "./marker-patterns"
+import { FIELD_HIGHLIGHT_FILL, OPEN_ITEM_HIGHLIGHT_FILL, shadedMarkerSpans } from "./open-items"
 
 export type AppliedAmendment = { id: string; pid: string; mode: "code" | "already_applied"; result_pids?: string[] }
 // What a reviewer needs to act on an unapplied amendment. `original` is the text
@@ -300,9 +299,10 @@ function hunkRange(from: string, to: string) {
   return { offset: at, replaced: previous, changed: previous + changed.slice(0, -replaced.length) }
 }
 
-// [start, end) of each open-item marker in a paragraph's text.
+// [start, end) of each marker the DOCX shades (an open item, a blank or a
+// drafting placeholder) in a paragraph's text.
 function markerSpans(text: string) {
-  return [...text.matchAll(OPEN_ITEM_PATTERN)].map(marker => [marker.index ?? 0, (marker.index ?? 0) + marker[0].length] as const)
+  return shadedMarkerSpans(text).map(span => [span.start, span.end] as const)
 }
 
 // Cardinality edits must not silently discard section breaks, fields, or ranges
@@ -354,7 +354,7 @@ function clearResolvedHighlights(bytes: Uint8Array, pids: Set<string>) {
     const paragraph = owningParagraph(run) as Element | null
     if (!paragraph || !paragraphPointers(paragraph).some(row => pids.has(row.pid))) return false
     const text = Array.from(run.getElementsByTagNameNS(W, "t")).map(text => text.textContent ?? "").join("")
-    return !hasOpenItemMarker(text) || text.replace(OPEN_ITEM_PATTERN, "") !== ""
+    return !text || markerSpans(text).reduce((covered, [start, end]) => covered + end - start, 0) < text.length
   })
   if (!shading.length) return bytes
   for (const shd of shading) shd.parentNode!.removeChild(shd)

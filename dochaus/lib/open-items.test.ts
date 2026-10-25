@@ -24,16 +24,24 @@ describe("highlightOpenItemsInDocx", () => {
     expect(xml).toContain("(open item: Maryland notice wording, per R02.)")
   })
 
-  test("does not highlight ordinary placeholders", () => {
+  test("highlights an ordinary placeholder whole as an open item, a bracketed blank as a field, and nothing beside them", () => {
     const docx = zipSync({
       "word/document.xml": strToU8(
-        `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>[insert execution date]</w:t></w:r></w:p></w:body></w:document>`,
+        `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p>` +
+          `<w:r><w:t xml:space="preserve">Dated [insert execution date] by the parties; accounts [TBC – outstanding]; signed [____].</w:t></w:r>` +
+          `</w:p></w:body></w:document>`,
       ),
     })
 
-    expect(strFromU8(unzipSync(highlightOpenItemsInDocx(docx))["word/document.xml"]!)).not.toContain(
-      `w:fill="${OPEN_ITEM_HIGHLIGHT_FILL}"`,
-    )
+    expect(shadedRuns(highlightOpenItemsInDocx(docx))).toEqual([
+      { text: "Dated ", fill: undefined },
+      { text: "[insert execution date]", fill: OPEN_ITEM_HIGHLIGHT_FILL },
+      { text: " by the parties; accounts ", fill: undefined },
+      { text: "[TBC – outstanding]", fill: OPEN_ITEM_HIGHLIGHT_FILL },
+      { text: "; signed ", fill: undefined },
+      { text: "[____]", fill: FIELD_HIGHLIGHT_FILL },
+      { text: ".", fill: undefined },
+    ])
   })
 
   test("highlights fillable underscore fields", () => {
@@ -124,6 +132,57 @@ describe("shadeOpenItemsInDocx", () => {
     expect(shadeOpenItemsInDocx(shaded, written)).toBe(shaded)
   })
 
+  test("shades a drafting placeholder whole across runs, a bracketed blank as a field, an open item naming a placeholder as one open item, and nothing beside them", () => {
+    const docx = zipSync({
+      "word/document.xml": strToU8(
+        `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+          // A placeholder split by a bold word, as drafting renders "[insert the **agreed** period]".
+          `<w:p><w:r><w:t xml:space="preserve">Payable within [insert the </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>agreed</w:t></w:r>` +
+          `<w:r><w:t xml:space="preserve"> period] of invoice; cap [£ (cap figure to be confirmed)].</w:t></w:r></w:p>` +
+          `<w:p><w:r><w:t xml:space="preserve">Sign here: [____] and initial ___.</w:t></w:r></w:p>` +
+          `<w:p><w:r><w:t xml:space="preserve">Fee: [open item: confirm whether the fee [TBC] is to be confirmed] now.</w:t></w:r></w:p>` +
+          `</w:body></w:document>`,
+      ),
+    })
+
+    const shaded = shadeOpenItemsInDocx(docx)
+    expect(shadedRuns(shaded)).toEqual([
+      { text: "Payable within ", fill: undefined },
+      { text: "[insert the ", fill: OPEN_ITEM_HIGHLIGHT_FILL },
+      { text: "agreed", fill: OPEN_ITEM_HIGHLIGHT_FILL },
+      { text: " period]", fill: OPEN_ITEM_HIGHLIGHT_FILL },
+      { text: " of invoice; cap ", fill: undefined },
+      { text: "[£ (cap figure to be confirmed)]", fill: OPEN_ITEM_HIGHLIGHT_FILL },
+      { text: ".", fill: undefined },
+      { text: "Sign here: ", fill: undefined },
+      { text: "[____]", fill: FIELD_HIGHLIGHT_FILL },
+      { text: " and initial ", fill: undefined },
+      { text: "___", fill: FIELD_HIGHLIGHT_FILL },
+      { text: ".", fill: undefined },
+      { text: "Fee: ", fill: undefined },
+      { text: "[open item: confirm whether the fee [TBC] is to be confirmed]", fill: OPEN_ITEM_HIGHLIGHT_FILL },
+      { text: " now.", fill: undefined },
+    ])
+    // The bold word inside the placeholder stays bold.
+    expect(strFromU8(unzipSync(shaded)["word/document.xml"]!)).toMatch(/<w:rPr><w:b\/><w:shd [^>]*\/><\/w:rPr><w:t[^>]*>agreed<\/w:t>/)
+    expect(shadeOpenItemsInDocx(shaded)).toBe(shaded)
+  })
+
+  test("leaves a run a lawyer shaded in a fill of their own as it is, its placeholder included", () => {
+    const own = `<w:shd w:val="clear" w:color="auto" w:fill="FFFF00"/>`
+    const docx = zipSync({
+      "word/document.xml": strToU8(
+        `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p>` +
+          `<w:r><w:rPr>${own}</w:rPr><w:t>[insert date]</w:t></w:r><w:r><w:t xml:space="preserve"> and </w:t></w:r>` +
+          `<w:r><w:rPr>${own}</w:rPr><w:t xml:space="preserve">due on [TBC] each year</w:t></w:r>` +
+          `</w:p></w:body></w:document>`,
+      ),
+    })
+
+    // Drafting's highlight and the end pass, the paragraph cleared or not, return the body itself.
+    for (const shaded of [highlightOpenItemsInDocx(docx), shadeOpenItemsInDocx(docx), shadeOpenItemsInDocx(docx, () => true)]) expect(shaded).toBe(docx)
+  })
+
   test("reads a tab or break in a tracked deletion as no text: it is not shaded and does not move the markers", () => {
     const docx = zipSync({
       "word/document.xml": strToU8(
@@ -139,3 +198,10 @@ describe("shadeOpenItemsInDocx", () => {
     expect(Array.from(doc.getElementsByTagName("w:r")).filter(run => run.getElementsByTagName("w:shd").length).map(run => run.textContent)).toEqual(["[open item: a", "b]"])
   })
 })
+
+// Each run of a body with text, in document order, with its shading fill.
+function shadedRuns(bytes: Uint8Array) {
+  const doc = new DOMParser().parseFromString(strFromU8(unzipSync(bytes)["word/document.xml"]!), "application/xml")
+  return Array.from(doc.getElementsByTagName("w:r")).filter(run => run.textContent)
+    .map(run => ({ text: run.textContent, fill: run.getElementsByTagName("w:shd")[0]?.getAttribute("w:fill") ?? undefined }))
+}
