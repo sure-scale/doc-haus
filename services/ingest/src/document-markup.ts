@@ -5,6 +5,7 @@ import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/ar
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { addCommentReplies, CommentReplyError, replyInitials, type CommentReply } from "../../../dochaus/lib/docx-comment-replies"
 import { readDocxMarkup, type DocxMarkup } from "../../../dochaus/lib/docx-markup"
+import { markupConsistency } from "../../../dochaus/workflows/lean/version-consistency"
 import { getDocumentRole, listPendingRedlines, openDb } from "./db"
 import { findVersionBySha, oneLine, readDocumentVersions, readVersion, readVersionBytes, sha256Hex, type VersionWrite } from "./document-versions"
 import { matterDocumentName, SourceDocumentConflictError } from "./ingest"
@@ -24,7 +25,10 @@ import { readDocumentTarget } from "./registered-document"
 // leaves no copy of removed wording behind. The same Apply adds the replies the
 // lawyer approved to the other side's open comment threads (scope 5), as Word
 // replies signed with the lawyer's name, in the same version; replies alone are
-// a revision with no event, as the event kinds have none for a reply. Only the
+// a revision with no event, as the event kinds have none for a reply. The
+// response carries the cross-references and defined terms the decisions broke
+// (#198), read by code once the version is written and kept nowhere, so its
+// clause headings leave no copy behind either. Only the
 // lawyer's request reaches the decisions route; no agent tool calls it.
 // doc.haus deliverables keep their own review path.
 type Options = {
@@ -145,14 +149,17 @@ export function documentMarkupRoutes(options: Options) {
             (counts.consumed ? `, ${counts.consumed} resolved with another change` : "") + (added.length ? `; ${answered}` : "") }
         : { origin: "revision", actor, label: answered }
       try {
-        return { written: await options.write(directory, target.name, Buffer.from(replied.bytes), version), counts, rows, added }
+        return { written: await options.write(directory, target.name, Buffer.from(replied.bytes), version), counts, rows, added,
+          name: target.name, before: bytes, after: replied.bytes }
       } catch (error) {
         if (error instanceof SourceDocumentConflictError) return c.json({ error: error.message }, 409)
         throw error
       }
     })
     if (result instanceof Response) return result
-    return c.json({ ...result.written, counts: result.counts, decisions: result.rows, replies: result.added })
+    // Read from the two versions' bytes once the lock is released.
+    const consistency = await versionConsistency(result.name, result.before, result.after)
+    return c.json({ ...result.written, counts: result.counts, decisions: result.rows, replies: result.added, consistency })
   })
 
   app.route("/", markupReplyRoutes(options))
@@ -187,6 +194,19 @@ async function readMarkup(name: string, bytes: Uint8Array): Promise<DocxMarkup |
     return await readDocxMarkup(bytes)
   } catch (error) {
     console.warn("[markup] tracked changes and comments not read", { name, ...diagnosticErrorMetadata(error) })
+  }
+}
+
+/** The cross-references and defined terms the Apply broke (#198), for the
+ * viewer's notice; nothing is stored. A check that fails is reported as not
+ * checked, never as clean. */
+async function versionConsistency(name: string, before: Uint8Array, after: Uint8Array):
+  Promise<{ status: "checked"; findings: { detail: string }[] } | { status: "not_checked" }> {
+  try {
+    return { status: "checked", findings: (await markupConsistency(name, before, after)).map(({ detail }) => ({ detail })) }
+  } catch (error) {
+    console.warn("[markup] references and defined terms not checked", { name, ...diagnosticErrorMetadata(error) })
+    return { status: "not_checked" }
   }
 }
 

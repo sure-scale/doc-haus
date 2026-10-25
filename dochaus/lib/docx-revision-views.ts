@@ -2,6 +2,7 @@ import { DOMParser } from "@xmldom/xmldom"
 import { strFromU8, unzipSync } from "fflate"
 import { docxodus } from "./docxodus"
 import { exportDocxComments, readDocxCommentParagraphs } from "./docx-comments"
+import { writeListLabels } from "./docx-list-labels"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const KINDS = new Map([["ins", "insert"], ["del", "delete"], ["moveFrom", "move from"], ["moveTo", "move to"]])
@@ -11,12 +12,19 @@ export type RevisionBodyView = "current_body" | "baseline_body" | "marked_up_bod
 /** A read-only projection of the main body (word/document.xml); formatting
  * changes are not marked. readDocxMarkup lists every part's changes. PIDs/
  * paragraph ordinals in a baseline belong to that projected artifact; they are
- * never amendment targets in current Word. */
-export async function readDocxBodyView(bytes: Uint8Array, view: RevisionBodyView) {
+ * never amendment targets in current Word. `labels`: the projected views read
+ * each numbered paragraph with the label Word shows, as ingest's text does
+ * (writeListLabels); a file whose labels cannot be read throws rather than
+ * reading without its numbers. The marked-up view is read as saved. */
+export async function readDocxBodyView(bytes: Uint8Array, view: RevisionBodyView, options: { labels?: boolean } = {}) {
   if (view !== "marked_up_body") {
     const dx = await docxodus()
     const projected = view === "baseline_body" ? await dx.docxDiffRejectRevisions(bytes) : await dx.docxDiffAcceptRevisions(bytes)
-    return readDocxCommentParagraphs(projected)
+    if (!options.labels) return readDocxCommentParagraphs(projected)
+    let unread = false
+    const labelled = await writeListLabels(Buffer.from(projected), () => { unread = true })
+    if (unread) throw new Error("list_labels_unread")
+    return readDocxCommentParagraphs(labelled)
   }
   const part = unzipSync(bytes)["word/document.xml"]
   if (!part) throw new Error("invalid_docx_package")
