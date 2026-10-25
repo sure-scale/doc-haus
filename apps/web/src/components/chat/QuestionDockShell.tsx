@@ -109,12 +109,14 @@ export default function QuestionDockShell({
   )
 }
 
-// Whether the lawyer is typing: the focused field holds their words. An empty
-// one, such as the composer just sent from, does not count.
+// Whether the lawyer is typing: the focused text field holds their words. An
+// empty one, such as the composer just sent from, does not count, and neither
+// does a box or button, whose value is never empty.
+const TEXT_ENTRY = new Set(["text", "search", "email", "url", "tel", "password", "number"])
 function typing() {
   const active = document.activeElement
   const words =
-    active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+    (active instanceof HTMLInputElement && TEXT_ENTRY.has(active.type)) || active instanceof HTMLTextAreaElement
       ? active.value
       : active instanceof HTMLElement && active.isContentEditable
         ? active.textContent

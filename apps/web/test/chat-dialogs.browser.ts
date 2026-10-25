@@ -67,7 +67,7 @@ const server = Bun.serve({
     if (route === "GET /") return new Response(`<html><meta charset="utf-8"><style>body{font-family:sans-serif;margin:0}${css}</style><div id="root" style="display:flex;flex-direction:column;height:100vh"></div><script type="module" src="/harness.js"></script></html>`, { headers: { "content-type": "text/html" } })
     if (route === "GET /ingest/matters/matter")
       return json({ id: "matter", title: "Supply agreement", dir: "/matter", created_at: 1, documents: [{ id: 1, name: "Supply terms.docx", doc_path: "/matter/Supply terms.docx", created_at: 1, role: "source" }] })
-    if (route === "GET /ingest/jurisdictions") return json([])
+    if (route === "GET /ingest/jurisdictions") return json([{ code: "england-wales", name: "England and Wales", citationStyle: "oscola" }])
     if (route === "GET /ingest/playbooks") return json(playbooks)
     if (route === "GET /ingest/workflows") return json({ dir: "/workflows", workflows: [] })
     if (route === "GET /api/agent") return json({ data: CHAT_ASSISTANTS.map(({ name }) => ({ id: name, description: name, mode: "primary" })) })
@@ -202,6 +202,23 @@ try {
       await shot("run-asks-closed")
       await page.getByRole("button", { name: "Answer 2", exact: true }).click()
       await questions.waitFor()
+    })
+
+    await check("questions asked while a box is ticked open: only words in a field are typing", width, height, async (page, shot) => {
+      drafting = working
+      await page.goto(server.url.href)
+      await page.getByRole("button", { name: "Pause drafting", exact: true }).waitFor()
+      // By keyboard: in this bare page the run's header covers the header's controls at 400 px.
+      await page.getByRole("button", { name: "+ Jurisdiction", exact: true }).focus()
+      await page.keyboard.press("Enter")
+      await page.getByRole("checkbox", { name: /England and Wales/ }).focus()
+      drafting = asking
+      await page.locator(".question-dock").waitFor(poll)
+      await page.waitForTimeout(500)
+      await shot("run-asks-from-checkbox")
+      const questions = page.getByRole("dialog", { name: "Question 1 of 2" })
+      await questions.waitFor()
+      assert.ok(await focusWithin(page, "dialog.question-dialog"), "focus moves to the question")
     })
 
     await check("questions asked while the lawyer types wait in the dock", width, height, async (page, shot) => {
