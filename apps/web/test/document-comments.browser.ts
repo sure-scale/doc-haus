@@ -527,7 +527,6 @@ try {
     const all = (selector: string, scope: ParentNode = root) => [...scope.querySelectorAll<HTMLElement>(selector)]
     for (const node of all(":is(ins, del)[data-author]:not(.rev-move-from, .rev-move-to)")) add(node.dataset.author, getComputedStyle(node).color)
     for (const node of all(":is(.rev-para-ins, .rev-para-del, .rev-para-format-change, .rev-section-format-change)[data-author]")) add(node.dataset.author, getComputedStyle(node).borderLeftColor)
-    for (const node of all(".rev-section-format-change[data-author]")) add(node.dataset.author, getComputedStyle(node).color)
     for (const node of all(":is(.rev-table-format-change, .rev-row-format-change, .rev-cell-format-change)[data-author]")) add(node.dataset.author, getComputedStyle(node).outlineColor)
     for (const node of all(".rev-para-del > .rev-para-mark-del")) add(node.parentElement!.dataset.author, getComputedStyle(node).color)
     for (const node of all(".rev-format-change[data-author]")) add(node.dataset.author, getComputedStyle(node).borderBottomColor)
@@ -543,7 +542,9 @@ try {
     const tones = ["var(--author-1)", "var(--author-2)", "var(--author-3)", "var(--accent)"].map((value) => resolve(value))
     probe.remove()
     const missing = ["rev-format-change", "rev-para-format-change", "rev-section-format-change", "rev-table-format-change", "rev-row-format-change", "rev-cell-format-change", "rev-para-ins", "rev-para-del", "rev-para-mark-del", "rev-row-ins", "rev-row-del", "rev-cell-ins", "rev-cell-del"].filter((marker) => !root.querySelector(`.${marker}`))
-    return { authors: out, tones, missing }
+    // A reformatted section's own text, beside a plain paragraph's.
+    const text = [all(".rev-section-format-change")[0], all("p:not([class*='rev-'])").find((node) => node.textContent?.includes("to the next one"))].map((node) => node && getComputedStyle(node).color)
+    return { authors: out, tones, missing, text }
   })
   const coloured = (painted: Awaited<ReturnType<typeof paints>>, label: string) => {
     const [first, second, third, brand] = painted.tones
@@ -552,6 +553,7 @@ try {
     for (const [author, { fills, tint }] of Object.entries(painted.authors)) assert.ok(fills.every((fill) => fill === tint), `${label}: ${author}'s rows and cells are tinted in their colour ${JSON.stringify({ fills, tint })}`)
     assert.ok(painted.authors[AVERY]!.fills.length && painted.authors[LAWYER]!.fills.length, `${label}: setup, both changed rows and cells`)
     assert.deepEqual(painted.missing, [], `${label}: setup, every kind of marker is on the page`)
+    assert.ok(painted.text[1] && painted.text[0] === painted.text[1], `${label}: a reformatted section's text is in the body's colour, only its bar in its author's ${JSON.stringify(painted.text)}`)
   }
   const shoot = async (page: Awaited<ReturnType<typeof open>>["page"], name: string) => {
     if (!screenshots) return

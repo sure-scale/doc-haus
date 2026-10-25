@@ -3562,14 +3562,19 @@ button.linklike:hover:not(:disabled) {
 /* A whole paragraph, table row or cell an author inserted, deleted or
    reformatted, a table or section they reformatted, a deleted paragraph mark
    (¶) and a formatting change, in the author's colour too; the bar, fill,
-   dotted line or outline still says what changed. The blackline sets no
-   author colours and keeps Docxodus's. */
+   dotted line or outline still says what changed. A reformatted section's
+   own text keeps the body's colour, as coloured text reads as inserted. The
+   blackline sets no author colours and keeps Docxodus's. */
 .document-reader:not(.blackline-reader) .docx-render :is(.rev-para-ins, .rev-para-del, .rev-para-format-change, .rev-section-format-change) {
   border-left-color: var(--author-tone, var(--border-strong));
 }
 
-.document-reader:not(.blackline-reader) .docx-render :is(.rev-para-del > .rev-para-mark-del, .rev-section-format-change) {
+.document-reader:not(.blackline-reader) .docx-render .rev-para-del > .rev-para-mark-del {
   color: var(--author-tone, var(--muted));
+}
+
+.document-reader:not(.blackline-reader) .docx-render .rev-section-format-change {
+  color: inherit;
 }
 
 .document-reader:not(.blackline-reader) .docx-render .rev-format-change {
