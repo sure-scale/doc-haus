@@ -1,4 +1,5 @@
 import type { CounterpartyItem } from "../../lib/docx-markup"
+import { escapeTagOpeners } from "../../lib/untrusted"
 import { parseJsonObject } from "./change-checks"
 import { PID_REFERENCE, TOOL_SYNTAX_ISSUE, printedToolCall, record, type ParagraphRow } from "./checks"
 import { counterpartyFindings } from "./counterparty"
@@ -229,17 +230,17 @@ function findingDetail(row: RaisedFinding) {
 /** Findings as a prompt lists them: each with its id, the review that raised
  * it and, for another document's review, that document. Paragraph pointers
  * stay only on the reviewed document's own findings; a draft is shown no ids.
- * Every "<" is written as its JSON escape, so no finding's text (the other
+ * Every "<" is escaped (escapeTagOpeners), so no finding's text (the other
  * side's included) can close the tag the prompt lists them in. */
 export function findingsText(findings: RaisedFinding[], document: DocID, options: { ids?: false } = {}) {
-  return JSON.stringify(findings.map(row => {
+  return escapeTagOpeners(JSON.stringify(findings.map(row => {
     const own = row.raised_in === document
     const text = (value: string) => own ? value : value.replace(PID_REFERENCE, "(earlier paragraph)")
     return {
       ...(options.ids === false ? {} : { id: row.id }), review: row.stage, ...(own ? {} : { raised_by: row.raised_in }),
       ...(row.pids ? { pids: row.pids } : {}), origin: row.origin, finding: text(row.finding), ...(row.instead ? { instead: text(row.instead) } : {}), sources: row.sources,
     }
-  }), null, 2).replaceAll("<", "\\u003c")
+  }), null, 2))
 }
 
 /** One saved review as later prompts show it, without finding ids, which only
