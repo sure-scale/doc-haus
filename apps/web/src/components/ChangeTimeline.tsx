@@ -69,32 +69,34 @@ function lineAt(boxes: DOMRect[], point?: Point) {
 
 // Below, above, right, then left of the line: the first side with room for
 // the whole card, else the roomier of below and above with the card's height
-// capped so its list scrolls. Then it shifts to stay inside the window. The
-// app zooms the body (`--ui-scale`), so window measures are divided by it.
-function placeCard(card: HTMLElement, list: HTMLElement | null, line: DOMRect) {
+// capped so its list scrolls. Then it shifts to stay inside the window, and
+// vertically inside the pane (`top`..`bottom`) so it never covers the viewer's
+// toolbar. The app zooms the body (`--ui-scale`), so window measures are
+// divided by it.
+function placeCard(card: HTMLElement, list: HTMLElement | null, line: DOMRect, top: number, bottom: number) {
   const scale = Number(getComputedStyle(document.body).zoom) || 1
   const box = card.getBoundingClientRect()
   const width = box.width
   const height = box.height + (list ? (list.scrollHeight - list.clientHeight) * scale : 0)
   const room = {
-    below: innerHeight - MARGIN - line.bottom - GAP,
-    above: line.top - GAP - MARGIN,
+    below: bottom - MARGIN - line.bottom - GAP,
+    above: line.top - GAP - MARGIN - top,
     right: innerWidth - MARGIN - line.right - GAP,
     left: line.left - GAP - MARGIN,
   }
   const fits = (side: (typeof SIDES)[number]) => side === "below" || side === "above"
     ? height <= room[side] && width <= innerWidth - 2 * MARGIN
-    : width <= room[side] && height <= innerHeight - 2 * MARGIN
+    : width <= room[side] && height <= bottom - top - 2 * MARGIN
   const fitting = SIDES.find(fits)
   const side = fitting ?? (room.below >= room.above ? "below" : "above")
   const cap = fitting ? undefined : Math.max(room[side], 0)
   const shown = cap === undefined ? height : Math.min(height, cap)
   const left = side === "right" ? line.right + GAP : side === "left" ? line.left - GAP - width : line.left
-  const top = side === "below" ? line.bottom + GAP : side === "above" ? line.top - GAP - shown : line.top
-  const within = (value: number, size: number, extent: number) => Math.max(MARGIN, Math.min(value, extent - MARGIN - size))
+  const y = side === "below" ? line.bottom + GAP : side === "above" ? line.top - GAP - shown : line.top
+  const within = (value: number, size: number, start: number, end: number) => Math.max(start + MARGIN, Math.min(value, end - MARGIN - size))
   card.style.maxHeight = cap === undefined ? "" : `${cap / scale}px`
-  card.style.left = `${within(left, width, innerWidth) / scale}px`
-  card.style.top = `${within(top, shown, innerHeight) / scale}px`
+  card.style.left = `${within(left, width, 0, innerWidth) / scale}px`
+  card.style.top = `${within(y, shown, top, bottom) / scale}px`
   card.dataset.placement = side
   card.style.visibility = "visible"
 }
@@ -401,7 +403,10 @@ export default function ChangeTimeline({ root, html, markup, revisions }: {
       line ??= lineAt(boxes, opened.point)
       const at = boxes[line] ?? boxes[0] ?? opened.anchor.getBoundingClientRect()
       if (moved && !inView(at, clips)) return controls.current?.close()
-      placeCard(element, list.current, at)
+      // The pane: the scrolling boxes outside the page (a table's own scroll
+      // box would cramp the card), within the window.
+      const pane = clips.filter((clip) => !root.current?.contains(clip)).map((clip) => clip.getBoundingClientRect())
+      placeCard(element, list.current, at, Math.max(0, ...pane.map((box) => box.top)), Math.min(innerHeight, ...pane.map((box) => box.bottom)))
     }
     place(false)
     if (focusList.current) {
