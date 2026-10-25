@@ -10,13 +10,15 @@ import { readChangeList, readParagraphs } from "../workflows/lean/checks"
 import { readLeanPlan } from "../workflows/lean/plan"
 import { UNTRUSTED_DOCUMENT_NOTICE } from "./untrusted"
 import { readDocxBodyView } from "./docx-revision-views"
-import { readMarkupComments } from "./docx-markup"
+import { readDocxMarkup, readMarkupComments, type MarkupRevision } from "./docx-markup"
 import { detectInjection, normalizeUntrustedText } from "./untrusted-text"
 
-export type CurrentDocumentView = "current_body" | "baseline_body" | "marked_up_body" | "comments" | "deleted_text" | "proposed_body"
+export type CurrentDocumentView = "current_body" | "baseline_body" | "marked_up_body" | "comments" | "deleted_text" | "proposed_body" | "revisions"
 /** `label` is the list number Word prints before a body paragraph ("2.1"); it is not part of `text`. */
 /** `flagged` names the injection rules an untrusted entry matched; its text is normalized (invisible characters removed). */
-export type CurrentDocumentEntry = { index: number; artifact: string; sha256: string; label?: string; text: string; flagged?: string[]; paragraph_index?: number; pids?: string[]; comment_id?: string; author?: string; date?: string | null; parent?: string | null; resolved?: boolean | null; markers?: unknown; representation?: "generated_proposal"; initial_pid?: string; proposed_part_index?: number; basis?: string[] }
+export type CurrentDocumentEntry = { index: number; artifact: string; sha256: string; label?: string; text: string; flagged?: string[]; paragraph_index?: number; pids?: string[]; comment_id?: string; author?: string; date?: string | null; parent?: string | null; resolved?: boolean | null; markers?: unknown; representation?: "generated_proposal"; initial_pid?: string; proposed_part_index?: number; basis?: string[]; kind?: MarkupRevision["kind"]; family?: string; part?: MarkupRevision["scope"]; locations?: { paragraph: number | null; context?: string }[]; locations_total?: number; status?: MarkupRevision["status"] }
+// A table or row change lists every cell paragraph; the first few place it.
+const LOCATION_CAP = 5
 type CurrentView = { status: "available"; document: string; view: CurrentDocumentView; entries: CurrentDocumentEntry[] } | { status: "unavailable"; document: string; view: CurrentDocumentView; reason: string }
 
 /** Actual Word and the explicitly requested pending projection remain distinct evidence views. */
@@ -55,9 +57,10 @@ export async function currentDocumentView(directory: string, document: string, v
       return { status: "available", document, view, entries }
     }
     const current = !selected || selected.id === "notes" ? undefined : currentDocumentArtifacts(directory, selected.id as `d${number}`)
-    // The accepted body remains the current view. A baseline or markup view
-    // of a generated document reads its current redline, when one exists.
-    const revisionView = view === "baseline_body" || view === "marked_up_body"
+    // The accepted body remains the current view. A baseline, markup or
+    // revisions view of a generated document reads its current redline, when one exists.
+    const bodyView = view === "current_body" || view === "baseline_body" || view === "marked_up_body"
+    const revisionView = view === "baseline_body" || view === "marked_up_body" || view === "revisions"
     const candidates = uploaded ? [document] : selected?.id === "notes" ? [".dochaus/lean/drafting-notes.docx"]
       : revisionView && current?.redline ? [`.dochaus/lean/${current.redline}`] : current?.body ? [`.dochaus/lean/${current.body}`] : []
     let body: { artifact: string; bytes: Buffer } | undefined
@@ -77,7 +80,7 @@ export async function currentDocumentView(directory: string, document: string, v
       // A planned document's body text stays exact: amendments target it. An
       // uploaded source's views, and every comment and deleted text, are
       // third-party text, read as ingest indexes it.
-      if (view === "current_body" || revisionView) for (const paragraph of await readDocxBodyView(bytes, view as "current_body" | "baseline_body" | "marked_up_body")) {
+      if (bodyView) for (const paragraph of await readDocxBodyView(bytes, view)) {
         const label = view === "current_body" ? paragraph.pids.map(pid => labels.get(pid)).find(Boolean) : undefined
         entries.push({ index: entries.length, ...identity, paragraph_index: paragraph.paragraph_index, pids: paragraph.pids, ...(label ? { label } : {}), ...(uploaded ? screened(paragraph.paragraph_text) : { text: paragraph.paragraph_text }) })
       }
@@ -90,6 +93,16 @@ export async function currentDocumentView(directory: string, document: string, v
           entries.push({ index: entries.length, ...identity, comment_id: String(comment.id), author: comment.author, date: comment.date, parent: comment.parent === null ? null : String(comment.parent), resolved: comment.resolved,
             markers: markers.map(marker => ({ kind: marker.kind, paragraph_index: marker.paragraph_index, xml_paragraph_index: marker.xml_paragraph_index, pids: marker.pids })), text: comment.text, ...(rules.length ? { flagged: rules } : {}) })
         }
+      }
+      // Every part's changes, formatting included: the list the lawyer's markup panel shows.
+      if (view === "revisions") for (const revision of (await readDocxMarkup(bytes)).revisions) {
+        // A context the change's own text already starts with (a whole moved or inserted paragraph) is left out.
+        const places = revision.locations.map(({ paragraph, context }) => ({ paragraph, ...(context && !revision.text.startsWith(context.replace(/…$/, "")) ? { context } : {}) }))
+        const shown = places.slice(0, LOCATION_CAP)
+        // Text and author are screened in readDocxMarkup; a header or note context reaches agents only here.
+        const rules = [...new Set([...revision.findings.map(finding => finding.rule), ...shown.flatMap(place => detectInjection(place.context ?? "").map(finding => finding.rule))])]
+        entries.push({ index: entries.length, ...identity, kind: revision.kind, family: revision.family, author: revision.author, date: revision.date, part: revision.scope, locations: shown,
+          ...(places.length > shown.length ? { locations_total: places.length } : {}), ...(revision.status === "supported" ? {} : { status: revision.status }), text: revision.text, ...(rules.length ? { flagged: rules } : {}) })
       }
       if (view === "deleted_text") for (const text of readDocxRevisionText(bytes).deleted_text) entries.push({ index: entries.length, ...identity, ...screened(text) })
     }
@@ -118,9 +131,11 @@ function registeredWordSource(directory: string, document: string) {
 
 function response(value: Record<string, unknown>, truncated = false) {
   const representation = value.view === "proposed_body" ? "Generated pending revision derived from initial paragraphs and current amendments; not actual Word, adopted wording, or source/instruction authority. Initial PIDs and part indices are projection coordinates, not final native Word PIDs."
-    : value.view === "baseline_body" ? "Reject-all text projection of the named Word artifact. This is an original reading, not the agreed/current text. Its paragraph ordinals and PIDs are projection coordinates, never current amendment targets."
-    : value.view === "marked_up_body" ? "Marked-up text projection: inline insert/delete/move markers name their recorded authors. Includes proposed and deleted text; no accept/reject decision is implied. Paragraph positions refer to this projection, never current amendment targets."
-    : value.view === "comments" ? "Native Word comments, separate from body text. parent is the comment_id a reply answers; resolved is null when the file records no thread state." : undefined
+    : value.view === "baseline_body" ? "Reject-all text projection of the named Word artifact's main body. This is an original reading, not the agreed/current text. Its paragraph ordinals and PIDs are projection coordinates, never current amendment targets."
+    : value.view === "marked_up_body" ? "Marked-up text projection: inline insert/delete/move markers name their recorded authors. Includes proposed and deleted text; no accept/reject decision is implied. Paragraph positions refer to this projection, never current amendment targets. Main body only; formatting changes are not marked. view=revisions lists every tracked change, including headers, footers, footnotes, endnotes and formatting."
+    : value.view === "comments" ? "Native Word comments, separate from body text. parent is the comment_id a reply answers; resolved is null when the file records no thread state."
+    : value.view === "deleted_text" ? "Deleted and moved-from wording in the main body only. view=revisions lists every tracked change in all parts with author, date and location."
+    : value.view === "revisions" ? "Every pending tracked change in the named Word artifact, from the body, headers, footers, footnotes and endnotes, with formatting, table and paragraph-break changes: the list the lawyer reviews. text is the inserted, deleted or moved wording (for a formatting change, the text reformatted; ¶ is a paragraph break). Each location is the part's 1-based paragraph as marked up, with context, the paragraph's opening without deleted wording, unless text already shows it. status appears only when the change must be resolved in Word. No accept/reject decision is implied; paragraph numbers are never amendment targets." : undefined
   return { title: "Current document evidence", output: JSON.stringify({ ...value, notice: UNTRUSTED_DOCUMENT_NOTICE, ...(representation ? { representation } : {}) }), metadata: { truncated } }
 }
 
@@ -149,14 +164,14 @@ export async function readCurrentDocument(directory: string, args: { document: s
     index++;cursor = 0
   }
   const more = index < current.entries.length
-  return response({ status: "read", document: args.document, view: args.view, total_entries: current.entries.length, offset, entries, next_offset: more ? index : null, next_text_offset: more ? cursor : null, scope: "Only this named artifact view; body, comments and deleted text are distinct. Continue with both returned offsets for complete consecutive text." }, more)
+  return response({ status: "read", document: args.document, view: args.view, total_entries: current.entries.length, offset, entries, next_offset: more ? index : null, next_text_offset: more ? cursor : null, scope: "Only this named artifact view; body, comments, revisions and deleted text are distinct. Continue with both returned offsets for complete consecutive text." }, more)
 }
 
 export async function searchCurrentDocument(directory: string, args: { document: string; view: CurrentDocumentView; query: string; k?: number }) {
   const current = await currentDocumentView(directory, args.document, args.view)
   if (current.status === "unavailable") return response(current)
   const terms = [...new Set(args.query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])]
-  const ranked = current.entries.map(entry => ({ entry, score: terms.filter(term => `${entry.label ?? ""} ${entry.text}`.toLowerCase().includes(term)).length })).filter(row => row.score > 0).sort((a, b) => b.score - a.score || a.entry.index - b.entry.index)
+  const ranked = current.entries.map(entry => ({ entry, score: terms.filter(term => `${entry.label ?? ""} ${entry.text} ${entry.locations?.map(place => place.context ?? "").join(" ") ?? ""}`.toLowerCase().includes(term)).length })).filter(row => row.score > 0).sort((a, b) => b.score - a.score || a.entry.index - b.entry.index)
   const hits = ranked.slice(0, args.k ?? 5).map(({ entry }) => ({ ...entry, text: Array.from(entry.text).slice(0, 180).join(""), text_complete: Array.from(entry.text).length <= 180, read_offset: entry.index }))
   while (JSON.stringify(hits).length > 4500) hits.pop()
   return response({ status: "searched", document: args.document, view: args.view, method: "lexical", total_entries: current.entries.length, matched_entries: ranked.length, hits, scope: "Lexical matches in this exact current view only. No hits does not prove absence. Read consecutive entries around a hit using read-document with the same view and offset; related documents require their own exact identity." })
