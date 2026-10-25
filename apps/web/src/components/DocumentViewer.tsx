@@ -1169,7 +1169,7 @@ function VersionsToggle({ open, count, onToggle }: { open: boolean; count?: numb
 // Opens and closes the file's tracked changes and comments beside the
 // document, counted the way the panel lists them: one per change and one per
 // comment thread. The count shows as a small badge beside the label, and on a
-// phone, where the label is hidden, on the icon, so it reads as tracked
+// narrow screen, where the label is hidden, on the icon, so it reads as tracked
 // changes, not "add". The label carries it in brackets for screen readers.
 function MarkupToggle({ open, count, onToggle }: { open: boolean; count: number; onToggle: () => void }) {
   return (
