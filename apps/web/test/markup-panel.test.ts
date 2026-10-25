@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { applyMarkupDecisions, MarkupRefusedError, type DocumentMarkup, type MarkupComment, type MarkupRevision } from "../src/api/ingest/markup"
-import MarkupPanel, { carryDrafts, decisionLabel } from "../src/components/MarkupPanel"
+import MarkupPanel, { carryDrafts, carryReplies, decisionLabel, type Reply } from "../src/components/MarkupPanel"
 
 const originalFetch = globalThis.fetch
 afterEach(() => {
@@ -37,6 +37,23 @@ test("decisions carry over to new bytes for the changes still listed, and the re
   expect(carryDrafts({ ...earlier, base: "new" }, reading)).toEqual({ drafts: { "rev2-a": "accept", "rev2-b": "reject" }, carried: [], dropped: 0 })
   // An unsupported change is resolved in Word, so a stored decision on it is not kept.
   expect(carryDrafts({ base: "old", decisions: { "rev2-word": "accept" } }, reading)).toEqual({ drafts: {}, carried: [], dropped: 1 })
+})
+
+test("a reply carries over while its thread reads the same and has nothing newer, and must be approved again", () => {
+  const comment = (id: number, author: string, text: string, patch: Partial<MarkupComment> = {}): MarkupComment => ({
+    id, author, initials: null, date: null, text, parent: null, resolved: false, quote: "", paragraph: 1, findings: [], ...patch,
+  })
+  const root = comment(0, "Avery Lindqvist", "Our production lead time needs forty-five days.")
+  const reply = (patch: Partial<Reply> = {}): Reply => ({
+    text: "Agreed.", approved: true, open_items: [], root: { author: root.author, text: root.text }, seen: 2, ...patch,
+  })
+  const reading = { ...markup("new", []), comments: [root, comment(1, "Morgan Okafor", "Agreed if stock is confirmed.", { parent: 0 }), comment(5, "Morgan Okafor", "Closed.", { resolved: true })] }
+  expect(carryReplies({ base: "old", replies: { 0: reply() } }, reading)).toEqual({ replies: { 0: reply({ approved: false }) }, carried: [0], dropped: 0 })
+  // The same bytes keep the approval.
+  expect(carryReplies({ base: "new", replies: { 0: reply() } }, reading)).toEqual({ replies: { 0: reply() }, carried: [], dropped: 0 })
+  // A newer comment in the thread, an edited root, a resolved thread or a broken entry drops it.
+  for (const stale of [{ 0: reply({ seen: 1 }) }, { 0: reply({ root: { author: root.author, text: "Thirty days." } }) }, { 5: reply() }, { 0: { text: "Agreed." } }])
+    expect(carryReplies({ base: "old", replies: stale }, reading)).toEqual({ replies: {}, carried: [], dropped: 1 })
 })
 
 test("each decision group names its change, author and an excerpt, and is one Tab stop", () => {

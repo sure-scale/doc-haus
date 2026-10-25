@@ -3,6 +3,7 @@ import { humanizeError } from "../api/ingest/errors"
 import {
   actorSent,
   applyMarkupDecisions,
+  draftMarkupReply,
   MarkupRefusedError,
   type DocumentMarkup,
   type MarkupComment,
@@ -22,8 +23,11 @@ import { useToast } from "./Toast"
 // version. Held changes stay as tracked changes in it. Drafts of the decisions
 // are kept in this browser per document, so closing the viewer loses nothing,
 // and carry over to a new version of the file for the changes it still lists.
-// Every name, change, quote and comment is the other side's text and renders as
-// plain text.
+// Each open comment thread takes one reply: drafted by the selected model on
+// request (never on opening), or written by hand, then edited and approved by
+// the lawyer. Only approved replies go with Apply, in the same version, signed
+// with the recorded name. Every name, change, quote and comment is the other
+// side's text and renders as plain text.
 
 type Thread = { root: MarkupComment; replies: MarkupComment[] }
 type Item =
@@ -31,11 +35,18 @@ type Item =
   | { type: "thread"; thread: Thread; order: number[] }
 type Kind = "changes" | "formatting" | "comments"
 type Drafts = Record<string, Exclude<MarkupDecision, "hold">>
-// A refused Apply: the message, the service's code and the listed changes it
-// names, whose cards carry the message.
-type Refusal = { message: string; code?: string; ids: string[] }
-// Where focus goes once the panel has rendered: a change's decision, or Apply.
-type Focus = { card: string } | "apply"
+// The lawyer's reply to an open thread, by its root comment's id: the text,
+// whether the lawyer approved it, what its draft said to check, and the root
+// and number of comments it answers.
+export type Reply = { text: string; approved: boolean; open_items: string[]; root: { author: string; text: string }; seen: number }
+type Replies = Record<number, Reply>
+// A refused Apply: the message, the service's code and the listed changes or
+// the thread it names, whose cards carry the message.
+type Refusal = { message: string; code?: string; ids: string[]; thread?: number }
+// Where focus goes once the panel has rendered: a change's decision, a
+// thread's reply (`reply`: its next control, not the refusal), the head's
+// Draft replies row, or Apply.
+type Focus = { card: string; reply?: boolean } | "apply" | "bulk"
 
 const KINDS: { value: Kind; label: string }[] = [
   { value: "changes", label: "Changes" },
@@ -71,6 +82,12 @@ const STRUCTURE: Record<string, string> = {
 // Rules that only report characters stripped from the text; every other rule
 // is text that reads like an instruction to an assistant.
 const HIDDEN = new Set(["bidi-control", "invisible-tag", "zero-width"])
+// Replies drafted at once, as the review grid fills cells.
+const POOL = 3
+// A part of a draft only the lawyer can fill.
+const PLACEHOLDER = /\[\[[\s\S]*?\]\]/
+const REPLY_MAX = 4000
+const STEER_MAX = 1000
 
 // Comments grouped into threads: each reply under the comment its chain starts
 // from, in the file's order. A reply whose parent is missing stands alone.
@@ -98,6 +115,11 @@ export function commentThreads(comments: MarkupComment[]): Thread[] {
 export function markupCount(markup: Pick<DocumentMarkup, "revisions" | "comments">) {
   return markup.revisions.length + commentThreads(markup.comments).length
 }
+
+// A thread takes a reply while it starts from a root comment (not a reply whose
+// parent is gone) that is not resolved.
+const isOpen = (thread: Thread) => thread.root.parent === null && thread.root.resolved !== true
+const threadCard = (thread: Thread) => `comment-${thread.root.id}`
 
 // Cards in document order: by part, then paragraph (unknown places last), a
 // paragraph's changes before its comments, then as listed. An edit inside a
@@ -229,16 +251,72 @@ export function carryDrafts(earlier: StoredDrafts | undefined, markup: Pick<Docu
   return { drafts, carried: Object.keys(drafts), dropped: decided.length - Object.keys(drafts).length }
 }
 
+// Replies are kept the same way, under their own key. A reply stays with its
+// thread while the root reads the same and no comment came after the ones it
+// answers; carried to other bytes, an approved reply needs approving again.
+const replyKey = (matterId: string, name: string) =>
+  `dh.markup-replies.v1/${encodeURIComponent(matterId)}/${encodeURIComponent(name)}`
+
+export type StoredReplies = { base: string; replies: Record<string, unknown> }
+
+function readStoredReplies(key: string): StoredReplies | undefined {
+  const stored = readBrowserJSON(key) as Partial<StoredReplies> | null
+  if (!stored || typeof stored !== "object" || typeof stored.base !== "string" || !stored.replies || typeof stored.replies !== "object") return
+  return { base: stored.base, replies: stored.replies }
+}
+
+function isReply(value: unknown): value is Reply {
+  const reply = value as Partial<Reply> | null
+  return !!reply && typeof reply.text === "string" && typeof reply.approved === "boolean" && typeof reply.seen === "number" &&
+    Array.isArray(reply.open_items) && reply.open_items.every((item) => typeof item === "string") &&
+    typeof reply.root?.author === "string" && typeof reply.root.text === "string"
+}
+
+// The replies a reading of the file takes from earlier ones: those whose
+// thread is still open, starts from the same comment and has nothing newer.
+// From other bytes, `carried` names the ones kept and `dropped` counts the rest.
+export function carryReplies(earlier: StoredReplies | undefined, markup: Pick<DocumentMarkup, "version" | "comments">): {
+  replies: Replies
+  carried: number[]
+  dropped: number
+} {
+  if (!earlier) return { replies: {}, carried: [], dropped: 0 }
+  const same = earlier.base === markup.version.sha256
+  const open = new Map(commentThreads(markup.comments).filter(isOpen).map((thread) => [thread.root.id, thread]))
+  const replies: Replies = {}
+  const stored = Object.entries(earlier.replies)
+  for (const [id, reply] of stored) {
+    const thread = open.get(Number(id))
+    if (!thread || !isReply(reply) || reply.root.author !== thread.root.author || reply.root.text !== thread.root.text || reply.seen !== 1 + thread.replies.length) continue
+    replies[thread.root.id] = same ? reply : { ...reply, approved: false }
+  }
+  if (same) return { replies, carried: [], dropped: 0 }
+  const carried = Object.keys(replies).map(Number)
+  return { replies, carried, dropped: stored.length - carried.length }
+}
+
+function without<T>(record: Record<number, T>, ...ids: number[]) {
+  const next = { ...record }
+  for (const id of ids) delete next[id]
+  return next
+}
+
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`
 
-// Plain words for a new reading of a file the lawyer had decided changes in.
-function carriedNote(name: string, carried: number, dropped: number, refused: boolean) {
-  if (!refused && !carried && !dropped) return undefined
+type Carried = { carried: number; dropped: number }
+
+// Plain words for a new reading of a file the lawyer had decided changes or
+// drafted replies in.
+function carriedNote(name: string, decisions: Carried, replies: Carried, refused: boolean) {
+  const decided = decisions.carried + decisions.dropped
+  if (!refused && !decided && !replies.carried && !replies.dropped) return undefined
   return [
-    refused ? `${name} changed after this list was read, so nothing was applied.` : `${name} changed since these decisions were made.`,
-    carried && `${plural(carried, "decision")} carried over — check ${carried === 1 ? "it" : "them"} before applying.`,
-    dropped && `${plural(dropped, "decision")} could not be carried over and ${dropped === 1 ? "is" : "are"} back on Hold.`,
-    refused && !carried && "Decide the changes again.",
+    refused ? `${name} changed after this list was read, so nothing was applied.` : `${name} changed since these ${decided ? "decisions were made" : "replies were drafted"}.`,
+    decisions.carried && `${plural(decisions.carried, "decision")} carried over — check ${decisions.carried === 1 ? "it" : "them"} before applying.`,
+    decisions.dropped && `${plural(decisions.dropped, "decision")} could not be carried over and ${decisions.dropped === 1 ? "is" : "are"} back on Hold.`,
+    replies.carried && `${plural(replies.carried, "draft reply", "draft replies")} carried over — read ${replies.carried === 1 ? "it" : "them"} again before approving.`,
+    replies.dropped && `${plural(replies.dropped, "draft reply", "draft replies")} could not be carried over, as ${replies.dropped === 1 ? "its thread" : "their threads"} changed.`,
+    refused && decisions.dropped && !decisions.carried && "Decide the changes again.",
   ].filter(Boolean).join(" ")
 }
 
@@ -268,13 +346,27 @@ export default function MarkupPanel({
 }) {
   const sha256 = markup.version.sha256
   const key = draftKey(matterId, name)
-  const [initial] = useState(() => carryDrafts(readStored(key), markup))
+  const repliesKey = replyKey(matterId, name)
+  const [initial] = useState(() => ({ decisions: carryDrafts(readStored(key), markup), replies: carryReplies(readStoredReplies(repliesKey), markup) }))
   // The document and bytes the drafts belong to.
   const [reading, setReading] = useState({ key, base: sha256 })
-  const [drafts, setDrafts] = useState<Drafts>(initial.drafts)
+  const [drafts, setDrafts] = useState<Drafts>(initial.decisions.drafts)
   // Decisions carried over from other bytes, until the lawyer looks at each.
-  const [carried, setCarried] = useState<string[]>(initial.carried)
-  const [notice, setNotice] = useState(() => carriedNote(name, initial.carried.length, initial.dropped, false))
+  const [carried, setCarried] = useState<string[]>(initial.decisions.carried)
+  const [notice, setNotice] = useState(() => carriedNote(name,
+    { carried: initial.decisions.carried.length, dropped: initial.decisions.dropped }, { carried: initial.replies.carried.length, dropped: initial.replies.dropped }, false))
+  const [replies, setReplies] = useState<Replies>(initial.replies.replies)
+  // Replies carried over from other bytes, until the lawyer touches each.
+  const [carriedReplies, setCarriedReplies] = useState<number[]>(initial.replies.carried)
+  // Threads whose reply is being drafted (or waits its turn), each with its own Cancel.
+  const [drafting, setDrafting] = useState<number[]>([])
+  const controllers = useRef(new Map<number, AbortController>())
+  // Per thread: the lawyer's steer for the next draft, why a draft failed, and
+  // the reply Discard or Remove took, which Undo brings back.
+  const [steers, setSteers] = useState<Record<number, string>>({})
+  const [draftErrors, setDraftErrors] = useState<Record<number, string>>({})
+  const [discarded, setDiscarded] = useState<Record<number, { reply: Reply; text: string }>>({})
+  const [drafted, setDrafted] = useState<string>()
   // The bytes decisions were just applied to: their drafts are done with.
   const [appliedFrom, setAppliedFrom] = useState<string>()
   const [undo, setUndo] = useState<{ drafts: Drafts; carried: string[]; decision: MarkupDecision; text: string }>()
@@ -292,21 +384,35 @@ export default function MarkupPanel({
   const proposalsButton = useRef<HTMLButtonElement>(null)
   const refusalText = useRef<HTMLParagraphElement>(null)
   const nameInput = useRef<HTMLInputElement>(null)
+  const bulkRow = useRef<HTMLDivElement>(null)
   const cards = useRef(new Map<string, HTMLLIElement>())
   const bulkButtons = useRef(new Map<MarkupDecision, HTMLButtonElement>())
   const ids = useId()
   const toast = useToast()
 
   // A new reading of other bytes keeps the drafts for changes it still lists,
-  // and says so; one after this panel's own Apply starts afresh. Another
-  // document takes its own drafts.
+  // and the replies for threads it still holds unchanged, and says so; after
+  // this panel's own Apply the decisions start afresh and the replies it did
+  // not send stay, without a note. Another document takes its own drafts.
   if (reading.key !== key || reading.base !== sha256) {
     const fresh = reading.key !== key
-    const next = carryDrafts(fresh ? readStored(key) : appliedFrom === reading.base ? undefined : { base: reading.base, decisions: drafts }, markup)
+    const own = appliedFrom === reading.base
+    const next = carryDrafts(fresh ? readStored(key) : own ? undefined : { base: reading.base, decisions: drafts }, markup)
+    const kept = carryReplies(fresh ? readStoredReplies(repliesKey) : { base: reading.base, replies }, markup)
     setReading({ key, base: sha256 })
     setDrafts(next.drafts)
     setCarried(next.carried)
-    setNotice(carriedNote(name, next.carried.length, next.dropped, !fresh && refusal?.code === "base_changed"))
+    setReplies(kept.replies)
+    setCarriedReplies(own ? [] : kept.carried)
+    setNotice(carriedNote(name, { carried: next.carried.length, dropped: next.dropped },
+      own ? { carried: 0, dropped: 0 } : { carried: kept.carried.length, dropped: kept.dropped }, !fresh && refusal?.code === "base_changed"))
+    if (fresh) {
+      setDrafting([])
+      setSteers({})
+    }
+    setDraftErrors({})
+    setDiscarded({})
+    setDrafted(undefined)
     setAppliedFrom(undefined)
     setUndo(undefined)
     setRefusal(undefined)
@@ -316,6 +422,20 @@ export default function MarkupPanel({
     if (Object.keys(drafts).length) writeBrowserValue(key, JSON.stringify({ base: reading.base, decisions: drafts }))
     else removeBrowserValue(key)
   }, [key, reading.base, drafts])
+
+  useEffect(() => {
+    if (Object.keys(replies).length) writeBrowserValue(repliesKey, JSON.stringify({ base: reading.base, replies }))
+    else removeBrowserValue(repliesKey)
+  }, [repliesKey, reading.base, replies])
+
+  // A closed panel, or another document, ends its drafts and their model calls.
+  useEffect(() => {
+    const running = controllers.current
+    return () => {
+      for (const controller of running.values()) controller.abort()
+      running.clear()
+    }
+  }, [repliesKey])
 
   useEffect(() => {
     let cancelled = false
@@ -329,12 +449,17 @@ export default function MarkupPanel({
   }, [])
 
   // Focus waits for the render that shows its target: a refused change's
-  // chosen decision, or Apply once the file has been read again (the
-  // proposals button or the message while Apply cannot be used).
+  // chosen decision or a refused reply's message, a reply's next control after
+  // an action on it, the Draft replies row, or Apply once the file has been
+  // read again (the proposals button or the message while Apply cannot be used).
   useEffect(() => {
     if (!focus || busy) return
     const card = typeof focus === "object" ? cards.current.get(focus.card) : undefined
-    if (card) {
+    if (focus === "bulk") {
+      bulkRow.current?.querySelector<HTMLElement>("button:not(:disabled)")?.focus()
+    } else if (card && focus !== "apply" && focus.reply) {
+      card.querySelector<HTMLElement>("[data-reply-focus]:not(:disabled)")?.focus()
+    } else if (card) {
       card.scrollIntoView?.({ block: "center" })
       const control = card.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]') ?? card.querySelector<HTMLElement>(".version-error")
       control?.focus({ preventScroll: true })
@@ -357,16 +482,25 @@ export default function MarkupPanel({
   const elsewhere = markup.revisions.length - listed.length
   const savedName = attorney?.trim()
   const actor = savedName || nameDraft.trim()
+  // Open threads in document order. One awaits a reply while its latest
+  // comment is not the saved attorney's; only those are offered a draft.
+  const open = items.flatMap((item) => (item.type === "thread" && isOpen(item.thread) ? [item.thread] : []))
+  const awaiting = (thread: Thread) => !savedName || (thread.replies.at(-1) ?? thread.root).author.trim().toLowerCase() !== savedName.toLowerCase()
+  const undrafted = open.filter((thread) => awaiting(thread) && !replies[thread.root.id] && !drafting.includes(thread.root.id))
+  const approved = open.filter((thread) => replies[thread.root.id]?.approved)
+  const unapproved = open.filter((thread) => replies[thread.root.id] && !replies[thread.root.id]!.approved).length
+  const decided = accepted > 0 || rejected > 0
   const blocked = proposalsPending > 0
     ? `Accept or reject doc.haus's ${plural(proposalsPending, "proposed change")} on this document first.`
-    : !accepted && !rejected ? "Mark at least one change Accept or Reject to apply." : undefined
+    : !decided && !approved.length ? (listed.length ? "Mark a change Accept or Reject, or approve a reply." : "Approve a reply first.") : undefined
   const canApply = !blocked && !busy && !loading && attorney !== undefined
   const proposalsFirst = proposalsPending > 0 || refusal?.code === "proposals_pending"
   // A refusal is shown on the cards it names; otherwise, or while they are
   // filtered out, beside Apply. The proposals line already says what a
   // proposals refusal says once the proposals are known.
   const shownIds = new Set(shown.flatMap((item) => (item.type === "change" ? [item.revision.id] : [])))
-  const onCards = !!refusal && refusal.ids.some((id) => shownIds.has(id))
+  const shownThreads = new Set(shown.flatMap((item) => (item.type === "thread" ? [item.thread.root.id] : [])))
+  const onCards = !!refusal && (refusal.ids.some((id) => shownIds.has(id)) || (refusal.thread !== undefined && shownThreads.has(refusal.thread)))
   const refusalShown = refusal && !onCards && !(refusal.code === "proposals_pending" && proposalsPending > 0) ? refusal.message : undefined
 
   function decide(changes: MarkupRevision[], decision: MarkupDecision, bulk?: string) {
@@ -395,7 +529,145 @@ export default function MarkupPanel({
     bulkButtons.current.get(undo.decision)?.focus()
   }
 
-  const toggle = <T,>(list: T[], value: T) => (list.includes(value) ? list.filter((entry) => entry !== value) : [...list, value])
+  // Sets, or with no reply removes, one thread's reply. Touching it settles a
+  // carried-over mark, an earlier failure and the refusal that named it.
+  function setReply(thread: Thread, reply: Reply | undefined) {
+    const id = thread.root.id
+    setReplies((current) => (reply ? { ...current, [id]: reply } : without(current, id)))
+    setCarriedReplies((current) => current.filter((entry) => entry !== id))
+    setDraftErrors((current) => without(current, id))
+    setDiscarded((current) => without(current, id))
+    setConfirming(false)
+    if (refusal?.thread === id) setRefusal(undefined)
+  }
+
+  // A new reply to `thread`: as read now, with nothing approved.
+  const replyTo = (thread: Thread, text: string, items: string[] = []): Reply =>
+    ({ text, approved: false, open_items: items, root: { author: thread.root.author, text: thread.root.text }, seen: 1 + thread.replies.length })
+
+  // Whether focus is nowhere, or still inside `within` (a control that went).
+  const focusFree = (within: Element | null | undefined) => {
+    const active = document.activeElement
+    return !active || active === document.body || !!within?.contains(active)
+  }
+
+  // Drafts a reply for each thread, three at a time. Each draft has its own
+  // Cancel, and one cancelled before its turn is skipped. The draft sees the
+  // decisions as they stand now. A file that changed refuses every draft, so
+  // the rest stop and the file is read again. Resolves with the threads that
+  // got a draft.
+  async function draftReplies(targets: Thread[]) {
+    const queue = targets.filter((thread) => !controllers.current.has(thread.root.id))
+    const ids = queue.map((thread) => thread.root.id)
+    for (const id of ids) controllers.current.set(id, new AbortController())
+    setDrafting((current) => [...current, ...ids])
+    setDraftErrors((current) => without(current, ...ids))
+    setDiscarded((current) => without(current, ...ids))
+    setDrafted(undefined)
+    const decisions = listed.flatMap((revision) => (drafts[revision.id] ? [{ id: revision.id, decision: drafts[revision.id]! }] : []))
+    const done = new Set<Thread>()
+    const draftOne = async (thread: Thread) => {
+      const id = thread.root.id
+      const controller = controllers.current.get(id)
+      if (!controller || controller.signal.aborted) return
+      const steer = steers[id]?.trim()
+      try {
+        const draft = await draftMarkupReply(matterId, name, { base_sha256: sha256, thread: id, decisions, ...(steer ? { steer } : {}) }, controller.signal)
+        if (controller.signal.aborted) return
+        setReplies((current) => ({ ...current, [id]: replyTo(thread, draft.reply, draft.open_items) }))
+        setCarriedReplies((current) => current.filter((entry) => entry !== id))
+        done.add(thread)
+      } catch (cause) {
+        if (controller.signal.aborted) return
+        const stale = cause instanceof MarkupRefusedError && cause.code === "base_changed"
+        setDraftErrors((current) => ({
+          ...current,
+          [id]: stale ? `${name} changed after this list was read. Draft the reply again once it is read again.`
+            : cause instanceof MarkupRefusedError ? cause.message : humanizeError(cause, "The reply was not drafted. Try again, or write the reply."),
+        }))
+        if (stale) cancelDrafts()
+        // The file or the thread moved on: read them again.
+        if (cause instanceof MarkupRefusedError && cause.status === 409 && cause.code !== "draft_unreadable") onRefetch()
+      } finally {
+        if (controllers.current.get(id) === controller) {
+          controllers.current.delete(id)
+          setDrafting((current) => current.filter((entry) => entry !== id))
+        }
+      }
+    }
+    let next = 0
+    const worker = async () => {
+      while (next < queue.length) await draftOne(queue[next++]!)
+    }
+    await Promise.all(Array.from({ length: Math.min(POOL, queue.length) }, worker))
+    if (done.size) setDrafted(`${plural(done.size, "draft reply", "draft replies")} ready — read ${done.size === 1 ? "it" : "each one"}, then approve it.`)
+    return queue.filter((thread) => done.has(thread))
+  }
+
+  function cancelDrafts(ids = [...controllers.current.keys()]) {
+    for (const id of ids) {
+      controllers.current.get(id)?.abort()
+      controllers.current.delete(id)
+    }
+    setDrafting((current) => current.filter((entry) => !ids.includes(entry)))
+  }
+
+  // Every thread awaiting a reply that has none: focus stays on the row (its
+  // Cancel), then goes to the first draft if the lawyer is still there.
+  async function draftAll() {
+    setConfirming(false)
+    setFocus("bulk")
+    const done = await draftReplies(undrafted)
+    if (done.length && focusFree(bulkRow.current)) setFocus({ card: threadCard(done[0]!), reply: true })
+  }
+
+  // One thread's actions; each leaves focus on the reply's next control.
+  function replyActions(thread: Thread, reply: Reply | undefined): ReplyActions {
+    const card = threadCard(thread)
+    const next = () => setFocus({ card, reply: true })
+    return {
+      draft: async () => {
+        setConfirming(false)
+        next()
+        const done = await draftReplies([thread])
+        if (done.length && focusFree(cards.current.get(card))) next()
+      },
+      cancel: () => {
+        cancelDrafts([thread.root.id])
+        next()
+      },
+      write: () => {
+        setReply(thread, replyTo(thread, ""))
+        next()
+      },
+      change: (text: string) => reply && setReply(thread, { ...reply, text }),
+      approve: () => {
+        if (!reply) return
+        setReply(thread, { ...reply, approved: true })
+        next()
+      },
+      edit: () => {
+        if (!reply) return
+        setReply(thread, { ...reply, approved: false })
+        next()
+      },
+      discard: () => {
+        if (!reply) return
+        setReply(thread, undefined)
+        setDiscarded((current) => ({ ...current, [thread.root.id]: { reply, text: reply.approved ? "Reply removed." : "Draft discarded." } }))
+        next()
+      },
+      undo: () => {
+        const earlier = discarded[thread.root.id]
+        if (!earlier) return
+        setReply(thread, earlier.reply)
+        next()
+      },
+      steer: (text: string) => setSteers((current) => ({ ...current, [thread.root.id]: text })),
+    }
+  }
+
+  const toggle =<T,>(list: T[], value: T) => (list.includes(value) ? list.filter((entry) => entry !== value) : [...list, value])
 
   function review() {
     setRefusal(undefined)
@@ -424,15 +696,16 @@ export default function MarkupPanel({
     // The file or its changes moved on: read them again before another try.
     if (cause.status === 409) onRefetch()
     const named = cause.ids.filter((id) => markup.revisions.some((revision) => revision.id === id))
+    const thread = open.find((entry) => entry.root.id === cause.thread)
     // The panel reads the file again itself; there is nothing to refresh.
     const message = cause.code === "base_changed" ? `${name} changed after this list was read, so nothing was applied.` : cause.message
-    setRefusal({ message, code: cause.code, ids: named })
-    if (!named.length) return "apply"
-    if (!named.every((id) => shownIds.has(id))) {
+    setRefusal({ message, code: cause.code, ids: named, thread: thread?.root.id })
+    if (!named.length && !thread) return "apply"
+    if (!named.every((id) => shownIds.has(id)) || (thread && !shownThreads.has(thread.root.id))) {
       setAuthors([])
       setKinds([])
     }
-    return { card: named[0]! }
+    return { card: named.length ? named[0]! : threadCard(thread!) }
   }
 
   async function apply() {
@@ -458,22 +731,32 @@ export default function MarkupPanel({
           toast("warning", "Your name could not be saved in Settings; it is still recorded with these decisions.")
         }
       }
+      // Only replies the lawyer approved are sent; drafts stay drafts.
+      const sent = approved.map((thread) => ({ thread: thread.root.id, text: replies[thread.root.id]!.text.trim() }))
       const result = await applyMarkupDecisions(matterId, name, {
         base_sha256: sha256,
         decisions: listed.map((revision) => ({ id: revision.id, decision: drafts[revision.id] ?? "hold" })),
+        ...(sent.length ? { replies: sent } : {}),
       }, recorded)
       removeBrowserValue(key)
       setAppliedFrom(sha256)
       setCarried([])
+      setReplies((current) => without(current, ...sent.map((reply) => reply.thread)))
+      setCarriedReplies([])
+      setDrafted(undefined)
       setNotice(undefined)
       setUndo(undefined)
       setConfirming(false)
       const counts = result.counts ?? {}
+      const added = result.replies?.length ?? sent.length
       const tally = [
-        `${counts.accepted ?? accepted} accepted`,
-        `${counts.rejected ?? rejected} rejected`,
-        `${counts.held ?? held} held`,
-      ].join(", ")
+        decided && [
+          `${counts.accepted ?? accepted} accepted`,
+          `${counts.rejected ?? rejected} rejected`,
+          `${counts.held ?? held} held`,
+        ].join(", "),
+        added > 0 && `${plural(added, "reply", "replies")} added`,
+      ].filter(Boolean).join("; ")
       // The tally names the held changes; the version's own notice about
       // tracked changes left in it would only repeat them.
       toast("success", `${result.version ? `Saved as version ${result.version.number}` : "Saved a new version"}: ${tally}.`)
@@ -489,8 +772,14 @@ export default function MarkupPanel({
     }
   }
 
-  const confirmText = `This saves a new version of ${name} with ${plural(accepted, "change")} accepted and ${rejected} rejected.` +
-    `${held ? ` ${plural(held, "held change stays", "held changes stay")} as tracked ${held === 1 ? "change" : "changes"}.` : ""} The current version stays in the history.`
+  const saved = [
+    ...(decided ? [`${plural(accepted, "change")} accepted`, `${rejected} rejected`] : []),
+    ...(approved.length ? [`${plural(approved.length, "reply", "replies")} added as ${actor}`] : []),
+  ]
+  const confirmText = `This saves a new version of ${name} with ${joined(saved)}.` +
+    `${held ? ` ${plural(held, "held change stays", "held changes stay")} as tracked ${held === 1 ? "change" : "changes"}.` : ""}` +
+    `${unapproved ? ` ${plural(unapproved, "draft reply is", "draft replies are")} not approved, so ${unapproved === 1 ? "it is" : "they are"} not added.` : ""}` +
+    " The current version stays in the history."
 
   return (
     <aside id="document-markup" className="changes-panel markup-panel" aria-labelledby={`${ids}-title`}>
@@ -498,7 +787,10 @@ export default function MarkupPanel({
         <h3 id={`${ids}-title`} ref={heading} tabIndex={-1}>
           Their changes <span className="compare-count">{items.length}</span>
         </h3>
-        <p>Tracked changes and comments in this Word file. Choose Accept, Reject or Hold for each change, then apply them together. Held changes stay as tracked changes.</p>
+        <p>
+          Tracked changes and comments in this Word file. Choose Accept, Reject or Hold for each change{open.length > 0 && " and approve any replies to their comments"}, then
+          apply them together. Held changes stay as tracked changes.
+        </p>
         {markup.authors.length > 0 && (
           <div className="markup-chips" role="group" aria-label="Reviewers">
             {markup.authors.map((author) => (
@@ -541,6 +833,25 @@ export default function MarkupPanel({
             <button type="button" className="linklike" disabled={busy} onClick={undoBulk}>Undo</button>
           </p>
         )}
+        {(undrafted.length > 0 || drafting.length > 0 || drafted) && (
+          <div className="markup-bulk markup-draft-all" ref={bulkRow}>
+            {drafting.length > 0 ? (
+              <>
+                <span role="status">Drafting {plural(drafting.length, "reply", "replies")}…</span>
+                <button type="button" className="icon-btn" onClick={() => cancelDrafts()}>Cancel drafting</button>
+              </>
+            ) : (
+              <>
+                {undrafted.length > 0 && (
+                  <button type="button" className="icon-btn is-primary" disabled={busy || loading} onClick={draftAll}>
+                    Draft replies ({undrafted.length})
+                  </button>
+                )}
+                {drafted && <span role="status">{drafted}</span>}
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {shown.length === 0 ? (
@@ -562,19 +873,28 @@ export default function MarkupPanel({
                   setFocus({ card: item.revision.id })
                 }} />
             ) : (
-              <ThreadCard key={`comment-${item.thread.root.id}`} thread={item.thread} />
+              <ThreadCard key={threadCard(item.thread)} thread={item.thread} open={isOpen(item.thread)} awaiting={awaiting(item.thread)}
+                reply={replies[item.thread.root.id]} drafting={drafting.includes(item.thread.root.id)} steer={steers[item.thread.root.id] ?? ""}
+                carried={carriedReplies.includes(item.thread.root.id)} undo={discarded[item.thread.root.id]?.text} disabled={busy} canDraft={!busy && !loading}
+                failure={refusal?.thread === item.thread.root.id ? refusal.message : draftErrors[item.thread.root.id]}
+                cardRef={(node) => { if (node) cards.current.set(threadCard(item.thread), node); else cards.current.delete(threadCard(item.thread)) }}
+                actions={replyActions(item.thread, replies[item.thread.root.id])} />
             ),
           )}
         </ol>
       )}
 
-      {listed.length > 0 && (
+      {(listed.length > 0 || open.length > 0) && (
         <div className="markup-apply">
           {notice && <p className="markup-hint" role="status">{notice}</p>}
-          <p className="markup-tally">
-            {accepted} to accept · {rejected} to reject · {held} held
-            {elsewhere > 0 && <span> · {elsewhere} to resolve in Word</span>}
-          </p>
+          {(listed.length > 0 || approved.length > 0) && (
+            <p className="markup-tally">
+              {listed.length > 0 && `${accepted} to accept · ${rejected} to reject · ${held} held`}
+              {listed.length > 0 && approved.length > 0 && " · "}
+              {approved.length > 0 && `${plural(approved.length, "reply", "replies")} to add`}
+              {listed.length > 0 && elsewhere > 0 && <span> · {elsewhere} to resolve in Word</span>}
+            </p>
+          )}
           {attorney === undefined ? null : savedName ? (
             <p className="markup-actor">Recorded as <strong>{savedName}</strong></p>
           ) : (
@@ -760,10 +1080,11 @@ function CommentBody({ comment }: { comment: MarkupComment }) {
   )
 }
 
-function ThreadCard({ thread }: { thread: Thread }) {
+// A thread, read-only, with the reply area while it is open.
+function ThreadCard({ thread, open, cardRef, ...area }: { thread: Thread; open: boolean; cardRef: (node: HTMLLIElement | null) => void } & Omit<ReplyAreaProps, "thread">) {
   const { root, replies } = thread
   return (
-    <li className="change-card markup-card markup-thread">
+    <li ref={cardRef} className={`change-card markup-card markup-thread${area.reply?.approved ? " is-approved" : ""}${area.failure ? " is-refused" : ""}`}>
       <div className="markup-card-head">
         <span className="markup-kind is-comment">Comment</span>
         {root.resolved === true && <span className="version-tag is-viewing">Resolved</span>}
@@ -780,6 +1101,127 @@ function ThreadCard({ thread }: { thread: Thread }) {
         </ol>
       )}
       {root.paragraph !== null && <p className="markup-place"><span>{capital(placeName(root.scope ?? "body", root)!)}</span></p>}
+      {open && <ReplyArea thread={thread} {...area} />}
     </li>
+  )
+}
+
+// What a thread's reply area can do; the panel focuses its next control after each.
+type ReplyActions = Record<"draft" | "cancel" | "write" | "approve" | "edit" | "discard" | "undo", () => void> & {
+  change: (text: string) => void
+  steer: (text: string) => void
+}
+
+type ReplyAreaProps = {
+  thread: Thread
+  // Offered a draft: its latest comment is not the lawyer's.
+  awaiting: boolean
+  reply?: Reply
+  drafting: boolean
+  steer: string
+  carried: boolean
+  // What Discard or Remove did, with Undo beside it.
+  undo?: string
+  failure?: string
+  disabled: boolean
+  canDraft: boolean
+  actions: ReplyActions
+}
+
+// One open thread's reply: offered (Draft reply, Write a reply, an optional
+// steer), drafting (Cancel), a draft to edit (Approve once nothing is left in
+// brackets, Redraft, Discard) or approved (Edit, Remove). The control the
+// panel focuses after an action carries data-reply-focus. A thread flagged for
+// planted instructions repeats its flag above the draft.
+function ReplyArea({ thread, awaiting, reply, drafting, steer, carried, undo, failure, disabled, canDraft, actions }: ReplyAreaProps) {
+  const id = useId()
+  const [steering, setSteering] = useState(steer !== "")
+  const planted = [thread.root, ...thread.replies].flatMap((comment) => comment.findings).filter((finding) => !HIDDEN.has(finding.rule))
+  const hold = !reply || reply.approved ? undefined : !reply.text.trim() ? "Write the reply first." : PLACEHOLDER.test(reply.text) ? "Fill the bracketed parts first." : undefined
+  const steerToggle = awaiting && (
+    <button type="button" className="linklike" aria-expanded={steering} onClick={() => setSteering(!steering)}>Steer…</button>
+  )
+  const steerField = awaiting && steering && (
+    <div className="markup-steer">
+      <label htmlFor={`${id}-steer`}>Direction for the draft</label>
+      <input id={`${id}-steer`} type="text" value={steer} maxLength={STEER_MAX} disabled={disabled} placeholder="For example: agree, or hold firm at 30 days"
+        onChange={(event) => actions.steer(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" || !canDraft) return
+          event.preventDefault()
+          actions.draft()
+        }} />
+    </div>
+  )
+  return (
+    <div className="markup-reply" role="group" aria-label={`Your reply to ${authorName(thread.root.author)}`}>
+      {drafting ? (
+        <div className="markup-reply-actions">
+          <span className="markup-reply-status">Drafting a reply…</span>
+          <button type="button" className="icon-btn" data-reply-focus onClick={actions.cancel}>Cancel</button>
+        </div>
+      ) : !reply ? (
+        <>
+          {undo && (
+            <p className="markup-hint" role="status">
+              {undo}{" "}
+              <button type="button" className="linklike" disabled={disabled} onClick={actions.undo}>Undo</button>
+            </p>
+          )}
+          <div className="markup-reply-actions">
+            {awaiting && (
+              <button type="button" className="icon-btn is-primary" data-reply-focus disabled={!canDraft} onClick={actions.draft}>Draft reply</button>
+            )}
+            <button type="button" className="linklike" data-reply-focus={awaiting ? undefined : true} disabled={disabled} onClick={actions.write}>Write a reply</button>
+            {steerToggle}
+          </div>
+          {steerField}
+        </>
+      ) : reply.approved ? (
+        <>
+          <p className="markup-reply-approved">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M5 12.5 10 17 19 7" />
+            </svg>
+            Reply approved, added when you apply
+          </p>
+          <p className="markup-reply-final">{reply.text}</p>
+          <div className="markup-reply-actions">
+            <button type="button" className="icon-btn" data-reply-focus disabled={disabled} onClick={actions.edit}>Edit</button>
+            <button type="button" className="linklike" disabled={disabled} onClick={actions.discard}>Remove</button>
+          </div>
+        </>
+      ) : (
+        <>
+          {planted.length > 0 && <Flags findings={planted} />}
+          <label className="markup-reply-label" htmlFor={`${id}-text`}>
+            Your reply
+            {carried && <span className="version-tag">Carried over</span>}
+          </label>
+          <textarea id={`${id}-text`} className="markup-reply-text" data-reply-focus value={reply.text} rows={4} maxLength={REPLY_MAX} disabled={disabled}
+            aria-describedby={[reply.open_items.length ? `${id}-items` : "", hold ? `${id}-hold` : ""].filter(Boolean).join(" ") || undefined}
+            onChange={(event) => actions.change(event.target.value)} />
+          {reply.open_items.length > 0 && (
+            <div className="markup-open-items" id={`${id}-items`}>
+              <p>Check before sending</p>
+              <ul>
+                {reply.open_items.map((item, index) => <li key={index}>{item}</li>)}
+              </ul>
+            </div>
+          )}
+          {hold && <p id={`${id}-hold`} className="markup-hint">{hold}</p>}
+          <div className="markup-reply-actions">
+            <button type="button" className="icon-btn is-primary" disabled={disabled || !!hold} aria-describedby={hold ? `${id}-hold` : undefined} onClick={actions.approve}>
+              Approve
+            </button>
+            {awaiting && <button type="button" className="icon-btn" disabled={!canDraft} onClick={actions.draft}>Redraft</button>}
+            <button type="button" className="linklike" disabled={disabled} onClick={actions.discard}>Discard</button>
+            {steerToggle}
+          </div>
+          {steerField}
+        </>
+      )}
+      {failure && <p className="version-error" role="alert" tabIndex={-1}>{failure}</p>}
+    </div>
   )
 }

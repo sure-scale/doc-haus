@@ -211,6 +211,28 @@
 .markup-comment-text { margin: 0; font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
 .markup-replies { margin: var(--space-3) 0 0; padding: 0 0 0 var(--space-3); list-style: none; border-left: 2px solid var(--border-soft); }
 .markup-replies li + li { margin-top: var(--space-3); }
+/* The lawyer's reply to an open thread, under it: offered, drafting, a draft to
+   edit with what to check, or approved (the card's accent bar, as an accepted
+   change has). Semantic tokens only, so any theme carries over. */
+.markup-reply { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px dashed var(--border); }
+.markup-reply .markup-flag { margin-top: 0; }
+.markup-reply-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--space-3); }
+.markup-reply-actions .linklike { min-height: 28px; font-size: 12.5px; font-weight: 500; }
+.markup-reply-status { font-size: 0.75rem; color: var(--text-secondary); }
+.markup-reply-label { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: 0.75rem; font-weight: 600; color: var(--text); }
+.markup-reply-text { box-sizing: border-box; width: 100%; min-height: calc(4lh + var(--space-4)); max-height: 50vh; font-size: 13px; line-height: 1.5; resize: vertical; field-sizing: content; overflow-wrap: anywhere; }
+.markup-open-items { padding: 6px var(--space-2); font-size: 0.75rem; line-height: 1.45; color: var(--text); background: var(--info-soft); border-left: 2px solid var(--info); border-radius: 0 4px 4px 0; }
+.markup-open-items p { margin: 0; font-weight: 600; }
+.markup-open-items ul { margin: 2px 0 0; padding-left: 18px; overflow-wrap: anywhere; }
+.markup-reply .markup-hint { margin: 0; }
+.markup-reply .markup-hint .linklike { min-height: 0; font-size: inherit; line-height: inherit; }
+.markup-reply-approved { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 0.75rem; font-weight: 600; color: var(--accent); }
+.markup-reply-approved svg { flex: none; }
+.markup-reply-final { margin: 0; padding: 6px var(--space-2); font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); background: var(--accent-tint); border-left: 2px solid var(--accent); border-radius: 0 4px 4px 0; }
+.markup-steer label { display: block; margin-bottom: 4px; font-size: 0.75rem; font-weight: 500; color: var(--text); }
+.markup-steer input { box-sizing: border-box; width: 100%; }
+.markup-reply .version-error { margin: 0; }
+.document-reader .markup-card.is-approved { padding-left: 14px; box-shadow: inset 3px 0 var(--accent); }
 .markup-apply { position: sticky; bottom: 0; z-index: 1; display: flex; flex-direction: column; gap: var(--space-2); margin: var(--space-2) calc(-1 * var(--space-5)) 0; padding: var(--space-4) var(--space-5); background: var(--panel); border-top: 1px solid var(--border); }
 .markup-tally { margin: 0; font-size: 0.8125rem; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; }
 .markup-tally span { font-weight: 400; color: var(--muted); }
@@ -235,7 +257,7 @@
   .viewer-markup-badge { position: absolute; top: -6px; right: -6px; display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--radius-pill); background: var(--accent); color: var(--text-on-accent); font-size: 0.6875rem; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
 }
 @media (hover: none) {
-  .markup-chip, .markup-choice { min-height: 44px; }
+  .markup-chip, .markup-choice, .markup-reply-actions .linklike { min-height: 44px; }
 }
 
 /* ---------- Documents drawer ---------- */

@@ -88,6 +88,22 @@ both flagged items must remain, and the deliverable must offer no panel. The
 source's embeddings use the local model from `DOCHAUS_MODEL_CACHE_DIR` (default
 the per-user cache); no engine or provider is contacted.
 
+Run the replies to their comments (#200) the same way:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:5221 \
+DOCHAUS_E2E_INGEST_PORT=4922 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-replies-evidence \
+bun apps/web/e2e/counterparty-replies.ts
+```
+
+It uploads the agreement with its footnote comment against the real ingest
+service, whose model calls go to a local engine fixture with scripted drafts.
+It drafts the open threads together, cancels one, checks that Approve waits for
+the bracketed part, edits and approves two replies, discards and restores one,
+and applies them with one Reject as one version. At 400 px it applies the last
+reply alone.
+
 Run the matter chat layout regression with the same environment as the
 setup and settings checks:
 

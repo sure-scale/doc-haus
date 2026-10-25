@@ -3,7 +3,8 @@ import { INGEST_URL } from "../../config"
 // The other side's markup in an uploaded Word source (#200,
 // services/ingest/src/document-markup.ts): its pending tracked changes and
 // comment threads, read from one version's bytes (dochaus/lib/docx-markup.ts).
-// Nothing is stored; deciding changes writes one new version.
+// Nothing is stored; deciding changes, with any approved replies to the
+// other side's comments, writes one new version.
 
 // Which field of an item matched a screening rule, and what it found.
 export type MarkupFinding = { field: "text" | "author" | "quote" | "initials"; rule: string; detail: string; snippet?: string }
@@ -79,22 +80,26 @@ export type DocumentMarkup = {
 export type MarkupDecision = "accept" | "reject" | "hold"
 
 // What one batch did. Every field is read tolerantly: the counts say what was
-// applied, and a change resolved along with another one is `consumed`.
+// applied, and a change resolved along with another one is `consumed`;
+// `replies` are the comments added, by the thread they answer.
 export type MarkupDecisionResult = {
   name?: string
   version?: { id: string; number: number } | null
   counts?: Partial<Record<"accepted" | "rejected" | "held" | "consumed", number>>
+  replies?: { thread: number; id: number }[]
   notice?: string
 }
 
 // The service refused a request: the file changed since the list was read, a
-// change can no longer be decided here, doc.haus proposals are pending (409),
-// or nothing was accepted or rejected (422). `message` is the service's own
-// words; `code` is whatever reason string it sent, known to this build or not;
-// `ids` are the listed changes the refusal is about (`id`, then those it
-// `merged_with`), empty when it names none.
+// change can no longer be decided here, doc.haus proposals are pending, a
+// thread is gone or resolved (409), nothing was accepted, rejected or replied
+// (422), or a reply could not be drafted (409 unreadable, 502). `message` is
+// the service's own words; `code` is whatever reason string it sent, known to
+// this build or not; `ids` are the listed changes the refusal is about (`id`,
+// then those it `merged_with`), empty when it names none; `thread` is the
+// root comment whose reply it is about.
 export class MarkupRefusedError extends Error {
-  constructor(readonly status: number, readonly code: string | undefined, message: string, readonly ids: string[] = []) {
+  constructor(readonly status: number, readonly code: string | undefined, message: string, readonly ids: string[] = [], readonly thread?: number) {
     super(message)
   }
 }
@@ -103,11 +108,12 @@ const route = (matterId: string, path: string, name: string) =>
   `${INGEST_URL}/matters/${encodeURIComponent(matterId)}/documents/markup${path}?name=${encodeURIComponent(name)}`
 
 async function refusal(res: Response, fallback: string) {
-  const body = (await res.json().catch(() => undefined)) as { error?: unknown; code?: unknown; reason?: unknown; id?: unknown; merged_with?: unknown } | undefined
+  const body = (await res.json().catch(() => undefined)) as { error?: unknown; code?: unknown; reason?: unknown; id?: unknown; merged_with?: unknown; thread?: unknown } | undefined
   const code = typeof body?.code === "string" ? body.code : typeof body?.reason === "string" ? body.reason : undefined
   const message = typeof body?.error === "string" && body.error.trim() ? body.error : code ?? `${fallback} (${res.status})`
   const ids = [body?.id, ...(Array.isArray(body?.merged_with) ? body.merged_with : [])].filter((id): id is string => typeof id === "string" && id !== "")
-  return new MarkupRefusedError(res.status, code, message, [...new Set(ids)])
+  const thread = typeof body?.thread === "number" ? body.thread : undefined
+  return new MarkupRefusedError(res.status, code, message, [...new Set(ids)], thread)
 }
 
 // The working file's markup. Refused (4xx) for a file it does not cover: a
@@ -125,10 +131,12 @@ const HEADER_SAFE = /^[\x20-\x7e]+$/
 // Whether `actor` travels with the decisions itself, needing no saved name.
 export const actorSent = (actor: string) => HEADER_SAFE.test(actor.trim())
 
+// `replies` are the lawyer's approved replies, at most one per open thread,
+// by its root comment's id; they are signed with the recorded name.
 export async function applyMarkupDecisions(
   matterId: string,
   name: string,
-  body: { base_sha256: string; decisions: { id: string; decision: MarkupDecision }[] },
+  body: { base_sha256: string; decisions: { id: string; decision: MarkupDecision }[]; replies?: { thread: number; text: string }[] },
   actor?: string,
 ): Promise<MarkupDecisionResult> {
   const headers: Record<string, string> = { "Content-Type": "application/json" }
@@ -137,4 +145,26 @@ export async function applyMarkupDecisions(
   const res = await fetch(route(matterId, "/decisions", name), { method: "POST", headers, body: JSON.stringify(body) })
   if (!res.ok) throw await refusal(res, `Could not apply the decisions to ${name}`)
   return (await res.json().catch(() => ({}))) as MarkupDecisionResult
+}
+
+// A draft reply to one open thread, for the lawyer to edit and approve: the
+// service reads the thread, its clause and the changes there from
+// `base_sha256` itself, with the panel's undecided `decisions` and an optional
+// one-line `steer`. `open_items` are what the lawyer should check; a `[[…]]`
+// in the reply is a part only the lawyer can fill. Nothing is stored. Aborting
+// `signal` ends the model call.
+export type MarkupReplyDraft = { reply: string; open_items: string[] }
+
+export async function draftMarkupReply(
+  matterId: string,
+  name: string,
+  body: { base_sha256: string; thread: number; decisions?: { id: string; decision: MarkupDecision }[]; steer?: string },
+  signal?: AbortSignal,
+): Promise<MarkupReplyDraft> {
+  const res = await fetch(route(matterId, "/replies/draft", name), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal })
+  if (!res.ok) throw await refusal(res, "Could not draft the reply")
+  const draft = (await res.json().catch(() => ({}))) as { reply?: unknown; open_items?: unknown }
+  if (typeof draft.reply !== "string" || !draft.reply.trim()) throw new MarkupRefusedError(res.status, "draft_unreadable", "The draft could not be read. Try again, or write the reply.")
+  const items = Array.isArray(draft.open_items) ? draft.open_items.filter((item): item is string => typeof item === "string" && item.trim() !== "") : []
+  return { reply: draft.reply, open_items: items }
 }
