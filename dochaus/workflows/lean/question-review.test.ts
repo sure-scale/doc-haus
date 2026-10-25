@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
-import { reviewNativeQuestions } from "../../plugin/legal/question-review"
-import { checkAdvice } from "./advise"
+import { nativeQuestionHistory, reviewNativeQuestions } from "../../plugin/legal/question-review"
+import { basisIssues, checkAdvice } from "./advise"
 import { proposedFactQuestions, reviewProposedQuestion, sourceFactsFeedback, type QuestionReview } from "./question-review"
 import { runLean } from "./runner"
 import { readLeanState, readQuestions, writeQuestions, type Question } from "./state"
@@ -36,6 +36,25 @@ test("an existing human question and a genuine judgment cannot become a source f
   expect(result.source).toBeUndefined()
   expect(result.advice).toHaveProperty("unavailable")
   expect(readQuestions(directory)).toEqual([FACT])
+  const fresh = matter()
+  expect(proposedFactQuestions(fresh, JSON.stringify({ questions: [{ ...FACT, pid: "p0123456789ab", document: "d2" }] }), "changes", "d1")[0])
+    .toMatchObject({ pid: "p0123456789ab", document: "d1" })
+})
+
+test("native request authority contains actual answers, never assistant-authored question or recommendation prose", () => {
+  const directory = matter()
+  const decorated = "Which route? Recommendation: use the hosted service."
+  const completed = { type: "tool", tool: "question", state: { status: "completed", input: { questions: [{ question: decorated, header: "Route", options: [{ label: "Manual", description: "Keep it local." }] }] },
+    metadata: { answers: [["Manual"]] }, output: `User answered: ${decorated}=Manual` } }
+  const history = nativeQuestionHistory([
+    { info: { id: "msg_user", role: "user", type: "user" }, parts: [{ type: "text", text: "Prepare the work locally." }] },
+    { info: { role: "assistant" }, parts: [completed, { ...completed, state: { ...completed.state, status: "error", metadata: { answers: [["Never selected"]] } } }] },
+  ])
+  expect(history.request).toBe("Prepare the work locally.\n\nManual")
+  expect(history.request).not.toContain("Recommendation")
+  expect(history.request).not.toContain("Never selected")
+  expect(history.questionContext).toContain(decorated)
+  expect(basisIssues(directory, [{ source_id: "request", quote: "use the hosted service", relevance: "This is what the user selected." }], true, history.request).issues.length).toBeGreaterThan(0)
 })
 
 test("native evidence feedback is bounded, never submits a form and preserves separate multi-select choices", async () => {

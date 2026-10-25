@@ -93,7 +93,7 @@ try {
   const group = card.getByRole("group", { name: "Your answer" })
   assert.deepEqual(await group.locator(".question-option-text").allInnerTexts(), options.map(option => option.text))
   assert.equal(await group.getByText("Recommended", { exact: true }).count(), 1)
-  assert.equal(await card.locator('[aria-pressed="true"], :focus.question-option').count(), 0)
+  assert.equal(await group.locator('[aria-pressed="true"], :focus.question-option').count(), 0)
   await card.getByText("Your instructions", { exact: true }).waitFor()
   await card.getByLabel("Other", { exact: true }).waitFor()
   const related = card.getByRole("group", { name: "Questions about Delivery" })

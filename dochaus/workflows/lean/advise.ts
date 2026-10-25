@@ -25,15 +25,22 @@ const ADVISOR_FAILED = "No checked recommendation is available for this question
  * question asked again with the same words and code-given options keeps the
  * advice it was recorded with: an option id is resolved when the answer is
  * recorded, so the card the lawyer answers must not change under them. */
-export async function adviseQuestions(directory: string, state: LeanState, step: StepID, deps: LeanDeps, questions: Question[], reviewed?: ReadonlyMap<string, { advice?: QuestionAdvice; group?: string }>): Promise<Question[]> {
+export async function adviseQuestions(directory: string, state: LeanState, step: StepID, deps: LeanDeps, questions: Question[], reviewed?: ReadonlyMap<string, { advice?: QuestionAdvice; group?: string }>, reuseSavedAdvice = true): Promise<Question[]> {
   const recorded = readQuestions(directory)
   const answered = new Set(recorded.filter(question => question.status === "answered").map(question => question.id))
   const open = new Map(recorded.filter(question => question.status === "open" && question.advice).map(question => [question.id, question]))
   const kept = questions.map(question => {
     const earlier = open.get(question.id)
-    return earlier && earlier.question === question.question && isDeepStrictEqual(earlier.options, question.options) ? earlier.advice : undefined
+    if (!earlier || earlier.question !== question.question || !isDeepStrictEqual(earlier.options, question.options)) return undefined
+    const same = earlier.context === question.context && earlier.kind === question.kind && earlier.document === question.document && earlier.pid === question.pid
+    const advice = earlier.advice!
+    const currentBasis = !("recommendation" in advice) || !basisIssues(directory, advice.recommendation.basis).issues.length
+    if (reuseSavedAdvice && same && currentBasis) return advice
+    // Existing option ids keep their meaning while an unanswered card changes.
+    // A stale recommendation cannot be adopted as though still checked.
+    return { ...(advice.options ? { options: advice.options } : {}), unavailable: { reason: "The question or its supporting inputs changed. Check the current sources before choosing an earlier option, or answer in your own words." } }
   })
-  const cached = questions.map(question => reviewed?.get(JSON.stringify([question.question, question.context, question.kind])))
+  const cached = questions.map(question => reviewed?.get(JSON.stringify([question.question, question.context, question.kind, question.document, question.pid])))
   const advised = questions.map((question, index) => kept[index] ? { ...question, ...(open.get(question.id)?.group ? { group: open.get(question.id)!.group } : {}), advice: kept[index] } : cached[index]?.advice ? { ...question, ...cached[index] } : question)
   await parallel(questions.flatMap((question, index) => answered.has(question.id) || kept[index] || cached[index]?.advice ? [] : [index]), async index => {
     advised[index] = { ...questions[index]!, ...await adviseQuestion(directory, state, step, deps, questions[index]!) }

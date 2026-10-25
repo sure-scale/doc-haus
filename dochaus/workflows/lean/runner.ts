@@ -183,7 +183,8 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     try {
       const reply = await untilPaused(sourceDeps.sessions.prompt(pause ? { ...input, signal: pause } : input), pause)
       const stage = input.agent === LEAN_STAGE_AGENTS.advise ? undefined : Object.entries(LEAN_STAGE_AGENTS).find(([, agent]) => agent === input.agent)?.[0] as StageID | undefined
-      const candidates = stage && !reviewedSessions.has(input.sessionID) ? proposedFactQuestions(directory, reply, stage) : []
+      const askingStep = Object.entries(state.stages).find(([, row]) => row?.session_id === input.sessionID || row?.session_ids?.includes(input.sessionID))?.[0] as StepID | undefined
+      const candidates = stage && !reviewedSessions.has(input.sessionID) ? proposedFactQuestions(directory, reply, stage, askingStep ? stepDocument(askingStep) ?? undefined : undefined) : []
       if (!candidates.length) return reply
       reviewedSessions.add(input.sessionID)
       const findings: { question: string; source: NonNullable<QuestionReview["source"]> }[] = []
@@ -357,7 +358,7 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       return { state: writeLeanState(directory, { ...state, status: "failed", stop_reason: result.reason }) }
     }
     // Every question the step asks is advised before anything from the step is recorded.
-    const questions = result.questions && await adviseQuestions(directory, state, step, deps, result.questions.map(question => document ? { ...question, document } : question), questionReviews)
+    const questions = result.questions && await adviseQuestions(directory, state, step, deps, result.questions.map(question => document ? { ...question, document } : question), questionReviews, recorded?.input_sha === inputSha)
     if (paused()) return { state: settlePause(directory, state), paused: true }
     if (preferencesChanged()) {
       state = updateLeanStage(directory, state, step, { status: "pending", ...unkeyed(step), outputs: [], finished_at: null })
