@@ -1,4 +1,4 @@
-import { OPEN_ITEM_PATTERN } from "./marker-patterns"
+import { INSTRUCTION_COMMENT_PATTERN, OPEN_ITEM_PATTERN, PLACEHOLDER_PATTERN } from "./marker-patterns"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 
@@ -33,11 +33,11 @@ function highlightOpenItemsInDocumentXml(xml: string) {
   return xml.replace(RUN_RE, (run) => highlightRunOpenItems(run))
 }
 
-/** A run with each open-item marker of its texts in a run of its own,
- * shaded. Only a text that holds a marker is split; each piece keeps the run's
- * properties and its own share of the run's content (Word puts several texts,
- * breaks and tabs in one run), and a split text keeps its spaces. A run with no
- * marker is returned as it is. */
+/** A run with each marker of its texts (shadedMarkerSpans) in a run of its
+ * own, shaded. Only a text that holds a marker is split; each piece keeps the
+ * run's properties and its own share of the run's content (Word puts several
+ * texts, breaks and tabs in one run), and a split text keeps its spaces. A run
+ * with no marker is returned as it is. */
 function highlightRunOpenItems(run: string) {
   const start = RUN_START_RE.exec(run)?.[0]
   if (!start || !run.endsWith("</w:r>")) return run
@@ -49,16 +49,15 @@ function highlightRunOpenItems(run: string) {
   let cursor = 0
   for (const text of content.matchAll(TEXT_RE)) {
     const value = text[2] ?? ""
-    const markers = [...value.matchAll(OPEN_ITEM_RE)]
+    const markers = shadedMarkerSpans(value)
     if (!markers.length) continue
     piece(start, content.slice(cursor, text.index))
     const tag = /\sxml:space=/.test(text[1]!) ? text[1]! : text[1]!.replace("<w:t", '<w:t xml:space="preserve"')
     let offset = 0
     for (const marker of markers) {
-      const at = marker.index ?? 0
-      if (at > offset) piece(start, `${tag}${value.slice(offset, at)}</w:t>`)
-      piece(highlightRun(start, markerFill(marker[0])), `${tag}${marker[0]}</w:t>`)
-      offset = at + marker[0].length
+      if (marker.start > offset) piece(start, `${tag}${value.slice(offset, marker.start)}</w:t>`)
+      piece(highlightRun(start, marker.fill), `${tag}${value.slice(marker.start, marker.end)}</w:t>`)
+      offset = marker.end
     }
     if (offset < value.length) piece(start, `${tag}${value.slice(offset)}</w:t>`)
     cursor = text.index + text[0].length
@@ -68,13 +67,20 @@ function highlightRunOpenItems(run: string) {
   return pieces.join("")
 }
 
-/** [start, end) and fill of each open-item marker in a paragraph's text. A
- * bracketed or parenthetical marker ends at the bracket that closes its own,
- * the brackets inside it counted, so a heading it cites in brackets ("[open
- * item: … addressed under [Disputes]]") stays in it. One the line leaves
- * unclosed ends at its first closing bracket, as OPEN_ITEM_PATTERN reads it. */
-export function openItemSpans(text: string) {
-  const spans: { start: number; end: number; fill: string }[] = []
+/** [start, end) and fill of each marker the DOCX shades in a paragraph's
+ * text: an open item or a blank (OPEN_ITEM_PATTERN) and a drafting placeholder
+ * (PLACEHOLDER_PATTERN, INSTRUCTION_COMMENT_PATTERN). A bracketed or
+ * parenthetical open item ends at the bracket that closes its own, the
+ * brackets inside it counted, so a heading it cites in brackets ("[open item:
+ * … addressed under [Disputes]]") stays in it; one the line leaves unclosed
+ * ends at its first closing bracket, as OPEN_ITEM_PATTERN reads it. A
+ * placeholder is its pattern's match. Markers that overlap are one marker,
+ * from the first to start (the longest of those starting together) to the
+ * last to end, so an open item naming a placeholder ("[open item: … [TBC] …]")
+ * stays one open item. A blank, bare or bracketed ("___", "[____]"), takes the
+ * field fill, every other marker the open-item fill. */
+export function shadedMarkerSpans(text: string) {
+  const found: { start: number; end: number }[] = []
   const pattern = new RegExp(OPEN_ITEM_RE.source, "gi")
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
     const open = match[0][0]!
@@ -87,14 +93,23 @@ export function openItemSpans(text: string) {
         break
       }
     }
-    spans.push({ start: match.index, end, fill: markerFill(match[0]) })
+    found.push({ start: match.index, end })
     pattern.lastIndex = end
   }
+  for (const placeholder of [PLACEHOLDER_PATTERN, INSTRUCTION_COMMENT_PATTERN])
+    for (const match of text.matchAll(placeholder)) found.push({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length })
+  const spans: { start: number; end: number; fill: string }[] = []
+  for (const { start, end } of found.sort((a, b) => a.start - b.start || b.end - a.end)) {
+    const last = spans.at(-1)
+    if (last && start < last.end) last.end = Math.max(last.end, end)
+    else spans.push({ start, end, fill: "" })
+  }
+  for (const span of spans) span.fill = markerFill(text.slice(span.start, span.end))
   return spans
 }
 
 /** A body's open items shaded once its text is final: each marker of a
- * paragraph (openItemSpans over the text it shows, deleted text aside) shaded
+ * paragraph (shadedMarkerSpans over the text it shows, deleted text aside) shaded
  * whole in its fill, however many runs it spans, a run partly in a marker
  * split at the marker's edge. In a paragraph `clear` accepts, open-item
  * shading outside the markers is removed too, so words a change wrote into a
@@ -109,7 +124,7 @@ export function shadeOpenItemsInDocx(bytes: Uint8Array, clear: (paragraph: Eleme
   let changed = false
   for (const paragraph of Array.from(doc.getElementsByTagNameNS(W, "p"))) {
     const runs = paragraphRuns(paragraph)
-    const spans = openItemSpans(runs.flatMap(row => row.content.map(part => part.value)).join(""))
+    const spans = shadedMarkerSpans(runs.flatMap(row => row.content.map(part => part.value)).join(""))
     const clearing = clear(paragraph)
     if (spans.length || clearing) for (const row of runs) changed = shadeRun(row, spans, clearing) || changed
   }
@@ -118,14 +133,14 @@ export function shadeOpenItemsInDocx(bytes: Uint8Array, clear: (paragraph: Eleme
   return zipSync(parts, { mtime: new Date(1980, 0, 1) })
 }
 
-/** Removes the open-item shading of each run holding part of an open-item
- * marker (openItemSpans), as the redline compares two bodies; whether any was
+/** Removes the open-item shading of each run holding part of a marker
+ * (shadedMarkerSpans), as the redline compares two bodies; whether any was
  * removed. */
 export function unshadeOpenItems(doc: Document) {
   let changed = false
   for (const paragraph of Array.from(doc.getElementsByTagNameNS(W, "p"))) {
     const runs = paragraphRuns(paragraph)
-    const spans = openItemSpans(runs.flatMap(row => row.content.map(part => part.value)).join(""))
+    const spans = shadedMarkerSpans(runs.flatMap(row => row.content.map(part => part.value)).join(""))
     for (const { run, content } of runs) {
       const shading = runShading(run)
       if (!shading || !OPEN_ITEM_FILLS.has((shading.getAttributeNS(W, "fill") ?? "").toUpperCase())) continue
@@ -169,7 +184,7 @@ function withinDeletion(run: Element, paragraph: Element) {
 // changes, each piece keeping the run's properties and its own content.
 // Content showing no text goes with the content before it, or after it when
 // it comes first.
-function shadeRun({ run, content }: { run: Element; content: RunContent[] }, spans: ReturnType<typeof openItemSpans>, clearing: boolean) {
+function shadeRun({ run, content }: { run: Element; content: RunContent[] }, spans: ReturnType<typeof shadedMarkerSpans>, clearing: boolean) {
   const shading = runShading(run)
   const fill = (shading?.getAttributeNS(W, "fill") ?? "").toUpperCase()
   const current = shading?.getAttributeNS(W, "val") === "clear" ? fill : undefined
@@ -260,7 +275,7 @@ function shadeRunElement(run: Element, fill: string) {
 }
 
 function markerFill(marker: string) {
-  return /^_+$/.test(marker) ? FIELD_HIGHLIGHT_FILL : OPEN_ITEM_HIGHLIGHT_FILL
+  return /^(?:_+|\[\s*_+\s*\])$/.test(marker) ? FIELD_HIGHLIGHT_FILL : OPEN_ITEM_HIGHLIGHT_FILL
 }
 
 function highlightRun(runBeforeText: string, fill: string) {

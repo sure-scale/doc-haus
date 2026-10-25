@@ -358,6 +358,21 @@ test("an open item citing a bracketed heading that a change rewrites is shaded w
   expect(revisions(directory).formatting).toBe(0)
 }, 60_000)
 
+test("a drafting placeholder is shaded whole in the body and the redline, one drafting split and one a change writes, and nothing around them", async () => {
+  // Drafting renders the bold word in a run of its own, so no single run holds the placeholder.
+  const { directory, row } = await drafted(AGREEMENT.replace("2.1 The Supplier shall provide the Services.", "2.1 The Supplier shall provide the Services by [insert the **agreed** date]."))
+  const invoices = row("Invoices are payable")
+  await apply(directory, [{ pid: invoices.pid, existing_sha256: invoices.sha256, updated: "Invoices are payable within [TBC – finance team] days of receipt." }])
+  const applied = readFileSync(leanFile(directory, "d1/body-applied.docx"))
+  const redline = readFileSync(leanFile(directory, "d1/redline.docx"))
+  expect(shadedOpenItems(applied).join("")).toBe("[insert the agreed date][TBC – finance team]")
+  expect(shadedOpenItems(redline).join("")).toBe("[insert the agreed date][TBC – finance team]")
+  // The shading the body adds to the drafted placeholder is no tracked formatting change.
+  expect(revisions(directory).formatting).toBe(0)
+  expect(shownParagraphs(redline, "accept")).toEqual(shownParagraphs(applied))
+  expect(shownParagraphs(redline, "reject")).toEqual(shownParagraphs(readFileSync(leanFile(directory, "d1/body.docx"))))
+}, 60_000)
+
 // A lawyer's original numbered by a Word list, as the drafted body is but
 // without its paragraph pointers: its references typed, or its own fields.
 function suppliedOriginal(drafted: Uint8Array, references: "typed" | "fields") {
