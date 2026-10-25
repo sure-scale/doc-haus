@@ -302,13 +302,16 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
   let frame = 0
   const place = () => {
     if (pane || stacked) return
+    // Boxes are measured on screen, which the text size setting zooms (body
+    // zoom); the gap and the margins set here are page pixels.
+    const scale = Number(getComputedStyle(document.body).zoom) || 1
     const top = column.getBoundingClientRect().top
     const gap = parseFloat(getComputedStyle(column).rowGap) || 0
     const wanted = notes.map((note) => {
       const text = content.querySelector(`.comment-highlight[data-comment-id="${CSS.escape(note.dataset.commentId ?? "")}"]`) ?? blockOf(note)
-      return text ? text.getBoundingClientRect().top - top : 0
+      return text ? (text.getBoundingClientRect().top - top) / scale : 0
     })
-    const heights = notes.map((note) => note.getBoundingClientRect().height)
+    const heights = notes.map((note) => note.getBoundingClientRect().height / scale)
     let next = 0
     notes.forEach((note, index) => {
       const at = Math.max(wanted[index]!, next)

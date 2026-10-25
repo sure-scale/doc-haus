@@ -4,9 +4,9 @@
 // paragraph, and a button or the commented text opens and focuses its thread in the panel. With the panel closed the
 // comments beside the page are Word-style cards: each author's initials and colour match the panel's (as do the colours of
 // their tracked changes on the page), a resolved thread says so, a screened comment is flagged, a card and its text light
-// up together, each card sits level with its text (the next just below it when they would overlap, following the text as
-// the page reflows), and on a narrow page each card sits under its paragraph (once) and goes back when the page widens,
-// with citations still found across it.
+// up together, each card sits level with its text at every text size (the next just below it when they would overlap,
+// following the text as the page reflows), and on a narrow page each card sits under its paragraph (once) and goes back
+// when the page widens, with citations still found across it.
 // Small synthetic files then cover the other side's tricks and crowded pages: a card shows no hidden character its
 // flag says was removed, a bookmark named like a comment's marker moves nothing, several buttons on one short clause
 // or in a table cell can each be clicked and cover no text, a comment with no range leaves no invisible Tab stop, and
@@ -437,7 +437,7 @@ try {
     assert.deepEqual(errors, [])
   })
 
-  await check("each card sits beside its comment's text, the next just below it when they would overlap, and follows the text as the page reflows", async () => {
+  await check("each card sits beside its comment's text, the next just below it when they would overlap, and follows the text as the page reflows or the text size changes", async () => {
     const clause = (n: number) => `${n}. The Supplier delivers each order to the Buyer's warehouse within ten business days and gives the Buyer written notice of any expected delay.`
     const comments = [
       { id: 0, author: REVIEWERS[0]!, text: "Ten business days is too short for orders placed in the last week of a month." },
@@ -477,6 +477,15 @@ try {
     assert.equal(await page.locator(".docx-render .comment-margin-note:visible").count(), 0, "no cards while the panel is open")
     await closePanel(page)
     await beside("panel closed again")
+    // Compact and Large text zoom the whole page; the cards, placed again, stay beside their text.
+    for (const size of ["compact", "large"]) {
+      await page.evaluate(value => { document.documentElement.dataset.text = value }, size)
+      await page.locator(".viewer-markup-toggle").click()
+      await page.locator('.docx-render[data-comments="pane"]').waitFor({ state: "attached" })
+      await closePanel(page)
+      if (screenshots) await page.screenshot({ path: path.join(screenshots, `cards-beside-text-${size}.png`) })
+      await beside(`${size} text`)
+    }
     assert.deepEqual(errors, [])
   })
 
