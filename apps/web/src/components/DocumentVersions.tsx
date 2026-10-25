@@ -39,9 +39,16 @@ const ORIGIN: Record<string, string> = {
   unknown: "Earlier file, not recorded how it was made",
 }
 
-export function versionOrigin(version: Pick<DocumentVersion, "id" | "origin" | "parent">, events: VersionEvent[] = []) {
+// The label the "Their changes" panel gives a version that only adds the
+// lawyer's replies to the other side's comments (#200).
+const REPLIES_ONLY = /^\d+ repl(?:y|ies) added$/
+
+export function versionOrigin(version: Pick<DocumentVersion, "id" | "origin" | "parent"> & { label?: string | null }, events: VersionEvent[] = []) {
   if (version.origin === "system" && !version.parent) return "Added by doc.haus"
   if (version.origin === "unknown" && version.parent) return "Changed outside doc.haus"
+  // Replies with no decision are saved as a revision with no event; only
+  // their label tells them from a save from Word.
+  if (version.origin === "revision" && REPLIES_ONLY.test(version.label?.trim() ?? "")) return "Replies added"
   // Saved from the "Their changes" panel (#200): the lawyer's accept, reject and
   // hold decisions on the other side's tracked changes, which its event lists,
   // rather than doc.haus's own proposals accepted.

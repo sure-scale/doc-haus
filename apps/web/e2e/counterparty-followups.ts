@@ -7,6 +7,9 @@
 // an info toast; rejecting it shows nothing; and a check that could not run (the
 // response's `consistency` rewritten in the browser, as ingest's own refusal is
 // covered by services/ingest/src/document-markup.test.ts) shows one muted line.
+// A reply written by hand to the synthetic supply agreement's open thread
+// (dochaus/test/support/counterparty-markup-fixture.ts), applied with no
+// decision, is listed as replies added, not as a save from Word.
 // Each state is captured at desktop and 400×860. Nothing reaches a model: the
 // sources' embeddings use the local model (DOCHAUS_MODEL_CACHE_DIR, else the
 // per-user cache), browser engine traffic is intercepted and unexpected
@@ -16,7 +19,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import os, { tmpdir } from "node:os"
 import path from "node:path"
 import type { Browser, Locator } from "@playwright/test"
-import { numberedMarkupDocx } from "../../../dochaus/test/support/counterparty-markup-fixture"
+import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx, numberedMarkupDocx } from "../../../dochaus/test/support/counterparty-markup-fixture"
 
 const { chromium, expect } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
 
@@ -31,6 +34,7 @@ const LAWYER = "Synthetic Reviewing Lawyer"
 const BROKEN = "Renumbered agreement.docx"
 const CLEAN = "Unchanged agreement.docx"
 const UNCHECKED = "Unchecked agreement.docx"
+const MARKUP = COUNTERPARTY_MARKUP.name
 const HEADING = "Check these references and defined terms after your decisions"
 const UNCHECKED_LINE = "References and defined terms were not checked for this version."
 const DESKTOP = { width: 1440, height: 1000 }
@@ -241,6 +245,29 @@ try {
     await expect(page.getByText(/to check\.$/)).toHaveCount(0)
     await shot("6b2-not-checked-desktop")
     await phone(viewer, ".markup-consistency-unchecked", "6b2-not-checked-phone")
+  })
+
+  await step("5 a reply applied with no decision is listed as replies added, with its label", async () => {
+    const body = new FormData(); body.append("file", new File([counterpartyMarkupDocx()], MARKUP))
+    expect((await api(`/matters/${file.matter}/documents`, { method: "POST", body })).status).toBe(200)
+    const viewer = await openDocument(MARKUP)
+    const panel = viewer.locator("#document-markup")
+    const thread = panel.locator(".markup-list > li.markup-thread").filter({ hasText: COUNTERPARTY_MARKUP.comments[0]!.text })
+    await thread.getByRole("button", { name: "Write a reply", exact: true }).click()
+    await thread.getByLabel("Your reply", { exact: true }).fill("Forty-five days is agreed if stock levels are reported monthly.")
+    await thread.getByRole("button", { name: "Approve", exact: true }).click()
+    await panel.getByRole("button", { name: "Apply decisions…", exact: true }).click()
+    await panel.getByRole("group", { name: "Apply decisions", exact: true }).getByRole("button", { name: "Apply decisions", exact: true }).click()
+    await expect(page.getByText("Saved as version 2: 1 reply added.", { exact: true })).toBeVisible({ timeout: 30_000 })
+    const listed = await (await api(`/matters/${file.matter}/documents/versions?name=${encodeURIComponent(MARKUP)}`)).json() as { versions: { number: number; origin: string; label: string | null }[] }
+    expect(listed.versions.map(({ number, origin, label }) => [number, origin, label])).toEqual([[2, "revision", "1 reply added"], [1, "upload", null]])
+    await viewer.getByRole("button", { name: /^Versions/ }).click()
+    const newest = viewer.locator(".versions-list > li").first()
+    await expect(newest).toContainText("Version 2")
+    await expect(newest.locator(".version-meta")).toHaveText(`Replies added · by ${LAWYER}`)
+    await expect(newest.locator(".version-label")).toHaveText("1 reply added")
+    await shot("versions-replies-only-desktop")
+    await phone(viewer, "#document-versions", "versions-replies-only-phone")
   })
 
   await step("no page errors or unexpected requests", async () => {

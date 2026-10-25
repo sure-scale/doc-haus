@@ -49,6 +49,11 @@ describe("version words", () => {
     expect(versionOrigin(restored, [])).toBe("Restored")
   })
 
+  test("replies added from their changes with no decision read as replies, not as a save from Word", () => {
+    expect([version(2, { label: "1 reply added" }), version(3, { label: "2 replies added" })].map((v) => versionOrigin(v))).toEqual(["Replies added", "Replies added"])
+    expect([version(4), version(5, { label: "Signed copy, 2 replies added" })].map((v) => versionOrigin(v))).toEqual(["Saved from Word", "Saved from Word"])
+  })
+
   test("an actor shows only when the writer knew a person", () => {
     expect(["unknown", "", "doc.haus", "agent:legal-review"].map(versionActor)).toEqual([undefined, undefined, undefined, undefined])
     expect(versionActor(null)).toBeUndefined()

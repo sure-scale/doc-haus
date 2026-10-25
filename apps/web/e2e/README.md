@@ -118,7 +118,9 @@ with a tracked deletion of a clause another clause cites, against the real
 ingest service. Accepting the deletion must show the broken reference above
 the page with an info toast, and viewing a kept version must end it; rejecting
 it must show nothing; a check that could not run (forced in the browser) must
-show one muted line. Each state is captured at desktop and 400 px.
+show one muted line. A reply written by hand to the marked-up supply agreement
+and applied with no decision must be listed as replies added, with its label.
+Each state is captured at desktop and 400 px.
 
 Run the matter chat layout regression with the same environment as the
 setup and settings checks:
