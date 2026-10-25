@@ -527,7 +527,7 @@ test("each change and thread the current drafting run answered carries its answe
     finding("rejected", "Keep the draft's positions.", "Each is answered as drafted.", rest.map(row => row.id)),
   ] }))
   try {
-    const answered = await view(name) as View & { responses?: Record<string, { disposition: string; reason?: string }> }
+    const answered = await view(name) as View & { responses?: Record<string, { disposition: string; reason?: string; from_version?: number | null }> }
     const cards = new Set([...answered.revisions.map(({ id }) => id), ...answered.comments.map(({ id }) => String(id))])
     const ids = [first!, ...rest].map(row => String(row.counterparty!.ref.id))
     expect(ids.length).toBeGreaterThan(1)
