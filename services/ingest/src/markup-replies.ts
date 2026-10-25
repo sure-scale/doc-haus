@@ -1,6 +1,5 @@
-import { Hono, type Context } from "hono"
+import { Hono } from "hono"
 import { existsSync, readFileSync } from "node:fs"
-import path from "node:path"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { readDocxMarkup, type DocxMarkup, type MarkupComment } from "../../../dochaus/lib/docx-markup"
@@ -9,13 +8,11 @@ import { renderInstructions } from "../../../dochaus/lib/drafting-preferences"
 import { effectivePosture, matterClient } from "../../../dochaus/lib/matter-client"
 import { UNTRUSTED_DOCUMENT_NOTICE } from "../../../dochaus/lib/untrusted"
 import { detectInjection, normalizeUntrustedText } from "../../../dochaus/lib/untrusted-text"
-import { getDocumentRole, openDb } from "./db"
+import { notSource, sourceTarget, wordName } from "./document-markup"
 import { sha256Hex } from "./document-versions"
 import { EngineGenerationError, generate } from "./engine-generate"
-import { matterDocumentName } from "./ingest"
 import type { MarkupDecision } from "./markup-decisions"
 import { readDraftingPreferences } from "./preferences"
-import { readDocumentTarget } from "./registered-document"
 
 // A draft reply to one of the other side's comment threads (#200), for the
 // lawyer to edit and approve in the triage panel: one stateless call to the
@@ -190,26 +187,6 @@ function draftBody(input: unknown) {
   return { base, thread, decisions: map, steer: steer.replace(/[\p{Cc}\s]+/gu, " ").trim() }
 }
 
-function wordName(requested: string | undefined) {
-  const name = matterDocumentName(requested ?? "")
-  return name && path.extname(name).toLowerCase() === ".docx" ? name : undefined
-}
-
-/** The registered uploaded source `name`, as the markup list reads it. */
-function sourceTarget(directory: string, name: string) {
-  const target = readDocumentTarget(directory, name)
-  if (!target || !existsSync(path.join(directory, ".dochaus", "legal.db"))) return
-  const db = openDb(directory)
-  try {
-    return getDocumentRole(db, target.docPath) === "source" ? target : undefined
-  } finally {
-    db.close()
-  }
-}
-
-function notSource(c: Context, name: string) {
-  return c.json({ error: `${name} is not an uploaded Word source in this matter.`, code: "not_source" }, 404)
-}
 
 function data(value: unknown) {
   return JSON.stringify(value).replace(/</g, "\\u003c")

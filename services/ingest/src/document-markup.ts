@@ -177,14 +177,17 @@ export function documentMarkupRoutes(options: Options) {
   return app
 }
 
-function wordName(requested: string | undefined) {
+// Shared with the reply-draft route this module mounts (markup-replies.ts).
+// Each side uses the other only inside request handlers, so the import cycle
+// is safe.
+export function wordName(requested: string | undefined) {
   const name = matterDocumentName(requested ?? "")
   return name && path.extname(name).toLowerCase() === ".docx" ? name : undefined
 }
 
 /** The registered uploaded source `name`, read from legal.db; undefined for a
  * deliverable, an unregistered file or a link. */
-function sourceTarget(directory: string, name: string) {
+export function sourceTarget(directory: string, name: string) {
   const target = readDocumentTarget(directory, name)
   if (!target || !existsSync(path.join(directory, ".dochaus", "legal.db"))) return
   const db = openDb(directory)
@@ -195,7 +198,7 @@ function sourceTarget(directory: string, name: string) {
   }
 }
 
-function notSource(c: Context, name: string) {
+export function notSource(c: Context, name: string) {
   return c.json({ error: `${name} is not an uploaded Word source in this matter.`, code: "not_source" }, 404)
 }
 
