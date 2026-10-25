@@ -68,6 +68,7 @@ const listing = (comments: Listed[]) => ({
   comments: comments.map(({ id, author, text, findings = [] }) => ({ id, author, initials: null, date: DATE, text, parent: null, resolved: null, quote: "", paragraph: null, findings })),
   authors: [...new Set(comments.map((comment) => comment.author))].map((name) => ({ name, revisions: 0, comments: comments.filter((comment) => comment.author === name).length })),
 })
+const REVIEWERS = ["Avery Lindqvist", "Morgan Okafor", "Sam Rivera", "Jo Park", "Lee Chan"]
 
 const entry = path.join((await import("node:os")).tmpdir(), `dochaus-comments-${process.pid}.tsx`)
 await Bun.write(entry, `
@@ -288,6 +289,27 @@ try {
     assert.equal(await card.getAttribute("aria-label"), `Comment by ${author}`)
     assert.match(await card.locator(".markup-flag").textContent() ?? "", /Hidden characters were removed from this text/)
     assert.deepEqual(await page.locator(".docx-render a.comment-marker").allTextContents(), [`(comment by ${author})`])
+    assert.deepEqual(errors, [])
+  })
+
+  await check("a bookmark named like a comment's marker moves neither its button nor its card", async () => {
+    const comments = [{ id: 1, author: REVIEWERS[0]!, text: "Agreed, no change." }]
+    const file = {
+      bytes: wordFile([
+        para('<w:bookmarkStart w:id="90" w:name="comment-ref-1"/>' + run("1. Delivery. The goods ship within ten days.") + '<w:bookmarkEnd w:id="90"/>'),
+        para(run("2. Price. ") + commented(1, "The price is fixed for the term.")),
+      ], comments),
+      markup: listing(comments),
+    }
+    const { page, errors } = await open({ width: 1440, height: 900 }, undefined, true, file)
+    const pin = page.locator('.docx-render[data-comments="pane"] .doc-comment-pin')
+    await pin.waitFor({ state: "attached" })
+    assert.match(await pin.evaluate(node => node.parentElement!.textContent ?? ""), /^2\. Price\./, "the button is by the commented clause")
+    await closePanel(page)
+    await page.setViewportSize({ width: 400, height: 860 })
+    const stack = page.locator(".docx-render .doc-comment-stack")
+    await stack.waitFor({ state: "attached" })
+    assert.equal(await stack.evaluate(node => Boolean(node.previousElementSibling?.querySelector('.comment-highlight[data-comment-id="1"]'))), true, "the card is under the commented clause")
     assert.deepEqual(errors, [])
   })
 

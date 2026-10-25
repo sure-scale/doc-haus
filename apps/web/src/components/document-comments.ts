@@ -118,9 +118,12 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
     return `${note.classList.contains("comment-resolved") ? "Resolved comment" : "Comment"}${author ? ` by ${author}` : ""}`
   }
   // The paragraph a thread's text is in: its highlight's, else its marker's.
+  // A bookmark is painted as <a id="its name">, so one the file names
+  // "comment-ref-N" is not the marker; only Docxodus's marker has the class.
   const blockOf = (note: HTMLElement) => {
     const id = CSS.escape(note.dataset.commentId ?? "")
-    return content.querySelector(`.comment-highlight[data-comment-id="${id}"], #comment-ref-${id}`)?.closest(BLOCKS) ?? undefined
+    const hit = content.querySelector(`.comment-highlight[data-comment-id="${id}"]`) ?? content.querySelector(`a.comment-marker#comment-ref-${id}`)
+    return hit?.closest(BLOCKS) ?? undefined
   }
 
   for (const note of all) {
