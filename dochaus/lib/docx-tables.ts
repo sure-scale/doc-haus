@@ -29,7 +29,9 @@ const XML_NS = "http://www.w3.org/XML/1998/namespace"
 const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 const BODY = "word/document.xml"
 const STYLES = "word/styles.xml"
-/** A drafted table is a counterpart of an original one from this share of shared cell text. */
+/** A drafted table is a counterpart of an original one from this share of
+ * shared cell text; a drafted clause takes the properties of the original
+ * clause with its number from this share of shared words. */
 const MATCH = 0.5
 /** A counterpart is preferred by up to this much for the passage it follows:
  * all of it when its passage has the original table's words, else the share
@@ -245,14 +247,16 @@ export function carryOriginalParagraphs(rendered: Uint8Array, original: Uint8Arr
   // A drafted paragraph left as drafted whose clause number is an uncarried
   // original paragraph's, between the same carried paragraphs (or a carried
   // one and the body's start or end), keeps the original's spacing after that
-  // number and takes its paragraph properties, so a reworded heading keeps
-  // its heading style; its runs stay as drafted. A number either side has
-  // more than once there pairs with none.
+  // number; where at least half of the words after the number are still the
+  // original's (a reworded clause, not another clause under that number), it
+  // also takes the original's paragraph properties, so a reworded heading
+  // keeps its heading style. Its runs stay as drafted. A number either side
+  // has more than once there pairs with none.
   let [spaced, restyled] = [0, 0]
   const numbered = (rows: typeof left) => {
     const labelled = rows.flatMap(row => {
       const label = CLAUSE_NUMBER.exec(row.words)?.[0]
-      return label ? [{ node: row.node, label }] : []
+      return label ? [{ node: row.node, label, words: row.words.slice(label.length) }] : []
     })
     return labelled.filter(row => labelled.filter(other => other.label === row.label).length === 1)
   }
@@ -264,7 +268,7 @@ export function carryOriginalParagraphs(rendered: Uint8Array, original: Uint8Arr
       if (at === undefined) continue
       const [from, into] = [was[index]!, now[at]!]
       if (respace(into.node, into.label, labelSpace(from.node, from.label))) spaced++
-      if (restyle(into.node, from.node, sourceStyles, targetStyles)) restyled++
+      if (wording(from.words, into.words) >= MATCH && restyle(into.node, from.node, sourceStyles, targetStyles)) restyled++
     }
   }
   const carry = { paragraphs: left.length, carried, breaks, spaced, restyled }
