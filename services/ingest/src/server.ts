@@ -49,7 +49,7 @@ import {
 import { EmbeddingModelUnavailableError, migrateEmbeddings } from "./embed"
 import { migrateSections, migrateStructure } from "./structure"
 import { pdfToDocx } from "./convert"
-import { buildRedlined, bake, layeredRedline, redlineState, redlineStaleReason, RedlinePreviewConflictError } from "./redline"
+import { buildRedlined, bake, layeredRedline, redlineState, redlineStaleReason, RedlineAcceptConflictError, RedlinePreviewConflictError } from "./redline"
 import { listMatters, createMatter, getMatter, renameMatter, deleteMatter, recordConflicts, matterDir, listJurisdictions, listPlaybooks, updatePlaybook, deletePlaybook, PlaybookError, PLAYBOOK_DIR, MatterValidationError, type Conflicts } from "./matter"
 import { listTemplates, templatePath, setTemplateDescription, removeTemplateDescription, TEMPLATES_DIR } from "./template"
 import { listWorkflows, createWorkflow, updateWorkflow, deleteWorkflow, NAME_RE, WORKFLOWS_DIR } from "./workflow"
@@ -1331,6 +1331,7 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
       redline = await prepareDeliveredRedline(dir,file,baked)
       await writeDocumentRevision(dir,name,baked,rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null),{version:acceptVersion(c,rows.map((row) => row.id))})
     } catch (error) {
+      if (error instanceof RedlineAcceptConflictError) return c.json({error:error.message},409)
       console.warn("[redline] batch acceptance refused",diagnosticErrorMetadata(error))
       return c.json({error:"Batch acceptance could not be confirmed. Refresh the document and change list before trying again."},409)
     }

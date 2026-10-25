@@ -1091,6 +1091,64 @@ test("on an uploaded markup, doc.haus's tracked change from before an attorney w
   }
 },120000)
 
+// Proposals are signed with the name saved when they were prepared, so naming
+// the attorney between two requests leaves the change list with two authors.
+test("on an uploaded markup, Accept all writes proposals prepared under different names, each tracked under its own, and names two that overlap", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-authors-"))
+  const law = {before_quote:"the Province",replacement:"the State",target_context:"governing law clause",reason:"Requested governing law update."}
+  const batches:LegalPass["amendments"][] = [[law],[law],[
+    {before_quote:"governed by",replacement:"construed under",target_context:"governing law clause",reason:"Requested wording."},
+    {before_quote:"without consent",replacement:"without prior written consent",target_context:"assignment clause",reason:"Consent must be written."},
+  ],[
+    {before_quote:"law of the Province",replacement:"laws of the Province",target_context:"governing law clause",reason:"Requested wording."},
+  ]]
+  const engine = syntheticEngine(() => ({amendments:batches.shift()!,open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  const by = (author:string,rows:Awaited<ReturnType<typeof listedRevisions>>) => rows.filter((row) => row.author === author).map((row) => [row.type,row.text])
+  const ids = async (matter:Awaited<ReturnType<typeof ingest.matter>>,instructions:string) => (await (await matter.prepare(instructions)).json() as {redline_ids:number[]}).redline_ids
+  try {
+    await ingest.start("only")
+    const all = await ingest.matter("Markup proposals by two names accepted together")
+    const overlap = await ingest.matter("Markup proposals by two names that overlap")
+    for (const matter of [all,overlap])
+      expect((await ingest.request(`${matter.route}/documents`,{method:"POST",body:wordForm(withParaIds(counterpartyMarkupDocx()))})).status).toBe(200)
+    const markup = await Bun.file(all.file).bytes()
+    const theirs = await listedRevisions(markup)
+    // Before an attorney is saved, proposals are doc.haus's.
+    const first = [...await ids(all,"Make the State's law govern."),...await ids(overlap,"Make the State's law govern.")]
+    expect((await ingest.request("/preferences",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({attorney:"Riley Chen"})})).status).toBe(200)
+    const named = await ids(all,"Say construed and require written consent to assign.")
+    expect(await all.pending()).toEqual([first[0]!,...named].map((id) => [id,undefined,undefined]))
+
+    const response = await ingest.request(`${all.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect({status:response.status,body:await response.json()}).toEqual({status:200,body:{ok:true,accepted:3}})
+    const accepted = await Bun.file(all.file).bytes()
+    const body = (await createDocxRevision(accepted,{pendingRevisions:"layer"})).paragraphs
+    expect([body[7]!.text,body[9]!.text]).toEqual([" without prior written consent.","9. Governing law. This Agreement is construed under the law of the State."])
+    // Each edit is tracked under the name it was prepared under, beside their
+    // changes, which stay as they were.
+    const after = await listedRevisions(accepted)
+    expect(by("doc.haus",after)).toEqual([["delete","Province"],["insert","State"]])
+    expect(by("Riley Chen",after)).toEqual([["delete","consent"],["insert","prior written consent"],["delete","governed by"],["insert","construed under"]])
+    expect(after.filter((row) => row.author !== "doc.haus" && row.author !== "Riley Chen")).toEqual(theirs)
+    expect(new Set(revisionMarkIds(accepted)).size).toBe(revisionMarkIds(accepted).length)
+    expect([first[0]!,...named].map(all.status)).toEqual(["accepted","accepted","accepted"])
+
+    // Two proposals on the same words cannot both be written: Accept all says
+    // which and what to do, and changes nothing.
+    const [wording] = await ids(overlap,"Make the laws govern.")
+    const before = await Bun.file(overlap.file).bytes()
+    expect(await overlap.pending()).toEqual([[first[1]!,undefined,undefined],[wording!,undefined,undefined]])
+    const refused = await ingest.request(`${overlap.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect({status:refused.status,body:await refused.json()}).toEqual({status:409,body:{error:
+      "The changes to \"the Province\" and \"law of the Province\" overlap, so Accept all cannot write both. Accept the one you want on its own, then reject the other and request that edit again."}})
+    expect(sha256(await Bun.file(overlap.file).bytes())).toBe(sha256(before))
+    expect([first[1]!,wording!].map(overlap.status)).toEqual(["pending","pending"])
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
 test("accepting paragraph-bound amendments to a numbered list paragraph and a table paragraph preserves numbering, tables, sibling paragraphs and untouched runs", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-numbered-"))
   const file = path.join(directory,"working.docx")

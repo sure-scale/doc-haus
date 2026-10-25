@@ -2,7 +2,7 @@ import { docxodus } from "./docxodus"
 import { compareDocxWithPointers, paragraphTargets, resolveParagraphTarget, withStableRevisionDates, type ParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import type { RedlineRow } from "./db"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { createDocxLocalization, applyDocxParagraphEdits, DocxTrackedRevisionsError, hasTrackedRevisions, openRevision, othersPending, pendingRevisionAnchors, pendingRevisionRefusal, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
+import { createDocxLocalization, applyDocxParagraphEdits, DocxOverlappingAmendmentsError, DocxTrackedRevisionsError, hasTrackedRevisions, openRevision, othersPending, pendingRevisionAnchors, pendingRevisionRefusal, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { createHash } from "node:crypto"
 import { draftingAttribution, ourAuthors } from "../../../dochaus/lib/docx-attribution"
 import { normalizeUntrustedText } from "../../../dochaus/lib/untrusted-text"
@@ -22,6 +22,8 @@ import { discloseSourceRevisions } from "../../../dochaus/lib/docx-revision-view
 
 type Session = ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"]>
 export class RedlinePreviewConflictError extends Error {}
+/** A batch Accept refused for a reason the lawyer can act on; its message says which proposals and what to do. */
+export class RedlineAcceptConflictError extends Error {}
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 // Ingest's own install of the same Docxodus package declares the session type
@@ -218,8 +220,7 @@ async function bodyParagraphPositions(bytes: Uint8Array, options: DocxRevisionOp
 const ours = (author: string) => [...ourAuthors(), author]
 
 function previewAuthor(rows: RedlineRow[]) {
-  const fallback = draftingAttribution().author
-  const authors = [...new Set(rows.map(row => row.author || fallback))]
+  const authors = [...new Set(rows.map(rowAuthor))]
   // Docxodus comparisons accept only one author for every new native revision.
   // Refuse a combined export rather than silently overwrite stored identities.
   if (authors.length > 1)
@@ -233,31 +234,41 @@ function previewAuthor(rows: RedlineRow[]) {
 // document. `state` is the request's redlineState for these bytes, when already
 // read for the stale check. A clean document takes the edits untracked. In layer
 // mode (an uploaded source) a document with pending revisions keeps them
-// pending and takes the edits beside them as native tracked changes under the
-// proposals' author, so the accepted file is itself the redline that goes back;
-// the round trip proves rejecting only those gives the document as it was, and
-// accepting them the same edits untracked.
+// pending and takes the edits beside them as native tracked changes, each under
+// its proposal's author (an attorney named between two Prepares leaves two), so
+// the accepted file is itself the redline that goes back; the round trip proves
+// rejecting only those gives the document as it was, and accepting them the
+// same edits untracked.
 export async function bake(original: Uint8Array, rows: RedlineRow[], state?: RedlineState, options: DocxRevisionOptions = {}): Promise<Uint8Array> {
   const bound = rows.some((row) => row.target_json != null)
   if (bound && rows.some((row) => row.target_json == null)) throw new Error("Revision-bound and older proposals require separate review. Prepare a fresh change list.")
-  const write = async (ownAuthors?: readonly string[], revisionAuthor?: string) => bound
-    ? (await bakeBound(original,rows,state,{...options,...ownAuthors ? {ownAuthors} : {},...revisionAuthor ? {revisionAuthor} : {}})).bytes
-    : bakeOlder(original,rows,revisionAuthor)
-  if (options.pendingRevisions !== "layer" || !(await (await docxodus()).getRevisions(original)).length) return write()
-  const author = previewAuthor(rows)
-  const own = ours(author)
-  const [plain,tracked] = [await write(own),await write(own,author)]
-  await assertLayeredRoundTrip(tracked,original,plain)
-  return tracked
+  const write = async (ownAuthors?: readonly string[], tracked = false) => bound
+    ? (await bakeBound(original,rows,state,{...options,...ownAuthors ? {ownAuthors} : {},...tracked ? {revisionAuthor:rowAuthor(rows[0]!),
+      amendmentAuthors:Object.fromEntries(rows.map((row) => [String(row.id),rowAuthor(row)]))} : {}})).bytes
+    : bakeOlder(original,rows,tracked)
+  try {
+    if (options.pendingRevisions !== "layer" || !(await (await docxodus()).getRevisions(original)).length) return await write()
+    // Every proposal's author is our side, whichever name it was prepared under.
+    const own = [...ourAuthors(),...rows.map(rowAuthor)]
+    const [plain,tracked] = [await write(own),await write(own,true)]
+    await assertLayeredRoundTrip(tracked,original,plain)
+    return tracked
+  } catch (error) {
+    if (!(error instanceof DocxOverlappingAmendmentsError)) throw error
+    const [first,second] = rows.filter((row) => error.amendments.includes(String(row.id)))
+    throw new RedlineAcceptConflictError(`The changes to ${JSON.stringify(first!.find_text)} and ${JSON.stringify(second!.find_text)} overlap, so Accept all cannot write both. Accept the one you want on its own, then reject the other and request that edit again.`)
+  }
 }
+const rowAuthor = (row: RedlineRow) => row.author || draftingAttribution().author
 
-// Older proposals, replayed by their text; with a revisionAuthor, as native
-// tracked changes under that name.
-async function bakeOlder(original: Uint8Array, rows: RedlineRow[], revisionAuthor?: string) {
+// Older proposals, replayed by their text; `tracked`, as native tracked changes
+// under each proposal's author.
+async function bakeOlder(original: Uint8Array, rows: RedlineRow[], tracked = false) {
   const dx = await docxodus()
-  const session = dx.openDocxSession(original, revisionAuthor ? { trackedChanges: "render_inline", revisionAuthor } : {})
+  const session = dx.openDocxSession(original, tracked ? { trackedChanges: "render_inline", revisionAuthor: rowAuthor(rows[0]!) } : {})
   try {
     for (const row of rows) {
+      if (tracked) session.setRevisionAuthor(rowAuthor(row))
       const result = applyProposal(session, row)
       if (!result.ok) throw new Error(result.error)
     }

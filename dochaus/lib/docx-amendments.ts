@@ -34,7 +34,15 @@ export type DocxLocalizationLimits = Limits
 // native tracked changes under that name, and pending revisions by ownAuthors
 // (every name doc.haus signs with: edits an earlier Accept kept tracked) hold no
 // paragraph: an edit beside them is written, one inside their text is refused.
-export type DocxRevisionOptions = { pendingRevisions?: "refuse" | "layer"; revisionAuthor?: string; ownAuthors?: readonly string[] }
+// amendmentAuthors gives, by amendment id, the name an edit is tracked under
+// instead of revisionAuthor.
+export type DocxRevisionOptions = { pendingRevisions?: "refuse" | "layer"; revisionAuthor?: string; ownAuthors?: readonly string[];
+  amendmentAuthors?: Readonly<Record<string, string>> }
+
+/** Two amendments whose spans overlap in one paragraph, by id; neither is written. */
+export class DocxOverlappingAmendmentsError extends Error {
+  constructor(readonly amendments: readonly [string, string]) { super("overlapping_docx_amendments") }
+}
 
 // A working-document projection is a view, not legal source authority. No native
 // UNIDs or offsets leave this module. Handles are valid only for this exact base.
@@ -240,9 +248,14 @@ function unlinkedFields(opened: Opened, edits: ReturnType<typeof admitted>[]) {
 }
 
 async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) {
-  if (edits.some((a, i) => edits.slice(i + 1).some(b => a.ordinal === b.ordinal
-    && a.match.span.start < b.match.span.start + b.match.span.length
-    && b.match.span.start < a.match.span.start + a.match.span.length))) throw new Error("overlapping_docx_amendments")
+  for (const [i, a] of edits.entries()) {
+    const b = edits.slice(i + 1).find(b => a.ordinal === b.ordinal
+      && a.match.span.start < b.match.span.start + b.match.span.length
+      && b.match.span.start < a.match.span.start + a.match.span.length)
+    if (b) throw new DocxOverlappingAmendmentsError([a.amendment.id, b.amendment.id])
+  }
+  const { revisionAuthor, amendmentAuthors } = opened.options
+  const author = (edit: ReturnType<typeof admitted>) => amendmentAuthors?.[edit.amendment.id] ?? revisionAuthor
   const expected = opened.paragraphs.map(p => p.match.text)
   const ordered = edits.toSorted((a, b) => a.ordinal - b.ordinal || b.match.span.start - a.match.span.start)
   // Edits touching a live cross-reference are written to the source with that
@@ -261,6 +274,7 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
         edit.match.span.start - opened.paragraphs[edit.ordinal]!.match.span.start, edit.match.text.length), edit.amendment.replacement,
         Boolean(opened.options.revisionAuthor))
       if (!change.match.text && !change.replacement) continue
+      if (revisionAuthor) target.session.setRevisionAuthor(author(edit)!)
       const result = target.session.replaceMatch(change.match, change.replacement)
       if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
     }
@@ -292,7 +306,7 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
           package_structure_verified: true,
           limitation: [`changed text inherits first touched run formatting; structural edits and ${opened.options.pendingRevisions === "layer"
             ? "edits in paragraphs with pending tracked revisions" : "existing tracked revisions"} unsupported`,
-            ...opened.options.revisionAuthor ? [`changes tracked as ${opened.options.revisionAuthor}`] : [],
+            ...revisionAuthor ? [`changes tracked as ${[...new Set(edits.map(author))].join(", ")}`] : [],
             ...unlinkedFields(opened, edits)].join("; "),
         },
       }
