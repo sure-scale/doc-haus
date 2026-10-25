@@ -7,11 +7,11 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { DOMParser } from "@xmldom/xmldom"
-import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
+import { strFromU8, unzipSync } from "fflate"
 import * as listLabels from "../../../dochaus/lib/docx-list-labels"
 import type { MarkupAuthor, MarkupComment, MarkupRevision } from "../../../dochaus/lib/docx-markup"
 import { recordRedlineProposal } from "../../../dochaus/lib/redlines"
-import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx } from "../../../dochaus/test/support/counterparty-markup-fixture"
+import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx, numberedMarkupDocx } from "../../../dochaus/test/support/counterparty-markup-fixture"
 import { documentMarkupRoutes } from "./document-markup"
 import { docxodus } from "./docxodus"
 import { reconstructText } from "./structure"
@@ -467,41 +467,13 @@ test("the list refuses anything but a registered Word source, and reads a kept v
 }, 120_000)
 
 // After Apply, the cross-references and defined terms (#198) of the version it
-// made, as a notice in the response. A synthetic services agreement whose
-// clauses Word's list numbers (no number is typed): Avery deletes clause 7,
-// which clause 5 cites, and clause 2 already cites a clause 12 it never had.
-const CLAUSES = [
-  "Services. The Provider shall perform the services in each order form.",
-  "Fees. The Customer shall pay the fees as adjusted under clause 12.",
-  "Records. Each party shall keep accurate records of its performance.",
-  "Notices. Notices must be in writing.",
-  "Termination. Either party may end this agreement as set out in clause 7.",
-  "Liability. Neither party is liable for indirect loss.",
-  "Termination procedure. A party ending this agreement must give thirty days' notice.",
-  "Assignment. Neither party may assign this agreement without consent.",
-  "Governing law. This agreement is governed by the law of the Province.",
-]
-function numberedDocx() {
-  const ns = `xmlns:w="${W}"`, part = "application/vnd.openxmlformats-officedocument.wordprocessingml"
-  const rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-  const by = `w:author="${AVERY}" w:date="${dates[AVERY]}"`
-  const list = '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>'
-  const body = CLAUSES.map((text, at) => at === 6
-    ? `<w:p><w:pPr>${list}<w:rPr><w:del w:id="2" ${by}/></w:rPr></w:pPr><w:del w:id="1" ${by}><w:r><w:delText xml:space="preserve">${text}</w:delText></w:r></w:del></w:p>`
-    : `<w:p><w:pPr>${list}</w:pPr><w:r><w:t xml:space="preserve">${text}</w:t></w:r></w:p>`).join("")
-  return zipSync({
-    "[Content_Types].xml": strToU8(`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="${part}.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="${part}.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="${part}.numbering+xml"/></Types>`),
-    "_rels/.rels": strToU8(`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${rel}/officeDocument" Target="word/document.xml"/></Relationships>`),
-    "word/_rels/document.xml.rels": strToU8(`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdS" Type="${rel}/styles" Target="styles.xml"/><Relationship Id="rIdN" Type="${rel}/numbering" Target="numbering.xml"/></Relationships>`),
-    "word/document.xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document ${ns}><w:body>${body}</w:body></w:document>`),
-    "word/styles.xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles ${ns}><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style></w:styles>`),
-    "word/numbering.xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering ${ns}><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>`),
-  })
-}
+// made, as a notice in the response, on the numbered services agreement
+// (numberedMarkupDocx): Avery deletes clause 7, which clause 5 cites, and
+// clause 2 already cites a clause 12 it never had.
 type Consistency = { status: "checked"; findings: { detail: string }[] } | { status: "not_checked" }
 /** Uploads the numbered agreement as `name` and applies `decision` to each of its listed changes. */
 async function decideNumbered(name: string, decision: Decision) {
-  await upload(name, numberedDocx())
+  await upload(name, numberedMarkupDocx())
   const response = await decide(name, (await view(name)).revisions.map(() => decision))
   expect(response.status).toBe(200)
   return (await response.json() as Applied & { consistency: Consistency }).consistency
@@ -517,7 +489,7 @@ test("after Apply, the reference an accepted deletion broke is reported; with th
 
 test("a check that cannot read the clause numbers is reported as not checked, never as clean", async () => {
   const name = "Unnumbered.docx"
-  await upload(name, numberedDocx())
+  await upload(name, numberedMarkupDocx())
   const listed = await view(name)
   // The route in this process over the service's matter, so the labeller can
   // fail; the stub writer keeps the file as it was.

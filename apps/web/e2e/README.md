@@ -104,6 +104,22 @@ the bracketed part, edits and approves two replies, discards and restores one,
 and applies them with one Reject as one version. At 400 px it applies the last
 reply alone.
 
+Run what follows an Apply in their changes (#200, #198) the same way:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:5231 \
+DOCHAUS_E2E_INGEST_PORT=4932 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-markup-followups-evidence \
+bun apps/web/e2e/counterparty-followups.ts
+```
+
+It uploads three copies of a synthetic agreement whose clauses Word numbers,
+with a tracked deletion of a clause another clause cites, against the real
+ingest service. Accepting the deletion must show the broken reference above
+the page with an info toast, and viewing a kept version must end it; rejecting
+it must show nothing; a check that could not run (forced in the browser) must
+show one muted line. Each state is captured at desktop and 400 px.
+
 Run the matter chat layout regression with the same environment as the
 setup and settings checks:
 

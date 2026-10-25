@@ -81,13 +81,16 @@ export type MarkupDecision = "accept" | "reject" | "hold"
 
 // What one batch did. Every field is read tolerantly: the counts say what was
 // applied, and a change resolved along with another one is `consumed`;
-// `replies` are the comments added, by the thread they answer.
+// `replies` are the comments added, by the thread they answer. `consistency`
+// is the cross-references and defined terms (#198) the decisions broke in the
+// new version, or that they could not be checked; it is kept nowhere.
 export type MarkupDecisionResult = {
   name?: string
   version?: { id: string; number: number } | null
   counts?: Partial<Record<"accepted" | "rejected" | "held" | "consumed", number>>
   replies?: { thread: number; id: number }[]
   notice?: string
+  consistency?: { status: "checked"; findings: { detail: string }[] } | { status: "not_checked" }
 }
 
 // The service refused a request: the file changed since the list was read, a

@@ -170,6 +170,11 @@
 /* A failed reading, with Retry, where the toggle or the panel would be. */
 .document-reader .markup-read-status { max-width: 760px; margin: 0 auto var(--space-4); font-size: 0.8125rem; line-height: 1.5; color: var(--warn); }
 .markup-read-status .linklike { min-height: 0; font-size: inherit; line-height: inherit; }
+/* After an Apply: the references and defined terms to check, or that they were not checked. */
+.document-reader .markup-consistency { max-width: 760px; margin: 0 auto var(--space-4); padding: var(--space-3) var(--space-4); font-size: 0.8125rem; line-height: 1.5; color: var(--text); background: var(--warn-soft); border: 1px solid var(--warn-border); border-radius: var(--radius-md); }
+.markup-consistency strong { font-weight: 600; }
+.markup-consistency ul { margin: var(--space-1) 0 0; padding-left: var(--space-5); overflow-wrap: anywhere; }
+.document-reader .markup-consistency-unchecked { max-width: 760px; margin: 0 auto var(--space-4); font-size: 0.8125rem; line-height: 1.5; color: var(--muted); }
 .document-reader .markup-panel { width: 360px; padding-bottom: 0; }
 .markup-panel .changes-head { gap: var(--space-2); font-weight: 400; }
 .markup-head h3 { display: flex; align-items: center; gap: var(--space-2); margin: 0; font-family: var(--font-sans); font-size: 0.875rem; font-weight: 600; color: var(--text); }

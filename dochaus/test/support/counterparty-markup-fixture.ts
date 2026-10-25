@@ -170,6 +170,39 @@ export function counterpartyMarkupDocx(variant: CounterpartyMarkupVariant = {}):
   }, { mtime: new Date(1980, 0, 1) })
 }
 
+// A second markup, for the cross-references checked after Apply (#198): a
+// synthetic services agreement whose clauses Word's list numbers (no number is
+// typed). Avery deletes clause 7, which clause 5 cites, and clause 2 already
+// cites a clause 12 it never had. Accepting the deletion renumbers clause 8 as 7.
+const NUMBERED_CLAUSES = [
+  "Services. The Provider shall perform the services in each order form.",
+  "Fees. The Customer shall pay the fees as adjusted under clause 12.",
+  "Records. Each party shall keep accurate records of its performance.",
+  "Notices. Notices must be in writing.",
+  "Termination. Either party may end this agreement as set out in clause 7.",
+  "Liability. Neither party is liable for indirect loss.",
+  "Termination procedure. A party ending this agreement must give thirty days' notice.",
+  "Assignment. Neither party may assign this agreement without consent.",
+  "Governing law. This agreement is governed by the law of the Province.",
+]
+
+export function numberedMarkupDocx(): Uint8Array {
+  const ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"', part = "application/vnd.openxmlformats-officedocument.wordprocessingml"
+  const rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  const list = '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>'
+  const body = NUMBERED_CLAUSES.map((text, at) => at === 6
+    ? `<w:p><w:pPr>${list}<w:rPr><w:del w:id="2" ${by(AVERY)}/></w:rPr></w:pPr>${del(1, AVERY, deleted(text))}</w:p>`
+    : `<w:p><w:pPr>${list}</w:pPr>${run(text)}</w:p>`).join("")
+  return zipSync({
+    "[Content_Types].xml": strToU8(`<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="${part}.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="${part}.styles+xml"/><Override PartName="/word/numbering.xml" ContentType="${part}.numbering+xml"/></Types>`),
+    "_rels/.rels": strToU8(PACKAGE_RELS),
+    "word/_rels/document.xml.rels": strToU8(`<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdS" Type="${rel}/styles" Target="styles.xml"/><Relationship Id="rIdN" Type="${rel}/numbering" Target="numbering.xml"/></Relationships>`),
+    "word/document.xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document ${ns}><w:body>${body}</w:body></w:document>`),
+    "word/styles.xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles ${ns}><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style></w:styles>`),
+    "word/numbering.xml": strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering ${ns}><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>`),
+  }, { mtime: new Date(1980, 0, 1) })
+}
+
 if (import.meta.main) {
   const [target, ...flags] = process.argv.slice(2)
   if (!target || flags.some(flag => !["--footnote", "--modern"].includes(flag)))

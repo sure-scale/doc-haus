@@ -8,6 +8,7 @@ import {
   type DocumentMarkup,
   type MarkupComment,
   type MarkupDecision,
+  type MarkupDecisionResult,
   type MarkupFinding,
   type MarkupLocation,
   type MarkupRevision,
@@ -337,8 +338,9 @@ export default function MarkupPanel({
   loading?: boolean
   // doc.haus's own proposals on this document, which are resolved first.
   proposalsPending?: number
-  // A new version was saved: the viewer reloads the document and its versions.
-  onApplied: () => void
+  // A new version was saved: the viewer reloads the document and its versions,
+  // and shows what the result says to check.
+  onApplied: (result: MarkupDecisionResult) => void
   // The service refused the batch: read the file and its markup again.
   onRefetch: () => void
   // doc.haus's own proposals block applying: show them instead of this panel.
@@ -761,7 +763,9 @@ export default function MarkupPanel({
       // tracked changes left in it would only repeat them.
       toast("success", `${result.version ? `Saved as version ${result.version.number}` : "Saved a new version"}: ${tally}.`)
       if (counts.consumed) toast("info", `${plural(counts.consumed, "change was", "changes were")} resolved along with another change.`)
-      onApplied()
+      const broken = result.consistency?.status === "checked" ? result.consistency.findings.length : 0
+      if (broken) toast("info", `${plural(broken, "reference or defined term", "references or defined terms")} to check.`)
+      onApplied(result)
     } catch (cause) {
       setConfirming(false)
       after = refused(cause)
@@ -938,6 +942,23 @@ export default function MarkupPanel({
         </div>
       )}
     </aside>
+  )
+}
+
+// Above the page after an Apply (#198): the references and defined terms its
+// decisions broke, each as the check worded it, or one line when they could
+// not be checked; nothing for a clean check. It goes with the next action.
+export function ConsistencyNotice({ consistency }: { consistency: NonNullable<MarkupDecisionResult["consistency"]> }) {
+  const id = useId()
+  if (consistency.status === "not_checked") return <p role="status" className="markup-consistency-unchecked">References and defined terms were not checked for this version.</p>
+  if (!consistency.findings.length) return null
+  return (
+    <div role="status" className="markup-consistency">
+      <strong id={id}>Check these references and defined terms after your decisions</strong>
+      <ul aria-labelledby={id}>
+        {consistency.findings.map((finding, index) => <li key={index}>{finding.detail}</li>)}
+      </ul>
+    </div>
   )
 }
 

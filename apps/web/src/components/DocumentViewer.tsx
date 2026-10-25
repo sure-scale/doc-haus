@@ -19,13 +19,13 @@ import {
 import { convertPdfToDocx, documentContentUrl, fetchDocumentText, locatePdfPassage, matterDocumentKind, type PdfPassagePage } from "../api/ingest/documents"
 import type { CompareParams } from "../api/ingest/compare"
 import { fetchVersionBytes, type DocumentVersion, type RestoreResult } from "../api/ingest/versions"
-import { fetchDocumentMarkup, MarkupRefusedError, type DocumentMarkup } from "../api/ingest/markup"
+import { fetchDocumentMarkup, MarkupRefusedError, type DocumentMarkup, type MarkupDecisionResult } from "../api/ingest/markup"
 import { getPreferences } from "../api/ingest/preferences"
 import { formatDateTime } from "../lib/format"
 import { ModalClose } from "./ModalHeader"
 import { CompareIcon } from "./CompareDialog"
 import VersionsPanel, { saveVersionFile, unavailableReason, useDocumentVersions, versionOrigin } from "./DocumentVersions"
-import MarkupPanel, { markupCount } from "./MarkupPanel"
+import MarkupPanel, { ConsistencyNotice, markupCount } from "./MarkupPanel"
 import { citationPassage, focusCitationPassage, type CitationFocus } from "./citation-target"
 import { decorateMarkers, markerSummary, type MarkerCounts } from "./document-markers"
 import { useToast } from "./Toast"
@@ -170,6 +170,8 @@ function WordDocumentViewer({
   const returnFocus = useRef<string>(undefined)
   const [unavailable, setUnavailable] = useState<Record<string, string>>({})
   const [versionStatus, setVersionStatus] = useState<string>()
+  // What the last Apply of their changes says to check (#198), until the next action.
+  const [consistency, setConsistency] = useState<MarkupDecisionResult["consistency"]>()
   const [pdfVersionUrl, setPdfVersionUrl] = useState<string>()
   const markUnavailable = (id: string, reason: string) => setUnavailable((current) => ({ ...current, [id]: reason }))
   // The other side's tracked changes and comments in an uploaded Word source
@@ -309,6 +311,7 @@ function WordDocumentViewer({
   // screen, brings the page into view.
   function show(version: DocumentVersion | undefined) {
     setVersionStatus(undefined)
+    setConsistency(undefined)
     setShown(version)
     if (narrow) documentRef.current?.closest(".viewer-doc")?.scrollIntoView({ block: "start" })
   }
@@ -333,6 +336,7 @@ function WordDocumentViewer({
   function restored(result: RestoreResult) {
     setShown(undefined)
     setVersionStatus(result.notice)
+    setConsistency(undefined)
     setReload((value) => value + 1)
     onChanged?.()
   }
@@ -376,7 +380,8 @@ function WordDocumentViewer({
       markup={markup.data}
       loading={markupPending || markup.failed !== undefined}
       proposalsPending={redlines.length}
-      onApplied={() => {
+      onApplied={(result) => {
+        setConsistency(result.consistency)
         setReload((value) => value + 1)
         onChanged?.()
       }}
@@ -661,6 +666,7 @@ function WordDocumentViewer({
           <div className="viewer-doc">
             {versionBanner}
             {versionStatus && <p role="status" className="version-status">{versionStatus}</p>}
+            {consistency && <ConsistencyNotice consistency={consistency} />}
             {!narrow && markupNotice}
             {citation && !shown && <p role="status">{citationStatus(citation.section, passage)}</p>}
             {editing && !shown && <div id="document-edit-request" className="change-card document-edit-request">
