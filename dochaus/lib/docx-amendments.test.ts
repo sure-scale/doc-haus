@@ -532,6 +532,44 @@ describe("layered edits on a counterparty markup", () => {
     }
   })
 
+  // A whole-paragraph quote ends sentences with the full stop the change sits
+  // beside; the change takes the space after it, never the full stop.
+  test("an inserted or deleted sentence keeps to the sentence boundary and the formatting of the text it joins", async () => {
+    const author = "Jordan Example"
+    const tracked = { ...layer, revisionAuthor: author }
+    const CLAUSE = '<w:r><w:t xml:space="preserve">9. Governing law. This Agreement is governed by the law of the Province.</w:t></w:r>'
+    const restyled = (runs: string) => {
+      const parts = unzipSync(source)
+      const xml = strFromU8(parts["word/document.xml"]!)
+      expect(xml).toContain(CLAUSE)
+      parts["word/document.xml"] = strToU8(xml.replace(CLAUSE, runs))
+      return zipSync(parts)
+    }
+    const plain = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`
+    const bold = (text: string) => `<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${text}</w:t></w:r>`
+    const heading = restyled(bold("9. Governing law.") + plain(" This Agreement is governed by the law of the Province."))
+    const term = restyled(plain("9. Governing law. This Agreement is governed by the law of the ") + bold("Province") + plain("."))
+    const whole = "9. Governing law. This Agreement is governed by the law of the Province."
+    const sentence = "Each party submits to the courts."
+    for (const [bytes, before_quote, replacement, expected] of [
+      [source, whole, `9. Governing law. ${sentence} This Agreement is governed by the law of the Province.`, ["insert", `${sentence} `]],
+      [heading, whole, `9. Governing law. ${sentence} This Agreement is governed by the law of the Province.`, ["insert", `${sentence} `]],
+      [heading, "Governing law. This Agreement", `Governing law. ${sentence} This Agreement`, ["insert", `${sentence} `]],
+      [source, "the law of the Province.", `the law of the Province. ${sentence}`, ["insert", ` ${sentence}`]],
+      [term, "the law of the Province.", `the law of the Province. ${sentence}`, ["insert", ` ${sentence}`]],
+      [source, whole, "9. Governing law.", ["delete", " This Agreement is governed by the law of the Province."]],
+    ] as const) {
+      const packet = await createDocxLocalization(bytes, [{ id: "law", before_quote, replacement }], {}, layer)
+      const clause = packet.candidates.find(row => row.paragraph.text.startsWith("9."))!
+      const output = await applyDocxLocalization(bytes, packet, [{ amendment_id: "law", target_handle: clause.target_handle }], tracked)
+      expect((await revisions(output.bytes)).filter(row => row.author === author).map(row => [row.type, row.text])).toEqual([[...expected]])
+      // The new sentence is body text, never part of the bold heading or term beside it.
+      const xml = strFromU8(unzipSync(output.bytes)["word/document.xml"]!)
+      for (const change of xml.match(/<w:ins [^>]*>[\s\S]*?<\/w:ins>/g)?.filter(change => change.includes(sentence)) ?? [])
+        expect(change).not.toContain("<w:b")
+    }
+  })
+
   test("a later tracked insertion stands beside doc.haus's own inserted sentence, never inside it", async () => {
     const author = "Jordan Example"
     const own = { ...layer, ownAuthors: [author], revisionAuthor: author }
@@ -542,12 +580,16 @@ describe("layered edits on a counterparty markup", () => {
     }
     const first = (await write(source, "This Agreement", "Each party submits to the courts. This Agreement")).bytes
     await expect(write(first, "submits to the courts", "submits irrevocably to the courts")).rejects.toThrow("docx_own_revision:law")
-    // Written as its own w:ins just after the first, which Docxodus lists with it.
-    const beside = await write(first, "This Agreement", "Both parties agree. This Agreement")
-    expect((await revisions(beside.bytes)).filter(row => row.author === author).map(row => [row.type, row.text]))
-      .toEqual([["insert", "Each party submits to the courts. Both parties agree. "]])
-    expect((await createDocxRevision(beside.bytes, layer)).paragraphs[9]!.text)
-      .toBe("9. Governing law. Each party submits to the courts. Both parties agree. This Agreement is governed by the law of the Province.")
+    // Written as its own w:ins just after the first, which Docxodus lists with
+    // it, whether or not the quote reaches back into the first.
+    for (const [before_quote, replacement] of [["This Agreement", "Both parties agree. This Agreement"],
+      ["the courts. This Agreement", "the courts. Both parties agree. This Agreement"]] as const) {
+      const beside = await write(first, before_quote, replacement)
+      expect((await revisions(beside.bytes)).filter(row => row.author === author).map(row => [row.type, row.text]))
+        .toEqual([["insert", "Each party submits to the courts. Both parties agree. "]])
+      expect((await createDocxRevision(beside.bytes, layer)).paragraphs[9]!.text)
+        .toBe("9. Governing law. Each party submits to the courts. Both parties agree. This Agreement is governed by the law of the Province.")
+    }
   })
 
   test("a paragraph in a table row they inserted is pending, though Docxodus lists only the row", async () => {

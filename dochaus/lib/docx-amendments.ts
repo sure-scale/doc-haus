@@ -356,9 +356,10 @@ export function changedRange(text: string, replacement: string, words = false) {
 // alone (an empty span, which Docxodus writes as one insertion), a pure
 // deletion alone, and a replacement as the words between the first and last
 // that differ. An insertion or deletion that could stand at several places,
-// because the words around it repeat, stands at the first that opens with a
-// word or mark rather than a space: a new sentence goes before the sentence
-// that opens with the same word, an inserted word before the word it qualifies.
+// because the words around it repeat, stands at the first that follows a
+// space or the start of the quote: a new sentence goes after the full stop and
+// space, before the sentence that opens with the same word, and an inserted
+// word before the word it qualifies. With no such place it stands at the last.
 function changedWords(text: string, replacement: string) {
   const words = (value: string) => value.match(/[\p{L}\p{N}_]+|\s+|[^\p{L}\p{N}_\s]/gu) ?? []
   const before = words(text)
@@ -375,7 +376,7 @@ function changedWords(text: string, replacement: string) {
   let shift = 0
   if (inserted !== (first === lastAfter))
     for (let k = 1; k <= first && (inserted ? after[lastAfter - k] : before[lastBefore - k]) === before[first - k]; k++)
-      if (!/^\s/.test(before[first - k]!)) shift = k
+      if (k === first || /^\s/.test(before[first - k - 1]!)) shift = k
   return { offset: before.slice(0, first - shift).join("").length, replaced: before.slice(first - shift, lastBefore - shift).join(""),
     changed: after.slice(first - shift, lastAfter - shift).join("") }
 }
