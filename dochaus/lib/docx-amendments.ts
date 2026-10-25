@@ -165,10 +165,13 @@ function admitted(opened: Opened, binding: Binding) {
   const change = changedDocxSpan(match, amendment.replacement, Boolean(opened.options.revisionAuthor))
   // Beside doc.haus's own pending change, never inside it: Docxodus would nest
   // the new revision in that one. A pure insertion has no text of its own; it
-  // is inside a change when the text on both sides of it is.
+  // is inside a change when the text on both sides of it is. The change is
+  // judged as the tracked write makes it, whole words, also for an untracked
+  // pass over the same file (Accept's), so both refuse what Prepare does.
   const whole = opened.paragraphs[ordinal]!.match
-  const at = change.match.span.start - whole.span.start
-  if (pending && (change.match.text || !change.replacement ? insideRevision(opened.session, paragraphSpan(whole, at, change.match.text.length))
+  const guarded = opened.options.revisionAuthor ? change : changedDocxSpan(match, amendment.replacement, true)
+  const at = guarded.match.span.start - whole.span.start
+  if (pending && (guarded.match.text || !guarded.replacement ? insideRevision(opened.session, paragraphSpan(whole, at, guarded.match.text.length))
     : at > 0 && insideRevision(opened.session, paragraphSpan(whole, at - 1, 1)) && insideRevision(opened.session, paragraphSpan(whole, at, 1))))
     throw new Error(`docx_own_revision:${amendment.id}`)
   const xml = parse(opened.session.raw.getXml(match.enclosingAnchor.id))
