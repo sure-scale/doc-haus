@@ -1,26 +1,28 @@
 import { currentDocumentArtifacts } from "./current-document-artifacts"
 import path from "node:path"
-import { realpathSync } from "node:fs"
+import { existsSync, realpathSync } from "node:fs"
+import { Database } from "bun:sqlite"
 import { createHash } from "node:crypto"
 import { readRegularFile } from "./regular-file"
-import { readDocxCommentParagraphs, readDocxComments, readDocxRevisionText } from "./docx-comments"
+import { readDocxComments, readDocxRevisionText } from "./docx-comments"
 import { projectedChangeParagraphs } from "../workflows/lean/change-pipeline"
 import { readChangeList, readParagraphs } from "../workflows/lean/checks"
 import { readLeanPlan } from "../workflows/lean/plan"
 import { UNTRUSTED_DOCUMENT_NOTICE } from "./untrusted"
+import { readDocxBodyView } from "./docx-revision-views"
 
-export type CurrentDocumentView = "current_body" | "comments" | "deleted_text" | "proposed_body"
+export type CurrentDocumentView = "current_body" | "baseline_body" | "marked_up_body" | "comments" | "deleted_text" | "proposed_body"
 /** `label` is the list number Word prints before a body paragraph ("2.1"); it is not part of `text`. */
 export type CurrentDocumentEntry = { index: number; artifact: string; sha256: string; label?: string; text: string; paragraph_index?: number; pids?: string[]; comment_id?: string; markers?: unknown; representation?: "generated_proposal"; initial_pid?: string; proposed_part_index?: number; basis?: string[] }
 type CurrentView = { status: "available"; document: string; view: CurrentDocumentView; entries: CurrentDocumentEntry[] } | { status: "unavailable"; document: string; view: CurrentDocumentView; reason: string }
 
 /** Actual Word and the explicitly requested pending projection remain distinct evidence views. */
-export function currentDocumentView(directory: string, document: string, view: CurrentDocumentView): CurrentView {
+export async function currentDocumentView(directory: string, document: string, view: CurrentDocumentView): Promise<CurrentView> {
   const plan = readLeanPlan(directory)
   const declared = [...(plan?.documents ?? []).map(row => ({ id: row.id, file: row.file ?? row.id })), ...(plan ? [{ id: "notes", file: plan.notes_file ?? "drafting-notes.docx" }] : [])]
   const matches = declared.filter(row => row.id === document || row.file === document)
-  if (matches.length !== 1) return { status: "unavailable", document, view, reason: "Current document must have one exact plan ID or filename match. Use the declared current-document inventory; uploaded sources use view=source." }
-  const selected = matches[0]!
+  if (matches.length > 1) return { status: "unavailable", document, view, reason: "Current document must have one exact plan ID or filename match." }
+  const selected = matches[0]
   const read = (artifact: string) => {
     const file = path.resolve(directory, artifact)
     const parent = path.relative(realpathSync(directory), realpathSync(path.dirname(file)))
@@ -28,7 +30,12 @@ export function currentDocumentView(directory: string, document: string, view: C
     return readRegularFile(file)
   }
   try {
+    // Uploaded Word files use their exact registered basename, never a path
+    // supplied by a model or an unregistered neighbouring matter artifact.
+    const uploaded = !selected && registeredWordSource(directory, document)
+    if (!selected && !uploaded) return { status: "unavailable", document, view, reason: "Choose an exact planned document ID/filename or a registered uploaded Word filename. No artifact was read." }
     if (view === "proposed_body") {
+      if (!selected) return { status: "unavailable", document, view, reason: "Uploaded sources have no generated pending-amendment projection." }
       if (selected.id === "notes") return { status: "unavailable", document, view, reason: "Drafting notes have no pending paragraph-amendment projection." }
       const doc = selected.id as `d${number}`
       const changes = readChangeList(directory, doc), initial = readParagraphs(directory, doc)
@@ -44,24 +51,28 @@ export function currentDocumentView(directory: string, document: string, view: C
       })
       return { status: "available", document, view, entries }
     }
-    const current = selected.id === "notes" ? undefined : currentDocumentArtifacts(directory, selected.id as `d${number}`)
-    const candidates = selected.id === "notes" ? [".dochaus/lean/drafting-notes.docx"] : current?.body ? [`.dochaus/lean/${current.body}`] : []
+    const current = !selected || selected.id === "notes" ? undefined : currentDocumentArtifacts(directory, selected.id as `d${number}`)
+    // The accepted body remains the current view. A baseline or markup view
+    // of a generated document reads its current redline, when one exists.
+    const revisionView = view === "baseline_body" || view === "marked_up_body"
+    const candidates = uploaded ? [document] : selected?.id === "notes" ? [".dochaus/lean/drafting-notes.docx"]
+      : revisionView && current?.redline ? [`.dochaus/lean/${current.redline}`] : current?.body ? [`.dochaus/lean/${current.body}`] : []
     let body: { artifact: string; bytes: Buffer } | undefined
     for (const artifact of candidates) {
       const bytes = read(artifact)
       if (bytes) { body = { artifact, bytes };break }
     }
     if (!body?.bytes) return { status: "unavailable", document, view, reason: "No readable current Word body exists for this planned document." }
-    const artifacts = view === "current_body" || selected.id === "notes" ? [body] : [body, ...(current?.redline ? [{ artifact: `.dochaus/lean/${current.redline}`, bytes: read(`.dochaus/lean/${current.redline}`) }] : [])].filter(row => row.bytes)
+    const artifacts = uploaded || view === "current_body" || revisionView || selected?.id === "notes" ? [body] : [body, ...(current?.redline ? [{ artifact: `.dochaus/lean/${current.redline}`, bytes: read(`.dochaus/lean/${current.redline}`) }] : [])].filter(row => row.bytes)
     // List numbers come from the lean rows recorded with this body, by paragraph PID.
-    const rows = current?.body ? readParagraphs(directory, selected.id as `d${number}`, current.applied ? "paragraphs-applied.json" : "paragraphs.json") : []
+    const rows = current?.body && selected ? readParagraphs(directory, selected.id as `d${number}`, current.applied ? "paragraphs-applied.json" : "paragraphs.json") : []
     const labels = new Map(rows.flatMap(row => row.label ? [[row.pid, row.label] as const] : []))
     const entries: CurrentDocumentEntry[] = []
     for (const row of artifacts) {
       const bytes = row.bytes!
       const identity = { artifact: row.artifact, sha256: createHash("sha256").update(bytes).digest("hex") }
-      if (view === "current_body") for (const paragraph of readDocxCommentParagraphs(bytes)) {
-        const label = paragraph.pids.map(pid => labels.get(pid)).find(Boolean)
+      if (view === "current_body" || revisionView) for (const paragraph of await readDocxBodyView(bytes, view as "current_body" | "baseline_body" | "marked_up_body")) {
+        const label = view === "current_body" ? paragraph.pids.map(pid => labels.get(pid)).find(Boolean) : undefined
         entries.push({ index: entries.length, ...identity, paragraph_index: paragraph.paragraph_index, pids: paragraph.pids, ...(label ? { label } : {}), text: paragraph.paragraph_text })
       }
       if (view === "comments") for (const comment of readDocxComments(bytes)) entries.push({ index: entries.length, ...identity, comment_id: comment.comment_id, markers: comment.markers.map(marker => ({ kind: marker.kind, paragraph_index: marker.paragraph_index, xml_paragraph_index: marker.xml_paragraph_index, pids: marker.pids })), text: comment.text })
@@ -73,13 +84,27 @@ export function currentDocumentView(directory: string, document: string, view: C
   }
 }
 
+function registeredWordSource(directory: string, document: string) {
+  if (path.basename(document) !== document || !/\.docx$/i.test(document)) return false
+  const file = path.join(directory, ".dochaus", "legal.db")
+  if (!existsSync(file)) return false
+  const relative = path.relative(realpathSync(directory), realpathSync(file))
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return false
+  const db = new Database(file, { readonly: true })
+  try { return Boolean(db.query("SELECT 1 FROM documents WHERE name = ? AND role = 'source'").get(document)) }
+  finally { db.close() }
+}
+
 function response(value: Record<string, unknown>, truncated = false) {
-  return { title: "Current document evidence", output: JSON.stringify({ ...value, notice: UNTRUSTED_DOCUMENT_NOTICE, ...(value.view === "proposed_body" ? { representation: "Generated pending revision derived from initial paragraphs and current amendments; not actual Word, adopted wording, or source/instruction authority. Initial PIDs and part indices are projection coordinates, not final native Word PIDs." } : {}) }), metadata: { truncated } }
+  const representation = value.view === "proposed_body" ? "Generated pending revision derived from initial paragraphs and current amendments; not actual Word, adopted wording, or source/instruction authority. Initial PIDs and part indices are projection coordinates, not final native Word PIDs."
+    : value.view === "baseline_body" ? "Reject-all text projection of the named Word artifact. This is an original reading, not the agreed/current text. Its paragraph ordinals and PIDs are projection coordinates, never current amendment targets."
+    : value.view === "marked_up_body" ? "Marked-up text projection: inline insert/delete/move markers name their recorded authors. Includes proposed and deleted text; no accept/reject decision is implied. Paragraph positions refer to this projection, never current amendment targets." : undefined
+  return { title: "Current document evidence", output: JSON.stringify({ ...value, notice: UNTRUSTED_DOCUMENT_NOTICE, ...(representation ? { representation } : {}) }), metadata: { truncated } }
 }
 
 /** Consecutive entries include full text, not JSON-array child descriptors. Long entries page without losing characters. */
-export function readCurrentDocument(directory: string, args: { document: string; view: CurrentDocumentView; offset?: number; text_offset?: number; limit?: number; count?: number }) {
-  const current = currentDocumentView(directory, args.document, args.view)
+export async function readCurrentDocument(directory: string, args: { document: string; view: CurrentDocumentView; offset?: number; text_offset?: number; limit?: number; count?: number }) {
+  const current = await currentDocumentView(directory, args.document, args.view)
   if (current.status === "unavailable") return response(current)
   const offset = args.offset ?? 0, textOffset = args.text_offset ?? 0
   if (offset > current.entries.length || (offset === current.entries.length && textOffset)) return response({ status: "unavailable", reason: "Entry offset is outside the selected current view." })
@@ -105,8 +130,8 @@ export function readCurrentDocument(directory: string, args: { document: string;
   return response({ status: "read", document: args.document, view: args.view, total_entries: current.entries.length, offset, entries, next_offset: more ? index : null, next_text_offset: more ? cursor : null, scope: "Only this named artifact view; body, comments and deleted text are distinct. Continue with both returned offsets for complete consecutive text." }, more)
 }
 
-export function searchCurrentDocument(directory: string, args: { document: string; view: CurrentDocumentView; query: string; k?: number }) {
-  const current = currentDocumentView(directory, args.document, args.view)
+export async function searchCurrentDocument(directory: string, args: { document: string; view: CurrentDocumentView; query: string; k?: number }) {
+  const current = await currentDocumentView(directory, args.document, args.view)
   if (current.status === "unavailable") return response(current)
   const terms = [...new Set(args.query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])]
   const ranked = current.entries.map(entry => ({ entry, score: terms.filter(term => `${entry.label ?? ""} ${entry.text}`.toLowerCase().includes(term)).length })).filter(row => row.score > 0).sort((a, b) => b.score - a.score || a.entry.index - b.entry.index)

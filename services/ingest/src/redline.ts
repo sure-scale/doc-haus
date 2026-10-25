@@ -6,6 +6,8 @@ import { createDocxLocalization, applyDocxParagraphEdits, DocxTrackedRevisionsEr
 import { createHash } from "node:crypto"
 import { draftingAttribution } from "../../../dochaus/lib/docx-attribution"
 import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphs } from "../../../dochaus/lib/docx-comments"
+import { assertRedlineRoundTrip } from "../../../dochaus/lib/redline-round-trip"
+import { discloseSourceRevisions } from "../../../dochaus/lib/docx-revision-views"
 
 // Replay and bake pending redline proposals against a clean .docx.
 //
@@ -104,7 +106,15 @@ async function commentRedline(original: Uint8Array, modified: Uint8Array, rows: 
     try { return preserveDocxComments(original, compared) }
     catch { throw new RedlinePreviewConflictError("An existing Word comment could not be preserved at its original unchanged anchor or with its original links and formatting dependencies. Review comments on edited ranges, complex fields, objects, threaded comments and attachments separately before exporting.") }
   })()
-  if (!rows.some(row => row.review_comment.trim())) return redline
+  const finish = async (bytes: Uint8Array) => {
+    try {
+      const output = await discloseSourceRevisions(bytes, original, draftingAttribution().author)
+      await assertRedlineRoundTrip(output.bytes, original, modified)
+      return output.bytes
+    }
+    catch (error) { throw new RedlinePreviewConflictError(error instanceof Error ? error.message : "The Word redline could not be checked against its source and intended text.") }
+  }
+  if (!rows.some(row => row.review_comment.trim())) return finish(redline)
   const paragraphs = readDocxCommentParagraphs(modified)
   const exported = readDocxCommentParagraphs(redline)
   if (JSON.stringify(paragraphs.map(row => row.paragraph_text)) !== JSON.stringify(exported.map(row => row.paragraph_text)))
@@ -121,7 +131,7 @@ async function commentRedline(original: Uint8Array, modified: Uint8Array, rows: 
     const output = exportDocxComments(redline, comments)
     if (output.unresolved.length)
       throw new RedlinePreviewConflictError(`Word review comments could not be attached: ${output.unresolved.map(row => `proposal #${row.id}: ${row.reason}`).join(" ")}`)
-    return output.bytes
+    return finish(output.bytes)
   } catch (error) {
     if (error instanceof RedlinePreviewConflictError) throw error
     throw new RedlinePreviewConflictError("The stored Word review comments could not be exported safely. Check their text, authors and document anchors before exporting again.")
