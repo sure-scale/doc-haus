@@ -131,6 +131,21 @@ const closePanel = async (page: Awaited<ReturnType<typeof open>>["page"]) => {
   await page.getByRole("button", { name: "Close tracked changes" }).click()
   await page.locator('.docx-render:not([data-comments="pane"]) .comment-margin-note').first().waitFor({ state: "visible" })
 }
+// Each comment button, scrolled into view: its thread, the button at its centre, and whether it covers the document's own text.
+const reach = (page: Awaited<ReturnType<typeof open>>["page"]) => page.locator(".docx-render .doc-comment-pin").evaluateAll(pins => pins.map(pin => {
+  pin.scrollIntoView({ block: "center" })
+  const box = pin.getBoundingClientRect()
+  const walker = document.createTreeWalker(pin.closest(".comment-margin-content") ?? pin.closest(".docx-render")!, NodeFilter.SHOW_TEXT)
+  const range = document.createRange()
+  let covers = false
+  for (let node = walker.nextNode(); node && !covers; node = walker.nextNode()) {
+    if (!node.textContent?.trim() || node.parentElement?.closest("a.comment-marker, .doc-comment-pin")) continue
+    range.selectNodeContents(node)
+    covers = [...range.getClientRects()].some(text => text.left < box.right - 0.5 && box.left < text.right - 0.5 && text.top < box.bottom - 0.5 && box.top < text.bottom - 0.5)
+  }
+  const under = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)?.closest<HTMLElement>(".doc-comment-pin")
+  return { id: (pin as HTMLElement).dataset.commentId, hit: under?.dataset.commentId ?? "none", covers }
+}))
 // Each crafted file's case runs on its own and reports, so one failure does not hide the next.
 const pages: import("@playwright/test").Page[] = []
 const failures: string[] = []
@@ -311,6 +326,38 @@ try {
     await stack.waitFor({ state: "attached" })
     assert.equal(await stack.evaluate(node => Boolean(node.previousElementSibling?.querySelector('.comment-highlight[data-comment-id="1"]'))), true, "the card is under the commented clause")
     assert.deepEqual(errors, [])
+  })
+
+  // Clicks each thread's button at its centre, as a lawyer would, and checks the panel focuses that thread.
+  const clickEach = async (page: Awaited<ReturnType<typeof open>>["page"], ids: number[]) => {
+    for (const id of ids) {
+      const pin = page.locator(`.docx-render .doc-comment-pin[data-comment-id="${id}"]`)
+      await pin.scrollIntoViewIfNeeded()
+      const box = (await pin.boundingBox())!
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+      await page.waitForFunction(id => document.activeElement?.matches(`#document-markup li.markup-thread[data-comment-id="${id}"]`), id, { timeout: 5_000 })
+        .catch(async () => assert.fail(`the button for thread ${id} opened ${await page.evaluate(() => document.activeElement?.getAttribute("data-comment-id") ?? document.activeElement?.tagName)}`))
+    }
+  }
+
+  await check("several buttons on one short clause can each be clicked, over no text, on a desktop or a phone", async () => {
+    const comments = [0, 1, 2, 3, 4].map(id => ({ id, author: REVIEWERS[id]!, text: `Comment ${id}.` }))
+    const file = {
+      bytes: wordFile([
+        para(run("1. ") + commented(0, "Short") + commented(1, " clause") + commented(2, " here.")),
+        para(run("2. ") + commented(3, "Next clause.")),
+        para(run("3. ") + commented(4, "Third clause.")),
+      ], comments),
+      markup: listing(comments),
+    }
+    for (const width of [1440, 400]) {
+      const { page, errors } = await open({ width, height: 900 }, undefined, true, file)
+      await page.locator('.docx-render[data-comments="pane"] .doc-comment-pin').first().waitFor({ state: "attached" })
+      assert.deepEqual(await reach(page), comments.map(({ id }) => ({ id: String(id), hit: String(id), covers: false })), `${width}px`)
+      await clickEach(page, comments.map(({ id }) => id))
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth) <= 1, `${width}px: nothing wider than the window`)
+      assert.deepEqual(errors, [])
+    }
   })
 
   assert.deepEqual(failures, [], "every crafted file's case passes")

@@ -3736,22 +3736,27 @@ button.linklike:hover:not(:disabled) {
 }
 
 /* With the panel open: the commented text opens its thread there, and a
-   button beside its paragraph does too (several on one paragraph stack). In
-   a table cell the button sits inside the cell's right edge. */
+   button beside its paragraph does too. Several on one paragraph sit side by
+   side, three to a row (a page's right margin holds three), and the paragraph
+   keeps the height of any rows below its first, so they never reach the next
+   paragraph's. On a phone's narrow margin they stand in one column. In a table
+   cell the button sits inside the cell's right edge. */
 .docx-render[data-comments="pane"] .comment-highlight[data-comment-id] {
   cursor: pointer;
 }
 
 .docx-render .doc-comment-block {
+  --pin-rows: round(up, var(--pin-count, 1) / 3, 1);
   position: relative;
+  min-height: calc((var(--pin-rows) - 1) * 28px + min(26px, (var(--pin-rows) - 1) * 26px));
 }
 
 /* Sized past the app's button minimums (taller on touch screens), which
    would cover the next line's button; 24px is still a full touch target. */
 .docx-render .doc-comment-block > .doc-comment-pin {
   position: absolute;
-  top: calc(2px + var(--pin-index, 0) * 28px);
-  left: calc(100% + 8px);
+  top: calc(2px + round(down, var(--pin-index, 0) / 3, 1) * 28px);
+  left: calc(100% + 8px + mod(var(--pin-index, 0), 3) * 28px);
   display: grid;
   place-items: center;
   width: 24px;
@@ -3791,7 +3796,12 @@ button.linklike:hover:not(:disabled) {
 
 /* A phone's page margin is narrower than the desktop's. */
 @container docx-page (max-width: 560px) {
+  .docx-render .doc-comment-block {
+    --pin-rows: var(--pin-count, 1);
+  }
+
   .docx-render .doc-comment-block > .doc-comment-pin {
+    top: calc(2px + var(--pin-index, 0) * 28px);
     left: calc(100% + 1px);
     width: 22px;
     height: 22px;

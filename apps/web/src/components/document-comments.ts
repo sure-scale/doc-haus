@@ -79,7 +79,7 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
   const markers = [...root.querySelectorAll<HTMLElement>("a.comment-marker")]
   const added: Element[] = []
   const pins: HTMLElement[] = []
-  const pinned: Element[] = []
+  const pinned: HTMLElement[] = []
   const element = <K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text?: string) => {
     const node = document.createElement(tag)
     node.className = className
@@ -123,7 +123,7 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
   const blockOf = (note: HTMLElement) => {
     const id = CSS.escape(note.dataset.commentId ?? "")
     const hit = content.querySelector(`.comment-highlight[data-comment-id="${id}"]`) ?? content.querySelector(`a.comment-marker#comment-ref-${id}`)
-    return hit?.closest(BLOCKS) ?? undefined
+    return hit?.closest<HTMLElement>(BLOCKS) ?? undefined
   }
 
   for (const note of all) {
@@ -190,7 +190,7 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
   // the markers and citations are unchanged.
   if (pane) {
     root.dataset.comments = "pane"
-    const count = new Map<Element, number>()
+    const count = new Map<HTMLElement, number>()
     for (const note of notes) {
       const block = blockOf(note)
       if (!block) continue
@@ -208,6 +208,8 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
         pinned.push(block)
       }
       count.set(block, (count.get(block) ?? 0) + 1)
+      // How many a paragraph holds, for its rows (styles.css).
+      block.style.setProperty("--pin-count", String(count.get(block)))
       block.append(pin)
       pins.push(pin)
     }
@@ -315,7 +317,10 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
     if (stacked) unstack()
     for (const node of added.splice(0)) node.remove()
     for (const [node, text] of stripped.splice(0)) node.data = text
-    for (const block of pinned.splice(0)) block.classList.remove("doc-comment-block")
+    for (const block of pinned.splice(0)) {
+      block.classList.remove("doc-comment-block")
+      block.style.removeProperty("--pin-count")
+    }
     delete root.dataset.comments
     for (const node of [...all, ...anchors]) {
       node.style.removeProperty("--comment-tone")
