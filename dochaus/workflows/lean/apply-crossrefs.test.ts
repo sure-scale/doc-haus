@@ -338,6 +338,26 @@ test("the redline shades the whole of an open item a change rewrote word by word
   expect(revisions(directory).formatting).toBe(0)
 }, 60_000)
 
+test("an open item citing a bracketed heading that a change rewrites is shaded whole, to its own closing bracket, and nothing around it", async () => {
+  const { directory, row } = await drafted(AGREEMENT
+    .replace("2.1 The Supplier shall provide the Services.", "2.1 The Supplier shall provide the Services in accordance with this agreement and the Schedule [open item: confirm the service scope — confirm all services are subject to this clause 2 and to [Payment and invoicing] is intended].")
+    .replace("3.1 Invoices are payable within thirty days.", "3.1 Invoices are payable within thirty days [open item: confirm the payment period — a dispute is then addressed under [Disputes and mediation]]. Unless disputed, an invoice is final."))
+  const scope = "[open item: confirm the service scope — confirm all services are subject to this clause 2 and clause 3 is intended]"
+  const period = "[open item: confirm the payment period — a dispute is then addressed under Disputes and Mediation]"
+  const pending = "[open item: confirm the suspension procedure]"
+  const services = row("The Supplier shall provide")
+  const invoices = row("Invoices are payable")
+  await apply(directory, [
+    { pid: services.pid, existing_sha256: services.sha256, updated: `The Supplier shall provide the Services in accordance with this clause 2, clause 3 and the Schedule ${scope}.` },
+    { pid: invoices.pid, existing_sha256: invoices.sha256, updated: `While both parties trade, invoices are payable within thirty days ${period}. Unless disputed, an invoice is final, and while a dispute subsists payment is suspended pending ${pending}.` },
+  ])
+  // Only the markers' text is shaded, all of it, in the body and the redline,
+  // with no formatting change tracked.
+  expect(shadedOpenItems(readFileSync(leanFile(directory, "d1/body-applied.docx"))).join("")).toBe(scope + period + pending)
+  expect(shadedOpenItems(readFileSync(leanFile(directory, "d1/redline.docx"))).join("")).toBe(scope + period + pending)
+  expect(revisions(directory).formatting).toBe(0)
+}, 60_000)
+
 // A lawyer's original numbered by a Word list, as the drafted body is but
 // without its paragraph pointers: its references typed, or its own fields.
 function suppliedOriginal(drafted: Uint8Array, references: "typed" | "fields") {

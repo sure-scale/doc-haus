@@ -17,11 +17,10 @@ import { draftingAttribution, withGeneratedDocxAttribution } from "../../lib/doc
 import { numberDocxClauses } from "../../lib/docx-numbering"
 import { linkCrossReferences, referenceFields } from "../../lib/docx-crossrefs"
 import { paragraphFields, refInstruction, unlink } from "../../lib/docx-fields"
-import { FIELD_HIGHLIGHT_FILL, OPEN_ITEM_HIGHLIGHT_FILL, hasOpenItemMarker, highlightOpenItemsInDocx, highlightSplitOpenItemsInDocx } from "../../lib/open-items"
+import { shadeOpenItemsInDocx, unshadeOpenItems } from "../../lib/open-items"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const BODY = "word/document.xml"
-const OPEN_ITEM_FILLS = new Set([OPEN_ITEM_HIGHLIGHT_FILL, FIELD_HIGHLIGHT_FILL])
 
 // The apply step of one document. Applies the document's change list to its
 // drafted body, always from body.docx and never onto an earlier apply output,
@@ -68,10 +67,12 @@ export async function runApply(directory: string, state: LeanState, document: Do
   const rewritten = new Set(settled.result.applied.flatMap(row => row.mode === "code" ? row.result_pids ?? [row.pid] : []))
   const relink = (paragraph: Element) => paragraphPointers(paragraph).some(pointer => rewritten.has(pointer.pid))
   const links = draftedReferences(directory, document).links
-  // The open items the changes and the refresh wrote are shaded as drafting
-  // shades the body's; one already shaded keeps its shading.
   const linked = await linkCrossReferences(renumbered, links ? { ...links, relink } : { refreshOnly: true })
-  writeLeanBytes(directory, `${document}/body-applied.docx`, withGeneratedDocxAttribution(highlightOpenItemsInDocx(linked), identity))
+  // The body's open items are shaded once its text is final, each marker
+  // whole however the changes and the refresh split its runs; in a paragraph a
+  // change rewrote, nothing else keeps an open item's shading. The other
+  // paragraphs keep their own formatting.
+  writeLeanBytes(directory, `${document}/body-applied.docx`, withGeneratedDocxAttribution(shadeOpenItemsInDocx(linked, relink), identity))
   const rows = await paragraphRows(out)
   writeLeanText(directory, `${document}/paragraphs-applied.json`, `${JSON.stringify(rows, null, 2)}\n`)
   const annotated = await documentRedline(directory, document, readFileSync(out), changes, settled.result.applied, identity)
@@ -106,7 +107,7 @@ export async function documentRedline(directory: string, document: DocID, final:
   // The comparison splits an open item a change rewrote word by word into
   // several runs; the redline shades it whole, as the body shows it.
   const compared = await compareDocxWithPointers(before, after, { authorName: identity.author })
-  const redline = withGeneratedDocxAttribution(highlightSplitOpenItemsInDocx(highlightOpenItemsInDocx(compared)), identity)
+  const redline = withGeneratedDocxAttribution(shadeOpenItemsInDocx(compared), identity)
   return exportAppliedChangeComments(redline, final, document, changes.amendments, applied, changes.explanations, readParagraphs(directory, document), identity.author)
 }
 
@@ -130,15 +131,7 @@ function comparableBodies(baseline: Uint8Array, final: Uint8Array): [Uint8Array,
       const pid = paragraphPointers(paragraph)[0]?.pid
       if (pid && !paragraphs.has(pid)) paragraphs.set(pid, paragraph)
     }
-    let changed = false
-    for (const shading of Array.from(doc.getElementsByTagNameNS(W, "shd"))) {
-      const run = shading.parentNode?.parentNode as Element | null
-      if (run?.localName !== "r" || !OPEN_ITEM_FILLS.has((shading.getAttributeNS(W, "fill") ?? "").toUpperCase())) continue
-      if (!hasOpenItemMarker(Array.from(run.getElementsByTagNameNS(W, "t")).map(text => text.textContent ?? "").join(""))) continue
-      shading.parentNode!.removeChild(shading)
-      changed = true
-    }
-    return { bytes, parts, doc, paragraphs, changed }
+    return { bytes, parts, doc, paragraphs, changed: unshadeOpenItems(doc) }
   }
   const before = read(baseline)
   const after = read(final)
