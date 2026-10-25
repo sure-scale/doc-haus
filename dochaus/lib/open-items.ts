@@ -6,6 +6,7 @@ export const OPEN_ITEM_HIGHLIGHT_FILL = "FFF2CC"
 export const FIELD_HIGHLIGHT_FILL = "DDEBF7"
 
 const OPEN_ITEM_RE = OPEN_ITEM_PATTERN
+const OPEN_ITEM_FILLS = new Set([OPEN_ITEM_HIGHLIGHT_FILL, FIELD_HIGHLIGHT_FILL])
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const XML = "http://www.w3.org/XML/1998/namespace"
 const RUN_RE = /<w:r\b[^>]*>[\s\S]*?<\/w:r>/g
@@ -67,70 +68,170 @@ function highlightRunOpenItems(run: string) {
   return pieces.join("")
 }
 
-/** Each open-item marker whose text spans several runs of a paragraph, as a
- * redline splits one a change rewrote word by word, shaded whole: a run partly
- * in the marker is split at the marker's edge and only its marker text is
- * shaded. highlightOpenItemsInDocx shades a marker inside one text. The words
- * around a marker, deleted text and a run holding more than one text keep
- * their formatting. */
-export function highlightSplitOpenItemsInDocx(bytes: Uint8Array) {
+/** [start, end) and fill of each open-item marker in a paragraph's text. A
+ * bracketed or parenthetical marker ends at the bracket that closes its own,
+ * the brackets inside it counted, so a heading it cites in brackets ("[open
+ * item: … addressed under [Disputes]]") stays in it. One the line leaves
+ * unclosed ends at its first closing bracket, as OPEN_ITEM_PATTERN reads it. */
+export function openItemSpans(text: string) {
+  const spans: { start: number; end: number; fill: string }[] = []
+  const pattern = new RegExp(OPEN_ITEM_RE.source, "gi")
+  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+    const open = match[0][0]!
+    const close = open === "[" ? "]" : open === "(" ? ")" : undefined
+    let end = match.index + match[0].length
+    if (close) for (let at = match.index, depth = 0; at < text.length && text[at] !== "\n" && text[at] !== "\r"; at++) {
+      if (text[at] === open) depth++
+      else if (text[at] === close && !--depth) {
+        end = at + 1
+        break
+      }
+    }
+    spans.push({ start: match.index, end, fill: markerFill(match[0]) })
+    pattern.lastIndex = end
+  }
+  return spans
+}
+
+/** A body's open items shaded once its text is final: each marker of a
+ * paragraph (openItemSpans over the text it shows, deleted text aside) shaded
+ * whole in its fill, however many runs it spans, a run partly in a marker
+ * split at the marker's edge. In a paragraph `clear` accepts, open-item
+ * shading outside the markers is removed too, so words a change wrote into a
+ * marker's run, or a marker it made clause text, are not shaded as open.
+ * Every other formatting, and shading of another fill, is kept. The bytes are
+ * returned themselves when nothing changes. */
+export function shadeOpenItemsInDocx(bytes: Uint8Array, clear: (paragraph: Element) => boolean = () => false) {
   const parts = unzipSync(bytes)
   const document = parts["word/document.xml"]
   if (!document) return bytes
   const doc = new DOMParser().parseFromString(strFromU8(document), "application/xml")
-  const spans = new Map<Element, [number, number, string][]>()
-  for (const paragraph of Array.from(doc.getElementsByTagNameNS(W, "p"))) {
-    let at = 0
-    const texts = Array.from(paragraph.getElementsByTagNameNS(W, "t")).filter(text => owningParagraph(text) === paragraph)
-      .map(text => ({ text, start: at, end: (at += (text.textContent ?? "").length) }))
-    for (const marker of texts.map(row => row.text.textContent ?? "").join("").matchAll(OPEN_ITEM_RE)) {
-      const start = marker.index ?? 0
-      const end = start + marker[0].length
-      const covered = texts.filter(row => row.start < end && start < row.end)
-      if (covered.length > 1) for (const row of covered)
-        spans.set(row.text, [...spans.get(row.text) ?? [], [Math.max(start, row.start) - row.start, Math.min(end, row.end) - row.start, markerFill(marker[0])]])
-    }
-  }
   let changed = false
-  for (const [text, inside] of spans) changed = shadeTextSpans(text, inside) || changed
+  for (const paragraph of Array.from(doc.getElementsByTagNameNS(W, "p"))) {
+    const runs = paragraphRuns(paragraph)
+    const spans = openItemSpans(runs.flatMap(row => row.content.map(part => part.value)).join(""))
+    const clearing = clear(paragraph)
+    if (spans.length || clearing) for (const row of runs) changed = shadeRun(row, spans, clearing) || changed
+  }
   if (!changed) return bytes
   parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
   return zipSync(parts, { mtime: new Date(1980, 0, 1) })
+}
+
+/** Removes the open-item shading of each run holding part of an open-item
+ * marker (openItemSpans), as the redline compares two bodies; whether any was
+ * removed. */
+export function unshadeOpenItems(doc: Document) {
+  let changed = false
+  for (const paragraph of Array.from(doc.getElementsByTagNameNS(W, "p"))) {
+    const runs = paragraphRuns(paragraph)
+    const spans = openItemSpans(runs.flatMap(row => row.content.map(part => part.value)).join(""))
+    for (const { run, content } of runs) {
+      const shading = runShading(run)
+      if (!shading || !OPEN_ITEM_FILLS.has((shading.getAttributeNS(W, "fill") ?? "").toUpperCase())) continue
+      if (!content.some(part => part.start < part.end && spans.some(span => part.start < span.end && span.start < part.end))) continue
+      shading.parentNode!.removeChild(shading)
+      changed = true
+    }
+  }
+  return changed
+}
+
+type RunContent = { node: Element; value: string; start: number; end: number }
+
+// The runs of a paragraph's own text (not a nested text box's), each with its
+// content and where that sits in the text the paragraph shows: a text, tab or
+// break is its characters, anything else (a field character or code, deleted
+// text, a drawing) is empty.
+function paragraphRuns(paragraph: Element) {
+  let at = 0
+  return Array.from(paragraph.getElementsByTagNameNS(W, "r")).filter(run => owningParagraph(run) === paragraph).map(run => ({
+    run,
+    content: Array.from(run.childNodes).filter((node): node is Element => node.nodeType === 1 && (node as Element).localName !== "rPr").map((node): RunContent => {
+      const value = node.namespaceURI !== W ? "" : node.localName === "t" ? node.textContent ?? "" : node.localName === "tab" ? "\t"
+        : node.localName === "br" || node.localName === "cr" ? "\n" : ""
+      return { node, value, start: at, end: (at += value.length) }
+    }),
+  }))
+}
+
+// The run with its content in a marker shaded in the marker's fill and, when
+// `clearing`, its other content's open-item shading removed: split where that
+// changes, each piece keeping the run's properties and its own content.
+// Content showing no text goes with the content before it, or after it when
+// it comes first.
+function shadeRun({ run, content }: { run: Element; content: RunContent[] }, spans: ReturnType<typeof openItemSpans>, clearing: boolean) {
+  const shading = runShading(run)
+  const fill = (shading?.getAttributeNS(W, "fill") ?? "").toUpperCase()
+  const current = shading?.getAttributeNS(W, "val") === "clear" ? fill : undefined
+  // A piece's shading: undefined keeps the run's, "" removes it, a fill sets it.
+  const outside = clearing && OPEN_ITEM_FILLS.has(fill) ? "" : undefined
+  const pieces: { node: Element; value?: string; fill?: string; shown: boolean }[] = []
+  for (const part of content) {
+    if (part.start === part.end) {
+      pieces.push({ node: part.node, shown: false })
+      continue
+    }
+    const cuts = [...new Set([part.start, ...spans.flatMap(span => [span.start, span.end]).filter(at => part.start < at && at < part.end), part.end])].sort((a, b) => a - b)
+    for (const [index, from] of cuts.slice(0, -1).entries()) {
+      const wanted = spans.find(span => span.start <= from && from < span.end)?.fill ?? outside
+      pieces.push({ node: part.node, value: cuts.length > 2 ? part.value.slice(from - part.start, cuts[index + 1]! - part.start) : undefined,
+        fill: wanted === current ? undefined : wanted, shown: true })
+    }
+  }
+  const shown = pieces.filter(piece => piece.shown)
+  if (!shown.length) return false
+  let previous = shown[0]!
+  for (const piece of pieces) if (piece.shown) previous = piece; else piece.fill = previous.fill
+  const groups = pieces.reduce<(typeof pieces)[]>((all, piece) => {
+    const last = all.at(-1)
+    if (last && last[0]!.fill === piece.fill) last.push(piece)
+    else all.push([piece])
+    return all
+  }, [])
+  if (groups.length === 1) return groups[0]![0]!.fill === undefined ? false : (restyle(run, groups[0]![0]!.fill), true)
+  const properties = Array.from(run.childNodes).find(node => node.nodeType === 1 && (node as Element).localName === "rPr")
+  for (const group of groups) {
+    const copy = run.cloneNode(false) as Element
+    if (properties) copy.appendChild(properties.cloneNode(true))
+    for (const piece of group) {
+      if (piece.value === undefined) {
+        copy.appendChild(piece.node)
+        continue
+      }
+      const text = copy.appendChild(piece.node.cloneNode(false)) as Element
+      text.setAttributeNS(XML, "xml:space", "preserve")
+      text.appendChild(run.ownerDocument!.createTextNode(piece.value))
+    }
+    restyle(copy, group[0]!.fill)
+    run.parentNode!.insertBefore(copy, run)
+  }
+  run.parentNode!.removeChild(run)
+  return true
+}
+
+// A run shaded in `fill`, its texts keeping their spaces as a marker's do, or
+// its shading removed (""); undefined leaves it as it is.
+function restyle(run: Element, fill: string | undefined) {
+  if (fill === undefined) return
+  if (!fill) {
+    const shading = runShading(run)
+    shading?.parentNode!.removeChild(shading)
+    return
+  }
+  shadeRunElement(run, fill)
+  for (const text of Array.from(run.childNodes)) if (text.nodeType === 1 && (text as Element).localName === "t") (text as Element).setAttributeNS(XML, "xml:space", "preserve")
+}
+
+function runShading(run: Element) {
+  const properties = Array.from(run.childNodes).find(node => node.nodeType === 1 && (node as Element).localName === "rPr") as Element | undefined
+  return properties && Array.from(properties.childNodes).find(node => node.nodeType === 1 && (node as Element).localName === "shd") as Element | undefined
 }
 
 function owningParagraph(node: Node) {
   for (let parent = node.parentNode; parent; parent = parent.parentNode)
     if (parent.nodeType === 1 && (parent as Element).namespaceURI === W && (parent as Element).localName === "p") return parent
   return null
-}
-
-// The run of `text` split so each [from, to) of it is a run of its own, shaded
-// with its fill; the rest keeps the run's formatting.
-function shadeTextSpans(text: Element, inside: [number, number, string][]) {
-  const run = text.parentNode as Element | null
-  const content = run ? Array.from(run.childNodes).filter(node => node.nodeType === 1 && (node as Element).localName !== "rPr") : []
-  if (run?.localName !== "r" || content.length !== 1) return false
-  const value = text.textContent ?? ""
-  const pieces: { value: string; fill?: string }[] = []
-  let cursor = 0
-  for (const [from, to, fill] of inside.toSorted((a, b) => a[0] - b[0])) {
-    if (from > cursor) pieces.push({ value: value.slice(cursor, from) })
-    pieces.push({ value: value.slice(from, to), fill })
-    cursor = to
-  }
-  if (cursor < value.length) pieces.push({ value: value.slice(cursor) })
-  if (pieces.length === 1) return shadeRunElement(run, pieces[0]!.fill!)
-  for (const piece of pieces) {
-    const copy = run.cloneNode(true) as Element
-    const node = copy.getElementsByTagNameNS(W, "t")[0]!
-    while (node.firstChild) node.removeChild(node.firstChild)
-    node.appendChild(copy.ownerDocument!.createTextNode(piece.value))
-    node.setAttributeNS(XML, "xml:space", "preserve")
-    if (piece.fill) shadeRunElement(copy, piece.fill)
-    run.parentNode!.insertBefore(copy, run)
-  }
-  run.parentNode!.removeChild(run)
-  return true
 }
 
 function shadeRunElement(run: Element, fill: string) {
