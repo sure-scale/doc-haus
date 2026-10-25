@@ -506,6 +506,8 @@ export default function MarkupPanel({
   const [help, setHelp] = useState<Record<Tab, boolean>>({ changes: false, comments: false })
   // undefined while loading; "" when no name is saved, so the bar asks once.
   const [attorney, setAttorney] = useState<string>()
+  // The settings could not be read: who "you" are is unknown.
+  const [settingsFailed, setSettingsFailed] = useState(false)
   const [firm, setFirm] = useState("")
   const [nameDraft, setNameDraft] = useState("")
   // What the panel's live region says: drafting, drafts ready, a bulk
@@ -594,7 +596,11 @@ export default function MarkupPanel({
         setAttorney(prefs.attorney?.trim() ?? "")
         setFirm(prefs.firm?.trim() ?? "")
       },
-      () => !cancelled && setAttorney(""),
+      () => {
+        if (cancelled) return
+        setAttorney("")
+        setSettingsFailed(true)
+      },
     )
     return () => {
       cancelled = true
@@ -642,9 +648,9 @@ export default function MarkupPanel({
   const actor = savedName || nameDraft.trim()
   // Every name doc.haus signs the lawyer's accepted edits with, as ingest reads
   // them: the saved attorney, the firm and doc.haus, so what it signed before a
-  // name was saved stays the lawyer's. Until the settings are read, no change
-  // is taken for the lawyer's own.
-  const ours = attorney === undefined ? undefined
+  // name was saved stays the lawyer's. Until the settings are read, or when
+  // they cannot be, no change is taken for the lawyer's own.
+  const ours = attorney === undefined || settingsFailed ? undefined
     : new Set([savedName, firm, "doc.haus"].filter((entry): entry is string => Boolean(entry)).map(nameKey))
   const isYou = (author: string) => Boolean(ours?.has(nameKey(author)))
   const yours = (revision: MarkupRevision) => isYou(revision.author)
@@ -1176,7 +1182,9 @@ export default function MarkupPanel({
               toggleRef={(node) => { if (node) filterToggles.current.set("changes", node); else filterToggles.current.delete("changes") }}
               groupRef={(node) => { if (node) filterGroups.current.set("changes", node); else filterGroups.current.delete("changes") }}
               onToggle={() => toggleFilters("changes")} onRemove={(key) => unfilter("changes", key)} onClear={() => unfilter("changes")}
-              action={shownDecidable.length > 0 && (
+              action={shownDecidable.length > 0 && (!ours ? settingsFailed && (
+                <p className="markup-bulk-unavailable">Decide all is unavailable: your settings could not be read.</p>
+              ) : (
                 <button type="button" ref={decideAll} className="markup-bulk-toggle" aria-expanded={bulkOpen} aria-controls={bulkOpen ? `${ids}-bulk` : undefined} disabled={busy}
                   onClick={() => setBulkOpen(!bulkOpen)} onKeyDown={(event) => {
                     // Escape closes the open choices, not the viewer.
@@ -1188,12 +1196,12 @@ export default function MarkupPanel({
                   {decideLabel}
                   <Icon name="chevron" />
                 </button>
-              )}>
+              ))}>
               <FilterSelect id={`${ids}-change-author`} label="Reviewer" all="All reviewers" value={changeFilters.author} options={changeOptions.author} onChange={(author) => filterChanges({ author })} />
               <FilterSelect id={`${ids}-change-type`} label="Type" all="All change types" value={changeFilters.type} options={changeOptions.type} onChange={(type) => filterChanges({ type })} />
               <FilterSelect id={`${ids}-change-decision`} label="Decision" all="All decisions" value={changeFilters.decision} options={changeOptions.decision} onChange={(decision) => filterChanges({ decision })} />
             </FilterBar>
-            {bulkOpen && shownDecidable.length > 0 && (
+            {bulkOpen && ours && shownDecidable.length > 0 && (
               <div id={`${ids}-bulk`} className="markup-bulk-menu" role="group" aria-label={decideLabel} onKeyDown={(event) => {
                 if (event.key !== "Escape") return
                 event.preventDefault()

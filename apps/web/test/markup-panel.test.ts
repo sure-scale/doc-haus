@@ -84,7 +84,8 @@ test("each decision is a named radio group of its own, with nothing chosen yet, 
   expect(html).toMatch(/role="tab"[^>]*aria-selected="true"[^>]*>Changes <span class="markup-tab-count">3<\/span>/)
   expect(html).toMatch(/role="tab"[^>]*aria-selected="false"[^>]*>Comments <span class="markup-tab-count">0<\/span>/)
   expect(html).toContain('Showing all 3<span class="sr-only"> changes</span>')
-  expect(html).toContain("Decide all 3 shown")
+  // Decide all waits, as Save does, until the settings say which edits are the lawyer's own.
+  expect(html).not.toContain("Decide all")
   // A paragraph break has no text of its own; its card quotes the paragraph.
   expect(html).toContain("<q>7. Assignment. Neither party may assign</q>")
   expect(html).toContain("Accept keeps the new formatting; Reject restores the old.")

@@ -237,6 +237,7 @@
 
 /* Decide all: a button that opens three choices for the shown changes. */
 .markup-draft-all { display: flex; }
+.markup-bulk-unavailable { margin: 0 0 0 auto; font-size: 0.75rem; color: var(--text-secondary); }
 .markup-bulk-toggle { display: inline-flex; align-items: center; justify-content: space-between; gap: var(--space-1); min-height: 32px; margin-left: auto; padding: 0 10px; font-size: 0.8125rem; font-weight: 600; color: var(--text); background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
 .markup-bulk-toggle:hover:not(:disabled) { background: var(--panel-hover); }
 .markup-bulk-toggle[aria-expanded="true"] { border-color: var(--accent); }
