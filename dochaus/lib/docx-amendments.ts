@@ -278,7 +278,8 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
         Boolean(opened.options.revisionAuthor))
       if (!change.match.text && !change.replacement) continue
       if (revisionAuthor) target.session.setRevisionAuthor(author(edit)!)
-      const result = target.session.replaceMatch(change.match, change.replacement)
+      const result = revisionAuthor && change.joinsAfter ? insertBefore(target.session, change.match, change.replacement)
+        : target.session.replaceMatch(change.match, change.replacement)
       if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
     }
     const output = target.session.save()
@@ -319,12 +320,46 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
 
 export function changedDocxSpan(match: Match, replacement: string, words = false) {
   const { offset, replaced, changed } = changedRange(match.text, replacement, words)
-  // A pure insertion is written in the formatting of the text before it.
-  const at = !replaced && changed && offset ? offset - 1 : offset
+  // A pure insertion joins the text it is written beside: one ending with a
+  // space before more text takes the formatting of that text, otherwise the
+  // formatting of the text before it.
+  const joinsAfter = !replaced && /\s$/.test(changed) && offset < match.text.length
+  const at = !replaced && changed && offset && !joinsAfter ? offset - 1 : offset
   const formatting = match.fragments.find((fragment, index) => match.fragments.slice(0, index + 1)
     .reduce((length, row) => length + row.text.length, 0) > at)?.formatting ?? match.fragments.at(-1)?.formatting
   return { match: { ...match, text: replaced, span: { start: match.span.start + offset, length: replaced.length } },
-    replacement: changed, formatting }
+    replacement: changed, formatting, joinsAfter }
+}
+
+// Docxodus writes a tracked insertion in the run properties of the character
+// before it, so a sentence inserted after a bold heading's trailing space
+// would be bold. One that joins the text after it is given that text's run
+// properties instead.
+function insertBefore(session: Session, match: Match, text: string) {
+  const anchor = match.enclosingAnchor.id
+  const existing = new Set(elements(parse(session.raw.getXml(anchor)), "ins").map(node => node.getAttributeNS(PT, "Unid")))
+  const result = session.replaceMatch(match, text)
+  if (!result.success) return result
+  const paragraph = parse(session.raw.getXml(anchor))
+  const runs = elements(paragraph, "r")
+  let restyled = false
+  for (const insertion of elements(paragraph, "ins").filter(node => !existing.has(node.getAttributeNS(PT, "Unid")))) {
+    const written = elements(insertion, "r")
+    const next = runs.slice(runs.indexOf(written.at(-1)!) + 1).find(run => children(run, "t").length)
+    const properties = next && children(next, "rPr")[0]
+    for (const run of written) {
+      if (canonical(children(run, "rPr")[0]) === canonical(properties)) continue
+      children(run, "rPr").forEach(node => run.removeChild(node))
+      if (properties) {
+        const copy = properties.cloneNode(true) as Element
+        for (const node of [copy, ...elements(copy, "*")]) node.removeAttributeNS(PT, "Unid")
+        children(copy, "rPrChange").forEach(node => copy.removeChild(node))
+        run.insertBefore(copy, run.firstChild)
+      }
+      restyled = true
+    }
+  }
+  return restyled ? session.raw.replaceXml(anchor, new XMLSerializer().serializeToString(paragraph.documentElement)) : result
 }
 
 /** The part of `text` a replacement by `replacement` rewrites: from `offset`
