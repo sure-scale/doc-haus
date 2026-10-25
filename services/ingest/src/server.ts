@@ -49,7 +49,7 @@ import {
 import { EmbeddingModelUnavailableError, migrateEmbeddings } from "./embed"
 import { migrateSections, migrateStructure } from "./structure"
 import { pdfToDocx } from "./convert"
-import { buildRedlined, bake, layeredRedline, redlineState, redlineStaleReason, RedlineAcceptConflictError, RedlinePreviewConflictError } from "./redline"
+import { buildRedlined, bake, layeredRedline, redlineState, redlineStaleReason, RedlineAcceptConflictError, RedlinePreviewConflictError, staleBatchReason } from "./redline"
 import { listMatters, createMatter, getMatter, renameMatter, deleteMatter, recordConflicts, matterDir, listJurisdictions, listPlaybooks, updatePlaybook, deletePlaybook, PlaybookError, PLAYBOOK_DIR, MatterValidationError, type Conflicts } from "./matter"
 import { listTemplates, templatePath, setTemplateDescription, removeTemplateDescription, TEMPLATES_DIR } from "./template"
 import { listWorkflows, createWorkflow, updateWorkflow, deleteWorkflow, NAME_RE, WORKFLOWS_DIR } from "./workflow"
@@ -1325,8 +1325,9 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
       const working = readWorkingDocx(dir,file)
       const options = proposalRevisionOptions(dir,file)
       const state = await redlineState(original,rows,options)
-      const stale = rows.map((row) => redlineStaleReason(row,state,Boolean(working))).find(Boolean)
-      if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
+      const stale = rows.flatMap((row) => {const reason = redlineStaleReason(row,state,Boolean(working));return reason ? [{row,reason}] : []})
+      if (stale.length || working && working.source_sha256 !== prior)
+        return c.json({error:stale.length ? staleBatchReason(stale) : "The working Word revision is inconsistent. Refresh it through the revision API."},409)
       const baked = documentRevisionBytes(dir,name,Buffer.from(await bake(original,rows,state,options))).bytes
       redline = await prepareDeliveredRedline(dir,file,baked)
       await writeDocumentRevision(dir,name,baked,rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null),{version:acceptVersion(c,rows.map((row) => row.id))})

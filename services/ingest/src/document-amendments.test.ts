@@ -483,6 +483,10 @@ test("a revision-API edit or a removed pointer stales only the proposals on thos
     expect(await matter.pending()).toEqual([[edited,true,paragraphChanged],[kept,undefined,undefined],[unpointed,true,paragraphChanged]])
     expect(await matter.accept(edited)).toBe(409)
     expect(await matter.accept(unpointed)).toBe(409)
+    // Accept all names the first stale proposal and counts the others.
+    const all = await ingest.request(`${matter.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect({status:all.status,body:await all.json()}).toEqual({status:409,body:{error:
+      `The change to "five days" can no longer be accepted. ${paragraphChanged} 1 other proposal can no longer be accepted either; the change list says why.`}})
     expect(sha256(await Bun.file(matter.file).bytes())).toBe(sha256(current))
     // Stale proposals are left out of the tracked-changes export; the valid one remains.
     const exported = await ingest.request(`${matter.route}/documents/redlined?name=working.docx`)
@@ -1040,6 +1044,9 @@ test("on an uploaded markup, a proposal whose paragraph gains their formatting c
     expect((await ingest.request(`${matter.route}/documents/revisions`,{method:"POST",body:wordForm(saved)})).status).toBe(200)
     expect(await matter.pending()).toEqual([[law,true,formatted],[consent,undefined,undefined]])
     expect(await matter.acceptResult(law)).toEqual({status:409,body:{error:formatted}})
+    // The reason already names the change, so Accept all gives it as it is.
+    const all = await ingest.request(`${matter.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect({status:all.status,body:await all.json()}).toEqual({status:409,body:{error:formatted}})
     expect(sha256(await Bun.file(matter.file).bytes())).toBe(sha256(saved))
     // The export leaves it out and shows the other beside their changes.
     const exported = await ingest.request(`${matter.route}/documents/redlined?name=working.docx`)

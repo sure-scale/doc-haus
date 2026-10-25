@@ -304,6 +304,7 @@ export function binding(row:RedlineRow):RevisionBinding|ParagraphBinding {
 
 const paragraphChanged = "The paragraph this change targets has changed since it was prepared. Prepare a fresh change list."
 const trackedChanges = "This Word file contains tracked changes. Accept or reject them in Word before changes can be applied."
+const unreadableRevision = "This Word revision cannot be read paragraph by paragraph. Prepare a fresh change list."
 export type RedlineState = { sha256:string; targets:ParagraphTarget[]|null; tracked?:true }
 // Read once per request from the bytes being reviewed. Paragraph targets are
 // read only when a paragraph-bound proposal needs them, or to explain why a
@@ -336,7 +337,7 @@ export function redlineStaleReason(row:RedlineRow,state:RedlineState,protectedWo
   // No bound proposal applies to this revision, and a fresh change list cannot either.
   if (state.tracked) return trackedChanges
   if (value.version === 1) return value.source_sha256 === state.sha256 ? undefined : "This proposal targets an earlier Word revision. Prepare a fresh change list."
-  if (!state.targets) return "This Word revision cannot be read paragraph by paragraph. Prepare a fresh change list."
+  if (!state.targets) return unreadableRevision
   // Never rebased: the pointed paragraph must still read exactly as prepared.
   const target = boundParagraph(value,state.targets)
   if (!target) return paragraphChanged
@@ -345,6 +346,18 @@ export function redlineStaleReason(row:RedlineRow,state:RedlineState,protectedWo
   // the paragraph, one that leaves its text as it was (a formatting change) included.
   const others = target.pending.length ? othersPending(target.pending,ours([row.author])) : []
   return others.length ? heldParagraph(row.find_text,others) : undefined
+}
+/** Accept all's refusal for its stale proposals, in list order: the first by
+ * its quote and reason, and how many others are stale too. */
+export function staleBatchReason(stale:{row:RedlineRow;reason:string}[]) {
+  const {row,reason} = stale[0]!
+  // The file's own reason holds every proposal alike.
+  if (reason === trackedChanges || reason === unreadableRevision) return reason
+  const change = `The change to ${JSON.stringify(row.find_text)}`
+  // A held paragraph's reason already names its change.
+  const named = reason.startsWith(change) ? reason : `${change} can no longer be accepted. ${reason}`
+  const others = stale.length - 1
+  return others ? `${named} ${others} other proposal${others === 1 ? "" : "s"} can no longer be accepted either; the change list says why.` : named
 }
 function heldParagraph(text:string,authors:string[]) {
   const names = [...new Set(authors.map((author) => normalizeUntrustedText(author).text.trim()).filter(Boolean))]
