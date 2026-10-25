@@ -12,6 +12,9 @@ import * as listLabels from "../../../dochaus/lib/docx-list-labels"
 import type { MarkupAuthor, MarkupComment, MarkupRevision } from "../../../dochaus/lib/docx-markup"
 import { recordRedlineProposal } from "../../../dochaus/lib/redlines"
 import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx, numberedMarkupDocx } from "../../../dochaus/test/support/counterparty-markup-fixture"
+import { counterpartyFindings, writeCounterpartyItems } from "../../../dochaus/workflows/lean/counterparty"
+import { writeLeanPlan } from "../../../dochaus/workflows/lean/plan"
+import { writeLeanText } from "../../../dochaus/workflows/lean/state"
 import { documentMarkupRoutes } from "./document-markup"
 import { docxodus } from "./docxodus"
 import { reconstructText } from "./structure"
@@ -464,6 +467,41 @@ test("the list refuses anything but a registered Word source, and reads a kept v
   expect(first.status).toBe(200)
   expect(await first.json()).toMatchObject({ version: listed.version, current: false, revisions: listed.revisions })
   expect((await markup(name, { version: crypto.randomUUID() })).status).toBe(404)
+}, 120_000)
+
+test("each change and thread the current drafting run answered carries its answer, for those bytes only", async () => {
+  const name = "Run answers.docx"
+  await upload(name)
+  const listed = await view(name)
+  expect(listed).not.toHaveProperty("responses")
+  // A run revising the uploaded bytes, with its change plan suggesting the
+  // first item and rejecting the rest; the register is read from these files.
+  writeLeanPlan(matter.dir, [{ title: "Supply Agreement", purpose: "Respond to the other side's markup.", parts: [{ heading: "Terms", scope: "The supply terms." }], mode: "revise", template: name }])
+  await writeCounterpartyItems(matter.dir, "d1", { name, bytes: await content(name) })
+  const [first, ...rest] = counterpartyFindings(matter.dir, "d1")
+  const finding = (disposition: string, detail: string, reason: string, resolves: string[]) =>
+    ({ disposition, kind: "suggestion", detail, reason, documents: ["d1"], sources: [], limitations: ["The drafter's judgment."], resolves })
+  writeLeanText(matter.dir, "d1/change-plan.json", JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [], findings: [
+    finding("recommendation", "Take the longer delivery period.", "Forty-five days matches the Supplier's lead times.", [first!.id]),
+    finding("rejected", "Keep the draft's positions.", "Each is answered as drafted.", rest.map(row => row.id)),
+  ] }))
+  try {
+    const answered = await view(name) as View & { responses?: Record<string, { disposition: string; reason?: string }> }
+    const cards = new Set([...answered.revisions.map(({ id }) => id), ...answered.comments.map(({ id }) => String(id))])
+    const ids = [first!, ...rest].map(row => String(row.counterparty!.ref.id))
+    expect(ids.length).toBeGreaterThan(1)
+    expect(ids.every(id => cards.has(id))).toBe(true)
+    expect(Object.keys(answered.responses ?? {}).toSorted()).toEqual(ids.toSorted())
+    expect(answered.responses![ids[0]!]).toEqual({ disposition: "recommendation", reason: "Forty-five days matches the Supplier's lead times." })
+    expect(ids.slice(1).every(id => answered.responses![id]!.disposition === "rejected")).toBe(true)
+    // Applied, the file has new bytes the run never read; the kept version it read still has its answers.
+    expect((await decide(name, listed.revisions.map((_, at) => at ? "hold" : "accept"))).status).toBe(200)
+    expect(await view(name)).not.toHaveProperty("responses")
+    const kept = await (await markup(name, { version: listed.version.id! })).json() as { responses?: object }
+    expect(Object.keys(kept.responses ?? {}).toSorted()).toEqual(ids.toSorted())
+  } finally {
+    await rm(path.join(matter.dir, ".dochaus", "lean"), { recursive: true, force: true })
+  }
 }, 120_000)
 
 // After Apply, the cross-references and defined terms (#198) of the version it

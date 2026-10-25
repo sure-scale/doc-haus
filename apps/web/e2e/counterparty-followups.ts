@@ -9,7 +9,9 @@
 // covered by services/ingest/src/document-markup.test.ts) shows one muted line.
 // A reply written by hand to the synthetic supply agreement's open thread
 // (dochaus/test/support/counterparty-markup-fixture.ts), applied with no
-// decision, is listed as replies added, not as a save from Word.
+// decision, is listed as replies added, not as a save from Word. A fresh copy
+// of that agreement, with a drafting run's issue register written beside it as
+// the lean workflow keeps one, shows the run's answer on each card.
 // Each state is captured at desktop and 400×860. Nothing reaches a model: the
 // sources' embeddings use the local model (DOCHAUS_MODEL_CACHE_DIR, else the
 // per-user cache), browser engine traffic is intercepted and unexpected
@@ -35,6 +37,10 @@ const BROKEN = "Renumbered agreement.docx"
 const CLEAN = "Unchanged agreement.docx"
 const UNCHECKED = "Unchecked agreement.docx"
 const MARKUP = COUNTERPARTY_MARKUP.name
+const ANSWERED = "Answered supply agreement.docx"
+// The lean workflow's own writers, loaded at run time: dochaus's typecheck
+// checks their sources, not this package's stricter one.
+const lean = (module: string) => import(path.resolve(import.meta.dir, "../../../dochaus/workflows/lean", `${module}.ts`))
 const HEADING = "Check these references and defined terms after your decisions"
 const UNCHECKED_LINE = "References and defined terms were not checked for this version."
 const DESKTOP = { width: 1440, height: 1000 }
@@ -186,7 +192,9 @@ try {
   // The same state at phone width: the viewer keeps it while the window narrows.
   async function phone(viewer: Locator, target: string | undefined, name: string) {
     await page.setViewportSize(PHONE)
-    if (target) await viewer.locator(target).scrollIntoViewIfNeeded()
+    // The viewer may lay its panels out again at the narrower width, so the
+    // scroll is retried until the target holds still.
+    if (target) await expect(async () => await viewer.locator(target).scrollIntoViewIfNeeded({ timeout: 2_000 })).toPass()
     expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1)
     await shot(name)
     await page.setViewportSize(DESKTOP)
@@ -268,6 +276,63 @@ try {
     await expect(newest.locator(".version-label")).toHaveText("1 reply added")
     await shot("versions-replies-only-desktop")
     await phone(viewer, "#document-versions", "versions-replies-only-phone")
+  })
+
+  await step("6 each of their changes and threads shows what the drafting run did with it", async () => {
+    const body = new FormData(); body.append("file", new File([counterpartyMarkupDocx()], ANSWERED))
+    expect((await api(`/matters/${file.matter}/documents`, { method: "POST", body })).status).toBe(200)
+    const bytes = new Uint8Array(await (await api(`/matters/${file.matter}/documents/content?name=${encodeURIComponent(ANSWERED)}`)).arrayBuffer())
+    // A run revising these bytes: the delivery-period replace made in the
+    // draft, Morgan's price insertion suggested, Avery's lead-time thread left
+    // to the lawyer and the rest rejected.
+    const [{ counterpartyFindings, writeCounterpartyItems }, { writeLeanPlan }, { writeLeanText }] = await Promise.all(["counterparty", "plan", "state"].map(lean))
+    writeLeanPlan(file.dir, [{ title: "Supply Agreement", purpose: "Respond to the other side's markup.", parts: [{ heading: "Terms", scope: "The supply terms." }], mode: "revise", template: ANSWERED }])
+    await writeCounterpartyItems(file.dir, "d1", { name: ANSWERED, bytes })
+    const items: { id: string; counterparty: { change: string; text: string } }[] = counterpartyFindings(file.dir, "d1")
+    const pick = (match: (item: (typeof items)[number]["counterparty"]) => boolean) => items.filter(row => match(row.counterparty)).map(row => row.id)
+    const amended = pick(item => item.text === "thirty" || item.text === "forty-five")
+    const suggested = pick(item => item.change === "insert" && item.text === "the first ")
+    const deferred = pick(item => item.change === "comment" && item.text === COUNTERPARTY_MARKUP.comments[0]!.text)
+    expect([amended.length, suggested.length, deferred.length]).toEqual([2, 1, 1])
+    const rejected = items.map(row => row.id).filter(id => ![...amended, ...suggested, ...deferred].includes(id))
+    const finding = (disposition: string, detail: string, reason: string, resolves: string[]) =>
+      ({ disposition, kind: "suggestion", detail, reason, documents: ["d1"], sources: [], limitations: ["The drafter's judgment."], resolves })
+    writeLeanText(file.dir, "d1/paragraphs.json", JSON.stringify([{ pid: "p1", sha256: "synthetic", text: "1. Supply. The Supplier shall deliver the Goods within forty-five days of each Order." }]))
+    writeLeanText(file.dir, "d1/change-plan.json", JSON.stringify({ shared_decisions: [], dismissed: [], questions: [],
+      groups: [{ id: "g1", pids: ["p1"], goal: "Take the longer delivery period.", sources: [], limitations: [], resolves: amended }],
+      findings: [
+        finding("recommendation", "Fix the price for the first twelve months only.", "Fixing the price for the first twelve months leaves it open to review at renewal.", suggested),
+        finding("deferred", "Whether forty-five days suits the Buyer's stock plan.", "The Buyer's stock plan is not in the matter.", deferred),
+        finding("rejected", "Keep the draft's remaining positions.", "The draft keeps the original wording.", rejected),
+      ] }))
+    writeLeanText(file.dir, "d1/changes.json", JSON.stringify({ amendments: [{ id: "a1", pid: "p1" }], questions: [] }))
+    writeLeanText(file.dir, "d1/apply.json", JSON.stringify({ applied: [{ id: "a1" }], unapplied: [] }))
+
+    const viewer = await openDocument(ANSWERED)
+    const panel = viewer.locator("#document-markup")
+    // A change's card by its own text, not the context its place quotes.
+    const answer = (text: string) => panel.locator(".markup-list > li")
+      .filter({ has: page.locator(":is(.change-old, .change-new)", { hasText: new RegExp(`^${text}\\s*$`) }) }).locator(".markup-response")
+    await expect(answer("thirty")).toHaveText("Changed in the draft")
+    await expect(answer("forty-five")).toHaveText("Changed in the draft")
+    await expect(answer("the first")).toHaveText("Suggested: Fixing the price for the first twelve months leaves it open to review at renewal.")
+    const thread = panel.locator(".markup-list > li.markup-thread").filter({ hasText: COUNTERPARTY_MARKUP.comments[0]!.text })
+    await expect(thread.locator(".markup-response")).toHaveText("For you to decide")
+    await expect(panel.locator(".markup-response", { hasText: /^No change: The draft keeps the original wording\.$/ })).toHaveCount(rejected.length)
+    // The resolved thread is no item of the run's, so it says nothing.
+    await expect(panel.locator(".markup-list > li.markup-thread").filter({ hasText: COUNTERPARTY_MARKUP.comments[2]!.text }).locator(".markup-response")).toHaveCount(0)
+    // Each kind of answer, centred in the panel, at desktop and phone width.
+    const views = [["amended", answer("thirty")], ["deferred", thread.locator(".markup-response")], ["suggested", answer("the first")],
+      ["rejected", panel.locator(".markup-response", { hasText: /^No change/ }).first()]] as const
+    for (const [size, viewport] of [["desktop", DESKTOP], ["phone", PHONE]] as const) {
+      await page.setViewportSize(viewport)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1)
+      for (const [name, target] of views) {
+        await expect(async () => await target.evaluate(node => node.scrollIntoView({ block: "center" }), undefined, { timeout: 2_000 })).toPass()
+        await shot(`6a3-card-responses-${name}-${size}`)
+      }
+    }
+    await page.setViewportSize(DESKTOP)
   })
 
   await step("no page errors or unexpected requests", async () => {

@@ -75,6 +75,17 @@ export type DocumentMarkup = {
   revisions: MarkupRevision[]
   comments: MarkupComment[]
   authors: MarkupAuthor[]
+  // How the matter's current drafting run answered each change and thread of
+  // these bytes, by the change's or root comment's id; absent when it answered
+  // none. `reason` is model text.
+  responses?: Record<string, MarkupResponse>
+}
+
+export type MarkupResponse = {
+  disposition: string
+  reason?: string
+  amendments?: { id: string; pid: string; outcome: string }[]
+  question?: { id: string; status: string }
 }
 
 export type MarkupDecision = "accept" | "reject" | "hold"

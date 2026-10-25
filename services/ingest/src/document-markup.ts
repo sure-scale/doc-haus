@@ -5,6 +5,7 @@ import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/ar
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { addCommentReplies, CommentReplyError, replyInitials, type CommentReply } from "../../../dochaus/lib/docx-comment-replies"
 import { readDocxMarkup, type DocxMarkup } from "../../../dochaus/lib/docx-markup"
+import { issueRegister } from "../../../dochaus/workflows/lean/register"
 import { markupConsistency } from "../../../dochaus/workflows/lean/version-consistency"
 import { getDocumentRole, listPendingRedlines, openDb } from "./db"
 import { findVersionBySha, oneLine, readDocumentVersions, readVersion, readVersionBytes, sha256Hex, type VersionWrite } from "./document-versions"
@@ -17,7 +18,8 @@ import { readDocumentTarget } from "./registered-document"
 // A counterparty's tracked changes and comments in an uploaded Word source
 // (#200): the list the viewer's triage panel shows, and the lawyer's accept,
 // reject and hold decisions applied as the document's next version. The list is
-// a computed view of one version's bytes (readDocxMarkup); nothing is stored.
+// a computed view of one version's bytes (readDocxMarkup); nothing is stored,
+// and neither is the current drafting run's answer to each item it carries.
 // Decisions write through the revision writer as an accept, so the source
 // re-ingests as any revision does: held changes stay labelled in search, the
 // others become plain text or go. Their event names each change's kind, author,
@@ -77,7 +79,8 @@ export function documentMarkupRoutes(options: Options) {
     }
     const markup = await readMarkup(target.name, bytes)
     if (!markup) return unreadable(c, target.name)
-    return c.json({ name: target.name, version, current: version.sha256 === sha256Hex(working), ...markup })
+    const responses = runResponses(directory, target.name, version.sha256)
+    return c.json({ name: target.name, version, current: version.sha256 === sha256Hex(working), ...markup, ...(responses ? { responses } : {}) })
   })
 
   // Applies one decision per listed change and adds the approved replies, as
@@ -195,6 +198,17 @@ async function readMarkup(name: string, bytes: Uint8Array): Promise<DocxMarkup |
   } catch (error) {
     console.warn("[markup] tracked changes and comments not read", { name, ...diagnosticErrorMetadata(error) })
   }
+}
+
+/** How the matter's current drafting run answered each of the other side's
+ * changes and comment threads in the bytes `sha256` of source `name`, by the
+ * change's or root comment's id: its issue register's entries for that markup
+ * (lean/register.ts), read now and kept nowhere. Undefined when it answered none. */
+function runResponses(directory: string, name: string, sha256: string) {
+  const entries = issueRegister(directory).entries.filter(({ counterparty }) => counterparty?.source.name === name && counterparty.source.sha256 === sha256)
+  if (!entries.length) return
+  return Object.fromEntries(entries.map(({ counterparty, disposition, reason, amendments, question }) => [counterparty!.ref.id,
+    { disposition, ...(reason ? { reason } : {}), ...(amendments.length ? { amendments } : {}), ...(question ? { question } : {}) }]))
 }
 
 /** The cross-references and defined terms the Apply broke (#198), for the

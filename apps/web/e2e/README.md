@@ -120,6 +120,9 @@ the page with an info toast, and viewing a kept version must end it; rejecting
 it must show nothing; a check that could not run (forced in the browser) must
 show one muted line. A reply written by hand to the marked-up supply agreement
 and applied with no decision must be listed as replies added, with its label.
+A fresh copy of that agreement, with a drafting run's issue register written
+beside it, must show the run's answer on each change and open thread: changed
+in the draft, suggested, for the lawyer to decide or no change with its reason.
 Each state is captured at desktop and 400 px.
 
 Run the matter chat layout regression with the same environment as the

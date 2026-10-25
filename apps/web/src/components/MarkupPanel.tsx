@@ -11,6 +11,7 @@ import {
   type MarkupDecisionResult,
   type MarkupFinding,
   type MarkupLocation,
+  type MarkupResponse,
   type MarkupRevision,
 } from "../api/ingest/markup"
 import { getPreferences, savePreferences } from "../api/ingest/preferences"
@@ -868,7 +869,7 @@ export default function MarkupPanel({
           {shown.map((item) =>
             item.type === "change" ? (
               <ChangeCard key={item.revision.id} revision={item.revision} comments={markup.comments} decision={drafts[item.revision.id] ?? "hold"} disabled={busy}
-                carried={carried.includes(item.revision.id)}
+                carried={carried.includes(item.revision.id)} response={markup.responses?.[item.revision.id]}
                 failure={refusal?.ids.includes(item.revision.id) ? refusal.message : undefined}
                 cardRef={(node) => { if (node) cards.current.set(item.revision.id, node); else cards.current.delete(item.revision.id) }}
                 onDecide={(decision) => decide([item.revision], decision)}
@@ -877,7 +878,7 @@ export default function MarkupPanel({
                   setFocus({ card: item.revision.id })
                 }} />
             ) : (
-              <ThreadCard key={threadCard(item.thread)} thread={item.thread} open={isOpen(item.thread)} awaiting={awaiting(item.thread)}
+              <ThreadCard key={threadCard(item.thread)} thread={item.thread} open={isOpen(item.thread)} awaiting={awaiting(item.thread)} response={markup.responses?.[String(item.thread.root.id)]}
                 reply={replies[item.thread.root.id]} drafting={drafting.includes(item.thread.root.id)} steer={steers[item.thread.root.id] ?? ""}
                 carried={carriedReplies.includes(item.thread.root.id)} undo={discarded[item.thread.root.id]?.text} disabled={busy} canDraft={!busy && !loading}
                 failure={refusal?.thread === item.thread.root.id ? refusal.message : draftErrors[item.thread.root.id]}
@@ -962,6 +963,21 @@ export function ConsistencyNotice({ consistency }: { consistency: NonNullable<Ma
   )
 }
 
+// What the drafting run did with this change or thread, in one line; nothing
+// for an item it left open. The reason is model text, shown as text.
+function RunResponse({ response }: { response?: MarkupResponse }) {
+  const reason = response?.reason?.trim()
+  const lines: Record<string, string> = {
+    amended: "Changed in the draft",
+    rejected: reason ? `No change: ${reason}` : "No change",
+    deferred: "For you to decide",
+    question: "For you to decide",
+    recommendation: reason ? `Suggested: ${reason}` : "Suggested",
+  }
+  const line = response && lines[response.disposition]
+  return line ? <p className="markup-response">{line}</p> : null
+}
+
 function Flags({ findings }: { findings: MarkupFinding[] }) {
   const notes = flagNotes(findings)
   if (!notes.length) return null
@@ -1023,12 +1039,13 @@ function Places({ revision, comments }: { revision: MarkupRevision; comments: Ma
 // One change: Accept, Reject and Hold are one radio group, a single Tab stop
 // whose arrow keys move and choose. A refused change carries the refusal and a
 // one-click Hold.
-function ChangeCard({ revision, comments, decision, disabled, carried, failure, cardRef, onDecide, onHold }: {
+function ChangeCard({ revision, comments, decision, disabled, carried, response, failure, cardRef, onDecide, onHold }: {
   revision: MarkupRevision
   comments: MarkupComment[]
   decision: MarkupDecision
   disabled: boolean
   carried: boolean
+  response?: MarkupResponse
   failure?: string
   cardRef: (node: HTMLLIElement | null) => void
   onDecide: (decision: MarkupDecision) => void
@@ -1061,6 +1078,7 @@ function ChangeCard({ revision, comments, decision, disabled, carried, failure, 
       {revision.kind === "format" && decidable(revision) && <p className="markup-hint">Accept keeps the new formatting; Reject restores the old.</p>}
       <Places revision={revision} comments={comments} />
       <Flags findings={revision.findings} />
+      <RunResponse response={response} />
       {decidable(revision) ? (
         <div className="markup-decision" role="radiogroup" aria-label={decisionLabel(revision)} aria-describedby={failure ? `${id}-refused` : undefined}>
           {DECISIONS.map((option, index) => (
@@ -1102,7 +1120,7 @@ function CommentBody({ comment }: { comment: MarkupComment }) {
 }
 
 // A thread, read-only, with the reply area while it is open.
-function ThreadCard({ thread, open, cardRef, ...area }: { thread: Thread; open: boolean; cardRef: (node: HTMLLIElement | null) => void } & Omit<ReplyAreaProps, "thread">) {
+function ThreadCard({ thread, open, response, cardRef, ...area }: { thread: Thread; open: boolean; response?: MarkupResponse; cardRef: (node: HTMLLIElement | null) => void } & Omit<ReplyAreaProps, "thread">) {
   const { root, replies } = thread
   return (
     <li ref={cardRef} className={`change-card markup-card markup-thread${area.reply?.approved ? " is-approved" : ""}${area.failure ? " is-refused" : ""}`}>
@@ -1122,6 +1140,7 @@ function ThreadCard({ thread, open, cardRef, ...area }: { thread: Thread; open: 
         </ol>
       )}
       {root.paragraph !== null && <p className="markup-place"><span>{capital(placeName(root.scope ?? "body", root)!)}</span></p>}
+      <RunResponse response={response} />
       {open && <ReplyArea thread={thread} {...area} />}
     </li>
   )
