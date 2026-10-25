@@ -88,6 +88,42 @@ both flagged items must remain, and the deliverable must offer no panel. The
 source's embeddings use the local model from `DOCHAUS_MODEL_CACHE_DIR` (default
 the per-user cache); no engine or provider is contacted.
 
+Run the change timeline card acceptance (#297) the same way, with its own ports:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:5474 \
+DOCHAUS_E2E_INGEST_PORT=4801 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-timeline-evidence \
+DOCHAUS_SCREENSHOT_DIR=/tmp/doc-haus-timeline-screenshots \
+bun apps/web/e2e/change-timeline.ts
+```
+
+It starts the real ingest service on a temporary data root and uploads four
+synthetic sources: the marked-up agreement, a long clause marked up by three
+fictional reviewers (with an undated change, a comment thread and a comment
+written as HTML), a file whose text box shifts the reader's paragraph numbers,
+and a file with list numbers, a changed table, an inserted row and two changed
+sections. For every painted paragraph with markup it hovers the first mark
+(a changed table or row on its first paragraph) and checks that the card lists
+the same authors, dates and kinds as the markup route for that paragraph,
+oldest first with undated entries last; a section's own change belongs on the
+section's last paragraph. It then checks the hover delay, that a click does
+not pin the card (hovering another clause switches it), that a drag across a
+mark opens nothing and keeps the selection, the pointer crossing into the
+card, Escape (the viewer stays open), placement below, above, right and left
+(marks and window sizes chosen from measured boxes), wheel and keyboard
+scrolling of a long timeline, Shift+Tab back to the mark and Tab on to the next
+clause's mark, that a keyboard-opened card closes once its line scrolls away,
+that every open card stays below the viewer's toolbar and within the document
+pane's visible part, the marks' accessible description as
+Chromium computes it, that HTML in a comment shows as text and runs nothing,
+the planted instruction's flag, tap, Close and an outside tap at 400×860, a
+dark colour scheme, that the text-box file offers comment threads only, and
+that a list number over 16 characters gives way to "Paragraph N". Screenshots
+of each verified state go to `DOCHAUS_SCREENSHOT_DIR` (default the evidence
+directory) and the JSON summary to `DOCHAUS_EVIDENCE_DIR`. A failed step is
+recorded and the run continues; no engine or provider is contacted.
+
 Run the matter chat layout regression with the same environment as the
 setup and settings checks:
 
