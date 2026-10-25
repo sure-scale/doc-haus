@@ -1,4 +1,4 @@
-import { useContext, useEffect, useMemo, useRef, useState, type Ref } from "react"
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react"
 import { Closing } from "./useExit"
 import { SplitButton } from "./SplitButton"
 import { useDocxodus, type ConversionOptions } from "docxodus/react"
@@ -28,6 +28,7 @@ import MarkupPanel, { markupCount } from "./MarkupPanel"
 import ChangeTimeline from "./ChangeTimeline"
 import { citationPassage, focusCitationPassage, type CitationFocus } from "./citation-target"
 import { decorateMarkers, markerSummary, type MarkerCounts } from "./document-markers"
+import { removeUnsafeLinkTargets } from "./docx-links"
 import { useToast } from "./Toast"
 import useModalFocus from "./useModalFocus"
 import backdropClose from "./backdropClose"
@@ -192,6 +193,10 @@ function WordDocumentViewer({
   // Keep React from resetting the HTML when passage status or viewer controls
   // re-render. The citation effect owns only its temporary text highlights.
   const documentPreview = useMemo(() => html && <div className="docx-render" ref={documentRef} dangerouslySetInnerHTML={{ __html: html }} />, [html])
+  // Before the document can be clicked, in the same commit that shows it.
+  useLayoutEffect(() => {
+    if (html && documentRef.current) removeUnsafeLinkTargets(documentRef.current)
+  }, [html])
 
   useEffect(() => {
     if (!isReady || isPdf) return

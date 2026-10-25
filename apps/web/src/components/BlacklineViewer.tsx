@@ -1,4 +1,4 @@
-import { Fragment, useContext, useEffect, useMemo, useRef, useState, type MouseEvent } from "react"
+import { Fragment, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react"
 import { Closing } from "./useExit"
 import { RevisionPresentation } from "docxodus"
 import { useDocxodus } from "docxodus/react"
@@ -19,6 +19,7 @@ import { DOCX_RENDER_OPTIONS, ViewerTitle } from "./DocumentViewer"
 import { ModalClose } from "./ModalHeader"
 import useModalFocus from "./useModalFocus"
 import backdropClose from "./backdropClose"
+import { removeUnsafeLinkTargets } from "./docx-links"
 import { withSafeStyleValues } from "./docx-style-values"
 
 // The blackline of two Word versions beside a list of the edits the later
@@ -50,6 +51,10 @@ export default function BlacklineViewer({ matterId, params, focus, onClose }: { 
   const key = compareUrl(matterId, params)
   const name = comparison?.blacklineName ?? `Blackline - ${fileStem(params.left)} vs ${fileStem(params.right)}.docx`
   const documentPreview = useMemo(() => html && <div className="docx-render" dangerouslySetInnerHTML={{ __html: html }} />, [html])
+  // Before the blackline can be clicked, in the same commit that shows it.
+  useLayoutEffect(() => {
+    if (html && page.current) removeUnsafeLinkTargets(page.current)
+  }, [html])
 
   useEffect(() => {
     let cancelled = false

@@ -7,6 +7,7 @@ import { ModalClose } from "./ModalHeader"
 import { decorateMarkers, markerEntries, type MarkerEntry } from "./document-markers"
 import backdropClose from "./backdropClose"
 import useModalFocus from "./useModalFocus"
+import { removeUnsafeLinkTargets } from "./docx-links"
 import { withSafeStyleValues } from "./docx-style-values"
 
 // In-browser template viewer. Renders a library template's .docx to HTML with the
@@ -71,6 +72,7 @@ export default function TemplateViewer({
       .then((result) => {
         if (cancelled) { result.destroy(); return }
         viewer = result
+        removeUnsafeLinkTargets(mount)
         documentHost.current?.replaceChildren(mount)
         decorateMarkers(mount, fields.current?.map((p) => p.text))
         setMarkers(markerEntries(mount))
