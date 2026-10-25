@@ -489,10 +489,10 @@ try {
     assert.deepEqual(errors, [])
   })
 
-  // Every kind of tracked change, by author: Sam changes clause 1's formatting and a table row's and cell's, Lee
-  // comments on clause 2, and Avery
-  // inserts a word in clause 3 and comments on it, then inserts a clause, a table row and a cell and deletes a
-  // paragraph mark; the lawyer deletes a clause, a row and a cell. Sam, Lee and Avery first appear in that order.
+  // Every kind of tracked change, by author: Sam changes the formatting of clause 1, the table, a row and a cell and
+  // the page setup of the section clause 7 ends, Lee comments on clause 2, and Avery inserts a word in clause 3 and
+  // comments on it, then inserts a clause, a table row and a cell and deletes a paragraph mark; the lawyer deletes a
+  // clause, a row and a cell. Sam, Lee and Avery first appear in that order.
   const SAM = "Sam Rivera", LEE = "Lee Chan", AVERY = REVIEWERS[0]!
   const tracked = (id: number, author: string) => `w:id="${id}" w:author="${author}" w:date="${DATE}"`
   const inserted = (id: number, author: string, text: string) => `<w:ins ${tracked(id, author)}>${run(text)}</w:ins>`
@@ -507,12 +507,12 @@ try {
     `<w:p><w:pPr><w:rPr><w:del ${tracked(5, LAWYER)}/></w:rPr></w:pPr>${removed(6, LAWYER, "5. A clause the lawyer deletes.")}</w:p>`,
     `<w:p><w:pPr><w:rPr><w:del ${tracked(7, AVERY)}/></w:rPr></w:pPr>${run("6. Avery joins this clause")}</w:p>`,
     para(run(" to the next one.")),
-    `<w:tbl><w:tblPr><w:tblW w:w="8000" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid>` +
+    `<w:tbl><w:tblPr><w:tblW w:w="8000" w:type="dxa"/><w:jc w:val="center"/><w:tblPrChange ${tracked(21, SAM)}><w:tblPr><w:tblW w:w="8000" w:type="dxa"/></w:tblPr></w:tblPrChange></w:tblPr><w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid>` +
       `<w:tr><w:trPr><w:jc w:val="center"/><w:trPrChange ${tracked(19, SAM)}><w:trPr/></w:trPrChange></w:trPr>${tableCell(run("Milestone"), `<w:shd w:val="clear" w:fill="auto"/><w:tcPrChange ${tracked(20, SAM)}><w:tcPr><w:tcW w:w="4000" w:type="dxa"/></w:tcPr></w:tcPrChange>`)}${tableCell(run("Fee"))}</w:tr>` +
       `<w:tr><w:trPr><w:ins ${tracked(8, AVERY)}/></w:trPr>${tableCell(inserted(9, AVERY, "Testing"))}${tableCell(inserted(10, AVERY, "£4,000"))}</w:tr>` +
       `<w:tr><w:trPr><w:del ${tracked(11, LAWYER)}/></w:trPr>${tableCell(removed(12, LAWYER, "Training"))}${tableCell(removed(13, LAWYER, "£2,000"))}</w:tr>` +
       `<w:tr>${tableCell(inserted(14, AVERY, "Handover"), `<w:cellIns ${tracked(15, AVERY)}/>`)}${tableCell(removed(16, LAWYER, "£1,000"), `<w:cellDel ${tracked(17, LAWYER)}/>`)}</w:tr></w:tbl>`,
-    para(run("7. After the table.")),
+    `<w:p><w:pPr><w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:sectPrChange ${tracked(22, SAM)}><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:sectPrChange></w:sectPr></w:pPr>${run("7. After the table.")}</w:p>`,
   ], changed)
   // Each author's colours on the page: every change marker's (an insertion's or deletion's text, a paragraph's bar, a
   // deleted paragraph mark, a formatting change's dotted line or outline), their cards' initials and, with the file's markup, the
@@ -526,8 +526,9 @@ try {
     }
     const all = (selector: string, scope: ParentNode = root) => [...scope.querySelectorAll<HTMLElement>(selector)]
     for (const node of all(":is(ins, del)[data-author]:not(.rev-move-from, .rev-move-to)")) add(node.dataset.author, getComputedStyle(node).color)
-    for (const node of all(":is(.rev-para-ins, .rev-para-del, .rev-para-format-change)[data-author]")) add(node.dataset.author, getComputedStyle(node).borderLeftColor)
-    for (const node of all(":is(.rev-row-format-change, .rev-cell-format-change)[data-author]")) add(node.dataset.author, getComputedStyle(node).outlineColor)
+    for (const node of all(":is(.rev-para-ins, .rev-para-del, .rev-para-format-change, .rev-section-format-change)[data-author]")) add(node.dataset.author, getComputedStyle(node).borderLeftColor)
+    for (const node of all(".rev-section-format-change[data-author]")) add(node.dataset.author, getComputedStyle(node).color)
+    for (const node of all(":is(.rev-table-format-change, .rev-row-format-change, .rev-cell-format-change)[data-author]")) add(node.dataset.author, getComputedStyle(node).outlineColor)
     for (const node of all(".rev-para-del > .rev-para-mark-del")) add(node.parentElement!.dataset.author, getComputedStyle(node).color)
     for (const node of all(".rev-format-change[data-author]")) add(node.dataset.author, getComputedStyle(node).borderBottomColor)
     for (const node of all(":is(.rev-row-ins, .rev-row-del, .rev-cell-ins, .rev-cell-del)[data-author]")) add(node.dataset.author, getComputedStyle(node).backgroundColor, "fills")
@@ -541,7 +542,7 @@ try {
     for (const entry of Object.values(out)) entry.tint = resolve(`color-mix(in srgb, ${entry.colours[0]} 10%, transparent)`, "backgroundColor")
     const tones = ["var(--author-1)", "var(--author-2)", "var(--author-3)", "var(--accent)"].map((value) => resolve(value))
     probe.remove()
-    const missing = ["rev-format-change", "rev-para-format-change", "rev-row-format-change", "rev-cell-format-change", "rev-para-ins", "rev-para-del", "rev-para-mark-del", "rev-row-ins", "rev-row-del", "rev-cell-ins", "rev-cell-del"].filter((marker) => !root.querySelector(`.${marker}`))
+    const missing = ["rev-format-change", "rev-para-format-change", "rev-section-format-change", "rev-table-format-change", "rev-row-format-change", "rev-cell-format-change", "rev-para-ins", "rev-para-del", "rev-para-mark-del", "rev-row-ins", "rev-row-del", "rev-cell-ins", "rev-cell-del"].filter((marker) => !root.querySelector(`.${marker}`))
     return { authors: out, tones, missing }
   })
   const coloured = (painted: Awaited<ReturnType<typeof paints>>, label: string) => {
