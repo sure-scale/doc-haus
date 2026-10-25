@@ -20,6 +20,7 @@ const QUESTION = "Should late delivery carry a remedy?"
 const CHOSEN = "Add no separate late-delivery remedy."
 const OTHER = "Reduce the price by one percent for each week of late delivery."
 const LAW = "Which law should govern the supply note?"
+const BASIS = SUPPORT.map(row => ({ ...row, relevance: "The supplied terms fix the period for the supplier's delivery under this note and give no remedy for missing it." }))
 // Wording of the deleted hand-back, and the web button's name: neither reaches a model.
 const LEFT_TO_DRAFTER = /left (?:\w+ ){0,2}to the draft(?:er|ing)|left_to_draft/i
 const BUTTON = /decide[\s_-]for[\s_-]me/i
@@ -41,7 +42,7 @@ test("an adopted recommendation runs through the queue as the lawyer's answer, r
       ] })
       : JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope: "Supplied terms" }),
     [AGENT.advise]: prompt => prompt.includes(QUESTION)
-      ? JSON.stringify({ options: [{ text: CHOSEN }, { text: OTHER }], recommendation: { option: 0, rationale: "The terms fix the delivery period and add no remedy.", basis: SUPPORT } })
+      ? JSON.stringify({ options: [{ text: CHOSEN }, { text: OTHER }], recommendation: { option: 0, rationale: "The terms fix the delivery period and add no remedy.", basis: BASIS } })
       : JSON.stringify({ unavailable: { reason: "The sources name no governing law." } }),
   })
   const run = () => runLean(directory, { sessions: model.port })

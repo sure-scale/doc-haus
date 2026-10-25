@@ -128,7 +128,7 @@ test("an answer to the conflict question re-keys the checklist check and reaches
 
 const ANSWER = "Payment on delivery governs; state it in the note."
 const ADVICE = { options: [{ text: "The payment requirement governs." }, { text: "The delivery requirement governs." }],
-  recommendation: { option: 0, rationale: "The request asks for a short supply note.", basis: [{ source_id: "request", quote: "short supply note" }] } }
+  recommendation: { option: 0, rationale: "The request asks for a short supply note.", basis: [{ source_id: "request", quote: "short supply note", relevance: "The lawyer's request sets the scope of this supply note, the document both conflicting requirements target." }] } }
 
 // Two requirements from the request; the first is reported as contradicted by
 // the second's source passage. With `answerFirst`, once the answer is a
@@ -179,13 +179,15 @@ test("a source conflict completes the run with one open question; resume and a g
   const idle = scriptedModel({})
   expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
   expect(idle.prompts).toHaveLength(0)
-  // A gate re-run asks the same question once and keeps its advice: no
-  // advise call, so the card's options and their ids stay as they were.
-  expect(question!.advice).toMatchObject({ options: [{ id: "o1", text: "The payment requirement governs." }, { id: "o2", text: "The delivery requirement governs." }] })
+  // A gate re-run asks the same question once, with no advise call. Like any
+  // step that is not done, the re-run gate has no key, so its saved
+  // recommendation is not reused as checked: the card's options and their ids
+  // stay as they were, and the advice says the inputs changed.
+  expect(question!.advice).toMatchObject({ options: [{ id: "o1", text: "The payment requirement governs." }, { id: "o2", text: "The delivery requirement governs." }], recommendation: { option: "o1" } })
   updateLeanStage(directory, readLeanState(directory)!, "gate", { status: "pending", input_sha: null, outputs: [], finished_at: null })
   expect((await runLean(directory, { sessions: idle.port })).status).toBe("completed")
   expect(idle.prompts).toHaveLength(0)
-  expect(readQuestions(directory)).toEqual([question!])
+  expect(readQuestions(directory)).toEqual([{ ...question!, advice: { options: question!.advice!.options, unavailable: { reason: expect.stringContaining("supporting inputs changed") } } }])
   // The answer re-runs the stages that consume answers; the checklist check
   // receives it as a settled instruction. The conflict still reported stays
   // disclosed and its answered question is not asked again.
