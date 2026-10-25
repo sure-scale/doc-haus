@@ -13,6 +13,8 @@ import { canonicalArtifactIdentity, withArtifactMutationLocksAsync } from "../..
 import { chunkText } from "../../../dochaus/lib/chunk-text"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { writeListLabels } from "../../../dochaus/lib/docx-list-labels"
+import { readDocxComments } from "../../../dochaus/lib/docx-comments"
+import { readDocxMarkup, type DocxMarkup } from "../../../dochaus/lib/docx-markup"
 import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { parseEmail, type ParsedEmail } from "../../../dochaus/lib/email"
@@ -20,7 +22,7 @@ import { parseMsg } from "../../../dochaus/lib/msg"
 import { zipToText } from "../../../dochaus/lib/zip"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
-import { captureVersion, stageVersionBytes, trackedChanges, trackedChangesNotice, type CapturedVersion, type VersionOrigin, type VersionWrite } from "./document-versions"
+import { captureVersion, oneLine, stageVersionBytes, trackedChanges, trackedChangesNotice, type CapturedVersion, type VersionOrigin, type VersionWrite } from "./document-versions"
 import {
   beginDocumentMutation,
   completeDocumentMutation,
@@ -158,10 +160,12 @@ async function ingestDocumentLocked(
   // stored on the document and flag overlapping chunks — the text itself is never
   // rewritten, so the lawyer always reviews exactly what the counterparty wrote.
   const extraction = options.extracted ?? await extractSourceText(fileName, buffer)
+  const markup = await sourceMarkup(fileName, buffer)
   const findings = [
     ...extraction.findings,
     ...detectInjection(extraction.text),
     ...(fileName.toLowerCase().endsWith(".docx") ? scanDocxHiddenContent(buffer) : []),
+    ...commentFindings(markup),
   ]
   // Extraction quality gate (#239): a file with no readable text is kept and
   // registered, with nothing indexed, so search and review never rest on it.
@@ -260,15 +264,44 @@ async function ingestDocumentLocked(
     // The version this ingest recorded; created is false when the file already
     // held these bytes.
     version: captured ?? null,
-    ...versionNotice(fileName, buffer, captured),
+    ...versionNotice(fileName, buffer, captured, markup),
   }
 }
 
 /** A saved Word file's pending tracked changes, with the notice that doc.haus
- * edits wait for them (document-versions.ts); nothing for a file without. */
-export function versionNotice(name: string, bytes: Uint8Array, version: CapturedVersion | undefined) {
-  const tracked = trackedChanges(name, bytes)
-  return tracked.count && version ? { tracked_changes: tracked, notice: trackedChangesNotice(version.number, tracked) } : {}
+ * edits wait for them (document-versions.ts); nothing for a file without. With
+ * a source's `markup`, the changes are counted as the viewer lists them, where
+ * the lawyer reviews them; otherwise by their tags, resolved in Word. */
+export function versionNotice(name: string, bytes: Uint8Array, version: CapturedVersion | undefined, markup?: DocxMarkup) {
+  const tracked = markup
+    ? { count: markup.revisions.length, authors: markup.authors.filter((author) => author.revisions && author.name).map((author) => author.name) }
+    : trackedChanges(name, bytes)
+  return tracked.count && version ? { tracked_changes: tracked, notice: trackedChangesNotice(version.number, tracked, markup ? "viewer" : "word") } : {}
+}
+
+/** A Word source's tracked changes and comments as the viewer lists them
+ * (dochaus/lib/docx-markup.ts), read only when it has either. Undefined when
+ * it has none or they cannot be read; the file then ingests as before and its
+ * notice says to resolve its changes in Word. */
+async function sourceMarkup(fileName: string, buffer: Buffer): Promise<DocxMarkup | undefined> {
+  if (!fileName.toLowerCase().endsWith(".docx")) return
+  try {
+    if (!trackedChanges(fileName, buffer).count && !readDocxComments(buffer).length) return
+    return await readDocxMarkup(buffer)
+  } catch (error) {
+    console.warn("[ingest] tracked changes and comments not read", diagnosticErrorMetadata(error))
+  }
+}
+
+/** The injection findings in a source's comments, as document-level findings
+ * (comments are not indexed, so they have no offsets) naming the comment's
+ * author. A comment's quote is body text, which ingest scans with offsets. */
+function commentFindings(markup: DocxMarkup | undefined): InjectionFinding[] {
+  return (markup?.comments ?? []).flatMap((comment) => comment.findings.filter((finding) => finding.field !== "quote").map((finding) => ({
+    rule: finding.rule,
+    detail: `${finding.detail}, in a comment by ${oneLine(comment.author) || "an unnamed author"}`,
+    ...(finding.snippet === undefined ? {} : { snippet: finding.snippet }),
+  })))
 }
 
 function sourceDocumentTarget(matterDir: string, fileName: string) {
