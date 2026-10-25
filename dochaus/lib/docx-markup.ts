@@ -294,10 +294,16 @@ export async function readMarkupComments(bytes: Uint8Array, native = readDocxCom
   const ids = new Map(listed.map(row => [row.anchorId, row.id]))
   const { quotes, places } = commentRanges(bytes, new Set(listed.map(row => String(row.id))))
   const referenced = commentReferences(bytes)
-  // The first native comment with each id, as a lookup.
-  const natives = new Map(native.map(comment => [comment.comment_id, comment] as const).reverse())
+  // Both readers list the comments part in order, comments that share an id
+  // included, so the nth row with an id is the nth native comment with it: each
+  // row's own text is the text screened, as the page shows it.
+  const natives = new Map<string, typeof native>()
+  for (const comment of native) natives.set(comment.comment_id, [...natives.get(comment.comment_id) ?? [], comment])
+  const seen = new Map<string, number>()
   return listed.map(row => {
-    const own = natives.get(String(row.id))
+    const at = seen.get(String(row.id)) ?? 0
+    seen.set(String(row.id), at + 1)
+    const own = natives.get(String(row.id))?.[at]
     // The range start places a comment; a reply often has only a reference.
     // The native markers are the body's; a note's come from the scan.
     const marker = MARKERS.map(kind => own?.markers.find(marker => marker.kind === kind && marker.xml_paragraph_index !== null)).find(Boolean)
