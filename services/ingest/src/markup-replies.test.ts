@@ -181,26 +181,31 @@ test("ordinary deal wording that the screen matches is drafted, with at most doc
   }
 }, 60_000)
 
+test("a reviewer's name in doc.haus's change labels is not screened as the clause: a reviewer named Claude gets no note, and the model still reads the labelled clause", async () => {
+  const name = "supply-reviewer-claude.docx"
+  const view = await variant(name, [["word/document.xml", "days of each Order.", "days of each Order, and the Supplier shall confirm it."]], { [AVERY]: "Claude Martin" })
+  const reply = "Claude, we will agree to forty-five days if stock levels are confirmed monthly."
+  answers(JSON.stringify({ reply, open_items: [] }))
+  const response = await draft({ base_sha256: view.version.sha256, thread: 0 }, undefined, name)
+  expect(response.status).toBe(200)
+  expect(await response.json()).toEqual({ reply, open_items: [], placeholders: 0, model: MODEL })
+  const [{ prompt }] = generations as [Generation]
+  expect(block(prompt, "clause").text).toContain('⟦insert by "Claude Martin": forty-five⟧ days of each Order, and the Supplier shall confirm it.')
+}, 60_000)
+
 test("a draft reusing the deal's words that the screen matches is returned as drafted, with the wording named for the lawyer and no correction", async () => {
-  const cases: { name: string; edits: [string, string, string][]; renamed: Record<string, string>; reply: string; wording: string }[] = [
-    // A reviewer named Claude: the clause as marked up names the change's author.
-    { name: "supply-reviewer-claude.docx", edits: [["word/document.xml", "days of each Order.", "days of each Order, and the Supplier shall confirm it."]], renamed: { [AVERY]: "Claude Martin" },
-      reply: "Claude, we will agree to forty-five days if stock levels are confirmed monthly.", wording: '"Claude, we will"' },
-    { name: "supply-ai-system.docx", edits: [["word/document.xml", "days of each Order.", "days of each Order. The AI system shall log each Order."]], renamed: {},
-      reply: "Forty-five days works if the AI system will log each Order within [[days]].", wording: '"AI system will"' },
-  ]
-  for (const { name, edits, renamed, reply, wording } of cases) {
-    const view = await variant(name, edits, renamed)
-    answers(JSON.stringify({ reply, open_items: [] }))
-    const response = await draft({ base_sha256: view.version.sha256, thread: 0 }, undefined, name)
-    expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({
-      reply,
-      open_items: [named("the clause"), `The draft contains wording that looks like an instruction to an AI: ${wording}. Check it before approving.`],
-      placeholders: reply.includes("[[") ? 1 : 0, model: MODEL,
-    })
-    expect(generations).toHaveLength(1)
-  }
+  const name = "supply-ai-system.docx"
+  const view = await variant(name, [["word/document.xml", "days of each Order.", "days of each Order. The AI system shall log each Order."]])
+  const reply = "Forty-five days works if the AI system will log each Order within [[days]]."
+  answers(JSON.stringify({ reply, open_items: [] }))
+  const response = await draft({ base_sha256: view.version.sha256, thread: 0 }, undefined, name)
+  expect(response.status).toBe(200)
+  expect(await response.json()).toEqual({
+    reply,
+    open_items: [named("the clause"), 'The draft contains wording that looks like an instruction to an AI: "AI system will". Check it before approving.'],
+    placeholders: 1, model: MODEL,
+  })
+  expect(generations).toHaveLength(1)
 }, 60_000)
 
 test("planted text earlier in the thread or in a tracked change is drafted around: doc.haus names it in the open items, the model is not told", async () => {

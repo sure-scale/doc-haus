@@ -109,18 +109,22 @@ async function replyInput(bytes: Uint8Array, markup: DocxMarkup, root: MarkupCom
   const part = root.scope ?? "body"
   const located = root.paragraph === null ? [] : markup.revisions.filter((revision) =>
     revision.scope === part && revision.locations.some((location) => location.paragraph === root.paragraph))
-  const row = part === "body" && root.paragraph !== null
-    ? (await readDocxBodyView(bytes, "marked_up_body")).find((row) => row.paragraph_index === root.paragraph! - 1)
+  const paragraph = async (bare: boolean) => part === "body" && root.paragraph !== null
+    ? (await readDocxBodyView(bytes, "marked_up_body", { bare })).find((row) => row.paragraph_index === root.paragraph! - 1)
     : undefined
+  const row = await paragraph(false)
   const clause = row ? normalizeUntrustedText(row.paragraph_text).text : undefined
-  // The reader screens the thread and the changes; the clause is screened here.
+  // The reader screens the thread and the changes; the clause is screened here,
+  // in its own words: doc.haus's change marks name authors the file does not
+  // hold as text.
+  const words = clause === undefined ? undefined : normalizeUntrustedText((await paragraph(true))?.paragraph_text ?? "").text
   const latest = planted(thread.at(-1)!.findings, ["text", "author"])
   const earlier = thread.slice(0, -1).filter((comment) => planted(comment.findings, ["text", "author"])).length
   const changes = located.filter((revision) => planted(revision.findings)).length
   const flagged = [
     ...latest ? [thread.length === 1 ? "the comment" : "the latest comment"] : [],
     ...earlier ? [earlier === 1 ? "an earlier comment" : `${earlier} earlier comments`] : [],
-    ...(clause !== undefined && detectInjection(clause).length) || thread.some((comment) => planted(comment.findings, ["quote"]))
+    ...(words !== undefined && detectInjection(words).length) || thread.some((comment) => planted(comment.findings, ["quote"]))
       ? [clause === undefined ? "the commented text" : "the clause"] : [],
     ...changes ? [changes === 1 ? "a tracked change" : `${changes} tracked changes`] : [],
   ]
