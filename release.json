@@ -1,5 +1,5 @@
 {
-  "version": 8,
-  "name": "2.0.6",
-  "notes": "Clients in one place. A new Clients page lists every client you act for. Add or edit one there, or type a new name when you open a matter; it is added once the matter is saved. Zip files and email attachments. Add an email or a zip file and everything inside is read and searchable, listed under the email or archive it came from. Client summaries. The new Client summary assistant writes in plain English for your client, with each source listed for you to check. Record conflicts checks when you create or edit a matter, and fill templates faster with placeholders colour-matched between the document and the list beside it."
+  "version": 9,
+  "name": "2.0.7",
+  "notes": "Drafts that behave like real Word documents. Native clause numbering, live cross-references, and every open point and placeholder shaded so nothing is missed. Redlines that show only what changed. Revisions keep the original's formatting, tables, signature blocks, header and footer. More ways to work with documents. Upload Outlook emails with their attachments, view and restore earlier versions, and open citations at the right page in PDFs."
 }
