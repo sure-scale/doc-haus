@@ -123,4 +123,19 @@ describe("shadeOpenItemsInDocx", () => {
     // Shaded again, the body is the same bytes.
     expect(shadeOpenItemsInDocx(shaded, written)).toBe(shaded)
   })
+
+  test("reads a tab or break in a tracked deletion as no text: it is not shaded and does not move the markers", () => {
+    const docx = zipSync({
+      "word/document.xml": strToU8(
+        `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+          `<w:p><w:r><w:t>[open item: a</w:t></w:r><w:del w:id="1"><w:r><w:tab/></w:r></w:del><w:ins w:id="2"><w:r><w:t>b]</w:t></w:r></w:ins></w:p>` +
+          `</w:body></w:document>`,
+      ),
+    })
+
+    const doc = new DOMParser().parseFromString(strFromU8(unzipSync(shadeOpenItemsInDocx(docx))["word/document.xml"]!), "application/xml")
+    const deleted = doc.getElementsByTagName("w:del")[0]!
+    expect(deleted.getElementsByTagName("w:shd").length).toBe(0)
+    expect(Array.from(doc.getElementsByTagName("w:r")).filter(run => run.getElementsByTagName("w:shd").length).map(run => run.textContent)).toEqual(["[open item: a", "b]"])
+  })
 })

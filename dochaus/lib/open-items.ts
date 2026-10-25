@@ -141,18 +141,27 @@ type RunContent = { node: Element; value: string; start: number; end: number }
 
 // The runs of a paragraph's own text (not a nested text box's), each with its
 // content and where that sits in the text the paragraph shows: a text, tab or
-// break is its characters, anything else (a field character or code, deleted
-// text, a drawing) is empty.
+// break is its characters, anything else (a field character or code, a
+// drawing) and all of a tracked deletion is empty.
 function paragraphRuns(paragraph: Element) {
   let at = 0
-  return Array.from(paragraph.getElementsByTagNameNS(W, "r")).filter(run => owningParagraph(run) === paragraph).map(run => ({
-    run,
-    content: Array.from(run.childNodes).filter((node): node is Element => node.nodeType === 1 && (node as Element).localName !== "rPr").map((node): RunContent => {
-      const value = node.namespaceURI !== W ? "" : node.localName === "t" ? node.textContent ?? "" : node.localName === "tab" ? "\t"
-        : node.localName === "br" || node.localName === "cr" ? "\n" : ""
-      return { node, value, start: at, end: (at += value.length) }
-    }),
-  }))
+  return Array.from(paragraph.getElementsByTagNameNS(W, "r")).filter(run => owningParagraph(run) === paragraph).map(run => {
+    const deleted = withinDeletion(run, paragraph)
+    return {
+      run,
+      content: Array.from(run.childNodes).filter((node): node is Element => node.nodeType === 1 && (node as Element).localName !== "rPr").map((node): RunContent => {
+        const value = deleted || node.namespaceURI !== W ? "" : node.localName === "t" ? node.textContent ?? "" : node.localName === "tab" ? "\t"
+          : node.localName === "br" || node.localName === "cr" ? "\n" : ""
+        return { node, value, start: at, end: (at += value.length) }
+      }),
+    }
+  })
+}
+
+function withinDeletion(run: Element, paragraph: Element) {
+  for (let parent = run.parentNode; parent && parent !== paragraph; parent = parent.parentNode)
+    if (parent.nodeType === 1 && (parent as Element).namespaceURI === W && (parent as Element).localName === "del") return true
+  return false
 }
 
 // The run with its content in a marker shaded in the marker's fill and, when
