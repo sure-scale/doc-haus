@@ -175,7 +175,7 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   if (selections.length !== placing.length || new Set(selections.map((row) => row.amendment_id)).size !== placing.length)
     throw new DocumentAmendmentConflictError(unplaced)
   // The touch rule on a source: a paragraph with a pending change by anyone
-  // but doc.haus waits for that change to be decided under Their changes. The
+  // but doc.haus waits for that change to be decided under Tracked changes. The
   // writer refuses it too (docx_pending_revision); here it is an open item instead.
   const pending = initial.role === "source" ? await pendingRevisionParagraphs(initial.bytes) : undefined
   let resolved = legal.amendments.flatMap((row,index) => {
@@ -186,7 +186,7 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
     if (othersPending(authors,author)) {
       const names = authors!.filter((name) => name !== author).map((name) => normalizeUntrustedText(name).text.trim()).filter(Boolean)
       const many = names.length > 1
-      refused.push(`The change to ${JSON.stringify(row.before_quote)} was not proposed: that paragraph has ${many ? "pending changes" : "a pending change"}${names.length ? ` by ${listNames(names)}` : ""}. Accept or reject ${many ? "them" : "it"} under Their changes, then request edits again.`)
+      refused.push(`The change to ${JSON.stringify(row.before_quote)} was not proposed: that paragraph has ${many ? "pending changes" : "a pending change"}${names.length ? ` by ${listNames(names)}` : ""}. Accept or reject ${many ? "them" : "it"} under Tracked changes, then request edits again.`)
       return []
     }
     // Word prints the number of a paragraph the quote opens just before the
@@ -208,7 +208,7 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   const inside = resolved.length && pending?.size ? await ownRevisionRefusals(initial.bytes,
     await createDocxLocalization(initial.bytes,resolved.map((value) => value.amendment),{},written),resolved.map((value) => value.selection),written) : new Set<string>()
   for (const {row,amendment} of resolved) if (inside.has(amendment.id))
-    refused.push(`The change to ${JSON.stringify(row.before_quote)} was not proposed: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Their changes and request edits again.`)
+    refused.push(`The change to ${JSON.stringify(row.before_quote)} was not proposed: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.`)
   resolved = resolved.filter(({amendment}) => !inside.has(amendment.id))
   const openItems = [...legal.open_items,...selections.flatMap((row) => typeof row.unresolved_reason === "string" ? [row.unresolved_reason] : []),...refused]
   if (!resolved.length) {

@@ -155,7 +155,7 @@ export function documentMarkupRoutes(options: Options) {
       const answered = added.length === 1 ? "1 reply added" : `${added.length} replies added`
       const version: VersionWrite = decided
         ? { origin: "accept", actor, event: { kind: "accept", actor, detail: { markup: rows, ...(added.length ? { replies: added } : {}) } },
-          label: `Tracked changes resolved: ${counts.accepted} accepted, ${counts.rejected} rejected, ${counts.held} held` +
+          label: `Tracked changes decided: ${counts.accepted} accepted, ${counts.rejected} rejected, ${counts.held} left tracked` +
             (counts.consumed ? `, ${counts.consumed} resolved with another change` : "") + (added.length ? `; ${answered}` : "") }
         : { origin: "revision", actor, label: answered }
       try {

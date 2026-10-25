@@ -138,7 +138,7 @@ test("an older proposal in a paragraph with their pending change is refused at a
     scope: "phrase", find_text, old_text: find_text, new_text, author: AUTHOR, review_comment: "", anchor_id: null, created_at: 1, status: "pending", target_json: null })
   const inside = older(1, "forty-five days of each", "sixty days of each")
   await expect(bake(source, [inside])).rejects.toThrow(
-    "The change to \"forty-five days of each\" was not applied: that paragraph has a pending change by Avery Lindqvist. Accept or reject it under Their changes, then request edits again.")
+    "The change to \"forty-five days of each\" was not applied: that paragraph has a pending change by Avery Lindqvist. Accept or reject it under Tracked changes, then request edits again.")
   expect(await buildRedlined(source, [inside])).toEqual(source)
   // In a paragraph of theirs with no pending change, it bakes as before.
   const baked = await bake(source, [older(2, "the Province", "the State")])

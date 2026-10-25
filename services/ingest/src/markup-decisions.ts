@@ -67,7 +67,7 @@ function decideInOrder(dx: Docxodus, bytes: Uint8Array, decisions: ReadonlyMap<s
     const outcomes = new Map<string, MarkupOutcome>()
     const resolve = (entry: RevisionListEntry, id: string) => decision(entry) === "accept" ? session.acceptRevision(id) : session.rejectRevision(id)
     const failed = (entry: RevisionListEntry) =>
-      new MarkupDecisionError("decision_failed", `This change could not be ${decision(entry)}ed here. Nothing was changed; hold it to apply the other decisions, and resolve it in Word.`, entry.id)
+      new MarkupDecisionError("decision_failed", `This change could not be ${decision(entry)}ed here. Nothing was changed; leave it tracked to apply the other decisions, and resolve it in Word.`, entry.id)
     // Each by its listed id; a change whose id is gone waits until the others are done.
     const moved: RevisionListEntry[] = []
     for (const entry of order) {

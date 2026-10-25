@@ -760,7 +760,7 @@ test("Request edits on an uploaded markup proposes beside their changes under th
       const response = await prepare("Make the State's law govern and fix the price for eighteen months.")
       expect(response.status).toBe(200)
       expect(await response.json()).toMatchObject({proposed:1,open_items:[
-        "The change to \"twelve months\" was not proposed: that paragraph has a pending change by Morgan Okafor. Accept or reject it under Their changes, then request edits again.",
+        "The change to \"twelve months\" was not proposed: that paragraph has a pending change by Morgan Okafor. Accept or reject it under Tracked changes, then request edits again.",
       ]})
     })
     const db = openDb(directory)
@@ -964,7 +964,7 @@ test("on an uploaded markup with Word paragraph ids, each Accept keeps doc.haus'
     // An edit inside doc.haus's own tracked change is not proposed, and says why.
     const inside = await matter.prepare("Make the Commonwealth's law govern.")
     expect(await inside.json()).toMatchObject({proposed:0,open_items:[
-      "The change to \"the State\" was not proposed: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Their changes and request edits again.",
+      "The change to \"the State\" was not proposed: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.",
     ]})
   } finally {
     await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
@@ -1022,7 +1022,7 @@ test("on an uploaded markup, a proposal whose paragraph gains their formatting c
     {before_quote:"without consent",replacement:"without prior written consent",target_context:"assignment clause",reason:"Consent must be written."},
   ],open_items:[]}),firstCandidate)
   const ingest = await isolatedIngest(temporary,engine.server)
-  const formatted = "The change to \"the Province\" can no longer be accepted: its paragraph now has a pending change by Morgan Okafor. Reject this proposal, decide that change under Their changes, then request edits again."
+  const formatted = "The change to \"the Province\" can no longer be accepted: its paragraph now has a pending change by Morgan Okafor. Reject this proposal, decide that change under Tracked changes, then request edits again."
   try {
     await ingest.start("only")
     const matter = await ingest.matter("Markup reformatted after preparing")

@@ -323,7 +323,7 @@ export function redlineStaleReason(row:RedlineRow,state:RedlineState,protectedWo
 function heldParagraph(text:string,authors:string[]) {
   const names = [...new Set(authors.map((author) => normalizeUntrustedText(author).text.trim()).filter(Boolean))]
   const many = authors.length > 1
-  return `The change to ${JSON.stringify(text)} can no longer be accepted: its paragraph now has ${many ? "pending changes" : "a pending change"}${names.length ? ` by ${listNames(names)}` : ""}. Reject this proposal, decide ${many ? "those changes" : "that change"} under Their changes, then request edits again.`
+  return `The change to ${JSON.stringify(text)} can no longer be accepted: its paragraph now has ${many ? "pending changes" : "a pending change"}${names.length ? ` by ${listNames(names)}` : ""}. Reject this proposal, decide ${many ? "those changes" : "that change"} under Tracked changes, then request edits again.`
 }
 // One all-or-nothing write. A version 1 row is located by its stored handle
 // through whole-revision localization of the version 1 rows. A version 2 row is

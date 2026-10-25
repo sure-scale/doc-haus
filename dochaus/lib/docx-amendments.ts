@@ -435,7 +435,7 @@ export function pendingRevisionRefusal(pending: Map<string, string[]>, anchors: 
   // As Prepare lists them: three names, then a count.
   const shown = names.length > 3 ? [...names.slice(0, 3), `${names.length - 3} other${names.length === 4 ? "" : "s"}`] : names
   const by = shown.length ? ` by ${shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)}` : shown[0]}` : ""
-  return `The change to ${JSON.stringify(text)} was not ${verb}: that paragraph has ${many ? "pending changes" : "a pending change"}${by}. Accept or reject ${many ? "them" : "it"} under Their changes, then request edits again.`
+  return `The change to ${JSON.stringify(text)} was not ${verb}: that paragraph has ${many ? "pending changes" : "a pending change"}${by}. Accept or reject ${many ? "them" : "it"} under Tracked changes, then request edits again.`
 }
 
 function listedRevisions(session: Session) {

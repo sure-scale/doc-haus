@@ -299,9 +299,9 @@ test("the version records the accept, who decided and an event that names each c
 
   const kept = await history(name)
   expect(kept.versions.map(version => [version.number, version.origin, version.actor, version.label])).toEqual([
-    [4, "accept", "Riley Chen", "Tracked changes resolved: 0 accepted, 1 rejected, 6 held"],
-    [3, "accept", "Sam Rivera", "Tracked changes resolved: 1 accepted, 0 rejected, 7 held"],
-    [2, "accept", "unknown", "Tracked changes resolved: 2 accepted, 0 rejected, 8 held"],
+    [4, "accept", "Riley Chen", "Tracked changes decided: 0 accepted, 1 rejected, 6 left tracked"],
+    [3, "accept", "Sam Rivera", "Tracked changes decided: 1 accepted, 0 rejected, 7 left tracked"],
+    [2, "accept", "unknown", "Tracked changes decided: 2 accepted, 0 rejected, 8 left tracked"],
     [1, "upload", "unknown", null],
   ])
   expect(kept.events.map(event => [event.kind, event.actor, event.version_id])).toEqual([
@@ -368,7 +368,7 @@ test("decisions and replies make one accept version; the event names the replies
 
   const kept = await history(name)
   expect(kept.versions.map(version => [version.number, version.origin, version.actor, version.label])).toEqual([
-    [2, "accept", "Riley Chen", "Tracked changes resolved: 1 accepted, 1 rejected, 8 held; 1 reply added"], [1, "upload", "unknown", null]])
+    [2, "accept", "Riley Chen", "Tracked changes decided: 1 accepted, 1 rejected, 8 left tracked; 1 reply added"], [1, "upload", "unknown", null]])
   expect(kept.events.map(event => [event.kind, event.actor, event.version_id])).toEqual([["accept", "Riley Chen", kept.versions[0]!.id]])
   expect(kept.events[0]!.detail!.replies).toEqual(result.replies)
   expect(kept.events[0]!.detail!.markup.map(row => row.decision)).toEqual(decisions.map(row => row.decision))
@@ -464,7 +464,7 @@ test("a deletion inside a rejected insertion is consumed whichever order the dec
     const result = await response.json() as Applied
     expect(result.counts).toEqual({ accepted: 0, rejected: 1, held: 8, consumed: 1 })
     expect(result.decisions.slice(6, 8).map(row => [row.author, row.decision, row.outcome])).toEqual([[AVERY, "reject", "applied"], [MORGAN, inner, "consumed"]])
-    expect((await history(name)).versions[0]!.label).toBe("Tracked changes resolved: 0 accepted, 1 rejected, 8 held, 1 resolved with another change")
+    expect((await history(name)).versions[0]!.label).toBe("Tracked changes decided: 0 accepted, 1 rejected, 8 left tracked, 1 resolved with another change")
     expect((await projections(await content(name))).accepted[5]).toBe(AUDIT)
     outcomes.set(name, result.decisions)
   }

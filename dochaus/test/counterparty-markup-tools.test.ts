@@ -21,7 +21,7 @@ afterEach(() => {
 })
 
 const refusal = (text: string, author: string, verb = "proposed") =>
-  `The change to ${JSON.stringify(text)} was not ${verb}: that paragraph has a pending change by ${author}. Accept or reject it under Their changes, then request edits again.`
+  `The change to ${JSON.stringify(text)} was not ${verb}: that paragraph has a pending change by ${author}. Accept or reject it under Tracked changes, then request edits again.`
 
 test("the chat tools refuse a paragraph with their pending change, and record or save nothing", async () => {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "dh-markup-tools-")))
