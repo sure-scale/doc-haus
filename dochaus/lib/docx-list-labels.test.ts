@@ -132,7 +132,7 @@ test("a body the two readers count differently keeps its text unlabelled, and th
     expect(await markupConsistency("Services.docx", before, after)).toEqual([{ detail: expect.stringMatching(/^Clause 2 refers to clause 3\b.*which was clause 4 before/) }])
     // Docxodus now lists one body paragraph fewer than the XML holds.
     const real = await docxodus()
-    const engine = spyOn(docxodusEngine, "docxodus").mockResolvedValue(new Proxy(real, { get: (target, key) => key !== "openDocxSession" ? Reflect.get(target, key)
+    const engine = spyOn(docxodusEngine, "docxodus").mockResolvedValue(new Proxy(real, { get: (target, key) => key !== "openDocxSession" ? target[key as keyof typeof target]
       : (...args: Parameters<typeof real.openDocxSession>) => {
         const session = target.openDocxSession(...args), project = session.project.bind(session)
         return Object.assign(session, { project: () => {
