@@ -1093,7 +1093,7 @@ export default function MarkupPanel({
         decided && [
           `${counts.accepted ?? accepted} accepted`,
           `${counts.rejected ?? rejected} rejected`,
-          `${counts.held ?? left} left tracked`,
+          `${counts.held ?? left + elsewhere} left tracked`,
         ].join(", "),
         added > 0 && `${plural(added, "reply", "replies")} added`,
       ].filter(Boolean).join("; ")
@@ -1118,11 +1118,15 @@ export default function MarkupPanel({
     ...(decided ? [`${plural(accepted, "change")} accepted`, `${rejected} rejected`] : []),
     ...(approved.length ? [`${plural(approved.length, "reply", "replies")} added as ${actor}`] : []),
   ]
-  const stays = !left ? "" : !undecided
-    ? ` ${plural(left, "change stays", "changes stay")} as tracked ${left === 1 ? "change" : "changes"}.`
-    : undecided === left
-      ? ` ${left === 1 ? "1 change you have not decided stays as a tracked change" : `${left} changes you have not decided stay as tracked changes`}.`
-      : ` ${left} changes stay as tracked changes, including ${undecided} you have not decided.`
+  // Every change left tracked, as the toast and the version's label count
+  // them: those left tracked, those not decided and those to resolve in Word.
+  const kept = left + elsewhere
+  const asTracked = kept === 1 ? "as a tracked change" : "as tracked changes"
+  const including = [undecided > 0 && `${undecided} you have not decided`, elsewhere > 0 && `${elsewhere} to resolve in Word`].filter((part): part is string => Boolean(part))
+  const stays = !kept ? ""
+    : undecided === kept ? ` ${kept === 1 ? "1 change you have not decided stays" : `${kept} changes you have not decided stay`} ${asTracked}.`
+    : elsewhere === kept ? ` ${kept === 1 ? "1 change to resolve in Word stays" : `${kept} changes to resolve in Word stay`} ${asTracked}.`
+    : ` ${plural(kept, "change stays", "changes stay")} ${asTracked}${including.length ? `, including ${joined(including)}` : ""}.`
   const confirmText = `This saves a new version of ${name} with ${joined(saved)}.${stays}` +
     `${unapproved ? ` ${plural(unapproved, "draft reply is", "draft replies are")} not approved, so ${unapproved === 1 ? "it is" : "they are"} not added.` : ""}` +
     " The current version stays in the history."
