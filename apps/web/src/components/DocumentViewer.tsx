@@ -134,6 +134,7 @@ function WordDocumentViewer({
   const [html, setHtml] = useState<string>()
   const [redlines, setRedlines] = useState<Redline[]>([])
   const [error, setError] = useState<string>()
+  const [revisionNotice, setRevisionNotice] = useState<string>()
   const [busy, setBusy] = useState<number | "all" | "prepare">()
   const [editing,setEditing] = useState(false)
   const [instructions,setInstructions] = useState("")
@@ -175,6 +176,7 @@ function WordDocumentViewer({
     let cancelled = false
     setHtml(undefined)
     setError(undefined)
+    setRevisionNotice(undefined)
     // An older version shows exactly as kept, with no proposals over it.
     if (shown) {
       fetchVersionBytes(matterId, shown.id)
@@ -191,7 +193,7 @@ function WordDocumentViewer({
         cancelled = true
       }
     }
-    Promise.all([fetchRedlinedBytes(matterId, name).catch(async (cause) => {
+    Promise.all([fetchRedlinedBytes(matterId, name, (notice) => { if (!cancelled) setRevisionNotice(notice) }).catch(async (cause) => {
       if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause))
       const current = await fetch(documentContentUrl(matterId,name))
       if (!current.ok) throw cause
@@ -380,7 +382,7 @@ function WordDocumentViewer({
     setError(undefined)
     try {
     if (shown) return saveVersionFile(await fetchVersionBytes(matterId, shown.id), name, shown.number)
-    const bytes = tracked ? await fetchRedlinedBytes(matterId, name) : await (async () => {
+    const bytes = tracked ? await fetchRedlinedBytes(matterId, name, setRevisionNotice) : await (async () => {
       const current = await fetch(documentContentUrl(matterId, name))
       if (!current.ok) throw new Error(`Could not download ${name} (${current.status})`)
       return new Uint8Array(await current.arrayBuffer())
@@ -544,6 +546,7 @@ function WordDocumentViewer({
             {wasmError && <p className="muted">Viewer failed to load: {wasmError.message}</p>}
             {error && <p className="muted">{error}</p>}
             {staleNotice && !shown && <p role="status" className="muted">{staleNotice}</p>}
+            {revisionNotice && !shown && <p role="status" className="muted">{revisionNotice}</p>}
             {!wasmError && !error && !html && (
               <div className="docx-render docx-skeleton" aria-label="Rendering document">
                 {Array.from({ length: 14 }, (_, i) => <div key={i} className="sk-line" />)}

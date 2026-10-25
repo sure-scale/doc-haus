@@ -1,3 +1,6 @@
+import { nativeQuestionHistory, reviewNativeQuestions } from "./legal/question-review"
+import { engineSessionPort } from "../workflows/lean/session-port"
+import type { QuestionReview } from "../workflows/lean/question-review"
 import { observeStartup, startupObservation } from "../lib/startup-observation"
 import { recordSessionAgent } from "./legal/session"
 import { nativeReadEvidence } from "../lib/native-read-evidence"
@@ -35,6 +38,7 @@ export default Plugin.define({
     // provider turn per Session at a time, so its HTTP request belongs to the
     // assistant message most recently prepared for that Session.
     const preparedAssistantMessages = new Map<string, string>()
+    const nativeQuestionReviews = new Map<string, { turn: string; reconsidered: Set<string>; reviews: Map<string, QuestionReview> }>()
     await observeStartup("legal.tools", directory, () => registerLegalTools(context))
 
     const readNative = (await observeStartup("legal.reader", directory, () => nativeSessionReader(directory, context.session))).read
@@ -115,6 +119,21 @@ export default Plugin.define({
       if (event.tool === "read" && typeof args.path === "string") args.filePath = args.path
       const output = { args }
       await policy["tool.execute.before"]?.({ tool: event.tool, sessionID: event.sessionID, callID: event.id, messageID: event.messageID }, output)
+      if (event.tool === "question" && event.agent !== "lean-advise") {
+        const current = await readNative(event.sessionID)
+        const users = current.messages.filter(isProjectedUserAdmission)
+        const turn = users.at(-1)?.info.id ?? event.messageID
+        let reviewed = nativeQuestionReviews.get(event.sessionID)
+        if (!reviewed || reviewed.turn !== turn) {
+          reviewed = { turn, reconsidered: new Set(), reviews: new Map() }
+          if (nativeQuestionReviews.size >= 512) nativeQuestionReviews.delete(nativeQuestionReviews.keys().next().value!)
+          nativeQuestionReviews.set(event.sessionID, reviewed)
+        }
+        const humanContext = nativeQuestionHistory(current.messages)
+        const selected = current.session.model
+        if (selected) await reviewNativeQuestions(directory, output.args, { sessions: engineSessionPort({ timeoutMs: 90_000 }), parentID: event.sessionID,
+          model: { providerID: selected.providerID, modelID: selected.modelID }, ...humanContext, cleanupSession: true }, reviewed.reconsidered, reviewed.reviews)
+      }
       event.input = output.args
     })
     // Hooks run in registration order: this observer sees the tool's own result

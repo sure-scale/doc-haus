@@ -63,7 +63,7 @@ export type LeanQuestionOption = { id: string; text: string }
  * recommends none. `options` are the advice's own, absent when the question
  * carries options. It is never an answer. */
 export type LeanQuestionAdvice =
-  | { options?: LeanQuestionOption[]; recommendation: { option: string; rationale: string; basis: { source_id: string; quote: string }[] } }
+  | { options?: LeanQuestionOption[]; recommendation: { option: string; rationale: string; basis: { source_id: string; quote: string; relevance?: string }[] } }
   | { options?: LeanQuestionOption[]; unavailable: { reason: string; reason_code?: string } }
 
 export type LeanQuestion = {
@@ -74,6 +74,10 @@ export type LeanQuestion = {
   context: string
   status: "open" | "answered"
   answer?: string
+  answer_kind?: "option" | "adopted"
+  option_id?: string
+  /** Related questions share a topic; each keeps its own decision and answer. */
+  group?: string
   kind?: LeanQuestionKind
   /** A scope question that also asks for missing facts or approvals. */
   mixed?: true

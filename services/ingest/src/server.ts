@@ -107,6 +107,7 @@ import { replaceableDeliverable } from "../../../dochaus/lib/system-docx"
 import { buildCombinedFile } from "../../../dochaus/lib/combined-docx"
 import { readLeanState } from "../../../dochaus/workflows/lean/state"
 import { documentRedline } from "../../../dochaus/workflows/lean/apply-stage"
+import { sourceRevisionDisclosure } from "../../../dochaus/lib/docx-revision-views"
 
 const app = new Hono()
 
@@ -142,7 +143,7 @@ process.on("unhandledRejection", (reason) => {
 // unaffected.
 app.use(
   "*",
-  cors({ origin: (origin) => (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null) }),
+  cors({ origin: (origin) => (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null), exposeHeaders: ["X-DocHaus-Revision-Notice"] }),
 )
 
 const updateRoot = path.resolve(import.meta.dir, "../../..")
@@ -1078,8 +1079,10 @@ app.get("/matters/:id/documents/redlined", async (c) => {
     const rows = pending.filter((row) => !redlineStaleReason(row, state, protectedWord))
     try {
       const bytes = await buildRedlined(original, rows, state)
+      const disclosure = rows.length ? await sourceRevisionDisclosure(original) : undefined
       return new Response(new Uint8Array(bytes), {
-        headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+        headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          ...(disclosure ? { "X-DocHaus-Revision-Notice": encodeURIComponent(disclosure.message) } : {}) },
       })
     } catch(error) {
       if (error instanceof RedlinePreviewConflictError) return c.json({error:error.message},409)

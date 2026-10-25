@@ -53,9 +53,9 @@ const recentBySession = new Map<string, string[]>()
 
 export default tool({
   description:
-    "view=proposed_body reads/searches the pending generated revision from current initial paragraphs plus amendments, with initial-PID/part coordinates; it is NOT actual Word or source authority. Search an explicit evidence corpus: view=source (default) searches indexed uploads; current_body, comments and deleted_text search exact current Word artifacts lexically with native provenance. Current views require an exact plan ID or filename and do not search uploaded sources. Unavailable is distinct from searched with no hits; neither empty lexical matches nor a different view proves absence. Read relevant consecutive current entries and related provisions before deciding.",
+    "Search an explicit evidence corpus: source (default) searches indexed uploads. current_body searches accepted Word text; baseline_body searches its reject-all projection; marked_up_body searches inline revisions with recorded authors. Word views require one exact plan ID/filename or registered uploaded DOCX filename. Baseline/markup are labelled projections, not agreed wording or current amendment targets. comments/deleted_text search native annotations. proposed_body searches the pending generated revision with initial-PID/part coordinates, not actual Word or source authority. Word-view searches are lexical, with artifact provenance. Unavailable differs from searched with no hits; neither empty matches nor a different view proves absence. Read consecutive entries and related provisions before deciding.",
   args: {
-    view: tool.schema.enum(["source", "current_body", "comments", "deleted_text", "proposed_body"]).optional().describe("Select source, a distinct actual Word view, or proposed_body for the pending generated revision."),
+    view: tool.schema.enum(["source", "current_body", "baseline_body", "marked_up_body", "comments", "deleted_text", "proposed_body"]).optional().describe("Select indexed source, an accepted/baseline/marked-up Word view, annotations, or generated pending proposed_body."),
     query: tool.schema.string().describe("What to search for, in natural language"),
     k: tool.schema.number().int().min(1).max(20).optional().describe("Number of passages to return (default 5)"),
     document: tool.schema
@@ -70,7 +70,7 @@ export default tool({
   },
   async execute(args, ctx) {
     if (args.view && args.view !== "source") {
-      if (!args.document) return "Current view unavailable: provide one exact planned document ID or filename; no search was performed."
+      if (!args.document) return "Current view unavailable: provide one exact planned document ID/filename or uploaded Word filename; no search was performed."
       if (args.structural_path) return "Current view unavailable: structural_path belongs to uploaded-source citations. Use current entry offsets and PIDs instead; no search was performed."
       return searchCurrentDocument(ctx.directory, { ...args, document: args.document, view: args.view })
     }

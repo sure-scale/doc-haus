@@ -12,7 +12,7 @@ afterEach(cleanupMatters)
 const QUESTION: Question = { id: "q-delivery", stage: "intake", question: "Which delivery period should the note state?", context: "The period decides when the supplier is late.", status: "open", kind: "judgment" }
 const FILES: Question = { id: "requested-files-1", stage: "draft", question: "Your words ask for one file, but the plan delivers two. Do you want it delivered as your words ask, or as planned?", context: "Drafting waits for your answer.", status: "open", kind: "file_name",
   options: [{ id: "o1", text: "As my words ask" }, { id: "o2", text: "As planned" }] }
-const BASIS = [{ source_id: SOURCE, quote: "within thirty days of the order date" }]
+const BASIS = [{ source_id: SOURCE, quote: "within thirty days of the order date", relevance: "The supplied delivery terms state the period this note must reproduce." }]
 const OPTIONS = [{ text: "Thirty days from the order date" }, { text: "Fourteen days from the order date" }]
 const VALID = { options: OPTIONS, recommendation: { option: 0, rationale: "The supply terms set thirty days.", basis: BASIS } }
 const UNAVAILABLE = { unavailable: { reason: "The sources do not settle the period." } }
@@ -83,11 +83,11 @@ describe("advising asked questions", () => {
     expect(sessions.every(row => row.permissions === LEAN_CHILD_PERMISSIONS && row.parentID === "ses_owner")).toBe(true)
     const prompts = model.prompts.filter(row => row.agent === AGENT.advise)
     expect(new Set(prompts.map(row => row.sessionID)).size).toBe(2)
-    expect(prompts[0]!.text).toContain("Kind: instruction\nWhich governing law applies?")
-    expect(prompts[0]!.text).toContain("The request names none.")
-    expect(prompts[0]!.text).toContain("Draft a short supply note from the supply terms.")
-    expect(prompts[0]!.text).toContain(SOURCE)
-    expect(prompts[0]!.text).toContain("The request does not say whom the lawyer acts for")
+    expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain("Kind: instruction\nWhich governing law applies?")
+    expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain("The request names none.")
+    expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain("Draft a short supply note from the supply terms.")
+    expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain(SOURCE)
+    expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain("The request does not say whom the lawyer acts for")
     expect(readQuestions(directory).map(row => [row.question, row.kind, row.advice])).toEqual([
       [LAW.question, "instruction", UNAVAILABLE], [SIGNATORY.question, "fact", UNAVAILABLE]])
   }, 120_000)
@@ -109,7 +109,7 @@ describe("advising asked questions", () => {
     writeQuestions(directory, [{ ...QUESTION, advice: kept }, { ...FILES, advice: UNAVAILABLE }])
     // Advised afresh, the options would read otherwise under the same ids.
     const model = scriptedModel({ [AGENT.advise]: prompt => JSON.stringify(prompt.includes("As my words ask")
-      ? { recommendation: { option: 1, rationale: "The request names no file.", basis: [{ source_id: "request", quote: "short supply note" }] } }
+      ? { recommendation: { option: 1, rationale: "The request names no file.", basis: [{ source_id: "request", quote: "short supply note", relevance: "The request names the supplied note, not a file name." }] } }
       : { ...VALID, options: [{ text: "Seven days" }, { text: "Ten days" }] }) })
     const advise = (...questions: Question[]) => adviseQuestions(directory, readLeanState(directory)!, "intake", { sessions: model.port }, questions)
     expect(await advise(QUESTION, FILES)).toEqual([{ ...QUESTION, advice: kept }, { ...FILES, advice: UNAVAILABLE }])
@@ -124,10 +124,25 @@ describe("advising asked questions", () => {
 
   test("a question with its own options shows them to the advisor and keeps them", async () => {
     const directory = matter()
-    const model = scriptedModel({ [AGENT.advise]: () => JSON.stringify({ recommendation: { option: 1, rationale: "The request names no file.", basis: [{ source_id: "request", quote: "short supply note" }] } }) })
+    const model = scriptedModel({ [AGENT.advise]: () => JSON.stringify({ recommendation: { option: 1, rationale: "The request names no file.", basis: [{ source_id: "request", quote: "short supply note", relevance: "The request names the supplied note, not a file name." }] } }) })
     const [advised] = await adviseQuestions(directory, readLeanState(directory)!, "d1.draft", { sessions: model.port }, [FILES])
     expect(model.prompts[0]!.text).toContain("0: As my words ask\n1: As planned")
-    expect(advised).toEqual({ ...FILES, advice: { recommendation: { option: "o2", rationale: "The request names no file.", basis: [{ source_id: "request", quote: "short supply note" }] } } })
+    expect(advised).toEqual({ ...FILES, advice: { recommendation: { option: "o2", rationale: "The request names no file.", basis: [{ source_id: "request", quote: "short supply note", relevance: "The request names the supplied note, not a file name." }] } } })
+  })
+
+  test("a changed question scope or missing supporting quote clears cached recommendation while retaining option ids", async () => {
+    const directory = matter()
+    const advice = { options: [{ id: "o1", text: "Keep the supplied note" }, { id: "o2", text: "Seek new instructions" }],
+      recommendation: { option: "o1", rationale: "The request asks for the note.", basis: [{ source_id: "request", quote: "short supply note", relevance: "The original request names this document." }] } }
+    writeQuestions(directory, [{ ...QUESTION, advice }])
+    const model = scriptedModel({})
+    const changed = await adviseQuestions(directory, readLeanState(directory)!, "intake", { sessions: model.port }, [{ ...QUESTION, context: "A different document is now requested.", document: "d2" }])
+    expect(changed[0]!.advice).toEqual({ options: advice.options, unavailable: { reason: expect.stringContaining("changed") } })
+    writeLeanText(directory, "request.md", "Prepare a chronology.")
+    const sourceChanged = await adviseQuestions(directory, readLeanState(directory)!, "intake", { sessions: model.port }, [QUESTION])
+    expect(sourceChanged[0]!.advice).toHaveProperty("unavailable")
+    expect(sourceChanged[0]!.advice?.options).toEqual(advice.options)
+    expect(model.count(AGENT.advise)).toBe(0)
   })
 
   test("when the advisor's retries run out the question is recorded as advisor_failed and intake stays blocked", async () => {

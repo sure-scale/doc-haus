@@ -643,6 +643,8 @@ export default function ChatPanel({
           ownerSessionID={run.owner_session_id}
           questions={asked}
           answered={run.questions.length - asked.length}
+          answeredQuestions={run.stopped ? [] : run.questions.filter(question => question.status === "answered")}
+          queuedAnswerIDs={run.queued_answer_ids}
           titles={new Map((run.plan?.documents ?? []).map((row) => [row.id, cleanTitle(row.title)]))}
           busy={actions.busy}
           error={actions.error}

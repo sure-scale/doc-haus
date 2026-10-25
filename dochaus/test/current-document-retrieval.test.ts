@@ -3,7 +3,7 @@ import { LEAN_PROMPT_VERSION, stageInputs } from "../workflows/lean/stages"
 import { LEAN_STATE_SCHEMA, hashStageInputs, readLeanState, writeLeanText } from "../workflows/lean/state"
 import { createHash } from "node:crypto"
 import { afterEach, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, readFileSync } from "node:fs"
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Database } from "bun:sqlite"
@@ -50,7 +50,7 @@ test("real current paragraph texts and PIDs are accessible; unindexed source, mi
 })
 test("long Unicode paragraphs page without lost characters or gaps and include continuation coordinates", async () => {
   const dir = fixture();await save(dir, "d1/body.docx", "α😀é\t  ".repeat(1500) + "\n\nLast paragraph.")
-  const original = currentDocumentView(dir, "d1", "current_body");if (original.status !== "available") throw Error(original.reason)
+  const original = await currentDocumentView(dir, "d1", "current_body");if (original.status !== "available") throw Error(original.reason)
   const pieces = new Map<number, string[]>();let offset = 0, text_offset = 0, calls = 0
   for (;;) {
     const page = await read(dir, { document: "d1", view: "current_body", offset, text_offset, limit: 1000, count: 3 });calls++
@@ -143,4 +143,35 @@ test("a body Word numbers shows each paragraph's list number beside its text, an
     expect(hit.hits[0]).toMatchObject({ label: "2.1", text: "The Customer shall pay within thirty days." })
     expect((await read(dir, { document: "d1", view })).entries.map(row => [row.label, row.text])).toContainEqual(["2.", "Payment"])
   }
+})
+
+test("generated and registered uploaded Word files expose separate accepted, baseline and author-labelled markup views", async () => {
+  const dir = fixture()
+  const before = (await renderMarkdownToDocx("Original violet condition.")).bytes
+  const after = (await renderMarkdownToDocx("Revised violet condition.")).bytes
+  const markup = await (await docxodus()).compareDocuments(before, after, { authorName: "Independent reviewer" })
+  writeLeanBytes(dir, "d1/body-applied.docx", after)
+  writeLeanBytes(dir, "d1/redline.docx", markup)
+  acceptApplyForTest(dir)
+  const name = "received.docx"
+  writeFileSync(path.join(dir, name), markup)
+  const db = new Database(path.join(dir, ".dochaus/legal.db"))
+  db.exec("CREATE TABLE documents (name TEXT, role TEXT); CREATE TABLE chunks (doc_name TEXT, text TEXT)")
+  db.query("INSERT INTO documents VALUES (?, 'source')").run(name)
+  db.close()
+  for (const document of ["d1", name]) {
+    const accepted = await read(dir, { document, view: "current_body" })
+    expect(accepted.status, `${document}: ${JSON.stringify(accepted)}`).toBe("read")
+    expect(accepted.entries.map(row => row.text)).toEqual(["Revised violet condition."])
+    const baseline = await read(dir, { document, view: "baseline_body" })
+    expect(baseline.entries.map(row => row.text)).toEqual(["Original violet condition."])
+    expect(baseline.representation).toContain("not the agreed/current text")
+    const marked = await search(dir, { document, view: "marked_up_body", query: "Original" })
+    expect(marked.hits[0].text).toContain('delete by "Independent reviewer"')
+    expect(marked.representation).toContain("no accept/reject decision")
+  }
+  writeFileSync(path.join(dir, "unregistered.docx"), markup)
+  expect((await read(dir, { document: "unregistered.docx", view: "baseline_body" })).status).toBe("unavailable")
+  expect((await read(dir, { document: "../received.docx", view: "baseline_body" })).status).toBe("unavailable")
+  expect(readFileSync(path.join(dir, name))).toEqual(Buffer.from(markup))
 })

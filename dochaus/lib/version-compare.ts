@@ -2,6 +2,7 @@ import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { normalizeParagraphText } from "./drafting-amendment"
 import { docxodus } from "./docxodus"
+import { assertRedlineRoundTrip, redlineRoundTripMismatch } from "./redline-round-trip"
 
 // Compares two versions of one Word document. The blackline is Word Compare's:
 // left → right with every pending tracked change in either file accepted first.
@@ -82,7 +83,6 @@ const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const STORY = /^word\/(?:document|header\d*|footer\d*|footnotes|endnotes)\.xml$/
 // ProjectionScopes: body, headers, footers, footnotes and endnotes; not comments.
 const STORIES = 31
-const HEADERS_FOOTERS = 6
 // Anchor kinds that are paragraphs (li: numbered list item); others are containers.
 const PARAGRAPHS = new Set(["p", "h", "li"])
 // Property-change markup records formatting only, never wording.
@@ -141,7 +141,9 @@ export async function compareVersions(
 
   const disclosed = (rows: InputRevision[]) => ({ count: rows.length, authors: unique(rows.map(row => row.author)) })
   const exported = ({ left: _left, right: _right, ...hunk }: Hunk): ChangeHunk => hunk
-  return { blackline: attribution === "authors" ? relabelled! : plain, changes: changes.map(exported), untracked: untracked.map(exported),
+  const blackline = attribution === "authors" ? relabelled! : plain
+  await assertRedlineRoundTrip(blackline, leftView, rightView, options.headersFooters)
+  return { blackline, changes: changes.map(exported), untracked: untracked.map(exported),
     attribution, left: disclosed(leftInputs), right: disclosed(rightInputs), proposals: await outcomes(left.bytes, sentRevisions, carried.ours, untracked, leftSide) }
 }
 
@@ -268,20 +270,7 @@ async function outcomes(left: Uint8Array, sent: ListedRevision[], ours: Carried[
 // per story; headers and footers only when compared, since otherwise the
 // blackline carries left's.
 export async function roundTrips(blackline: Uint8Array, left: Uint8Array, right: Uint8Array, headersFooters: boolean) {
-  const dx = await docxodus()
-  const scope = headersFooters ? STORIES : STORIES & ~HEADERS_FOOTERS
-  const text = (bytes: Uint8Array) => {
-    const session = dx.openDocxSession(bytes, { persistAnchorIds: false })
-    try {
-      return JSON.stringify(session.grep("^[\\s\\S]*$", { scope }).flatMap(match => {
-        const paragraph = normalizeParagraphText(match.text)
-        return paragraph ? [[match.enclosingAnchor.scope, paragraph]] : []
-      }))
-    } finally {
-      session.close()
-    }
-  }
-  return text(await dx.docxDiffRejectRevisions(blackline)) === text(left) && text(await dx.docxDiffAcceptRevisions(blackline)) === text(right)
+  return !await redlineRoundTripMismatch(blackline, left, right, headersFooters)
 }
 
 // Paragraph-level hunks. Revisions that share a paragraph on either side, or a

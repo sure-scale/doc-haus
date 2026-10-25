@@ -6,12 +6,15 @@ export default function QuestionDockShell({
   count,
   preview,
   subject,
+  answeredCount = 0,
   renderQuestions,
 }: {
   /** Questions asked; the dock counts them. */
   count: number
   preview: string
   subject: string
+  /** Saved answers remain reviewable after the last open question is settled. */
+  answeredCount?: number
   renderQuestions: (titleId: string, onClose: () => void) => ReactNode
 }) {
   const [open, setOpen] = useState(false)
@@ -35,10 +38,11 @@ export default function QuestionDockShell({
     if (count === 0) setOpen(false)
   }, [count])
 
-  if (count === 0) return null
+  if (count === 0 && answeredCount === 0) return null
+  const historyOnly = count === 0
   return (
     <>
-      <div className="question-dock">
+      <div className={`question-dock${historyOnly ? " is-history" : ""}`}>
         <span className="question-dock-icon" aria-hidden>
           <svg
             width="14"
@@ -56,12 +60,12 @@ export default function QuestionDockShell({
         </span>
         <div className="question-dock-text">
           <span className="question-dock-title">
-            {count === 1 ? `${subject} has a question for you` : `${subject} has ${count} questions for you`}
+            {historyOnly ? "Your drafting answers" : count === 1 ? `${subject} has a question for you` : `${subject} has ${count} questions for you`}
           </span>
-          <span className="question-dock-preview">{preview}</span>
+          <span className="question-dock-preview">{historyOnly ? `${answeredCount} saved ${answeredCount === 1 ? "answer" : "answers"}` : preview}</span>
         </div>
         <button type="button" className="question-dock-cta" aria-haspopup="dialog" onClick={() => setOpen(true)}>
-          {count === 1 ? "Answer" : `Answer ${count}`}
+          {historyOnly ? "Review answers" : count === 1 ? "Answer" : `Answer ${count}`}
         </button>
       </div>
       <dialog
