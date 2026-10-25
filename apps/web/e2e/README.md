@@ -84,7 +84,7 @@ synthetic marked-up agreement as a source and the same bytes as a deliverable,
 and opens the Tracked changes panel: Changes lists every change undecided and
 Comments holds the threads. While the panel is open the page shows a pin per
 thread instead of margin cards, and a pin opens its thread on Comments. It filters Changes to one reviewer, rejects the
-shown changes with Decide all, accepts the other reviewer's replace, reloads to
+shown changes with Reject all shown, accepts the other reviewer's replace, reloads to
 check the kept drafts, gives the attorney name once and saves. The new version
 must list its actor, the undecided changes and both flagged items must remain,
 and the deliverable must offer no panel. The

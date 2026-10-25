@@ -167,23 +167,24 @@ try {
     return viewer
   }
 
-  // Sets every listed change of `name` to `decision` with Decide all and saves
-  // them, with the response's `consistency` replaced by `forced` when given.
+  // Sets every listed change of `name` to `decision` with the Accept all /
+  // Reject all menu and saves them, with the response's `consistency`
+  // replaced by `forced` when given.
   async function apply(name: string, decision: "Accept" | "Reject", forced?: Consistency) {
     const viewer = await openDocument(name)
     const panel = viewer.locator("#document-markup")
     await expect(panel).toBeVisible()
-    await panel.getByRole("button", { name: /^Decide all \d+ shown$/ }).click()
-    const bulk = panel.getByRole("group", { name: /^Decide all \d+ shown$/ })
-    // No filter is in use, so it sets every change in the file.
-    await expect(bulk).toContainText("Sets every change of theirs in this file that doc.haus can apply.")
-    await bulk.getByRole("button", { name: new RegExp(`^${decision} all \\d+$`) }).click()
+    await panel.getByRole("button", { name: "Accept all / Reject all", exact: true }).click()
+    const bulk = panel.getByRole("group", { name: "Accept all / Reject all", exact: true })
+    await expect(bulk).toContainText("Your own edits are not changed.")
+    // No filter is in use, so it sets every change in the file, not those shown.
+    await bulk.getByRole("button", { name: new RegExp(`^${decision} all \\(\\d+\\)$`) }).click()
     await expect(panel.locator(".markup-progress p")).toHaveText(/^(All \d+ changes decided|The change is decided)$/)
     if (forced) await page.route(url => url.pathname.endsWith("/documents/markup/decisions"), async route => {
       const response = await route.fetch()
       await route.fulfill({ response, json: { ...await response.json(), consistency: forced } })
     }, { times: 1 })
-    await panel.getByRole("button", { name: "Save decisions as a new version…", exact: true }).click()
+    await panel.getByRole("button", { name: "Save as new version", exact: true }).click()
     const done = page.waitForResponse(response => new URL(response.url()).pathname.endsWith("/documents/markup/decisions"))
     await panel.getByRole("group", { name: "Save a new version", exact: true }).getByRole("button", { name: "Save new version", exact: true }).click()
     const response = await done
@@ -270,7 +271,7 @@ try {
     await thread.getByRole("button", { name: "Write a reply", exact: true }).click()
     await thread.getByLabel("Your reply", { exact: true }).fill("Forty-five days is agreed if stock levels are reported monthly.")
     await thread.getByRole("button", { name: "Approve reply", exact: true }).click()
-    await panel.getByRole("button", { name: "Save decisions as a new version…", exact: true }).click()
+    await panel.getByRole("button", { name: "Save as new version", exact: true }).click()
     await panel.getByRole("group", { name: "Save a new version", exact: true }).getByRole("button", { name: "Save new version", exact: true }).click()
     await expect(page.getByText("Saved as version 2: 1 reply added.", { exact: true })).toBeVisible({ timeout: 30_000 })
     const listed = await (await api(`/matters/${file.matter}/documents/versions?name=${encodeURIComponent(MARKUP)}`)).json() as { versions: { number: number; origin: string; label: string | null }[] }
@@ -320,22 +321,31 @@ try {
     const panel = viewer.locator("#document-markup")
     const tab = (name: "Changes" | "Comments") => panel.getByRole("tab", { name: new RegExp(`^${name} \\d+$`) })
     // Both tabs' cards are rendered, the other tab's hidden: the answers are read on both.
-    // A change's card by its own text, not the context its place quotes.
+    // A change's card by its own text, not the context its place quotes. Each
+    // answer is a short tag that names the full sentence, shown on hover or focus.
     const answer = (text: string) => panel.locator(".markup-list > li")
-      .filter({ has: page.locator(":is(.change-old, .change-new)", { hasText: new RegExp(`^${text}\\s*$`) }) }).locator(".markup-response")
-    await expect(answer("thirty")).toHaveText("doc.haus draft: changed in response")
-    await expect(answer("forty-five")).toHaveText("doc.haus draft: changed in response")
-    await expect(answer("the first")).toHaveText("doc.haus suggests: Fixing the price for the first twelve months leaves it open to review at renewal.")
+      .filter({ has: page.locator(":is(.change-old, .change-new)", { hasText: new RegExp(`^${text}\\s*$`) }) }).locator(".markup-run-tag")
+    const says = async (tag: Locator, short: string, full: string) => {
+      await expect(tag).toHaveText(short)
+      await expect(tag).toHaveAttribute("aria-label", full)
+    }
+    await says(answer("thirty"), "Draft: changed", "doc.haus draft: changed in response")
+    await says(answer("forty-five"), "Draft: changed", "doc.haus draft: changed in response")
+    await says(answer("the first"), "Suggestion", "doc.haus suggests: Fixing the price for the first twelve months leaves it open to review at renewal.")
     const thread = panel.locator(".markup-list > li.markup-thread").filter({ hasText: COUNTERPARTY_MARKUP.comments[0]!.text })
-    await expect(thread.locator(".markup-response")).toHaveText("doc.haus draft: left for you to decide")
-    await expect(panel.locator(".markup-response", { hasText: /^doc\.haus draft: not changed — The draft keeps the original wording\.$/ })).toHaveCount(rejected.length)
+    await says(thread.locator(".markup-run-tag"), "Draft: left to you", "doc.haus draft: left for you to decide")
+    await expect(panel.locator('.markup-run-tag[aria-label="doc.haus draft: not changed — The draft keeps the original wording."]')).toHaveCount(rejected.length)
     // The run read the version on screen, so no answer names another version.
-    await expect(panel.locator(".markup-response-from")).toHaveCount(0)
+    await expect(panel.locator('.markup-run-tag[aria-label*="from the run on version"]')).toHaveCount(0)
     // The resolved thread is no item of the run's, so it says nothing.
-    await expect(panel.locator(".markup-list > li.markup-thread").filter({ hasText: COUNTERPARTY_MARKUP.comments[2]!.text }).locator(".markup-response")).toHaveCount(0)
+    await expect(panel.locator(".markup-list > li.markup-thread").filter({ hasText: COUNTERPARTY_MARKUP.comments[2]!.text }).locator(".markup-run-tag")).toHaveCount(0)
+    // Focus shows the full sentence.
+    await answer("thirty").focus()
+    await expect(page.getByRole("tooltip")).toHaveText("doc.haus draft: changed in response")
+    await answer("thirty").blur()
     // Each kind of answer, on its tab and centred in the panel, at desktop and phone width.
-    const views = [["amended", answer("thirty"), "Changes"], ["deferred", thread.locator(".markup-response"), "Comments"], ["suggested", answer("the first"), "Changes"],
-      ["rejected", panel.locator(".markup-list > li:not(.markup-thread) .markup-response", { hasText: /^doc\.haus draft: not changed/ }).first(), "Changes"]] as const
+    const views = [["amended", answer("thirty"), "Changes"], ["deferred", thread.locator(".markup-run-tag"), "Comments"], ["suggested", answer("the first"), "Changes"],
+      ["rejected", panel.locator('.markup-list > li:not(.markup-thread) .markup-run-tag[aria-label^="doc.haus draft: not changed"]').first(), "Changes"]] as const
     for (const [size, viewport] of [["desktop", DESKTOP], ["phone", PHONE]] as const) {
       await page.setViewportSize(viewport)
       expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1)

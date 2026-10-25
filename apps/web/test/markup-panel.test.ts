@@ -79,13 +79,15 @@ test("each decision is a named radio group of its own, with nothing chosen yet, 
   expect(radios).toHaveLength(9)
   expect(new Set(radios.map((radio) => radio.match(/name="([^"]+)"/)?.[1])).size).toBe(3)
   expect(radios.some((radio) => radio.includes("checked"))).toBe(false)
-  expect(html.match(/Needs your decision/g)).toHaveLength(3)
-  // The tabs carry their counts; the Changes tab is open and says what it shows.
+  // Undecided shows as the card's edge and no pressed button; a screen reader is told.
+  expect(html.match(/<span id="[^"]+-state" class="sr-only">Not yet decided<\/span>/g)).toHaveLength(3)
+  expect(html.match(/<fieldset class="markup-decision" aria-label="[^"]+" aria-describedby="[^"]+-state"/g)).toHaveLength(3)
+  // The tabs carry their counts; the Changes tab is open and tells a screen reader what it shows.
   expect(html).toMatch(/role="tab"[^>]*aria-selected="true"[^>]*>Changes <span class="markup-tab-count">3<\/span>/)
   expect(html).toMatch(/role="tab"[^>]*aria-selected="false"[^>]*>Comments <span class="markup-tab-count">0<\/span>/)
-  expect(html).toContain('Showing all 3<span class="sr-only"> changes</span>')
-  // Decide all waits, as Save does, until the settings say which edits are the lawyer's own.
-  expect(html).not.toContain("Decide all")
+  expect(html).toContain('<p class="markup-showing sr-only" role="status">Showing all 3 changes</p>')
+  // Accept all / Reject all waits, as Save does, until the settings say which edits are the lawyer's own.
+  expect(html).not.toContain("Accept all")
   // A paragraph break has no text of its own; its card quotes the paragraph.
   expect(html).toContain("<q>7. Assignment. Neither party may assign</q>")
   expect(html).toContain("Accept keeps the new formatting; Reject restores the old.")
@@ -114,7 +116,7 @@ test("an edit inside a comment is placed in that comment's thread, and a list nu
   expect(at("In a comment by Morgan Okafor")).toBeLessThan(at("markup-thread"))
 })
 
-test("a move says where it left and where it landed, and a comment thread names its clause as a change card does", () => {
+test("a move says where it left and where it landed, and a comment thread names its clause in its tooltip", () => {
   const text = "Confidentiality. Each party keeps the other's information confidential."
   // Moved up: its places come in document order, destination first.
   const up = revision("rev2-up", { kind: "move", family: "move", text: `${text}¶`, locations: [
@@ -132,7 +134,10 @@ test("a move says where it left and where it landed, and a comment thread names 
   expect(html).toContain("Moved from clause 6 to clause 4")
   // Without sides the card keeps naming both places in document order.
   expect(html).toContain("Old and new places: paragraphs 3 and 9")
-  expect(html).toContain("<span class=\"markup-place-name\">Clause 5</span>")
+  // Each card's place is its tooltip; the thread's anchor line is the quoted words alone.
+  expect(html).toContain('title="Moved from clause 6 to clause 4"')
+  expect(html).toMatch(/<li tabindex="-1" data-comment-id="2" title="Clause 5"/)
+  expect(html).toContain('<q class="markup-quote">the Supplier&#x27;s records</q></span></p>')
   expect(html).not.toContain("Paragraph 6")
 })
 

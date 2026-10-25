@@ -4,7 +4,7 @@
 // supply agreement (dochaus/test/support/counterparty-markup-fixture.ts) as a
 // source and the same bytes as a generated deliverable, and drives the viewer's
 // Tracked changes panel: filter the Changes tab to one reviewer, reject the
-// shown changes with Decide all, accept the other reviewer's replace, keep the
+// shown changes with the Accept all / Reject all menu, accept the other reviewer's replace, keep the
 // drafts over a reload, give the attorney name once, and save; then, at phone
 // width, the panel sits above the page with Save in reach. Nothing reaches a model: the source's
 // embeddings use the local model (DOCHAUS_MODEL_CACHE_DIR, else the per-user
@@ -163,7 +163,7 @@ try {
   // The save bar's line: how many of the changes doc.haus can apply are decided, and what is left.
   const progress = panel.locator(".markup-progress p")
   const live = panel.locator(":scope > p.sr-only[role=status]")
-  const save = panel.getByRole("button", { name: "Save decisions as a new version…", exact: true })
+  const save = panel.getByRole("button", { name: "Save as new version", exact: true })
   const checked = (card: Locator) => card.getByRole("radio", { checked: true })
   // A change by what changed, as its decision group names it ("Moved paragraph by …").
   const kind = (label: string) => changes.filter({ has: page.getByRole("group", { name: new RegExp(`^Your decision: ${label} by `) }) })
@@ -210,22 +210,39 @@ try {
     await expect(tab("Changes")).toHaveAttribute("aria-selected", "true")
     await expect(changes).toHaveCount(10)
     await expect(threads).toHaveCount(0)
-    // Nothing is decided until the lawyer decides it; no internal id is shown.
+    // Nothing is decided until the lawyer decides it, which the card's edge
+    // shows and its decision group says; no internal id is shown.
     for (let index = 0; index < 10; index++) {
       await expect(checked(changes.nth(index))).toHaveCount(0)
-      await expect(changes.nth(index)).toContainText("Needs your decision")
+      await expect(changes.nth(index).getByRole("group")).toHaveAccessibleDescription("Not yet decided")
     }
     await expect(panel).not.toContainText("rev2-")
-    await expect(progress).toHaveText("0 of 10 decided · Still to do: 10 changes")
-    expect(await decisionCounts()).toEqual(["All decisions", "Not yet decided (10)", "Accept (0)", "Reject (0)", "Leave tracked (0)"])
-    // A move is one card with both places; formatting reads as such.
+    await expect(progress).toHaveText("0 of 10 decided")
+    // Every option says how many it lists.
+    expect(await decisionCounts()).toEqual(["All decisions (10)", "Not yet decided (10)", "Accept (0)", "Reject (0)", "Leave tracked (0)"])
+    // A move is one card with both places, given in its tooltip and to a
+    // screen reader; formatting reads as such.
     await expect(kind("Moved paragraph")).toHaveCount(1)
+    await expect(kind("Moved paragraph")).toHaveAttribute("title", "Moved from paragraph 3 to paragraph 5")
     await expect(kind("Moved paragraph")).toContainText("Moved from paragraph 3 to paragraph 5")
     await expect(kind("Formatting changed")).toHaveCount(1)
     await expect(kind("Paragraph break deleted")).toHaveCount(1)
     await expect(changes.filter({ hasText: COUNTERPARTY_MARKUP.plantedDeletion.trim() })).toContainText(FLAG)
     // The proposals panel and the versions list are not shown beside it.
     await expect(dialog.locator(".changes-panel")).toHaveCount(1)
+    // Clicked, a card shows its change in the document: every part of it
+    // outlined, the first scrolled into view.
+    const located = render.locator(".markup-located")
+    await change(".change-new", "forty-five").locator(".change-new").click()
+    await expect(located).toHaveText(["forty-five"])
+    await expect(located.first()).toBeInViewport()
+    // One insertion Word splits in two runs, and a move's two places.
+    await changes.filter({ hasText: "on ten Business Days' notice" }).locator(".change-new").click()
+    await expect(located).toHaveText(["on ten Business Days' notice", "at any time"])
+    await expect(located.first()).toBeInViewport()
+    await kind("Moved paragraph").locator(".markup-text").click()
+    await expect(located).toHaveText(["3. Notices. Notices must be in writing.", "3. Notices. Notices must be in writing."])
+    await expect(located.first()).toBeInViewport()
     await shot("02-panel-open")
     // Threads: the reply under its comment, the resolved note marked, the quote shown.
     await tab("Comments").click()
@@ -259,7 +276,7 @@ try {
     await expect(changes).toHaveCount(10)
   })
 
-  await step("3 filter to Morgan and reject the shown changes with Decide all", async () => {
+  await step("3 filter to Morgan and reject the shown changes with Reject all shown", async () => {
     await filtersToggle.click()
     const reviewer = filters("changes").getByLabel("Reviewer", { exact: true })
     await expect(reviewer).toBeFocused()
@@ -267,7 +284,8 @@ try {
     // Morgan's five changes.
     await expect(changes).toHaveCount(5)
     for (let index = 0; index < 5; index++) await expect(changes.nth(index).locator(".change-author")).toHaveText(MORGAN)
-    await expect(shown.locator(".markup-showing")).toHaveText("Showing 5 of 10 changes")
+    // Said to a screen reader only; the chips show the filter.
+    await expect(shown.locator(".markup-showing.sr-only")).toHaveText("Showing 5 of 10 changes")
     // Closed, the filter keeps filtering and stays in view as a chip.
     await filtersToggle.click()
     await expect(filters("changes")).toBeHidden()
@@ -275,18 +293,20 @@ try {
     await expect(filtersToggle).toHaveAccessibleName("Filters 1 in use")
     await expect(shown.getByRole("button", { name: `Remove the filter Reviewer: ${MORGAN}`, exact: true })).toBeVisible()
     await expect(changes).toHaveCount(5)
-    const decideAll = shown.getByRole("button", { name: "Decide all 5 shown", exact: true })
+    const decideAll = shown.getByRole("button", { name: "Accept all / Reject all", exact: true })
     await decideAll.click()
     await expect(decideAll).toHaveAttribute("aria-expanded", "true")
-    const bulk = shown.getByRole("group", { name: "Decide all 5 shown", exact: true })
-    await expect(bulk).toContainText("Sets the 5 changes of theirs your filters show. The others keep their decisions.")
-    await bulk.getByRole("button", { name: "Reject all 5", exact: true }).click()
+    const bulk = shown.getByRole("group", { name: "Accept all / Reject all", exact: true })
+    // Filtered, it sets the changes shown; the others keep their decisions.
+    await expect(bulk.getByRole("button")).toHaveText(["Accept all shown (5)", "Reject all shown (5)", "Leave all shown tracked (5)"])
+    await expect(bulk).toContainText("Your own edits are not changed.")
+    await bulk.getByRole("button", { name: "Reject all shown (5)", exact: true }).click()
     await expect(bulk).toHaveCount(0)
     await expect(decideAll).toBeFocused()
     for (let index = 0; index < 5; index++) await expect(checked(changes.nth(index))).toHaveAccessibleName("Reject")
     await expect(live).toHaveText("5 changes rejected.")
     await expect(shown.locator(".markup-undo")).toHaveText("5 changes rejected. Undo")
-    await expect(progress).toHaveText("5 of 10 decided · Still to do: 5 changes")
+    await expect(progress).toHaveText("5 of 10 decided")
     await shot("03-morgan-rejected")
     // The Comments tab filters by reviewer too: the two threads Morgan wrote in.
     await tab("Comments").click()
@@ -310,8 +330,8 @@ try {
     await change(".change-new", "forty-five").getByRole("radio", { name: "Accept", exact: true }).click()
     await expect(checked(change(".change-old", "thirty"))).toHaveAccessibleName("Accept")
     await expect(checked(change(".change-new", "forty-five"))).toHaveAccessibleName("Accept")
-    await expect(changes.filter({ hasText: "Needs your decision" })).toHaveCount(3)
-    await expect(progress).toHaveText("7 of 10 decided · Still to do: 3 changes")
+    await expect(changes.filter({ hasText: "Not yet decided" })).toHaveCount(3)
+    await expect(progress).toHaveText("7 of 10 decided")
     expect(decisionRequests).toEqual([])
     expect(hash(await Bun.file(file.path).bytes())).toBe(hashes.seeded)
   })
@@ -319,9 +339,9 @@ try {
   await step("5 the drafts survive a reload, and the bar asks for the attorney name once", async () => {
     await page.reload()
     await openDocument(NAME, false)
-    await expect(progress).toHaveText("7 of 10 decided · Still to do: 3 changes")
+    await expect(progress).toHaveText("7 of 10 decided")
     // The filters start afresh, so the Decision filter counts every change.
-    await expect.poll(decisionCounts).toEqual(["All decisions", "Not yet decided (3)", "Accept (2)", "Reject (5)", "Leave tracked (0)"])
+    await expect.poll(decisionCounts).toEqual(["All decisions (10)", "Not yet decided (3)", "Accept (2)", "Reject (5)", "Leave tracked (0)"])
     await expect(checked(change(".change-old", "thirty"))).toHaveAccessibleName("Accept")
     await expect(checked(change(".change-new", "forty-five"))).toHaveAccessibleName("Accept")
     await expect(panel.getByLabel("Your name, recorded with these decisions", { exact: true })).toBeVisible()
@@ -360,12 +380,21 @@ try {
     }
     await expect(kind("Moved paragraph")).toHaveCount(1)
     await expect(changes.filter({ hasText: "on ten Business Days' notice" })).toHaveCount(1)
-    await expect(progress).toHaveText("0 of 3 decided · Still to do: 3 changes")
-    // A new version's decisions start afresh, so Save waits for one.
+    await expect(progress).toHaveText("0 of 3 decided")
+    // A new version's decisions start afresh, so Save waits for one and says
+    // why on hover or focus and to a screen reader.
     await expect(save).toBeDisabled()
-    await expect(panel.locator(".markup-blocked")).toHaveText("Accept or reject a change, or approve a reply, to save.")
+    await expect(save).toHaveAccessibleDescription("Accept or reject a change, or approve a reply, to save.")
+    await save.hover()
+    await expect(page.getByRole("tooltip")).toHaveText("Accept or reject a change, or approve a reply, to save.")
+    await page.mouse.move(0, 0)
+    await expect(page.getByRole("tooltip")).toHaveCount(0)
     await expect(panel.getByText(FLAG, { exact: true })).toHaveCount(2)
-    await expect(panel.locator(".markup-actor")).toHaveText(`Saved as ${LAWYER}`)
+    // Who the decisions are saved as is said when saving.
+    await expect(panel.locator(".markup-actor")).toHaveCount(0)
+    // The count leads to the first change still to decide.
+    await panel.getByRole("button", { name: "0 of 3 decided. Show the next change to decide", exact: true }).click()
+    await expect(changes.first().getByRole("radio", { name: "Accept", exact: true })).toBeFocused()
     await expect(tab("Comments")).toHaveAccessibleName("Comments 3")
     // The comment markers after the anchored word ("[0]", or words for a screen
     // reader such as "(comment by …)") are left out of the page's text.
@@ -435,7 +464,7 @@ try {
     // The comments follow the text rather than squeezing it to a few words a line.
     expect(await phonePage.locator(".comment-margin-content").evaluate(node => node.getBoundingClientRect().width)).toBeGreaterThan(250)
     await shot("09-phone-panel")
-    const phoneSave = phonePanel.getByRole("button", { name: "Save decisions as a new version…", exact: true })
+    const phoneSave = phonePanel.getByRole("button", { name: "Save as new version", exact: true })
     await phoneSave.scrollIntoViewIfNeeded()
     await expect(phoneSave).toBeInViewport()
     // In view and not under the panel's pinned head.

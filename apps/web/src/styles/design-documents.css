@@ -173,10 +173,11 @@
 /* ---------- Tracked changes (#200) ---------- */
 /* The tracked changes and comment threads in an uploaded Word file, in the
    side-panel slot: a pinned head with the title and the Changes | Comments
-   tabs; each tab's labelled filters, Decide all and its cards in document
-   order; the progress, tally and Save pinned at the foot. A card that still
-   needs the lawyer carries an amber edge and chip; a decided one takes its
-   decision's colour. Colour always repeats a word or an icon. */
+   tabs; each tab's Filters, Accept all / Reject all and its cards in document
+   order; the progress and Save pinned at the foot. A card that still needs
+   the lawyer carries an amber edge and says so to a screen reader; a decided
+   one takes its decision's colour. Colour always repeats a word or a pressed
+   button. */
 /* A failed reading, with Retry, where the toggle or the panel would be. */
 .document-reader .markup-read-status { max-width: 760px; margin: 0 auto var(--space-4); font-size: 0.8125rem; line-height: 1.5; color: var(--warn); }
 .markup-read-status .linklike { min-height: 0; font-size: inherit; line-height: inherit; }
@@ -188,13 +189,19 @@
 
 .document-reader .markup-panel { width: 400px; padding-bottom: 0; }
 .markup-icon { flex: none; }
+/* A control that cannot be used yet stays focusable, so it can say why. */
+.markup-panel button[aria-disabled="true"] { opacity: .6; cursor: not-allowed; }
+.markup-panel button.primary[aria-disabled="true"]:hover { background: var(--accent); border-color: var(--accent); }
 
-/* Head: title and close, the summary, then the tabs on its bottom edge. */
+/* Head: title, the ? for the guide and close, the summary, then the tabs on its bottom edge. */
 .markup-panel .markup-head { gap: var(--space-1); padding-bottom: 0; font-weight: 400; color: var(--text-secondary); }
 .markup-title { display: flex; align-items: center; gap: var(--space-2); }
 .markup-title-text { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-2); min-width: 0; }
 .markup-title h3 { margin: 0; font-family: var(--font-sans); font-size: 1rem; font-weight: 700; color: var(--text); }
 .markup-title .markup-close { flex: none; }
+.markup-help-toggle { align-self: center; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; min-height: 0; padding: 0; font-size: 0.6875rem; font-weight: 700; line-height: 1; color: var(--text-secondary); background: transparent; border: 1px solid var(--border-strong); border-radius: 50%; }
+.markup-help-toggle:hover:not(:disabled) { color: var(--text); background: var(--panel-hover); }
+.markup-help-toggle[aria-expanded="true"] { color: var(--text-on-accent); background: var(--accent); border-color: var(--accent); }
 .markup-close { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; color: var(--text-secondary); background: transparent; border: 0; border-radius: var(--radius-sm); }
 .markup-close:hover { color: var(--text); background: var(--panel-hover); }
 .markup-close .markup-icon { width: 18px; height: 18px; }
@@ -205,18 +212,17 @@
 .markup-tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
 .markup-tab-count { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 20px; padding: 0 6px; font-size: 0.75rem; font-weight: 700; color: var(--text); background: var(--bg-sunken); border-radius: var(--radius-pill); font-variant-numeric: tabular-nums; }
 .markup-tab[aria-selected="true"] .markup-tab-count { color: var(--text-on-accent); background: var(--accent); }
+/* The guide, under the head while the ? is pressed. */
+.markup-help { display: flex; flex-direction: column; gap: var(--space-1); margin: 0 0 var(--space-3); padding: var(--space-2) var(--space-3); font-size: 0.75rem; line-height: 1.5; color: var(--text-secondary); background: var(--bg-sunken); border-radius: var(--radius-sm); }
+.markup-help p { margin: 0; }
+.markup-help strong { color: var(--text); font-weight: 600; }
+.markup-help[hidden] { display: none; }
 
-/* A tab: its one-line guide, the labelled filters, what they show. */
+/* A tab: Filters and its bulk action on one line, then the cards. */
 .markup-tabpanel { display: flex; flex-direction: column; gap: var(--space-3); padding-bottom: var(--space-4); }
 .markup-tabpanel[hidden] { display: none; }
 /* doc.haus's proposals: what Accept does on a file with their tracked changes. */
 .changes-panel .changes-hint { margin: 0 0 var(--space-3); font-size: 0.75rem; line-height: 1.45; }
-.markup-intro { font-size: 0.8125rem; line-height: 1.5; color: var(--text-secondary); }
-.markup-intro p { margin: 0; }
-.markup-intro .linklike { min-height: 0; font-size: inherit; line-height: inherit; }
-.markup-help { display: flex; flex-direction: column; gap: var(--space-1); margin-top: var(--space-2); padding: var(--space-2) var(--space-3); font-size: 0.75rem; background: var(--bg-sunken); border-radius: var(--radius-sm); }
-.markup-help[hidden] { display: none; }
-.markup-intro strong { color: var(--text); font-weight: 600; }
 .markup-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
 .markup-filters-toggle { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 0 10px 0 var(--space-2); font-size: 0.8125rem; font-weight: 600; color: var(--text); background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
 .markup-filters-toggle:hover { background: var(--panel-hover); }
@@ -237,52 +243,58 @@
 .markup-filter label { font-size: 0.8125rem; font-weight: 600; color: var(--text); }
 .markup-filter select { box-sizing: border-box; width: 100%; min-width: 0; height: 36px; font-size: 0.8125rem; }
 .markup-filter select.is-active { font-weight: 600; color: var(--accent); background-color: var(--accent-soft); border-color: var(--accent); }
-.markup-showing { flex: 1 1 auto; margin: 0; font-size: 0.75rem; color: var(--text-secondary); }
-.markup-showing strong { color: var(--text); font-weight: 700; }
 .markup-empty .linklike, .markup-undo .linklike { min-height: 0; font-size: inherit; line-height: inherit; }
 .markup-empty { margin: var(--space-2) 0; font-size: 0.8125rem; }
 
-/* Decide all: a button that opens three choices for the shown changes. */
-.markup-draft-all { display: flex; }
+/* Accept all / Reject all, and a reply's ⋯: a quiet button that opens a small menu. */
 .markup-bulk-unavailable { margin: 0 0 0 auto; font-size: 0.75rem; color: var(--text-secondary); }
-.markup-bulk-toggle { display: inline-flex; align-items: center; justify-content: space-between; gap: var(--space-1); min-height: 32px; margin-left: auto; padding: 0 10px; font-size: 0.8125rem; font-weight: 600; color: var(--text); background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
-.markup-bulk-toggle:hover:not(:disabled) { background: var(--panel-hover); }
+.markup-menu-wrap { position: relative; }
+.markup-toolbar .markup-menu-wrap { margin-left: auto; }
+.markup-bulk-toggle { display: inline-flex; align-items: center; gap: var(--space-1); min-height: 32px; padding: 0 var(--space-2) 0 10px; font-size: 0.8125rem; font-weight: 600; color: var(--text); background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.markup-bulk-toggle:hover:not(:disabled) { background: var(--panel-hover); border-color: var(--border-strong); }
+.markup-bulk-toggle .markup-icon { color: var(--text-secondary); }
 .markup-bulk-toggle[aria-expanded="true"] { border-color: var(--accent); }
 .markup-bulk-toggle[aria-expanded="true"] .markup-icon { transform: rotate(180deg); }
-.markup-bulk-menu { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow-sm); }
-.markup-bulk-scope { margin: 0; font-size: 0.75rem; line-height: 1.45; color: var(--text-secondary); }
-.markup-bulk-options { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.markup-bulk-option { flex: 1 1 auto; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 0 var(--space-3); font-size: 0.8125rem; font-weight: 600; white-space: nowrap; color: var(--text); background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); }
-.markup-bulk-option.is-accept { color: var(--accent); border-color: var(--accent-border); }
-.markup-bulk-option.is-reject { color: var(--danger); border-color: var(--danger-border); }
-.markup-bulk-option.is-accept:hover:not(:disabled) { background: var(--accent-soft); }
-.markup-bulk-option.is-reject:hover:not(:disabled) { background: var(--danger-soft); }
-.markup-bulk-option.is-hold:hover:not(:disabled) { background: var(--bg-sunken); }
+.markup-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 5; display: flex; flex-direction: column; width: max-content; min-width: 200px; max-width: min(300px, calc(100vw - 48px)); padding: 6px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-md); }
+.markup-menu.is-up { top: auto; bottom: calc(100% + 4px); }
+.markup-menu-item { display: flex; align-items: center; width: 100%; min-height: 36px; padding: 0 var(--space-3); font-size: 0.8125rem; font-weight: 500; text-align: left; white-space: nowrap; color: var(--text); background: transparent; border: 0; border-radius: var(--radius-sm); }
+.markup-menu-item:hover:not(:disabled) { background: var(--panel-hover); }
+.markup-menu-item.is-accept { color: var(--accent); }
+.markup-menu-item.is-reject { color: var(--danger); }
+.markup-menu-note { margin: 4px 0 0; padding: 6px var(--space-3) 2px; font-size: 0.75rem; line-height: 1.4; color: var(--muted); border-top: 1px solid var(--border-soft); }
 .markup-undo { margin: 0; font-size: 0.8125rem; color: var(--text-secondary); }
-.markup-draft-all { flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); }
-.markup-draft-button { display: inline-flex; align-items: center; gap: 6px; }
+.markup-draft-all { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); }
+/* Draft replies and Draft reply: plain outlined buttons with a pen. */
+.markup-draft-button { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 var(--space-3); font-size: 0.8125rem; font-weight: 600; white-space: nowrap; color: var(--accent); background: var(--panel); border: 1px solid var(--accent-border); border-radius: var(--radius-sm); }
+.markup-draft-button:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
 .markup-drafted { display: inline-flex; align-items: flex-start; gap: 6px; font-size: 0.8125rem; line-height: 1.45; color: var(--accent); }
 .markup-drafted .markup-icon { margin-top: 2px; }
 
-/* Cards: boxed and spaced, with a state edge on the left. */
-.markup-list { display: flex; flex-direction: column; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
+/* Cards: boxed and well spaced, with a state edge on the left. */
+.markup-list { display: flex; flex-direction: column; gap: var(--space-4); margin: 0; padding: 0; list-style: none; }
 .document-reader .markup-card { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: var(--space-3); background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-xs); }
 .markup-card.is-undecided, .markup-thread:is(.is-needed, .is-drafted) { border-left-color: var(--warn); }
 .markup-card.is-accept, .markup-thread.is-approved { border-left-color: var(--accent); }
 .markup-card.is-reject { border-left-color: var(--danger); }
 .markup-card.is-hold { border-left-color: var(--border-strong); }
 .document-reader .markup-card.is-refused { border-color: var(--danger); border-left-color: var(--danger); box-shadow: 0 0 0 1px var(--danger-border); }
+/* A change card shows its change in the document when clicked. */
+.markup-card:not(.markup-thread) { cursor: pointer; }
 .markup-card-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--space-2); }
+.markup-card-top .markup-byline { flex: 0 1 auto; }
+.markup-card-top time { font-size: 0.6875rem; }
 .markup-kind { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px 2px 7px; font-size: 0.75rem; font-weight: 700; color: var(--text); background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-pill); }
 .markup-kind.is-insert .markup-icon { color: var(--accent); }
 .markup-kind.is-delete .markup-icon { color: var(--danger); }
 .markup-kind.is-move .markup-icon, .markup-kind.is-format .markup-icon { color: var(--info); }
 .markup-kind-detail { font-size: 0.75rem; color: var(--text-secondary); }
-.markup-own { padding: 1px 8px; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); background: var(--panel); border: 1px dashed var(--border-strong); border-radius: var(--radius-pill); }
-.markup-chip { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; padding: 2px 8px; font-size: 0.75rem; font-weight: 600; white-space: nowrap; border: 1px solid transparent; border-radius: var(--radius-pill); }
-.markup-chip.is-todo { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-border); }
+.markup-own { padding: 1px 8px; font-size: 0.6875rem; font-weight: 600; color: var(--text-secondary); background: var(--panel); border: 1px dashed var(--border-strong); border-radius: var(--radius-pill); white-space: nowrap; }
+.markup-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; font-size: 0.75rem; font-weight: 600; white-space: nowrap; border: 1px solid transparent; border-radius: var(--radius-pill); }
 .markup-chip.is-done { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-border); }
 .markup-chip.is-quiet { color: var(--text-secondary); background: var(--bg-sunken); border-color: var(--border); }
+/* What the drafting run did: a small muted tag, in full on hover or focus. */
+.markup-run-tag { display: inline-flex; align-items: center; padding: 1px 7px; font-size: 0.6875rem; font-weight: 600; white-space: nowrap; color: var(--text-secondary); background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-pill); cursor: help; }
+.markup-run-tag:focus-visible { outline: 2px solid var(--md-sys-state-focus); outline-offset: 2px; }
 
 /* Who and when: initials in the author's colour, the name bold, the date under it. */
 .markup-byline { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
@@ -298,7 +310,8 @@
 .markup-byline.is-inline .markup-byline-text { flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-2); }
 .markup-panel .markup-byline .change-author { margin: 0; font-size: 0.8125rem; font-weight: 700; text-transform: none; letter-spacing: normal; color: var(--text); overflow-wrap: anywhere; }
 .markup-byline time { font-size: 0.75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
-.markup-byline .markup-chip { margin-left: auto; }
+.markup-byline-end { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 6px; margin-left: auto; }
+.markup-byline-end:empty { display: none; }
 
 .markup-card .change-old, .markup-card .change-new { margin: 0; overflow-wrap: anywhere; }
 .markup-text { font-size: 13px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; padding: 6px var(--space-2); border-left: 2px solid var(--border-strong); border-radius: 0 4px 4px 0; background: var(--bg-sunken); color: var(--text); }
@@ -314,18 +327,14 @@
 .markup-flag, .markup-reply-changed { display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: 6px var(--space-2); font-size: 0.75rem; line-height: 1.45; color: var(--text); background: var(--warn-soft); border: 1px solid var(--warn-border); border-radius: var(--radius-sm); }
 .markup-flag .markup-icon, .markup-reply-changed .markup-icon { margin-top: 2px; color: var(--warn); }
 .markup-flag > span > span { display: block; }
-/* What the drafting run did with the change or thread, as doc.haus's note. */
-.markup-response { display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: 6px var(--space-2); font-size: 0.75rem; line-height: 1.45; color: var(--text); background: var(--info-soft); border-left: 3px solid var(--info); border-radius: 0 4px 4px 0; overflow-wrap: anywhere; }
-.markup-response .markup-icon { margin-top: 2px; color: var(--info); }
-.markup-response-label { font-weight: 700; color: var(--info); }
-.markup-response-from { color: var(--muted); }
 .markup-word { display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: var(--space-2); font-size: 0.75rem; line-height: 1.45; color: var(--text-secondary); background: var(--bg-sunken); border-radius: var(--radius-sm); }
 .markup-word .markup-icon { margin-top: 2px; }
 .markup-word strong { color: var(--text); }
+/* The change a card shows in the document, outlined until another is shown. */
+.docx-render .markup-located { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
 
-/* Your decision: three segments, the chosen one filled in its colour. */
+/* The decision: three segments, the chosen one filled in its colour. */
 .markup-decision { min-width: 0; margin: 2px 0 0; padding: 0; border: 0; }
-.markup-decision legend { margin-bottom: 4px; padding: 0; font-size: 0.75rem; font-weight: 700; color: var(--text-secondary); }
 .markup-decision:disabled { opacity: .55; }
 .markup-choices { display: flex; flex-wrap: wrap; gap: 6px; }
 .markup-choice { position: relative; flex: 1 1 auto; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 38px; padding: 0 var(--space-2); font-size: 0.8125rem; font-weight: 600; white-space: nowrap; color: var(--text); background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); cursor: pointer; }
@@ -346,11 +355,11 @@
 .markup-error .markup-icon { margin-top: 2px; }
 .markup-error .linklike { min-height: 0; font-size: inherit; line-height: inherit; color: var(--danger); font-weight: 600; text-decoration: underline; }
 
-/* Comment cards, as Word's: the author with the card's state beside them, the
-   text the comment is on in one quiet line under the author, the comment, its
-   replies indented under it, and the reply box at the foot. */
+/* Comment cards, as Word's: the author with the card's tags beside them, the
+   words the comment is on in one muted italic line under the author, the
+   comment, its replies indented under it, and the reply box at the foot. */
 .markup-anchor { margin: 0; font-size: 0.75rem; line-height: 1.4; color: var(--muted); }
-.markup-anchor .markup-quote { font-style: italic; color: var(--text-secondary); }
+.markup-anchor .markup-quote { font-style: italic; color: var(--muted); }
 .markup-comment { display: flex; flex-direction: column; gap: 6px; }
 .markup-comment-text { margin: 0; font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
 .markup-replies { display: flex; flex-direction: column; gap: var(--space-3); margin: 0; padding: 0 0 0 var(--space-4); list-style: none; border-left: 2px solid var(--border-soft); }
@@ -362,9 +371,6 @@
 .markup-thread:focus { outline: 2px solid var(--md-sys-state-focus); outline-offset: 2px; }
 .markup-thread:is(.is-resolved, .is-detached) .markup-comment-text { color: var(--text-secondary); }
 .markup-reply { display: flex; flex-direction: column; gap: var(--space-2); padding-top: var(--space-3); border-top: 1px solid var(--border-soft); }
-.markup-replybox { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); box-sizing: border-box; width: 100%; min-height: 38px; padding: 0 var(--space-3); font-size: 0.8125rem; font-weight: 400; text-align: left; color: var(--placeholder); background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); cursor: text; }
-button.markup-replybox:hover:not(:disabled) { border-color: var(--text-secondary); }
-.markup-replybox.is-busy { cursor: default; background: var(--accent-tint); }
 .markup-reply-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); }
 .markup-reply-actions button { display: inline-flex; align-items: center; gap: 6px; }
 .markup-reply-actions .linklike { min-height: 28px; font-size: 0.8125rem; font-weight: 500; }
@@ -372,14 +378,34 @@ button.markup-replybox:hover:not(:disabled) { border-color: var(--text-secondary
 .markup-spinner { width: 12px; height: 12px; border: 2px solid var(--accent-border); border-top-color: var(--accent); border-radius: 50%; animation: markup-spin .8s linear infinite; }
 @keyframes markup-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .markup-spinner { animation: none; } }
-.markup-reply-label { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: 0.75rem; font-weight: 700; color: var(--text); }
-.markup-reply-text { box-sizing: border-box; width: 100%; min-height: calc(4lh + var(--space-4)); max-height: 50vh; font-size: 13px; line-height: 1.5; resize: vertical; field-sizing: content; overflow-wrap: anywhere; }
-.markup-open-items { padding: 6px var(--space-2); font-size: 0.75rem; line-height: 1.45; color: var(--text); background: var(--info-soft); border-left: 3px solid var(--info); border-radius: 0 4px 4px 0; }
-.markup-open-items p { display: flex; align-items: center; gap: 6px; margin: 0; font-weight: 700; }
-.markup-open-items p .markup-icon { color: var(--info); }
-.markup-open-items ul { margin: 2px 0 0; padding-left: 18px; overflow-wrap: anywhere; }
+/* The reply box, as the chat's composer: rounded, growing with its text, its
+   action inside at the bottom right. A mirror behind the text marks the
+   bracketed parts still to fill; both share one cell, so the box grows with it. */
+.markup-composer { display: flex; flex-direction: column; min-width: 0; background: var(--md-sys-color-surface-container-low); border: 1px solid var(--md-sys-color-outline); border-radius: var(--radius-lg); }
+.markup-composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.markup-composer-field { display: grid; min-width: 0; }
+.markup-composer-field > * { grid-area: 1 / 1; box-sizing: border-box; width: 100%; min-width: 0; margin: 0; padding: var(--space-3) var(--space-3) var(--space-1); font: inherit; font-size: 13px; line-height: 1.5; letter-spacing: normal; white-space: pre-wrap; overflow-wrap: anywhere; border: 0; border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+.markup-composer-mirror { color: transparent; pointer-events: none; }
+.markup-composer-mirror mark { color: transparent; background: var(--warn-soft); border-radius: 3px; box-shadow: 0 0 0 1px var(--warn-border); }
+.markup-composer .markup-reply-text,
+.markup-composer .markup-reply-text:hover:not(:disabled),
+.markup-composer .markup-reply-text:focus { min-height: calc(2lh + var(--space-4)); height: auto; overflow: hidden; resize: none; color: var(--text); background: transparent; border: 0; outline: none; box-shadow: none; }
+.markup-composer-foot { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); padding: var(--space-1) var(--space-2) var(--space-2); }
+.markup-composer-foot > .version-tag { margin-right: auto; }
+.markup-more { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; min-height: 0; padding: 0; color: var(--text-secondary); background: transparent; border: 0; border-radius: 50%; }
+.markup-more:hover:not(:disabled), .markup-more[aria-expanded="true"] { color: var(--text); background: var(--panel-hover); }
+.markup-more .markup-icon { width: 16px; height: 16px; }
+.markup-approve { display: inline-flex; align-items: center; gap: 6px; }
+.markup-composer.is-empty, .markup-composer.is-busy { flex-direction: row; align-items: center; gap: var(--space-2); padding: 4px; }
+.markup-composer.is-busy { justify-content: space-between; padding-left: var(--space-3); }
+.markup-composer-write { flex: 1 1 auto; min-width: 0; min-height: 36px; padding: 0 var(--space-2); font-size: 0.8125rem; font-weight: 400; text-align: left; color: var(--placeholder); background: transparent; border: 0; border-radius: var(--radius-lg); cursor: text; }
+.markup-composer-write:hover:not(:disabled) { color: var(--text-secondary); background: transparent; }
+.markup-steer-toggle { align-self: flex-start; min-height: 0; font-size: 0.75rem; }
+/* What to check before sending: a quiet line each, under the box. */
+.markup-open-items { display: flex; flex-direction: column; gap: 2px; font-size: 0.75rem; line-height: 1.45; color: var(--muted); }
+.markup-open-items p { display: flex; align-items: flex-start; gap: 6px; margin: 0; overflow-wrap: anywhere; }
+.markup-open-items .markup-icon { margin-top: 2px; }
 .markup-reply .markup-hint .linklike { min-height: 0; font-size: inherit; line-height: inherit; }
-.markup-hold { color: var(--warn); }
 /* An approved reply, shown as the next reply in the thread. */
 .markup-comment.is-pending { padding: var(--space-2) var(--space-3); background: var(--accent-tint); border: 1px dashed var(--accent-border); border-radius: var(--radius-sm); }
 .markup-reply-final { margin: 0; font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
@@ -387,26 +413,25 @@ button.markup-replybox:hover:not(:disabled) { border-color: var(--text-secondary
 .markup-steer label { display: block; margin-bottom: 4px; font-size: 0.75rem; font-weight: 500; color: var(--text); }
 .markup-steer input { box-sizing: border-box; width: 100%; }
 
-/* Save bar: progress, the tally, what is left, who signs, Save. */
+/* Save bar: a thin progress bar and how many are decided, who signs, Save. */
 .markup-apply { position: sticky; bottom: 0; z-index: 1; display: flex; flex-direction: column; gap: var(--space-2); margin: 0 calc(-1 * var(--space-4)); padding: 10px var(--space-4) var(--space-3); background: var(--panel); border-top: 1px solid var(--border); box-shadow: 0 -6px 16px rgb(24 35 28 / 6%); }
 .markup-notice { display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: var(--space-2) 10px; font-size: 0.75rem; line-height: 1.45; color: var(--text); background: var(--warn-soft); border: 1px solid var(--warn-border); border-radius: var(--radius-sm); }
 .markup-notice .markup-icon { margin-top: 2px; color: var(--warn); }
 .markup-progress { display: flex; align-items: center; gap: var(--space-3); }
 .markup-progress p { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 0.8125rem; line-height: 1.45; color: var(--text-secondary); }
 .markup-progress strong { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
-.markup-progress-bar { flex: 0 0 64px; display: block; height: 6px; overflow: hidden; background: var(--bg-sunken); border-radius: var(--radius-pill); }
+.markup-progress-bar { flex: 0 0 64px; display: block; height: 4px; overflow: hidden; background: var(--bg-sunken); border-radius: var(--radius-pill); }
 .markup-progress-bar > span { display: block; height: 100%; background: var(--accent); border-radius: inherit; transition: width var(--duration-base) var(--ease-out); }
-.markup-todo { font-weight: 600; color: var(--warn); }
-.markup-todo .linklike { min-height: 0; font-size: inherit; font-weight: 700; line-height: inherit; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+/* "2 of 11 decided": a quiet link to the next change to decide. */
+.markup-progress .markup-next { min-height: 0; font-size: inherit; font-weight: 400; line-height: inherit; color: inherit; text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
+.markup-progress .markup-next:hover { color: var(--text); text-decoration-color: currentColor; }
 .markup-done { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; color: var(--accent); }
 .markup-actor { margin: 0; font-size: 0.75rem; color: var(--text-secondary); overflow-wrap: anywhere; }
 .markup-save { display: flex; flex-direction: column; align-items: stretch; gap: var(--space-1); }
-.markup-save .markup-actor { text-align: center; }
 .markup-actor strong { color: var(--text); font-weight: 600; }
 .markup-name label { display: block; margin-bottom: 4px; font-size: 0.8125rem; font-weight: 600; color: var(--text); }
 .markup-name input { box-sizing: border-box; width: 100%; }
 .markup-name small { display: block; margin-top: 4px; font-size: 0.6875rem; color: var(--muted); }
-.markup-blocked { margin: 0; font-size: 0.75rem; line-height: 1.45; color: var(--muted); }
 .markup-apply-button { align-self: stretch; min-height: var(--ctl-h); }
 .markup-apply .version-confirm { margin-top: 0; }
 .markup-apply .version-confirm .markup-actor { margin-bottom: var(--space-3); }
@@ -423,26 +448,31 @@ button.markup-replybox:hover:not(:disabled) { border-color: var(--text-secondary
   .document-reader .markup-card { padding-right: var(--space-3); }
 }
 @media (hover: none) {
-  .markup-tab, .markup-choice, .markup-bulk-toggle, .markup-bulk-option, .markup-replybox, .markup-close, .markup-reply-actions .linklike, .markup-filter select, .markup-filters-toggle { min-height: 44px; }
+  .markup-tab, .markup-choice, .markup-bulk-toggle, .markup-menu-item, .markup-composer-write, .markup-draft-button, .markup-close, .markup-reply-actions .linklike, .markup-filter select, .markup-filters-toggle { min-height: 44px; }
   .markup-filter-chip { min-height: 32px; }
-  .markup-close { width: 44px; }
+  .markup-close, .markup-more { width: 44px; height: 44px; }
+  .markup-help-toggle { width: 32px; height: 32px; }
 }
 @media (forced-colors: active) {
-  .markup-card, .markup-tab-count, .markup-kind, .markup-chip, .markup-own, .markup-avatar, .markup-filters, .markup-bulk-menu, .markup-response, .markup-flag, .markup-error, .markup-notice, .markup-word { border: 1px solid CanvasText; }
+  .markup-card, .markup-tab-count, .markup-kind, .markup-chip, .markup-own, .markup-run-tag, .markup-avatar, .markup-filters, .markup-menu, .markup-flag, .markup-error, .markup-notice, .markup-word, .markup-composer, .markup-help-toggle { border: 1px solid CanvasText; }
   .document-reader .markup-card { border-left-width: 4px; }
   .markup-card.is-undecided, .markup-thread:is(.is-needed, .is-drafted), .document-reader .markup-card.is-refused { border-left-style: double; border-left-width: 6px; }
   .markup-tab[aria-selected="true"] { border-bottom-color: Highlight; color: Highlight; }
   .markup-filter select.is-active { border: 2px solid Highlight; }
-  .markup-filters-toggle.is-active, .markup-filter-chip { border: 2px solid Highlight; }
+  .markup-filters-toggle.is-active, .markup-filter-chip, .markup-help-toggle[aria-expanded="true"] { border: 2px solid Highlight; }
   .markup-help { border: 1px solid CanvasText; }
   .markup-choice { border: 1px solid ButtonText; }
   .markup-choice:has(input:checked), .markup-choice:has(input:checked) :is(*, ::before, ::after) { forced-color-adjust: none; color: HighlightText; background-color: Highlight; border-color: Highlight; box-shadow: none; }
   .markup-choice:has(input:checked) input { background-color: transparent; }
   .markup-choice:has(input:focus-visible) { outline-color: CanvasText; }
-  .markup-thread:focus { outline-color: Highlight; }
+  .markup-thread:focus, .docx-render .markup-located { outline-color: Highlight; }
+  .markup-composer:focus-within { outline: 2px solid Highlight; }
+  /* The mirror keeps its text invisible; a bracketed part takes a Highlight ring. */
+  .markup-composer-mirror, .markup-composer-mirror mark { forced-color-adjust: none; color: transparent; }
+  .markup-composer-mirror mark { background: transparent; box-shadow: none; outline: 2px solid Highlight; }
   .markup-progress-bar { border: 1px solid CanvasText; }
   .markup-progress-bar > span { forced-color-adjust: none; background: Highlight; }
-  .markup-comment.is-pending, .markup-replybox { border: 1px solid CanvasText; }
+  .markup-comment.is-pending { border: 1px solid CanvasText; }
 }
 
 /* ---------- Documents drawer ---------- */

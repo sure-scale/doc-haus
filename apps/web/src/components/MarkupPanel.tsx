@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react"
+import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactElement, type ReactNode, type RefObject } from "react"
 import { humanizeError } from "../api/ingest/errors"
 import {
   actorSent,
@@ -19,6 +19,7 @@ import { readBrowserJSON, readBrowserValue, removeBrowserValue, writeBrowserValu
 import { formatDateTime } from "../lib/format"
 import { authorTones, initialsOf, nameKey, toneClass, toneOf } from "./comment-authors"
 import { useToast } from "./Toast"
+import { Tooltip } from "./Tooltip"
 
 // The tracked changes and comments in an uploaded Word source (#200), beside
 // the document, in two tabs: Changes, where the lawyer marks each change
@@ -417,12 +418,82 @@ function carriedNote(name: string, decisions: Carried, replies: Carried, refused
 }
 
 // A filter's options with how many items each would show, the rest of the
-// tab's filters applied; an option that would show none is disabled unless
-// chosen. The chosen one stays listed even when the file no longer has it.
+// tab's filters applied (`all`: how many its "All …" option shows); an option
+// that would show none is disabled unless chosen. The chosen one stays listed
+// even when the file no longer has it.
 type Option = { value: string; label: string; count: number }
-function facets<T>(list: T[], tests: Record<string, (item: T) => boolean>, key: string, choices: { value: string; label: string; test: (item: T) => boolean }[]) {
+type Facet = { all: number; options: Option[] }
+function facets<T>(list: T[], tests: Record<string, (item: T) => boolean>, key: string, choices: { value: string; label: string; test: (item: T) => boolean }[]): Facet {
   const rest = list.filter((item) => Object.entries(tests).every(([name, test]) => name === key || test(item)))
-  return choices.map(({ value, label, test }): Option => ({ value, label, count: rest.filter(test).length }))
+  return { all: rest.length, options: choices.map(({ value, label, test }): Option => ({ value, label, count: rest.filter(test).length })) }
+}
+
+// The rendered marks of one tracked change, to show it in the document.
+// Docxodus renders each as an ins, del or span carrying its author and date
+// but no id, so a change is found by those and its text (a change split into
+// runs spans several marks), as the nth change of that signature.
+const MARKS: Partial<Record<MarkupRevision["kind"], string[]>> = {
+  insert: ["ins.rev-ins"],
+  delete: ["del.rev-del"],
+  move: ["del.rev-move-from", "ins.rev-move-to"],
+  format: [".rev-format-change"],
+}
+// JavaScript's \s includes the no-break space Word uses.
+const bare = (text: string) => text.replace(/[\s¶]+/g, "")
+
+export function changeMarks(root: ParentNode, revision: MarkupRevision, revisions: MarkupRevision[]): HTMLElement[] {
+  const mark = revision.family === "paragraph_mark"
+  const selectors = mark ? [revision.kind === "insert" ? "p.rev-para-ins" : "p.rev-para-del"] : MARKS[revision.kind]
+  const target = bare(revision.text)
+  if (!selectors || (!mark && !target)) return []
+  const same = (other: MarkupRevision) => other.kind === revision.kind && other.family === revision.family && other.author === revision.author &&
+    other.date === revision.date && (mark || bare(other.text) === target)
+  const nth = revisions.filter(same).indexOf(revision)
+  return selectors.flatMap((selector) => {
+    const marks = [...root.querySelectorAll<HTMLElement>(selector)].filter((element) =>
+      element.dataset.author === revision.author && (!revision.date || element.dataset.date === revision.date) && !element.closest(".comment-margin-note"))
+    return (mark ? marks.map((element) => [element]) : textGroups(marks, target))[nth] ?? []
+  })
+}
+
+// Runs of consecutive marks whose text together is the change's.
+function textGroups(marks: HTMLElement[], target: string) {
+  const groups: HTMLElement[][] = []
+  for (let start = 0; start < marks.length; start++) {
+    let text = ""
+    const group: HTMLElement[] = []
+    for (let at = start; at < marks.length; at++) {
+      const part = bare(marks[at]!.textContent ?? "")
+      if (!part) continue
+      if (!target.startsWith(text + part)) break
+      text += part
+      group.push(marks[at]!)
+      if (text === target) {
+        groups.push(group)
+        start = at
+        break
+      }
+    }
+  }
+  return groups
+}
+
+// A menu closes on a click or tap outside it.
+function useDismiss(open: boolean, within: RefObject<HTMLElement | null>, close: () => void) {
+  useEffect(() => {
+    if (!open) return
+    const away = (event: PointerEvent) => {
+      if (!within.current?.contains(event.target as Node)) close()
+    }
+    document.addEventListener("pointerdown", away)
+    return () => document.removeEventListener("pointerdown", away)
+    // close only sets state.
+  }, [open])
+}
+
+// A control that cannot be used yet says why when hovered or focused.
+function Why({ reason, children }: { reason?: string; children: ReactElement }) {
+  return reason ? <Tooltip label={reason} describes={false}>{children}</Tooltip> : children
 }
 
 // The filters in use, each as "Reviewer: Avery Lindqvist" for its chip.
@@ -501,9 +572,10 @@ export default function MarkupPanel({
   // not vanish from "Not yet decided" the moment it is decided.
   const [stay, setStay] = useState<string[]>([])
   const [bulkOpen, setBulkOpen] = useState(false)
-  // Per tab, while the panel is open: whether its filters and its guide are shown.
+  // Per tab, while the panel is open: whether its filters are shown; and
+  // whether the panel's guide, behind the ? beside its title, is open.
   const [filtersOpen, setFiltersOpen] = useState<Record<Tab, boolean>>({ changes: false, comments: false })
-  const [help, setHelp] = useState<Record<Tab, boolean>>({ changes: false, comments: false })
+  const [help, setHelp] = useState(false)
   // undefined while loading; "" when no name is saved, so the bar asks once.
   const [attorney, setAttorney] = useState<string>()
   // The settings could not be read: who "you" are is unknown.
@@ -517,6 +589,7 @@ export default function MarkupPanel({
   const [busy, setBusy] = useState(false)
   const [refusal, setRefusal] = useState<Refusal>()
   const [focus, setFocus] = useState<Focus>()
+  const panel = useRef<HTMLElement>(null)
   const heading = useRef<HTMLHeadingElement>(null)
   const applyButton = useRef<HTMLButtonElement>(null)
   const proposalsButton = useRef<HTMLButtonElement>(null)
@@ -524,6 +597,9 @@ export default function MarkupPanel({
   const nameInput = useRef<HTMLInputElement>(null)
   const bulkRow = useRef<HTMLDivElement>(null)
   const decideAll = useRef<HTMLButtonElement>(null)
+  const bulkMenu = useRef<HTMLDivElement>(null)
+  // The change shown in the document, and the marks that show it.
+  const located = useRef<{ id: string; marks: HTMLElement[] }>(undefined)
   const cards = useRef(new Map<string, HTMLLIElement>())
   const tabButtons = useRef(new Map<Tab, HTMLButtonElement>())
   const filterToggles = useRef(new Map<Tab, HTMLButtonElement>())
@@ -631,11 +707,12 @@ export default function MarkupPanel({
       card.querySelector<HTMLElement>("[data-reply-focus]:not(:disabled)")?.focus()
     } else if (card) {
       card.scrollIntoView?.({ block: "center" })
-      const control = card.querySelector<HTMLElement>('input[type="radio"]:checked') ?? card.querySelector<HTMLElement>(".version-error")
+      const control = card.querySelector<HTMLElement>('input[type="radio"]:checked') ?? card.querySelector<HTMLElement>(".version-error") ?? card.querySelector<HTMLElement>('input[type="radio"]')
       control?.focus({ preventScroll: true })
     } else {
       if (loading) return
-      const target = [applyButton.current, proposalsButton.current, refusalText.current].find((element) => element && !(element as HTMLButtonElement).disabled) ?? heading.current
+      const usable = (element: HTMLElement | null) => element && !(element as HTMLButtonElement).disabled && element.getAttribute("aria-disabled") !== "true"
+      const target = [applyButton.current, proposalsButton.current, refusalText.current].find(usable) ?? heading.current
       target?.focus()
     }
     setFocus(undefined)
@@ -703,7 +780,6 @@ export default function MarkupPanel({
   // Decide all sets the other side's shown changes only; the lawyer's own
   // edits are decided one by one.
   const shownDecidable = shownChangeList.filter((revision) => decidable(revision) && !yours(revision))
-  const ownShown = shownChangeList.some(yours)
   const changesFiltered = Object.values(changeFilters).some(Boolean)
   const undrafted = shownThreadList.filter((thread) => isOpen(thread) && awaiting(thread) && !replies[thread.root.id] && !drafting.includes(thread.root.id))
 
@@ -724,8 +800,8 @@ export default function MarkupPanel({
     reply: facets(threadList, commentTests, "reply", REPLY_STATES.map((state) => ({ ...state, test: (thread: Thread) => replyStateOf(thread) === state.value }))),
   }
 
-  const changeChips = activeFilters(changeFilters, [["author", "Reviewer", changeOptions.author], ["type", "Type", changeOptions.type], ["decision", "Decision", changeOptions.decision]])
-  const commentChips = activeFilters(commentFilters, [["author", "Reviewer", commentOptions.author], ["status", "Status", commentOptions.status], ["reply", "Reply", commentOptions.reply]])
+  const changeChips = activeFilters(changeFilters, [["author", "Reviewer", changeOptions.author.options], ["type", "Type", changeOptions.type.options], ["decision", "Decision", changeOptions.decision.options]])
+  const commentChips = activeFilters(commentFilters, [["author", "Reviewer", commentOptions.author.options], ["status", "Status", commentOptions.status.options], ["reply", "Reply", commentOptions.reply.options]])
 
   // A refusal is shown on the cards it names; otherwise, or while they are
   // filtered out or on the other tab, beside Save. The proposals line already
@@ -783,13 +859,37 @@ export default function MarkupPanel({
     setFocus({ toggle: which })
   }
 
-  // Still to do, one click away: the changes not yet decided, or the drafts
-  // to approve, with every other filter cleared.
-  function showUndecided() {
+  // The save bar's "2 of 11 decided": the first change not yet decided, in
+  // view even past the filters, with focus on its decision.
+  function showNext() {
+    const next = changeList.find((revision) => stateOf(revision) === "undecided")
+    if (!next) return
     setTab("changes")
-    filterChanges({ ...NO_CHANGE_FILTERS, decision: "undecided" })
-    setSaid(`Showing the ${plural(undecided, "change")} not yet decided.`)
+    keep(next.id)
+    setFocus({ card: next.id })
   }
+
+  // A change card clicked or focused shows its change in the document, as
+  // Word's Reviewing pane does: its marks outlined and, beside the document,
+  // scrolled into view. Focus moving within the card shows it once.
+  function locate(revision: MarkupRevision, again: boolean) {
+    if (!again && located.current?.id === revision.id && located.current.marks.every((mark) => mark.isConnected)) return
+    for (const mark of located.current?.marks ?? []) mark.classList.remove("markup-located")
+    const root = panel.current?.closest(".document-reader")?.querySelector(".viewer-body .docx-render:not(.docx-skeleton)")
+    const marks = root ? changeMarks(root, revision, markup.revisions) : []
+    located.current = { id: revision.id, marks }
+    for (const mark of marks) mark.classList.add("markup-located")
+    // Stacked above the document on a phone, the panel stays where it is.
+    if (!marks.length || window.matchMedia?.("(max-width: 720px)").matches) return
+    const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+    marks[0]!.scrollIntoView?.({ block: "center", behavior: still ? "auto" : "smooth" })
+  }
+
+  useEffect(() => () => {
+    for (const mark of located.current?.marks ?? []) mark.classList.remove("markup-located")
+  }, [])
+
+  useDismiss(bulkOpen, bulkMenu, () => setBulkOpen(false))
 
   // A comment chosen in the document opens its thread, even past the filters.
   useEffect(() => {
@@ -802,12 +902,6 @@ export default function MarkupPanel({
     setFocus({ thread: threadCard(thread) })
     // Only a new request acts; the lists it reads are the current render's.
   }, [reveal?.thread, reveal?.seq])
-
-  function showDrafts() {
-    setTab("comments")
-    filterComments({ ...NO_COMMENT_FILTERS, reply: "drafted" })
-    setSaid(`Showing the ${plural(unapproved, "draft")} to approve.`)
-  }
 
   function decide(changes: MarkupRevision[], decision: MarkupDecision, bulk?: string) {
     setConfirming(false)
@@ -1134,8 +1228,13 @@ export default function MarkupPanel({
   // own edits or comments, is named apart.
   const reviewers = markup.authors.filter((author) => !isYou(author.name) && !(savedName && nameKey(author.name) === nameKey(savedName))).length
   const withYou = markup.authors.some((author) => isYou(author.name) || (savedName && nameKey(author.name) === nameKey(savedName)))
-  const theirListed = listed.filter((revision) => !yours(revision)).length
-  const decideLabel = ownShown ? `Decide all ${shownDecidable.length} of their changes shown` : `Decide all ${shownDecidable.length} shown`
+  // Accept all / Reject all: Word's names, "shown" while filters narrow them.
+  const bulkLabel = "Accept all / Reject all"
+  const bulkItem = (decision: MarkupDecision) => {
+    const shown = changesFiltered ? " shown" : ""
+    const count = ` (${shownDecidable.length})`
+    return decision === "hold" ? `Leave all${shown} tracked${count}` : `${decision === "accept" ? "Accept" : "Reject"} all${shown}${count}`
+  }
   const tabs: { value: Tab; label: string; count: number }[] = [
     { value: "changes", label: "Changes", count: changeList.length },
     { value: "comments", label: "Comments", count: threadList.length },
@@ -1144,12 +1243,14 @@ export default function MarkupPanel({
   return (
     <ToneContext.Provider value={tone}>
     <VersionContext.Provider value={markup.version.number}>
-    <aside id="document-markup" className="changes-panel markup-panel" aria-labelledby={`${ids}-title`}>
+    <aside ref={panel} id="document-markup" className="changes-panel markup-panel" aria-labelledby={`${ids}-title`}>
       <p className="sr-only" role="status">{said}</p>
       <div className="changes-head markup-head">
         <div className="markup-title">
           <div className="markup-title-text">
             <h3 id={`${ids}-title`} ref={heading} tabIndex={-1}>Tracked changes</h3>
+            <button type="button" className="markup-help-toggle" aria-label="How this works" title="How this works" aria-expanded={help} aria-controls={`${ids}-help`}
+              onClick={() => setHelp(!help)}>?</button>
             <p className="markup-summary">
               {plural(items.length, "item")}{reviewers > 0 && ` from ${plural(reviewers, "reviewer")}`}{withYou && (reviewers > 0 ? " and you" : " from you")}
             </p>
@@ -1170,65 +1271,61 @@ export default function MarkupPanel({
           ))}
         </div>
       </div>
+      {/* The guide behind the ?, for both tabs; its Leave tracked line describes that choice on every card. */}
+      <div id={`${ids}-help`} className="markup-help" hidden={!help}>
+        <p>Accept or reject each change, as in Word. A change you do not decide stays tracked.</p>
+        <p id={`${ids}-hold-hint`}><strong>Leave tracked</strong> keeps a change as a tracked change, with its author and date, in the new version.</p>
+        <p>doc.haus edits you accept appear here as your own, under your name.</p>
+        <p>Reply to comments as you would in Word. doc.haus can draft each reply for you to edit. Only the replies you approve are added when you save.</p>
+      </div>
 
       <div className="markup-tabpanel" role="tabpanel" id={`${ids}-changes-panel`} aria-labelledby={`${ids}-changes-tab`} hidden={tab !== "changes"}>
         {changeList.length === 0 ? (
           <p className="muted markup-empty">There are no tracked changes in this file.</p>
         ) : (
           <>
-            <Intro id={`${ids}-changes-help`} open={help.changes} lead="Accept or reject each change, as in Word."
-              onToggle={() => setHelp((current) => ({ ...current, changes: !current.changes }))}>
-              <p id={`${ids}-hold-hint`}><strong>Leave tracked</strong> keeps a change as a tracked change, with its author and date, in the new version.</p>
-              <p>doc.haus edits you accept appear here as your own, under your name.</p>
-            </Intro>
             <FilterBar id={`${ids}-change-filters`} label="Filter changes" open={filtersOpen.changes} chips={changeChips}
               shown={shownChangeList.length} total={changeList.length} noun="change"
               toggleRef={(node) => { if (node) filterToggles.current.set("changes", node); else filterToggles.current.delete("changes") }}
               groupRef={(node) => { if (node) filterGroups.current.set("changes", node); else filterGroups.current.delete("changes") }}
               onToggle={() => toggleFilters("changes")} onRemove={(key) => unfilter("changes", key)} onClear={() => unfilter("changes")}
               action={shownDecidable.length > 0 && (!ours ? settingsFailed && (
-                <p className="markup-bulk-unavailable">Decide all is unavailable: your settings could not be read.</p>
+                <p className="markup-bulk-unavailable">Accept all is unavailable: your settings could not be read.</p>
               ) : (
-                <button type="button" ref={decideAll} className="markup-bulk-toggle" aria-expanded={bulkOpen} aria-controls={bulkOpen ? `${ids}-bulk` : undefined} disabled={busy}
-                  onClick={() => setBulkOpen(!bulkOpen)} onKeyDown={(event) => {
-                    // Escape closes the open choices, not the viewer.
-                    if (event.key !== "Escape" || !bulkOpen) return
-                    event.preventDefault()
-                    event.stopPropagation()
-                    setBulkOpen(false)
-                  }}>
-                  {decideLabel}
-                  <Icon name="chevron" />
-                </button>
-              ))}>
-              <FilterSelect id={`${ids}-change-author`} label="Reviewer" all="All reviewers" value={changeFilters.author} options={changeOptions.author} onChange={(author) => filterChanges({ author })} />
-              <FilterSelect id={`${ids}-change-type`} label="Type" all="All change types" value={changeFilters.type} options={changeOptions.type} onChange={(type) => filterChanges({ type })} />
-              <FilterSelect id={`${ids}-change-decision`} label="Decision" all="All decisions" value={changeFilters.decision} options={changeOptions.decision} onChange={(decision) => filterChanges({ decision })} />
-            </FilterBar>
-            {bulkOpen && ours && shownDecidable.length > 0 && (
-              <div id={`${ids}-bulk`} className="markup-bulk-menu" role="group" aria-label={decideLabel} onKeyDown={(event) => {
-                if (event.key !== "Escape") return
-                event.preventDefault()
-                event.stopPropagation()
-                setBulkOpen(false)
-                decideAll.current?.focus()
-              }}>
-                <p className="markup-bulk-scope">
-                  {changesFiltered || shownDecidable.length < theirListed
-                    ? `Sets the ${plural(shownDecidable.length, "change")} of theirs your filters show. The others keep their decisions.`
-                    : `Sets every change of theirs in this file that doc.haus can apply.`}
-                  {ownShown && " Your own edits keep their decisions."}
-                </p>
-                <div className="markup-bulk-options">
-                  {DECISIONS.map((option) => (
-                    <button type="button" key={option.value} className={`markup-bulk-option is-${option.value}`} disabled={busy} onClick={() => decideShown(option.value)}>
-                      <Icon name={option.value} />
-                      {option.value === "hold" ? `Leave all ${shownDecidable.length} tracked` : `${option.label} all ${shownDecidable.length}`}
-                    </button>
-                  ))}
+                <div className="markup-menu-wrap" ref={bulkMenu}>
+                  <button type="button" ref={decideAll} className="markup-bulk-toggle" aria-expanded={bulkOpen} aria-controls={bulkOpen ? `${ids}-bulk` : undefined} disabled={busy}
+                    onClick={() => setBulkOpen(!bulkOpen)} onKeyDown={(event) => {
+                      // Escape closes the open menu, not the viewer.
+                      if (event.key !== "Escape" || !bulkOpen) return
+                      event.preventDefault()
+                      event.stopPropagation()
+                      setBulkOpen(false)
+                    }}>
+                    {bulkLabel}
+                    <Icon name="chevron" />
+                  </button>
+                  {bulkOpen && (
+                    <div id={`${ids}-bulk`} className="markup-menu markup-bulk-menu" role="group" aria-label={bulkLabel} onKeyDown={(event) => {
+                      if (event.key !== "Escape") return
+                      event.preventDefault()
+                      event.stopPropagation()
+                      setBulkOpen(false)
+                      decideAll.current?.focus()
+                    }}>
+                      {DECISIONS.map((option) => (
+                        <button type="button" key={option.value} className={`markup-menu-item is-${option.value}`} disabled={busy} onClick={() => decideShown(option.value)}>
+                          {bulkItem(option.value)}
+                        </button>
+                      ))}
+                      <p className="markup-menu-note">Your own edits are not changed.</p>
+                    </div>
+                  )}
                 </div>
-              </div>
-            )}
+              ))}>
+              <FilterSelect id={`${ids}-change-author`} label="Reviewer" all="All reviewers" value={changeFilters.author} facet={changeOptions.author} onChange={(author) => filterChanges({ author })} />
+              <FilterSelect id={`${ids}-change-type`} label="Type" all="All change types" value={changeFilters.type} facet={changeOptions.type} onChange={(type) => filterChanges({ type })} />
+              <FilterSelect id={`${ids}-change-decision`} label="Decision" all="All decisions" value={changeFilters.decision} facet={changeOptions.decision} onChange={(decision) => filterChanges({ decision })} />
+            </FilterBar>
             {undo && (
               <p className="markup-undo">
                 {undo.text}{" "}
@@ -1247,6 +1344,7 @@ export default function MarkupPanel({
                     carried={carried.includes(revision.id)} response={markup.responses?.[revision.id]}
                     failure={refusal?.ids.includes(revision.id) ? refusal.message : undefined}
                     cardRef={(node) => { if (node) cards.current.set(revision.id, node); else cards.current.delete(revision.id) }}
+                    onLocate={(again) => locate(revision, again)}
                     onDecide={(decision) => decide([revision], decision)}
                     onHold={() => {
                       decide([revision], "hold")
@@ -1264,18 +1362,14 @@ export default function MarkupPanel({
           <p className="muted markup-empty">There are no comments in this file.</p>
         ) : (
           <>
-            <Intro id={`${ids}-comments-help`} open={help.comments} lead="Reply to comments as you would in Word."
-              onToggle={() => setHelp((current) => ({ ...current, comments: !current.comments }))}>
-              <p>doc.haus can draft each reply for you to edit. Only the replies you approve are added when you save.</p>
-            </Intro>
             <FilterBar id={`${ids}-comment-filters`} label="Filter comments" open={filtersOpen.comments} chips={commentChips}
               shown={shownThreadList.length} total={threadList.length} noun="comment"
               toggleRef={(node) => { if (node) filterToggles.current.set("comments", node); else filterToggles.current.delete("comments") }}
               groupRef={(node) => { if (node) filterGroups.current.set("comments", node); else filterGroups.current.delete("comments") }}
               onToggle={() => toggleFilters("comments")} onRemove={(key) => unfilter("comments", key)} onClear={() => unfilter("comments")}>
-              <FilterSelect id={`${ids}-comment-author`} label="Reviewer" all="All reviewers" value={commentFilters.author} options={commentOptions.author} onChange={(author) => filterComments({ author })} />
-              <FilterSelect id={`${ids}-comment-status`} label="Status" all="Open and resolved" value={commentFilters.status} options={commentOptions.status} onChange={(status) => filterComments({ status })} />
-              <FilterSelect id={`${ids}-comment-reply`} label="Reply" all="All replies" value={commentFilters.reply} options={commentOptions.reply} onChange={(reply) => filterComments({ reply })} />
+              <FilterSelect id={`${ids}-comment-author`} label="Reviewer" all="All reviewers" value={commentFilters.author} facet={commentOptions.author} onChange={(author) => filterComments({ author })} />
+              <FilterSelect id={`${ids}-comment-status`} label="Status" all="Open and resolved" value={commentFilters.status} facet={commentOptions.status} onChange={(status) => filterComments({ status })} />
+              <FilterSelect id={`${ids}-comment-reply`} label="Reply" all="All replies" value={commentFilters.reply} facet={commentOptions.reply} onChange={(reply) => filterComments({ reply })} />
             </FilterBar>
             {(undrafted.length > 0 || drafting.length > 0 || drafted) && (
               <div className="markup-bulk markup-draft-all" ref={bulkRow}>
@@ -1287,8 +1381,8 @@ export default function MarkupPanel({
                 ) : (
                   <>
                     {undrafted.length > 0 && (
-                      <button type="button" className="primary btn-sm markup-draft-button" disabled={busy || loading} onClick={draftAll}>
-                        <Icon name="spark" />
+                      <button type="button" className="markup-draft-button" disabled={busy || loading} onClick={draftAll}>
+                        <Icon name="pen" />
                         Draft replies to {plural(undrafted.length, "comment")}
                       </button>
                     )}
@@ -1321,26 +1415,20 @@ export default function MarkupPanel({
       {(listed.length > 0 || open.length > 0) && (
         <div className="markup-apply">
           {notice && <p className="markup-notice"><Icon name="warning" />{notice}</p>}
-          {(listed.length > 0 || unapproved > 0) && (
+          {listed.length > 0 && (
             <div className="markup-progress">
-              {listed.length > 0 && (
-                <span className="markup-progress-bar" aria-hidden="true">
-                  <span style={{ width: `${Math.round(((listed.length - undecided) / listed.length) * 100)}%` }} />
-                </span>
-              )}
+              <span className="markup-progress-bar" aria-hidden="true">
+                <span style={{ width: `${Math.round(((listed.length - undecided) / listed.length) * 100)}%` }} />
+              </span>
               <p>
-                {listed.length > 0 && (undecided > 0
-                  ? <><strong>{listed.length - undecided} of {listed.length}</strong> decided</>
-                  : <span className="markup-done"><Icon name="accept" />{listed.length === 1 ? "The change is decided" : `All ${listed.length} changes decided`}</span>)}
-                {listed.length > 0 && elsewhere > 0 && <span className="markup-tally-word"> · {elsewhere} to resolve in Word</span>}
-                {(undecided > 0 || unapproved > 0) && (
-                  <span className="markup-todo">
-                    {listed.length > 0 && " · "}Still to do:{" "}
-                    {undecided > 0 && <button type="button" className="linklike" aria-label={`Show the ${plural(undecided, "change")} to decide`} onClick={showUndecided}>{plural(undecided, "change")}</button>}
-                    {undecided > 0 && unapproved > 0 && " · "}
-                    {unapproved > 0 && <button type="button" className="linklike" aria-label={`Show the ${plural(unapproved, "draft")} to approve`} onClick={showDrafts}>{plural(unapproved, "draft")} to approve</button>}
-                  </span>
+                {undecided > 0 ? (
+                  <button type="button" className="linklike markup-next" aria-label={`${listed.length - undecided} of ${listed.length} decided. Show the next change to decide`} onClick={showNext}>
+                    <strong>{listed.length - undecided} of {listed.length}</strong> decided
+                  </button>
+                ) : (
+                  <span className="markup-done"><Icon name="accept" />{listed.length === 1 ? "The change is decided" : `All ${listed.length} changes decided`}</span>
                 )}
+                {elsewhere > 0 && <span className="markup-tally-word"> · {elsewhere} to resolve in Word</span>}
               </p>
             </div>
           )}
@@ -1352,7 +1440,6 @@ export default function MarkupPanel({
               <small id={`${ids}-name-hint`}>Saved as the attorney name in Settings → Drafting.</small>
             </div>
           )}
-          {blocked && <p id={`${ids}-blocked`} className="markup-blocked">{blocked}</p>}
           {proposalsFirst && onShowProposals && (
             <button type="button" ref={proposalsButton} className="icon-btn" onClick={onShowProposals}>
               Show doc.haus's proposals
@@ -1366,7 +1453,7 @@ export default function MarkupPanel({
               cancel()
             }}>
               <p id={`${ids}-confirm`}>{confirmText}</p>
-              {!savedName && <p className="markup-actor">Saved as: <strong>{actor}</strong></p>}
+              <p className="markup-actor">Saved as: <strong>{actor}</strong></p>
               <span className="upload-actions">
                 <button type="button" className="primary btn-sm" autoFocus aria-describedby={`${ids}-confirm`} disabled={busy || loading} onClick={apply}>
                   {busy ? "Saving…" : "Save new version"}
@@ -1378,10 +1465,14 @@ export default function MarkupPanel({
             </div>
           ) : (
             <div className="markup-save">
-              <button type="button" ref={applyButton} className="primary markup-apply-button" disabled={!canApply} aria-describedby={blocked ? `${ids}-blocked` : undefined} onClick={review}>
-                Save decisions as a new version…
-              </button>
-              {savedName && <p className="markup-actor">Saved as <strong>{savedName}</strong></p>}
+              {/* Save says why it cannot be used yet, on hover or focus, and to a screen reader. */}
+              <Why reason={blocked}>
+                <button type="button" ref={applyButton} className="primary markup-apply-button" disabled={busy || loading || attorney === undefined}
+                  aria-disabled={blocked ? true : undefined} aria-describedby={blocked ? `${ids}-blocked` : undefined} onClick={() => { if (canApply) review() }}>
+                  Save as new version
+                </button>
+              </Why>
+              {blocked && <span id={`${ids}-blocked`} className="sr-only">{blocked}</span>}
             </div>
           )}
           {refusalShown && <p ref={refusalText} tabIndex={-1} className="version-error markup-error" role="alert"><Icon name="warning" /><span>{refusalShown}</span></p>}
@@ -1410,11 +1501,10 @@ export function ConsistencyNotice({ consistency }: { consistency: NonNullable<Ma
   )
 }
 
-type IconName = "accept" | "reject" | "hold" | "insert" | "delete" | "move" | "format" | "other" | "chevron" | "close" | "spark" | "warning" | "pending" | "info" | "resolved" | "filter"
+type IconName = "accept" | "reject" | "insert" | "delete" | "move" | "format" | "other" | "chevron" | "close" | "pen" | "more" | "warning" | "info" | "resolved" | "filter"
 const ICONS: Record<IconName, ReactNode> = {
   accept: <path d="M5 12.5 10 17 19 7" />,
   reject: <path d="M6 6l12 12M18 6 6 18" />,
-  hold: <><path d="M4 7h16M4 12h16" /><path d="M4 17h9" strokeDasharray="2 3" /></>,
   insert: <path d="M12 5v14M5 12h14" />,
   delete: <path d="M5 12h14" />,
   move: <path d="M12 4v16M8 8l4-4 4 4M8 16l4 4 4-4" />,
@@ -1422,9 +1512,9 @@ const ICONS: Record<IconName, ReactNode> = {
   other: <path d="M4 12h4l2-5 4 10 2-5h4" />,
   chevron: <path d="m6 9 6 6 6-6" />,
   close: <path d="M6 6l12 12M18 6 6 18" />,
-  spark: <path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6" />,
+  pen: <><path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3z" /><path d="m14.5 7.5 3 3" /></>,
+  more: <><circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" /><circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none" /></>,
   warning: <><path d="M12 3 2 21h20L12 3z" /><path d="M12 10v5M12 18h.01" /></>,
-  pending: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
   info: <><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7.5h.01" /></>,
   resolved: <><circle cx="12" cy="12" r="9" /><path d="m8 12.5 3 3 5-6" /></>,
   filter: <path d="M4 5h16l-6 7.5V18l-4 2v-7.5L4 5z" />,
@@ -1438,21 +1528,22 @@ function Icon({ name }: { name: IconName }) {
   )
 }
 
-// One labelled filter: "All …" first, then each choice with how many it shows.
-function FilterSelect({ id, label, all, value, options, onChange }: {
+// One labelled filter: "All …" first, then each choice, each with how many it
+// shows with the other filters as they are.
+function FilterSelect({ id, label, all, value, facet, onChange }: {
   id: string
   label: string
   all: string
   value: string
-  options: Option[]
+  facet: Facet
   onChange: (value: string) => void
 }) {
   return (
     <div className="markup-filter">
       <label htmlFor={id}>{label}</label>
       <select id={id} value={value} className={value ? "is-active" : undefined} onChange={(event) => onChange(event.target.value)}>
-        <option value="">{all}</option>
-        {options.map((option) => (
+        <option value="">{all} ({facet.all})</option>
+        {facet.options.map((option) => (
           <option key={option.value} value={option.value} disabled={!option.count && option.value !== value}>
             {option.label} ({option.count})
           </option>
@@ -1462,22 +1553,9 @@ function FilterSelect({ id, label, all, value, options, onChange }: {
   )
 }
 
-// A tab's one-line guide, with the rest a click away.
-function Intro({ id, lead, open, onToggle, children }: { id: string; lead: string; open: boolean; onToggle: () => void; children: ReactNode }) {
-  return (
-    <div className="markup-intro">
-      <p>
-        {lead}{" "}
-        <button type="button" className="linklike" aria-expanded={open} aria-controls={id} onClick={onToggle}>How this works</button>
-      </p>
-      <div id={id} className="markup-help" hidden={!open}>{children}</div>
-    </div>
-  )
-}
-
 // A tab's line: Filters, which opens the tab's dropdowns as Word's Show Markup
-// opens Specific People; how many cards show, said again whenever it changes;
-// the tab's bulk action. Closed, the filters in use stay in view as chips,
+// opens Specific People, and the tab's bulk action; how many cards show is
+// said to a screen reader whenever it changes (each option shows its count). Closed, the filters in use stay in view as chips,
 // each removing its own. Escape closes the dropdowns.
 function FilterBar({ id, label, open, chips, shown, total, noun, action, toggleRef, groupRef, onToggle, onRemove, onClear, children }: {
   id: string
@@ -1510,9 +1588,8 @@ function FilterBar({ id, label, open, chips, shown, total, noun, action, toggleR
           Filters
           {chips.length > 0 && <span className="markup-filters-count"><span aria-hidden="true">·</span> {chips.length}<span className="sr-only"> in use</span></span>}
         </button>
-        <p className="markup-showing" role="status">
-          {chips.length ? <>Showing <strong>{shown}</strong> of {total}</> : <>Showing all {total}</>}
-          <span className="sr-only"> {total === 1 ? noun : `${noun}s`}</span>
+        <p className="markup-showing sr-only" role="status">
+          {chips.length ? `Showing ${shown} of ${total} ${total === 1 ? noun : `${noun}s`}` : `Showing all ${total} ${total === 1 ? noun : `${noun}s`}`}
         </p>
         {action}
       </div>
@@ -1580,7 +1657,7 @@ function Avatar({ name, initials, small = false }: { name: string; initials?: st
 }
 
 // Who and when: the avatar, the name in bold and the date beneath it, or
-// beside it on a change card.
+// beside it, smaller, on a change card. What follows goes at the line's end.
 function Byline({ name, initials, date, small, inline, children }: { name: string; initials?: string | null; date: string | null; small?: boolean; inline?: boolean; children?: ReactNode }) {
   return (
     <div className={`markup-byline${inline ? " is-inline" : ""}`}>
@@ -1589,41 +1666,39 @@ function Byline({ name, initials, date, small, inline, children }: { name: strin
         <span className="change-author">{authorName(name)}</span>
         {date && <time dateTime={date}>{formatDateTime(date)}</time>}
       </span>
-      {children}
+      {children && <span className="markup-byline-end">{children}</span>}
     </div>
   )
 }
 
-// A card's state at its top right while something is left to do on it.
-function Chip({ tone, icon, children }: { tone: "todo" | "done" | "quiet"; icon: IconName; children: ReactNode }) {
-  return <span className={`markup-chip is-${tone}`}><Icon name={icon} />{children}</span>
+// A thread's state where Word shows it too: resolved, or its text gone.
+function Chip({ tone, icon, children }: { tone: "done" | "quiet"; icon: IconName; children: ReactNode }) {
+  return <span className={`markup-chip markup-state is-${tone}`}><Icon name={icon} />{children}</span>
 }
 
-// What the drafting run did with this change or thread, in one line that
-// says it is doc.haus's; nothing for an item it left open. A run that read an
-// earlier version says which. The reason is model text, shown as text.
-function RunResponse({ response }: { response?: MarkupResponse }) {
+// What the drafting run did with this change or thread, as a small tag that
+// says it in full on hover or focus; nothing for an item it left open. A run
+// that read an earlier version says which. The reason is model text, shown as
+// text.
+function RunTag({ response }: { response?: MarkupResponse }) {
   const current = useContext(VersionContext)
   const reason = response?.reason?.trim()
   const answered = response?.question?.status === "answered"
-  const lines: Record<string, [string, string]> = {
-    amended: ["doc.haus draft:", "changed in response"],
-    rejected: ["doc.haus draft:", reason ? `not changed — ${reason}` : "not changed"],
-    deferred: ["doc.haus draft:", "left for you to decide"],
-    question: ["doc.haus draft:", answered ? "you answered its question on this" : "waiting for your answer to its question"],
-    recommendation: ["doc.haus suggests:", reason || "a change here"],
+  const tags: Record<string, [string, string]> = {
+    amended: ["Draft: changed", "doc.haus draft: changed in response"],
+    rejected: ["Draft: not changed", `doc.haus draft: not changed${reason ? ` — ${reason}` : ""}`],
+    deferred: ["Draft: left to you", "doc.haus draft: left for you to decide"],
+    question: answered ? ["Draft: answered", "doc.haus draft: you answered its question on this"] : ["Draft: question", "doc.haus draft: waiting for your answer to its question"],
+    recommendation: ["Suggestion", `doc.haus suggests: ${reason || "a change here"}`],
   }
-  const line = response && lines[response.disposition]
-  if (!line) return null
+  const tag = response && tags[response.disposition]
+  if (!tag) return null
   const from = typeof response.from_version === "number" && response.from_version !== current ? response.from_version : undefined
+  const full = `${tag[1]}${from !== undefined ? ` (from the run on version ${from})` : ""}`
   return (
-    <p className="markup-response">
-      <Icon name="spark" />
-      <span>
-        <span className="markup-response-label">{line[0]}</span> {line[1]}
-        {from !== undefined && <span className="markup-response-from"> (from the run on version {from})</span>}
-      </span>
-    </p>
+    <Tooltip label={full} describes={false}>
+      <span className="markup-run-tag" role="img" tabIndex={0} aria-label={full}>{tag[0]}</span>
+    </Tooltip>
   )
 }
 
@@ -1638,10 +1713,13 @@ function Flags({ findings }: { findings: MarkupFinding[] }) {
   )
 }
 
-function Places({ revision, comments }: { revision: MarkupRevision; comments: MarkupComment[] }) {
+// Where a change is, a line per place: its clause or paragraph and, when its
+// own text does not say it, how the paragraph reads.
+type PlaceLine = { where?: string; context?: string }
+function placeLines(revision: MarkupRevision, comments: MarkupComment[]): PlaceLine[] {
   const text = changeText(revision)
   const places = revision.locations.filter((place) => place.paragraph !== null || place.context)
-  if (!places.length) return null
+  if (!places.length) return []
   // The preview repeats a whole inserted or moved paragraph; it is left out
   // then. A change with no text of its own (a paragraph break, a table row)
   // shows its paragraph's.
@@ -1656,39 +1734,49 @@ function Places({ revision, comments }: { revision: MarkupRevision; comments: Ma
     const to = places.filter((place) => place.side === "to")
     const side = (list: MarkupLocation[]) =>
       list.length > 1 && !list.some(listLabel) ? `paragraphs ${joined(list.map((place) => place.paragraph!))}` : joined(list.map((place) => placeName("body", place)!))
-    if (from.length && to.length && from.length + to.length === places.length)
-      return <OneLine className="markup-place">Moved from {PART[revision.scope]}{side(from)} to {side(to)}</OneLine>
+    if (from.length && to.length && from.length + to.length === places.length) return [{ where: `Moved from ${PART[revision.scope]}${side(from)} to ${side(to)}` }]
     // Otherwise its places come in document order, which does not say which
     // one it left; the document shows that.
     const labelled = places.some(listLabel)
     const where = joined(places.map((place) => (labelled ? placeName(revision.scope, place)! : place.paragraph!)))
-    return <OneLine className="markup-place">Old and new places: {labelled ? where : `${PART[revision.scope]}paragraphs ${where}`}</OneLine>
+    return [{ where: `Old and new places: ${labelled ? where : `${PART[revision.scope]}paragraphs ${where}`}` }]
   }
+  return places.map((place) => {
+    const context = preview(place.context)
+    const named = revision.scope === "comment" ? commentPlace(place, comments, !!context) : placeName(revision.scope, place)
+    // A move whose places are quoted says which one each is.
+    const where = named && revision.scope !== "comment" && place.side ? `${place.side} ${named}` : named
+    return { where: where ? capital(where) : undefined, context: context || undefined }
+  })
+}
+
+const placeText = (lines: PlaceLine[]) => lines.map((line) => [line.where, line.context && `“${line.context}”`].filter(Boolean).join(" · ")).join("\n")
+
+// The places, for a screen reader; the card's tooltip shows them.
+function Places({ lines }: { lines: PlaceLine[] }) {
+  if (!lines.length) return null
   return (
-    <>
-      {places.map((place, index) => {
-        const context = preview(place.context)
-        const named = revision.scope === "comment" ? commentPlace(place, comments, !!context) : placeName(revision.scope, place)
-        // A move whose places are quoted says which one each is.
-        const where = named && revision.scope !== "comment" && place.side ? `${place.side} ${named}` : named
-        return (
-          <OneLine className="markup-place" key={index}>
-            {where && <span className="markup-place-name">{capital(where)}</span>}
-            {where && context && " · "}
-            {context && <q>{context}</q>}
-          </OneLine>
-        )
-      })}
-    </>
+    <div className="sr-only">
+      {lines.map((line, index) => (
+        <p className="markup-place" key={index}>
+          {line.where && <span className="markup-place-name">{line.where}</span>}
+          {line.where && line.context && " · "}
+          {line.context && <q>{line.context}</q>}
+        </p>
+      ))}
+    </div>
   )
 }
 
-// One change, as Word's Review pane shows it: what kind, who and when, the
-// text. Accept, Reject and Leave tracked are one radio group (one Tab stop,
-// arrow keys move and choose), with nothing chosen until the lawyer decides;
-// the lawyer's own edit starts on Leave tracked and says what Accept does to
-// it. A refused change carries the refusal and a one-click Leave tracked.
-function ChangeCard({ revision, comments, state, own, disabled, carried, response, failure, holdHint, cardRef, onDecide, onHold }: {
+// One change, as Word's Review pane shows it: what kind, who and when on one
+// line, the text, then Accept, Reject and Leave tracked as one radio group
+// (one Tab stop, arrow keys move and choose), with nothing chosen until the
+// lawyer decides; an undecided card says so in its left edge and to a screen
+// reader. Clicked or focused, the card shows its change in the document; where
+// the change is goes in its tooltip. The lawyer's own edit starts on Leave
+// tracked and says what Accept does to it. A refused change carries the
+// refusal and a one-click Leave tracked.
+function ChangeCard({ revision, comments, state, own, disabled, carried, response, failure, holdHint, cardRef, onLocate, onDecide, onHold }: {
   revision: MarkupRevision
   comments: MarkupComment[]
   state: ChangeState
@@ -1698,9 +1786,11 @@ function ChangeCard({ revision, comments, state, own, disabled, carried, respons
   carried: boolean
   response?: MarkupResponse
   failure?: string
-  // The tab's line that says what Leave tracked does.
+  // The guide's line that says what Leave tracked does.
   holdHint: string
   cardRef: (node: HTMLLIElement | null) => void
+  // Show the change in the document; `again` scrolls to it even when it is already shown.
+  onLocate: (again: boolean) => void
   onDecide: (decision: MarkupDecision) => void
   onHold: () => void
 }) {
@@ -1709,40 +1799,44 @@ function ChangeCard({ revision, comments, state, own, disabled, carried, respons
   const detail = changeDetail(revision)
   const text = changeText(revision)
   const removes = revision.kind === "delete"
+  const places = placeLines(revision, comments)
+  const described = [failure ? `${id}-refused` : "", state === "undecided" ? `${id}-state` : ""].filter(Boolean).join(" ") || undefined
   return (
-    <li ref={cardRef} className={`change-card markup-card is-${state}${own ? " is-own" : ""}${failure ? " is-refused" : ""}`}>
+    <li ref={cardRef} title={placeText(places) || undefined} onClick={() => onLocate(true)} onFocus={() => onLocate(false)}
+      className={`change-card markup-card is-${state}${own ? " is-own" : ""}${failure ? " is-refused" : ""}`}>
       <div className="markup-card-top">
         <span className={`markup-kind is-${type}`}>
           <Icon name={type} />
           {TYPES.find((entry) => entry.value === type)!.label}
         </span>
         {detail && <span className="markup-kind-detail">{detail}</span>}
-        {own && <span className="markup-own">Your edit</span>}
-        {carried && <span className="version-tag">Carried over</span>}
-        {state === "undecided" && <Chip tone="todo" icon="pending">Needs your decision</Chip>}
-        {state === "word" && <Chip tone="quiet" icon="info">Resolve in Word</Chip>}
+        <Byline name={revision.author} date={revision.date} small inline />
+        {/* Its tags go to the next line, not the date, when the line is full. */}
+        <span className="markup-byline-end">
+          {own && <span className="markup-own">Your edit</span>}
+          {carried && <span className="version-tag">Carried over</span>}
+          <RunTag response={response} />
+        </span>
       </div>
-      <Byline name={revision.author} date={revision.date} small inline />
+      {state === "undecided" && <span id={`${id}-state`} className="sr-only">Not yet decided</span>}
       {text && <div className={removes ? "change-old" : revision.kind === "insert" ? "change-new" : "markup-text"}>{text}</div>}
       {revision.family === "paragraph_mark" && revision.kind === "delete" && <p className="markup-hint">Accepting joins this paragraph with the next one.</p>}
       {revision.kind === "format" && decidable(revision) && <p className="markup-hint">Accept keeps the new formatting; Reject restores the old.</p>}
       {own && decidable(revision) && (
         <p className="markup-hint" id={`${id}-own`}>Leave tracked to send it to the other side as a tracked change. Accept makes it final, without tracking.</p>
       )}
-      <Places revision={revision} comments={comments} />
+      <Places lines={places} />
       <Flags findings={revision.findings} />
-      <RunResponse response={response} />
       {state === "word" ? (
         <p className="markup-word"><Icon name="info" /><span><strong>Resolve in Word.</strong> doc.haus cannot apply this change safely, so it stays as a tracked change.</span></p>
       ) : (
-        <fieldset className="markup-decision" aria-label={`Your decision: ${decisionLabel(revision)}`} aria-describedby={failure ? `${id}-refused` : undefined} disabled={disabled}>
-          <legend>Your decision</legend>
+        <fieldset className="markup-decision" aria-label={`Your decision: ${decisionLabel(revision)}`} aria-describedby={described} disabled={disabled}>
           <div className="markup-choices">
             {DECISIONS.map((option) => (
               <label key={option.value} className={`markup-choice is-${option.value}`}>
                 <input type="radio" name={`${id}-decision`} value={option.value} checked={state === option.value}
                   aria-describedby={option.value === "hold" ? (own ? `${id}-own` : holdHint) : undefined} onChange={() => onDecide(option.value)} />
-                <Icon name={option.value} />
+                {option.value !== "hold" && <Icon name={option.value} />}
                 <span>{option.label}</span>
               </label>
             ))}
@@ -1768,12 +1862,12 @@ function ChangeCard({ revision, comments, state, own, disabled, carried, respons
 }
 
 // One comment in a thread, as Word shows it: avatar, name and date, the text.
-// The thread's first comment carries the card's state beside the author and,
-// under the author, the text the comment is on.
-function CommentBody({ comment, reply = false, chip, anchor }: { comment: MarkupComment; reply?: boolean; chip?: ReactNode; anchor?: ReactNode }) {
+// The thread's first comment carries the card's tags and state at the end of
+// its byline and, under the author, the words the comment is on.
+function CommentBody({ comment, reply = false, end, anchor }: { comment: MarkupComment; reply?: boolean; end?: ReactNode; anchor?: ReactNode }) {
   return (
     <div className={`markup-comment${reply ? " is-reply" : ""}`}>
-      <Byline name={comment.author} initials={comment.initials} date={comment.date} small={reply}>{chip}</Byline>
+      <Byline name={comment.author} initials={comment.initials} date={comment.date} small={reply}>{end}</Byline>
       {anchor}
       <p className="markup-comment-text">{comment.text}</p>
       <Flags findings={comment.findings} />
@@ -1781,28 +1875,31 @@ function CommentBody({ comment, reply = false, chip, anchor }: { comment: Markup
   )
 }
 
-// A thread as a Word comment card: the text it is anchored to, quietly, the
-// comment and its replies under it, and the reply box while it is open. A
-// resolved thread is greyed, as Word greys it, and so is a detached one, whose
-// text is no longer in the document; it says so and takes no reply.
+// What a screen reader hears for the state a thread's left edge shows.
+const THREAD_STATES: Record<string, string> = { needed: "Needs a reply", drafted: "Reply to approve", approved: "Reply approved", drafting: "Drafting a reply" }
+
+// A thread as a Word comment card: the words it is anchored to, quietly, the
+// comment and its replies under it, and the reply box while it is open; its
+// clause goes in its tooltip. A resolved thread is greyed, as Word greys it,
+// and so is a detached one, whose text is no longer in the document; it says
+// so and takes no reply.
 function ThreadCard({ thread, open, response, cardRef, ...area }: { thread: Thread; open: boolean; response?: MarkupResponse; cardRef: (node: HTMLLIElement | null) => void } & Omit<ReplyAreaProps, "thread">) {
   const { root, replies } = thread
   const place = root.paragraph !== null ? placeName(root.scope ?? "body", root) : undefined
   const state = !open ? (root.resolved === true ? "resolved" : root.detached ? "detached" : "closed") : area.reply?.approved ? "approved" : area.reply ? "drafted" : area.drafting ? "drafting" : area.awaiting ? "needed" : "answered"
   return (
-    <li ref={cardRef} tabIndex={-1} data-comment-id={root.id} className={`change-card markup-card markup-thread is-${state}${area.failure ? " is-refused" : ""}`}>
+    <li ref={cardRef} tabIndex={-1} data-comment-id={root.id} title={place ? capital(place) : undefined}
+      className={`change-card markup-card markup-thread is-${state}${area.failure ? " is-refused" : ""}`}>
       <CommentBody comment={root}
-        chip={state === "resolved" ? <Chip tone="quiet" icon="resolved">Resolved</Chip>
-          : state === "detached" ? <Chip tone="quiet" icon="info">Text removed</Chip>
-          : state === "needed" ? <Chip tone="todo" icon="pending">Needs a reply</Chip>
-          : state === "drafted" ? <Chip tone="todo" icon="pending">Reply to approve</Chip>
-          : state === "approved" ? <Chip tone="done" icon="accept">Reply approved</Chip>
-          : undefined}
-        anchor={(root.quote || place) && (
+        end={<>
+          <RunTag response={response} />
+          {state === "resolved" ? <Chip tone="quiet" icon="resolved">Resolved</Chip>
+            : state === "detached" ? <Chip tone="quiet" icon="info">Text removed</Chip>
+            : THREAD_STATES[state] && <span className="markup-state sr-only">{THREAD_STATES[state]}</span>}
+        </>}
+        anchor={root.quote && (
           <OneLine className="markup-anchor">
-            {root.quote && <><span className="sr-only">On the text </span><q className="markup-quote">{root.quote}</q></>}
-            {root.quote && place && " · "}
-            {place && <span className="markup-place-name">{capital(place)}</span>}
+            <span className="sr-only">On the text </span><q className="markup-quote">{root.quote}</q>
           </OneLine>
         )} />
       {replies.length > 0 && (
@@ -1814,7 +1911,6 @@ function ThreadCard({ thread, open, response, cardRef, ...area }: { thread: Thre
           ))}
         </ol>
       )}
-      <RunResponse response={response} />
       {state === "detached" && <p className="markup-hint">The text this comment was on is no longer in the document, so it takes no reply here.</p>}
       {open && <ReplyArea thread={thread} {...area} />}
     </li>
@@ -1845,25 +1941,39 @@ type ReplyAreaProps = {
   actions: ReplyActions
 }
 
-// One open thread's reply, in Word's reply box at the foot of the card:
+// A draft's text with each part only the lawyer can fill marked.
+function marked(text: string) {
+  return text.split(/(\[\[[\s\S]*?\]\])/).map((part, index) => (index % 2 ? <mark key={index}>{part}</mark> : part))
+}
+
+// One open thread's reply, in a box like the chat's at the foot of the card:
 // offered (Write a reply in the box, Draft reply, an optional steer), drafting
-// (Cancel), a draft to edit (Approve reply once nothing is left in brackets,
-// Redraft, Discard) or approved (shown as the next reply in the thread, with
-// Edit and Remove). The control the panel focuses after an action carries
-// data-reply-focus. A thread flagged for planted instructions repeats its flag
-// above the draft.
+// (Cancel), a draft to edit (Approve reply inside the box once nothing is left
+// in brackets, which it says on hover or focus; Redraft, Steer… and Discard
+// behind ⋯; what to check before sending under it) or approved (shown as the
+// next reply in the thread, with Edit and Remove). The box grows with its text
+// and marks the bracketed parts still to fill. The control the panel focuses
+// after an action carries data-reply-focus. A thread flagged for planted
+// instructions repeats its flag above the draft.
 function ReplyArea({ thread, awaiting, reply, drafting, steer, carried, you, undo, failure, disabled, canDraft, actions }: ReplyAreaProps) {
   const id = useId()
   const [steering, setSteering] = useState(steer !== "")
+  const [menu, setMenu] = useState(false)
+  const menuWrap = useRef<HTMLDivElement>(null)
+  const menuButton = useRef<HTMLButtonElement>(null)
+  const steerInput = useRef<HTMLInputElement>(null)
+  useDismiss(menu, menuWrap, () => setMenu(false))
   const planted = [thread.root, ...thread.replies].flatMap((comment) => comment.findings).filter((finding) => !HIDDEN.has(finding.rule))
   const hold = !reply || reply.approved ? undefined : !reply.text.trim() ? "Write the reply first." : PLACEHOLDER.test(reply.text) ? "Fill the bracketed parts first." : undefined
-  const steerToggle = awaiting && (
-    <button type="button" className="linklike" aria-expanded={steering} onClick={() => setSteering(!steering)}>Steer…</button>
-  )
+  const steerNow = () => {
+    setMenu(false)
+    setSteering(true)
+    requestAnimationFrame(() => steerInput.current?.focus())
+  }
   const steerField = awaiting && steering && (
     <div className="markup-steer">
       <label htmlFor={`${id}-steer`}>Direction for the draft</label>
-      <input id={`${id}-steer`} type="text" value={steer} maxLength={STEER_MAX} disabled={disabled} placeholder="For example: agree, or hold firm at 30 days"
+      <input id={`${id}-steer`} ref={steerInput} type="text" value={steer} maxLength={STEER_MAX} disabled={disabled} placeholder="For example: agree, or hold firm at 30 days"
         onChange={(event) => actions.steer(event.target.value)}
         onKeyDown={(event) => {
           if (event.key !== "Enter" || !canDraft) return
@@ -1872,27 +1982,28 @@ function ReplyArea({ thread, awaiting, reply, drafting, steer, carried, you, und
         }} />
     </div>
   )
+  const undoLine = undo && (
+    <p className="markup-hint">
+      {undo}{" "}
+      <button type="button" className="linklike" disabled={disabled} onClick={actions.undo}>Undo</button>
+    </p>
+  )
   return (
     <div className={`markup-reply${reply?.approved ? " is-approved" : ""}`} role="group" aria-label={`Your reply to ${authorName(thread.root.author)}`}>
       {drafting ? (
-        <div className="markup-replybox is-busy">
+        <div className="markup-composer is-busy">
           <span className="markup-reply-status"><span className="markup-spinner" aria-hidden="true" />Drafting a reply…</span>
           <button type="button" className="icon-btn" data-reply-focus onClick={actions.cancel}>Cancel</button>
         </div>
       ) : !reply ? (
         <>
-          {undo && (
-            <p className="markup-hint">
-              {undo}{" "}
-              <button type="button" className="linklike" disabled={disabled} onClick={actions.undo}>Undo</button>
-            </p>
-          )}
-          <button type="button" className="markup-replybox" data-reply-focus={awaiting ? undefined : true} disabled={disabled} onClick={actions.write}>Write a reply</button>
+          {undoLine}
+          <div className="markup-composer is-empty">
+            <button type="button" className="markup-composer-write" data-reply-focus={awaiting ? undefined : true} disabled={disabled} onClick={actions.write}>Write a reply</button>
+            {awaiting && <button type="button" className="markup-draft-button" data-reply-focus disabled={!canDraft} onClick={actions.draft}><Icon name="pen" />Draft reply</button>}
+          </div>
           {awaiting && (
-            <div className="markup-reply-actions">
-              <button type="button" className="icon-btn is-primary" data-reply-focus disabled={!canDraft} onClick={actions.draft}><Icon name="spark" />Draft reply</button>
-              {steerToggle}
-            </div>
+            <button type="button" className="linklike markup-steer-toggle" aria-expanded={steering} onClick={() => setSteering(!steering)}>Steer…</button>
           )}
           {steerField}
         </>
@@ -1914,36 +2025,56 @@ function ReplyArea({ thread, awaiting, reply, drafting, steer, carried, you, und
           {reply.changed && (
             <p className="markup-reply-changed"><Icon name="warning" /><span>The thread changed since you drafted this — check before approving.</span></p>
           )}
-          {undo && (
-            <p className="markup-hint">
-              {undo}{" "}
-              <button type="button" className="linklike" disabled={disabled} onClick={actions.undo}>Undo</button>
-            </p>
-          )}
-          <label className="markup-reply-label" htmlFor={`${id}-text`}>
-            Your reply
-            {carried && <span className="version-tag">Carried over</span>}
-          </label>
-          <textarea id={`${id}-text`} className="markup-reply-text" data-reply-focus value={reply.text} rows={4} maxLength={REPLY_MAX} disabled={disabled}
-            aria-describedby={[reply.open_items.length ? `${id}-items` : "", hold ? `${id}-hold` : ""].filter(Boolean).join(" ") || undefined}
-            onChange={(event) => actions.change(event.target.value)} />
+          {undoLine}
+          <div className="markup-composer">
+            <label className="sr-only" htmlFor={`${id}-text`}>Your reply</label>
+            <div className="markup-composer-field">
+              <div className="markup-composer-mirror" aria-hidden="true">{marked(reply.text)}{" "}</div>
+              <textarea id={`${id}-text`} className="markup-reply-text" data-reply-focus value={reply.text} rows={2} maxLength={REPLY_MAX} disabled={disabled} placeholder="Write a reply"
+                aria-describedby={[reply.open_items.length ? `${id}-items` : "", hold ? `${id}-hold` : ""].filter(Boolean).join(" ") || undefined}
+                onChange={(event) => actions.change(event.target.value)} />
+            </div>
+            <div className="markup-composer-foot">
+              {carried && <span className="version-tag">Carried over</span>}
+              <div className="markup-menu-wrap" ref={menuWrap}>
+                <button type="button" ref={menuButton} className="markup-more" aria-label="More reply actions" title="More reply actions" aria-expanded={menu}
+                  aria-controls={menu ? `${id}-menu` : undefined} disabled={disabled} onClick={() => setMenu(!menu)} onKeyDown={(event) => {
+                    if (event.key !== "Escape" || !menu) return
+                    event.preventDefault()
+                    event.stopPropagation()
+                    setMenu(false)
+                  }}>
+                  <Icon name="more" />
+                </button>
+                {menu && (
+                  <div id={`${id}-menu`} className="markup-menu is-up" role="group" aria-label="Reply actions" onKeyDown={(event) => {
+                    if (event.key !== "Escape") return
+                    event.preventDefault()
+                    event.stopPropagation()
+                    setMenu(false)
+                    menuButton.current?.focus()
+                  }}>
+                    {awaiting && <button type="button" className="markup-menu-item" disabled={!canDraft} onClick={() => { setMenu(false); actions.draft() }}>Redraft</button>}
+                    {awaiting && <button type="button" className="markup-menu-item" onClick={steerNow}>Steer…</button>}
+                    <button type="button" className="markup-menu-item is-reject" onClick={() => { setMenu(false); actions.discard() }}>Discard</button>
+                  </div>
+                )}
+              </div>
+              <Why reason={hold}>
+                <button type="button" className="primary btn-sm markup-approve" disabled={disabled} aria-disabled={hold ? true : undefined} aria-describedby={hold ? `${id}-hold` : undefined}
+                  onClick={() => { if (!hold) actions.approve() }}>
+                  <Icon name="accept" />Approve reply
+                </button>
+              </Why>
+              {hold && <span id={`${id}-hold`} className="sr-only">{hold}</span>}
+            </div>
+          </div>
           {reply.open_items.length > 0 && (
             <div className="markup-open-items" id={`${id}-items`}>
-              <p><Icon name="info" />Check before sending</p>
-              <ul>
-                {reply.open_items.map((item, index) => <li key={index}>{item}</li>)}
-              </ul>
+              <span className="sr-only">Check before sending: </span>
+              {reply.open_items.map((item, index) => <p key={index}><Icon name="info" /><span>{item}</span></p>)}
             </div>
           )}
-          {hold && <p id={`${id}-hold`} className="markup-hint markup-hold">{hold}</p>}
-          <div className="markup-reply-actions">
-            <button type="button" className="primary btn-sm" disabled={disabled || !!hold} aria-describedby={hold ? `${id}-hold` : undefined} onClick={actions.approve}>
-              <Icon name="accept" />Approve reply
-            </button>
-            {awaiting && <button type="button" className="icon-btn" disabled={!canDraft} onClick={actions.draft}>Redraft</button>}
-            <button type="button" className="linklike" disabled={disabled} onClick={actions.discard}>Discard</button>
-            {steerToggle}
-          </div>
           {steerField}
         </>
       )}
