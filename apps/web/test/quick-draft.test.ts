@@ -135,6 +135,17 @@ describe("candidates", () => {
     expect(CHAT_ASSISTANTS.find((a) => a.name === CLIENT_SUMMARY)?.label).toBe("Client summary")
     expect(NAMES).not.toContain(CLIENT_SUMMARY)
   })
+
+  // A revised draft of an existing document, such as the answer to the other
+  // side's markup, is a drafting run, not Redline (#299). The router is told so
+  // twice: in the draft candidate it is offered and in its drafting rule, which
+  // comes before the rule for edits the lawyer directs.
+  test("Auto offers the drafting run for a revised draft, not only a new document", async () => {
+    expect(AUTO_CANDIDATES.find((a) => a.name === "draft")?.description).toMatch(/revised draft/)
+    const router = await Bun.file(new URL("../../../dochaus/agent/router.md", import.meta.url)).text()
+    const drafting = router.split(/\n(?=\d+\. )/).find((rule) => rule.includes("-> the draft mode"))
+    expect(drafting).toMatch(/revised draft/)
+  })
 })
 
 describe("route form", () => {

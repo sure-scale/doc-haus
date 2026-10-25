@@ -31,7 +31,7 @@ export const CHAT_ASSISTANTS: AssistantMeta[] = [
   {
     name: "redliner",
     label: "Redline",
-    description: "Edits and redlines this matter's documents as tracked changes you accept or reject in Word.",
+    description: "Makes the edits you ask for in this matter's documents, as tracked changes you accept or reject in Word.",
   },
   {
     name: "redactor",
@@ -48,7 +48,8 @@ export const CHAT_ASSISTANTS: AssistantMeta[] = [
   {
     name: "draft",
     label: "Draft",
-    description: "Drafts new documents into this matter — from a firm template or from scratch.",
+    description:
+      "Drafts new documents from a firm template or from scratch, and revised drafts, such as your response to the other side's markup.",
   },
   {
     name: "quick-draft",
