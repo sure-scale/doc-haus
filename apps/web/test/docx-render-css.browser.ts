@@ -10,6 +10,9 @@
 // must still apply. A hyperlink whose target is a script must not run when
 // clicked, while web, mail and in-document links keep their targets as the
 // converter wrote them. Only ingest HTTP is mocked.
+// Each viewer then renders again with the style-value cleaning stubbed out,
+// under the page's Content-Security-Policy from index.html: the remote images
+// must be refused by the policy, and nothing else the viewer loads may be.
 // DOCHAUS_EVIDENCE_DIR optionally keeps a screenshot per viewer.
 import assert from "node:assert/strict"
 import { existsSync, statSync } from "node:fs"
@@ -84,9 +87,16 @@ const viewers = {
 }
 createRoot(document.getElementById("root")).render(viewers[location.hash.slice(1)]())
 `)
-const build = await Bun.build({ entrypoints: [entry], target: "browser", define: { "import.meta.env": JSON.stringify({ VITE_INGEST_URL: "/ingest", VITE_OPENCODE_URL: "/" }) } })
-assert.equal(build.success, true, build.logs.join("\n"))
-const script = await build.outputs.find(output => output.kind === "entry-point")!.text()
+const bundle = async (plugins: import("bun").BunPlugin[] = []) => {
+  const build = await Bun.build({ entrypoints: [entry], target: "browser", plugins, define: { "import.meta.env": JSON.stringify({ VITE_INGEST_URL: "/ingest", VITE_OPENCODE_URL: "/" }) } })
+  assert.equal(build.success, true, build.logs.join("\n"))
+  return build.outputs.find(output => output.kind === "entry-point")!.text()
+}
+const script = await bundle()
+const unsanitised = await bundle([{ name: "no-style-value-cleaning", setup(build) {
+  build.onLoad({ filter: /docx-style-values\.ts$/ }, () => ({ contents: "export const withSafeStyleValues = (bytes: Uint8Array) => bytes", loader: "ts" }))
+} }])
+const policy = (await Bun.file(path.resolve(import.meta.dir, "../index.html")).text()).match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)"/)?.[1]
 const css = (await Promise.all([
   "styles.css", "styles/primitives.css", "styles/design-system.css", "styles/design-documents.css",
 ].map(file => Bun.file(path.resolve(import.meta.dir, "../src", file)).text()))).join("\n")
@@ -94,11 +104,12 @@ const server = Bun.serve({
   port: 0, hostname: "127.0.0.1", fetch(request) {
     const url = new URL(request.url), { pathname } = url
     if (pathname === "/harness.js") return new Response(script, { headers: { "content-type": "text/javascript" } })
+    if (pathname === "/unsanitised.js") return new Response(unsanitised, { headers: { "content-type": "text/javascript" } })
     if (pathname.startsWith("/wasm/")) {
       const file = path.join(wasmDir, decodeURIComponent(pathname.slice("/wasm/".length)))
       return file.startsWith(wasmDir + path.sep) && existsSync(file) && statSync(file).isFile() ? new Response(Bun.file(file)) : new Response("Not found", { status: 404 })
     }
-    if (pathname === "/") return new Response(`<!doctype html><html lang="en"><meta charset="utf-8"><style>${css}body{margin:0;padding:24px}</style>${Object.entries(probes).map(([name, label], i) => `<div id="${name}-probe" style="position:fixed;left:24px;bottom:${24 + i * 56}px;z-index:2147483647;background:#fff;padding:8px 12px;font:14px system-ui">App page, outside the document (${label})</div>`).join("")}<div id="root"></div><script type="module" src="/harness.js"></script></html>`, { headers: { "content-type": "text/html" } })
+    if (pathname === "/" || pathname === "/policy") return new Response(`<!doctype html><html lang="en"><meta charset="utf-8">${pathname === "/policy" && policy ? `<meta http-equiv="Content-Security-Policy" content="${policy}">` : ""}<style>${css}body{margin:0;padding:24px}</style>${Object.entries(probes).map(([name, label], i) => `<div id="${name}-probe" style="position:fixed;left:24px;bottom:${24 + i * 56}px;z-index:2147483647;background:#fff;padding:8px 12px;font:14px system-ui">App page, outside the document (${label})</div>`).join("")}<div id="root"></div><script type="module" src="${pathname === "/policy" ? "/unsanitised.js" : "/harness.js"}"></script></html>`, { headers: { "content-type": "text/html" } })
     if (request.method !== "GET") return Response.json({ error: "Read-only harness" }, { status: 405 })
     const word = () => new Response(docx, { headers: { "content-type": `${CT}.document` } })
     if (pathname === "/template.docx" || /^\/ingest\/matters\/material\/documents\/(redlined|content)$/.test(pathname)) return word()
@@ -113,18 +124,24 @@ const server = Bun.serve({
 const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } : {}) })
 const failures: string[] = []
 try {
-  for (const viewer of ["document", "version", "blackline", "template"]) {
+  const viewers = ["document", "version", "blackline", "template"]
+  for (const [viewer, guard] of [...viewers.map(viewer => [viewer, "cleaning"]), ...viewers.map(viewer => [viewer, "policy"])]) {
+    const label = `${viewer} viewer${guard === "policy" ? ", style values uncleaned, page policy only" : ""}`
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
     page.setDefaultTimeout(60_000)
-    const remote: string[] = []
+    const fetched: string[] = []
     const errors: string[] = []
     page.on("pageerror", error => errors.push(error.message))
     await page.route("**/*", route => {
       if (new URL(route.request().url()).origin === server.url.origin) return route.continue()
-      remote.push(route.request().url())
+      fetched.push(route.request().url())
       return route.abort()
     })
-    await page.goto(`${server.url.href}#${viewer}`)
+    await page.addInitScript(() => {
+      const seen: string[] = ((window as { __violations?: string[] }).__violations = [])
+      document.addEventListener("securitypolicyviolation", event => seen.push(`${event.effectiveDirective} ${event.blockedURI}`), true)
+    })
+    await page.goto(`${server.url.href}${guard === "policy" ? "policy" : ""}#${viewer}`)
     let rendered = page.locator(".docx-render:not(.docx-skeleton)").filter({ hasText: sentence })
     await rendered.first().waitFor()
     if (viewer === "version") {
@@ -144,21 +161,29 @@ try {
     await page.waitForTimeout(250)
     const ran = await page.evaluate(() => (window as { __docxLink?: unknown }).__docxLink !== undefined)
     const sheet = await page.evaluate(() => [...document.querySelectorAll(".docx-render style")].map(style => style.textContent).join("\n"))
-    if (evidence) await page.screenshot({ path: path.join(evidence, `${viewer}-viewer.png`), fullPage: true })
-    const problem = [
+    const violations = await page.evaluate(() => (window as { __violations?: string[] }).__violations ?? [])
+    if (evidence) await page.screenshot({ path: path.join(evidence, `${viewer}-viewer${guard === "policy" ? "-policy-only" : ""}.png`), fullPage: true })
+    const beacons = ["font", "style", "prefix"].map(name => `img-src ${remote(name)}`)
+    const problem = guard === "policy" ? [
+      ...errors.map(error => `page error: ${error}`),
+      ...fetched.map(url => `remote request: ${url}`),
+      ...beacons.filter(beacon => !violations.includes(beacon)).map(beacon => `the page policy did not refuse ${beacon}`),
+      ...violations.filter(violation => !beacons.includes(violation)).map(violation => `the page policy refused something the viewer loads: ${violation}`),
+    ] : [
       ...errors.map(error => `page error: ${error}`),
       ...outlines.filter(([, outline]) => outline !== "none").map(([name]) => `a rule from the file's ${probes[name as keyof typeof probes]} restyled the page outside the document`),
-      ...remote.map(url => `remote request: ${url}`),
+      ...fetched.map(url => `remote request: ${url}`),
       ...["Times New Roman", "MS 明朝"].filter(name => !sheet.includes(name)).map(name => `ordinary font name "${name}" missing from the stylesheet`),
       ...(Number(weight) >= 700 ? [] : [`the file's own paragraph style no longer applies (font-weight ${weight})`]),
       ...(ran ? ["clicking a hyperlink whose target is a script ran it"] : []),
       ...Object.entries(targets).filter(([kind, href]) => JSON.stringify(anchors[kind]) !== JSON.stringify({ href, target: null, rel: null })).map(([kind]) => `${kind} link rendered as ${JSON.stringify(anchors[kind])}`),
     ]
-    if (problem.length) failures.push(`${viewer}: ${problem.join("; ")}`)
-    console.log(`${problem.length ? "FAIL" : "PASS"} ${viewer} viewer${problem.length ? `: ${problem.join("; ")}` : ""}`)
+    if (problem.length) failures.push(`${label}: ${problem.join("; ")}`)
+    console.log(`${problem.length ? "FAIL" : "PASS"} ${label}${problem.length ? `: ${problem.join("; ")}` : ""}`)
     await page.close()
   }
-  assert.deepEqual(failures, [], "No value in a Word file adds CSS rules to the page in any viewer")
+  assert.ok(policy, "index.html declares a Content-Security-Policy")
+  assert.deepEqual(failures, [], "No value in a Word file adds CSS rules to the page or loads a remote resource in any viewer")
 } finally {
   await browser.close()
   server.stop(true)
