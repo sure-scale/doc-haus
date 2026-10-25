@@ -406,6 +406,22 @@ test("derived attachment names drop bidi overrides and zero-width characters", (
   expect(safeAttachmentName("\u200B\u2066", "application/pdf", 2)).toBe("attachment-2.pdf")
 })
 
+test("an attachment listed as not supported is judged at start by the name it was listed under, not taken in again", async () => {
+  const directory = matter()
+  // Its safe name drops the format character ("x.pdfz"); its stated name on
+  // one line reads it as a space ("x.pdf z"), which would take a .pdf.
+  const message = email("Synthetic format character", "Body.", [[
+    "Content-Type: application/pdf",
+    `Content-Disposition: attachment; filename*=utf-8''${encodeURIComponent("x.pdf\uFEFFz")}`,
+    "Content-Transfer-Encoding: base64",
+    "",
+    pdf("Synthetic format character marker").toString("base64"),
+  ].join("\r\n")])
+  const result = await ingestEmailDocument(directory, "Format.eml", message)
+  expect(result.attachments.map(({ name, status }) => [name, status])).toEqual([["x.pdf z", "unsupported"]])
+  expect(await reingestLegacyEmails(directory)).toBe(0)
+}, 120_000)
+
 test("an attachment a sibling email that is also removed links to is removed with the email", async () => {
   const directory = matter()
   const shared = await docx("Synthetic sibling shared marker")

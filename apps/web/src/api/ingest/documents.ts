@@ -68,7 +68,9 @@ export type EmailAttachment = {
   size: number
   status: AttachmentStatus
   document?: string
-  note?: "may-contain-attachments"
+  // may-contain-attachments: Outlook's winmail.dat, not unpacked; linked or ole:
+  // an Outlook attachment held only as a link, or an OLE object, never read.
+  note?: "may-contain-attachments" | "linked" | "ole"
   flagged?: true
   // Its document's extracted text may be incomplete or garbled.
   degraded?: true
@@ -81,8 +83,8 @@ export type EmailRemoval = {
 // The source formats ingest reads (MATTER_DOCUMENT_EXTENSIONS in
 // services/ingest/src/ingest.ts). The upload picker, every drop target and the
 // citation link take this one list.
-export const MATTER_DOCUMENT_EXTENSIONS = [".docx", ".pdf", ".eml", ".xlsx", ".zip"] as const
-export type MatterDocumentKind = "docx" | "pdf" | "eml" | "xlsx" | "zip"
+export const MATTER_DOCUMENT_EXTENSIONS = [".docx", ".pdf", ".eml", ".msg", ".xlsx", ".zip"] as const
+export type MatterDocumentKind = "docx" | "pdf" | "eml" | "msg" | "xlsx" | "zip"
 
 // Read the extension as ingest does (path.extname of the trimmed name): from the
 // base name's last dot, and none when that dot leads the name (".pdf").
@@ -108,10 +110,18 @@ export type IngestResult = {
   attachments?: EmailAttachment[]
   // The extraction quality gate's result for the uploaded file.
   quality?: ExtractionQuality
+  // The version this upload saved (#268); created is false when the file
+  // already held these bytes.
+  version?: { id: string; number: number; created: boolean } | null
+  // A Word file saved with pending tracked changes: kept as a version, with a
+  // plain notice that doc.haus edits wait until they are resolved.
+  tracked_changes?: { count: number; authors: string[] }
+  notice?: string
 }
 
 // What an upload does when a source of the same name is already in the matter:
-// replace it, or keep both by storing the upload under the next free name
+// save it as that document's next version ("replace"; earlier versions stay
+// kept), or keep both by storing the upload under the next free name
 // ("Name (2).docx"), returned as the result's `name`. Without a choice the
 // upload is refused with DocumentExistsError, so a lawyer's file is never
 // replaced silently. A generated deliverable is never replaced by an upload;
@@ -124,6 +134,30 @@ export class DocumentExistsError extends Error {
   constructor(readonly existing: string, readonly role: "source" | "deliverable", message: string) {
     super(message)
   }
+}
+
+// The upload's bytes are already kept for the document of that name, as one of
+// its versions (or, from before versions were kept, as the file itself), so
+// nothing was saved. `existing` is that document's name.
+export class DuplicateUploadError extends Error {
+  constructor(readonly existing: string, readonly version: { id: string; number: number; current: boolean } | null, message: string) {
+    super(message)
+  }
+}
+
+// The service refused the upload, with its HTTP status: a refusal for this file
+// (4xx) is the same on retry; a service failure (5xx) may not be.
+export class UploadFailedError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message)
+  }
+}
+
+// What an identical upload matched, said beside the file's name: plainly that
+// nothing was saved.
+export function duplicateMessage(name: string, version: DuplicateUploadError["version"]) {
+  if (!version) return `Identical to ${name}, already in this matter. Nothing was saved.`
+  return `Identical to ${version.current ? `the current version (version ${version.number})` : `version ${version.number}`} of ${name}. Nothing was saved.`
 }
 
 // XHR rather than fetch so the row can tell "uploading" (bytes still leaving the
@@ -147,7 +181,9 @@ export function uploadDocument(
       const res = new Response(xhr.responseText, { status: xhr.status })
       const exists = documentExists(xhr.status, xhr.responseText)
       if (exists) return reject(exists)
-      if (!res.ok) return ingestError(res, `Could not read ${file.name}`).then((message) => reject(new Error(message)))
+      const duplicate = duplicateUpload(xhr.status, xhr.responseText)
+      if (duplicate) return reject(duplicate)
+      if (!res.ok) return ingestError(res, `Could not read ${file.name}`).then((message) => reject(new UploadFailedError(xhr.status, message)))
       return res.json().then(resolve, reject)
     }
     xhr.send(form)
@@ -161,6 +197,21 @@ function documentExists(status: number, text: string) {
     const role = body.code === "source_exists" ? "source" : body.code === "deliverable_exists" ? "deliverable" : undefined
     if (!role || typeof body.name !== "string") return
     return new DocumentExistsError(body.name, role, typeof body.error === "string" ? body.error : `${body.name} is already in this matter.`)
+  } catch {
+    return
+  }
+}
+
+function duplicateUpload(status: number, text: string) {
+  if (status !== 409) return
+  try {
+    const body = JSON.parse(text) as { code?: unknown; name?: unknown; error?: unknown; version?: { id?: unknown; number?: unknown; current?: unknown } | null }
+    if (body.code !== "duplicate" || typeof body.name !== "string") return
+    const kept = body.version
+    const version = kept && typeof kept.id === "string" && typeof kept.number === "number"
+      ? { id: kept.id, number: kept.number, current: kept.current === true }
+      : null
+    return new DuplicateUploadError(body.name, version, typeof body.error === "string" ? body.error : `${body.name} is already in this matter.`)
   } catch {
     return
   }
@@ -195,6 +246,26 @@ export async function convertPdfToDocx(id: string, name: string): Promise<Ingest
 // from our own ingest service, so the file never leaves for a third-party service.
 export function documentContentUrl(id: string, name: string): string {
   return `${INGEST_URL}/matters/${id}/documents/content?name=${encodeURIComponent(name)}`
+}
+
+export type PdfPassagePage =
+  | { status: "matched"; page: number }
+  | { status: "ambiguous"; pages: number[] }
+  | { status: "unavailable"; reason: "no_text_layer" | "not_found" | "unreadable" }
+
+// The page of a matter PDF where a cited excerpt starts, found by ingest in the
+// PDF's own text layer, so the browser's PDF viewer can open at it (#page=N).
+// The viewer waits for this before loading the PDF, so a slow answer (a held
+// document lock, a busy ingest) is given up and the PDF opens at page 1.
+export async function locatePdfPassage(id: string, name: string, excerpt: string): Promise<PdfPassagePage> {
+  const res = await fetch(`${INGEST_URL}/matters/${id}/documents/pdf-page`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, excerpt }),
+    signal: AbortSignal.timeout(4000),
+  })
+  if (!res.ok) throw new Error(await ingestError(res, `Could not locate the cited passage in ${name}`))
+  return res.json()
 }
 
 // The normalised text ingest extracted from a matter document: the same text the

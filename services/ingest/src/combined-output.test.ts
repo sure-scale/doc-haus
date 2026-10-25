@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
@@ -433,6 +433,43 @@ describe("combined file rebuild: lock, contention and ownership", () => {
       const uploaded = await request(`${matter.route}/documents/revisions`, { method: "POST", body: form })
       expect({ status: uploaded.status, body: await uploaded.json() }).toMatchObject({ status: 200, body: { combined_updated: true } })
       expect(documentText(readFileSync(path.join(matter.dir, SAVED)))).toContain("by rail")
+      // The rebuilt file's version says what made it: a rebuild, not an accept (#268).
+      const history = await (await request(`${matter.route}/documents/versions?${new URLSearchParams({ name: SAVED })}`)).json() as { versions: { origin: string; label: string | null }[] }
+      expect(history.versions[0]).toMatchObject({ origin: "system", label: "Combined file rebuilt" })
+    })
+  }, 120_000)
+
+  test("a redaction of a part rebuilds the saved combined file and deletes the combined file's earlier versions", async () => {
+    await withIngest(async request => {
+      const matter = await completedMatter(request)
+      const removed = "the supplier delivers the goods"
+      type Listed = { document: { id: string }; versions: { id: string; origin: string; removed: string | null; label: string | null; current: boolean }[] }
+      const versions = async (name: string) => await (await request(`${matter.route}/documents/versions?${new URLSearchParams({ name })}`)).json() as Listed
+      expect(documentText(readFileSync(path.join(matter.dir, SAVED)))).toContain(removed)
+      // As the redaction tool saves: the part in place, then its revision.
+      const redacted = (await renderMarkdownToDocx(BODY.replace(removed, "[REDACTED]"))).bytes
+      writeFileSync(path.join(matter.dir, BODY_NAME), redacted)
+      const form = new FormData()
+      form.append("file", new File([redacted], BODY_NAME))
+      const saved = await request(`${matter.route}/documents/revisions`, { method: "POST", body: form, headers: { "x-dochaus-origin": "redaction", "x-dochaus-actor": "agent:redactor" } })
+      const body = await saved.json() as { combined_updated?: boolean; purge_failed?: string }
+      expect({ status: saved.status, combined_updated: body.combined_updated, purge_failed: body.purge_failed }).toEqual({ status: 200, combined_updated: true, purge_failed: undefined })
+      expect(documentText(readFileSync(path.join(matter.dir, SAVED)))).not.toContain(removed)
+      // The rebuild is the redaction's write: every earlier combined version is removed, unreadable and not restorable.
+      const combined = await versions(SAVED)
+      expect(combined.versions.map(row => [row.origin, row.removed, row.current])).toEqual([
+        ["redaction", null, true], ...combined.versions.slice(1).map(() => [expect.any(String), "redaction", false]),
+      ])
+      expect(combined.versions.length).toBeGreaterThan(1)
+      for (const row of combined.versions.slice(1)) {
+        expect((await request(`${matter.route}/documents/versions/${row.id}/content`)).status).toBe(410)
+        expect((await request(`${matter.route}/documents/versions/${row.id}/restore`, { method: "POST" })).status).toBe(410)
+      }
+      // Neither the part's nor the combined file's kept versions hold the text.
+      for (const id of [combined.document.id, (await versions(BODY_NAME)).document.id]) {
+        const store = path.join(matter.dir, ".dochaus", "revisions", id)
+        expect(readdirSync(store).filter(file => documentText(readFileSync(path.join(store, file))).includes(removed))).toEqual([])
+      }
     })
   }, 120_000)
 

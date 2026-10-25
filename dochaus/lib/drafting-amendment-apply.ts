@@ -2,10 +2,12 @@ import { readFile } from "node:fs/promises"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { z } from "zod"
-import { changedDocxSpan, openRevision } from "./docx-amendments"
+import { changedRange, openRevision } from "./docx-amendments"
+import { paragraphFields, refInstruction, runText, unlink } from "./docx-fields"
 import { amendmentSchema, amendmentParagraphs, amendmentText, ensureParagraphPointers, normalizeParagraphText, owningParagraph, paragraphPointers, paragraphSha256, type Amendment } from "./drafting-amendment"
 import { writeDurableBytes } from "./durable-json"
 import { FIELD_HIGHLIGHT_FILL, OPEN_ITEM_HIGHLIGHT_FILL, hasOpenItemMarker } from "./open-items"
+import { OPEN_ITEM_PATTERN } from "./marker-patterns"
 
 export type AppliedAmendment = { id: string; pid: string; mode: "code" | "already_applied"; result_pids?: string[] }
 // What a reviewer needs to act on an unapplied amendment. `original` is the text
@@ -39,7 +41,9 @@ const HIGHLIGHT_FILLS = new Set([OPEN_ITEM_HIGHLIGHT_FILL, FIELD_HIGHLIGHT_FILL]
 // never merged. A missing or duplicated pointer is target_deleted; there is no
 // text fallback. Edits touch only the changed words, so run formatting outside
 // them is kept; a paragraph the engine cannot write or that reads back
-// differently is left as it was (apply_failed). outPath is written atomically.
+// differently is left as it was (apply_failed). A live cross-reference keeps
+// its field unless the amendment rewrites its number (unlinkEditedReferences).
+// outPath is written atomically.
 export async function applyAmendments(input: { docxPath: string; outPath: string; amendments: Amendment[] }) {
   const amendments = requireAmendments(input.amendments)
   const source = new Uint8Array(await readFile(input.docxPath))
@@ -145,13 +149,19 @@ function settleParagraph(initial: string, rows: Amendment[], outcomes: Map<strin
 // Writes the edits in one engine session and reads the saved file back. A
 // paragraph whose edit fails or reads back differently is left as it was and
 // the remaining edits are rewritten from the source; each round removes at
-// least one paragraph, so this ends.
+// least one paragraph, so this ends. Each round unlinks only the references
+// its own edits need unlinked, from the untouched source, so a paragraph left
+// as it was keeps its live cross-references and, when no edit is kept, the
+// source is returned unchanged.
 async function writeVerified(source: Uint8Array, opened: Opened, edits: Edit[]) {
   const failed: { edit: Edit; issue: string }[] = []
   for (let round = 0; ; round++) {
     const kept = edits.filter(edit => !failed.some(row => row.edit === edit))
     if (!kept.length) return { bytes: source, failed }
-    const revision = round ? await openRevision(source) : opened
+    const base = round ? await openRevision(source) : opened
+    const unlinked = unlinkEditedReferences(base, kept)
+    const revision = unlinked ? await openRevision(unlinked) : base
+    if (unlinked && base !== opened) base.session.close()
     try {
       const written = writeParagraphs(revision, kept)
       if (written.kind === "failed") {
@@ -163,7 +173,7 @@ async function writeVerified(source: Uint8Array, opened: Opened, edits: Edit[]) 
       if (!mismatched.length) return { bytes, failed }
       failed.push(...mismatched.map(edit => ({ edit, issue: "The saved paragraph did not read back as the amended text." })))
     } finally {
-      if (round) revision.session.close()
+      if (revision !== opened) revision.session.close()
     }
   }
 }
@@ -193,9 +203,9 @@ function writeParagraph(opened: Opened, edit: Edit, live: (anchor: string) => Re
     for (const text of hunkTexts(live(anchor)?.text ?? "", final.join(""))) {
       const match = live(anchor)
       if (!match) return false
-      const change = changedDocxSpan(match, text)
-      if (!change.match.text && !change.replacement) continue
-      const result = opened.session.replaceMatch(change.match, change.replacement)
+      const { offset, replaced, changed } = hunkRange(match.text, text)
+      if (!replaced && !changed) continue
+      const result = opened.session.replaceMatch({ ...match, text: replaced, span: { start: match.span.start + offset, length: replaced.length } }, changed)
       refresh()
       if (!result.success) return false
     }
@@ -208,6 +218,91 @@ function writeParagraph(opened: Opened, edit: Edit, live: (anchor: string) => Re
     }
     return true
   } catch { return false }
+}
+
+// A REF field whose number an edit rewrites, and one in a paragraph split or
+// deleted, become the text they show, as before the edit; the cross-reference
+// check then reads them like any other reference. The text is unchanged, so
+// the edits still apply. A deleted clause's bookmark that only body REF fields
+// cite goes first, so the engine may delete the clause; those fields stay as
+// they are, and the refresh after renumbering (linkCrossReferences) makes each
+// an open-item marker, since its number may by then be another clause's. A
+// bookmark anything else cites stays, and the engine refuses the deletion.
+// Undefined when nothing is changed.
+function unlinkEditedReferences(opened: Opened, edits: Edit[]) {
+  let changed = false
+  const cited = (body: boolean) => new Set(opened.paragraphs.filter(paragraph => (paragraph.part === BODY) === body)
+    .flatMap(paragraph => paragraphFields(paragraph.node).map(field => refInstruction(field)?.name ?? "")))
+  const elsewhere = new Set([...cited(false), ...Object.values(opened.documents)
+    .flatMap(doc => Array.from(doc.getElementsByTagNameNS(W, "hyperlink")).map(node => node.getAttributeNS(W, "anchor") ?? ""))])
+  const body = edits.some(edit => !edit.final.length) ? cited(true) : new Set<string>()
+  for (const edit of edits) {
+    const paragraph = opened.paragraphs[edit.ordinal]!
+    if (paragraph.part !== BODY) continue
+    const fields = paragraphFields(paragraph.node).filter(field => refInstruction(field))
+    const touched = edit.final.length === 1 && runText(paragraph.node) === edit.initial ? touchedRanges(edit.initial, edit.final[0]!) : undefined
+    for (const field of fields) if (!touched || touched.some(([start, end]) => start < field.to && field.from < end)) {
+      unlink(field)
+      changed = true
+    }
+    if (edit.final.length) continue
+    const ends = Array.from(paragraph.node.getElementsByTagNameNS(W, "bookmarkEnd"))
+    for (const start of Array.from(paragraph.node.getElementsByTagNameNS(W, "bookmarkStart"))) {
+      const name = start.getAttributeNS(W, "name") ?? ""
+      const end = ends.find(node => node.getAttributeNS(W, "id") === start.getAttributeNS(W, "id"))
+      if (!/^_Ref\d+$/.test(name) || !body.has(name) || elsewhere.has(name) || !end) continue
+      start.parentNode!.removeChild(start)
+      end.parentNode!.removeChild(end)
+      changed = true
+    }
+  }
+  return changed ? zipSync({ ...opened.parts, [BODY]: strToU8(new XMLSerializer().serializeToString(opened.documents[BODY]!)) }, { mtime: new Date(1980, 0, 1) }) : undefined
+}
+
+// Where in `from` each word-level hunk to `to` writes, as writeParagraph
+// writes them: [start, end) offsets of the original text.
+function touchedRanges(from: string, to: string) {
+  const ranges: [number, number][] = []
+  let current = from
+  let shift = 0
+  for (const text of hunkTexts(from, to)) {
+    const { offset, replaced, changed } = hunkRange(current, text)
+    current = text
+    if (!replaced && !changed) continue
+    ranges.push([offset - shift, offset - shift + replaced.length])
+    shift += changed.length - replaced.length
+  }
+  return ranges
+}
+
+// The part of `from` one hunk to `to` rewrites (changedRange). The engine
+// writes a replacement in the formatting of the first run its span touches,
+// and a pure insertion's span is the one character after it, so words inserted
+// just before an open-item marker would be written in the marker's shaded run
+// and read as open. Such an insertion takes the character before the marker
+// instead, unless that character is in a marker too. Only a pure insertion's
+// text ends with the character it keeps. A replacement that runs from before a
+// marker into it would keep the marker's end (its closing bracket) in the
+// marker's run while writing what comes before it into another run, so the
+// marker that text ends would span two runs and go unshaded; it rewrites the
+// rest of the marker too.
+function hunkRange(from: string, to: string) {
+  const range = changedRange(from, to)
+  const { offset, replaced, changed } = range
+  const markers = markerSpans(from)
+  const end = offset + replaced.length
+  const entered = markers.find(([start, stop]) => offset < start && start < end && end < stop)
+  if (entered) return { offset, replaced: from.slice(offset, entered[1]), changed: changed + from.slice(end, entered[1]) }
+  if (!offset || changed === replaced || !changed.endsWith(replaced) || !markers.some(([start]) => start === offset)) return range
+  const previous = Array.from(from.slice(0, offset)).at(-1)!
+  const at = offset - previous.length
+  if (markers.some(([start, end]) => start <= at && at < end)) return range
+  return { offset: at, replaced: previous, changed: previous + changed.slice(0, -replaced.length) }
+}
+
+// [start, end) of each open-item marker in a paragraph's text.
+function markerSpans(text: string) {
+  return [...text.matchAll(OPEN_ITEM_PATTERN)].map(marker => [marker.index ?? 0, (marker.index ?? 0) + marker[0].length] as const)
 }
 
 // Cardinality edits must not silently discard section breaks, fields, or ranges
@@ -246,8 +341,10 @@ function preserveDeletedCellParagraphs(bytes: Uint8Array, opened: Opened, edits:
 }
 
 // Inserted text takes the formatting of the first run it touches, so resolving a
-// highlighted open item would leave the answer shaded as open. Clears open-item
-// shading from runs of edited paragraphs that no longer hold a marker.
+// highlighted open item would leave the answer shaded as open, and words written
+// beside a marker into its run would be shaded with it. Clears open-item shading
+// from runs of edited paragraphs that hold anything but markers; the apply step
+// shades each marker in them on its own, as drafting does.
 function clearResolvedHighlights(bytes: Uint8Array, pids: Set<string>) {
   const parts = unzipSync(bytes)
   const doc = new DOMParser().parseFromString(strFromU8(parts[BODY]!), "application/xml")
@@ -256,7 +353,8 @@ function clearResolvedHighlights(bytes: Uint8Array, pids: Set<string>) {
     if (run?.localName !== "r" || !HIGHLIGHT_FILLS.has((shd.getAttributeNS(W, "fill") ?? "").toUpperCase())) return false
     const paragraph = owningParagraph(run) as Element | null
     if (!paragraph || !paragraphPointers(paragraph).some(row => pids.has(row.pid))) return false
-    return !hasOpenItemMarker(Array.from(run.getElementsByTagNameNS(W, "t")).map(text => text.textContent ?? "").join(""))
+    const text = Array.from(run.getElementsByTagNameNS(W, "t")).map(text => text.textContent ?? "").join("")
+    return !hasOpenItemMarker(text) || text.replace(OPEN_ITEM_PATTERN, "") !== ""
   })
   if (!shading.length) return bytes
   for (const shd of shading) shd.parentNode!.removeChild(shd)
@@ -282,12 +380,24 @@ async function readBack(bytes: Uint8Array, before: Opened, edits: Edit[]) {
 }
 
 // Intermediate paragraph texts from `from` to `to`, one per word-level hunk.
-// Whitespace runs compare equal, so the document's own spacing is kept.
+// Whitespace runs compare equal, so the document's own spacing is kept. A word
+// in an open-item marker never matches one outside a marker: kept, it would
+// keep its run, and so the marker's shading where it became clause text, or
+// leave a rewritten marker's opening in the clause text's run and the marker
+// split across runs and unshaded.
 function hunkTexts(from: string, to: string) {
   const a = from.match(/\s+|\S+/g) ?? []
   const b = to.match(/\s+|\S+/g) ?? []
-  const key = (token: string) => (/^\s/.test(token) ? " " : token)
-  const pairs = matchTokens(a.map(key), b.map(key))
+  const keys = (text: string, tokens: string[]) => {
+    const markers = markerSpans(text)
+    let at = 0
+    return tokens.map(token => {
+      const start = at
+      at += token.length
+      return (markers.some(([from, to]) => from < at && start < to) ? "\u0000" : "") + (/^\s/.test(token) ? " " : token)
+    })
+  }
+  const pairs = matchTokens(keys(from, a), keys(to, b))
   if (!pairs) return [to]
   // Hunks separated only by whitespace become one edit.
   const hunks = gaps(pairs, a.length, b.length).reduce<{ start: number; end: number; text: string }[]>((joined, gap) => {

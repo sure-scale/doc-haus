@@ -79,6 +79,10 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   const [attorney, setAttorney] = useState<string>()
   const [comparing, setComparing] = useState<{ name: string; fromViewer?: boolean }>()
   const [blackline, setBlackline] = useState<CompareParams>()
+  // A version blackline opened from the viewer's versions list returns there
+  // when closed, with the list showing.
+  const [returnTo, setReturnTo] = useState<string>()
+  const [viewerVersions, setViewerVersions] = useState(false)
   // The change to show when the blackline opens, set when the user follows a
   // chat answer's "Show in blackline" link (undefined otherwise).
   const [focusChange, setFocusChange] = useState<string>()
@@ -331,6 +335,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
             onSessionStarted={onSessionsChanged}
             onViewDocument={(name, redlineId) => {
               setFocusRedline(redlineId)
+              setViewerVersions(false)
               setViewing(name)
             }}
             onOpenBlackline={(params, change) => {
@@ -371,6 +376,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
           onUploaded={refresh}
           onView={(name) => {
             setFocusRedline(undefined)
+            setViewerVersions(false)
             setViewing(name)
           }}
           onCompare={(name) => setComparing({ name })}
@@ -385,7 +391,17 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
           matterId={matter.id}
           name={viewing}
           focusId={focusRedline}
-          onClose={() => setViewing(undefined)}
+          initialVersions={viewerVersions}
+          onClose={() => {
+            setViewing(undefined)
+            setViewerVersions(false)
+          }}
+          onCompareVersions={(params) => {
+            setReturnTo(viewing)
+            setViewing(undefined)
+            setFocusChange(undefined)
+            setBlackline(params)
+          }}
           onChanged={refresh}
           onConverted={(name) => setViewing(name)}
           onCompare={
@@ -446,7 +462,14 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
         />
       )}</Exit>
 
-      <Exit when={blackline}>{(blackline) => <BlacklineViewer matterId={matter.id} params={blackline} focus={focusChange} onClose={() => setBlackline(undefined)} />}</Exit>
+      <Exit when={blackline}>{(blackline) => <BlacklineViewer matterId={matter.id} params={blackline} focus={focusChange} onClose={() => {
+        setBlackline(undefined)
+        if (!returnTo) return
+        setReturnTo(undefined)
+        setViewerVersions(true)
+        setFocusRedline(undefined)
+        setViewing(returnTo)
+      }} />}</Exit>
     </>
   )
 }

@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@huggingface/transformers": "4.2.0",
+    "@kenjiuno/msgreader": "1.28.0",
     "@ladybugdb/core": "0.19.1",
     "@llamaindex/liteparse": "2.1.1",
     "@xmldom/xmldom": "0.8.15",
@@ -19,8 +20,10 @@
     "docxodus": "^13.0.0",
     "fflate": "0.8.3",
     "hono": "4.13.13",
-    "mammoth": "^1.8.0",
+    "iconv-lite": "0.7.3",
+    "mammoth": "1.12.3",
     "postal-mime": "2.7.4",
+    "rtf-stream-parser": "4.0.0",
     "unpdf": "^1.6.2",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },

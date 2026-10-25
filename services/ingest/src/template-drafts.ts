@@ -349,6 +349,9 @@ function cleanTemplateCopy(source: Uint8Array) {
       catch { throw new TemplateDraftError("The selected Word document contains unreadable XML. Save a clean Word copy and try again.", 422) }
       documents.set(name, document)
       const elements = Array.from(document.getElementsByTagName("*"))
+      // A tracked numbering change has no accepted form doc.haus can choose.
+      if (elements.some(element => element.namespaceURI === WORD && element.localName === "numberingChange"))
+        throw new TemplateDraftError("This document has tracked numbering changes. Accept or reject them in Word before creating a reusable template.", 422)
       if (elements.some(element => ["dataBinding", "altChunk", "subDoc", "mailMerge", "OLEObject", "object", "control", "docPartObj", "docPartList"].includes(element.localName)))
         throw new TemplateDraftError("This document contains linked, bound or embedded content. Save a self-contained Word copy before creating a template.", 422)
       if (elements.some(element => element.namespaceURI === WORD &&

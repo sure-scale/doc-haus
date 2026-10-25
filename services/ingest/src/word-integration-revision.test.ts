@@ -166,6 +166,11 @@ test("an edited deliverable stays a deliverable outside source retrieval and kee
     expect(getDocumentRole(db, file)).toBe("deliverable")
     expect(listSourceDocuments(db)).toEqual([])
     expect(db.query("SELECT COUNT(*) AS n FROM chunks").get()).toEqual({ n: 0 })
+    // The save is the document's next version, made by the agent in its session (#268).
+    expect(db.query("SELECT number, origin, actor, run FROM document_versions ORDER BY number").all()).toEqual([
+      { number: 1, origin: "generated", actor: "unknown", run: null },
+      { number: 2, origin: "agent-edit", actor: "agent:test", run: "word-integration-test" },
+    ])
   } finally { db.close() }
 }, 120_000)
 

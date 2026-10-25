@@ -2,8 +2,11 @@ import { useEffect, useRef, useState } from "react"
 import {
   deleteDocument,
   DocumentExistsError,
+  duplicateMessage,
+  DuplicateUploadError,
   MATTER_DOCUMENT_EXTENSIONS,
   matterDocumentKind,
+  UploadFailedError,
   uploadDocument,
   type Document,
   type EmailAttachment,
@@ -15,9 +18,11 @@ import {
 } from "../api/ingest/documents"
 import { humanizeError } from "../api/ingest/errors"
 import type { LeanDraftingStatus } from "../api/ingest/lean"
+import { restoreVersion } from "../api/ingest/versions"
 import { formatDate, formatDateTime, formatTime } from "../lib/format"
 import { CompareIcon } from "./CompareDialog"
 import DocumentLabelBadge from "./DocumentLabel"
+import { restoreConfirmText, restoredMessage, unavailableReason } from "./DocumentVersions"
 import DraftedList from "./drafting/DraftedList"
 import { deliverableGroups, type DraftedOutput } from "./drafting/model"
 import Dropzone from "./Dropzone"
@@ -30,15 +35,23 @@ type Upload = {
   file: File
   // not_indexed: added, but no readable text could be extracted, so nothing
   // was indexed (the extraction quality gate). Never shown as ready.
-  status: "queued" | "uploading" | "reading" | "ready" | "not_indexed" | "failed" | "exists"
+  // duplicate: identical to a version the matter already keeps; nothing saved.
+  status: "queued" | "uploading" | "reading" | "ready" | "not_indexed" | "failed" | "exists" | "duplicate"
   error?: string
+  // A ready Word file saved with pending tracked changes: the notice stays in
+  // its row until dismissed.
+  notice?: string
   // A wrong file type cannot succeed on retry, so the row offers Remove only.
   retryable?: boolean
   // A document of this name is already in the matter. The row asks the lawyer to
-  // replace an uploaded source or keep both, or to keep both beside a generated
-  // deliverable, and the choice is sent on retry.
+  // save the upload as a new version of an uploaded source or keep both, or to
+  // keep both beside a generated deliverable, and the choice is sent on retry.
   existing?: { name: string; role: "source" | "deliverable" }
   choice?: ExistingSourceChoice
+  // A duplicate of an earlier version of a document: the row offers to make
+  // that version current again (a restore, kept as the next version).
+  match?: { name: string; version: { id: string; number: number } }
+  restoring?: boolean
 }
 
 const READY_LINGER_MS = 3000
@@ -77,6 +90,7 @@ export default function DocumentUpload({
   const watched = useRef(false)
   // Uploads run one at a time so a batch does not swamp the reader.
   const queue = useRef(Promise.resolve())
+  const body = useRef<HTMLDivElement>(null)
   const toast = useToast()
   // StrictMode re-runs effects on mount; the ref keeps one batch from uploading twice.
   const taken = useRef<File[]>(undefined)
@@ -110,13 +124,34 @@ export default function DocumentUpload({
         onSent: () => update(upload.key, { status: "reading" }),
         existing: upload.choice,
       })
-      update(upload.key, { status: result.quality?.status === "no_readable_text" ? "not_indexed" : "ready" })
-      setTimeout(() => setUploads((prev) => prev.filter((u) => u.key !== upload.key)), READY_LINGER_MS)
+      update(upload.key, { status: result.quality?.status === "no_readable_text" ? "not_indexed" : "ready", notice: result.notice })
+      if (!result.notice) setTimeout(() => setUploads((prev) => prev.filter((u) => u.key !== upload.key)), READY_LINGER_MS)
       onUploaded()
       const { kind, message } = uploadedToast(result)
       toast(kind, message)
     } catch (e) {
       update(upload.key, failedUpload(e, upload.file))
+    }
+  }
+
+  async function restoreMatch(upload: Upload) {
+    const match = upload.match
+    if (!match) return
+    update(upload.key, { restoring: true })
+    try {
+      const result = await restoreVersion(matterId, match.version.id)
+      // The row goes with its buttons: focus moves to the documents list.
+      body.current?.focus()
+      setUploads((prev) => prev.filter((u) => u.key !== upload.key))
+      onUploaded()
+      toast("success", restoredMessage(match.version.number, result, match.name))
+      if (result.notice) toast("warning", result.notice)
+    } catch (e) {
+      update(upload.key, {
+        restoring: false,
+        match: undefined,
+        error: unavailableReason(e) ?? humanizeError(e, `Could not restore version ${match.version.number} of ${match.name}.`),
+      })
     }
   }
 
@@ -326,6 +361,7 @@ export default function DocumentUpload({
                 enqueue({ ...u, choice })
               }}
               onDismiss={() => setUploads((prev) => prev.filter((x) => x.key !== u.key))}
+              onRestore={() => restoreMatch(u)}
             />
           ))}
         </ul>
@@ -376,7 +412,7 @@ export default function DocumentUpload({
           </button>
         )}
       </div>
-      <div className="docs-drawer-body" tabIndex={0} role="region" aria-label="Documents" onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
+      <div ref={body} className="docs-drawer-body" tabIndex={0} role="region" aria-label="Documents" onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
         event.preventDefault()
         const added = Array.from(event.dataTransfer.files)
         if (added.length) onFiles(added)
@@ -403,6 +439,13 @@ export default function DocumentUpload({
 // assistant treats flagged text as untrusted and is told the text may be
 // incomplete, and the warning says what ingest found.
 export function uploadedToast(result: IngestResult): { kind: "success" | "warning"; message: string } {
+  // A Word file kept with pending tracked changes says so after the rest; the
+  // notice names the version, so the ready line does not repeat it.
+  if (!result.notice) return readyToast(result)
+  return { kind: "warning", message: `${readyToast({ ...result, version: undefined }).message} ${result.notice}` }
+}
+
+function readyToast(result: IngestResult): { kind: "success" | "warning"; message: string } {
   const attachments = attachmentsSummary(result)
   const quality = result.quality
   const injection = result.injection
@@ -427,7 +470,9 @@ export function uploadedToast(result: IngestResult): { kind: "success" | "warnin
     }
   // A zip file's own text only lists its files, so its sections say nothing.
   if (result.name.toLowerCase().endsWith(".zip")) return { kind: "success", message: `${result.name} is ready.${attachments}` }
-  return { kind: "success", message: `${result.name} is ready (${result.sections} section${result.sections === 1 ? "" : "s"}).${attachments}` }
+  // An upload saved as a later version of its document names the version.
+  const version = result.version?.created && result.version.number > 1 ? ` as version ${result.version.number}` : ""
+  return { kind: "success", message: `${result.name} is ready${version} (${result.sections} section${result.sections === 1 ? "" : "s"}).${attachments}` }
 }
 
 function qualityDetails(quality: Exclude<ExtractionQuality, { status: "ok" }>) {
@@ -461,7 +506,7 @@ export function attachmentsSummary(result: Pick<IngestResult, "attachments"> & {
     added && ` ${added} ${noun}${added === 1 ? "" : "s"} added.`,
     same && ` ${same} already in the matter.`,
     unreadable.length && ` Added but not indexed, no readable text: ${unreadable.map(attachmentName).join(", ")}.`,
-    missing.length && ` Not added: ${missing.map((a) => `${attachmentName(a)} (${attachmentStatus(a.status).toLowerCase()})`).join(", ")}.`,
+    missing.length && ` Not added: ${missing.map((a) => `${attachmentName(a)} (${[attachmentStatus(a.status).toLowerCase(), attachmentNote(a)].filter(Boolean).join(": ")})`).join(", ")}.`,
   ]
     .filter(Boolean)
     .join("")
@@ -489,6 +534,12 @@ function attachmentStatus(status: string) {
 
 function attachmentName(attachment: EmailAttachment) {
   return attachment.name || attachment.document || "Unnamed attachment"
+}
+
+// Why an Outlook attachment named like a document was not read.
+function attachmentNote(attachment: EmailAttachment) {
+  if (attachment.note === "linked") return "a link to a file stored elsewhere"
+  if (attachment.note === "ole") return "an embedded object, not a file"
 }
 
 // The documents list as a tree. A document extracted from another (an email's
@@ -533,7 +584,7 @@ const EXPANDED_CHILDREN = 5
 // How a parent and what came out of it are named: an email's attachments, a
 // zip's files, or any other parent's files.
 function parentWords(name: string) {
-  const parent = /\.eml$/i.test(name) ? "email" : /\.zip$/i.test(name) ? "zip" : "file"
+  const parent = /\.(eml|msg)$/i.test(name) ? "email" : /\.zip$/i.test(name) ? "zip" : "file"
   const child = parent === "email" ? "attachment" : "file"
   return {
     parent,
@@ -556,6 +607,7 @@ export function AttachmentEntryRow({ attachment, documents, onView }: {
     ? attachment.document
     : undefined
   const status = attachment.status === "same" && attachment.document ? `Same as ${attachment.document}` : attachmentStatus(attachment.status)
+  const note = attachmentNote(attachment)
   return (
     <div className={`doc-row is-child is-entry is-${attachment.status}`}>
       <div className="doc-row-main">
@@ -571,6 +623,7 @@ export function AttachmentEntryRow({ attachment, documents, onView }: {
           status
         )}
         {attachment.note === "may-contain-attachments" && " · may contain further attachments"}
+        {note && ` · ${note}`}
         {attachment.flagged && " · suspicious name"}
       </span>
     </div>
@@ -623,14 +676,20 @@ export function EmailRemoveConfirm({ name, removal, onRemove, onCancel }: {
 // format ingest cannot read is refused here, with the formats it can.
 export function newUpload(key: number, file: File): Upload {
   if (matterDocumentKind(file.name)) return { key, file, status: "queued" }
-  return { key, file, status: "failed", error: "Only Word (.docx), PDF, email (.eml), Excel (.xlsx) and zip (.zip) files can be added." }
+  return { key, file, status: "failed", error: "Only Word (.docx), PDF, email (.eml, .msg), Excel (.xlsx) and zip (.zip) files can be added." }
 }
 
-// A same-name clash asks the lawyer what to do with the existing document; any
-// other failure can be retried.
+// A same-name clash asks the lawyer what to do with the existing document; an
+// identical file says which version it matches. A lost connection or a service
+// failure can be retried; a refusal for this file (4xx) would only repeat.
 export function failedUpload(error: unknown, file: File): Partial<Upload> {
   if (error instanceof DocumentExistsError) return { status: "exists", existing: { name: error.existing, role: error.role } }
-  return { status: "failed", error: humanizeError(error, `Could not read ${file.name}.`), retryable: true }
+  if (error instanceof DuplicateUploadError) {
+    const earlier = error.version && !error.version.current ? { name: error.existing, version: { id: error.version.id, number: error.version.number } } : undefined
+    return { status: "duplicate", error: duplicateMessage(error.existing, error.version), match: earlier }
+  }
+  const failed = { status: "failed" as const, error: humanizeError(error, `Could not read ${file.name}.`) }
+  return error instanceof UploadFailedError && error.status < 500 ? failed : { ...failed, retryable: true }
 }
 
 const UPLOAD_LABEL: Record<Upload["status"], string> = {
@@ -640,28 +699,85 @@ const UPLOAD_LABEL: Record<Upload["status"], string> = {
   ready: "Ready",
   not_indexed: "Added, not indexed: no readable text",
   failed: "Not added",
-  exists: "Already in this matter. Keep both or replace it?",
+  exists: "Already in this matter. Save this as a new version of it, or keep both?",
+  duplicate: "Already in this matter. Nothing was saved.",
 }
 const DELIVERABLE_EXISTS = "A document created by Doc.Haus has this name. Keep both?"
 
-export function UploadRow({ upload, onRetry, onChoose, onDismiss }: {
+export function UploadRow({ upload, onRetry, onChoose, onDismiss, onRestore }: {
   upload: Upload
   onRetry: () => void
   onChoose: (choice: ExistingSourceChoice) => void
   onDismiss: () => void
+  onRestore?: () => void
 }) {
+  const [confirming, setConfirming] = useState(false)
+  // A cancelled confirmation hands focus back to the Restore button.
+  const refocus = useRef(false)
+  const dismiss = useRef<HTMLButtonElement>(null)
+  const match = upload.status === "duplicate" && onRestore ? upload.match : undefined
+  // A failed restore takes the confirmation with it: focus stays in the row,
+  // on Dismiss, beside the reason.
+  useEffect(() => {
+    if (!confirming || match) return
+    setConfirming(false)
+    dismiss.current?.focus()
+  }, [confirming, match])
+  function cancel() {
+    refocus.current = true
+    setConfirming(false)
+  }
   return (
-    <li className={`doc-row upload-row is-${upload.status}`} aria-live="polite">
+    <li className={`doc-row upload-row is-${upload.status}${upload.notice ? " has-notice" : ""}`} aria-live="polite">
       <div className="doc-row-main">
         <span className="upload-icon" aria-hidden>
-          {upload.status === "failed" || upload.status === "exists" || upload.status === "not_indexed" ? <IconAlert /> : upload.status === "ready" ? <IconCheck /> : <span className="upload-spinner" />}
+          {upload.status === "failed" || upload.status === "exists" || upload.status === "not_indexed" || upload.status === "duplicate" || upload.notice
+            ? <IconAlert />
+            : upload.status === "ready" ? <IconCheck /> : <span className="upload-spinner" />}
         </span>
         <span className="upload-name">{upload.file.name}</span>
       </div>
       <div className="doc-row-meta">
         <span className="upload-status">
-          {upload.error ?? (upload.existing?.role === "deliverable" ? DELIVERABLE_EXISTS : UPLOAD_LABEL[upload.status])}
+          {match && confirming
+            ? restoreConfirmText(match.version.number)
+            : upload.error ?? upload.notice ?? (upload.existing?.role === "deliverable" ? DELIVERABLE_EXISTS : UPLOAD_LABEL[upload.status])}
         </span>
+        {match && confirming && (
+          <span className="upload-actions" role="group" aria-label={`Restore version ${match.version.number}`} onKeyDown={(event) => {
+            if (event.key !== "Escape" || upload.restoring) return
+            event.preventDefault()
+            event.stopPropagation()
+            cancel()
+          }}>
+            <button type="button" className="icon-btn upload-choice-lead" autoFocus disabled={upload.restoring} onClick={onRestore}>
+              {upload.restoring ? "Restoring…" : `Restore version ${match.version.number}`}
+            </button>
+            <button type="button" className="icon-btn" disabled={upload.restoring} onClick={cancel}>
+              Cancel
+            </button>
+          </span>
+        )}
+        {(upload.status === "duplicate" || upload.notice) && !(match && confirming) && (
+          <span className="upload-actions">
+            {/* The file is an earlier version: making it current again is
+                usually what the lawyer meant by uploading it. */}
+            {match && (
+              <button type="button" className="icon-btn upload-choice-lead" ref={(node) => {
+                if (!node || !refocus.current) return
+                refocus.current = false
+                node.focus()
+              }}
+                title={`Make version ${match.version.number} of ${match.name} current again. Every version stays in the history.`}
+                onClick={() => setConfirming(true)}>
+                {`Restore version ${match.version.number}`}
+              </button>
+            )}
+            <button type="button" className="icon-btn" ref={dismiss} onClick={onDismiss}>
+              Dismiss
+            </button>
+          </span>
+        )}
         {upload.status === "failed" && (
           <span className="upload-actions">
             {upload.retryable && (
@@ -676,20 +792,27 @@ export function UploadRow({ upload, onRetry, onChoose, onDismiss }: {
         )}
         {upload.status === "exists" && (
           <span className="upload-actions">
-            {/* Keep both loses nothing, so it leads; Replace overwrites and stays plain. */}
-            <button type="button" className="icon-btn upload-keep-both" title="Add this file under a new name and keep both" onClick={() => onChoose("keep-both")}>
-              Keep both
-            </button>
+            {/* Neither choice loses anything. A new version of the same document
+                is the usual intent, so it leads; a generated document is never
+                replaced by an upload, so only keep both is offered beside it. */}
             {upload.existing?.role === "source" && (
               <button
                 type="button"
-                className="icon-btn"
-                title={`Replace ${upload.existing.name} with this file — the current file is overwritten`}
+                className="icon-btn upload-choice-lead"
+                title={`Save this file as the next version of ${upload.existing.name}. Earlier versions stay in its history.`}
                 onClick={() => onChoose("replace")}
               >
-                Replace
+                Save as new version
               </button>
             )}
+            <button
+              type="button"
+              className={`icon-btn${upload.existing?.role === "source" ? "" : " upload-choice-lead"}`}
+              title="Add this file under a new name and keep both"
+              onClick={() => onChoose("keep-both")}
+            >
+              Keep both
+            </button>
             <button type="button" className="icon-btn" onClick={onDismiss}>
               Cancel
             </button>
@@ -725,6 +848,7 @@ const DOCUMENT_TYPE_LABEL: Record<DocumentGlyph, string> = {
   docx: "Word document",
   pdf: "PDF document",
   eml: "Email",
+  msg: "Outlook email",
   xlsx: "Excel spreadsheet",
   zip: "Zip file",
   file: "File",
@@ -734,7 +858,7 @@ function DocumentType({ name }: { name: string }) {
   const kind: DocumentGlyph = matterDocumentKind(name) ?? (/\.zip$/i.test(name.trim()) ? "zip" : "file")
   return (
     <span className={`doc-type is-${kind}`} title={DOCUMENT_TYPE_LABEL[kind]} aria-hidden>
-      {kind === "eml" ? <IconEmail /> : kind === "xlsx" ? <IconSheet /> : kind === "zip" ? <IconArchive /> : <IconFile />}
+      {kind === "eml" || kind === "msg" ? <IconEmail /> : kind === "xlsx" ? <IconSheet /> : kind === "zip" ? <IconArchive /> : <IconFile />}
     </span>
   )
 }

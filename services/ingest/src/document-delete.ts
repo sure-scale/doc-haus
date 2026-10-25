@@ -7,6 +7,8 @@ import { matterDocumentName } from "./ingest"
 import { stageSourceChange, writeSourceArtifacts } from "./source-artifacts"
 import { workingDocxKey } from "../../../dochaus/lib/working-docx"
 import { forgetSystemDocx } from "../../../dochaus/lib/system-docx"
+import { detachVersionedDocument, purgeVersionBytes } from "./document-versions"
+import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import {
   beginDocumentMutation,
   completeDocumentMutation,
@@ -35,12 +37,16 @@ export async function deleteMatterDocument(matterDir: string, requestedName: str
     }
     const correlation = `delete-${Date.now().toString(36)}`
     const mutation = beginDocumentMutation(matterDir, target.name, "delete", role === "source")
+    // The document's version history, detached in the delete's transaction; its
+    // kept bytes are deleted once the delete commits, as the file is (#268).
+    let detached: string[] = []
     try {
       if (role === "deliverable") {
         await commitDocumentDeleteAsync(target.docPath, async () => {
           db.run("BEGIN IMMEDIATE")
           try {
             deleteDocument(db, target.docPath)
+            detached = detachVersionedDocument(db, matterDir, target.name)
             db.run("DELETE FROM meta WHERE key = ?",[workingDocxKey(matterDir,target.docPath)])
             forgetSystemDocx(db, matterDir, target.docPath)
             recordDocumentMutationCommit(db, mutation)
@@ -55,7 +61,7 @@ export async function deleteMatterDocument(matterDir: string, requestedName: str
           }
         }, { backupPath: mutation.documentBackup })
         completeDocumentMutation(db, mutation)
-        return { ok: true as const, name: target.name, role }
+        return { ok: true as const, name: target.name, role, ...purgeDetached(matterDir, target.name, detached) }
       }
       // The remaining sources' snapshot is staged before legal.db's write lock
       // is taken (see stageSourceChange), so the transaction holds the lock for
@@ -66,10 +72,12 @@ export async function deleteMatterDocument(matterDir: string, requestedName: str
         let settled = false
         try {
           deleteDocument(db, target.docPath)
+          detached = detachVersionedDocument(db, matterDir, target.name)
           recordDocumentMutationLineageIntent(
             mutation,
             (listSourceDocuments(db) as { name: string }[]).map((document) => document.name),
             correlation,
+            "delete",
           )
           return await writeSourceArtifacts(matterDir, correlation, {
             db,
@@ -94,7 +102,7 @@ export async function deleteMatterDocument(matterDir: string, requestedName: str
       }, { backupPath: mutation.documentBackup })
       finalizeDocumentMutationLineage(db, mutation, artifacts.files)
       completeDocumentMutation(db, mutation)
-      return { ok: true as const, name: target.name, role }
+      return { ok: true as const, name: target.name, role, ...purgeDetached(matterDir, target.name, detached) }
     } catch (error) {
       discardDocumentMutation(db, mutation)
       throw error
@@ -102,6 +110,22 @@ export async function deleteMatterDocument(matterDir: string, requestedName: str
       db.close()
     }
   })
+}
+
+// The delete stands; bytes left behind are logged and reported, no route
+// serves a removed document's versions, and the startup sweep
+// (sweepRemovedVersionBytes) deletes them.
+function purgeDetached(matterDir: string, name: string, documentIds: readonly string[]): { purge_failed?: string } {
+  let failed = false
+  for (const id of documentIds) {
+    try {
+      purgeVersionBytes(matterDir, id)
+    } catch (error) {
+      failed = true
+      console.error("[versions] removed document's versions not purged", diagnosticErrorMetadata(error))
+    }
+  }
+  return failed ? { purge_failed: `The kept versions of ${name} could not be deleted from doc.haus; they are deleted when doc.haus next starts.` } : {}
 }
 
 function documentTarget(matterDir: string, fileName: string) {

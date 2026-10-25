@@ -9,6 +9,7 @@ import path from "node:path"
 import { Database } from "bun:sqlite"
 import { z } from "zod"
 import { renderMarkdownToDocx } from "../lib/render"
+import { ensureParagraphRows, paragraphSha256 } from "../lib/drafting-amendment"
 import { exportDocxComments, readDocxCommentParagraphs } from "../lib/docx-comments"
 import { docxodus } from "../lib/docxodus"
 import { currentDocumentView } from "../lib/current-document-retrieval"
@@ -128,4 +129,18 @@ test("pending projection rejects missing, stale and duplicate operations instead
   writeLeanText(dir, "d1/changes.json", JSON.stringify({ amendments: [amendment], questions: [] }))
   expect((await read(dir, { document: "d1", view: "proposed_body" })).status).toBe("unavailable")
   expect((await read(dir, { document: "d1", view: "current_body" })).entries[0].text).toBe(text)
+})
+
+test("a body Word numbers shows each paragraph's list number beside its text, and a search for the number finds the clause", async () => {
+  const dir = fixture()
+  await save(dir, "d1/body.docx", "# Supply Agreement\n\n## 1. Delivery\n\n1.1 The Supplier shall deliver the goods.\n\n## 2. Payment\n\n2.1 The Customer shall pay within thirty days.")
+  const rows = (await ensureParagraphRows(leanFile(dir, "d1/body.docx"))).map(row => ({ ...row, sha256: paragraphSha256(row.text) }))
+  writeLeanText(dir, "d1/paragraphs.json", JSON.stringify(rows))
+  writeLeanText(dir, "d1/changes.json", JSON.stringify({ amendments: [], questions: [] }))
+  for (const view of ["current_body", "proposed_body"] as const) {
+    // The text stays the paragraph's own text, which quotes are checked against.
+    const hit = await search(dir, { document: "d1", query: "2.1", view })
+    expect(hit.hits[0]).toMatchObject({ label: "2.1", text: "The Customer shall pay within thirty days." })
+    expect((await read(dir, { document: "d1", view })).entries.map(row => [row.label, row.text])).toContainEqual(["2.", "Payment"])
+  }
 })

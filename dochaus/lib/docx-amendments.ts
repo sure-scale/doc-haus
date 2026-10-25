@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto"
-import { DOMParser } from "@xmldom/xmldom"
-import { strFromU8, unzipSync } from "fflate"
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { z } from "zod"
+import { paragraphFields, refInstruction, runText, unlink } from "./docx-fields"
 import { docxodus } from "./docxodus"
+import { shownText } from "./list-label"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const PT = "http://powertools.codeplex.com/2011"
@@ -139,10 +141,52 @@ function admitted(opened: Opened, binding: Binding) {
   if (/[\r\n\t]/.test(amendment.replacement)) throw new Error("unsupported_structural_replacement")
   if (!amendment.replacement && match.text === opened.paragraphs[ordinal].match.text)
     throw new Error("unsupported_empty_paragraph_replacement")
+  const change = changedDocxSpan(match, amendment.replacement)
   const xml = parse(opened.session.raw.getXml(match.enclosingAnchor.id))
-  if (elements(xml, "fldChar").length || elements(xml, "instrText").length)
+  if (!elements(xml, "fldChar").length && !elements(xml, "instrText").length) return { ...binding, change, unlinks: [] as number[] }
+  // A live cross-reference (a REF field) is the only field an edit may stand
+  // beside. One the edit's changed text touches becomes the text it shows.
+  const paragraph = opened.paragraphs[ordinal]!
+  const fields = paragraphFields(paragraph.node)
+  const owned = new Set(fields.flatMap(field => field.controls))
+  if (runText(paragraph.node) !== paragraph.match.text || fields.some(field => !refInstruction(field))
+    || [...elements(paragraph.node, "fldChar"), ...elements(paragraph.node, "instrText")].some(node => !owned.has(node)))
     throw new Error("unsupported_field_replacement")
-  return { ...binding, change: changedDocxSpan(match, amendment.replacement) }
+  const start = change.match.span.start - paragraph.match.span.start
+  const end = start + change.match.text.length
+  return { ...binding, change, unlinks: fields.flatMap((field, index) => start < field.to && field.from < end ? [index] : []) }
+}
+
+// The source with the REF fields the edits touch unwrapped to their text, for
+// the edits to be written to; undefined when they touch none.
+function unlinkedSource(opened: Opened, edits: ReturnType<typeof admitted>[]) {
+  const touched = Map.groupBy(edits.filter(edit => edit.unlinks.length), edit => edit.ordinal)
+  if (!touched.size) return
+  const documents = new Map<string, Document>()
+  for (const [ordinal, rows] of touched) {
+    const { part, node } = opened.paragraphs[ordinal]!
+    const doc = documents.get(part) ?? parse(strFromU8(opened.parts[part]!))
+    documents.set(part, doc)
+    const fields = paragraphFields(elements(doc, "p")[elements(opened.documents[part]!, "p").indexOf(node)]!)
+    for (const index of new Set(rows.flatMap(row => row.unlinks))) unlink(fields[index]!)
+  }
+  const parts = { ...opened.parts }
+  for (const [part, doc] of documents) parts[part] = strToU8(new XMLSerializer().serializeToString(doc))
+  return zipSync(parts, { mtime: new Date(1980, 0, 1) })
+}
+
+// The report's line for the live cross-references unlinkedSource made text:
+// how many, and the paragraphs they are in, by list number or opening words.
+function unlinkedFields(opened: Opened, edits: ReturnType<typeof admitted>[]) {
+  const counts = [...Map.groupBy(edits, edit => edit.ordinal)].map(([ordinal, rows]) => [ordinal, new Set(rows.flatMap(row => row.unlinks)).size] as const)
+    .filter(([, count]) => count)
+  if (!counts.length) return []
+  const total = counts.reduce((sum, [, count]) => sum + count, 0)
+  const where = counts.map(([ordinal]) => {
+    const view = opened.revision.paragraphs[ordinal]!
+    return view.label ?? `"${view.text.length > 40 ? `${view.text.slice(0, 40).trimEnd()}…` : view.text}"`
+  })
+  return [`${total} cross-reference field${total === 1 ? "" : "s"} converted to text in paragraph${where.length === 1 ? "" : "s"} ${where.join(", ")}`]
 }
 
 async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) {
@@ -151,49 +195,72 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
     && b.match.span.start < a.match.span.start + a.match.span.length))) throw new Error("overlapping_docx_amendments")
   const expected = opened.paragraphs.map(p => p.match.text)
   const ordered = edits.toSorted((a, b) => a.ordinal - b.ordinal || b.match.span.start - a.match.span.start)
-  for (const edit of ordered) {
-    const text = expected[edit.ordinal]
-    expected[edit.ordinal] = text.slice(0, edit.match.span.start) + edit.amendment.replacement
-      + text.slice(edit.match.span.start + edit.match.span.length)
-    // The complete authenticated quote localizes the occurrence. Unchanged
-    // context keeps its own runs; only the changed text is mutated.
-    if (!edit.change.match.text && !edit.change.replacement) continue
-    const result = opened.session.replaceMatch(edit.change.match, edit.change.replacement)
-    if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
-  }
-  const output = opened.session.save()
-  const reopened = await openRevision(output)
+  // Edits touching a live cross-reference are written to the source with that
+  // field unwrapped: the same paragraphs and text, so the same spans.
+  const unlinked = unlinkedSource(opened, edits)
+  const target = unlinked ? await openRevision(unlinked) : opened
   try {
-    if (JSON.stringify(reopened.paragraphs.map(p => p.match.text)) !== JSON.stringify(expected))
-      throw new Error("docx_saved_text_mismatch")
-    const changed = new Set(edits.map(edit => edit.ordinal))
-    verifyPreservation(opened, reopened, changed)
-    return {
-      bytes: output,
-      // The projection these edits were admitted against.
-      revision: opened.revision,
-      report: {
-        source_sha256: opened.revision.source_sha256,
-        output_sha256: reopened.revision.source_sha256,
-        amendments: edits.map(edit => ({ amendment_id: edit.amendment.id, target_handle: edit.handle,
-          paragraph_handle: opened.revision.paragraphs[edit.ordinal].paragraph_handle,
-          before_quote: edit.amendment.before_quote, replacement: edit.amendment.replacement,
-          paragraph_before: opened.revision.paragraphs[edit.ordinal].text,
-          paragraph_after: expected[edit.ordinal],
-          replacement_formatting: edit.change.formatting,
-        })),
-        unchanged_paragraphs_verified: opened.paragraphs.length - changed.size,
-        package_structure_verified: true,
-        limitation: "changed text inherits first touched run formatting; structural edits and existing tracked revisions unsupported",
-      },
+    for (const edit of ordered) {
+      const text = expected[edit.ordinal]
+      expected[edit.ordinal] = text.slice(0, edit.match.span.start) + edit.amendment.replacement
+        + text.slice(edit.match.span.start + edit.match.span.length)
+      // The complete authenticated quote localizes the occurrence. Unchanged
+      // context keeps its own runs; only the changed text is mutated.
+      const paragraph = target.paragraphs[edit.ordinal]!.match
+      const change = target === opened ? edit.change : changedDocxSpan(paragraphSpan(paragraph,
+        edit.match.span.start - opened.paragraphs[edit.ordinal]!.match.span.start, edit.match.text.length), edit.amendment.replacement)
+      if (!change.match.text && !change.replacement) continue
+      const result = target.session.replaceMatch(change.match, change.replacement)
+      if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
     }
-  } finally { reopened.session.close() }
+    const output = target.session.save()
+    const reopened = await openRevision(output)
+    try {
+      if (JSON.stringify(reopened.paragraphs.map(p => p.match.text)) !== JSON.stringify(expected))
+        throw new Error("docx_saved_text_mismatch")
+      const changed = new Set(edits.map(edit => edit.ordinal))
+      // The edited runs are those of the session the edits were written in,
+      // which stays open until its own check has compared their formatting.
+      verifyPreservation(opened, reopened, changed)
+      if (target !== opened) verifyPreservation(target, reopened, changed)
+      return {
+        bytes: output,
+        // The projection these edits were admitted against.
+        revision: opened.revision,
+        report: {
+          source_sha256: opened.revision.source_sha256,
+          output_sha256: reopened.revision.source_sha256,
+          amendments: edits.map(edit => ({ amendment_id: edit.amendment.id, target_handle: edit.handle,
+            paragraph_handle: opened.revision.paragraphs[edit.ordinal].paragraph_handle,
+            before_quote: edit.amendment.before_quote, replacement: edit.amendment.replacement,
+            paragraph_before: opened.revision.paragraphs[edit.ordinal].text,
+            paragraph_after: expected[edit.ordinal],
+            replacement_formatting: edit.change.formatting,
+          })),
+          unchanged_paragraphs_verified: opened.paragraphs.length - changed.size,
+          package_structure_verified: true,
+          limitation: ["changed text inherits first touched run formatting; structural edits and existing tracked revisions unsupported",
+            ...unlinkedFields(opened, edits)].join("; "),
+        },
+      }
+    } finally { reopened.session.close() }
+  } finally { if (target !== opened) target.session.close() }
 }
 
 export function changedDocxSpan(match: Match, replacement: string) {
+  const { offset, replaced, changed } = changedRange(match.text, replacement)
+  const formatting = match.fragments.find((fragment, index) => match.fragments.slice(0, index + 1)
+    .reduce((length, row) => length + row.text.length, 0) > offset)?.formatting ?? match.fragments.at(-1)?.formatting
+  return { match: { ...match, text: replaced, span: { start: match.span.start + offset, length: replaced.length } },
+    replacement: changed, formatting }
+}
+
+/** The part of `text` a replacement by `replacement` rewrites: from `offset`
+ * (UTF-16 units), `replaced` becomes `changed`. */
+export function changedRange(text: string, replacement: string) {
   // Native offsets count UTF-16 units, but trim whole code points so a shared
   // surrogate never becomes an unchanged half of a changed character.
-  const before = Array.from(match.text)
+  const before = Array.from(text)
   const after = Array.from(replacement)
   let first = 0
   let lastBefore = before.length
@@ -203,18 +270,15 @@ export function changedDocxSpan(match: Match, replacement: string) {
     lastBefore--
     lastAfter--
   }
-  const text = before.slice(first, lastBefore).join("")
+  const removed = before.slice(first, lastBefore).join("")
   const inserted = after.slice(first, lastAfter).join("")
   // Native replacement needs a nonempty span. A pure insertion retains one
   // adjacent code point inside the authenticated quote as its formatting anchor.
-  const anchor = !text && inserted ? Math.min(first, before.length - 1) : first
+  const anchor = !removed && inserted ? Math.min(first, before.length - 1) : first
   const offset = before.slice(0, anchor).join("").length
-  const replaced = !text && inserted ? before[anchor]! : text
-  const changed = !text && inserted ? first < before.length ? inserted + replaced : replaced + inserted : inserted
-  const formatting = match.fragments.find((fragment, index) => match.fragments.slice(0, index + 1)
-    .reduce((length, row) => length + row.text.length, 0) > offset)?.formatting ?? match.fragments.at(-1)?.formatting
-  return { match: { ...match, text: replaced, span: { start: match.span.start + offset, length: replaced.length } },
-    replacement: changed, formatting }
+  const replaced = !removed && inserted ? before[anchor]! : removed
+  const changed = !removed && inserted ? first < before.length ? inserted + replaced : replaced + inserted : inserted
+  return { offset, replaced, changed }
 }
 
 function targetHandle(source_sha256: string, ordinal: number, match: Match) {
@@ -300,10 +364,13 @@ export async function openRevision(source: Uint8Array) {
       const scope = paragraph.match.enclosingAnchor.scope
       const headingStack = headingsByScope.get(scope) ?? []
       headingsByScope.set(scope, headingStack)
+      // The number Word's list numbering prints before the paragraph: shown in
+      // the headings and the draft view, never part of `text`, which quotes match.
+      const label = paragraph.metadata.list?.generatedLabel?.trim() || undefined
       if (paragraph.match.enclosingAnchor.kind === "h") {
         const level = (paragraph.metadata.outlineLevel ?? 0) + 1
         while (headingStack.length && headingStack.at(-1)!.level >= level) headingStack.pop()
-        headingStack.push({ level, text: paragraph.match.text })
+        headingStack.push({ level, text: shownText({ text: paragraph.match.text, label }) })
       }
       const ancestors = [] as Element[]
       for (let node = paragraph.node.parentNode; node && node.nodeType === 1; node = node.parentNode) ancestors.unshift(node as Element)
@@ -319,6 +386,7 @@ export async function openRevision(source: Uint8Array) {
       return { paragraph_handle: `paragraph-${digest(JSON.stringify([source_sha256, ordinal])).slice(0, 24)}`,
         scope,
         text: paragraph.match.text,
+        ...(label ? { label } : {}),
         headings: headingStack.map(heading => ({ ...heading })),
         table: tableContext,
         style_id: paragraph.metadata.styleId ?? null,
@@ -333,8 +401,9 @@ export async function openRevision(source: Uint8Array) {
       const part = view.scope !== (views[ordinal - 1]?.scope ?? "body") ? `[${partLabel(view.scope)}]\n\n` : ""
       const prefix = paragraphs[ordinal].match.enclosingAnchor.kind === "h" ? `${"#".repeat(view.headings.at(-1)!.level)} ` : ""
       const context = view.table ? `> Table ${view.table.table}, row ${view.table.row}, column ${view.table.column}\n\n` : ""
-      return part + context + prefix + view.formatting.map(fragment => {
-        const text = fragment.text.replace(/[\\`*_{}[\]<>|]/g, "\\$&")
+      const escape = (text: string) => text.replace(/[\\`*_{}[\]<>|]/g, "\\$&")
+      return part + context + prefix + (view.label ? `${escape(view.label)} ` : "") + view.formatting.map(fragment => {
+        const text = escape(fragment.text)
         return fragment.formatting.bold && fragment.formatting.italic ? `***${text}***`
           : fragment.formatting.bold ? `**${text}**` : fragment.formatting.italic ? `*${text}*` : text
       }).join("")

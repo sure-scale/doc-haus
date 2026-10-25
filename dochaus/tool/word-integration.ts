@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
+import { findPastListLabel } from "../lib/list-label"
 import { assertDirectWorkingDocxWriteAllowed } from "../lib/working-docx"
 import { withArtifactMutationLocksAsync } from "../capabilities/artifacts/mutation-lock"
 
@@ -16,7 +17,7 @@ import { withArtifactMutationLocksAsync } from "../capabilities/artifacts/mutati
 
 export default tool({
   description:
-    'Read or edit the matter\'s canonical Word (.docx) document in place. Use action "read" to get the document text, or "replace" to change wording. Edits are plain (not tracked changes) and re-open correctly in Microsoft Word.',
+    'Read or edit the matter\'s canonical Word (.docx) document in place. Use action "read" to get the document text, or "replace" to change wording. Edits are plain (not tracked changes) and re-open correctly in Microsoft Word. A list number Word prints before a paragraph ("2.1") is not text; leave it out of find and replace.',
   args: {
     document: tool.schema.string().describe("Document file name within the matter (the docPath from a citation)"),
     action: tool.schema.enum(["read", "replace"]).describe('"read" the document text, or "replace" text in place'),
@@ -58,12 +59,13 @@ export default tool({
       const original = await Bun.file(file).bytes()
       const session = (await docxodus()).openDocxSession(original,{})
       try {
-        const targets = session.findAllByText(args.find!)
+        const {find,replace,targets,error} = findPastListLabel(args.find!,args.replace!,(text) => session.findAllByText(text),(id) => session.getAnchorInfo(id)?.visibleText)
         if (!targets.length) return `Text not found in ${name}: ${JSON.stringify(args.find)}`
-        const results = targets.flatMap((target) => session.replaceTextRange(target.id,args.find!,args.replace!))
+        if (error) return error
+        const results = targets.flatMap((target) => session.replaceTextRange(target.id,find,replace))
         const failed = results.find((result) => !result.success)
         if (failed) return `Edit failed: ${failed.error?.message ?? JSON.stringify(failed.error)}`
-        return {bytes:session.save(),priorSha256:createHash("sha256").update(original).digest("hex"),edits:results.length}
+        return {bytes:session.save(),priorSha256:createHash("sha256").update(original).digest("hex"),edits:results.length,find,replace}
       } finally {session.close()}
     })
     if (typeof edit === "string") return edit
@@ -75,7 +77,8 @@ export default tool({
     const ingestUrl = process.env.INGEST_URL ?? "http://127.0.0.1:4500"
     const refusal = await fetch(`${ingestUrl}/matters/${encodeURIComponent(path.basename(ctx.directory))}/documents/revisions`, {
       method: "POST",
-      headers: { "x-document-prior-sha256": edit.priorSha256 },
+      // Saved as the document's next version, made by this agent in this session.
+      headers: { "x-document-prior-sha256": edit.priorSha256, "x-dochaus-origin": "agent-edit", "x-dochaus-actor": `agent:${ctx.agent}`, "x-dochaus-run": ctx.sessionID },
       body: form,
       signal: ctx.abort,
     }).then(
@@ -90,7 +93,7 @@ export default tool({
     )
     if (refusal) return refusal
     return {title:`Edited ${name}`,
-      output:`Replaced ${edit.edits} occurrence(s) of ${JSON.stringify(args.find)} with ${JSON.stringify(args.replace)} in ${name}.`,
-      metadata:{document:file,find:args.find,replace:args.replace,edits:edit.edits}}
+      output:`Replaced ${edit.edits} occurrence(s) of ${JSON.stringify(edit.find)} with ${JSON.stringify(edit.replace)} in ${name}.`,
+      metadata:{document:file,find:edit.find,replace:edit.replace,edits:edit.edits}}
   },
 })

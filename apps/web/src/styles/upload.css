@@ -76,8 +76,19 @@
   color: var(--warn);
 }
 
+.upload-row.is-duplicate .upload-icon {
+  color: var(--text-secondary);
+}
+
+.upload-row.has-notice .upload-icon,
+.upload-row.has-notice .upload-status {
+  color: var(--warn);
+}
+
 .upload-row.is-failed .doc-row-meta,
-.upload-row.is-exists .doc-row-meta {
+.upload-row.is-exists .doc-row-meta,
+.upload-row.is-duplicate .doc-row-meta,
+.upload-row.has-notice .doc-row-meta {
   align-items: flex-start;
   gap: var(--space-2);
 }
@@ -89,7 +100,7 @@
   margin-left: auto;
 }
 
-.upload-actions .upload-keep-both {
+.upload-actions .upload-choice-lead {
   color: var(--accent);
   background: var(--accent-soft);
   border-color: var(--accent-border);

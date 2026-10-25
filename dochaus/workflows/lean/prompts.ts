@@ -1,4 +1,4 @@
-import { draftingStyleWarningsBlock } from "./style-warnings"
+import { draftingStyleWarningsBlock, styleScopedRows } from "./style-warnings"
 import { boundPlaybookContext } from "../../lib/playbook-source"
 import { delegationSettles } from "../../lib/question-delegation"
 import { readChangePlan, repairBodyText, reviewDispositionText, writerPlan } from "./change-pipeline"
@@ -6,11 +6,11 @@ import { appliedChangeEvidence, nativeExportEvidence } from "./review-evidence"
 import { comparisonDescription } from "./comparison"
 import { combinedDelivery, deliveryArtifactEvidence, requestedMemo } from "./deliverables"
 import { researchHandoff } from "./research"
-import { finalBodyParagraphs, readChangeList, readParagraphs, type ApplyResult } from "./checks"
+import { finalBodyParagraphs, readChangeList, readParagraphs, type ApplyResult, shownText } from "./checks"
 import { reviewStages, FIRST_DOCUMENT, earlierDocuments, planActingFor, operativeDocument, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type StepID } from "./plan"
 import { REQUEST_SOURCE, matterSourceIDs } from "./quotes"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
-import { readRepairRound, changesRepairSections } from "./repairs"
+import { readRepairRound, changesRepairSections, notesRepair } from "./repairs"
 import { MEMO_TARGET, REVIEW_FINDINGS_CONTRACT, findingsText, forwardedFindings, reviewText } from "./review-findings"
 import { disclosableItems } from "./stages"
 import { QUESTION_KIND_CONTRACT, WORKING_DRAFT, isReviewStage, answeredQuestions, answeredQuestionsText, delegatedQuestions, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type StageID } from "./state"
@@ -38,6 +38,16 @@ const SOURCE_RULES = [
   "- Information is a fact, a commercial or strategic decision for the lawyer or the party the lawyer acts for, or authority. Where it is missing or uncertain, write a visible [open item: what is needed] marker instead of guessing.",
   "- A preference is a drafting choice needed to fulfil the requested purpose, within the requested scope. For a new substantive choice not settled by instructions or answers, draft balanced wording and add a visible [open item: confirm ...] marker in the same paragraph saying what was chosen. Do not add confirmation markers to settled decisions or ordinary wording that creates no new substantive choice. A drafted choice is not an invented fact; the marker goes with the drafted wording, never in its place.",
 ]
+
+/** The scope of the firm's drafting preferences in a revision; the original's
+ * unchanged paragraphs are not style-checked either (styleScopedRows). */
+export const REVISION_PREFERENCE_SCOPE = "The drafting preferences apply to text this revision writes or changes; unchanged wording of the original keeps its own style."
+
+/** REVISION_PREFERENCE_SCOPE for a revised document; empty for a new or
+ * template draft, whose prompts stay as they were. */
+export function revisionPreferenceScope(directory: string, document: DocID) {
+  return plannedDocument(directory, document)?.mode === "revise" ? REVISION_PREFERENCE_SCOPE : ""
+}
 
 /** A quick draft the lawyer carried into this run: a starting point for the
  * outline and the drafting, never a source and never the lawyer's words. */
@@ -75,7 +85,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const stage = stepStage(step)
   const title = plannedDocument(directory, document)?.title
   const finished = completedDocumentsBlock(directory, document)
-  const paragraphs = tagged("draft", readParagraphs(directory, document).map(row => `[${row.pid}] ${row.text}`).join("\n\n"))
+  const paragraphs = tagged("draft", readParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n"))
   const adjudicated = stage === "changes" ? readChangePlan(directory, document) : undefined
   const named = title ? ` of "${title}"` : ""
   const template = stage === "draft" || stage === "changes" ? plannedContract(directory, document)?.source : undefined
@@ -86,7 +96,8 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   // What the scope guards say other output owns: another planned document, the memo.
   const assigned = [planned ? "another planned document" : "", composition ? "the accompanying memo" : ""].filter(Boolean).join(" or ")
   const outline = tagged("document_outline", JSON.stringify(operativeDocument(plannedDocument(directory, document))))
-  if (options.contextOnly) return [request, spineBlock, acting, answerBlock, sources, planned, composition, outline, finished].filter(Boolean).join("\n\n")
+  const preferenceScope = revisionPreferenceScope(directory, document)
+  if (options.contextOnly) return [request, spineBlock, acting, answerBlock, sources, planned, composition, outline, preferenceScope, finished].filter(Boolean).join("\n\n")
   const sections: Partial<Record<StageID, string[]>> = {
     draft: options.outline ? [
       "This is a lean drafting run. Plan the substantive document bodies to draft, then draft each in parts. The workflow generates delivery artifacts from those bodies.",
@@ -139,8 +150,8 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
     review: [
       `This is a lean drafting run. Independently review the draft${named} below against the lawyer's request and the matter's sources.`,
       tagged("review_focus", isReviewStage(stage) ? REVIEW_FOCUS[stage] : ""),
-      request, spineBlock, acting, answerBlock, sources, planned, composition, outline, finished, paragraphs,
-      ...(stage === "review-wording" ? [draftingStyleWarningsBlock(readParagraphs(directory, document))] : []),
+      request, spineBlock, acting, answerBlock, sources, planned, composition, outline, preferenceScope, finished, paragraphs,
+      ...(stage === "review-wording" ? [draftingStyleWarningsBlock(styleScopedRows(directory, document, readParagraphs(directory, document)))] : []),
       tagged("output_contract", [
         "- Check the draft against the request and the sources (search-document, read-document, verify-quote).",
         ...(planned ? ["- Where a problem concerns another planned document rather than this one, report it with that document's id as its document; the run carries it to that document. Content the request assigns to another planned document is not missing from this one."] : []),
@@ -173,7 +184,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
         const finding = reviewText(directory, document, stage)
         return finding ? `${stage}:\n${finding}` : ""
       }).filter(Boolean).join("\n\n"))]), ...changesRepairSections(directory, document),
-      spineBlock, acting, answerBlock, sources, planned, composition, outline, finished,
+      spineBlock, acting, answerBlock, sources, planned, composition, outline, preferenceScope, finished,
       tagged("output_contract", [
         "Reply with exactly one JSON object and nothing else:",
         '{"amendments":[{"pid":"<pid from the draft>","updated":"<full new text of that paragraph>","reason":"<why it changes>","sources":[{"source_id":"<exact document name, or request>","quote":"<words copied exactly from that source>"}]}],"questions":[{"id":"<id of an open question you are repeating; omit for a new one>","pid":"<pid of the paragraph whose text depends on the answer>","question":"<what only the lawyer can decide>","kind":"<fact|instruction|judgment>","context":"<why it matters>"}]}',
@@ -263,9 +274,9 @@ export function completedDocumentsText(directory: string, document: DocID) {
   return earlierDocuments(directory, document)
     .map(row => {
       const guidanceReview = row.playbook_review?.sources.length ? reviewText(directory, row.id, "review-playbook", { strip: true }) : undefined
-      return `<document title="${attribute(row.title)}">\n${finalBodyParagraphs(directory, row.id).map(paragraph => paragraph.text).join("\n\n")}\n<accepted_change_explanations>\n${JSON.stringify(appliedChangeEvidence(directory, row.id).map(change => ({
+      return `<document title="${attribute(row.title)}">\n${finalBodyParagraphs(directory, row.id).map(shownText).join("\n\n")}\n<accepted_change_explanations>\n${JSON.stringify(appliedChangeEvidence(directory, row.id).map(change => ({
       change_origin: change.change_origin, operation: change.operation, deleted_text: change.deleted_text, result_text: change.result_paragraphs.map(row => row.text), reason: change.reason, sources: change.sources, evidence_basis: change.evidence_basis,
-      final_text: finalBodyParagraphs(directory, row.id).find(paragraph => paragraph.pid === change.pid)?.text ?? "",
+      final_text: (paragraph => paragraph ? shownText(paragraph) : "")(finalBodyParagraphs(directory, row.id).find(paragraph => paragraph.pid === change.pid)),
       comment_status: change.native_comment.status,
     })), null, 2)}\n</accepted_change_explanations>\n<review_dispositions>\n${reviewDispositionText(directory, row.id, true)}\n</review_dispositions>${guidanceReview ? `\n<prior_playbook_review>\nEarlier guidance review is a navigation aid, not approval. Verify its conclusions against the canonical guidance, current instructions and final wording. When this document provides advice, explain the material original exposure and proposed effect; preserve conditions, exceptions and proposal status. Earlier paragraph references are not amendment targets in this document.\n${guidanceReview}\n</prior_playbook_review>` : ""}\n</document>`
     })
@@ -302,7 +313,7 @@ function draftingNotesSections(directory: string, request: string) {
     memo
       ? `This is a lean drafting run. The request asks for a memo to accompany the drafted documents, "${memo.name}". Write the drafting notes as that memo.`
       : "This is a lean drafting run. Write the drafting notes that go to the lawyer with the drafted documents.",
-    tagged("required_repairs", (readRepairRound(directory)?.items ?? []).filter(item => item.stage === "package-review" || item.ref.repair_target === "memo").map(item => `- ${item.detail}`).join("\n") || "None."),
+    tagged("required_repairs", (readRepairRound(directory)?.items ?? []).filter(item => item.stage === "package-review" || item.ref.repair_target === "memo" || notesRepair(item)).map(item => `- ${item.detail}`).join("\n") || "None."),
     request, actingForBlock(directory), answers ? tagged("answers", answers) : "",
     tagged("sources", matterSourceIDs(directory).map(name => nameWithProvenance(name, provenance)).join("\n")),
     tagged("delivery_artifacts", JSON.stringify(deliveryArtifactEvidence(directory), null, 2)),
@@ -371,8 +382,8 @@ function documentSections(directory: string, document: DocID, items: OpenItem[])
   return [
     tagged("comparison_baseline", comparisonDescription(directory, document)),
     tagged("native_export", JSON.stringify(nativeExportEvidence(directory, document), null, 2)),
-    tagged("final_body", finalBodyParagraphs(directory, document).map(row => `[${row.pid}] ${row.text}`).join("\n\n")),
-    draftingStyleWarningsBlock(finalBodyParagraphs(directory, document), true),
+    tagged("final_body", finalBodyParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")),
+    draftingStyleWarningsBlock(styleScopedRows(directory, document, finalBodyParagraphs(directory, document)), true),
     tagged("applied_changes", JSON.stringify(appliedChangeEvidence(directory, document), null, 2)),
     tagged("review_dispositions", reviewDispositionText(directory, document)),
     tagged("unapplied_changes", [

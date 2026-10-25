@@ -1,4 +1,5 @@
 import { tool } from "./legacy-definition"
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
@@ -6,6 +7,9 @@ import { withParagraphPointers } from "../lib/drafting-amendment"
 import { renumberHeadings, splitBlocks } from "../lib/markdown"
 import { lintRenderedDraftMarkdown, renderMarkdownToDocx, uploadDeliverable } from "../lib/render"
 import { withGeneratedDocxAttribution } from "../lib/docx-attribution"
+import { numberDocxClauses } from "../lib/docx-numbering"
+import { linkCrossReferences } from "../lib/docx-crossrefs"
+import { withTemplateStyleIds } from "../lib/template-seed"
 import { normalizePreferences } from "../lib/drafting-preferences"
 import { pageFurniture } from "../lib/page-furniture"
 import { readFirmPreferences } from "../lib/preferences"
@@ -22,6 +26,7 @@ import { readFirmPreferences } from "../lib/preferences"
 // text as source evidence for retrieval.
 
 const ingestUrl = process.env.INGEST_URL ?? "http://127.0.0.1:4500"
+const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 export default tool({
   description:
@@ -99,7 +104,8 @@ export default tool({
     // omit/fills/replaces machinery.
     if (!args.template && args.content) {
       // The tool knows no document form, so a from-scratch draft carries only
-      // the firm's page numbers.
+      // the firm's page numbers, and its clause references stay typed: it may
+      // be advice citing the clauses of another document.
       const rendered = await renderMarkdownToDocx(args.content, undefined, pageFurniture("other", normalizePreferences(readFirmPreferences())))
         .catch((err: Error) => err)
       if (rendered instanceof Error) return `Draft failed: ${rendered.message}`
@@ -108,6 +114,7 @@ export default tool({
         name,
         rendered.bytes,
         { kind: "create" },
+        { actor: `agent:${ctx.agent}`, run: ctx.sessionID },
       )
       if (uploadError) return `Draft composed but ${uploadError}`
       return {
@@ -141,16 +148,33 @@ export default tool({
 
     // Omitted optional components go first: a component is its `[optional: name]`-marked
     // heading plus everything under it (deleteSection), or just the marked block
-    // when the marker sits on a plain paragraph.
+    // when the marker sits on a plain paragraph. The engine refuses to delete or
+    // remove a bookmark a cross-reference still cites, so the component's own
+    // cross-reference bookmarks are taken out of its XML first; the refresh below
+    // marks each reference to them as an open item. A hyperlink's target stays,
+    // and the refused omission is reported.
     const missingOmits: string[] = []
+    const refusedOmits: string[] = []
     for (const clause of args.omit ?? []) {
       const anchor = session.findByText(`[optional: ${clause}]`, { ignoreWhitespace: true })
       if (!anchor) {
         missingOmits.push(clause)
         continue
       }
-      if (anchor.kind === "h") session.deleteSection(anchor.id)
-      if (anchor.kind !== "h") session.deleteBlock(anchor.id)
+      const component = new Set(Object.keys(session.projectAnchor(anchor.id).anchorIndex))
+      const linked = new Set(session.listHyperlinks().map((link) => link.target))
+      for (const mark of session.listBookmarks()) {
+        const targets = /^_Ref\d+$/.test(mark.name) && !linked.has(mark.name) ? session.findByBookmark(mark.name) : []
+        if (!mark.range || !targets.length || !targets.every((target) => component.has(target.id))) continue
+        for (const id of new Set([mark.range.startAnchorId, mark.range.endAnchorId])) {
+          const xml = new DOMParser().parseFromString(session.raw.getXml(id), "application/xml")
+          for (const node of Array.from(xml.getElementsByTagNameNS(W, "*")))
+            if (["bookmarkStart", "bookmarkEnd"].includes(node.localName) && node.getAttributeNS(W, "id") === mark.bookmarkId) node.parentNode!.removeChild(node)
+          session.raw.replaceXml(id, new XMLSerializer().serializeToString(xml))
+        }
+      }
+      const removed = anchor.kind === "h" ? session.deleteSection(anchor.id) : session.deleteBlock(anchor.id)
+      if (!removed.success) refusedOmits.push(`${clause} (${removed.error?.message ?? removed.error?.code})`)
     }
 
     if (args.fills?.length) {
@@ -204,7 +228,16 @@ export default tool({
     )
 
     const remaining = session.findPlaceholders().map((p) => p.match.text)
-    const bytes = withGeneratedDocxAttribution(withParagraphPointers(session.save()))
+    // The template's literal clause numbers become its own (or the house)
+    // Word list numbering once the text is final. Headings the engine inserts
+    // name built-in style ids, which a localized template keeps under its own.
+    // A library template has no document form either, so its typed clause
+    // references stay text; the cross-references it already has are
+    // refreshed. A template reference to a part the draft no longer has (an
+    // omitted component) becomes an open-item marker, reported below.
+    const removedReferences: string[] = []
+    const bytes = withGeneratedDocxAttribution(withParagraphPointers(await linkCrossReferences(numberDocxClauses(withTemplateStyleIds(session.save())),
+      { refreshOnly: true, onRemovedTarget: (marker) => removedReferences.push(marker) })))
     session.close()
 
     // Upload through ingest rather than writing the file directly: its
@@ -215,6 +248,7 @@ export default tool({
       name,
       bytes,
       { kind: "create" },
+      { actor: `agent:${ctx.agent}`, run: ctx.sessionID },
     )
     if (uploadError) return `Draft composed but ${uploadError}`
 
@@ -228,11 +262,17 @@ export default tool({
         missingOmits.length
           ? `Optional components not found (left as-is): ${missingOmits.join(", ")}. Check the names against list-templates.`
           : "",
+        refusedOmits.length
+          ? `Optional components the document engine could not remove (left in the draft): ${refusedOmits.join(", ")}. Remove them with the editing tools.`
+          : "",
         missedReplaces.length
           ? `Component rewrites whose anchor text was not found (template language kept as-is): ${missedReplaces.map((c) => JSON.stringify(c)).join(", ")}. Locate the exact text with read-document and retry, or fix the draft with the editing tools.`
           : "",
         lint.length
           ? `Consistency check: ${lint.join("; ")}. Fix these with the redline/editing tools during your read-back.`
+          : "",
+        removedReferences.length
+          ? `${removedReferences.length} cross-reference${removedReferences.length === 1 ? "" : "s"} to parts no longer in the draft ${removedReferences.length === 1 ? "is" : "are"} marked as open items: ${[...new Set(removedReferences)].join(", ")}. Point each at the right clause or remove it with the editing tools.`
           : "",
       ]
         .filter(Boolean)
@@ -240,8 +280,10 @@ export default tool({
       metadata: {
         document: target,
         template: args.template,
+        removedReferences,
         remainingPlaceholders: remaining,
         omitted: args.omit,
+        refusedOmits,
         replaced: (args.replaces ?? []).filter((r) => !missedReplaces.includes(r.clause)).map((r) => r.clause),
         missedReplaces,
         lint,

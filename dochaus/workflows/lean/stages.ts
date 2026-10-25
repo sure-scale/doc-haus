@@ -1,4 +1,4 @@
-import { draftingStyleAdvisoryNotes } from "./style-warnings"
+import { draftingStyleAdvisoryNotes, styleScopedRows } from "./style-warnings"
 import { checklistCheckResultSchema, readEffectiveChecklistItems, reconcileChecklistParentCoverage, type ChecklistCoverageIssue } from "./checklist-flow"
 import { leanClarifications, checklistRefinementSelections } from "./requests"
 import { z } from "zod"
@@ -16,10 +16,15 @@ import { normalizeLegend, normalizePreferences, readFirmDraftingPreferences } fr
 import { pageFurniture, type FurnitureKind, type RequestedFurniture } from "../../lib/page-furniture"
 import { matterClient } from "../../lib/matter-client"
 import { readFirmPreferences } from "../../lib/preferences"
-import { existsSync, readFileSync } from "node:fs"
-import { ensureParagraphPointers, paragraphSha256 } from "../../lib/drafting-amendment"
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
+import path from "node:path"
+import { ensureParagraphRows, paragraphSha256 } from "../../lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../lib/render"
+import { numberDocxClauses, numberedList } from "../../lib/docx-numbering"
+import { linkCrossReferences } from "../../lib/docx-crossrefs"
+import { withTemplateStyleIds } from "../../lib/template-seed"
 import { presentDraft, type DraftPresentation } from "./draft-presentation"
+import { carryRevisionParagraphs, carryRevisionTables, draftedTablesNotes } from "./original-tables"
 import { checkChanges, parseJsonObject } from "./change-checks"
 import {
   checkDraft,
@@ -31,7 +36,7 @@ import {
   type ParagraphRow,
   type StageCheck,
 } from "./checks"
-import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type PlannedDocument, type StepID } from "./plan"
+import { reviewStages, FIRST_DOCUMENT, planActingFor, operativeDocument, operativePlan, plannedDocument, readLeanPlan, runPosture, stepDocument, stepStage, type DocID, type PlannedDocument, type StepID } from "./plan"
 import { acceptReviewReply, forwardedFindings, readReviewRecord } from "./review-findings"
 import { templateSource } from "./template-contract"
 import { completedDocumentsText, delegatedDecisionsText, packageCompositionBlock } from "./prompts"
@@ -64,7 +69,7 @@ import {
 // goes to the pointer applier as data, addressed by paragraph pointer. Steps of
 // one planned document keep their files under that document's id (d1/, d2/...).
 
-export const LEAN_PROMPT_VERSION = "lean-24-draft-status-home"
+export const LEAN_PROMPT_VERSION = "lean-28-numbered-headings-revise-scope"
 const OUTLINE_CONTRACT = "document-form-unheaded-labels-9"
 const DELIVERY_REVIEW_CONTRACT = "grounded-delivery-selection-4"
 const STRUCTURAL_AMENDMENT_CONTRACT = "explicit-paragraph-cardinality-1"
@@ -356,8 +361,33 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     // A plan without a form (a legacy plan, or an outline's last attempt) carries the plain page numbers.
     const planned = plannedDocument(directory, document)
     const furniture = renderedFurniture(directory, planned?.form ?? "other", requestedFurniture(planned?.furniture))
-    const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture)
-      .then(result => options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false) : { bytes: result.bytes, attribution: undefined })
+    // A revised original's tables are carried over their drafted counterparts
+    // before the body's paragraphs are attributed to parts and listed; its
+    // paragraphs, once attributed (their pointers stay), when the body is
+    // drafted on its styles, so headings keep the original's styles.
+    // Clause numbering, and a template's own style ids, follow presentation,
+    // which matches and reshapes the headings by their literal text and style.
+    // A document compared against an original that types its clause numbers
+    // (no paragraph a list numbers, or no more of them than typed numbers)
+    // keeps them typed, so its redline (comparisonBaseline) shows no number
+    // changes. A draft rendered on that original's own styles is otherwise
+    // numbered into the original's list, a list no style binds (Word's
+    // default numbering) included. Numbered references to the document's own
+    // clauses then become live cross-references; one placed after another pack
+    // document's title is that document's. A typed document gets no fields.
+    // A revised original keeps its own header and footer, the firm's header
+    // lines written above its own header text.
+    const styleTemplate = plannedStyleTemplate(directory, planned)
+    const { list, links } = draftedReferences(directory, document, planned)
+    const into = list && templateSource(planned) === planned?.comparison ? { list } : {}
+    const rendered = await renderMarkdownToDocx(options.presentation?.source ?? reply, undefined, furniture, { numbering: false, styleTemplate, ...(planned?.mode === "revise" ? { revising: true as const } : {}) })
+      .then(result => ({ ...result, bytes: carryRevisionTables(directory, document, result.bytes) }))
+      .then(result => ({ ...(options.presentation ? presentDraft(result.bytes, options.presentation.parts, options.presentation.title !== false, result.headingSpacing) : { bytes: result.bytes, attribution: undefined }), templated: result.templated }))
+      .then(result => ({ ...result, bytes: result.templated ? carryRevisionParagraphs(directory, document, result.bytes) : result.bytes }))
+      .then(async ({ templated, ...result }) => {
+        const styled = templated ? withTemplateStyleIds(result.bytes) : result.bytes
+        return { ...result, bytes: links ? await linkCrossReferences(numberDocxClauses(styled, templated ? into : {}), links) : styled }
+      })
       .then(result => result, (error: unknown) => ({ error }))
     if ("error" in rendered)
       return { issues: [`The document could not be rendered to Word (${message(rendered.error)}). Use plain Markdown headings, paragraphs, lists and tables.`], openItems: [], outputs: [] }
@@ -390,13 +420,16 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
   const check = checkDraftingNotes(directory, reply, disclosableItems(directory), { final: options.final })
   if (check.issues.length) return { ...check, outputs: [] }
   const advisory = draftingStyleAdvisoryNotes([
-    ...(readLeanPlan(directory)?.documents ?? []).map(row => ({ title: row.title, rows: finalBodyParagraphs(directory, row.id) })),
+    ...(readLeanPlan(directory)?.documents ?? []).map(row => ({ title: row.title, rows: styleScopedRows(directory, row.id, finalBodyParagraphs(directory, row.id)) })),
     { title: "Drafting notes", rows: [{ pid: "drafting-notes", text: reply }] },
   ])
-  const notes = advisory ? `${reply.trimEnd()}\n\n${advisory}\n` : reply
+  // Code adds what the records show and the reply need not restate: the style
+  // advisories, and the original tables kept as drafted.
+  const appended = [advisory, draftedTablesNotes(directory)].filter(Boolean)
+  const notes = appended.length ? `${[reply.trimEnd(), ...appended].join("\n\n")}\n` : reply
   writeLeanText(directory, "drafting-notes.md", ensureNewline(notes))
   const previous = leanFile(directory, "drafting-notes.docx")
-  writeLeanBytes(directory, "drafting-notes.docx", (await renderMarkdownToDocx(notes, existsSync(previous) ? readFileSync(previous) : undefined, notesFurniture(directory))).bytes)
+  writeLeanBytes(directory, "drafting-notes.docx", await renderNotes(directory, notes, existsSync(previous) ? readFileSync(previous) : undefined))
   return { ...check, outputs: stepOutputs(step) }
 }
 
@@ -406,6 +439,37 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
  * every file and render in the run reads the same date. */
 export function renderedFurniture(directory: string, kind: FurnitureKind, requested?: RequestedFurniture) {
   return pageFurniture(kind, normalizePreferences(readFirmPreferences()), readLeanState(directory)?.created_at, requested)
+}
+
+/** The clause list of the original a planned document is compared against, and
+ * how the draft links its cross-references: not at all when that original
+ * types its clause numbers (no paragraph a list numbers, or no more of them
+ * than typed numbers), which the draft then keeps. The apply step links the
+ * paragraphs its changes rewrote by the same rule. */
+export function draftedReferences(directory: string, document: DocID, planned = plannedDocument(directory, document)) {
+  const original = matterWordFile(directory, planned?.comparison)
+  const list = original && numberedList(original)
+  const typed = original !== undefined && (!list || list.typed >= list.numbered)
+  const titles = (readLeanPlan(directory)?.documents ?? []).filter(row => row.id !== document).map(row => row.title)
+  return { list, links: typed ? undefined : { title: planned?.title, form: planned?.form, titles } }
+}
+
+/** The Word file a planned document is drafted from (its template, or the
+ * original it revises), whose styles, numbering and page set-up its body takes.
+ * Without one the firm's style template or the house style applies. */
+function plannedStyleTemplate(directory: string, planned: PlannedDocument | undefined) {
+  return matterWordFile(directory, templateSource(planned))
+}
+
+/** A Word file of the matter, by name. A file outside the matter, through a
+ * link included, is none. */
+function matterWordFile(directory: string, source: string | undefined) {
+  if (!source?.toLowerCase().endsWith(".docx")) return
+  const file = path.resolve(directory, source)
+  if (!existsSync(file)) return
+  const real = realpathSync(file)
+  if (!real.startsWith(realpathSync(directory) + path.sep) || !statSync(real).isFile()) return
+  return readFileSync(real)
 }
 
 /** A planned document's furniture lines as the renderer takes them; a lawyer's
@@ -421,10 +485,19 @@ export function notesFurniture(directory: string) {
   return renderedFurniture(directory, requestedMemo(directory) ? "advice" : "notes")
 }
 
+/** The drafting notes (or memo) as Word: always in the house style, whose
+ * heading numbering a combined delivery can carry beside the document's own;
+ * a firm template's list styles could not be. Rendered with no form, its
+ * references to the documents' clauses stay text. */
+export async function renderNotes(directory: string, notes: string, previous?: Uint8Array) {
+  return (await renderMarkdownToDocx(notes, previous, notesFurniture(directory), { styleTemplate: false })).bytes
+}
+
 /** Gives every body paragraph a pointer (rewriting the docx when one is added)
- * and lists the paragraphs with the text hash amendments are authored against. */
+ * and lists the paragraphs with the text hash amendments are authored against
+ * and the list label Word numbers each with. */
 export async function paragraphRows(docxPath: string): Promise<ParagraphRow[]> {
-  return Object.entries(await ensureParagraphPointers(docxPath)).map(([pid, text]) => ({ pid, sha256: paragraphSha256(text), text }))
+  return (await ensureParagraphRows(docxPath)).map(row => ({ pid: row.pid, sha256: paragraphSha256(row.text), text: row.text, ...(row.label ? { label: row.label } : {}), ...(row.clause ? { clause: row.clause } : {}) }))
 }
 
 /** A draft step's accepted document: planned, with its Word body and its paragraphs. */

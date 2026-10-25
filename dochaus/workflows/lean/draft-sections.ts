@@ -17,7 +17,7 @@ import {
   FIRST_DOCUMENT, headingText, normalizedHeading, parsePlan, plannedDocument, readLeanPlan, runPosture, withDocumentIDs, writeLeanPlan,
   type ActingFor, type DocID, type LeanOutline, type PlannedDocument, type StepID,
 } from "./plan"
-import { actingForBlock, packageCompositionBlock, retryPrompt, stagePrompt } from "./prompts"
+import { REVISION_PREFERENCE_SCOPE, actingForBlock, packageCompositionBlock, retryPrompt, stagePrompt } from "./prompts"
 import {
   LEAN_CHILD_PERMISSIONS,
   LEAN_MAX_RETRIES,
@@ -34,6 +34,7 @@ import { stageInputSha } from "./runner"
 import { outlineCoverageIssues, partCarries, plannedContract } from "./template-contract"
 import { draftStatusItems } from "./draft-status"
 import { draftTemplateItems } from "./template-coverage"
+import { originalTables, originalTablesBlock, partTableIssues, tableParts } from "./original-tables"
 
 // Sectioned draft step. A long document can need more tokens than one model
 // reply may carry, so the draft agent writes one part per reply in the same
@@ -81,7 +82,7 @@ import { draftTemplateItems } from "./template-coverage"
 // step: the draft is never rewritten for it, the change cycle receives it as a
 // required repair, and the apply step records any gap left in the final body.
 
-export type DraftOutline = Pick<PlannedDocument, "title" | "parts" | "form" | "mode">
+export type DraftOutline = Pick<PlannedDocument, "title" | "parts" | "form" | "mode" | "template">
 
 export type DraftStageRun =
   | { status: "done"; outputs: string[]; openItems: OpenItem[]; questions?: Question[] }
@@ -317,6 +318,9 @@ export async function runDraftStage(
   const key = stageInputSha(directory, step)
   const contract = plannedContract(directory, document)
   const carries = contract ? partCarries(contract, plan.parts.length) : []
+  // A revised original's tables: each part is shown those its scope holds.
+  const original = originalTables(directory, document)
+  const scopes = original ? tableParts(directory, document, original.tables) : []
   const drafted: string[] = []
   for (const [index, part] of plan.parts.entries()) {
     const label = `part ${index + 1}/${plan.parts.length}`
@@ -325,16 +329,33 @@ export async function runDraftStage(
       ? { source: contract.source, parts: carried.carried.map(unit => unit.label), left: carried.left.map(unit => unit.label) }
       : undefined)
     const brief = sectionHandoff(directory, document)
+    const own = scopes.flatMap((parts, table) => parts.includes(index) ? [table] : [])
     // The outline's session saw the run context before the plan named a memo.
-    const text = [...(index > 0 ? [] : outlined ? [actingForBlock(directory), packageCompositionBlock(directory, document)] : [stagePrompt(directory, step)]), brief, section].filter(Boolean).join("\n\n")
-    const written = await ask(label, text, (reply, final) => checkSection(reply, plan, index, final))
-    if (!written.value) return failed(`${label} "${part.heading}"`, written.issues)
-    drafted.push(written.value)
+    const text = [...(index > 0 ? [] : outlined ? [actingForBlock(directory), packageCompositionBlock(directory, document)] : [stagePrompt(directory, step)]), originalTablesBlock(original, own), brief, section].filter(Boolean).join("\n\n")
+    // The first reply the section check passes is checked once for an
+    // original table it leaves out (partTableIssues); asked for it, the part
+    // keeps that reply when no later one passes, so the table check never
+    // costs a part the text it had.
+    let tables = original?.tables
+    let kept: string | undefined
+    const written = await ask(label, text, (reply, final) => {
+      const checked = checkSection(reply, plan, index, final)
+      if (!tables || checked.value === undefined) return checked
+      const issues = partTableIssues(checked.value, tables, own)
+      tables = undefined
+      if (!issues.length) return checked
+      if (final) return { issues, value: checked.value }
+      kept = checked.value
+      return { issues }
+    })
+    const value = written.value ?? kept
+    if (!value) return failed(`${label} "${part.heading}"`, written.issues)
+    drafted.push(value)
     writeLeanText(directory, `${document}/draft-in-progress.md`, assembleDraft(plan, drafted, false))
   }
   const letter = isLetter(plan.form)
   const presentation = letter || plan.parts.some(part => part.display_heading !== undefined)
-    ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: plan.parts[part]?.display_heading, part })), ...(letter ? { title: false as const } : {}) }
+    ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: printedDisplayHeading(plan, part, text), part })), ...(letter ? { title: false as const } : {}) }
     : undefined
   const accepted = await acceptStageReply(directory, step, assembleDraft(plan, drafted), { presentation })
   if (accepted.issues.length) return failed("assembled document", accepted.issues)
@@ -354,6 +375,10 @@ export function sectionPrompt(outline: DraftOutline, index: number, template?: {
   const part = outline.parts[index]!
   const names = (labels: string[]) => labels.map(name => `"${name}"`).join("; ")
   const original = outline.mode === "revise" ? "the original" : template ? `the template "${template.source}"` : undefined
+  // A new agreement has no source numbering to follow; clause numbering
+  // (lib/docx-numbering.ts) becomes native Word numbering only from numbered
+  // clause headings, whether or not a part heading is printed above them.
+  const numbered = outline.form === "agreement" && !original && !outline.template
   return [
     `Draft part ${index + 1} of ${outline.parts.length} of "${outline.title}": ${part.heading}`,
     ...(part.scope ? [`This part covers: ${part.scope}`] : []),
@@ -375,6 +400,7 @@ export function sectionPrompt(outline: DraftOutline, index: number, template?: {
       : isLetter(outline.form) ? "- That first line is an internal part label; the renderer omits it. Begin the body with the document text itself, without a replacement heading."
       : "- That first line is an internal part label; the renderer omits it. Write the headings the document itself needs in the part's text, in its own style" +
         (original ? `, following the heading text and hierarchy of ${original} except where the outline or the instructions change them.` : "."),
+    ...(numbered ? ['- Number the clauses in one sequence across the whole document: each clause has a numbered heading ("### 3. <clause heading>") and its subclauses continue that number (3.1, 3.2). A part heading the renderer prints is not a clause and is not numbered.'] : []),
     "- Do not repeat the title or write any other part. Keep defined terms, numbering and cross-references consistent with the outline, the instructions and the parts already drafted.",
     "- The source, quotation and open item rules of the first prompt still apply.",
   ].join("\n")
@@ -388,7 +414,7 @@ function sectionHandoff(directory: string, document: DocID) {
   const answers = answeredQuestionsText(directory)
   const files = ["spine.json", "research.json", "research-review.json"].filter(name => readLeanText(directory, name))
   return [
-    ...(plannedDocument(directory, document)?.mode === "revise" ? ["Revision foundation: preserve unaffected source wording and operative clauses, including their qualifications. Read the full original part before editing it. A summary or recommendation does not replace operative wording. Explain substantive omissions against the supplied source."] : []),
+    ...(plannedDocument(directory, document)?.mode === "revise" ? [`Revision foundation: preserve unaffected source wording and operative clauses, including their qualifications. Read the full original part before editing it. A summary or recommendation does not replace operative wording. Explain substantive omissions against the supplied source. ${REVISION_PREFERENCE_SCOPE}`] : []),
     ...(readLeanText(directory, `${document}/draft-in-progress.md`)?.trim() ? [`Exact accepted parts of this stage attempt are available at .dochaus/lean/${document}/draft-in-progress.md. Read them when checking shared definitions, numbering or cross-references; a conversation summary does not replace their wording.`] : []),
     "Section handoff: use the current part's scope and provided source references to retrieve the passages it needs. Preserve shared definitions, settled decisions and cross-references from the preceding parts in this session; inspect their source dependencies when needed. The other outline scopes show where related provisions belong.",
     ...(files.length ? [`Working evidence records available with read: ${files.map(name => `.dochaus/lean/${name}`).join(", ")}. These are retrieval guides, not independent authority; verify underlying matter passages and use only research approved by research-review.`] : []),
@@ -472,6 +498,22 @@ function plainLine(line: string) {
   return visibleInlineText(line.trim().replace(/^#{1,6}\s+/, "")).replace(/[*_`]/g, "").replace(/[\s.:;,]+$/, "").replace(/\s+/g, " ").trim().toLowerCase()
 }
 
+/** The heading publication prints in place of part `index`'s label, whose
+ * drafted `text` ("## " label first) is given: its display heading
+ * (undefined: the label itself). A display heading prints nothing where it
+ * would repeat what is printed right below or above it (markup, case, spacing
+ * and closing punctuation aside): the heading that opens the part's text, its
+ * clause number aside, or, above the part that opens the document (not in a
+ * letter), the title, printed once; a later part's restating the title stands,
+ * as a title restated after a cover sheet does. */
+function printedDisplayHeading(outline: DraftOutline, index: number, text: string) {
+  const display = outline.parts[index]?.display_heading
+  if (!display) return display
+  const opening = text.trim().split("\n").slice(1).find(line => line.trim())?.trim() ?? ""
+  const heading = /^#{3,6}\s/.test(opening) ? plainLine(opening).replace(/^\d{1,3}(?:\.\d{1,3})*\.?\s+/, "") : undefined
+  return plainLine(display) === heading || index === 0 && !isLetter(outline.form) && plainLine(display) === plainLine(outline.title) ? "" : display
+}
+
 /** The draft from its parts. With `presentation`, each part label gives way to
  * its display heading, and a part that prints none has its own headings moved
  * up, keeping their relative depth, until the shallowest is a second-level
@@ -482,7 +524,8 @@ export function assembleDraft(outline: DraftOutline, parts: string[], presentati
   return `# ${outline.title}\n\n${parts.map(part => {
     const text = part.trim()
     const label = headingText(text.split("\n")[0]!.replace(/^##\s+/, ""))
-    const display = outline.parts.find(row => normalizedHeading(row.heading) === normalizedHeading(label))?.display_heading
+    const at = outline.parts.findIndex(row => normalizedHeading(row.heading) === normalizedHeading(label))
+    const display = at < 0 ? undefined : printedDisplayHeading(outline, at, text)
     if (!presentation || display === undefined) return text
     const body = text.split("\n").slice(1).join("\n").trim()
     if (display) return [`## ${display}`, body].filter(Boolean).join("\n\n")

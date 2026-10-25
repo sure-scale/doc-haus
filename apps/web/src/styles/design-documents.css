@@ -53,6 +53,14 @@
 .document-reader .modal-close svg { flex-shrink: 0; }
 .viewer-bar-divider { width: 1px; height: 22px; margin: 0 var(--space-1); background: var(--border); }
 .document-reader .viewer-doc { padding: 36px var(--space-8) 64px; background: var(--md-sys-color-surface-container-low); }
+/* A PDF preview fills the viewer. The panel gets a definite height so the frame
+   can take the room left below the header; the PDF scrolls inside the frame. */
+.viewer-panel.pdf-reader { height: calc(var(--viewport-block) - 48px); }
+.pdf-reader .viewer-doc.pdf-doc { display: flex; flex-direction: column; gap: var(--space-3); overflow: hidden; padding: var(--space-4) var(--space-6); }
+.pdf-reader .pdf-doc > p { flex: none; margin: 0; }
+/* The citation line names the page first; its quoted excerpt is clipped past three lines. */
+.pdf-reader .pdf-doc > p[role="status"] { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.pdf-reader .pdf-doc .pdf-render { flex: 1 1 0; min-height: 0; height: auto; background: var(--md-sys-color-surface); }
 .document-reader .docx-render { background: var(--md-sys-color-surface); line-height: 1.85; border-color: var(--md-sys-color-outline-variant); }
 .document-reader .changes-panel { background: var(--panel); padding: 0 var(--space-5) var(--space-5); }
 .document-reader .changes-head { background: var(--panel); }
@@ -86,7 +94,9 @@
   .document-reader .viewer-bar-actions > button:not(.modal-close) { flex: 1; justify-content: center; padding: 0 10px; }
   .document-reader .viewer-body { flex-direction: column; overflow: auto; }
   .document-reader .viewer-doc { flex: none; overflow: visible; padding: var(--space-5) var(--space-3) var(--space-8); }
-  .document-reader .pdf-render { min-height: 65dvh; }
+  .pdf-reader .viewer-body { flex-direction: column; overflow: hidden; }
+  .pdf-reader .viewer-doc.pdf-doc { flex: 1 1 0; min-height: 0; overflow: hidden; padding: var(--space-3); }
+  .pdf-reader .pdf-doc .pdf-render { min-height: 0; }
   .document-reader .docx-render { padding: 30px var(--space-6); }
   .document-reader .changes-panel { width: 100%; overflow: visible; padding: 0 18px 18px; border-left: 0; border-top: 1px solid var(--border); }
   .document-reader .document-edit-request, .document-reader .document-open-items { padding: 18px; }
@@ -100,6 +110,46 @@
   .document-reader .viewer-bar-actions > button,
   .viewer-more-actions > summary { min-height: 44px; }
   .viewer-more-actions > summary { width: 44px; height: 44px; }
+}
+
+/* ---------- Document versions (#268) ---------- */
+/* The list sits where the change list does; a version open in place of the
+   working file carries a banner with the way back. */
+.document-reader .viewer-bar-actions > button.viewer-versions-toggle[aria-expanded="true"] { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent); }
+.document-reader .viewer-bar-actions > button.viewer-versions-toggle[aria-expanded="true"] svg { color: var(--accent); }
+.viewer-versions-count { font-variant-numeric: tabular-nums; color: var(--muted); }
+.versions-panel .changes-head { gap: var(--space-1); }
+.versions-head h3 { display: flex; align-items: center; gap: var(--space-2); margin: 0; font-family: var(--font-sans); font-size: 0.875rem; font-weight: 600; color: var(--text); }
+.versions-head p { margin: 0; font-size: 0.75rem; font-weight: 400; line-height: 1.5; color: var(--muted); }
+.versions-list { margin: 0; padding: 0; list-style: none; }
+.version-row { display: flex; flex-direction: column; gap: 2px; padding: var(--space-4) 0; border-bottom: 1px solid var(--border); }
+.version-row:last-child { border-bottom: 0; }
+.version-row.is-shown { padding-left: 14px; box-shadow: inset 3px 0 var(--accent); }
+.version-title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); font-size: 0.875rem; color: var(--text); }
+.version-tag { padding: 0 7px; border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-size: 0.6875rem; font-weight: 500; line-height: 18px; }
+.version-tag.is-viewing { background: var(--bg-sunken); color: var(--text-secondary); }
+.version-meta { font-size: 0.8125rem; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
+.version-time { font-size: 0.75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.version-label, .version-branch { font-size: 0.75rem; line-height: 1.45; color: var(--text-secondary); overflow-wrap: anywhere; }
+.version-branch::before { content: "↳ "; color: var(--muted); }
+.version-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: var(--space-2); }
+.version-actions .icon-btn { display: inline-flex; align-items: center; gap: 6px; }
+.version-actions .icon-btn svg { flex: none; color: var(--muted); }
+.version-row.is-unavailable .version-title strong { color: var(--text-secondary); }
+.version-unavailable { margin: var(--space-1) 0 0; font-size: 0.75rem; line-height: 1.45; color: var(--muted); }
+.version-confirm { margin-top: var(--space-2); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--md-sys-color-surface-container-low); }
+.version-confirm p { margin: 0 0 var(--space-3); font-size: 0.8125rem; line-height: 1.5; color: var(--text); }
+.version-confirm .upload-actions { flex-wrap: wrap; margin-left: 0; }
+.version-error { margin: var(--space-2) 0 0; font-size: 0.75rem; line-height: 1.45; color: var(--danger); }
+.version-changed { margin: 0 0 var(--space-2); font-size: 0.75rem; line-height: 1.5; color: var(--warn); }
+.document-reader .version-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); max-width: 760px; margin: 0 auto var(--space-5); padding: var(--space-3) var(--space-4); background: var(--panel); border: 1px solid var(--accent-border); border-radius: var(--radius-md); }
+.version-banner p { margin: 0; font-size: 0.8125rem; line-height: 1.5; color: var(--text); }
+.version-banner p span { display: block; font-size: 0.75rem; color: var(--muted); }
+.document-reader .version-status { max-width: 760px; margin: 0 auto var(--space-4); font-size: 0.8125rem; line-height: 1.5; color: var(--warn); }
+.compare-notice { color: var(--text-secondary); }
+@media (max-width: 720px) {
+  /* Above the page, and first in the markup so the tab order matches. */
+  .document-reader .versions-panel { border-top: 0; border-bottom: 1px solid var(--border); }
 }
 
 /* ---------- Documents drawer ---------- */

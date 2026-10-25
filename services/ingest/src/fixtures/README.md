@@ -61,3 +61,14 @@ LibreOffice version. They were re-zipped with unchanged part contents and fixed
 1980-01-01 entry times, so no save time is embedded. The live test in the same
 file repeats the save with the installed `soffice` and is skipped when it is
 absent. No model provider or paid request is used.
+
+# Synthetic Outlook email generator
+
+`synthetic-msg.ts` writes Outlook (.msg) emails for tests at run time; no .msg
+binary is checked in. It builds an OLE compound file in the MS-OXMSG layout with
+the compound-file writer of `@kenjiuno/msgreader`, the reader ingest uses, and
+compresses RTF bodies in the MS-OXRTFCP format. Every subject, address, body and
+attachment comes from the test that calls it: invented `example.test` content,
+no real email, person or organization. It reads no external file and calls no
+model provider. It exercises `src/outlook-msg.test.ts` and the Outlook upload
+case in `src/source-upload-http.test.ts`.

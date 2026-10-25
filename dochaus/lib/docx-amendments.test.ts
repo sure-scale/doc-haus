@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test"
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { createDocxRevision, createDocxLocalization, applyDocxLocalization, applyDocxParagraphEdits } from "./docx-amendments"
 import { renderMarkdownToDocx } from "./render"
@@ -328,4 +329,75 @@ test("the revision view labels page header and footer text apart from the body; 
   const page = await createDocxLocalization(source, [{ id: "page", before_quote: "Page", replacement: "Sheet" }])
   await expect(applyDocxLocalization(source, page, [{ amendment_id: "page", target_handle: page.candidates[0]!.target_handle }]))
     .rejects.toThrow("unsupported_field_replacement")
+})
+
+test("the revision view shows each Word list number before its heading or paragraph, apart from the text quotes match", async () => {
+  // render numbers the clauses with a Word list, so "2." and "2.1" are list labels, not run text.
+  const bytes = (await renderMarkdownToDocx(["# Supply Agreement", "## 1. Delivery", "1.1 The Supplier shall deliver the cartons.",
+    "## 2. Payment", "2.1 The Customer shall pay within thirty days."].join("\n\n"))).bytes
+  const revision = await createDocxRevision(bytes)
+  expect(revision.markdown).toContain("## 2. Payment\n\n2.1 The Customer shall pay within thirty days.")
+  const last = revision.paragraphs.at(-1)!
+  expect([last.label, last.text, last.headings.map(heading => heading.text)])
+    .toEqual(["2.1", "The Customer shall pay within thirty days.", ["Supply Agreement", "2. Payment"]])
+})
+
+describe("live cross-references", () => {
+  // A numbered agreement whose clause references render as REF fields.
+  const AGREEMENT = ["# Services Agreement", "## 1. Definitions", "1.1 In this Agreement the terms in clause 2.1 and Schedule 1 apply.",
+    "## 2. Services", "2.1 The Supplier shall provide the Services.", "2.2 The Customer shall pay as set out in clause 2.1.",
+    "## Schedule 1 – Services", "The services listed here."].join("\n\n")
+  const refs = (bytes: Uint8Array) => [...strFromU8(unzipSync(bytes)["word/document.xml"]!).matchAll(/<w:instrText[^>]*>([^<]*)<\/w:instrText>[\s\S]*?<w:t[^>]*>([^<]*)<\/w:t>/g)]
+    .map(match => [match[1]!.replace(/_Ref\d+/, "_Ref#"), match[2]])
+
+  test("an edit beside a REF field keeps it live; an edit of its number leaves that number as text, and the report says so", async () => {
+    const source = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes
+    expect(refs(source)).toEqual([[" REF _Ref# \\r \\h ", "2.1"], [" REF _Ref# \\h ", "1"], [" REF _Ref# \\r \\h ", "2.1"]])
+    const revision = await createDocxRevision(source)
+    const handle = (start: string) => revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle
+    const beside = { id: "beside", paragraph_handle: handle("In this Agreement"), occurrence: 0, before_quote: "the terms", replacement: "the defined terms" }
+    const output = await applyDocxParagraphEdits(source, [
+      beside,
+      { id: "number", paragraph_handle: handle("The Customer"), occurrence: 0, before_quote: "clause 2.1", replacement: "clause 2.2" },
+    ])
+    expect((await createDocxRevision(output.bytes)).paragraphs.map(row => row.text)).toContain("In this Agreement the defined terms in clause 2.1 and Schedule 1 apply.")
+    expect((await createDocxRevision(output.bytes)).paragraphs.map(row => row.text)).toContain("The Customer shall pay as set out in clause 2.2.")
+    expect(refs(output.bytes)).toEqual([[" REF _Ref# \\r \\h ", "2.1"], [" REF _Ref# \\h ", "1"]])
+    expect(output.report.limitation).toEndWith("; 1 cross-reference field converted to text in paragraph 2.2")
+    expect((await applyDocxParagraphEdits(source, [beside])).report.limitation).not.toContain("cross-reference")
+  })
+
+  test("a changed format of an existing run is refused, also in a batch that rewrites a cross-reference number", async () => {
+    // Clause 2.3 sits in clause 2: numbers after the schedule heading stay typed.
+    const source = (await renderMarkdownToDocx(AGREEMENT.replace("\n\n## Schedule 1", "\n\n2.3 Nothing here limits the **Supplier**.\n\n## Schedule 1"),
+      undefined, undefined, { form: "agreement" })).bytes
+    const revision = await createDocxRevision(source)
+    const handle = (start: string) => revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle
+    const plain = { id: "plain", paragraph_handle: handle("Nothing here"), occurrence: 0, before_quote: "Nothing here", replacement: "Nothing in this clause" }
+    const number = { id: "number", paragraph_handle: handle("The Customer"), occurrence: 0, before_quote: "clause 2.1", replacement: "clause 2.2" }
+    // A faulty engine edit: the untouched bold run "Supplier" gains capitals.
+    const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    const dx = await docxodus()
+    const probe = dx.openDocxSession(source, {})
+    const prototype = Object.getPrototypeOf(probe)
+    probe.close()
+    const replaceMatch = prototype.replaceMatch
+    prototype.replaceMatch = function (this: typeof probe, ...args: Parameters<typeof probe.replaceMatch>) {
+      const result = replaceMatch.apply(this, args)
+      const id = args[0].enclosingAnchor.id
+      if (!this.raw.getXml(id).includes("Nothing in this clause")) return result
+      const doc = new DOMParser().parseFromString(this.raw.getXml(id), "application/xml")
+      const run = Array.from(doc.getElementsByTagNameNS(W, "r")).find(row => row.getElementsByTagNameNS(W, "t")[0]?.textContent === "Supplier")!
+      run.getElementsByTagNameNS(W, "rPr")[0]!.appendChild(doc.createElementNS(W, "w:caps"))
+      this.raw.replaceXml(id, new XMLSerializer().serializeToString(doc))
+      return result
+    }
+    try {
+      await expect(applyDocxParagraphEdits(source, [plain])).rejects.toThrow("docx_existing_run_properties_changed")
+      await expect(applyDocxParagraphEdits(source, [plain, number])).rejects.toThrow("docx_existing_run_properties_changed")
+    } finally { prototype.replaceMatch = replaceMatch }
+    // Without the fault both batches apply.
+    expect((await createDocxRevision((await applyDocxParagraphEdits(source, [plain, number])).bytes)).paragraphs.map(row => row.text))
+      .toEqual(expect.arrayContaining(["Nothing in this clause limits the Supplier.", "The Customer shall pay as set out in clause 2.2."]))
+  })
 })

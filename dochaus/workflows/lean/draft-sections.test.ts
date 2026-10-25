@@ -1,11 +1,13 @@
 import { Database } from "bun:sqlite"
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { strFromU8, unzipSync } from "fflate"
-import { paragraphSha256 } from "../../lib/drafting-amendment"
-import { readParagraphs } from "./checks"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
+import { referenceFields } from "../../lib/docx-crossrefs"
+import { compareDocxWithPointers, paragraphSha256 } from "../../lib/drafting-amendment"
+import { renderMarkdownToDocx } from "../../lib/render"
+import { readParagraphs, shownText } from "./checks"
 import { assembleDraft, checkSection, runDraftStage, sectionPrompt } from "./draft-sections"
 import { readLeanEvents } from "./events"
 import { NOT_STATED, leanPlanIssue, operativeDocument, parsePlan, readLeanPlan, writeLeanPlan, type PlannedDocument } from "./plan"
@@ -111,7 +113,7 @@ describe("sectioned draft stage", () => {
     })
     const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
     expect(result.status).toBe("done")
-    expect(readParagraphs(directory, "d1").map(row => [row.text, row.draft_part, row.draft_heading])).toEqual([
+    expect(readParagraphs(directory, "d1").map(row => [shownText(row), row.draft_part, row.draft_heading])).toEqual([
       ["Deed", null, true], ["1. Clause", 0, false], ["Text 1.", 0, false], ["2. Clause", 1, false], ["Text 2.", 1, false], ["3. Clause", 2, false], ["Text 3.", 2, false],
     ])
     expect(readLeanEvents(directory).filter(event => event.step === "presentation")).toEqual([])
@@ -209,14 +211,15 @@ describe("sectioned draft stage", () => {
     expect(result.status).toBe("done")
     expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8")).toBe("# Supply Agreement\n\n## 1. Parties\n\n1.1 The supplier and the buyer.\n\n" +
       "### 1.2 Definitions\n\nWords have their defined meanings.\n\n## Schedule\n\n### Goods supplied\n\nThe goods in the order.\n")
-    // Text, heading style and the spacing rendering gives that style.
+    // Text, heading style and the spacing rendering gives that style; clause
+    // numbers are Word list numbering, not text.
     expect(styledParagraphs(directory)).toEqual([
       ["Supply Agreement", "Heading1", "320"],
-      ["1. Parties", "Heading2", "280"], ["1.1 The supplier and the buyer.", undefined, undefined],
-      ["1.2 Definitions", "Heading3", "220"], ["Words have their defined meanings.", undefined, undefined],
+      ["Parties", "Heading2", "280"], ["The supplier and the buyer.", undefined, undefined],
+      ["Definitions", "Heading3", "220"], ["Words have their defined meanings.", undefined, undefined],
       ["Schedule", "Heading2", "280"], ["Goods supplied", "Heading3", "220"], ["The goods in the order.", undefined, undefined],
     ])
-    expect(readParagraphs(directory, "d1").map(row => [row.text, row.draft_part, row.draft_heading])).toEqual([
+    expect(readParagraphs(directory, "d1").map(row => [shownText(row), row.draft_part, row.draft_heading])).toEqual([
       ["Supply Agreement", null, true],
       ["1. Parties", 0, false], ["1.1 The supplier and the buyer.", 0, false], ["1.2 Definitions", 0, false], ["Words have their defined meanings.", 0, false],
       ["Schedule", 1, true], ["Goods supplied", 1, false], ["The goods in the order.", 1, false],
@@ -240,6 +243,67 @@ describe("sectioned draft stage", () => {
       ["Interest", "Heading3", "220"], ["Interest runs daily.", undefined, undefined],
       ["Terms", "Heading2", "280"], ["The terms apply.", undefined, undefined],
     ])
+  }, 60_000)
+
+  test("an opening part whose display heading repeats the title prints the title once, in the Markdown and the Word body, its text still attributed to it", async () => {
+    const { directory, state } = matter()
+    const outline = "Acting for: not stated\n# Supply Agreement\nForm: agreement\n## Parties and subject matter\nDisplay heading: supply  AGREEMENT\nWho is bound.\n" +
+      "## Goods\nDisplay heading: Goods\nWhat is supplied."
+    const model = scripted((text, index) => {
+      if (index === 0) return outline
+      if (text.includes("part 1 of 2")) return "## Parties and subject matter\n\nThis agreement is between the supplier and the buyer.\n\n### Subject matter\n\nThe supply of goods."
+      return "## Goods\n\nThe goods in the order."
+    })
+    const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
+    expect(result.status).toBe("done")
+    const plan = readLeanPlan(directory)!.documents[0]!
+    expect(plan.parts.map(part => part.display_heading)).toEqual(["supply  AGREEMENT", "Goods"])
+    // The part prints no heading of its own, so its headings sit directly under the title.
+    expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8")).toBe("# Supply Agreement\n\nThis agreement is between the supplier and the buyer.\n\n" +
+      "## Subject matter\n\nThe supply of goods.\n\n## Goods\n\nThe goods in the order.\n")
+    expect(styledParagraphs(directory).map(([text, style]) => [text, style])).toEqual([
+      ["Supply Agreement", "Heading1"], ["This agreement is between the supplier and the buyer.", undefined],
+      ["Subject matter", "Heading2"], ["The supply of goods.", undefined], ["Goods", "Heading2"], ["The goods in the order.", undefined],
+    ])
+    const rows = readParagraphs(directory, "d1")
+    expect(rows.map(row => [row.text, row.draft_part, row.draft_heading])).toEqual([
+      ["Supply Agreement", null, true], ["This agreement is between the supplier and the buyer.", 0, false],
+      ["Subject matter", 0, false], ["The supply of goods.", 0, false], ["Goods", 1, true], ["The goods in the order.", 1, false],
+    ])
+    expect(rowsBody(plan, rows).partOf).toEqual([undefined, 0, 0, 0, 1, 1])
+  }, 60_000)
+
+  test("a display heading that reads as the heading opening its part, clause number aside, prints once, in the Markdown and the Word body, its text still attributed to it", async () => {
+    const { directory, state } = matter()
+    const outline = "Acting for: not stated\n# Supply Agreement\nForm: agreement\n## Parties and background\nDisplay heading: Parties and Background\nWho is bound.\n" +
+      "## Term and ordering\nDisplay heading: Term and Ordering\nHow goods are ordered.\n## Price\nDisplay heading: Price\nWhat is paid.\n" +
+      "## Schedules and signing\nDisplay heading: Schedules and Signing\nThe schedules."
+    const replies: Record<string, string> = {
+      "part 1 of 4": "## Parties and background\n\n### Parties\n\nThis agreement is between the supplier and the buyer.",
+      "part 2 of 4": "## Term and ordering\n\n### 1. Term and ordering\n\nThe buyer orders goods by written order.",
+      "part 3 of 4": "## Price\n\nThe price is stated in the order.",
+      "part 4 of 4": "## Schedules and signing\n\n### Schedules\n\nThe goods are listed in the order.",
+    }
+    const model = scripted((text, index) => index === 0 ? outline : Object.entries(replies).find(([part]) => text.includes(part))![1])
+    const result = await runDraftStage(directory, state, { sessions: model.sessions }, () => {}, "d1", () => {})
+    expect(result.status).toBe("done")
+    // Only the second part's display heading repeats its own first heading: it prints nothing and that heading moves up.
+    expect(readFileSync(leanFile(directory, "d1/draft.md"), "utf8")).toBe("# Supply Agreement\n\n## Parties and Background\n\n### Parties\n\n" +
+      "This agreement is between the supplier and the buyer.\n\n## 1. Term and ordering\n\nThe buyer orders goods by written order.\n\n" +
+      "## Price\n\nThe price is stated in the order.\n\n## Schedules and Signing\n\n### Schedules\n\nThe goods are listed in the order.\n")
+    // Word list numbering may take over a typed clause number; the heading's words and level are what count here.
+    expect(styledParagraphs(directory).map(([text, style]) => [text!.replace(/^\d+\.\s+/, ""), style])).toEqual([
+      ["Supply Agreement", "Heading1"], ["Parties and Background", "Heading2"], ["Parties", "Heading3"], ["This agreement is between the supplier and the buyer.", undefined],
+      ["Term and ordering", "Heading2"], ["The buyer orders goods by written order.", undefined], ["Price", "Heading2"], ["The price is stated in the order.", undefined],
+      ["Schedules and Signing", "Heading2"], ["Schedules", "Heading3"], ["The goods are listed in the order.", undefined],
+    ])
+    const rows = readParagraphs(directory, "d1")
+    expect(rows.map(row => [row.text.replace(/^\d+\.\s+/, ""), row.draft_part, row.draft_heading])).toEqual([
+      ["Supply Agreement", null, true], ["Parties and Background", 0, true], ["Parties", 0, false], ["This agreement is between the supplier and the buyer.", 0, false],
+      ["Term and ordering", 1, false], ["The buyer orders goods by written order.", 1, false], ["Price", 2, true], ["The price is stated in the order.", 2, false],
+      ["Schedules and Signing", 3, true], ["Schedules", 3, false], ["The goods are listed in the order.", 3, false],
+    ])
+    expect(rowsBody(readLeanPlan(directory)!.documents[0]!, rows).partOf).toEqual([undefined, 0, 0, 0, 1, 1, 2, 2, 3, 3, 3])
   }, 60_000)
 
   test("a plan saved before labels were planned unheaded keeps them as visible headings and tells the drafter so", async () => {
@@ -442,6 +506,19 @@ describe("sectioned draft stage", () => {
     expect(letter).not.toContain("Write the headings")
   })
 
+  test("only a new agreement drafted without a template or original is asked for numbered clause headings, whether or not its part headings print", () => {
+    const agreement = { title: "Services agreement", form: "agreement" as const, parts: [
+      { heading: "Scope", scope: "", display_heading: "" }, { heading: "Fees", scope: "", display_heading: "Fees and payment" }, { heading: "Duration", scope: "" }] }
+    const numbers = (prompt: string) => prompt.includes("numbered heading")
+    expect([0, 1, 2].map(part => numbers(sectionPrompt(agreement, part)))).toEqual([true, true, true])
+    // An original or a template keeps its own numbering, including a templated document's part that carries nothing from it.
+    expect(numbers(sectionPrompt({ ...agreement, mode: "revise" }, 0))).toBe(false)
+    expect(numbers(sectionPrompt({ ...agreement, template: "template.docx" }, 0))).toBe(false)
+    expect(numbers(sectionPrompt(agreement, 0, { source: "template.docx", parts: ["1 Scope"] }))).toBe(false)
+    for (const form of ["letter", "advice letter", "advice", "other", undefined] as const)
+      expect(numbers(sectionPrompt({ ...agreement, form }, 0))).toBe(false)
+  })
+
   test("assembly prints a part label only where the plan keeps it; a part without a printed heading moves its own headings up to the second level", () => {
     const parts = ["## One\n\n### 1. One\n\nText.\n\n#### 1.1 Detail\n\nMore.", "## Two\n\n### Sub\n\nMore."]
     const outline = { title: "T", parts: [{ heading: "One", scope: "" }, { heading: "Two", scope: "", display_heading: "Second" }] }
@@ -600,6 +677,225 @@ describe("a planned document's form", () => {
       if (root === undefined) delete process.env.WORKSPACE_ROOT
       else process.env.WORKSPACE_ROOT = root
     }
+  }, 60_000)
+
+  test("a revised original keeps its own header and footer, the firm's legend, a requested legend and the draft line written above its header text: its redline only inserts them", async () => {
+    const { directory, state } = matter()
+    dated(directory, state)
+    // An original whose pages carry its firm's name, a different first-page header, and its matter reference beside a page number.
+    const parts = unzipSync((await renderMarkdownToDocx("# Supply terms\n\n## 1. Term\n\n1.1 The term is one year.", undefined, undefined, { numbering: false })).bytes)
+    const NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    const TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml"
+    const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    const story = (root: "hdr" | "ftr", paragraph: string) => strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:${root} ${NS}><w:p>${paragraph}</w:p></w:${root}>`)
+    const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`
+    parts["word/header7.xml"] = story("hdr", run("Precedent Partners LLP"))
+    parts["word/header8.xml"] = story("hdr", run("Strictly private"))
+    parts["word/footer7.xml"] = story("ftr", `${run("PP/2026/7 | ")}<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r>${run("1")}<w:r><w:fldChar w:fldCharType="end"/></w:r>`)
+    parts["[Content_Types].xml"] = strToU8(strFromU8(parts["[Content_Types].xml"]!).replace("</Types>", ["header7", "header8", "footer7"].map(name => `<Override PartName="/word/${name}.xml" ContentType="${TYPE}.${name.replace(/\d+$/, "")}+xml"/>`).join("") + "</Types>"))
+    parts["word/_rels/document.xml.rels"] = strToU8(strFromU8(parts["word/_rels/document.xml.rels"]!).replace("</Relationships>", ["header7", "header8", "footer7"].map(name => `<Relationship Id="rIdOwn${name}" Type="${REL}/${name.replace(/\d+$/, "")}" Target="${name}.xml"/>`).join("") + "</Relationships>"))
+    parts["word/document.xml"] = strToU8(strFromU8(parts["word/document.xml"]!).replace(/<w:sectPr([^>]*)>([\s\S]*?)<\/w:sectPr>/, `<w:sectPr$1><w:headerReference w:type="default" r:id="rIdOwnheader7" xmlns:r="${REL}"/><w:headerReference w:type="first" r:id="rIdOwnheader8" xmlns:r="${REL}"/><w:footerReference w:type="default" r:id="rIdOwnfooter7" xmlns:r="${REL}"/>$2<w:titlePg/></w:sectPr>`))
+    const original = zipSync(parts)
+    const own = { "header:default": ["Precedent Partners LLP"], "header:first": ["Strictly private"], "footer:default": ["PP/2026/7 | 1"] }
+    expect(furnitureLines(parts)).toEqual(own)
+    writeFileSync(path.join(directory, "original.docx"), original)
+    // The request asks for a legend of its own.
+    writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], form: "agreement", mode: "revise", comparison: "original.docx", furniture: { legend: "Without prejudice" } }])
+    // The firm marks its agreements and dates its drafts.
+    const firm = { firm: "Doe Partners LLP", agreementLegend: "Subject to contract" }
+    expect((await withFirm(firm, () => acceptStageReply(directory, "d1.draft", "# Supply terms\n\n## 1. Term\n\n1.1 The term is two years.\n"))).issues).toEqual([])
+    const body = readFileSync(leanFile(directory, "d1/body.docx"))
+    const revised = unzipSync(new Uint8Array(body))
+    // Every page shows the lines above the original's own header; its footer and page number stay its own.
+    const lines = ["Subject to contract", "Without prejudice", "Doe Partners LLP draft: 20 October 2026"]
+    expect(furnitureLines(revised)).toEqual({ "header:default": [...lines, "Precedent Partners LLP"], "header:first": [...lines, "Strictly private"], "footer:default": ["PP/2026/7 | 1"] })
+    expect(strFromU8(revised["word/document.xml"]!)).toContain("<w:titlePg")
+    expect(Object.keys(revised).filter(name => /^word\/(header|footer)\d*\.xml$/.test(name)).sort()).toEqual(["word/footer7.xml", "word/header7.xml", "word/header8.xml"])
+    // The redline shows the body's change and, in each header, the lines inserted: nothing deleted or restyled, the footer untouched.
+    const redline = unzipSync(await compareDocxWithPointers(original, body, { authorName: "Test" }))
+    expect(strFromU8(redline["word/document.xml"]!)).toContain("two years")
+    const marks = (name: string) => strFromU8(redline[name]!)
+    const inserted = (xml: string) => [...xml.matchAll(/<w:ins\b[^>]*>([\s\S]*?)<\/w:ins>/g)].map(([, run]) => [...run!.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)</g)].map(text => text[1]).join("")).filter(Boolean)
+    for (const name of ["word/header7.xml", "word/header8.xml"]) {
+      expect(marks(name)).not.toMatch(/<w:(?:del|pPrChange|rPrChange)\b/)
+      expect(inserted(marks(name))).toEqual(lines)
+    }
+    expect(marks("word/footer7.xml")).not.toMatch(/<w:(?:ins|del|pPrChange|rPrChange)\b/)
+  }, 60_000)
+
+  test("a revised original with no header or footer of its own takes the firm's furniture as a new draft does", async () => {
+    const { directory, state } = matter()
+    dated(directory, state)
+    writeFileSync(path.join(directory, "original.docx"), (await renderMarkdownToDocx("# Supply terms\n\n## 1. Term\n\n1.1 The term is one year.", undefined, undefined, { numbering: false })).bytes)
+    writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], form: "agreement", mode: "revise", comparison: "original.docx" }])
+    expect((await withFirm({ agreementLegend: "Subject to contract" }, () => acceptStageReply(directory, "d1.draft", "# Supply terms\n\n## 1. Term\n\n1.1 The term is two years.\n"))).issues).toEqual([])
+    expect(furnitureLines(unzipSync(new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx")))))).toEqual({ "header:default": ["Subject to contract", "Draft: 20 October 2026"], "footer:default": ["1"] })
+  }, 60_000)
+
+  test("a document drafted from a Word template takes its clause numbering and page set-up", async () => {
+    const { directory } = matter()
+    // An A4 precedent whose clauses are numbered by its own Word list.
+    const precedent = unzipSync((await renderMarkdownToDocx("# Precedent terms\n\n## 1. Term\n\n1.1 The term is one year.")).bytes)
+    const a4 = strFromU8(precedent["word/document.xml"]!).replace(/<w:pgSz [^>]*\/>/, '<w:pgSz w:w="11906" w:h="16838"/>')
+    writeFileSync(path.join(directory, "precedent.docx"), zipSync({ ...precedent, "word/document.xml": strToU8(a4) }))
+    writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], form: "agreement", template: "precedent.docx" }])
+    expect((await acceptStageReply(directory, "d1.draft", "# Supply terms\n\n## Terms\n\n### 1. Definitions\n\n1.1 Terms have their defined meanings.\n\n### 2. Supply\n\n2.1 The Supplier shall deliver the Goods.\n")).issues).toEqual([])
+    const parts = unzipSync(new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx"))))
+    expect(strFromU8(parts["word/document.xml"]!)).toContain('<w:pgSz w:w="11906" w:h="16838"/>')
+    expect(strFromU8(parts["word/numbering.xml"]!)).toBe(strFromU8(precedent["word/numbering.xml"]!))
+    expect(readParagraphs(directory, "d1").map(shownText)).toEqual(["Supply terms", "Terms", "1. Definitions", "1.1 Terms have their defined meanings.", "2. Supply", "2.1 The Supplier shall deliver the Goods."])
+  }, 60_000)
+
+  test("a template linked from outside the matter is not drawn on", async () => {
+    const { directory } = matter()
+    const outside = mkdtempSync(path.join(tmpdir(), "outside-template-"))
+    try {
+      const precedent = unzipSync((await renderMarkdownToDocx("# Precedent terms\n\n## 1. Term\n\n1.1 The term is one year.")).bytes)
+      const a4 = strFromU8(precedent["word/document.xml"]!).replace(/<w:pgSz [^>]*\/>/, '<w:pgSz w:w="11906" w:h="16838"/>')
+      writeFileSync(path.join(outside, "precedent.docx"), zipSync({ ...precedent, "word/document.xml": strToU8(a4) }))
+      symlinkSync(path.join(outside, "precedent.docx"), path.join(directory, "precedent.docx"))
+      writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], form: "agreement", template: "precedent.docx" }])
+      expect((await acceptStageReply(directory, "d1.draft", "# Supply terms\n\n## Terms\n\nThe term is one year.\n")).issues).toEqual([])
+      expect(strFromU8(unzipSync(new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx"))))["word/document.xml"]!)).not.toContain('<w:pgSz w:w="11906" w:h="16838"/>')
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  }, 60_000)
+
+  test("a revision of an original whose clause numbers are typed keeps them typed", async () => {
+    const { directory } = matter()
+    // The original numbers its clauses as text, with no Word list of its own.
+    const original = (await renderMarkdownToDocx("# Supply terms\n\n## 1. Term\n\n1.1 The term is one year.", undefined, undefined, { numbering: false })).bytes
+    expect(strFromU8(unzipSync(original)["word/document.xml"]!)).not.toContain("<w:numPr>")
+    writeFileSync(path.join(directory, "original.docx"), original)
+    writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], mode: "revise", comparison: "original.docx" }])
+    expect((await acceptStageReply(directory, "d1.draft", "# Supply terms\n\n## 1. Term\n\n1.1 The term is two years.\n\n## 2. Supply\n\n2.1 The Supplier shall deliver the Goods.\n")).issues).toEqual([])
+    const rows = readParagraphs(directory, "d1")
+    expect(rows.map(row => row.text)).toEqual(["Supply terms", "1. Term", "1.1 The term is two years.", "2. Supply", "2.1 The Supplier shall deliver the Goods."])
+    expect(rows.filter(row => row.label)).toEqual([])
+  }, 60_000)
+
+  test("typed clause numbers follow the redline's original: a compared original without Mode: revise keeps them typed, a typed template alone does not", async () => {
+    const typed = (await renderMarkdownToDocx("# Supply terms\n\n## 1. Term\n\n1.1 The term is one year.", undefined, undefined, { numbering: false })).bytes
+    const reply = "# Supply terms\n\n## 1. Term\n\n1.1 The term is two years.\n"
+    const labels = async (plan: { mode?: "revise"; template?: string; comparison?: string }) => {
+      const { directory } = matter()
+      writeFileSync(path.join(directory, "original.docx"), typed)
+      writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], ...plan }])
+      expect((await acceptStageReply(directory, "d1.draft", reply)).issues).toEqual([])
+      expect(readParagraphs(directory, "d1").map(shownText)).toEqual(["Supply terms", "1. Term", "1.1 The term is two years."])
+      return readParagraphs(directory, "d1").flatMap(row => row.label ? [row.label] : [])
+    }
+    // The redline compares against the original, so its typed numbers stay text.
+    expect(await labels({ comparison: "original.docx" })).toEqual([])
+    // The redline compares against this run's own draft: the clauses are Word-numbered.
+    expect(await labels({ mode: "revise", template: "original.docx" })).toEqual(["1.", "1.1"])
+  }, 60_000)
+
+  // `markdown` rendered with typed numbers, then `listed` paragraphs numbered
+  // as Word's numbering buttons leave them: a multilevel list no style binds,
+  // set on each List Paragraph (or Normal) paragraph, its top level a bold
+  // run-in heading.
+  const wordListed = async (markdown: string, listed: [level: number, text: string][], options: { style?: string; bullets?: boolean } = {}) => {
+    const parts = unzipSync((await renderMarkdownToDocx(markdown, undefined, undefined, { numbering: false })).bytes)
+    const level = (ilvl: number, text: string) => `<w:lvl w:ilvl="${ilvl}"><w:start w:val="1"/><w:numFmt w:val="${options.bullets ? "bullet" : "decimal"}"/><w:lvlText w:val="${text}"/><w:pPr><w:ind w:left="${720 * (ilvl + 1)}" w:hanging="720"/></w:pPr></w:lvl>`
+    parts["word/numbering.xml"] = strToU8(`<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="multilevel"/>${level(0, options.bullets ? "•" : "%1.")}${level(1, options.bullets ? "o" : "%1.%2")}</w:abstractNum><w:num w:numId="5"><w:abstractNumId w:val="0"/></w:num></w:numbering>`)
+    parts["[Content_Types].xml"] = strToU8(strFromU8(parts["[Content_Types].xml"]!).replace("</Types>", '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>'))
+    parts["word/_rels/document.xml.rels"] = strToU8(strFromU8(parts["word/_rels/document.xml.rels"]!).replace("</Relationships>", '<Relationship Id="rIdNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/></Relationships>'))
+    const paragraph = ([ilvl, text]: [number, string]) => `<w:p><w:pPr>${options.style ? `<w:pStyle w:val="${options.style}"/>` : ""}<w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="5"/></w:numPr></w:pPr><w:r>${ilvl ? "" : "<w:rPr><w:b/></w:rPr>"}<w:t>${text}</w:t></w:r></w:p>`
+    parts["word/document.xml"] = strToU8(strFromU8(parts["word/document.xml"]!).replace(/(<w:sectPr)/, `${listed.map(paragraph).join("")}$1`))
+    return zipSync(parts)
+  }
+  /** Drafts `reply` as a revision compared against `original`, a matter
+   * source, and redlines it as apply does. */
+  const reviseAgainst = async (original: Uint8Array, reply: string) => {
+    const { directory } = matter()
+    writeFileSync(path.join(directory, "original.docx"), original)
+    const db = new Database(path.join(directory, ".dochaus", "legal.db"))
+    db.query("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)").run("original.docx", "1", "Supply terms", 0, 12)
+    db.close()
+    writeLeanPlan(directory, [{ title: "Supply terms", purpose: "", parts: [{ heading: "Terms", scope: "" }], mode: "revise", comparison: "original.docx" }])
+    expect((await acceptStageReply(directory, "d1.draft", reply)).issues).toEqual([])
+    const redline = strFromU8(unzipSync(await compareDocxWithPointers(original, readFileSync(leanFile(directory, "d1/body.docx")), { authorName: "Test" }))["word/document.xml"]!)
+    const text = (xml: string, tag: string) => [...xml.matchAll(new RegExp(`<w:${tag}\\b[^>]*>([^<]*)<`, "g"))].map(match => match[1]).join("")
+    return {
+      rows: readParagraphs(directory, "d1"),
+      body: new Uint8Array(readFileSync(leanFile(directory, "d1/body.docx"))),
+      inserted: [...redline.matchAll(/<w:ins\b[\s\S]*?<\/w:ins>/g)].map(match => text(match[0], "t")).filter(Boolean),
+      deleted: [...redline.matchAll(/<w:del\b[\s\S]*?<\/w:del>/g)].map(match => text(match[0], "delText")).filter(Boolean),
+      // The text of each paragraph whose properties the redline changes.
+      restyled: [...redline.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)].filter(match => match[0].includes("<w:pPrChange")).map(match => text(match[0], "t") + text(match[0], "delText")),
+      redline,
+      carry: readLeanEvents(directory).find(row => row.event === "paragraphs")?.outcome,
+    }
+  }
+
+  test("a revision of an original Word's own numbering numbers is numbered into that list; a bulleted original keeps typed numbers", async () => {
+    const listed: [number, string][] = [[0, "Term"], [1, "The term is one year."], [1, "Either party may renew it."], [0, "Supply"], [1, "The Supplier shall deliver the Goods."]]
+    const reply = "# Supply terms\n\n## 1. Term\n\n1.1 The term is two years.\n\n1.2 Either party may renew it.\n\n## 2. Supply\n\n2.1 The Supplier shall deliver the Goods.\n"
+    for (const style of ["ListParagraph", undefined]) {
+      const { rows, inserted, restyled } = await reviseAgainst(await wordListed("# Supply terms", listed, { style }), reply)
+      expect(rows.map(row => [row.label ?? "", row.text])).toEqual([["", "Supply terms"], ["1.", "Term"], ["1.1", "The term is two years."], ["1.2", "Either party may renew it."], ["2.", "Supply"], ["2.1", "The Supplier shall deliver the Goods."]])
+      // The redline inserts no number, and no untouched clause changes its paragraph properties.
+      expect(inserted).toEqual(["two years"])
+      expect(restyled.filter(paragraph => /term is|renew|deliver/.test(paragraph))).toEqual([])
+    }
+    // Bullets number nothing: the clause numbers stay typed.
+    expect((await reviseAgainst(await wordListed("# Supply terms", listed, { style: "ListParagraph", bullets: true }), reply)).rows.filter(row => row.label)).toEqual([])
+  }, 60_000)
+
+  test("a revision of a Word-numbered original keeps its unnumbered paragraph as the original's, numbered and cross-referenced as a drafted one is", async () => {
+    // An original whose clauses a Word list numbers by their heading styles,
+    // its paragraph outside the list typing its spaces and quotes as Word does.
+    const original = (await renderMarkdownToDocx("# Supply terms\n\n## 1. Term\n\n1.1 The term is one year.\n\n1.2 Either party may renew it.\n\n## 2. Renewal\n\nThe Buyer’s  renewal is subject to clause 1.1.")).bytes
+    const reply = "# Supply terms\n\n## 1. Term\n\n1.1 The term is two years.\n\n1.2 Either party may renew it.\n\n## 2. Renewal\n\nThe Buyer's renewal is subject to clause 1.1.\n"
+    const { rows, body, restyled } = await reviseAgainst(original, reply)
+    // The list still numbers the clauses; the paragraph outside it reads as the original's.
+    expect(rows.map(row => [row.label ?? "", row.text])).toEqual([["", "Supply terms"], ["1.", "Term"], ["1.1", "The term is two years."],
+      ["1.2", "Either party may renew it."], ["2.", "Renewal"], ["", "The Buyer’s  renewal is subject to clause 1.1."]])
+    // Its reference is linked to the clause it names, and no paragraph changes its properties.
+    expect(referenceFields(body).get(rows[5]!.pid)?.map(link => link.target)).toEqual([rows[2]!.pid])
+    expect(restyled).toEqual([])
+  }, 60_000)
+
+  test("a revision keeps the original's headings it drafts in bold, its page break before a kept heading, and its spacing after a changed clause's number", async () => {
+    // An original typing two spaces after each number, with heading styles and
+    // a page break before its schedule. The drafter writes each heading as a
+    // bold line with one space, and changes the two clauses either side of
+    // that break, typing one space after their numbers.
+    const typed = unzipSync((await renderMarkdownToDocx("# Supply terms\n\n## 1  Term\n\n1.1  The term is one year.\n\n1.2  Either party may renew it.\n\n## 2  Notices\n\n2.1  Notices must be in writing.\n\n## Schedule 1  Particulars\n\nThe Goods are cartons.", undefined, undefined, { numbering: false })).bytes)
+    typed["word/document.xml"] = strToU8(strFromU8(typed["word/document.xml"]!).replace(/<w:p\b(?:(?!<w:p\b)[\s\S])*?Schedule 1/, '<w:p><w:r><w:br w:type="page"/></w:r></w:p>$&'))
+    const original = zipSync(typed)
+    const reply = "# Supply terms\n\n**1 Term**\n\n1.1 The term is two years.\n\n1.2 Either party may renew it.\n\n**2 Notices**\n\n2.1 Notices must be in writing and signed.\n\n**Schedule 1 Particulars**\n\nThe Goods are cartons.\n"
+    const { rows, inserted, deleted, restyled, redline, carry } = await reviseAgainst(original, reply)
+    // Six paragraphs are the original's, its page break is carried once, and the two changed clauses take its spacing.
+    expect(carry).toBe("carried 6 of 8, page breaks 1, number spacing 2")
+    // The redline marks only the changed words: no heading changes its style or
+    // emphasis, no space after a number is deleted, and the page break stays.
+    expect(restyled).toEqual([])
+    expect(redline).not.toMatch(/<w:rPrChange\b/)
+    expect(deleted).toEqual(["one year"])
+    expect(inserted.map(text => text.trim())).toEqual(["two years", "and signed"])
+    expect(redline.match(/<w:br w:type="page"\s*\/>/g)).toHaveLength(1)
+    expect(redline).not.toMatch(/<w:del\b(?:(?!<\/w:del>)[\s\S])*<w:br w:type="page"/)
+    // The changed clauses keep their drafted words with the original's spacing, in the paragraphs the applier hashes.
+    expect(rows.map(row => row.text)).toEqual(["Supply terms", "1  Term", "1.1  The term is two years.", "1.2  Either party may renew it.", "2  Notices",
+      "2.1  Notices must be in writing and signed.", "Schedule 1  Particulars", "The Goods are cartons."])
+  }, 60_000)
+
+  test("an original that types its clause numbers keeps them typed beside a Word list in its schedule that could show them", async () => {
+    const clauses = ["Term", "Supply", "Price", "Liability", "Termination"].map((heading, index) => [`## ${index + 1}. ${heading}`, `${index + 1}.1 The ${heading.toLowerCase()} clause applies for one year.`, `${index + 1}.2 The ${heading.toLowerCase()} clause binds both parties.`].join("\n\n"))
+    const typed = `# Supply terms\n\n${clauses.join("\n\n")}\n\n## Schedule\n`
+    // The schedule's list shows "1." and "1.1", as the clauses' typed numbers read.
+    const original = await wordListed(typed, [[0, "Delivery points"], [1, "The Buyer's site."], [1, "The Supplier's depot."]], { style: "ListParagraph" })
+    const reply = `${typed.replace("The term clause applies for one year.", "The term clause applies for two years.")}\nDelivery points\n\nThe Buyer's site.\n\nThe Supplier's depot.\n`
+    const { rows, inserted, deleted, restyled } = await reviseAgainst(original, reply)
+    expect(rows.filter(row => row.label)).toEqual([])
+    expect(rows.map(row => row.text)).toContain("1.1 The term clause applies for two years.")
+    // The redline deletes no typed number and changes no untouched clause.
+    expect(deleted).toEqual(["one year"])
+    expect(inserted).toEqual(["two years"])
+    expect(restyled.filter(paragraph => /clause|^\d/.test(paragraph))).toEqual([])
   }, 60_000)
 
   test("a saved plan reads with or without a form; an edited form must be one of the forms, and it keys the draft", () => {

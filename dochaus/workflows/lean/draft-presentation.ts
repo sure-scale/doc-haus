@@ -24,7 +24,7 @@ export type DraftPresentation = { source: string; parts: { heading: string; disp
  * A label the body does not show as a second-level heading is passed over
  * rather than failing the draft: it stays as rendered, and its paragraphs are
  * attributed to the part before it. */
-export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"], title = true) {
+export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"], title = true, headingSpacing = true) {
   const entries = unzipSync(bytes)
   const document = new DOMParser().parseFromString(strFromU8(entries["word/document.xml"]!), "application/xml")
   const namespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -87,6 +87,8 @@ export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"
     paragraphPointers(paragraph).forEach(pointer => attribution.set(pointer.pid, { draft_part: part, draft_heading: Boolean(boundary && boundary.part !== undefined) || style === "Heading1" }))
   })
   const xml = new XMLSerializer().serializeToString(document)
-  entries["word/document.xml"] = strToU8(promoted ? polishHeadingSpacing(xml) : xml)
+  // A promoted house heading takes its new style's spacing, as rendering
+  // gives it; a template's headings keep their styles' own (`headingSpacing`).
+  entries["word/document.xml"] = strToU8(promoted && headingSpacing ? polishHeadingSpacing(xml) : xml)
   return { bytes: zipSync(entries, { mtime: new Date(1980, 0, 1) }), attribution }
 }

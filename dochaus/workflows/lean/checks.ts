@@ -4,6 +4,7 @@ import { amendmentText, type Amendment } from "../../lib/drafting-amendment"
 import type { AppliedAmendment, UnappliedAmendment } from "../../lib/drafting-amendment-apply"
 import { openItemMarkers } from "../../lib/open-items"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
+import { retypedListLabel } from "../../lib/list-label"
 import { normalize } from "../../lib/quote-verify"
 import { changeListIDs, memoMode, mintedQuestionID, runItemIDs, withoutRefMarkers } from "./delivered-memo"
 import { notesForReader } from "./gate"
@@ -22,7 +23,26 @@ import { delegatedQuestions, readLeanJson, type OpenItem, type Question, type St
 
 export type StageCheck = { issues: string[]; openItems: OpenItem[] }
 
-export type ParagraphRow = { pid: string; sha256: string; text: string; draft_part?: number | null; draft_heading?: boolean }
+/** One body paragraph: `text` is its own text, which `sha256` hashes and
+ * amendments replace; `label` is the number Word's list numbering prints
+ * before it ("1.1", "(a)"), which is not part of that text. */
+export type ParagraphRow = { pid: string; sha256: string; text: string; label?: string; clause?: true; draft_part?: number | null; draft_heading?: boolean }
+
+// A paragraph's list label is shown before its text (shownText). Amendment
+// text drops a leading copy of that label (withoutListLabel), also just inside
+// an opening bracket (change-checks.ts): the list supplies the number. A
+// different number typed in its place is not dropped; retypedLabelIssues
+// names it for a retry, as it would print beside the label.
+export { shownText, withoutListLabel } from "../../lib/list-label"
+
+/** Retry feedback for replacement text `text`, at `at`, that opens with a
+ * number written like its paragraph's list label but not it ("3.2 " on a
+ * paragraph Word numbers 2.2), unless `current`, the paragraph's present
+ * text, opens with that number. */
+export function retypedLabelIssues(at: string, text: string, label: string | undefined, current?: string) {
+  const typed = retypedListLabel(text, label, current)
+  return typed ? [`${at} begins with "${typed}", but its paragraph's number ${label} is Word list numbering, which prints and renumbers itself. Leave the number out of the text.`] : []
+}
 
 export type CommentExport = {
   author: string
@@ -316,6 +336,7 @@ function documentShapeIssues(content: string, noun: "document" | "drafting notes
 
 function isParagraphRow(value: unknown): value is ParagraphRow {
   return record(value) && typeof value.pid === "string" && typeof value.sha256 === "string" && typeof value.text === "string"
+    && (value.label === undefined || typeof value.label === "string") && (value.clause === undefined || value.clause === true)
 }
 
 export function record(value: unknown): value is Record<string, unknown> {

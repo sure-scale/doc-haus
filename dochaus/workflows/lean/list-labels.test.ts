@@ -1,0 +1,114 @@
+import { afterEach, expect, test } from "bun:test"
+import { paragraphSha256 } from "../../lib/drafting-amendment"
+import { advisePrompt } from "./advise"
+import { checkChanges } from "./change-checks"
+import { retypedLabelIssues, withoutListLabel, type ParagraphRow } from "./checks"
+import { REQUEST_SOURCE, openItem } from "./quotes"
+import { changesRepairSections } from "./repairs"
+import { replaceStageOpenItems, writeLeanText, type Question } from "./state"
+import { cleanupMatters, matter } from "./test-support"
+
+afterEach(cleanupMatters)
+
+// Two paragraphs of a natively numbered body, as the lean rows record them:
+// the list number Word prints is the label, not the text.
+function numbered(directory: string): ParagraphRow[] {
+  const rows = [
+    { label: "2.", text: "Payment" },
+    { label: "2.1", text: "The Customer shall pay within thirty days." },
+  ].map((row, index) => ({ pid: `p${String(index + 1).padStart(12, "0")}`, sha256: paragraphSha256(row.text), ...row }))
+  writeLeanText(directory, "d1/paragraphs.json", JSON.stringify(rows))
+  return rows
+}
+
+// A replacement may restate the number Word prints before its paragraph; only
+// that number is the list's to print. Another number typed in its place is the
+// model renumbering by hand, which the list would print beside its own label.
+test("amendment text drops only its paragraph's own list label, in the forms Word prints it", () => {
+  expect(withoutListLabel("2.2 Payment is made by card.", "2.2")).toBe("Payment is made by card.")
+  expect(withoutListLabel("2.2\tPayment is made by card.", "2.2")).toBe("Payment is made by card.")
+  expect(withoutListLabel("Article 1 Definitions", "Article 1")).toBe("Definitions")
+  expect(withoutListLabel("3.2 Payment is made by card.", "2.2")).toBe("3.2 Payment is made by card.")
+  expect(withoutListLabel("Article 2 Definitions", "Article 1")).toBe("Article 2 Definitions")
+  expect(withoutListLabel("2.2", "2.2")).toBe("2.2")
+})
+
+test("a different number typed where the list prints one is named for a retry", () => {
+  expect(retypedLabelIssues("amendments[0].updated", "3.2 Payment is made by card.", "2.2"))
+    .toEqual([expect.stringContaining('amendments[0].updated begins with "3.2"')])
+  expect(retypedLabelIssues("amendments[0].updated", "Article 2 Definitions", "Article 1")).toHaveLength(1)
+  expect(retypedLabelIssues("amendments[0].updated", "(c) the third limb.", "(b)")).toHaveLength(1)
+  expect(retypedLabelIssues("amendments[0].updated", "2.2 Payment is made by card.", "2.2")).toEqual([])
+  expect(retypedLabelIssues("amendments[0].updated", "30 days after delivery.", "2.2")).toEqual([])
+  expect(retypedLabelIssues("amendments[0].updated", "3.2 Payment is made by card.", undefined)).toEqual([])
+})
+
+test("a finding quoting a clause with the number its reader was shown names that clause for repair", () => {
+  const directory = matter()
+  const rows = numbered(directory)
+  const item = openItem("draft", "quote_miss", "The payment term is not in the source.", { document: "d1", quote: "2.1 The Customer shall pay within" })
+  replaceStageOpenItems(directory, "draft", "d1", [item])
+  expect(changesRepairSections(directory, "d1").join("\n")).toContain(`${item.id} [${rows[1]!.pid}]`)
+})
+
+test("an adviser is shown the affected paragraph with its list number, as the drafting stages show it", () => {
+  const directory = matter()
+  const rows = numbered(directory)
+  const question: Question = { id: "q1", stage: "changes", question: "How long may the Customer take to pay?", context: "", pid: rows[1]!.pid, document: "d1", status: "open" }
+  expect(advisePrompt(directory, question)).toContain("<affected_paragraph>\n2.1 The Customer shall pay within thirty days.")
+})
+
+// The change stage retries a replacement that types a different number in
+// place of the one Word prints, rather than shipping both numbers side by side.
+test("a change that retypes another number before a Word-numbered paragraph is retried", () => {
+  const directory = matter()
+  const rows = numbered(directory)
+  const amend = (updated: string | string[], operation?: string) =>
+    JSON.stringify({ amendments: [{ pid: rows[1]!.pid, ...(operation ? { operation } : {}), updated, reason: "Review finding.", sources: [{ source_id: REQUEST_SOURCE, quote: "Draft a short supply note" }] }], questions: [] })
+  expect(checkChanges(directory, amend("3.1 The Customer shall pay within ten days."), rows, { document: "d1" }).issues.join(" ")).toContain('begins with "3.1"')
+  expect(checkChanges(directory, amend(["3.1 The Customer shall pay within ten days.", "Late sums bear interest."], "split"), rows, { document: "d1" }).issues.join(" ")).toContain('begins with "3.1"')
+  const own = checkChanges(directory, amend("2.1 The Customer shall pay within ten days."), rows, { document: "d1" })
+  expect(own.issues).toEqual([])
+  expect(own.changes?.amendments[0]?.updated).toBe("The Customer shall pay within ten days.")
+})
+
+// A reader shown "2.1 The Customer …" who brackets the whole clause as open
+// writes "[2.1 The Customer …]". Word still prints 2.1 before the paragraph,
+// so the bracket stays and the copied number goes; any other number there, a
+// number later in the text or one before an unnumbered paragraph is text.
+test("a change bracketing a Word-numbered paragraph as open drops its copied number inside the bracket", () => {
+  const directory = matter()
+  const rows = numbered(directory)
+  const admitted = (pid: string, updated: string, paragraphs = rows) => {
+    const checked = checkChanges(directory, JSON.stringify({ amendments: [{ pid, updated, reason: "Review finding.", sources: [{ source_id: REQUEST_SOURCE, quote: "Draft a short supply note" }] }], questions: [] }), paragraphs, { document: "d1" })
+    return checked.changes?.amendments[0]?.updated ?? checked.issues.join(" ")
+  }
+  const [heading, clause] = rows as [ParagraphRow, ParagraphRow]
+  expect(admitted(clause.pid, "[2.1 The Customer shall pay within ten days] [open item: confirm the payment period].")).toBe("[The Customer shall pay within ten days] [open item: confirm the payment period].")
+  expect(admitted(heading.pid, "[2. Payment and invoicing]")).toBe("[Payment and invoicing]")
+  expect(admitted(clause.pid, "[3.1 The Customer shall pay within ten days] [open item: confirm the payment period].")).toBe("[3.1 The Customer shall pay within ten days] [open item: confirm the payment period].")
+  expect(admitted(clause.pid, "The Customer shall pay [2.1 days after delivery] [open item: confirm the payment period].")).toBe("The Customer shall pay [2.1 days after delivery] [open item: confirm the payment period].")
+  const typed = [{ pid: "p000000000003", sha256: paragraphSha256("2.1 The Customer shall pay within thirty days."), text: "2.1 The Customer shall pay within thirty days." }]
+  expect(admitted(typed[0]!.pid, "[2.1 The Customer shall pay within ten days] [open item: confirm the payment period].", typed)).toBe("[2.1 The Customer shall pay within ten days] [open item: confirm the payment period].")
+  // The bracketed copy of the number is no change of wording either.
+  const bracketed = [{ ...clause, text: "[The Customer shall pay within thirty days]", sha256: paragraphSha256("[The Customer shall pay within thirty days]") }]
+  expect(admitted(clause.pid, "[2.1 The Customer shall pay within thirty days]", bracketed)).toContain("identical to the current paragraph")
+})
+
+// A paragraph's own text may open with a number written like its label; kept
+// in the replacement, that number is operative text, not typed numbering.
+test("a change keeping the number its paragraph's text opens with is not retried", () => {
+  const directory = matter()
+  for (const [label, text, updated] of [
+    ["2.1", "1.5 times the Fees is the cap on liability.", "1.5 times the Fees is the cap on all liability."],
+    ["2", "30 days' notice ends this Agreement.", "30 days' written notice ends this Agreement."],
+    ["(a)", "(i) and (ii) below apply to the Goods.", "(i) and (ii) below apply to all Goods."],
+  ]) {
+    const rows = [{ pid: "p000000000001", sha256: paragraphSha256(text!), label, text: text! }]
+    writeLeanText(directory, "d1/paragraphs.json", JSON.stringify(rows))
+    const body = JSON.stringify({ amendments: [{ pid: rows[0]!.pid, updated, reason: "Review finding.", sources: [{ source_id: REQUEST_SOURCE, quote: "Draft a short supply note" }] }], questions: [] })
+    const checked = checkChanges(directory, body, rows, { document: "d1" })
+    expect(checked.issues).toEqual([])
+    expect(checked.changes?.amendments[0]?.updated).toBe(updated)
+  }
+})

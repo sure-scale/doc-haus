@@ -2,7 +2,7 @@ import { amendmentSchema, amendmentParagraphs, amendmentText, normalizeParagraph
 import { normalize } from "../../lib/quote-verify"
 import { markerIssues } from "./change-markers"
 import { draftStatusAmendmentIssues } from "./draft-status"
-import { record, type ChangeList, type ParagraphRow, type StageCheck } from "./checks"
+import { record, retypedLabelIssues, withoutListLabel, type ChangeList, type ParagraphRow, type StageCheck } from "./checks"
 import { paragraphShowsOpenItem } from "./gate"
 import { approvedResearch } from "./research"
 import { REQUEST_SOURCE, excerpt, matterSourceIDs, openItem, proseQuoteFound, quoteFound, quoteMissIssue, sourceQuotes } from "./quotes"
@@ -55,7 +55,9 @@ export function checkChanges(directory: string, content: string, paragraphs: Par
     pid: String(item.pid),
     existing_sha256: rows.get(String(item.pid))!.sha256,
     ...(item.operation !== undefined ? { operation: item.operation as Amendment["operation"] } : {}),
-    updated: Array.isArray(item.updated) ? item.updated.map(text => String(text).trim()) : String(item.updated).trim(),
+    updated: Array.isArray(item.updated)
+      ? item.updated.map(text => withoutOwnLabel(String(text).trim(), rows.get(String(item.pid))!.label))
+      : withoutOwnLabel(String(item.updated).trim(), rows.get(String(item.pid))!.label),
     reason: String(item.reason).trim(),
     sources: (item.sources as Record<string, unknown>[]).map(source => ({ source_id: String(source.source_id).trim(), quote: String(source.quote) })),
   }))
@@ -138,7 +140,9 @@ function amendmentIssues(item: unknown, index: number, rows: Map<string, Paragra
     ...(!deletion && !split && !updated ? [`${at}.updated must be the full replacement text; use operation delete with updated \"\" for an explicit deletion, or operation split with an array of at least two nonempty paragraphs.`] : []),
     ...(item.operation !== undefined && !["replace", "delete", "split"].includes(String(item.operation)) ? [`${at}.operation must be replace, delete or split.`] : []),
     ...(/[\r\n]/.test(updated) ? [`${at}.updated must be one paragraph without line breaks; use operation split with an array of resulting paragraphs for a deliberate split.`] : []),
-    ...(row && updated && normalizeParagraphText(updated) === normalizeParagraphText(row.text) ? [`${at}.updated is identical to the current paragraph; drop it or change the text.`] : []),
+    ...(row && updated && normalizeParagraphText(withoutOwnLabel(updated, row.label)) === normalizeParagraphText(row.text) ? [`${at}.updated is identical to the current paragraph; drop it or change the text.${row.label ? ` Its number ${row.label} is Word list numbering, which renumbers itself.` : ""}`] : []),
+    // Only a split's first part keeps the paragraph's number; later parts are new paragraphs.
+    ...(row && (updated || split) ? retypedLabelIssues(split ? `${at}.updated[0]` : `${at}.updated`, split ? String((item.updated as string[])[0]).trim() : updated, row.label, row.text) : []),
     ...(typeof item.reason !== "string" || !item.reason.trim() ? [`${at}.reason must say why the paragraph changes.`] : []),
     ...(!sourceList ? [`${at}.sources must be a list of {source_id, quote}.`] : []),
     ...(sourceList ?? []).flatMap((source, sourceIndex) => {
@@ -148,6 +152,16 @@ function amendmentIssues(item: unknown, index: number, rows: Map<string, Paragra
       return sources.has(source.source_id.trim()) ? [] : [`${where}.source_id ${JSON.stringify(source.source_id)} is not a matter document or an approved research URL; use an exact source name, or \"${REQUEST_SOURCE}\" for the request and the lawyer's answers.`]
     }),
   ]
+}
+
+/** Replacement text without a leading copy of its paragraph's own list label
+ * (withoutListLabel), also where the copy follows an opening "[" bracketing
+ * the paragraph as open: "[2.1 The Customer …]" keeps the bracket, loses "2.1 ". */
+function withoutOwnLabel(text: string, label: string | undefined) {
+  const own = withoutListLabel(text, label)
+  if (own !== text || !text.startsWith("[")) return own
+  const rest = withoutListLabel(text.slice(1), label)
+  return rest === text.slice(1) ? text : `[${rest}`
 }
 
 function duplicateAmendmentIssues(amendments: unknown[]) {

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
 import path from "node:path"
 import mammoth from "mammoth"
 import { read, utils } from "xlsx"
@@ -12,12 +12,15 @@ import { stageSourceChange, writeSourceArtifacts } from "./source-artifacts"
 import { canonicalArtifactIdentity, withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { chunkText } from "../../../dochaus/lib/chunk-text"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
+import { writeListLabels } from "../../../dochaus/lib/docx-list-labels"
 import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
-import { parseEmail } from "../../../dochaus/lib/email"
+import { parseEmail, type ParsedEmail } from "../../../dochaus/lib/email"
+import { parseMsg } from "../../../dochaus/lib/msg"
 import { zipToText } from "../../../dochaus/lib/zip"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
+import { captureVersion, stageVersionBytes, trackedChanges, trackedChangesNotice, type CapturedVersion, type VersionOrigin, type VersionWrite } from "./document-versions"
 import {
   beginDocumentMutation,
   completeDocumentMutation,
@@ -29,9 +32,11 @@ import {
   type ActiveDocumentMutation,
 } from "./document-mutation"
 
-const MATTER_DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml", ".zip"])
+const MATTER_DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml", ".msg", ".zip"])
 
 export class SourceDocumentConflictError extends Error {}
+
+export type IngestVersion = Omit<VersionWrite, "origin"> & { origin?: VersionOrigin }
 
 // The upload names a source (or an unregistered file) already in the matter and
 // the caller chose neither replace nor keep both. `existing` is its stored name.
@@ -74,6 +79,11 @@ export async function ingestDocument(
     extracted?: ExtractedSourceText
     // The document's email links; a field left out keeps what it had.
     links?: DocumentLinks
+    // The version this write records (document-versions.ts). Without an
+    // origin the write is an upload: every caller that states none ingests a
+    // file the lawyer brought in (an upload, an email and its attachments, a
+    // zip's files), and a replace choice over an existing file makes it a replace.
+    version?: IngestVersion
   } = {},
 ) {
   const requested = matterDocumentName(fileName)
@@ -122,6 +132,7 @@ async function ingestDocumentLocked(
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
     extracted?: ExtractedSourceText
     links?: DocumentLinks
+    version?: IngestVersion
   },
 ) {
   const recovery = await recoverDocumentMutations(matterDir)
@@ -137,6 +148,10 @@ async function ingestDocumentLocked(
     throw new SourceDocumentConflictError(`${fileName} is no longer a registered source document.`)
   if (options.existing === "refuse" && (role === "source" || existsSync(docPath)))
     throw new SourceDocumentExistsError(fileName)
+  const version: VersionWrite = {
+    ...options.version,
+    origin: options.version?.origin ?? (options.existing === "replace" && existsSync(docPath) ? "replace" : "upload"),
+  }
 
   // Untrusted-document defense (issue #17): normalize away invisible Unicode, then
   // scan the visible text and the raw DOCX for injected instructions. Findings are
@@ -169,6 +184,7 @@ async function ingestDocumentLocked(
     .join("; ")
   const correlation = `ingest-${Date.now().toString(36)}`
   const mutation = beginDocumentMutation(matterDir, fileName, "write", true)
+  let captured: CapturedVersion | undefined
   try {
     // Never mix vectors from two embedding models in one matter — re-embed any
     // stale chunks before this document's are written (no-op on current DBs).
@@ -219,9 +235,11 @@ async function ingestDocumentLocked(
       chunks: preparedChunks,
       updateRegistry: options.updateRegistry,
       links: options.links ?? {},
+      version,
     })
     finalizeDocumentMutationLineage(db, mutation, artifacts.files)
     completeDocumentMutation(db, mutation)
+    captured = artifacts.version
   } catch (error) {
     discardDocumentMutation(db, mutation)
     throw error
@@ -239,7 +257,18 @@ async function ingestDocumentLocked(
       ? { findings, flaggedChunks: preparedChunks.filter((chunk) => chunk.flagged).length }
       : null,
     quality,
+    // The version this ingest recorded; created is false when the file already
+    // held these bytes.
+    version: captured ?? null,
+    ...versionNotice(fileName, buffer, captured),
   }
+}
+
+/** A saved Word file's pending tracked changes, with the notice that doc.haus
+ * edits wait for them (document-versions.ts); nothing for a file without. */
+export function versionNotice(name: string, bytes: Uint8Array, version: CapturedVersion | undefined) {
+  const tracked = trackedChanges(name, bytes)
+  return tracked.count && version ? { tracked_changes: tracked, notice: trackedChangesNotice(version.number, tracked) } : {}
 }
 
 function sourceDocumentTarget(matterDir: string, fileName: string) {
@@ -275,6 +304,7 @@ async function commitIngestedDocument(
     }>
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
     links: DocumentLinks
+    version: VersionWrite
   },
 ) {
   const links = effectiveDocumentLinks(db, input.fileName, input.links)
@@ -287,6 +317,8 @@ async function commitIngestedDocument(
     text: canonicalText(input.chunks),
     ...links,
   })
+  // The version's bytes, likewise stored before the lock (stageVersionBytes).
+  const stage = stageVersionBytes(input.matterDir, input.fileName, input.buffer, input.version.origin)
   return commitDocumentWriteAsync(input.docPath, input.buffer, async () => {
     db.run("BEGIN IMMEDIATE")
     let settled = false
@@ -319,12 +351,22 @@ async function commitIngestedDocument(
       recordSections(db, input.docPath, input.fileName)
       extractStructure(db, input.docPath, input.fileName, input.text)
       input.updateRegistry?.(db)
+      // The bytes this write replaced are its backup until it settles.
+      const backup = input.mutation.documentBackup
+      const version = captureVersion(db, input.matterDir, {
+        name: input.fileName,
+        bytes: input.buffer,
+        prior: existsSync(backup) ? readFileSync(backup) : null,
+        version: input.version,
+        stage,
+      })
       recordDocumentMutationLineageIntent(
         input.mutation,
         (listSourceDocuments(db) as { name: string }[]).map((document) => document.name),
         input.correlation,
+        input.version.origin,
       )
-      return await writeSourceArtifacts(input.matterDir, input.correlation, {
+      const artifacts = await writeSourceArtifacts(input.matterDir, input.correlation, {
         db,
         stampLineage: false,
         staged,
@@ -334,6 +376,7 @@ async function commitIngestedDocument(
           settled = true
         },
       })
+      return { ...artifacts, version }
     } catch (error) {
       if (!settled) {
         try {
@@ -372,13 +415,33 @@ export type ExtractedSourceText = { text: string; findings: InjectionFinding[]; 
 // text's quality, as ingest indexes it.
 export async function extractSourceText(fileName: string, buffer: Buffer): Promise<ExtractedSourceText> {
   const raw = await extractRawText(fileName, buffer)
-  const { text, findings } = normalizeExtractedText(raw.text)
-  const facts = raw.facts.format === "email" ? { ...raw.facts, body: normalizeExtractedText(raw.facts.body).text } : raw.facts
+  return extractedText(raw.text, raw.facts)
+}
+
+// The same for an email already parsed, so one parse serves its text and its
+// attachments.
+export function extractedEmailText(email: ParsedEmail): ExtractedSourceText {
+  return extractedText(email.text, emailFacts(email))
+}
+
+// An email (.eml or .msg) parsed by its format's one extractor.
+export function parseEmailFile(fileName: string, buffer: Buffer) {
+  return fileName.toLowerCase().endsWith(".msg") ? parseMsg(buffer) : parseEmail(buffer)
+}
+
+function extractedText(rawText: string, rawFacts: ExtractionFacts): ExtractedSourceText {
+  const { text, findings } = normalizeExtractedText(rawText)
+  const facts = rawFacts.format === "email" ? { ...rawFacts, body: normalizeExtractedText(rawFacts.body).text } : rawFacts
   return { text, findings, quality: assessExtraction(text, facts) }
 }
 
-// Pull plain text from a source document. DOCX goes through mammoth, with pending
-// tracked changes labelled first (see dochaus/lib/docx-tracked-text.ts); PDF through
+function emailFacts(email: ParsedEmail): ExtractionFacts {
+  return { format: "email", body: email.body, attachments: email.attachments.length, ...(email.bodyUnreadable ? { bodyUnreadable: true as const } : {}) }
+}
+
+// Pull plain text from a source document. DOCX goes through mammoth, with Word's
+// list numbers written in first (see dochaus/lib/docx-list-labels.ts) and then
+// pending tracked changes labelled (dochaus/lib/docx-tracked-text.ts); PDF through
 // LiteParse/markitdown/unpdf with an OCR fallback for flat scans (see pdf.ts). Always
 // normalized (see sanitize.ts) so every consumer — indexing, the document/template
 // text routes, and through them the agents' read-document tool — sees the same
@@ -393,13 +456,13 @@ async function extractRawText(fileName: string, buffer: Buffer): Promise<{ text:
     const { text, pages } = await readPdf(buffer)
     return { text, facts: { format: "pdf", pages } }
   }
-  if (lower.endsWith(".eml")) {
-    const email = await parseEmail(buffer)
-    return { text: email.text, facts: { format: "email", body: email.body, attachments: email.attachments.length } }
+  if (lower.endsWith(".eml") || lower.endsWith(".msg")) {
+    const email = await parseEmailFile(lower, buffer)
+    return { text: email.text, facts: emailFacts(email) }
   }
   if (lower.endsWith(".xlsx")) return xlsxToText(buffer)
   if (lower.endsWith(".zip")) return { text: zipToText(buffer), facts: { format: "archive" } }
-  return { text: (await mammoth.extractRawText({ buffer: markTrackedChanges(buffer) })).value, facts: { format: "docx" } }
+  return { text: (await mammoth.extractRawText({ buffer: markTrackedChanges(await writeListLabels(buffer)) })).value, facts: { format: "docx" } }
 }
 
 // Spreadsheet sources (cap tables, waterfalls, payout models) are zip-based but

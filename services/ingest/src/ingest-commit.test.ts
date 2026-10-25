@@ -425,7 +425,7 @@ type LineageRow = {
   content_sha256: string
   bytes: number
   run: string
-  provenance: { documents?: string[]; document_mutation_id?: string }
+  provenance: { origin?: string; documents?: string[]; document_mutation_id?: string }
 }
 
 const lineageFile = (directory: string) => path.join(directory, ".dochaus", "lineage.jsonl")
@@ -540,7 +540,7 @@ describe("a source mutation's lineage and replaced snapshot", () => {
         const [first] = after.subarray(before.length).toString("utf8").trim().split("\n").map((line) => JSON.parse(line) as LineageRow)
         // The stamp as an ingest always made it: every changed artifact read and hashed from disk.
         writeFileSync(lineageFile(directory), before)
-        stampIngestLineage(directory, first!.provenance.documents!, first!.run.slice("ingest:".length), first!.provenance.document_mutation_id)
+        stampIngestLineage(directory, first!.provenance.documents!, first!.run.slice("ingest:".length), first!.provenance.document_mutation_id, undefined, first!.provenance.origin)
         expect(readFileSync(lineageFile(directory)).equals(after)).toBe(true)
       }
     } finally {
@@ -631,6 +631,8 @@ describe("after a source mutation is interrupted", () => {
       expect(unrecorded(directory, latest).map(({ artifact }) => artifact)).toContain(".dochaus/legal.db")
       expect(await healSourceArtifacts(directory, true)).toBe("recovered")
       expect(stampedSince(directory, before)).toEqual(unrecorded(directory, latest))
+      // doc.haus's own restamp, not a lawyer's upload (#268).
+      expect(lineageRows(directory)[before]?.provenance.origin).toBe("system")
       expect(unrecorded(directory)).toEqual([])
       expect(await transactionsSettled(directory)).toBe(true)
     } finally {

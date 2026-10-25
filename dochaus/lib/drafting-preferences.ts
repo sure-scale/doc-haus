@@ -48,6 +48,11 @@ export type DraftingPreferences = {
   agreementLegend: string
   adviceLegend: string
   notesMarking: boolean
+  // The library template (WORKSPACE_ROOT/.templates) whose styles, numbering,
+  // fonts and page set-up a document drafted without a template of its own is
+  // rendered onto (lib/template-seed.ts); "" is doc.haus's house style. A file
+  // name only. Read at render and never rendered into drafting.md.
+  styleTemplate: string
   // Chat operation, not drafting: whether Auto offers a quick draft for a short
   // drafting request ("ask"), starts one without asking ("auto") or always
   // starts the full run ("off"). Read by the web app and never rendered into
@@ -96,6 +101,7 @@ export const DEFAULT_DRAFTING: DraftingPreferences = {
   agreementLegend: "",
   adviceLegend: "",
   notesMarking: true,
+  styleTemplate: "",
   quickDraftOffer: "ask",
 }
 
@@ -132,8 +138,17 @@ export function normalizePreferences(value: unknown): DraftingPreferences {
     agreementLegend: normalizeLegend(input.agreementLegend),
     adviceLegend: normalizeLegend(input.adviceLegend),
     notesMarking: input.notesMarking !== false,
+    styleTemplate: normalizeStyleTemplate(input.styleTemplate),
     quickDraftOffer: input.quickDraftOffer === "auto" || input.quickDraftOffer === "off" ? input.quickDraftOffer : DEFAULT_DRAFTING.quickDraftOffer,
   }
+}
+
+/** A style template is a library .docx named by its file name alone; anything
+ * else is the house style. */
+export function normalizeStyleTemplate(input: unknown): string {
+  if (typeof input !== "string") return ""
+  const name = input.trim()
+  return name.length <= 255 && name.endsWith(".docx") && !/[\/\\\p{Cc}]/u.test(name) && !name.startsWith(".") ? name : ""
 }
 
 /** A legend is one line of the firm's own text: control characters and line

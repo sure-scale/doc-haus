@@ -12,8 +12,10 @@ test("template drafting stamps the new document and leaves template bytes untouc
   writeFileSync(path.join(root, "matter.json"), JSON.stringify({ id: "template-test" }))
   const template = await Bun.file(path.resolve(import.meta.dir, "../templates/_base.docx")).bytes()
   const snapshot = new Uint8Array(template)
+  const uploads: { actor: string | null; run: string | null }[] = []
   const server = Bun.serve({ port: 0, async fetch(request) {
     if (new URL(request.url).pathname === "/templates/content") return new Response(new Uint8Array(template))
+    uploads.push({ actor: request.headers.get("x-dochaus-actor"), run: request.headers.get("x-dochaus-run") })
     const file = (await request.formData()).get("file") as File
     writeFileSync(path.join(root, file.name), new Uint8Array(await file.arrayBuffer()))
     return Response.json({})
@@ -37,6 +39,8 @@ test("template drafting stamps the new document and leaves template bytes untouc
     expect(parse(parts["docProps/core.xml"]).getElementsByTagNameNS("http://purl.org/dc/elements/1.1/", "creator")[0]?.textContent).toBe("Template Reviewing Lawyer")
     expect(parse(parts["docProps/app.xml"]).getElementsByTagNameNS("http://schemas.openxmlformats.org/officeDocument/2006/extended-properties", "Company")[0]?.textContent).toBe("Template Reviewing Firm")
     expect(template).toEqual(snapshot)
+    // The draft's version names the agent and session that made it (#268).
+    expect(uploads).toEqual([{ actor: "agent:draft", run: "template-identity" }])
   } finally {
     server.stop(true)
     rmSync(root, { recursive: true, force: true })

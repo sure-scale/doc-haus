@@ -9,10 +9,12 @@ import { existsSync, readFileSync } from "node:fs"
 import { readDocxCommentParagraphs, readDocxComments, readDocxRevisionText, readDocxRevisionProperties } from "../../lib/docx-comments"
 import { readLeanPlan } from "./plan"
 import { deliveryArtifactEvidence } from "./deliverables"
+import { readParagraphs } from "./checks"
 import { leanFile } from "./state"
 import { DELIVERY_ARTIFACTS_ROW, checklistTextMeasuresMeaning, type ChecklistCheckerInput, type ChecklistCurrentEvidence, type ChecklistItem, type ChecklistSourceReference } from "./checklist-contract"
 
-export type ChecklistParagraphRecord = { paragraph_index: number; paragraph_text: string; pids: string[] }
+/** `label` is the list number Word prints before the paragraph ("2.1"); it is not part of `paragraph_text`. */
+export type ChecklistParagraphRecord = { paragraph_index: number; paragraph_text: string; pids: string[]; label?: string }
 export type ChecklistDocumentRecord = {
   id: string; document: string; aliases: string[]; artifact: string; sha256: string
   paragraphs: ChecklistParagraphRecord[]
@@ -45,13 +47,16 @@ export function buildChecklistDocumentContext(directory: string, options: {
   const warnings: string[] = []
   const artifacts: ChecklistDocumentContext["artifacts"] = []
   const documents: ChecklistDocumentContext["documents"] = []
-  const declared: { id: string; document: string; aliases: string[]; files: string[]; redline?: string }[] = (plan?.documents ?? []).map(document => {
+  const declared: { id: string; document: string; aliases: string[]; files: string[]; redline?: string; labels?: Map<string, string> }[] = (plan?.documents ?? []).map(document => {
     const current = currentDocumentArtifacts(directory, document.id)
     if (current.warning) warnings.push(`${document.id}: ${current.warning}`)
+    // List numbers come from the lean rows recorded with this body, by paragraph PID.
+    const rows = current.body ? readParagraphs(directory, document.id, current.applied ? "paragraphs-applied.json" : "paragraphs.json") : []
     return {
       id: document.id, document: document.file ?? document.id,
       aliases: [...new Set([document.id, document.file].filter((value): value is string => !!value))],
       files: current.body ? [current.body] : [], redline: current.redline,
+      labels: new Map(rows.flatMap(row => row.label ? [[row.pid, row.label] as const] : [])),
     }
   })
   if (plan) declared.push({ id: "notes", document: plan.notes_file ?? "drafting-notes.docx", aliases: [...new Set(["notes", plan.notes_file ?? "drafting-notes.docx"])], files: ["drafting-notes.docx"] })
@@ -65,7 +70,10 @@ export function buildChecklistDocumentContext(directory: string, options: {
     }
     try {
       const bytes = readFileSync(leanFile(directory, relative))
-      const paragraphs = readDocxCommentParagraphs(bytes)
+      const paragraphs: ChecklistParagraphRecord[] = readDocxCommentParagraphs(bytes).map(row => {
+        const label = row.pids.map(pid => document.labels?.get(pid)).find(Boolean)
+        return label ? { ...row, label } : row
+      })
       const value: ChecklistDocumentRecord = {
         id: document.id, document: document.document, aliases: document.aliases,
         artifact: `.dochaus/lean/${relative}`, sha256: createHash("sha256").update(bytes).digest("hex"), paragraphs,
@@ -117,7 +125,7 @@ export function buildChecklistDocumentContext(directory: string, options: {
       const row = rows[index]!
       // A whitespace-only neighbour (e.g. a lone no-break space) is not evidence; drop it without widening the window.
       if (!row.paragraph_text.trim()) continue
-      current_evidence.push({ document: options.item.target.document, locator: `native PIDs ${row.pids.join(", ") || "unavailable"}; accepted paragraph_index ${row.paragraph_index}; read-record ${target.path} /paragraphs/${index}`, text: row.paragraph_text, kind: "body" })
+      current_evidence.push({ document: options.item.target.document, locator: `${row.label ? `Word list number ${row.label} (printed before the text, not part of it); ` : ""}native PIDs ${row.pids.join(", ") || "unavailable"}; accepted paragraph_index ${row.paragraph_index}; read-record ${target.path} /paragraphs/${index}`, text: row.paragraph_text, kind: "body" })
     }
   }
   const id = matching.length === 1 ? matching[0]!.id : undefined

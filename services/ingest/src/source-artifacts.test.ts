@@ -629,7 +629,7 @@ describe("source artifacts", () => {
       expect(added.find((row) => row.artifact === ".dochaus/legal.db")).toMatchObject({
         op: "ingest",
         content_sha256: sha(".dochaus/legal.db"),
-        provenance: { origin: "upload" },
+        provenance: { origin: "system" },
       })
       // Every artifact on disk ends with a lineage row that matches it.
       const tracked = [

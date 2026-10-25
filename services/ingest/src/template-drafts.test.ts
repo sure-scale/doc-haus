@@ -217,6 +217,28 @@ test("unsupported revisions, bindings and embedded content leave no partial draf
   } finally { f.close() }
 }, 60000)
 
+test("a tracked numbering change is refused with a message naming it and leaves no partial draft", async () => {
+  const f = fixture()
+  try {
+    const source = await sourceDocument()
+    const matter = f.register("matter-a", source)
+    await capture(f)
+    const parts = unzipSync(source)
+    parts["word/document.xml"] = strToU8(strFromU8(parts["word/document.xml"]!).replace("<w:p>",
+      '<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/><w:numberingChange w:id="7" w:author="Synthetic Reviewer" w:date="2026-01-02T03:04:05Z" w:original="%1."/></w:numPr></w:pPr>'))
+    expect(strFromU8(parts["word/document.xml"]!)).toContain("<w:numberingChange ")
+    const invalid = zipSync(parts)
+    writeFileSync(matter.file, invalid)
+    const base = path.join(f.workspace, ".template-drafts")
+    const prior = readdirSync(base)
+    const response = await f.request("/matters/matter-a/template-drafts", "POST", { name: "Selected.docx" })
+    expect(response.status).toBe(422)
+    expect((await response.json() as { error: string }).error).toBe("This document has tracked numbering changes. Accept or reject them in Word before creating a reusable template.")
+    expect(readdirSync(base)).toEqual(prior)
+    expect(readFileSync(matter.file)).toEqual(Buffer.from(invalid))
+  } finally { f.close() }
+}, 60000)
+
 test("removes hidden client labels and building blocks while keeping safe fields and cross-references", async () => {
   const f = fixture()
   try {

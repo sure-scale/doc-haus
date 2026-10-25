@@ -120,7 +120,9 @@ export async function writeSourceArtifacts(
   if (options.stampLineage !== false) {
     const correlationId = correlation ?? `${options.rebuild ? "rebuild" : "ingest"}-${Date.now().toString(36)}`
     if (options.rebuild) stampSourceRebuildLineage(matterDir, snapshot.documents, correlationId, snapshot.files)
-    else stampIngestLineage(matterDir, snapshot.documents, correlationId, undefined, snapshot.files)
+    // Only recovery stamps here (a writer stamps its own, with its origin), so
+    // the ingest is doc.haus's own.
+    else stampIngestLineage(matterDir, snapshot.documents, correlationId, undefined, snapshot.files, "system")
   }
   // `files`: the installed snapshot's hashes, for a caller that stamps lineage itself.
   return { documents: snapshot.documents.length, chunks: snapshot.chunks, sourceDocuments: snapshot.documents, files: snapshot.files }
@@ -257,8 +259,8 @@ async function stageSourceArtifacts(matterDir: string, transaction: string, sour
 // Startup heal for one matter (ingest server boot). Returns what it did.
 export async function healSourceArtifacts(matterDir: string, sourceRolledBack: boolean) {
   if (!sourceRolledBack && sourceArtifactsMatchRegistry(matterDir)) return "current" as const
-  // A rolled-back mutation also restored legal.db, so it is stamped as an ingest like the other recovery
-  // paths. Only a registry mismatch is a rebuild, stamped with origin "source-rebuild". Both stamp just the
+  // A rolled-back mutation also restored legal.db, so it is stamped as an ingest of origin "system" like the
+  // other recovery paths. Only a registry mismatch is a rebuild, stamped with origin "source-rebuild". Both stamp just the
   // files whose bytes changed.
   await writeSourceArtifacts(matterDir, undefined, sourceRolledBack ? {} : { rebuild: true })
   return sourceRolledBack ? "recovered" as const : "rebuilt" as const

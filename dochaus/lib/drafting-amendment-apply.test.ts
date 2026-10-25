@@ -7,6 +7,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { openRevision, verifyPreservation } from "./docx-amendments"
 import { applyAmendments } from "./drafting-amendment-apply"
 import { ensureParagraphPointers, paragraphPointers, paragraphSha256, type Amendment } from "./drafting-amendment"
+import { highlightOpenItemsInDocx } from "./open-items"
 import { renderMarkdownToDocx } from "./render"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -262,6 +263,64 @@ describe("pointer-based paragraph amendments", () => {
     expect(await shaded(doc.out)).toEqual([])
   })
 
+  test("words an amendment writes just before a highlighted open item are not shaded as open", async () => {
+    const doc = await single("before-open-item", "The Customer may reject within 30 days [open item: confirm the period] of delivery.")
+    const before = (await texts(doc.file)).get(doc.pid)!
+    const updated = "The Customer may reject within 30 days and in any event within 90 days [open item: confirm both periods] of delivery."
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amend("before", doc.pid, before, updated)] })
+    expect(result.applied.map(row => row.mode)).toEqual(["code"])
+    expect((await texts(doc.out)).get(doc.pid)).toBe(updated)
+    expect(await shaded(doc.out)).toEqual(["[open item: confirm both periods]"])
+  })
+
+  test("an open item an amendment rewrites with the words before it stays in one shaded run", async () => {
+    const doc = await single("rewritten-open-item", "The exclusion applies so far as it satisfies the requirement of reasonableness under clause 12 of this Agreement [open item: what is the evidence of bargaining strength to support reasonableness].")
+    const before = (await texts(doc.file)).get(doc.pid)!
+    const updated = "The exclusion applies so far as it satisfies the requirement of reasonableness [open item: confirm reasonableness qualification; what is the evidence of bargaining strength to support reasonableness]."
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amend("rewritten", doc.pid, before, updated)] })
+    expect(result.applied.map(row => row.mode)).toEqual(["code"])
+    expect((await texts(doc.out)).get(doc.pid)).toBe(updated)
+    expect(await shaded(doc.out)).toEqual(["[open item: confirm reasonableness qualification; what is the evidence of bargaining strength to support reasonableness]"])
+  })
+
+  test("an open item an amendment closes with a later open item's bracket stays in one shaded run", async () => {
+    const doc = await single("merged-open-items", "Defects may be notified within a reasonable time, and in any event within [open item: confirm the notice period and its start] after delivery [open item: confirm the remedy].")
+    const before = (await texts(doc.file)).get(doc.pid)!
+    const updated = "Defects may be notified within a reasonable time [open item: confirm the notice period and its start date]."
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amend("merged", doc.pid, before, updated)] })
+    expect(result.applied.map(row => row.mode)).toEqual(["code"])
+    expect((await texts(doc.out)).get(doc.pid)).toBe(updated)
+    expect(await shaded(doc.out)).toEqual(["[open item: confirm the notice period and its start date]"])
+  })
+
+  // The apply step shades the open items an amendment wrote (highlightOpenItemsInDocx).
+  for (const [name, from, to, marker] of [
+    ["placeholder-before-open-item", "The Supplier's liability is limited to [open item: what is needed — no cap figure is instructed].",
+      "The Supplier's liability is limited to [£ (cap figure to be confirmed)] [open item: confirm the cap figure — no cap figure is instructed].",
+      "[open item: confirm the cap figure — no cap figure is instructed]"],
+    ["bracket-around-open-item", "Delivery is at [open item: confirm the address].",
+      "Delivery is at [the main warehouse [open item: confirm whether the warehouse is right]].",
+      "[open item: confirm whether the warehouse is right]"],
+  ]) test(`words an amendment writes in an open item's run around a new marker are not shaded as open (${name})`, async () => {
+    const doc = await single(name!, from!)
+    const before = (await texts(doc.file)).get(doc.pid)!
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amend(name!, doc.pid, before, to!)] })
+    expect(result.applied.map(row => row.mode)).toEqual(["code"])
+    await writeFile(doc.out, highlightOpenItemsInDocx(new Uint8Array(await readFile(doc.out))))
+    expect((await texts(doc.out)).get(doc.pid)).toBe(to)
+    expect(await shaded(doc.out)).toEqual([marker])
+  })
+
+  test("words an open item held that an amendment makes clause text are not shaded as open", async () => {
+    const doc = await single("open-item-to-text", "The Buyer may reject the excess [open item: confirm that this regime is accepted, including that the Buyer may not reject a slight excess where unreasonable].")
+    const before = (await texts(doc.file)).get(doc.pid)!
+    const updated = "The Buyer may reject the excess, provided that the Buyer may not reject a slight excess where unreasonable [open item: confirm that this regime, including what counts as slight, is accepted]."
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amend("to-text", doc.pid, before, updated)] })
+    expect(result.applied.map(row => row.mode)).toEqual(["code"])
+    expect((await texts(doc.out)).get(doc.pid)).toBe(updated)
+    expect(await shaded(doc.out)).toEqual(["[open item: confirm that this regime, including what counts as slight, is accepted]"])
+  })
+
   test("a split lands with its pointers; an overlapping replacement after it is stale", async () => {
     const original = "The archive record is paper. Inspection is annual."
     const split = ["The archive record is paper.", "Inspection is annual."]
@@ -339,6 +398,62 @@ describe("pointer-based paragraph amendments", () => {
     const after = await texts(doc.out)
     expect(after.get(doc.pid(DELIVERY))).toBe(plain(DELIVERY))
     expect(after.get(doc.pid(PAYMENT))).toBe(payment)
+  })
+})
+
+describe("amendments beside live cross-references", () => {
+  // A numbered agreement whose clause references render as REF fields.
+  const AGREEMENT = ["# Services Agreement", "## 1. Definitions", "1.1 In this Agreement the terms in clause 2.1 apply.",
+    "## 2. Services", "2.1 The Supplier shall provide the Services.", "2.2 Late payment carries interest, subject to clause 2.1."].join("\n\n")
+  let root: string
+  beforeAll(async () => { root = await mkdtemp(path.join(tmpdir(), "dh-amend-refs-")) })
+  afterAll(async () => { await rm(root, { recursive: true, force: true }) })
+
+  async function drafted(name: string) {
+    const file = path.join(root, `${name}.docx`)
+    await writeFile(file, (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes)
+    const pointers = await ensureParagraphPointers(file)
+    const pid = (start: string) => Object.entries(pointers).find(([, text]) => text.startsWith(start))![0]
+    return { file, out: path.join(root, `${name}.out.docx`), pid, text: (start: string) => pointers[pid(start)]! }
+  }
+
+  // The REF fields of each paragraph, by its opening words.
+  async function fields(file: string) {
+    const body = new DOMParser().parseFromString(strFromU8(unzipSync(new Uint8Array(await readFile(file)))["word/document.xml"]!), "application/xml")
+    return Object.fromEntries(Array.from(body.getElementsByTagNameNS(W, "p")).flatMap(paragraph => {
+      const count = Array.from(paragraph.getElementsByTagNameNS(W, "instrText")).filter(node => /^\s*REF\s/.test(node.textContent ?? "")).length
+      return count ? [[Array.from(paragraph.getElementsByTagNameNS(W, "t")).map(node => node.textContent).join("").slice(0, 12), count]] : []
+    }))
+  }
+
+  test("an edit the engine cannot write keeps its paragraph's cross-references live; with nothing applied the body is unchanged", async () => {
+    const doc = await drafted("ref-failed")
+    expect(await fields(doc.file)).toEqual({ "In this Agre": 1, "Late payment": 1 })
+    // The edit rewrites the reference's number, and its control character makes the engine refuse it.
+    const broken = amend("broken", doc.pid("Late payment"), doc.text("Late payment"), "Late payment carries interest, subject to clause 2.2\u0001.")
+    const alone = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [broken] })
+    expect(alone.unapplied).toMatchObject([{ id: "broken", reason: "apply_failed" }])
+    expect(Buffer.from(await readFile(doc.out)).equals(Buffer.from(await readFile(doc.file)))).toBe(true)
+    const beside = amend("beside", doc.pid("In this Agreement"), doc.text("In this Agreement"), "In this Agreement the defined terms in clause 2.1 apply.")
+    const mixed = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [broken, beside] })
+    expect([mixed.applied.map(row => row.id), mixed.unapplied.map(row => row.id)]).toEqual([["beside"], ["broken"]])
+    expect((await texts(doc.out)).get(doc.pid("In this Agreement"))).toBe("In this Agreement the defined terms in clause 2.1 apply.")
+    expect(await fields(doc.out)).toEqual({ "In this Agre": 1, "Late payment": 1 })
+  })
+
+  test("a deletion the engine cannot write leaves the references to its clause live", async () => {
+    const doc = await drafted("ref-delete-failed")
+    // A section break in the clause contains the deletion.
+    await writeFile(doc.file, await editBody(doc.file, body => {
+      const target = Array.from(body.getElementsByTagNameNS(W, "p")).find(node => paragraphPointers(node).some(row => row.pid === doc.pid("The Supplier")))!
+      target.getElementsByTagNameNS(W, "pPr")[0]!.appendChild(body.createElementNS(W, "w:sectPr"))
+    }))
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [
+      { ...amend("delete", doc.pid("The Supplier"), doc.text("The Supplier"), ""), operation: "delete", sources: [{ source_id: "instruction", quote: "Remove the services clause." }] },
+    ] })
+    expect(result.unapplied).toMatchObject([{ id: "delete", reason: "apply_failed" }])
+    expect(Buffer.from(await readFile(doc.out)).equals(Buffer.from(await readFile(doc.file)))).toBe(true)
+    expect(await fields(doc.out)).toEqual({ "In this Agre": 1, "Late payment": 1 })
   })
 })
 

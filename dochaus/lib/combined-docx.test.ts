@@ -48,10 +48,11 @@ test("the notes come first, then a section break, then the body exactly as regis
   expect(keptAll(part(body, "word/numbering.xml"), part(combined, "word/numbering.xml"), "abstractNum")).toBe(true)
   expect(keptAll(part(body, "word/numbering.xml"), part(combined, "word/numbering.xml"), "num")).toBe(true)
 
-  // Memo headings keep the shared heading styles; its code style, lists and
-  // link carry over without touching the body's definitions.
+  // Memo headings keep the shared heading styles, except one the body numbers
+  // as its clause list, which the memo takes as its own copy; its code style,
+  // lists and link carry over without touching the body's definitions.
   const memoBlocks = blocks.slice(0, split)
-  expect(memoBlocks.slice(0, 2).map(block => value(all(block, "pStyle")[0]))).toEqual(["Heading1", "Heading2"])
+  expect(memoBlocks.slice(0, 2).map(block => value(all(block, "pStyle")[0]))).toEqual(["Heading1", "MemoHeading2"])
   expect(danglingStyles(combined)).toEqual([])
   expect(numberingProblems(combined)).toEqual([])
   const bodyNums = new Set(blocks.slice(split).flatMap(block => all(block, "numId")).map(value))

@@ -1,7 +1,7 @@
 import { parseJsonObject } from "./change-checks"
 import { checklistProducerInputs } from "./checklist-source-context"
 import { acceptChangeReview, checkChangeReview, projectedChangeParagraphs, readChangePlan, type ChangeReview } from "./change-pipeline"
-import { readChangeList, readParagraphs } from "./checks"
+import { readChangeList, readParagraphs, shownText } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { readLeanPlan, type DocID } from "./plan"
 import { packageCompositionBlock } from "./prompts"
@@ -61,8 +61,8 @@ export function focusedChangeReviewInputs(directory: string, document: DocID): F
       ...(composition ? [composition] : []),
       `<actual_questions_and_answers>\n${JSON.stringify(answers)}\n</actual_questions_and_answers>`,
       `<shared_decisions>\n${JSON.stringify(plan.shared_decisions)}\n</shared_decisions>`,
-      `<initial_target_and_neighbors>\n${initial.filter(row => context.has(row.pid)).map(row => `[${row.pid}] ${row.text}`).join("\n\n")}\n</initial_target_and_neighbors>`,
-      `<projected_target_and_neighbors>\n${projected.filter(row => context.has(row.pid)).map(row => `[${row.pid}] ${row.text}`).join("\n\n")}\n</projected_target_and_neighbors>`,
+      `<initial_target_and_neighbors>\n${initial.filter(row => context.has(row.pid)).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</initial_target_and_neighbors>`,
+      `<projected_target_and_neighbors>\n${projected.filter(row => context.has(row.pid)).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</projected_target_and_neighbors>`,
       `<cumulative_operations>\n${JSON.stringify({ amendments: changes.amendments.filter(row => own.has(row.pid)), explanations: (changes.explanations ?? []).filter(row => own.has(row.pid)), retained_initial: (changes.retained_initial ?? []).filter(row => own.has(row.pid)), withheld: (changes.withheld ?? []).filter(row => own.has(row.amendment.pid)), questions: changes.questions })}\n</cumulative_operations>`,
       "Your explicit dependency task: inspect the conditions, exceptions, definitions and cross-references on which this assigned wording depends, including related clauses outside these neighbors. For advice about another run-owned document, retrieve its actual relevant final clause and compare each material factual assertion, proposed resolution and remaining decision against that clause; agreement with another agent's summary is insufficient. Inspect relevant original source qualifications and actual instructions/answers. Report a cross-clause or earlier-document defect with its owning initial PID when identifiable. Do not review unrelated history or silently assume dependencies are consistent.",
       `Targeted retrieval: read-record .dochaus/lean/${document}/paragraphs.json and changes.json provide initial targets and the complete cumulative operation inventory. For this document, search-document/read-document view=proposed_body exposes the complete pending revision with initial-PID and split-part coordinates, including replacements and deletions. Use that view to locate disclosure passages even when this assignment has no inline target PID. Its words are generated proposals to evaluate, not source authority. current_body is the actual pre-apply Word artifact and may differ: never infer an omission in the pending revision from that older view. Original uploads are available using search-document/read-document view=source. Earlier run-owned final bodies can be inspected with document=<id>, view=current_body and bounded offset/count; use source-map.json and .dochaus/lean/plan.json to identify them. Approved legal propositions and limitations are in research-review.json/research.json; retrieve relevant approved text before asserting law, never substitute memory. Full plans, reviews and old findings remain targeted lookup, not authority.`,

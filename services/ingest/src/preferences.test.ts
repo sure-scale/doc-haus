@@ -100,10 +100,18 @@ test("research-only patches preserve unrelated drafting and operational preferen
 test("invalid research saves reject without changing the saved consent or any preference", () => {
   const baseline = writeDraftingPreferences({ ...DEFAULT_DRAFTING, attorney: "Preserved lawyer" })
   for (const patch of [null, [], { webResearch: "all" }, { courtlistenerMcpEnabled: "true" }, { searchApiKey: "token\nheader" },
-    { caseLawApiKey: {} }, { approvedSources: ["https://trusted.example/path"] }, { approvedSources: ["*.example"] }, { approvedSources: ["example.test:443"] }]) {
+    { caseLawApiKey: {} }, { approvedSources: ["https://trusted.example/path"] }, { approvedSources: ["*.example"] }, { approvedSources: ["example.test:443"] },
+    { styleTemplate: "../Firm.docx" }, { styleTemplate: "Firm.dotm" }, { styleTemplate: 7 }]) {
     expect(() => writeDraftingPreferences(patch)).toThrow()
     expect(readDraftingPreferences()).toEqual(baseline)
   }
+})
+
+test("the style template is a library file name, kept off the model's instructions", () => {
+  const saved = writeDraftingPreferences({ styleTemplate: "Firm house style.docx" })
+  expect(saved.styleTemplate).toBe("Firm house style.docx")
+  expect(readFirmDraftingPreferences()).not.toContain("Firm house style")
+  expect(writeDraftingPreferences({ styleTemplate: "" }).styleTemplate).toBe("")
 })
 
 test("malformed saved credentials are never echoed and cannot be overwritten by a partial save", () => {

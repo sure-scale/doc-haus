@@ -332,7 +332,7 @@ export async function seedSampleMatter(): Promise<{ matter: Matter; created: boo
   // the sample then shows jurisdiction-aware reasoning without any setup.
   const matter = createMatter(MATTER_TITLE, "A&C/2026-0042", ["EW"], SAMPLE_PLAYBOOK, undefined, undefined, true)
   try {
-    await ingestDocument(matter.dir, DOC_NAME, letter)
+    await ingestDocument(matter.dir, DOC_NAME, letter, { version: { origin: "system", actor: "doc.haus", label: "Sample matter" } })
   } catch (error) {
     // A half-made sample would satisfy the idempotence check above and block a retry.
     deleteMatter(matter.id)

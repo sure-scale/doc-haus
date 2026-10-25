@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from "node:util"
 import { normalize } from "../../lib/quote-verify"
 import { parseJsonObject } from "./change-checks"
 import { parallel } from "./checklist-flow"
-import { readParagraphs, record } from "./checks"
+import { readParagraphs, record, shownText } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { FIRST_DOCUMENT, planActingFor, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, tagged } from "./prompts"
@@ -64,7 +64,8 @@ async function adviseQuestion(directory: string, state: LeanState, step: StepID,
 }
 
 export function advisePrompt(directory: string, question: Question) {
-  const paragraph = question.pid ? readParagraphs(directory, question.document ?? FIRST_DOCUMENT).find(row => row.pid === question.pid)?.text : undefined
+  const row = question.pid ? readParagraphs(directory, question.document ?? FIRST_DOCUMENT).find(row => row.pid === question.pid) : undefined
+  const paragraph = row && shownText(row)
   const updates = readLeanText(directory, "updated-notes.md")
   const acting = planActingFor(directory)
   const provenanceLine = provenanceMapLine(matterSourceIDs(directory), sourceProvenance(directory))

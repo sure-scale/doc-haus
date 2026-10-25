@@ -26,14 +26,14 @@ describe("source document resolution", () => {
   })
 
   test("does not hand unsupported formats or path-like names to the viewer", () => {
-    for (const name of ["terms.md", "notes.msg", "../terms.docx", "sub/terms.docx", "sub\\terms.docx", "sub/instructions.eml"]) {
+    for (const name of ["terms.md", "notes.mbox", "../terms.docx", "sub/terms.docx", "sub\\terms.docx", "sub/instructions.eml"]) {
       expect(citationDocument({ ...citation, documentName: name }, [{ ...document, name }])).toBeUndefined()
     }
     expect(citationDocument({ ...citation, documentName: "terms.PDF" }, [{ ...document, name: "terms.PDF" }])?.name).toBe("terms.PDF")
   })
 
   test("opens emails and spreadsheets, which ingest indexes and the assistant cites", () => {
-    for (const name of ["Client instructions.eml", "Cap table.XLSX"]) {
+    for (const name of ["Client instructions.eml", "Forwarded thread.msg", "Cap table.XLSX"]) {
       expect(citationDocument({ ...citation, documentName: name, docPath: name }, [{ ...document, name }])?.name).toBe(name)
     }
   })
