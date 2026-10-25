@@ -18,6 +18,9 @@ import { numberDocxClauses } from "../../lib/docx-numbering"
 import { linkCrossReferences, referenceFields } from "../../lib/docx-crossrefs"
 import { paragraphFields, refInstruction, unlink } from "../../lib/docx-fields"
 import { shadeOpenItemsInDocx, unshadeOpenItems } from "../../lib/open-items"
+import { assertRedlineRoundTrip } from "../../lib/redline-round-trip"
+import { discloseSourceRevisions } from "../../lib/docx-revision-views"
+import { openItem } from "./quotes"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const BODY = "word/document.xml"
@@ -103,12 +106,17 @@ export async function documentRedline(directory: string, document: DocID, final:
   changes: ChangeList | undefined = readChangeList(directory, document),
   applied: ApplyResult["applied"] | undefined = recordedApplied(directory, document), identity = draftingAttribution()) {
   if (!changes || !applied) throw new Error(`${document}: the change list or the apply outcome is missing or unreadable.`)
-  const [before, after] = comparableBodies(comparisonBaseline(directory, document).bytes, final)
+  const source = comparisonBaseline(directory, document).bytes
+  const [before, after] = comparableBodies(source, final)
   // The comparison splits an open item a change rewrote word by word into
   // several runs; the redline shades it whole, as the body shows it.
   const compared = await compareDocxWithPointers(before, after, { authorName: identity.author })
   const redline = withGeneratedDocxAttribution(shadeOpenItemsInDocx(compared), identity)
-  return exportAppliedChangeComments(redline, final, document, changes.amendments, applied, changes.explanations, readParagraphs(directory, document), identity.author)
+  const exported = exportAppliedChangeComments(redline, final, document, changes.amendments, applied, changes.explanations, readParagraphs(directory, document), identity.author)
+  const disclosed = await discloseSourceRevisions(exported.bytes, source, identity.author)
+  await assertRedlineRoundTrip(disclosed.bytes, before, after)
+  return { ...exported, bytes: disclosed.bytes, openItems: [...exported.openItems,
+    ...(disclosed.disclosure ? [openItem("apply", "omission", disclosed.disclosure.message, { document })] : [])] }
 }
 
 /** The two bodies as the redline compares them. The comparer marks a whole

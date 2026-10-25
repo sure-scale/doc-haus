@@ -18,12 +18,14 @@ export type Redline = {
 // The redlined view: the clean .docx compared against itself with every pending
 // proposal applied, so the bytes carry native tracked changes the viewer paints
 // green/red. Identical to the clean bytes when nothing is pending.
-export async function fetchRedlinedBytes(id: string, name: string): Promise<Uint8Array> {
+export async function fetchRedlinedBytes(id: string, name: string, notice?: (message: string | undefined) => void): Promise<Uint8Array> {
   const res = await fetch(`${INGEST_URL}/matters/${id}/documents/redlined?name=${encodeURIComponent(name)}`)
   if (!res.ok) {
     const detail = await res.json().catch(() => undefined)
     throw new Error(typeof detail?.error === "string" ? detail.error : `Could not load ${name} (${res.status})`)
   }
+  const encoded = res.headers.get("X-DocHaus-Revision-Notice")
+  notice?.(encoded ? decodeURIComponent(encoded) : undefined)
   return new Uint8Array(await res.arrayBuffer())
 }
 
