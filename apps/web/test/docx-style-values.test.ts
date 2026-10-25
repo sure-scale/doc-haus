@@ -28,6 +28,8 @@ describe("style values in the copy a viewer renders", () => {
       `<w:rFonts w:ascii="A&apos;; } B"/>`,
       `<w:rFonts w:ascii="A&#39;B&#x5C;C&#10;D"/>`,
       `<q:rFonts q:hAnsi="A'B"/>`,
+      `<wé:rFonts wé:ascii="A'B"/>`,
+      `<w\u00b7\u0300:sym w\u00b7\u0300:font="A'B"/>`,
       `<w:rFonts w:cs='A"B'/>`,
       `<w:rFonts w:ascii="A>'; } B"/>`,
       `<w:font w:name="A'B">`,
@@ -44,7 +46,7 @@ describe("style values in the copy a viewer renders", () => {
     expect(safeStyleValuesInXml(`<w:rFonts w:ascii="A'; } B" w:hint="eastAsia"/>`)).toBe(`<w:rFonts w:ascii="A  B" w:hint="eastAsia"/>`)
     // A colour is written bare, so a semicolon or brace is enough to leave it.
     expect(safeStyleValuesInXml(`<w:color w:val="000000; } p { color: #000000"/>`)).toBe(`<w:color w:val="000000pcolor000000"/>`)
-    for (const tag of [`<w:shd w:val="clear" w:fill="FFF;}"/>`, `<w:top w:val="single" w:color="0F0;}"/>`, `<w:highlight w:val="yellow;}"/>`, `<x:background x:color="FFF;}"/>`, `<a:srgbClr val="FFF;}"/>`])
+    for (const tag of [`<w:shd w:val="clear" w:fill="FFF;}"/>`, `<w:top w:val="single" w:color="0F0;}"/>`, `<w:highlight w:val="yellow;}"/>`, `<x:background x:color="FFF;}"/>`, `<a:srgbClr val="FFF;}"/>`, `<wé:color wé:val="FFF;}"/>`])
       expect({ tag, cleaned: safeStyleValuesInXml(tag) }).toEqual({ tag, cleaned: tag.replace(";}", "") })
     // A style id is selector text; its own id and every reference to it are cleaned alike.
     const id = "Clause { } p { color: red } p.X"
@@ -53,6 +55,7 @@ describe("style values in the copy a viewer renders", () => {
       .toBe(`<w:style w:type="paragraph" w:styleId="${cleaned}"><w:basedOn w:val="${cleaned}"/><w:next w:val="${cleaned}"/><w:link w:val="${cleaned}"/></w:style>`)
     for (const element of ["pStyle", "rStyle", "tblStyle", "numStyleLink", "styleLink"])
       expect(safeStyleValuesInXml(`<w:${element} w:val="${id}"/>`)).toBe(`<w:${element} w:val="${cleaned}"/>`)
+    expect(safeStyleValuesInXml(`<見:pStyle 見:val="${id}"/>`)).toBe(`<見:pStyle 見:val="${cleaned}"/>`)
     // Text and other attributes keep their characters.
     expect(safeStyleValuesInXml(`<w:p><w:ins w:id="1" w:author="Ann O'Brien {Legal}"><w:r><w:t>It's {fine}</w:t></w:r></w:ins></w:p>`)).toBeUndefined()
   })

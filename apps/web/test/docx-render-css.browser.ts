@@ -35,7 +35,9 @@ const font = `X'; } p { background-image: url('${remote("font")}') } ${probe("fo
 const colour = `000000; } ${probe("colour", "rgb(0, 0, 220)")} span.zz { color: #000000`
 // A style id is written as selector text (p.docx-<id> {).
 const style = `X { } ${probe("style", "rgb(0, 140, 0)")} p::before { content: url('${remote("style")}') } p.Y`
-const probes = { font: "font name", colour: "colour", style: "style id" }
+// The same font name under a namespace prefix spelled outside ASCII.
+const prefixed = `X'; } ${probe("prefix", "rgb(200, 120, 0)")} p::after { content: url('${remote("prefix")}') } span.zz { font-family: 'Y`
+const probes = { font: "font name", colour: "colour", style: "style id", prefix: "font name under a non-ASCII prefix" }
 const sentence = "The Supplier shall deliver the goods within fourteen days."
 const styled = "Clause styled by the file's own paragraph style."
 const ordinary = "The Customer shall pay each invoice within thirty days."
@@ -44,7 +46,7 @@ const docx = zipSync(Object.fromEntries(Object.entries({
   "_rels/.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/officeDocument" Target="word/document.xml"/></Relationships>`,
   "word/_rels/document.xml.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/styles" Target="styles.xml"/></Relationships>`,
   "word/styles.xml": `<w:styles xmlns:w="${W}"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="${xml(font)}" w:hAnsi="${xml(font)}"/><w:sz w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults><w:style w:type="paragraph" w:styleId="${xml(style)}"><w:name w:val="Clause"/><w:rPr><w:b/></w:rPr></w:style></w:styles>`,
-  "word/document.xml": `<w:document xmlns:w="${W}"><w:body><w:p><w:r><w:rPr><w:color w:val="${xml(colour)}"/></w:rPr><w:t>${sentence}</w:t></w:r></w:p><w:p><w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/></w:rPr><w:t>${ordinary}</w:t></w:r><w:r><w:rPr><w:rFonts w:ascii="MS 明朝" w:hAnsi="MS 明朝"/></w:rPr><w:t xml:space="preserve"> Payment is due on receipt.</w:t></w:r></w:p><w:p><w:pPr><w:pStyle w:val="${xml(style)}"/></w:pPr><w:r><w:t>${styled}</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`,
+  "word/document.xml": `<w:document xmlns:w="${W}"><w:body><w:p><w:r><w:rPr><w:color w:val="${xml(colour)}"/></w:rPr><w:t>${sentence}</w:t></w:r></w:p><w:p><w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman"/></w:rPr><w:t>${ordinary}</w:t></w:r><w:r><w:rPr><w:rFonts w:ascii="MS 明朝" w:hAnsi="MS 明朝"/></w:rPr><w:t xml:space="preserve"> Payment is due on receipt.</w:t></w:r></w:p><w:p><w:r xmlns:wé="${W}"><w:rPr><wé:rFonts wé:ascii="${xml(prefixed)}" wé:hAnsi="${xml(prefixed)}"/></w:rPr><w:t>Notice is given in writing.</w:t></w:r></w:p><w:p><w:pPr><w:pStyle w:val="${xml(style)}"/></w:pPr><w:r><w:t>${styled}</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>`,
 }).map(([name, part]) => [name, strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${part}`)])))
 
 const params = { left: "Supplier agreement.docx", right: "Counterparty response.docx", leftLabel: "Sent", rightLabel: "Returned", ignoreFormatting: true, detectMoves: true, headersFooters: true }

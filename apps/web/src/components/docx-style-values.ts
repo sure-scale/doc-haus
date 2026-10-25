@@ -49,8 +49,10 @@ const NOT_FONT = /[^\p{L}\p{M}\p{N} \-_.,+&@()]/gu
 const NOT_COLOUR = /[^0-9A-Za-z]/g
 const NOT_STYLE_ID = /[^\p{L}\p{M}\p{N}\-_]/gu
 
-// A start tag. Quoted values are matched whole, as a value may hold a raw ">".
-const TAG = /<([A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?)((?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*)(\s*\/?>)/g
+// A start tag. A prefix or local name may use letters, digits and marks in any
+// script, as the converter accepts them; quoted values are matched whole, as a
+// value may hold a raw ">".
+const TAG = /<([^\s:=/>!?<"']+(?::[^\s:=/><"']+)?)((?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*)(\s*\/?>)/gu
 const ATTRIBUTE = /([^\s=/>]+)(\s*=\s*)(?:"([^"]*)"|'([^']*)')/g
 const ENTITY = /&(?:#(\d+)|#x([0-9a-fA-F]+)|(lt|gt|amp|quot|apos));/g
 const NAMED: Record<string, string> = { lt: "<", gt: ">", amp: "&", quot: '"', apos: "'" }
