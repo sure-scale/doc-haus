@@ -3,8 +3,7 @@ import { Database } from "bun:sqlite"
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { applyDocxLocalization, createDocxLocalization, createDocxRevision } from "../lib/docx-amendments"
-import { docxodus } from "../lib/docxodus"
+import { applyDocxLocalization, createDocxLocalization } from "../lib/docx-amendments"
 import { pendingRedlinesForDoc, supersedeMatchingRedlines } from "../lib/redlines"
 import { renderMarkdownToDocx } from "../lib/render"
 import redline from "../tool/redline"
@@ -36,6 +35,9 @@ function register(root: string, role: "source" | "deliverable") {
   supersedeMatchingRedlines(root, path.join(root, COUNTERPARTY_MARKUP.name), () => false)
 }
 
+// word-integration's edit is untracked, so it would not show in their markup.
+const untracked = "This uploaded markup has tracked changes, so an untracked edit would not show in it. Use Request edits, which makes tracked changes."
+
 const refusal = (text: string, author: string, verb = "proposed") =>
   `The change to ${JSON.stringify(text)} was not ${verb}: that paragraph has a pending change by ${author}. Accept or reject it under Tracked changes, then request edits again.`
 
@@ -62,7 +64,7 @@ test("the chat tools refuse a paragraph with their pending change, and record or
     expect(pendingRedlinesForDoc(root, document)).toEqual([])
     // Inside Avery's insertion in clause 1.
     expect(await wordIntegration.execute({ document: COUNTERPARTY_MARKUP.name, action: "replace", find: "forty-five days of each", replace: "sixty days of each" }, context))
-      .toBe(refusal("forty-five days of each", "Avery Lindqvist", "made"))
+      .toBe(untracked)
     expect(saved).toEqual([])
     expect(new Uint8Array(readFileSync(document))).toEqual(counterpartyMarkupDocx())
 
@@ -74,7 +76,8 @@ test("the chat tools refuse a paragraph with their pending change, and record or
 
 // #299: doc.haus's own pending change (one an earlier Accept wrote tracked into
 // their markup) holds no paragraph, as in Request edits: an edit beside it is
-// proposed or made, and one that would rewrite it is refused with Prepare's reason.
+// proposed, and one that would rewrite it is refused with Prepare's reason.
+// word-integration, which edits untracked, makes neither.
 test("the chat tools edit beside doc.haus's own pending change and refuse to rewrite it", async () => {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "dh-markup-tools-ours-")))
   roots.push(root)
@@ -96,19 +99,13 @@ test("the chat tools edit beside doc.haus's own pending change and refuse to rew
   process.env.INGEST_URL = ingest.url.href.replace(/\/$/, "")
   const inside = (text: string, verb = "proposed") =>
     `The change to ${JSON.stringify(text)} was not ${verb}: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.`
-  const revisions = async (bytes: Uint8Array) => {
-    const session = (await docxodus()).openDocxSession(bytes, { persistAnchorIds: false })
-    try { return session.listRevisions().map(({ id, author, type, text }) => ({ id, author, type, text })) } finally { session.close() }
-  }
   const proposed = () => pendingRedlinesForDoc(root, document).map(row => [row.find_text, row.new_text])
   try {
     // Beside it, in the same paragraph.
     await trackedChanges.execute({ document: COUNTERPARTY_MARKUP.name, find: "governed by", replace: "construed under", comment }, context)
     expect(proposed()).toEqual([["governed by", "construed under"]])
-    await wordIntegration.execute({ document: COUNTERPARTY_MARKUP.name, action: "replace", find: "governed by", replace: "construed under" }, context)
-    expect(saved).toHaveLength(1)
-    expect((await createDocxRevision(saved[0]!, layer)).paragraphs[9]!.text).toBe("9. Governing law. This Agreement is construed under the law of the State.")
-    expect(await revisions(saved[0]!)).toEqual(await revisions(ours))
+    expect(await wordIntegration.execute({ document: COUNTERPARTY_MARKUP.name, action: "replace", find: "governed by", replace: "construed under" }, context))
+      .toBe(untracked)
 
     // Inside its insertion of "State", and a rewrite of its whole clause.
     expect(await trackedChanges.execute({ document: COUNTERPARTY_MARKUP.name, find: "the State", replace: "the Commonwealth", comment }, context))
@@ -116,9 +113,10 @@ test("the chat tools edit beside doc.haus's own pending change and refuse to rew
     expect(await redline.execute({ document: COUNTERPARTY_MARKUP.name, clause: "This Agreement is governed by the law of the State.", replacement: "This Agreement is construed under the law of the State.", comment }, context))
       .toBe(inside("This Agreement is governed by the law of the State."))
     expect(await wordIntegration.execute({ document: COUNTERPARTY_MARKUP.name, action: "replace", find: "the State", replace: "the Commonwealth" }, context))
-      .toBe(inside("the State", "made"))
+      .toBe(untracked)
     expect(proposed()).toEqual([["governed by", "construed under"]])
-    expect(saved).toHaveLength(1)
+    expect(saved).toEqual([])
+    expect(new Uint8Array(readFileSync(document))).toEqual(ours)
   } finally { ingest.stop(true) }
 })
 

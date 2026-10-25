@@ -20,7 +20,7 @@ import { withArtifactMutationLocksAsync } from "../capabilities/artifacts/mutati
 
 export default tool({
   description:
-    'Read or edit the matter\'s canonical Word (.docx) document in place. Use action "read" to get the document text, or "replace" to change wording. Edits are plain (not tracked changes) and re-open correctly in Microsoft Word. A list number Word prints before a paragraph ("2.1") is not text; leave it out of find and replace.',
+    'Read or edit the matter\'s canonical Word (.docx) document in place. Use action "read" to get the document text, or "replace" to change wording. Edits are plain (not tracked changes) and re-open correctly in Microsoft Word, so a file with tracked changes is refused; an uploaded markup is edited with Request edits instead. A list number Word prints before a paragraph ("2.1") is not text; leave it out of find and replace.',
   args: {
     document: tool.schema.string().describe("Document file name within the matter (the docPath from a citation)"),
     action: tool.schema.enum(["read", "replace"]).describe('"read" the document text, or "replace" text in place'),
@@ -60,17 +60,19 @@ export default tool({
     const edit = await withArtifactMutationLocksAsync(ctx.directory,[file],async () => {
       assertDirectWorkingDocxWriteAllowed(ctx.directory,file)
       const original = await Bun.file(file).bytes()
-      // As Request edits: a Word file other than an uploaded source is refused
-      // while it has tracked changes, beside which this untracked edit would not show.
-      if (!registeredWordSource(ctx.directory,name) && hasTrackedRevisions(original)) return trackedRevisionsReason
+      // This edit is untracked, so beside tracked changes it would not show. As
+      // Request edits does, a Word file other than an uploaded source is refused
+      // while it has them; an uploaded markup is left to Request edits, which tracks.
+      if (hasTrackedRevisions(original)) return registeredWordSource(ctx.directory,name)
+        ? "This uploaded markup has tracked changes, so an untracked edit would not show in it. Use Request edits, which makes tracked changes."
+        : trackedRevisionsReason
       const session = (await docxodus()).openDocxSession(original,{})
       try {
         const {find,replace,targets,error} = findPastListLabel(args.find!,args.replace!,(text) => session.findAllByText(text),(id) => session.getAnchorInfo(id)?.visibleText)
         if (!targets.length) return `Text not found in ${name}: ${JSON.stringify(args.find)}`
         if (error) return error
-        // The edit is untracked: in a paragraph with someone else's pending
-        // revision it would become their text, and inside doc.haus's own it
-        // would rewrite that change (the touch rule).
+        // Pending formatting changes remain: the touch rule holds a paragraph
+        // with someone else's, and refuses rewriting doc.haus's own.
         const refused = pendingRevisionRefusal(session,pendingRevisionAnchors(session),targets.map((target) => target.id),find,"made",ourAuthors())
         if (refused) return refused
         const results = targets.flatMap((target) => session.replaceTextRange(target.id,find,replace))
