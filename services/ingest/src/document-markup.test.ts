@@ -510,7 +510,7 @@ test("the list refuses anything but a registered Word source, and reads a kept v
   expect((await markup(name, { version: crypto.randomUUID() })).status).toBe(404)
 }, 120_000)
 
-test("each change and thread the current drafting run answered carries its answer, for those bytes only", async () => {
+test("each change and thread the current drafting run answered carries its answer while it is listed, after an Apply too", async () => {
   const name = "Run answers.docx"
   await upload(name)
   const listed = await view(name)
@@ -533,11 +533,21 @@ test("each change and thread the current drafting run answered carries its answe
     expect(ids.length).toBeGreaterThan(1)
     expect(ids.every(id => cards.has(id))).toBe(true)
     expect(Object.keys(answered.responses ?? {}).toSorted()).toEqual(ids.toSorted())
-    expect(answered.responses![ids[0]!]).toEqual({ disposition: "recommendation", reason: "Forty-five days matches the Supplier's lead times." })
+    const from_version = listed.version.number
+    expect(from_version).toBe(1)
+    expect(answered.responses![ids[0]!]).toEqual({ disposition: "recommendation", reason: "Forty-five days matches the Supplier's lead times.", from_version })
     expect(ids.slice(1).every(id => answered.responses![id]!.disposition === "rejected")).toBe(true)
-    // Applied, the file has new bytes the run never read; the kept version it read still has its answers.
-    expect((await decide(name, listed.revisions.map((_, at) => at ? "hold" : "accept"))).status).toBe(200)
-    expect(await view(name)).not.toHaveProperty("responses")
+    // An Apply deciding the first answered change makes bytes the run never
+    // read; the changes and threads it leaves keep their ids and their answers.
+    expect(listed.revisions.some(({ id }) => id === ids[0])).toBe(true)
+    expect((await decide(name, listed.revisions.map(({ id }) => id === ids[0] ? "accept" : "hold"))).status).toBe(200)
+    const after = await view(name) as View & { responses?: Record<string, { disposition: string; from_version?: number }> }
+    expect(after.version.number).toBe(2)
+    expect(after.revisions.map(({ id }) => id)).toEqual(listed.revisions.map(({ id }) => id).filter(id => id !== ids[0]))
+    expect(after.comments.map(({ id }) => id)).toEqual(listed.comments.map(({ id }) => id))
+    expect(Object.keys(after.responses ?? {}).toSorted()).toEqual(ids.slice(1).toSorted())
+    expect(ids.slice(1).every(id => after.responses![id]!.disposition === "rejected" && after.responses![id]!.from_version === from_version)).toBe(true)
+    // The kept version the run read still has every answer.
     const kept = await (await markup(name, { version: listed.version.id! })).json() as { responses?: object }
     expect(Object.keys(kept.responses ?? {}).toSorted()).toEqual(ids.toSorted())
   } finally {

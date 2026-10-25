@@ -4,7 +4,7 @@ import path from "node:path"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { addCommentReplies, CommentReplyError, replyInitials, type CommentReply } from "../../../dochaus/lib/docx-comment-replies"
-import { commentReferences, readDocxMarkup, type DocxMarkup } from "../../../dochaus/lib/docx-markup"
+import { commentReferences, counterpartyItems, readDocxMarkup, type CounterpartyItem, type DocxMarkup } from "../../../dochaus/lib/docx-markup"
 import { issueRegister } from "../../../dochaus/workflows/lean/register"
 import { markupConsistency } from "../../../dochaus/workflows/lean/version-consistency"
 import { getDocumentRole, listPendingRedlines, openDb } from "./db"
@@ -79,7 +79,7 @@ export function documentMarkupRoutes(options: Options) {
     }
     const markup = await readMarkup(target.name, bytes)
     if (!markup) return unreadable(c, target.name)
-    const responses = runResponses(directory, target.name, version.sha256)
+    const responses = runResponses(directory, target.name, markup)
     return c.json({ name: target.name, version, current: version.sha256 === sha256Hex(working), ...markup, ...(responses ? { responses } : {}) })
   })
 
@@ -214,11 +214,28 @@ async function readMarkup(name: string, bytes: Uint8Array): Promise<DocxMarkup |
  * changes and comment threads in the bytes `sha256` of source `name`, by the
  * change's or root comment's id: its issue register's entries for that markup
  * (lean/register.ts), read now and kept nowhere. Undefined when it answered none. */
-function runResponses(directory: string, name: string, sha256: string) {
-  const entries = issueRegister(directory).entries.filter(({ counterparty }) => counterparty?.source.name === name && counterparty.source.sha256 === sha256)
+/** How the matter's current drafting run answered each change and thread of
+ * `name` that `markup` still lists, by id. The run read one version; an Apply
+ * keeps the ids of the changes and comments it leaves, so an item keeps its
+ * answer while it is listed with the same id, author and text. `from_version`
+ * is the number of the version the run read. */
+function runResponses(directory: string, name: string, markup: DocxMarkup) {
+  const entries = issueRegister(directory).entries.filter(({ counterparty }) => counterparty?.source.name === name)
   if (!entries.length) return
-  return Object.fromEntries(entries.map(({ counterparty, disposition, reason, amendments, question }) => [counterparty!.ref.id,
-    { disposition, ...(reason ? { reason } : {}), ...(amendments.length ? { amendments } : {}), ...(question ? { question } : {}) }]))
+  const same = ({ ref, change, author, text }: CounterpartyItem) => JSON.stringify([ref.kind, ref.id, change, author, text])
+  const listed = new Set(counterpartyItems({ name, sha256: "" }, markup).map(same))
+  const versions = new Map<string, number | undefined>()
+  const read = (sha256: string) => {
+    if (!versions.has(sha256)) versions.set(sha256, findVersionBySha(directory, name, sha256)?.number)
+    return versions.get(sha256)
+  }
+  const answered = entries.filter(({ counterparty }) => listed.has(same(counterparty!)))
+  if (!answered.length) return
+  return Object.fromEntries(answered.map(({ counterparty, disposition, reason, amendments, question }) => {
+    const from = read(counterparty!.source.sha256)
+    return [counterparty!.ref.id, { disposition, ...(reason ? { reason } : {}), ...(amendments.length ? { amendments } : {}), ...(question ? { question } : {}),
+      ...(from === undefined ? {} : { from_version: from }) }]
+  }))
 }
 
 /** The cross-references and defined terms the Apply broke (#198), for the
