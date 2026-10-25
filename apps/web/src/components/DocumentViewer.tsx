@@ -287,7 +287,7 @@ function WordDocumentViewer({
   // Settings shows; without it the lines name no one. Comments on the page
   // need it too, to show the lawyer's own in the brand colour, and read it
   // again after each save, which may have recorded a name.
-  const reviserNeeded = (Boolean(markup.data?.revisions.length) && (editing || redlines.length > 0)) || Boolean(html?.includes("comment-margin-note"))
+  const reviserNeeded = (Boolean(markup.data?.revisions.length) && (editing || redlines.length > 0)) || /class="[^"]*\bcomment-margin-note\b/.test(html ?? "")
   useEffect(() => {
     if (!reviserNeeded) return
     let cancelled = false
