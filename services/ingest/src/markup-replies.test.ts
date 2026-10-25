@@ -155,6 +155,17 @@ test("an instruction planted in the clause's plain text, outside any change or c
   expect(flag?.[1]).toBe("role-reassignment")
 }, 60_000)
 
+test("a failed model call is refused in plain words, and its status stays in the server log", async () => {
+  generations = []
+  answer = () => new Response("Engine failure", { status: 500 })
+  const response = await draft({ base_sha256: listed.version.sha256, thread: 0 })
+  expect(response.status).toBe(502)
+  expect(await response.json()).toEqual({ error: "The reply was not drafted. Try again, or write the reply.", code: "generation_failed" })
+  const log = path.join(temporary, "ingest.log"), deadline = Date.now() + 5_000
+  while (!(await readFile(log, "utf8")).includes("HTTP 500") && Date.now() < deadline) await Bun.sleep(50)
+  expect(await readFile(log, "utf8")).toContain("The configured legal generation failed (HTTP 500).")
+}, 60_000)
+
 test("an unreadable answer gets one correction, then the draft is refused", async () => {
   answers("Here is a reply: thanks.", "```json\n{\"reply\": \"Thanks\"\n```")
   const response = await draft({ base_sha256: listed.version.sha256, thread: 0 })

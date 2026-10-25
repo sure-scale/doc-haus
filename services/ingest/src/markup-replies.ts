@@ -81,8 +81,10 @@ export function markupReplyRoutes(options: { directory: (id: string) => string }
       return c.json({ ...checked.draft, placeholders, model: answer.model })
     } catch (error) {
       if (signal.aborted) return new Response(null, { status: 499 })
-      console.warn("[markup] reply draft failed", diagnosticErrorMetadata(error))
-      return c.json({ error: `${error instanceof EngineGenerationError ? `${error.message} ` : ""}The reply was not drafted. Try again, or write the reply.`, code: "generation_failed" }, 502)
+      // The engine's own message (its HTTP status) stays in the log; the lawyer
+      // gets what happened and what to do.
+      console.warn("[markup] reply draft failed", { ...diagnosticErrorMetadata(error), ...error instanceof EngineGenerationError ? { detail: error.message } : {} })
+      return c.json({ error: "The reply was not drafted. Try again, or write the reply.", code: "generation_failed" }, 502)
     }
   })
 
