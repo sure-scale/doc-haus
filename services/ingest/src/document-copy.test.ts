@@ -130,6 +130,8 @@ test("native copy tool asks before HTTP and returns the registered new document 
     expect(existsSync(path.join(f.directory, "new.docx"))).toBe(false)
     const result = await copy.execute({ document: "original.docx", name: "new.docx" }, { ...context, async ask(request) { expect(request.permission).toBe("copy-document"); expect(request.always).toBeUndefined() } })
     expect(result).toMatchObject({ title: "Created new.docx", metadata: { name: "new.docx", document: path.join(f.directory, "new.docx") } })
+    // The copy keeps the original's tracked insertion, which the editing tools refuse.
+    expect((result as { output: string }).output).toEndWith("new.docx holds tracked changes, so it cannot be edited until they are accepted or rejected in Word. Edits answering the other side's markup go on the uploaded markup itself (Request edits).")
     expect(calls).toBe(1)
     expect(readFileSync(f.original)).toEqual(Buffer.from(f.bytes))
     expect(await copy.execute({ document: "../original.docx", name: "other.docx" }, context)).toBeString()
