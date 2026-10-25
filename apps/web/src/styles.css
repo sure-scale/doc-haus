@@ -1585,7 +1585,8 @@ li.list-row {
 }
 
 /* Instant hover tooltip (components/Tooltip.tsx). Fixed + body-portaled so it
-   escapes the sidebar scroll clip; pinned to the right of the hovered item. */
+   escapes the sidebar scroll clip; beside the hovered item, or above it when
+   there is no room beside it. */
 .tip-bubble {
   position: fixed;
   transform: translateY(-50%);

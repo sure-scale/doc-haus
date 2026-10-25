@@ -36,9 +36,15 @@ export function Tooltip({ label, children, describes = true }: { label: string; 
     if (!anchor || !bubble.current) return
     const rect = bubble.current.getBoundingClientRect()
     const scale = Number(getComputedStyle(document.body).zoom) || 1
-    const preferred = anchor.right + 8
-    const x = preferred + rect.width < innerWidth - 12 ? preferred : anchor.left - rect.width - 8
-    setPosition({ x: Math.max(12, Math.min(x, innerWidth - rect.width - 12)) / scale, y: Math.max(12, Math.min(anchor.top + anchor.height / 2 - rect.height / 2, innerHeight - rect.height - 12)) / scale })
+    const right = anchor.right + 8
+    const left = anchor.left - rect.width - 8
+    const beside = right + rect.width < innerWidth - 12 ? right : left >= 12 ? left : undefined
+    // Too wide a control to sit beside (a full-width button on a phone): above
+    // it, or below when there is no room above, so it never covers the control.
+    const above = anchor.top - rect.height - 8
+    const x = beside ?? anchor.left + anchor.width / 2 - rect.width / 2
+    const y = beside !== undefined ? anchor.top + anchor.height / 2 - rect.height / 2 : above >= 12 ? above : anchor.bottom + 8
+    setPosition({ x: Math.max(12, Math.min(x, innerWidth - rect.width - 12)) / scale, y: Math.max(12, Math.min(y, innerHeight - rect.height - 12)) / scale })
     const onEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return
       // Hovered help must dismiss even when keyboard focus is elsewhere, and

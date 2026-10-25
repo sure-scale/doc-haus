@@ -138,16 +138,20 @@ try {
     const bounds = await tooltip.boundingBox()
     assert.ok(bounds && bounds.x >= 11 && bounds.y >= 11 && bounds.x + bounds.width <= width - 11 && bounds.y + bounds.height <= 729,
       `tooltip is clamped inside the ${width}px viewport with ${textSize} text: ${JSON.stringify(bounds)}`)
-    const triggerBounds = await trigger.boundingBox()
-    const expectedTop = Math.max(12, Math.min(triggerBounds!.y + triggerBounds!.height / 2 - bounds.height / 2, 740 - bounds.height - 12))
-    assert.ok(Math.abs(bounds.y - expectedTop) <= 1, `tooltip remains anchored with ${textSize} text: top=${bounds.y}, expected=${expectedTop}`)
+    const triggerBounds = (await trigger.boundingBox())!
+    // Beside the control when it fits there; on a narrow screen, above it. It never covers the control.
+    const beside = bounds.x >= triggerBounds.x + triggerBounds.width || bounds.x + bounds.width <= triggerBounds.x
+    const expectedTop = beside
+      ? Math.max(12, Math.min(triggerBounds.y + triggerBounds.height / 2 - bounds.height / 2, 740 - bounds.height - 12))
+      : triggerBounds.y - bounds.height - 8
+    assert.ok(Math.abs(bounds.y - expectedTop) <= 1, `tooltip remains anchored ${beside ? "beside" : "above"} its control at ${width}px with ${textSize} text: top=${bounds.y}, expected=${expectedTop}, control=${JSON.stringify(triggerBounds)}`)
     await page.keyboard.press("Escape")
     await expect(tooltip).toHaveCount(0)
     await expect(trigger).toBeFocused()
     assert.equal(await trigger.getAttribute("aria-describedby"), "existing-description")
   }
   await page.evaluate(() => { document.documentElement.dataset.text = "standard" })
-  console.log("PASS Tooltips open on keyboard focus, preserve descriptions, anchor/clamp at 375/768/1440px in every text preference and dismiss with Escape.")
+  console.log("PASS Tooltips open on keyboard focus, preserve descriptions, sit beside or above their control without covering it at 375/768/1440px in every text preference and dismiss with Escape.")
 
   // The pointer must cross the actual 8px gap and remain on the help beyond
   // its dismissal delay. Keyboard focus stays outside the trigger throughout.
