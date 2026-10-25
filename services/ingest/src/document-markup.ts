@@ -100,7 +100,8 @@ export function documentMarkupRoutes(options: Options) {
       try {
         applied = await applyMarkupDecisions(bytes, decisions.map)
       } catch (error) {
-        if (error instanceof MarkupDecisionError) return c.json({ error: error.message, code: error.code, id: error.revision }, 409)
+        if (error instanceof MarkupDecisionError)
+          return c.json({ error: error.message, code: error.code, id: error.revision, ...(error.mergedWith.length ? { merged_with: error.mergedWith } : {}) }, 409)
         console.warn("[markup] decisions refused", diagnosticErrorMetadata(error))
         return c.json({ error: "The decisions could not be applied. Nothing was changed; refresh the list and try again.", code: "decision_failed" }, 409)
       }
