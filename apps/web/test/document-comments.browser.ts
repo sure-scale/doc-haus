@@ -480,6 +480,106 @@ try {
     assert.deepEqual(errors, [])
   })
 
+  // Every kind of tracked change, by author: Sam changes clause 1's formatting and a table row's and cell's, Lee
+  // comments on clause 2, and Avery
+  // inserts a word in clause 3 and comments on it, then inserts a clause, a table row and a cell and deletes a
+  // paragraph mark; the lawyer deletes a clause, a row and a cell. Sam, Lee and Avery first appear in that order.
+  const SAM = "Sam Rivera", LEE = "Lee Chan", AVERY = REVIEWERS[0]!
+  const tracked = (id: number, author: string) => `w:id="${id}" w:author="${author}" w:date="${DATE}"`
+  const inserted = (id: number, author: string, text: string) => `<w:ins ${tracked(id, author)}>${run(text)}</w:ins>`
+  const removed = (id: number, author: string, text: string) => `<w:del ${tracked(id, author)}><w:r><w:delText xml:space="preserve">${escaped(text)}</w:delText></w:r></w:del>`
+  const tableCell = (inner: string, change = "") => `<w:tc><w:tcPr><w:tcW w:w="4000" w:type="dxa"/>${change}</w:tcPr>${para(inner)}</w:tc>`
+  const changed = [{ id: 0, author: LEE, text: "Ten days is short." }, { id: 1, author: AVERY, text: "Promptly is vague." }]
+  const everyChange = wordFile([
+    `<w:p><w:pPr><w:jc w:val="center"/><w:pPrChange ${tracked(18, SAM)}><w:pPr/></w:pPrChange></w:pPr><w:r><w:rPr><w:b/><w:rPrChange ${tracked(1, SAM)}><w:rPr/></w:rPrChange></w:rPr><w:t>1. Sam makes this clause bold.</w:t></w:r></w:p>`,
+    para(run("2. ") + commented(0, "Delivery within ten days.")),
+    para(`${run("3. The Supplier delivers ")}<w:commentRangeStart w:id="1"/>${inserted(2, AVERY, "promptly")}<w:commentRangeEnd w:id="1"/>${reference(1)}`),
+    `<w:p><w:pPr><w:rPr><w:ins ${tracked(3, AVERY)}/></w:rPr></w:pPr>${inserted(4, AVERY, "4. A clause Avery inserts.")}</w:p>`,
+    `<w:p><w:pPr><w:rPr><w:del ${tracked(5, LAWYER)}/></w:rPr></w:pPr>${removed(6, LAWYER, "5. A clause the lawyer deletes.")}</w:p>`,
+    `<w:p><w:pPr><w:rPr><w:del ${tracked(7, AVERY)}/></w:rPr></w:pPr>${run("6. Avery joins this clause")}</w:p>`,
+    para(run(" to the next one.")),
+    `<w:tbl><w:tblPr><w:tblW w:w="8000" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid>` +
+      `<w:tr><w:trPr><w:jc w:val="center"/><w:trPrChange ${tracked(19, SAM)}><w:trPr/></w:trPrChange></w:trPr>${tableCell(run("Milestone"), `<w:shd w:val="clear" w:fill="auto"/><w:tcPrChange ${tracked(20, SAM)}><w:tcPr><w:tcW w:w="4000" w:type="dxa"/></w:tcPr></w:tcPrChange>`)}${tableCell(run("Fee"))}</w:tr>` +
+      `<w:tr><w:trPr><w:ins ${tracked(8, AVERY)}/></w:trPr>${tableCell(inserted(9, AVERY, "Testing"))}${tableCell(inserted(10, AVERY, "£4,000"))}</w:tr>` +
+      `<w:tr><w:trPr><w:del ${tracked(11, LAWYER)}/></w:trPr>${tableCell(removed(12, LAWYER, "Training"))}${tableCell(removed(13, LAWYER, "£2,000"))}</w:tr>` +
+      `<w:tr>${tableCell(inserted(14, AVERY, "Handover"), `<w:cellIns ${tracked(15, AVERY)}/>`)}${tableCell(removed(16, LAWYER, "£1,000"), `<w:cellDel ${tracked(17, LAWYER)}/>`)}</w:tr></w:tbl>`,
+    para(run("7. After the table.")),
+  ], changed)
+  // Each author's colours on the page: every change marker's (an insertion's or deletion's text, a paragraph's bar, a
+  // deleted paragraph mark, a formatting change's dotted line or outline), their cards' initials and, with the file's markup, the
+  // panel's; and the fill of each row or cell they changed, beside the tint of their colour. `tones`: the palette's
+  // first three colours and the brand's.
+  const paints = (page: Awaited<ReturnType<typeof open>>["page"]) => page.locator(".docx-render").evaluate((root) => {
+    const out: Record<string, { colours: string[]; fills: string[]; tint?: string }> = {}
+    const add = (author: string | undefined, colour: string, kind: "colours" | "fills" = "colours") => {
+      const entry = (out[author ?? "none"] ??= { colours: [], fills: [] })
+      if (!entry[kind].includes(colour)) entry[kind].push(colour)
+    }
+    const all = (selector: string, scope: ParentNode = root) => [...scope.querySelectorAll<HTMLElement>(selector)]
+    for (const node of all(":is(ins, del)[data-author]:not(.rev-move-from, .rev-move-to)")) add(node.dataset.author, getComputedStyle(node).color)
+    for (const node of all(":is(.rev-para-ins, .rev-para-del, .rev-para-format-change)[data-author]")) add(node.dataset.author, getComputedStyle(node).borderLeftColor)
+    for (const node of all(":is(.rev-row-format-change, .rev-cell-format-change)[data-author]")) add(node.dataset.author, getComputedStyle(node).outlineColor)
+    for (const node of all(".rev-para-del > .rev-para-mark-del")) add(node.parentElement!.dataset.author, getComputedStyle(node).color)
+    for (const node of all(".rev-format-change[data-author]")) add(node.dataset.author, getComputedStyle(node).borderBottomColor)
+    for (const node of all(":is(.rev-row-ins, .rev-row-del, .rev-cell-ins, .rev-cell-del)[data-author]")) add(node.dataset.author, getComputedStyle(node).backgroundColor, "fills")
+    for (const node of all(".comment-margin-note")) add(node.dataset.author, getComputedStyle(node.querySelector(":scope > .comment-margin-note-header > .markup-avatar")!).backgroundColor)
+    for (const node of all("#document-markup .markup-byline", document)) add(node.querySelector(".change-author")?.textContent ?? undefined, getComputedStyle(node.querySelector(".markup-avatar")!).backgroundColor)
+    const probe = root.appendChild(document.createElement("i"))
+    const resolve = (value: string, property: "color" | "backgroundColor" = "color") => {
+      probe.style[property] = value
+      return getComputedStyle(probe)[property]
+    }
+    for (const entry of Object.values(out)) entry.tint = resolve(`color-mix(in srgb, ${entry.colours[0]} 10%, transparent)`, "backgroundColor")
+    const tones = ["var(--author-1)", "var(--author-2)", "var(--author-3)", "var(--accent)"].map((value) => resolve(value))
+    probe.remove()
+    const missing = ["rev-format-change", "rev-para-format-change", "rev-row-format-change", "rev-cell-format-change", "rev-para-ins", "rev-para-del", "rev-para-mark-del", "rev-row-ins", "rev-row-del", "rev-cell-ins", "rev-cell-del"].filter((marker) => !root.querySelector(`.${marker}`))
+    return { authors: out, tones, missing }
+  })
+  const coloured = (painted: Awaited<ReturnType<typeof paints>>, label: string) => {
+    const [first, second, third, brand] = painted.tones
+    assert.deepEqual(Object.fromEntries(Object.entries(painted.authors).map(([author, { colours }]) => [author, colours])),
+      { [SAM]: [first], [LEE]: [second], [AVERY]: [third], [LAWYER]: [brand] }, `${label}: each author's changes and initials are in one colour, given in the order the authors first appear`)
+    for (const [author, { fills, tint }] of Object.entries(painted.authors)) assert.ok(fills.every((fill) => fill === tint), `${label}: ${author}'s rows and cells are tinted in their colour ${JSON.stringify({ fills, tint })}`)
+    assert.ok(painted.authors[AVERY]!.fills.length && painted.authors[LAWYER]!.fills.length, `${label}: setup, both changed rows and cells`)
+    assert.deepEqual(painted.missing, [], `${label}: setup, every kind of marker is on the page`)
+  }
+  const shoot = async (page: Awaited<ReturnType<typeof open>>["page"], name: string) => {
+    if (!screenshots) return
+    await page.locator(".docx-render .rev-para-ins").first().evaluate((node) => node.scrollIntoView({ block: "start" }))
+    await page.screenshot({ path: path.join(screenshots, `${name}.png`) })
+  }
+  await check("without the file's markup, every kind of change and each comment card is in its author's colour, in the order the authors first appear", async () => {
+    const { page, errors } = await open({ width: 1440, height: 900 }, undefined, false, { bytes: everyChange, markup: null })
+    await page.locator('.docx-render .comment-margin-note .markup-avatar').nth(1).waitFor({ state: "attached" })
+    await page.locator('.docx-render ins[data-author][style*="--author-tone"]').first().waitFor({ state: "attached" })
+    await shoot(page, "author-colours-every-change-1440")
+    await page.setViewportSize({ width: 400, height: 860 })
+    await shoot(page, "author-colours-every-change-400")
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await page.emulateMedia({ forcedColors: "active" })
+    assert.deepEqual(await page.locator(".docx-render :is(.rev-para-ins, .rev-para-del)").evaluateAll((nodes) => nodes.map((node) => getComputedStyle(node).borderLeftStyle)), ["solid", "solid", "solid"], "forced colours keep each paragraph's bar")
+    await shoot(page, "author-colours-every-change-forced-colours")
+    await page.emulateMedia({ forcedColors: "none" })
+    coloured(await paints(page), "without markup")
+    assert.deepEqual(errors, [])
+  })
+  await check("with the file's markup, the panel, the page and the cards colour authors in the order they first appear in the document", async () => {
+    const change = (id: string, author: string, kind: "insert" | "delete" | "format", paragraph: number, text: string) => ({
+      id, kind, family: kind === "format" ? "run_format" : `content_${kind}`, author, date: DATE, text, scope: "body",
+      locations: [{ paragraph, context: text }], status: "supported", diagnostic: null, findings: [],
+    })
+    const listed = listing(changed)
+    // Listed changes first, as ingest reads them, not in the document's order.
+    const markup = { ...listed, comments: listed.comments.map((comment) => ({ ...comment, paragraph: comment.id === 0 ? 2 : 3 })),
+      revisions: [change("r1", AVERY, "insert", 3, "promptly"), change("r2", LAWYER, "delete", 5, "5. A clause the lawyer deletes."), change("r3", SAM, "format", 1, "1. Sam makes this clause bold.")] }
+    const { page, errors } = await open({ width: 1440, height: 900 }, undefined, true, { bytes: everyChange, markup })
+    await page.locator("#document-markup .markup-avatar.tone-self").first().waitFor({ state: "attached" })
+    await page.locator('.docx-render ins[data-author][style*="--author-tone"]').first().waitFor({ state: "attached" })
+    await shoot(page, "author-colours-every-change-panel-1440")
+    coloured(await paints(page), "with markup")
+    assert.deepEqual(errors, [])
+  })
+
   assert.deepEqual(failures, [], "every crafted file's case passes")
 } finally {
   await browser.close()

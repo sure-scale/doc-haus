@@ -3559,6 +3559,30 @@ button.linklike:hover:not(:disabled) {
   text-decoration-line: line-through;
 }
 
+/* A whole paragraph, table row or cell an author inserted, deleted or
+   reformatted, a deleted paragraph mark (¶) and a formatting change, in the
+   author's colour too; the bar, fill or dotted line still says what changed.
+   The blackline sets no author colours and keeps Docxodus's. */
+.document-reader:not(.blackline-reader) .docx-render :is(.rev-para-ins, .rev-para-del, .rev-para-format-change) {
+  border-left-color: var(--author-tone, var(--border-strong));
+}
+
+.document-reader:not(.blackline-reader) .docx-render .rev-para-del > .rev-para-mark-del {
+  color: var(--author-tone, var(--muted));
+}
+
+.document-reader:not(.blackline-reader) .docx-render .rev-format-change {
+  border-bottom-color: var(--author-tone, var(--border-strong));
+}
+
+.document-reader:not(.blackline-reader) .docx-render :is(.rev-row-ins, .rev-row-del, .rev-cell-ins, .rev-cell-del) {
+  background-color: color-mix(in srgb, var(--author-tone, var(--muted)) 10%, transparent);
+}
+
+.document-reader:not(.blackline-reader) .docx-render :is(.rev-row-format-change, .rev-cell-format-change) {
+  outline-color: var(--author-tone, var(--border-strong));
+}
+
 /* Comments beside the page, as Word's comment cards: one card per thread in
    the margin, the author's initials in the colour the Tracked changes panel
    gives them, replies inside the card, resolved threads greyed with a label.

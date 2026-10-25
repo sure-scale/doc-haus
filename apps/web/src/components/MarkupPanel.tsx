@@ -204,6 +204,14 @@ function documentOrder(markup: DocumentMarkup): Item[] {
 }
 
 const threadAuthors = (thread: Thread) => [thread.root.author, ...thread.replies.map((reply) => reply.author)]
+
+// Every author in the file, in the order their changes and comments first
+// appear in it (a paragraph's changes before its comments), which gives each
+// their colour here, on the page and in a clause's change history.
+export function markupAuthors(markup: DocumentMarkup) {
+  return documentOrder(markup).flatMap((item) => (item.type === "change" ? [item.revision.author] : threadAuthors(item.thread)))
+}
+
 const decidable = (revision: MarkupRevision) => revision.status === "supported"
 const authorName = (name: string) => name.trim() || "No author named"
 
@@ -757,8 +765,7 @@ export default function MarkupPanel({
 
   // Each author's colour, in the order they first appear in the file, as the
   // page colours their changes and comments; the lawyer's is the brand's.
-  const tone = authorTones([...markup.revisions.map((revision) => revision.author), ...markup.comments.map((comment) => comment.author)],
-    (name) => Boolean(savedName && nameKey(name) === nameKey(savedName)) || isYou(name))
+  const tone = authorTones(markupAuthors(markup), (name) => Boolean(savedName && nameKey(name) === nameKey(savedName)) || isYou(name))
 
   // What each card shows as its state, and the filters that read it.
   const stateOf = (revision: MarkupRevision): ChangeState => (!decidable(revision) ? "word" : decisionOf(revision) ?? "undecided")

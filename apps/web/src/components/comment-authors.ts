@@ -38,12 +38,28 @@ export const toneClass = (tone: Tone) => `tone-${tone === "self" ? "self" : tone
 // The colour itself, for a style property.
 export const toneColour = (tone: Tone) => (tone === "self" ? "var(--accent)" : `var(--author-${tone + 1})`)
 
-// Each tracked insertion and deletion in a rendered page in its author's
-// colour (styles.css reads --author-tone). The page's authors follow those in
-// `names`, so the file's authors keep the panel's colours.
+const authorOf = (node: HTMLElement) => (node.dataset.author ?? "").replace(STRIP_RE, "")
+
+// Every author a rendered page names, in the order their changes and comments
+// first appear in its text: a comment where its text (or marker) is, not
+// where its card sits, so the order holds however the cards are laid out.
+function pageAuthors(root: HTMLElement) {
+  const notes = new Map([...root.querySelectorAll<HTMLElement>(".comment-margin-note")].map((note) => [note.dataset.commentId ?? "", authorOf(note)]))
+  const inText = [...root.querySelectorAll<HTMLElement>("[data-author]:not(.comment-margin-note), .comment-highlight[data-comment-id], a.comment-marker")].map((node) =>
+    node.dataset.author !== undefined ? authorOf(node) : notes.get(node.dataset.commentId ?? node.id.replace(/^comment-ref-/, "")))
+  return [...inText, ...notes.values()].filter((name) => name !== undefined)
+}
+
+// Each author's colour on a rendered page, one list for its tracked changes
+// and its comment cards: the authors in `names` (the file's own, in document
+// order, as the panel colours them) first, then any other the page names.
+export const pageTones = (root: HTMLElement, names: string[] = [], self?: (author: string) => boolean) =>
+  authorTones([...names, ...pageAuthors(root)], self)
+
+// Each tracked change in a rendered page in its author's colour: an insertion
+// or deletion, a whole paragraph, row or cell, a formatting change
+// (styles.css reads --author-tone).
 export function colourChanges(root: HTMLElement, names: string[], self?: (author: string) => boolean) {
-  const marks = [...root.querySelectorAll<HTMLElement>(":is(ins, del)[data-author]")]
-  const authorOf = (mark: HTMLElement) => mark.dataset.author!.replace(STRIP_RE, "")
-  const tone = authorTones([...names, ...marks.map(authorOf)], self)
-  for (const mark of marks) mark.style.setProperty("--author-tone", toneColour(tone(authorOf(mark))))
+  const tone = pageTones(root, names, self)
+  for (const mark of root.querySelectorAll<HTMLElement>("[data-author]:not(.comment-margin-note)")) mark.style.setProperty("--author-tone", toneColour(tone(authorOf(mark))))
 }

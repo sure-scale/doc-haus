@@ -25,7 +25,7 @@ import { formatDateTime } from "../lib/format"
 import { ModalClose } from "./ModalHeader"
 import { CompareIcon } from "./CompareDialog"
 import VersionsPanel, { saveVersionFile, unavailableReason, useDocumentVersions, versionOrigin } from "./DocumentVersions"
-import MarkupPanel, { ConsistencyNotice, markupCount } from "./MarkupPanel"
+import MarkupPanel, { ConsistencyNotice, markupAuthors, markupCount } from "./MarkupPanel"
 import ChangeTimeline from "./ChangeTimeline"
 import { citationPassage, focusCitationPassage, type CitationFocus } from "./citation-target"
 import { decorateMarkers, markerSummary, type MarkerCounts } from "./document-markers"
@@ -332,11 +332,11 @@ function WordDocumentViewer({
     const own = new Set(ownNames.map(nameKey))
     return (author: string) => own.has(nameKey(author))
   }, [ownNames])
-  // Each author's colour, as Word colours changes by author: the
-  // working file's authors in the order its markup lists them, so the page,
-  // the panel and the change history agree; an older version's in the order
-  // its page names them.
-  const authors = useMemo(() => (!shown && markup.data ? [...markup.data.revisions.map((revision) => revision.author), ...markup.data.comments.map((comment) => comment.author)] : []), [shown, markup.data])
+  // Each author's colour, as Word colours changes by author: the working
+  // file's authors in the order they first appear in its markup, so the page,
+  // the panel and the change history agree; without the markup (an older
+  // version), in the order they first appear on the page.
+  const authors = useMemo(() => (!shown && markup.data ? markupAuthors(markup.data) : []), [shown, markup.data])
   const tone = useMemo(() => authorTones(authors, self), [authors, self])
 
   // A PDF's older version is read once and shown from memory, so a copy that

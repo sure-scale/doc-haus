@@ -1,8 +1,8 @@
 import { STRIP_RE } from "../../../../dochaus/lib/untrusted-text"
 import type { DocumentMarkup } from "../api/ingest/markup"
 import { formatDateTime } from "../lib/format"
-import { authorTones, initialsOf, toneClass, toneColour } from "./comment-authors"
-import { flagNotes } from "./MarkupPanel"
+import { initialsOf, pageTones, toneClass, toneColour } from "./comment-authors"
+import { flagNotes, markupAuthors } from "./MarkupPanel"
 
 // Word's comment cards for the comments Docxodus sets beside the page. Its
 // notes are restyled in styles.css; this pass adds what CSS cannot: each
@@ -17,9 +17,9 @@ import { flagNotes } from "./MarkupPanel"
 // Everything it adds or moves is undone by the function it returns.
 
 export type CommentDecoration = {
-  // Every author the panel colours (its revisions' and comments' authors, in
-  // its order), so a name has the same colour in both. Without it, the
-  // authors named in the rendered page.
+  // Every author the panel colours, in its order, so a name has the same
+  // colour in both; the page's other authors follow, as its tracked changes
+  // are coloured.
   authors?: string[]
   // Whether a name is the lawyer's own, shown in the brand colour.
   self?: (author: string) => boolean
@@ -47,7 +47,7 @@ export function commentDecoration(markup: DocumentMarkup | undefined, self: ((au
   if (!markup) return { self }
   const body = markup.comments.filter((comment) => !comment.scope)
   return {
-    authors: [...markup.revisions.map((revision) => revision.author), ...markup.comments.map((comment) => comment.author)],
+    authors: markupAuthors(markup),
     self,
     initials: new Map(body.map((comment) => [String(comment.id), comment.initials])),
     flags: new Map(body.flatMap((comment) => {
@@ -102,10 +102,8 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
   }
   const authorOf = (note: HTMLElement) => visible(note.dataset.author ?? "").trim()
 
-  // Colours exactly as the panel's: its list of names when given, else every
-  // author the page names (tracked changes and comments alike).
-  const names = decoration.authors ?? [...root.querySelectorAll<HTMLElement>("[data-author]")].map((node) => visible(node.dataset.author ?? ""))
-  const toneFor = authorTones(names, decoration.self)
+  // Colours exactly as the panel's and the page's tracked changes.
+  const toneFor = pageTones(root, decoration.authors, decoration.self)
   const toneVariable = (author: string) => toneColour(toneFor(author))
   const rootOf = (note: Element) => (note.parentElement?.closest<HTMLElement>(".comment-margin-note") ?? note) as HTMLElement
   const byId = new Map(all.map((note) => [note.dataset.commentId ?? "", note]))
