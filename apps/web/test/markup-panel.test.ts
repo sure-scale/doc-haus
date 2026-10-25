@@ -159,13 +159,13 @@ test("a detached comment shows why it takes no reply, offers no draft and keeps 
 })
 
 test("each author keeps one colour and Word-style initials, told apart from the file's other authors", () => {
-  const names = ["Avery Lindqvist", "Morgan Okafor", "Sam Lee", "Dana Wu", "Chris Park", "Robin Tse"]
-  const tones = authorTones(names)
-  // Six authors take the six colours; the order they are met in does not matter.
-  expect(new Set(tones.values()).size).toBe(6)
-  expect(authorTones([...names].reverse())).toEqual(tones)
+  const names = ["Avery Lindqvist", "Morgan Okafor", "Avery Lindqvist", "Synthetic Reviewing Lawyer", "Sam Lee", "Dana Wu", "Chris Park", "Robin Tse", "Jo Park"]
+  const tone = authorTones(names, (name) => name === "Synthetic Reviewing Lawyer")
+  // As Word colours by author: in the order authors first appear, the lawyer's
+  // own in the brand colour without taking a reviewer's, then round again.
+  expect(names.map(tone)).toEqual([0, 1, 0, "self", 2, 3, 4, 5, 0])
   // A name repeated with other spacing or case is the same author.
-  expect(authorTones([" avery lindqvist", "Avery Lindqvist"]).size).toBe(1)
+  expect(authorTones(["Morgan Okafor", " avery lindqvist", "Avery Lindqvist"])("AVERY LINDQVIST")).toBe(1)
   expect(initialsOf("Avery Lindqvist", null)).toBe("AL")
   expect(initialsOf("Morgan Okafor", "mo")).toBe("MO")
   expect(initialsOf("Synthetic Reviewing Lawyer", "a long given value")).toBe("SL")

@@ -1,7 +1,7 @@
 import { STRIP_RE } from "../../../../dochaus/lib/untrusted-text"
 import type { DocumentMarkup } from "../api/ingest/markup"
 import { formatDateTime } from "../lib/format"
-import { authorTones, initialsOf, nameKey, toneClass, toneOf } from "./comment-authors"
+import { authorTones, initialsOf, toneClass, toneColour } from "./comment-authors"
 import { flagNotes } from "./MarkupPanel"
 
 // Word's comment cards for the comments Docxodus sets beside the page. Its
@@ -21,8 +21,8 @@ export type CommentDecoration = {
   // its order), so a name has the same colour in both. Without it, the
   // authors named in the rendered page.
   authors?: string[]
-  // The lawyer's own name, shown in the brand colour.
-  self?: string | null
+  // Whether a name is the lawyer's own, shown in the brand colour.
+  self?: (author: string) => boolean
   // Word's initials and screening notes by comment id, from the file's markup.
   initials?: Map<string, string | null>
   flags?: Map<string, string[]>
@@ -43,7 +43,7 @@ const visible = (text: string) => text.replace(STRIP_RE, "")
 
 // What the panel knows about the comments in the working file. An older
 // version's comments may carry other ids, so it gets none of this.
-export function commentDecoration(markup: DocumentMarkup | undefined, self: string | null | undefined): CommentDecoration {
+export function commentDecoration(markup: DocumentMarkup | undefined, self: ((author: string) => boolean) | undefined): CommentDecoration {
   if (!markup) return { self }
   const body = markup.comments.filter((comment) => !comment.scope)
   return {
@@ -105,13 +105,8 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
   // Colours exactly as the panel's: its list of names when given, else every
   // author the page names (tracked changes and comments alike).
   const names = decoration.authors ?? [...root.querySelectorAll<HTMLElement>("[data-author]")].map((node) => visible(node.dataset.author ?? ""))
-  const tones = authorTones(names)
-  const self = decoration.self?.trim()
-  const toneFor = (author: string) => toneOf(tones, author, self ? (name) => nameKey(name) === nameKey(self) : undefined)
-  const toneVariable = (author: string) => {
-    const tone = toneFor(author)
-    return tone === "self" ? "var(--accent)" : `var(--author-${tone + 1})`
-  }
+  const toneFor = authorTones(names, decoration.self)
+  const toneVariable = (author: string) => toneColour(toneFor(author))
   const rootOf = (note: Element) => (note.parentElement?.closest<HTMLElement>(".comment-margin-note") ?? note) as HTMLElement
   const byId = new Map(all.map((note) => [note.dataset.commentId ?? "", note]))
   const named = (note: HTMLElement) => {

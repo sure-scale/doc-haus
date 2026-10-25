@@ -2,10 +2,11 @@
 // Mounts the real DocumentViewer on the Docxodus WASM runtime with the synthetic counterparty markup; only ingest HTTP is mocked.
 // While the Tracked changes panel lists the comments, the page shows no cards, only a comment button by each commented
 // paragraph, and a button or the commented text opens and focuses its thread in the panel. With the panel closed the
-// comments beside the page are Word-style cards: each author's initials and colour match the panel's, a resolved thread
-// says so, a screened comment is flagged, a card and its text light up together, each card sits level with its text
-// (the next just below it when they would overlap, following the text as the page reflows), and on a narrow page each
-// card sits under its paragraph (once) and goes back when the page widens, with citations still found across it.
+// comments beside the page are Word-style cards: each author's initials and colour match the panel's (as do the colours of
+// their tracked changes on the page), a resolved thread says so, a screened comment is flagged, a card and its text light
+// up together, each card sits level with its text (the next just below it when they would overlap, following the text as
+// the page reflows), and on a narrow page each card sits under its paragraph (once) and goes back when the page widens,
+// with citations still found across it.
 // Small synthetic files then cover the other side's tricks and crowded pages: a card shows no hidden character its
 // flag says was removed, a bookmark named like a comment's marker moves nothing, several buttons on one short clause
 // or in a table cell can each be clicked and cover no text, a comment with no range leaves no invisible Tab stop, and
@@ -180,6 +181,12 @@ try {
   assert.equal(margin.length, 4, "a card for each root comment and the reply")
   for (const byline of margin) assert.ok(panel.has(byline), `the panel shows ${byline} too (panel: ${[...panel].join(", ")})`)
   assert.ok(margin.includes(`${LAWYER}: markup-avatar tone-self MOK`), "the lawyer's own comments are in the brand colour, with Word's initials")
+  // Each author's insertions and deletions on the page are in the colour of their initials in the panel (moves keep
+  // a colour of their own, as in Word).
+  const changeColours = await page.locator(".docx-render :is(ins, del)[data-author]:not(.rev-move-from, .rev-move-to)").evaluateAll(nodes => [...new Set(nodes.map(node => `${node.getAttribute("data-author")}: ${getComputedStyle(node).color}`))].sort())
+  const initialColours = await page.locator("#document-markup .markup-thread .markup-byline").evaluateAll(nodes => [...new Set(nodes.map(node => `${node.querySelector(".change-author")?.textContent}: ${getComputedStyle(node.querySelector(".markup-avatar")!).backgroundColor}`))].sort())
+  assert.deepEqual(changeColours, initialColours, "each author's changes are in the colour of their initials")
+  assert.equal(new Set(changeColours.map(entry => entry.split(": ")[1])).size, 2, "two authors, two colours")
   assert.equal(await note(page, 1).locator(".markup-avatar").getAttribute("class").then(value => value?.includes("is-small")), true, "a reply's initials are small")
   assert.equal(await note(page, 0).locator(":scope > .comment-margin-note-header > .markup-avatar").getAttribute("class").then(value => value?.includes("is-small")), false)
   assert.match(await note(page, 0).locator(":scope > .comment-margin-note-header time").textContent() ?? "", /^20 Oct 2026, \d\d:\d\d$/)

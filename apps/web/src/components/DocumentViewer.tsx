@@ -30,15 +30,17 @@ import ChangeTimeline from "./ChangeTimeline"
 import { citationPassage, focusCitationPassage, type CitationFocus } from "./citation-target"
 import { decorateMarkers, markerSummary, type MarkerCounts } from "./document-markers"
 import { commentDecoration, decorateComments } from "./document-comments"
+import { authorTones, colourChanges, nameKey } from "./comment-authors"
 import { removeUnsafeLinkTargets } from "./docx-links"
 import { useToast } from "./Toast"
 import useModalFocus from "./useModalFocus"
 import backdropClose from "./backdropClose"
 import { withSafeStyleValues } from "./docx-style-values"
 
-// How a Word file with tracked changes is painted: insertions green, deletions
-// struck red, moves, headers and footers, comments in the margin. Shared with
-// the blackline view so both read the same way.
+// How a Word file with tracked changes is painted: insertions underlined and
+// deletions struck through in their author's colour (styles.css), moves,
+// headers and footers, comments in the margin. The blackline view starts from
+// these and paints its changes as comparisons do.
 export const DOCX_RENDER_OPTIONS: ConversionOptions = {
   renderTrackedChanges: true,
   showDeletedContent: true,
@@ -91,10 +93,11 @@ function useVersionsList(matterId: string, name: string, reload: number, initial
 
 // In-browser redline viewer. Fetches the matter's document with every pending
 // redline applied as native tracked changes and converts it to HTML with the WASM
-// runtime — insertions render green, deletions struck red, the redline lawyers
-// expect. The change list alongside it accepts or rejects each proposal, one block
-// at a time or the whole document at once. Bytes convert client-side, so the
-// document never leaves the browser for a third-party service.
+// runtime — insertions underlined and deletions struck through in each
+// author's colour, the redline lawyers expect. The change list alongside it
+// accepts or rejects each proposal, one block at a time or the whole document
+// at once. Bytes convert client-side, so the document never leaves the browser
+// for a third-party service.
 function WordDocumentViewer({
   matterId,
   name,
@@ -153,6 +156,10 @@ function WordDocumentViewer({
   // The name doc.haus's changes carry: the saved attorney, else the firm, else
   // doc.haus, as ingest records it; null when the settings could not be read.
   const [reviser,setReviser] = useState<string | null>()
+  // The names the lawyer's own changes and comments carry, as the Tracked
+  // changes panel counts them: the saved attorney, the firm and doc.haus;
+  // none when the settings could not be read.
+  const [ownNames,setOwnNames] = useState<string[]>([])
   // Bumped after an accept/reject resolves so the load effect re-runs — the
   // document re-renders and the change list shrinks without duplicating fetch logic.
   const [reload, setReload] = useState(0)
@@ -284,19 +291,37 @@ function WordDocumentViewer({
 
   // Read once the file's tracked changes meet doc.haus's: the request opens, or
   // proposals are listed. Read then, not on opening, so a name just saved in
-  // Settings shows; without it the lines name no one. Comments on the page
-  // need it too, to show the lawyer's own in the brand colour, and read it
-  // again after each save, which may have recorded a name.
-  const reviserNeeded = (Boolean(markup.data?.revisions.length) && (editing || redlines.length > 0)) || /class="[^"]*\bcomment-margin-note\b/.test(html ?? "")
+  // Settings shows; without it the lines name no one. Tracked changes and
+  // comments on the page need it too, to show the lawyer's own in the brand
+  // colour, and read it again after each save, which may have recorded a name.
+  const reviserNeeded = (Boolean(markup.data?.revisions.length) && (editing || redlines.length > 0)) || /class="[^"]*\b(comment-margin-note|rev-ins|rev-del)\b/.test(html ?? "")
   useEffect(() => {
     if (!reviserNeeded) return
     let cancelled = false
     getPreferences().then(
-      (prefs) => !cancelled && setReviser(prefs.attorney?.trim() || prefs.firm?.trim() || "doc.haus"),
-      () => !cancelled && setReviser(null),
+      (prefs) => {
+        if (cancelled) return
+        setReviser(prefs.attorney?.trim() || prefs.firm?.trim() || "doc.haus")
+        setOwnNames([prefs.attorney, prefs.firm, "doc.haus"].flatMap((own) => own?.trim() || []))
+      },
+      () => {
+        if (cancelled) return
+        setReviser(null)
+        setOwnNames([])
+      },
     )
     return () => { cancelled = true }
   }, [reviserNeeded, reload])
+  const self = useMemo(() => {
+    const own = new Set(ownNames.map(nameKey))
+    return (author: string) => own.has(nameKey(author))
+  }, [ownNames])
+  // Each author's colour, as Word colours changes by author: the
+  // working file's authors in the order its markup lists them, so the page,
+  // the panel and the change history agree; an older version's in the order
+  // its page names them.
+  const authors = useMemo(() => (!shown && markup.data ? [...markup.data.revisions.map((revision) => revision.author), ...markup.data.comments.map((comment) => comment.author)] : []), [shown, markup.data])
+  const tone = useMemo(() => authorTones(authors, self), [authors, self])
 
   // A PDF's older version is read once and shown from memory, so a copy that
   // cannot be served is reported here rather than as an error page in the frame.
@@ -475,12 +500,18 @@ function WordDocumentViewer({
   // paragraph instead, which opens its thread there.
   const commentPane = markupShown && Boolean(markup.data)
   const comments = useMemo(() => ({
-    ...commentDecoration(shown ? undefined : markup.data, reviser),
+    ...commentDecoration(shown ? undefined : markup.data, self),
     onReveal: commentPane ? (thread: number) => setRevealComment({ thread, seq: ++revealSeq.current }) : undefined,
-  }), [shown, markup.data, reviser, commentPane])
+  }), [shown, markup.data, self, commentPane])
   useEffect(() => {
     if (html && documentRef.current) return decorateComments(documentRef.current, comments)
   }, [html, comments])
+
+  // Each tracked change in its author's colour, once the lawyer's own names
+  // are read, so no author's colour moves when they arrive.
+  useEffect(() => {
+    if (html && documentRef.current && reviser !== undefined) colourChanges(documentRef.current, authors, self)
+  }, [html, authors, self, reviser])
 
   useEffect(() => {
     setPassage(undefined)
@@ -738,7 +769,7 @@ function WordDocumentViewer({
               </div>
             )}
             {documentPreview}
-            <ChangeTimeline root={documentRef} html={html} markup={!shown && !markupPending && !markup.failed ? markup.data : undefined} revisions={!revisionNotice && !redlines.some((row) => !row.stale)} />
+            <ChangeTimeline root={documentRef} html={html} markup={!shown && !markupPending && !markup.failed ? markup.data : undefined} revisions={!revisionNotice && !redlines.some((row) => !row.stale)} tone={tone} />
           </div>
           {!narrow && versionsPanel}
           {!narrow && markupPanel}

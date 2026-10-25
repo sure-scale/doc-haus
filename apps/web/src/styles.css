@@ -3526,24 +3526,33 @@ button.linklike:hover:not(:disabled) {
   font-size: 13px;
 }
 
-/* Tracked changes: insertion as a green highlighter pass, deletion struck quiet.
-   Docxodus emits <ins>/<del> for revisions; the class forms cover prefixed output. */
-.docx-render ins,
-.docx-render .docx-insertion {
-  color: #1f5040;
-  background: linear-gradient(transparent 62%, rgba(45, 74, 62, 0.16) 62%);
-  text-decoration: underline;
-  text-decoration-color: rgba(45, 74, 62, 0.45);
+/* Tracked changes as Word marks them by author: insertions underlined and
+   deletions struck through, both in the colour of the author who made them
+   (--author-tone, which colourChanges in comment-authors.ts sets on each
+   mark), with no fill, so the colour says who and the line says what. A run's
+   own colour gives way to its author's, as in Word. These rules outrank the
+   stylesheet Docxodus writes after this one; moves keep its colours, and the
+   open clause's tint (ChangeTimeline.css) still shows. */
+.docx-render :is(ins.rev-ins, del.rev-del):not(.rev-move-from, .rev-move-to) {
+  color: var(--author-tone, var(--text));
   text-decoration-thickness: 1px;
+}
+
+.docx-render :is(ins.rev-ins, del.rev-del):not(.rev-move-from, .rev-move-to, .is-timeline-active) {
+  background-color: transparent;
+}
+
+.docx-render :is(ins.rev-ins, del.rev-del):not(.rev-move-from, .rev-move-to) span[class^="docx-"] {
+  color: inherit;
+}
+
+.docx-render ins.rev-ins:not(.rev-move-to) {
+  text-decoration-line: underline;
   text-underline-offset: 2px;
 }
 
-.docx-render del,
-.docx-render .docx-deletion {
-  color: var(--danger);
-  text-decoration: line-through;
-  text-decoration-thickness: 1px;
-  opacity: 0.85;
+.docx-render del.rev-del:not(.rev-move-from) {
+  text-decoration-line: line-through;
 }
 
 /* Comments beside the page, as Word's comment cards: one card per thread in

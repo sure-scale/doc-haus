@@ -17,7 +17,7 @@ import {
 import { getPreferences, savePreferences } from "../api/ingest/preferences"
 import { readBrowserJSON, readBrowserValue, removeBrowserValue, writeBrowserValue } from "../browser-storage"
 import { formatDateTime } from "../lib/format"
-import { authorTones, initialsOf, nameKey, toneClass, toneOf } from "./comment-authors"
+import { authorTones, initialsOf, nameKey, toneClass, type Tone } from "./comment-authors"
 import { useToast } from "./Toast"
 import { Tooltip } from "./Tooltip"
 
@@ -142,8 +142,6 @@ const POOL = 3
 const PLACEHOLDER = /\[\[[\s\S]*?\]\]/
 const REPLY_MAX = 4000
 const STEER_MAX = 1000
-// Author colours (design-system.css --author-1 … --author-6), as Word gives
-// each reviewer one.
 
 // Comments grouped into threads: each reply under the comment its chain starts
 // from, in the file's order. A reply whose parent is missing stands alone.
@@ -305,7 +303,7 @@ const addressedToAI = (comment: MarkupComment) =>
 const NOT_DRAFTED = "This comment contains instructions addressed to an AI, so doc.haus does not draft a reply to it. You can write the reply yourself."
 
 // An author's colour anywhere in the panel; the lawyer's own is the brand's.
-const ToneContext = createContext<(name: string) => number | "self">(() => 0)
+const ToneContext = createContext<(name: string) => Tone>(() => 0)
 // The number of the version on screen, which a run note from another version names.
 const VersionContext = createContext<number | undefined>(undefined)
 
@@ -765,9 +763,10 @@ export default function MarkupPanel({
   const canApply = !blocked && !busy && !loading && attorney !== undefined
   const proposalsFirst = proposalsPending > 0 || refusal?.code === "proposals_pending"
 
-  // Each author's colour, told apart within this file; the lawyer's is the brand's.
-  const tones = useMemo(() => authorTones([...markup.revisions.map((revision) => revision.author), ...markup.comments.map((comment) => comment.author)]), [markup])
-  const tone = (author: string) => toneOf(tones, author, (name) => Boolean(savedName && nameKey(name) === nameKey(savedName)) || isYou(name))
+  // Each author's colour, in the order they first appear in the file, as the
+  // page colours their changes and comments; the lawyer's is the brand's.
+  const tone = authorTones([...markup.revisions.map((revision) => revision.author), ...markup.comments.map((comment) => comment.author)],
+    (name) => Boolean(savedName && nameKey(name) === nameKey(savedName)) || isYou(name))
 
   // What each card shows as its state, and the filters that read it.
   const stateOf = (revision: MarkupRevision): ChangeState => (!decidable(revision) ? "word" : decisionOf(revision) ?? "undecided")
