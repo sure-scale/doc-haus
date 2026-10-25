@@ -5,7 +5,8 @@
 // source and the same bytes as a generated deliverable, and drives the viewer's
 // "Their changes" panel: filter to one reviewer, set the shown changes to
 // Reject, accept the other reviewer's replace, keep the drafts over a reload,
-// give the attorney name once, and apply. Nothing reaches a model: the source's
+// give the attorney name once, and apply; then, at phone width, the panel sits
+// above the page with Apply in reach. Nothing reaches a model: the source's
 // embeddings use the local model (DOCHAUS_MODEL_CACHE_DIR, else the per-user
 // cache), browser engine traffic is intercepted and unexpected requests fail
 // the run. Screenshots and the JSON summary go beneath DOCHAUS_EVIDENCE_DIR.
@@ -190,7 +191,7 @@ try {
 
   await step("2 the panel opens by default with one card per change and comment thread, in plain words", async () => {
     await openDocument(NAME)
-    await expect(toggle).toHaveText("Their changes (13)")
+    await expect(toggle).toHaveAccessibleName("Their changes (13)")
     await expect(toggle).toHaveAttribute("aria-expanded", "true")
     await expect(changes).toHaveCount(10)
     await expect(threads).toHaveCount(3)
@@ -277,7 +278,7 @@ try {
     expect(sent.decisions.map(row => row.decision).sort()).toEqual([...Array(2).fill("accept"), ...Array(3).fill("hold"), ...Array(5).fill("reject")])
     await expect(page.getByText(/^Saved as version 2: 2 accepted, 5 rejected, 3 held\.$/)).toBeVisible()
     // The panel reads the new version: Avery's three held changes and every comment remain.
-    await expect(toggle).toHaveText("Their changes (6)", { timeout: 30_000 })
+    await expect(toggle).toHaveAccessibleName("Their changes (6)", { timeout: 30_000 })
     await expect(changes).toHaveCount(3)
     await expect(threads).toHaveCount(3)
     for (let index = 0; index < 3; index++) {
@@ -306,7 +307,8 @@ try {
     const newest = dialog.locator(".versions-list > li").first()
     await expect(newest).toContainText("Version 2")
     await expect(newest).toContainText("Current")
-    await expect(newest.locator(".version-meta")).toHaveText(`Changes accepted · by ${LAWYER}`)
+    // Decided from the panel, not doc.haus's proposals accepted: 5 of these were rejected.
+    await expect(newest.locator(".version-meta")).toHaveText(`Their changes decided · by ${LAWYER}`)
     const listed = await (await api(`/matters/${file.matter}/documents/versions?name=${encodeURIComponent(NAME)}`)).json() as { versions: { number: number; origin: string; actor: string; sha256: string; current: boolean }[] }
     expect(listed.versions.map(row => [row.number, row.origin, row.actor, row.current])).toEqual([[2, "accept", LAWYER, true], [1, "upload", expect.any(String), false]])
     expect(listed.versions[0]!.sha256).toBe(hashes.applied)
@@ -329,6 +331,37 @@ try {
     await expect(other.getByRole("button", { name: /^Their changes/ })).toHaveCount(0)
     await expect(other.locator("#document-markup")).toHaveCount(0)
     await shot("08-deliverable")
+  })
+
+  await step("9 at phone width the panel sits above the page, the toggle keeps its count and Apply is in reach", async () => {
+    await page.setViewportSize({ width: 400, height: 860 })
+    // The rail starts collapsed at this width, as on a first visit from a phone.
+    await page.evaluate(() => localStorage.setItem("dh.sidebar", "1"))
+    const phone = await openDocument(NAME)
+    const phonePanel = phone.locator("#document-markup")
+    const phoneToggle = phone.locator(".viewer-markup-toggle")
+    const phonePage = phone.locator(".docx-render:not(.docx-skeleton)")
+    await expect(phonePanel).toBeInViewport()
+    await expect(phoneToggle).toHaveAttribute("aria-expanded", "true")
+    await expect(phoneToggle).toHaveAccessibleName("Their changes (6)")
+    await expect(phoneToggle.locator(".viewer-markup-badge")).toBeVisible()
+    await expect(phoneToggle.locator(".viewer-markup-badge")).toHaveText("6")
+    const [panelBox, pageBox] = [await phonePanel.boundingBox(), await phonePage.boundingBox()]
+    expect(panelBox!.y + panelBox!.height).toBeLessThanOrEqual(pageBox!.y)
+    // The comments follow the text rather than squeezing it to a few words a line.
+    expect(await phonePage.locator(".comment-margin-content").evaluate(node => node.getBoundingClientRect().width)).toBeGreaterThan(250)
+    await shot("09-phone-panel")
+    const apply = phonePanel.getByRole("button", { name: /^Apply/ })
+    await apply.scrollIntoViewIfNeeded()
+    await expect(apply).toBeInViewport()
+    // In view and not under the panel's pinned head.
+    expect(await apply.evaluate(node => {
+      const box = node.getBoundingClientRect()
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+      return Boolean(hit && node.contains(hit))
+    })).toBe(true)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1)
+    await shot("09-phone-apply")
   })
 
   await step("no page errors or unexpected requests", async () => {

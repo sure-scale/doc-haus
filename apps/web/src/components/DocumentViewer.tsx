@@ -19,7 +19,7 @@ import {
 import { convertPdfToDocx, documentContentUrl, fetchDocumentText, locatePdfPassage, matterDocumentKind, type PdfPassagePage } from "../api/ingest/documents"
 import type { CompareParams } from "../api/ingest/compare"
 import { fetchVersionBytes, type DocumentVersion, type RestoreResult } from "../api/ingest/versions"
-import { fetchDocumentMarkup, type DocumentMarkup } from "../api/ingest/markup"
+import { fetchDocumentMarkup, MarkupRefusedError, type DocumentMarkup } from "../api/ingest/markup"
 import { formatDateTime } from "../lib/format"
 import { ModalClose } from "./ModalHeader"
 import { CompareIcon } from "./CompareDialog"
@@ -53,8 +53,8 @@ export default function DocumentViewer(props: Parameters<typeof WordDocumentView
   return <WordDocumentViewer {...props} />
 }
 
-// On a narrow screen the versions list sits above the page, so it comes first
-// in the markup too and the tab order follows what the lawyer sees.
+// On a narrow screen the versions list and their changes sit above the page, so
+// they come first in the markup too and the tab order follows what the lawyer sees.
 const NARROW = "(max-width: 720px)"
 function useNarrow() {
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && Boolean(window.matchMedia?.(NARROW).matches))
@@ -171,12 +171,21 @@ function WordDocumentViewer({
   const markUnavailable = (id: string, reason: string) => setUnavailable((current) => ({ ...current, [id]: reason }))
   // The other side's tracked changes and comments in an uploaded Word source
   // (#200), read again with the document. The route refuses anything else (a
-  // generated deliverable), which leaves the toggle out. The last reading stays
-  // shown while a newer one loads.
+  // generated deliverable or a file that is not Word), which leaves the toggle
+  // out. Any other failure (an unreadable file, ingest out of reach) says so with
+  // a Retry. The last reading stays shown while a newer one loads, and after a
+  // failed one, so an open panel never vanishes; it cannot be applied until a
+  // fresh reading arrives.
   const isDocx = name.toLowerCase().endsWith(".docx")
-  const [markup, setMarkup] = useState<{ data?: DocumentMarkup; reload?: number }>({})
+  const [markupAttempt, setMarkupAttempt] = useState(0)
+  const markupKey = `${reload}.${markupAttempt}`
+  const [markup, setMarkup] = useState<{ data?: DocumentMarkup; key?: string; failed?: string }>({})
+  const markupPending = markup.key !== markupKey
   const [markupOpen, setMarkupOpen] = useState(false)
   const markupDefaulted = useRef(false)
+  // Set by the toggle, so opening the panel on a narrow screen scrolls to it.
+  const revealMarkup = useRef(false)
+  const markupWasShown = useRef(false)
   const markupItems = markup.data ? markupCount(markup.data) : 0
   // Keep React from resetting the HTML when passage status or viewer controls
   // re-render. The citation effect owns only its temporary text highlights.
@@ -226,22 +235,32 @@ function WordDocumentViewer({
   useEffect(() => {
     if (!isDocx) return
     let cancelled = false
+    const key = markupKey
     fetchDocumentMarkup(matterId, name).then(
-      (data) => !cancelled && setMarkup({ data, reload }),
-      () => !cancelled && setMarkup({ reload }),
+      (data) => !cancelled && setMarkup({ data, key }),
+      (cause) => {
+        if (cancelled) return
+        // Not covered (400 not Word, 404 not an uploaded source): nothing to offer, nothing to say.
+        if (cause instanceof MarkupRefusedError && (cause.status === 400 || cause.status === 404)) return setMarkup({ key })
+        const failed = cause instanceof MarkupRefusedError && cause.status === 422
+          ? "Their changes in this file could not be read. Resolve them in Word, or save it in Word and upload it again."
+          : "Their changes in this file could not be loaded."
+        setMarkup((current) => ({ data: current.data, key, failed }))
+      },
     )
     return () => {
       cancelled = true
     }
-  }, [isDocx, matterId, name, reload])
+  }, [isDocx, matterId, name, markupKey])
 
   // Their changes open by default once, when the file has some and doc.haus
-  // has no proposals of its own waiting on it.
+  // has no proposals of its own waiting on it. A failed first reading waits
+  // for its Retry.
   useEffect(() => {
-    if (markupDefaulted.current || !html || shown || markup.reload === undefined) return
+    if (markupDefaulted.current || !html || shown || markup.key === undefined || (markup.failed && !markup.data)) return
     markupDefaulted.current = true
     if (markupItems > 0 && !redlines.length && !versionsOpen) setMarkupOpen(true)
-  }, [html, shown, markup.reload, markupItems, redlines.length, versionsOpen])
+  }, [html, shown, markup.key, markup.failed, markup.data, markupItems, redlines.length, versionsOpen])
 
   // A PDF's older version is read once and shown from memory, so a copy that
   // cannot be served is reported here rather than as an error page in the frame.
@@ -330,6 +349,7 @@ function WordDocumentViewer({
   const markupToggle = !shown && markupItems > 0 && (
     <MarkupToggle open={markupShown} count={markupItems} onToggle={() => {
       if (!markupShown && versionsOpen) toggleVersions()
+      revealMarkup.current = !markupShown
       setMarkupOpen(!markupShown)
     }} />
   )
@@ -338,15 +358,45 @@ function WordDocumentViewer({
       matterId={matterId}
       name={name}
       markup={markup.data}
-      loading={markup.reload !== reload}
+      loading={markupPending || markup.failed !== undefined}
       proposalsPending={redlines.length}
       onApplied={() => {
         setReload((value) => value + 1)
         onChanged?.()
       }}
       onRefetch={() => setReload((value) => value + 1)}
+      // doc.haus's own proposals come first: closing this panel shows them.
+      onShowProposals={() => setMarkupOpen(false)}
     />
   )
+  // Where the toggle or the panel would be: above the page on a narrow screen,
+  // with the page's other notices otherwise.
+  const markupNotice = !shown && markup.failed && (
+    <p role="status" className="markup-read-status">
+      {markup.failed}{" "}
+      <button type="button" className="linklike" disabled={markupPending} onClick={() => setMarkupAttempt((value) => value + 1)}>
+        {markupPending ? "Retrying…" : "Retry"}
+      </button>
+    </p>
+  )
+
+  // Opened from the toggle on a narrow screen, the panel above the page is
+  // scrolled into view; the page may be scrolled well past it.
+  useEffect(() => {
+    if (!markupShown || !revealMarkup.current) return
+    revealMarkup.current = false
+    if (narrow) modalRef.current?.querySelector("#document-markup")?.scrollIntoView({ block: "start" })
+  }, [markupShown, narrow])
+
+  // When the panel goes with focus inside it (Apply left nothing to list),
+  // focus moves to the Versions toggle, which is always there, not the page.
+  useEffect(() => {
+    const was = markupWasShown.current
+    markupWasShown.current = markupShown
+    const root = modalRef.current
+    if (!was || markupShown || !root || root.contains(document.activeElement)) return
+    root.querySelector<HTMLElement>(".viewer-versions-toggle")?.focus()
+  }, [markupShown])
   const versionBanner = shown && (
     <VersionBanner key={shown.id} version={shown} origin={versionOrigin(shown, versions.data?.events)} onBack={back} />
   )
@@ -586,9 +636,12 @@ function WordDocumentViewer({
         </div>
         <div className="viewer-body">
           {narrow && versionsPanel}
+          {narrow && markupNotice}
+          {narrow && markupPanel}
           <div className="viewer-doc">
             {versionBanner}
             {versionStatus && <p role="status" className="version-status">{versionStatus}</p>}
+            {!narrow && markupNotice}
             {citation && !shown && <p role="status">{citationStatus(citation.section, passage)}</p>}
             {editing && !shown && <div id="document-edit-request" className="change-card document-edit-request">
               <label htmlFor="document-edit-instructions">Describe the changes you want to review</label>
@@ -613,7 +666,7 @@ function WordDocumentViewer({
             {documentPreview}
           </div>
           {!narrow && versionsPanel}
-          {markupPanel}
+          {!narrow && markupPanel}
           {!versionsPanel && !markupPanel && !shown && redlines.length > 0 && (
             <aside className="changes-panel">
               <div className="changes-head">
@@ -978,18 +1031,21 @@ function VersionsToggle({ open, count, onToggle }: { open: boolean; count?: numb
 }
 
 // Opens and closes the other side's changes beside the document, counted the
-// way the panel lists them: one per change and one per comment thread.
+// way the panel lists them: one per change and one per comment thread. On a
+// phone the label is hidden and the count stays as a badge on the icon (the
+// label still names the button), so it reads as their changes, not "add".
 function MarkupToggle({ open, count, onToggle }: { open: boolean; count: number; onToggle: () => void }) {
   return (
     <button type="button" className="viewer-markup-toggle" aria-expanded={open} aria-controls={open ? "document-markup" : undefined} onClick={onToggle}
       title={open ? "Hide the tracked changes and comments in this file" : "Review the tracked changes and comments in this file"}>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-        <path d="M9 10h6M12 7v6" />
+        <path d="M8 8h8M8 12h5" />
       </svg>
       <span className="viewer-action-label">
         Their changes<span className="viewer-versions-count"> ({count})</span>
       </span>
+      <span className="viewer-markup-badge" aria-hidden="true">{count}</span>
     </button>
   )
 }

@@ -61,7 +61,14 @@
 /* The citation line names the page first; its quoted excerpt is clipped past three lines. */
 .pdf-reader .pdf-doc > p[role="status"] { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 .pdf-reader .pdf-doc .pdf-render { flex: 1 1 0; min-height: 0; height: auto; background: var(--md-sys-color-surface); }
-.document-reader .docx-render { background: var(--md-sys-color-surface); line-height: 1.85; border-color: var(--md-sys-color-outline-variant); }
+.document-reader .docx-render { background: var(--md-sys-color-surface); line-height: 1.85; border-color: var(--md-sys-color-outline-variant); container: docx-page / inline-size; }
+/* Docxodus sets margin comments in a fixed 250px column beside the text. Where
+   the page is too narrow for both (a phone, or a side panel open on a small
+   screen), the comments follow the text instead, as Docxodus prints them. */
+@container docx-page (max-width: 560px) {
+  .docx-render .comment-margin-container { display: block; }
+  .docx-render .comment-margin-column { width: auto; margin-top: var(--space-6); }
+}
 .document-reader .changes-panel { background: var(--panel); padding: 0 var(--space-5) var(--space-5); }
 .document-reader .changes-head { background: var(--panel); }
 .document-reader .change-card { border: 0; border-bottom: 1px solid var(--border); border-radius: 0; padding: var(--space-5) 0; box-shadow: none; }
@@ -158,6 +165,11 @@
    order, the decision tally and Apply pinned at the foot. */
 .document-reader .viewer-bar-actions > button.viewer-markup-toggle[aria-expanded="true"] { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent); }
 .document-reader .viewer-bar-actions > button.viewer-markup-toggle[aria-expanded="true"] svg { color: var(--accent); }
+/* The count on the icon, shown only where the label is hidden. */
+.viewer-markup-badge { display: none; }
+/* A failed reading, with Retry, where the toggle or the panel would be. */
+.document-reader .markup-read-status { max-width: 760px; margin: 0 auto var(--space-4); font-size: 0.8125rem; line-height: 1.5; color: var(--warn); }
+.markup-read-status .linklike { min-height: 0; font-size: inherit; line-height: inherit; }
 .document-reader .markup-panel { width: 360px; padding-bottom: 0; }
 .markup-panel .changes-head { gap: var(--space-2); font-weight: 400; }
 .markup-head h3 { display: flex; align-items: center; gap: var(--space-2); margin: 0; font-family: var(--font-sans); font-size: 0.875rem; font-weight: 600; color: var(--text); }
@@ -212,8 +224,14 @@
 .markup-apply .version-confirm .markup-actor { margin-bottom: var(--space-3); }
 .markup-apply .version-error { margin: 0; }
 @media (max-width: 720px) {
-  .document-reader .markup-panel { width: 100%; padding-bottom: 18px; }
+  /* Above the page, as the versions list is, and first in the markup. */
+  .document-reader .markup-panel { width: 100%; padding-bottom: 18px; border-top: 0; border-bottom: 1px solid var(--border); }
   .markup-apply { position: static; margin: var(--space-2) 0 0; padding: var(--space-4) 0 0; }
+  .document-reader .viewer-body > .markup-read-status { flex: none; max-width: none; margin: 0; padding: var(--space-3) 18px; border-bottom: 1px solid var(--border); }
+}
+@media (max-width: 420px) {
+  .document-reader .viewer-bar-actions > button.viewer-markup-toggle { position: relative; }
+  .viewer-markup-badge { position: absolute; top: -6px; right: -6px; display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--radius-pill); background: var(--accent); color: var(--text-on-accent); font-size: 0.6875rem; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
 }
 @media (hover: none) {
   .markup-chip, .markup-choice { min-height: 44px; }
