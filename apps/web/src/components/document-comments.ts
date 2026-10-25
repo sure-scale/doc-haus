@@ -8,8 +8,9 @@ import { flagNotes } from "./MarkupPanel"
 // notes are restyled in styles.css; this pass adds what CSS cannot: each
 // author's initials in the colour the Tracked changes panel gives them, the
 // date as the panel writes it, screening flags, a link between a card and
-// its commented text, and plain words for the "[0]" markers. On a narrow page
-// each card moves under its paragraph and back again when the page widens.
+// its commented text, each card level with that text, and plain words for
+// the "[0]" markers. On a narrow page each card moves under its paragraph and
+// back again when the page widens.
 // While the Tracked changes panel lists the comments, as Word's Comments pane
 // does, the cards give way to a comment button beside each commented
 // paragraph, which opens its thread in the panel.
@@ -276,6 +277,7 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
   const stack = () => {
     const placed = new Map<Element, HTMLElement>()
     for (const note of notes) {
+      note.style.removeProperty("margin-top")
       const block = blockOf(note)
       if (!block) continue
       let group = placed.get(block)
@@ -301,16 +303,42 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
     if (narrow) stack()
     else unstack()
   }
+  // Beside the page, as Word's balloons: each card level with the start of its
+  // commented text (its paragraph for a comment on no text), or just below the
+  // card above when they would overlap. Placed again whenever the text reflows.
+  let frame = 0
+  const place = () => {
+    if (pane || stacked) return
+    const top = column.getBoundingClientRect().top
+    const gap = parseFloat(getComputedStyle(column).rowGap) || 0
+    const wanted = notes.map((note) => {
+      const text = content.querySelector(`.comment-highlight[data-comment-id="${CSS.escape(note.dataset.commentId ?? "")}"]`) ?? blockOf(note)
+      return text ? text.getBoundingClientRect().top - top : 0
+    })
+    const heights = notes.map((note) => note.getBoundingClientRect().height)
+    let next = 0
+    notes.forEach((note, index) => {
+      const at = Math.max(wanted[index]!, next)
+      note.style.marginTop = `${at - next}px`
+      next = at + heights[index]! + gap
+    })
+  }
   const style = getComputedStyle(root)
   fit(root.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight))
+  place()
   const observer = new ResizeObserver((entries) => {
-    const entry = entries.at(-1)
-    if (entry) fit(entry.contentRect.width)
+    const page = entries.find((entry) => entry.target === root)
+    if (page) fit(page.contentRect.width)
+    // After this frame's layout: moving a card can resize the page.
+    cancelAnimationFrame(frame)
+    frame = requestAnimationFrame(place)
   })
   observer.observe(root)
+  observer.observe(content)
 
   const undo = () => {
     observer.disconnect()
+    cancelAnimationFrame(frame)
     host.removeEventListener("mouseover", over)
     host.removeEventListener("mouseout", out)
     host.removeEventListener("focusin", focusIn)
@@ -329,6 +357,7 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
       node.classList.remove("is-linked")
     }
     for (const note of notes) {
+      note.style.removeProperty("margin-top")
       note.removeAttribute("tabindex")
       note.removeAttribute("role")
       note.removeAttribute("aria-label")

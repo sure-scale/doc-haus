@@ -3,8 +3,9 @@
 // While the Tracked changes panel lists the comments, the page shows no cards, only a comment button by each commented
 // paragraph, and a button or the commented text opens and focuses its thread in the panel. With the panel closed the
 // comments beside the page are Word-style cards: each author's initials and colour match the panel's, a resolved thread
-// says so, a screened comment is flagged, a card and its text light up together, and on a narrow page each card sits
-// under its paragraph (once) and goes back when the page widens, with citations still found across it.
+// says so, a screened comment is flagged, a card and its text light up together, each card sits level with its text
+// (the next just below it when they would overlap, following the text as the page reflows), and on a narrow page each
+// card sits under its paragraph (once) and goes back when the page widens, with citations still found across it.
 // Small synthetic files then cover the other side's tricks and crowded pages: a card shows no hidden character its
 // flag says was removed, a bookmark named like a comment's marker moves nothing, several buttons on one short clause
 // or in a table cell can each be clicked and cover no text, a comment with no range leaves no invisible Tab stop, and
@@ -426,6 +427,49 @@ try {
     assert.ok(placed.card >= placed.column - 1, `the card starts on the page, below the panel ${JSON.stringify(placed)}`)
     // After the card's fade-in.
     if (screenshots) await page.waitForTimeout(400).then(() => page.screenshot({ path: path.join(screenshots, "history-card-under-panel-400.png") }))
+    assert.deepEqual(errors, [])
+  })
+
+  await check("each card sits beside its comment's text, the next just below it when they would overlap, and follows the text as the page reflows", async () => {
+    const clause = (n: number) => `${n}. The Supplier delivers each order to the Buyer's warehouse within ten business days and gives the Buyer written notice of any expected delay.`
+    const comments = [
+      { id: 0, author: REVIEWERS[0]!, text: "Ten business days is too short for orders placed in the last week of a month." },
+      { id: 1, author: REVIEWERS[1]!, text: "The notice should be in writing." },
+      { id: 2, author: REVIEWERS[2]!, text: "Agreed." },
+    ]
+    const body = Array.from({ length: 14 }, (_, index) => index + 1).map(n =>
+      n === 4 ? para(run("4. ") + commented(0, "Delivery.")) : n === 5 ? para(run("5. ") + commented(1, "Notice.")) : n === 12 ? para(commented(2, clause(12))) : para(run(clause(n))))
+    const { page, errors } = await open({ width: 1440, height: 900 }, undefined, true, { bytes: wordFile(body, comments), markup: listing(comments) })
+    await page.locator('.docx-render[data-comments="pane"] .doc-comment-pin').first().waitFor({ state: "attached" })
+    await closePanel(page)
+    // Each card's top and bottom, and the top of its commented text, after the page has settled.
+    const placed = async () => {
+      await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))))
+      return page.locator(".docx-render").evaluate(root => [...root.querySelectorAll<HTMLElement>(".comment-margin-column > .comment-margin-note")].map(card => {
+        const box = card.getBoundingClientRect()
+        const text = root.querySelector(`.comment-margin-content .comment-highlight[data-comment-id="${card.dataset.commentId}"]`)!.getBoundingClientRect()
+        return { card: Math.round(box.top), bottom: Math.round(box.bottom), text: Math.round(text.top) }
+      }))
+    }
+    const beside = async (label: string) => {
+      const [delivery, notice, last] = await placed()
+      assert.ok(delivery && notice && last, `${label}: three cards in the margin`)
+      assert.ok(Math.abs(delivery.card - delivery.text) <= 1, `${label}: the first card is level with its text ${JSON.stringify(delivery)}`)
+      assert.ok(notice.text < delivery.bottom, `${label}: setup, the next clause's text is beside the first card`)
+      assert.ok(notice.card >= delivery.bottom && notice.card <= delivery.bottom + 16, `${label}: the second card is just below the first ${JSON.stringify({ delivery, notice })}`)
+      assert.ok(Math.abs(last.card - last.text) <= 1, `${label}: the last card is level with its text ${JSON.stringify(last)}`)
+    }
+    await beside("1440px")
+    if (screenshots) await page.screenshot({ path: path.join(screenshots, "cards-beside-text.png") })
+    // A narrower window reflows the text; the cards follow it.
+    await page.setViewportSize({ width: 1024, height: 900 })
+    await beside("1024px")
+    // Opened, the panel takes the comments; closed again, the cards come back beside their text.
+    await page.locator(".viewer-markup-toggle").click()
+    await page.locator('.docx-render[data-comments="pane"]').waitFor({ state: "attached" })
+    assert.equal(await page.locator(".docx-render .comment-margin-note:visible").count(), 0, "no cards while the panel is open")
+    await closePanel(page)
+    await beside("panel closed again")
     assert.deepEqual(errors, [])
   })
 

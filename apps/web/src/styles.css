@@ -3550,8 +3550,8 @@ button.linklike:hover:not(:disabled) {
    the margin, the author's initials in the colour the Tracked changes panel
    gives them, replies inside the card, resolved threads greyed with a label.
    Docxodus's own notes are restyled here; document-comments.ts adds the
-   initials, dates and flags, and on a narrow page moves each card under its
-   paragraph. Docxodus wraps the whole document in .comment-margin-container,
+   initials, dates and flags, sets each card level with its text, and on a
+   narrow page moves each card under its paragraph. Docxodus wraps the whole document in .comment-margin-container,
    so a greedy [class*="comment"] selector would restyle the body text: every
    rule names the comment classes exactly. The measure is relaxed for the
    margin wherever the cards sit, so moving them never changes the width.
