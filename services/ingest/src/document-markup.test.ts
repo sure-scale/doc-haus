@@ -13,7 +13,9 @@ import type { MarkupAuthor, MarkupComment, MarkupRevision } from "../../../docha
 import { recordRedlineProposal } from "../../../dochaus/lib/redlines"
 import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx, numberedMarkupDocx } from "../../../dochaus/test/support/counterparty-markup-fixture"
 import { counterpartyFindings, writeCounterpartyItems } from "../../../dochaus/workflows/lean/counterparty"
+import { readChangePlan } from "../../../dochaus/workflows/lean/change-pipeline"
 import { writeLeanPlan } from "../../../dochaus/workflows/lean/plan"
+import { issueRegister } from "../../../dochaus/workflows/lean/register"
 import { writeLeanText } from "../../../dochaus/workflows/lean/state"
 import { documentMarkupRoutes } from "./document-markup"
 import { docxodus } from "./docxodus"
@@ -510,46 +512,65 @@ test("the list refuses anything but a registered Word source, and reads a kept v
   expect((await markup(name, { version: crypto.randomUUID() })).status).toBe(404)
 }, 120_000)
 
-test("each change and thread the current drafting run answered carries its answer while it is listed, after an Apply too", async () => {
+test("each change and thread the drafting run answered keeps its delivered answer while it is listed, after a partial Apply too", async () => {
   const name = "Run answers.docx"
   await upload(name)
   const listed = await view(name)
   expect(listed).not.toHaveProperty("responses")
   // A run revising the uploaded bytes, with its change plan suggesting the
-  // first item and rejecting the rest; the register is read from these files.
+  // first item and rejecting the rest. Its findings quote the source as the
+  // run read it: the inline labels of their changes and the line that counts
+  // them, which a later Apply changes.
   writeLeanPlan(matter.dir, [{ title: "Supply Agreement", purpose: "Respond to the other side's markup.", parts: [{ heading: "Terms", scope: "The supply terms." }], mode: "revise", template: name }])
   await writeCounterpartyItems(matter.dir, "d1", { name, bytes: await content(name) })
   const [first, ...rest] = counterpartyFindings(matter.dir, "d1")
-  const finding = (disposition: string, detail: string, reason: string, resolves: string[]) =>
-    ({ disposition, kind: "suggestion", detail, reason, documents: ["d1"], sources: [], limitations: ["The drafter's judgment."], resolves })
+  const read = indexedText(name)
+  const supply = SUPPLY(`[Tracked deletion by ${AVERY}: thirty][Tracked insertion by ${AVERY}: forty-five]`)
+  const count = read.match(/This Word file contains \d+ pending tracked changes by [^.\]]+, marked inline below\./)?.[0]
+  expect(read).toContain(supply)
+  expect(count).toBeDefined()
+  const finding = (disposition: string, detail: string, reason: string, resolves: string[], quote: string) =>
+    ({ disposition, kind: "suggestion", detail, reason, documents: ["d1"], sources: [{ source_id: name, quote }], limitations: [], resolves })
   writeLeanText(matter.dir, "d1/change-plan.json", JSON.stringify({ shared_decisions: [], groups: [], dismissed: [], questions: [], findings: [
-    finding("recommendation", "Take the longer delivery period.", "Forty-five days matches the Supplier's lead times.", [first!.id]),
-    finding("rejected", "Keep the draft's positions.", "Each is answered as drafted.", rest.map(row => row.id)),
+    finding("recommendation", "Take the longer delivery period.", "Forty-five days matches the Supplier's lead times.", [first!.id], supply),
+    finding("rejected", "Keep the draft's positions.", "Each is answered as drafted.", rest.map(row => row.id), count!),
   ] }))
   try {
+    // The run's final gate delivers its register, as the runner writes it.
+    expect(readChangePlan(matter.dir, "d1")).toBeDefined()
+    writeLeanText(matter.dir, "register.json", `${JSON.stringify(issueRegister(matter.dir), null, 2)}\n`)
     const answered = await view(name) as View & { responses?: Record<string, { disposition: string; reason?: string; from_version?: number | null }> }
     const cards = new Set([...answered.revisions.map(({ id }) => id), ...answered.comments.map(({ id }) => String(id))])
     const ids = [first!, ...rest].map(row => String(row.counterparty!.ref.id))
-    expect(ids.length).toBeGreaterThan(1)
+    expect(ids.length).toBeGreaterThan(2)
     expect(ids.every(id => cards.has(id))).toBe(true)
     expect(Object.keys(answered.responses ?? {}).toSorted()).toEqual(ids.toSorted())
     const from_version = listed.version.number
     expect(from_version).toBe(1)
     expect(answered.responses![ids[0]!]).toEqual({ disposition: "recommendation", reason: "Forty-five days matches the Supplier's lead times.", from_version })
     expect(ids.slice(1).every(id => answered.responses![id]!.disposition === "rejected")).toBe(true)
-    // An Apply deciding the first answered change makes bytes the run never
-    // read; the changes and threads it leaves keep their ids and their answers.
-    expect(listed.revisions.some(({ id }) => id === ids[0])).toBe(true)
-    expect((await decide(name, listed.revisions.map(({ id }) => id === ids[0] ? "accept" : "hold"))).status).toBe(200)
-    const after = await view(name) as View & { responses?: Record<string, { disposition: string; from_version?: number }> }
+    // A partial Apply, accepting the first answered change, rejecting
+    // Morgan's insertion and holding the rest, makes bytes the run never read:
+    // the plan's quotes are no longer in them. The changes and threads it
+    // leaves keep their ids and the answers the run delivered.
+    const rejected = String(rest.find(row => row.counterparty!.change === "insert" && row.counterparty!.text === "the first ")!.counterparty!.ref.id)
+    const decided = new Set([ids[0]!, rejected])
+    expect((await decide(name, listed.revisions.map(({ id }) => id === ids[0] ? "accept" : id === rejected ? "reject" : "hold"))).status).toBe(200)
+    expect(readChangePlan(matter.dir, "d1")).toBeUndefined()
+    const after = await view(name) as View & { responses?: Record<string, { disposition: string; reason?: string; from_version?: number }> }
     expect(after.version.number).toBe(2)
-    expect(after.revisions.map(({ id }) => id)).toEqual(listed.revisions.map(({ id }) => id).filter(id => id !== ids[0]))
+    expect(after.revisions.map(({ id }) => id)).toEqual(listed.revisions.map(({ id }) => id).filter(id => !decided.has(id)))
     expect(after.comments.map(({ id }) => id)).toEqual(listed.comments.map(({ id }) => id))
-    expect(Object.keys(after.responses ?? {}).toSorted()).toEqual(ids.slice(1).toSorted())
-    expect(ids.slice(1).every(id => after.responses![id]!.disposition === "rejected" && after.responses![id]!.from_version === from_version)).toBe(true)
+    const left = ids.filter(id => !decided.has(id))
+    expect(Object.keys(after.responses ?? {}).toSorted()).toEqual(left.toSorted())
+    for (const id of left) expect(after.responses![id]).toEqual({ disposition: "rejected", reason: "Each is answered as drafted.", from_version: from_version! })
     // The kept version the run read still has every answer.
     const kept = await (await markup(name, { version: listed.version.id! })).json() as { responses?: object }
     expect(Object.keys(kept.responses ?? {}).toSorted()).toEqual(ids.toSorted())
+    // The answers are the delivered register's: with none delivered, the
+    // run's other files give none.
+    await rm(path.join(matter.dir, ".dochaus", "lean", "register.json"))
+    expect(await (await markup(name, { version: listed.version.id! })).json()).not.toHaveProperty("responses")
   } finally {
     await rm(path.join(matter.dir, ".dochaus", "lean"), { recursive: true, force: true })
   }

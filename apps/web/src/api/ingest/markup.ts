@@ -78,9 +78,10 @@ export type DocumentMarkup = {
   revisions: MarkupRevision[]
   comments: MarkupComment[]
   authors: MarkupAuthor[]
-  // How the matter's current drafting run answered each change and thread
-  // still listed here, by the change's or root comment's id; absent when it
-  // answered none of them. `reason` is model text.
+  // How the matter's drafting run answered each change and thread still
+  // listed here, as the issue register its final gate delivered says, by the
+  // change's or root comment's id; absent when no register was delivered or
+  // it answered none of them. `reason` is model text.
   responses?: Record<string, MarkupResponse>
 }
 

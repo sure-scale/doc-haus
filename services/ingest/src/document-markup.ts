@@ -5,7 +5,8 @@ import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/ar
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { addCommentReplies, CommentReplyError, replyInitials, type CommentReply } from "../../../dochaus/lib/docx-comment-replies"
 import { commentReferences, counterpartyItems, readDocxMarkup, type CounterpartyItem, type DocxMarkup } from "../../../dochaus/lib/docx-markup"
-import { issueRegister } from "../../../dochaus/workflows/lean/register"
+import type { RegisterEntry } from "../../../dochaus/workflows/lean/register"
+import { readLeanJson } from "../../../dochaus/workflows/lean/state"
 import { markupConsistency } from "../../../dochaus/workflows/lean/version-consistency"
 import { getDocumentRole, listPendingRedlines, openDb } from "./db"
 import { findVersionBySha, oneLine, readDocumentVersions, readVersion, readVersionBytes, sha256Hex, type VersionWrite } from "./document-versions"
@@ -18,8 +19,9 @@ import { readDocumentTarget } from "./registered-document"
 // A counterparty's tracked changes and comments in an uploaded Word source
 // (#200): the list the viewer's triage panel shows, and the lawyer's accept,
 // reject and hold decisions applied as the document's next version. The list is
-// a computed view of one version's bytes (readDocxMarkup); nothing is stored,
-// and neither is the current drafting run's answer to each item it carries.
+// a computed view of one version's bytes (readDocxMarkup); nothing is stored
+// for it. The drafting run's answer to each item it carries is read from the
+// issue register the run's final gate delivered.
 // Decisions write through the revision writer as an accept, so the source
 // re-ingests as any revision does: held changes stay labelled in search, the
 // others become plain text or go. Their event names each change's kind, author,
@@ -210,17 +212,17 @@ async function readMarkup(name: string, bytes: Uint8Array): Promise<DocxMarkup |
   }
 }
 
-/** How the matter's current drafting run answered each of the other side's
- * changes and comment threads in the bytes `sha256` of source `name`, by the
- * change's or root comment's id: its issue register's entries for that markup
- * (lean/register.ts), read now and kept nowhere. Undefined when it answered none. */
-/** How the matter's current drafting run answered each change and thread of
- * `name` that `markup` still lists, by id. The run read one version; an Apply
- * keeps the ids of the changes and comments it leaves, so an item keeps its
- * answer while it is listed with the same id, author and text. `from_version`
- * is the number of the version the run read. */
+/** How the matter's drafting run answered each change and thread of `name`
+ * that `markup` still lists, by id: the entries for them in the issue register
+ * its final gate delivered (lean/register.json), never recomputed, as the
+ * run's plan quotes the version it read and an Apply changes that text. The
+ * run read one version; an Apply keeps the ids of the changes and comments it
+ * leaves, so an item keeps its answer while it is listed with the same kind,
+ * id, change, author and text. `from_version` is the number of the version
+ * the run read. Undefined when no register was delivered or it answered none. */
 function runResponses(directory: string, name: string, markup: DocxMarkup) {
-  const entries = issueRegister(directory).entries.filter(({ counterparty }) => counterparty?.source.name === name)
+  const register = readLeanJson(directory, "register.json") as { entries?: RegisterEntry[] } | undefined
+  const entries = (Array.isArray(register?.entries) ? register.entries : []).filter(({ counterparty }) => counterparty?.source?.name === name)
   if (!entries.length) return
   const same = ({ ref, change, author, text }: CounterpartyItem) => JSON.stringify([ref.kind, ref.id, change, author, text])
   const listed = new Set(counterpartyItems({ name, sha256: "" }, markup).map(same))

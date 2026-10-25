@@ -10,8 +10,10 @@
 // A reply written by hand to the synthetic supply agreement's open thread
 // (dochaus/test/support/counterparty-markup-fixture.ts), applied with no
 // decision, is listed as the replies it added, not as a save from Word. A fresh copy
-// of that agreement, with a drafting run's issue register written beside it as
-// the lean workflow keeps one, shows the run's answer on each card.
+// of that agreement, with a drafting run's issue register delivered beside it as
+// the lean workflow's final gate writes one, shows the run's answer on each
+// card; after a Save that decides two of their changes, the cards it leaves
+// keep those answers, after a reload too.
 // Each state is captured at desktop and 400×860. Nothing reaches a model: the
 // sources' embeddings use the local model (DOCHAUS_MODEL_CACHE_DIR, else the
 // per-user cache), browser engine traffic is intercepted and unexpected
@@ -43,6 +45,14 @@ const ANSWERED = "Answered supply agreement.docx"
 const lean = (module: string) => import(path.resolve(import.meta.dir, "../../../dochaus/workflows/lean", `${module}.ts`))
 const HEADING = "Check these references and defined terms after your decisions"
 const UNCHECKED_LINE = "References and defined terms were not checked for this version — check them yourself before sending."
+// What the drafting run did with an item, as its card's tag says it: the
+// short text and the full sentence it gives on hover or focus.
+const TAGS = {
+  amended: ["Draft: changed", "doc.haus draft: changed in response"],
+  suggested: ["Suggestion", "doc.haus suggests: Fixing the price for the first twelve months leaves it open to review at renewal."],
+  deferred: ["Draft: left to you", "doc.haus draft: left for you to decide"],
+  rejected: ["Draft: not changed", "doc.haus draft: not changed — The draft keeps the original wording."],
+} as const
 const DESKTOP = { width: 1440, height: 1000 }
 const PHONE = { width: 400, height: 860 }
 
@@ -206,6 +216,17 @@ try {
     await page.setViewportSize(DESKTOP)
   }
 
+  // A change's card by its own text, not the context its place quotes. Each
+  // answer is a short tag that names the full sentence, shown on hover or focus.
+  const answer = (panel: Locator, text: string) => panel.locator(".markup-list > li")
+    .filter({ has: page.locator(":is(.change-old, .change-new)", { hasText: new RegExp(`^${text}\\s*$`) }) }).locator(".markup-run-tag")
+  const says = async (tag: Locator, [short, full]: readonly [string, string], from?: number) => {
+    await expect(tag).toHaveText(short)
+    await expect(tag).toHaveAttribute("aria-label", from === undefined ? full : `${full} (from the run on version ${from})`)
+  }
+  // How many items the run rejected (step 6), for the Save that follows (6b).
+  const rejectedItems: { read?: number } = {}
+
   await step("1 upload three copies of the numbered agreement as sources", async () => {
     const matter = await (await api("/matters", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Synthetic Apply Follow-ups" }) })).json() as { id: string; dir: string }
     expect(matter.dir.startsWith(dataRoot)).toBe(true)
@@ -293,8 +314,11 @@ try {
     const bytes = new Uint8Array(await (await api(`/matters/${file.matter}/documents/content?name=${encodeURIComponent(ANSWERED)}`)).arrayBuffer())
     // A run revising these bytes: the delivery-period replace made in the
     // draft, Morgan's price insertion suggested, Avery's lead-time thread left
-    // to the lawyer and the rest rejected.
-    const [{ counterpartyFindings, writeCounterpartyItems }, { writeLeanPlan }, { writeLeanText }] = await Promise.all(["counterparty", "plan", "state"].map(lean))
+    // to the lawyer and the rest rejected. Its findings quote the source as
+    // the run read it, with the line that counts their changes, which a Save
+    // deciding any of them changes.
+    const [{ counterpartyFindings, writeCounterpartyItems }, { writeLeanPlan }, { writeLeanText }, { issueRegister }, { readChangePlan }] =
+      await Promise.all(["counterparty", "plan", "state", "register", "change-pipeline"].map(lean))
     writeLeanPlan(file.dir, [{ title: "Supply Agreement", purpose: "Respond to the other side's markup.", parts: [{ heading: "Terms", scope: "The supply terms." }], mode: "revise", template: ANSWERED }])
     await writeCounterpartyItems(file.dir, "d1", { name: ANSWERED, bytes })
     const items: { id: string; counterparty: { change: string; text: string } }[] = counterpartyFindings(file.dir, "d1")
@@ -304,8 +328,9 @@ try {
     const deferred = pick(item => item.change === "comment" && item.text === COUNTERPARTY_MARKUP.comments[0]!.text)
     expect([amended.length, suggested.length, deferred.length]).toEqual([2, 1, 1])
     const rejected = items.map(row => row.id).filter(id => ![...amended, ...suggested, ...deferred].includes(id))
+    const counted = `This Word file contains 9 pending tracked changes by ${COUNTERPARTY_MARKUP.reviewers.join(", ")}, marked inline below.`
     const finding = (disposition: string, detail: string, reason: string, resolves: string[]) =>
-      ({ disposition, kind: "suggestion", detail, reason, documents: ["d1"], sources: [], limitations: ["The drafter's judgment."], resolves })
+      ({ disposition, kind: "suggestion", detail, reason, documents: ["d1"], sources: [{ source_id: ANSWERED, quote: counted }], limitations: [], resolves })
     writeLeanText(file.dir, "d1/paragraphs.json", JSON.stringify([{ pid: "p1", sha256: "synthetic", text: "1. Supply. The Supplier shall deliver the Goods within forty-five days of each Order." }]))
     writeLeanText(file.dir, "d1/change-plan.json", JSON.stringify({ shared_decisions: [], dismissed: [], questions: [],
       groups: [{ id: "g1", pids: ["p1"], goal: "Take the longer delivery period.", sources: [], limitations: [], resolves: amended }],
@@ -316,36 +341,33 @@ try {
       ] }))
     writeLeanText(file.dir, "d1/changes.json", JSON.stringify({ amendments: [{ id: "a1", pid: "p1" }], questions: [] }))
     writeLeanText(file.dir, "d1/apply.json", JSON.stringify({ applied: [{ id: "a1" }], unapplied: [] }))
+    // The plan holds against the version the run read; its final gate
+    // delivers the register, as the runner writes it.
+    expect(readChangePlan(file.dir, "d1")).toBeDefined()
+    writeLeanText(file.dir, "register.json", `${JSON.stringify(issueRegister(file.dir), null, 2)}\n`)
 
     const viewer = await openDocument(ANSWERED)
     const panel = viewer.locator("#document-markup")
     const tab = (name: "Changes" | "Comments") => panel.getByRole("tab", { name: new RegExp(`^${name} \\d+$`) })
     // Both tabs' cards are rendered, the other tab's hidden: the answers are read on both.
-    // A change's card by its own text, not the context its place quotes. Each
-    // answer is a short tag that names the full sentence, shown on hover or focus.
-    const answer = (text: string) => panel.locator(".markup-list > li")
-      .filter({ has: page.locator(":is(.change-old, .change-new)", { hasText: new RegExp(`^${text}\\s*$`) }) }).locator(".markup-run-tag")
-    const says = async (tag: Locator, short: string, full: string) => {
-      await expect(tag).toHaveText(short)
-      await expect(tag).toHaveAttribute("aria-label", full)
-    }
-    await says(answer("thirty"), "Draft: changed", "doc.haus draft: changed in response")
-    await says(answer("forty-five"), "Draft: changed", "doc.haus draft: changed in response")
-    await says(answer("the first"), "Suggestion", "doc.haus suggests: Fixing the price for the first twelve months leaves it open to review at renewal.")
+    await says(answer(panel, "thirty"), TAGS.amended)
+    await says(answer(panel, "forty-five"), TAGS.amended)
+    await says(answer(panel, "the first"), TAGS.suggested)
     const thread = panel.locator(".markup-list > li.markup-thread").filter({ hasText: COUNTERPARTY_MARKUP.comments[0]!.text })
-    await says(thread.locator(".markup-run-tag"), "Draft: left to you", "doc.haus draft: left for you to decide")
-    await expect(panel.locator('.markup-run-tag[aria-label="doc.haus draft: not changed — The draft keeps the original wording."]')).toHaveCount(rejected.length)
+    await says(thread.locator(".markup-run-tag"), TAGS.deferred)
+    await expect(panel.locator(`.markup-run-tag[aria-label="${TAGS.rejected[1]}"]`)).toHaveCount(rejected.length)
+    rejectedItems.read = rejected.length
     // The run read the version on screen, so no answer names another version.
     await expect(panel.locator('.markup-run-tag[aria-label*="from the run on version"]')).toHaveCount(0)
     // The resolved thread is no item of the run's, so it says nothing.
     await expect(panel.locator(".markup-list > li.markup-thread").filter({ hasText: COUNTERPARTY_MARKUP.comments[2]!.text }).locator(".markup-run-tag")).toHaveCount(0)
     // Focus shows the full sentence.
-    await answer("thirty").focus()
-    await expect(page.getByRole("tooltip")).toHaveText("doc.haus draft: changed in response")
-    await answer("thirty").blur()
+    await answer(panel, "thirty").focus()
+    await expect(page.getByRole("tooltip")).toHaveText(TAGS.amended[1])
+    await answer(panel, "thirty").blur()
     // Each kind of answer, on its tab and centred in the panel, at desktop and phone width.
-    const views = [["amended", answer("thirty"), "Changes"], ["deferred", thread.locator(".markup-run-tag"), "Comments"], ["suggested", answer("the first"), "Changes"],
-      ["rejected", panel.locator('.markup-list > li:not(.markup-thread) .markup-run-tag[aria-label^="doc.haus draft: not changed"]').first(), "Changes"]] as const
+    const views = [["amended", answer(panel, "thirty"), "Changes"], ["deferred", thread.locator(".markup-run-tag"), "Comments"], ["suggested", answer(panel, "the first"), "Changes"],
+      ["rejected", panel.locator(`.markup-list > li:not(.markup-thread) .markup-run-tag[aria-label="${TAGS.rejected[1]}"]`).first(), "Changes"]] as const
     for (const [size, viewport] of [["desktop", DESKTOP], ["phone", PHONE]] as const) {
       await page.setViewportSize(viewport)
       expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1)
@@ -357,6 +379,50 @@ try {
       }
     }
     await page.setViewportSize(DESKTOP)
+    // The full sentence on hover, as the lawyer reads it.
+    await tab("Changes").click()
+    const notEdited = panel.locator(`.markup-list > li:not(.markup-thread) .markup-run-tag[aria-label="${TAGS.rejected[1]}"]`).first()
+    await notEdited.evaluate(node => node.scrollIntoView({ block: "center" }))
+    await notEdited.hover()
+    await expect(page.getByRole("tooltip")).toHaveText(TAGS.rejected[1])
+    await shot("6a3-card-tag-hover-rejected-desktop")
+    await answer(panel, "thirty").hover()
+    await expect(page.getByRole("tooltip")).toHaveText(TAGS.amended[1])
+    await shot("6a3-card-tag-hover-amended-desktop")
+    await page.mouse.move(0, 0)
+  })
+
+  await step("6b after a Save that decides two of their changes, the cards it leaves keep the run's answers, after a reload too", async () => {
+    const viewer = await openDocument(ANSWERED)
+    const panel = viewer.locator("#document-markup")
+    // The lawyer takes the price insertion the run suggested and rejects the
+    // Waiver clause it made no edit for; the rest stay tracked.
+    const card = (text: string) => panel.locator(".markup-list > li:not(.markup-thread)").filter({ has: page.locator(".change-new", { hasText: text }) })
+    await card("the first").getByRole("radio", { name: "Accept", exact: true }).click()
+    await card("No waiver is effective").getByRole("radio", { name: "Reject", exact: true }).click()
+    await panel.getByRole("button", { name: "Save as new version", exact: true }).click()
+    const done = page.waitForResponse(response => new URL(response.url()).pathname.endsWith("/documents/markup/decisions"))
+    await panel.getByRole("group", { name: "Save a new version", exact: true }).getByRole("button", { name: "Save new version", exact: true }).click()
+    expect((await done).status()).toBe(200)
+    await expect(page.getByText(/^Saved as version 2: 1 accepted, 1 rejected, \d+ left tracked\.$/)).toBeVisible()
+    // The panel reads version 2; its cards keep the answers of the run on version 1.
+    const answered = async () => {
+      await expect(card("No waiver is effective")).toHaveCount(0, { timeout: 30_000 })
+      await expect(answer(panel, "the first")).toHaveCount(0)
+      await says(answer(panel, "thirty"), TAGS.amended, 1)
+      await says(answer(panel, "forty-five"), TAGS.amended, 1)
+      await says(panel.locator(".markup-list > li.markup-thread").filter({ hasText: COUNTERPARTY_MARKUP.comments[0]!.text }).locator(".markup-run-tag"), TAGS.deferred, 1)
+      await expect(panel.locator(`.markup-run-tag[aria-label="${TAGS.rejected[1]} (from the run on version 1)"]`)).toHaveCount(rejectedItems.read! - 1)
+      await expect(panel.locator(".markup-run-tag")).toHaveCount(2 + 1 + rejectedItems.read! - 1)
+    }
+    await answered()
+    await panel.locator(".markup-tabs").getByRole("tab", { name: /^Changes \d+$/ }).click()
+    await expect(async () => await answer(panel, "thirty").evaluate(node => node.scrollIntoView({ block: "center" }), undefined, { timeout: 2_000 })).toPass()
+    await shot("6b-answers-after-partial-save-desktop")
+    await page.reload()
+    await openDocument(ANSWERED)
+    await answered()
+    await shot("6b-answers-after-reload-desktop")
   })
 
   await step("no page errors or unexpected requests", async () => {
