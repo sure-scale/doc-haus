@@ -2,6 +2,7 @@ import { DOMParser } from "@xmldom/xmldom"
 import type { RevisionListEntry } from "docxodus"
 import { strFromU8, unzipSync } from "fflate"
 import { docxodus } from "./docxodus"
+import { draftingAttribution } from "./docx-attribution"
 import { readDocxComments } from "./docx-comments"
 import { detectInjection, normalizeUntrustedText } from "./untrusted-text"
 
@@ -92,7 +93,9 @@ export type CounterpartyItem = {
   date: string | null
   change: "insert" | "delete" | "move" | "comment"
   text: string
-  replies?: { author: string; date: string | null; text: string }[]
+  /** A thread the other side answered: its root comment (on a reply, that reply) is ours. */
+  ours?: true
+  replies?: { author: string; date: string | null; text: string; ours?: true }[]
   /** A comment's anchor text. */
   quote?: string
   places: { part: MarkupRevision["scope"]; paragraph: number | null; label?: string; side?: "from" | "to" }[]
@@ -133,15 +136,22 @@ export async function readDocxMarkup(bytes: Uint8Array): Promise<DocxMarkup> {
 // with its replies folded in. Format and structure changes and resolved threads
 // are left out. A reply joins the thread of a comment listed before it (Word
 // lists replies after their parent); any other comment starts its own thread.
-export function counterpartyItems(source: { name: string; sha256: string }, markup: DocxMarkup): CounterpartyItem[] {
+// `ours` names our own side (by default the drafting author, whose name signs
+// doc.haus's redlines and comments and the lawyer's accepted edits and
+// replies), matched trimmed and case-insensitively. A change, or a thread, all
+// of whose authors are ours is not the other side's and is left out; a thread
+// they answered keeps our root or replies, each marked `ours`.
+export function counterpartyItems(source: { name: string; sha256: string }, markup: DocxMarkup, ours: readonly string[] = [draftingAttribution().author]): CounterpartyItem[] {
   // Initials are not carried, so their findings are not either.
   const flagged = (findings: MarkupFinding[]) => {
     const rules = [...new Set(findings.filter(finding => finding.field !== "initials").map(finding => finding.rule))]
     return rules.length ? { flagged: rules } : {}
   }
+  const names = new Set(ours.map(name => name.trim().toLowerCase()).filter(Boolean))
+  const own = (author: string) => names.has(author.trim().toLowerCase())
   const units = markup.revisions.flatMap((revision): CounterpartyItem[] => {
     const { kind } = revision
-    if (revision.scope === "comment" || kind === "format" || kind === "structure") return []
+    if (revision.scope === "comment" || kind === "format" || kind === "structure" || own(revision.author)) return []
     return [{
       source, ref: { kind: "revision", id: revision.id }, author: revision.author, date: revision.date, change: kind, text: revision.text,
       places: revision.locations.map(({ paragraph, label, side }) => ({ part: revision.scope, paragraph, ...label ? { label } : {}, ...side ? { side } : {} })),
@@ -156,9 +166,9 @@ export function counterpartyItems(source: { name: string; sha256: string }, mark
     else threads.push({ root: comment, replies: [] })
     member.set(comment.id, joined ?? threads.at(-1)!)
   }
-  const comments = threads.flatMap(({ root, replies }): CounterpartyItem[] => root.resolved === true ? [] : [{
-    source, ref: { kind: "comment", id: root.id }, author: root.author, date: root.date, change: "comment", text: root.text,
-    ...replies.length ? { replies: replies.map(({ author, date, text }) => ({ author, date, text })) } : {},
+  const comments = threads.flatMap(({ root, replies }): CounterpartyItem[] => root.resolved === true || [root, ...replies].every(comment => own(comment.author)) ? [] : [{
+    source, ref: { kind: "comment", id: root.id }, author: root.author, date: root.date, change: "comment", text: root.text, ...own(root.author) ? { ours: true as const } : {},
+    ...replies.length ? { replies: replies.map(({ author, date, text }) => ({ author, date, text, ...own(author) ? { ours: true as const } : {} })) } : {},
     ...root.quote ? { quote: root.quote } : {},
     places: [{ part: root.scope ?? "body", paragraph: root.paragraph, ...root.label ? { label: root.label } : {} }],
     ...flagged([root, ...replies].flatMap(comment => comment.findings)),

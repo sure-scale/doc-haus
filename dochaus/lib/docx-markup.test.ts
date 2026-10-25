@@ -113,6 +113,28 @@ test("counterparty items are each content change and open thread, with author, p
   expect(counterpartyItems(source, await readDocxMarkup(numbered)).map(item => item.places)).toEqual([[{ part: "body", paragraph: 4, label: "3." }]])
 })
 
+test("our own changes and threads are not theirs to answer; a thread they answered marks our entries", async () => {
+  const bytes = counterpartyMarkupDocx()
+  const source = { name: COUNTERPARTY_MARKUP.name, sha256: createHash("sha256").update(bytes).digest("hex") }
+  const markup = await readDocxMarkup(bytes)
+  const all = counterpartyItems(source, markup, [])
+  const summary = (items: ReturnType<typeof counterpartyItems>) => items.map(item => [item.author, item.change, item.ours ?? false, (item.replies ?? []).map(reply => [reply.author, reply.ours ?? false])])
+  // Morgan is our side (matched trimmed, in any case): Morgan's changes go, and Avery's
+  // thread keeps Morgan's reply as ours.
+  expect(summary(counterpartyItems(source, markup, ["  morgan OKAFOR "]))).toEqual([
+    ...all.filter(item => item.change !== "comment" && item.author === AVERY).map(item => [AVERY, item.change, false, []]),
+    [AVERY, "comment", false, [[MORGAN, true]]],
+    [AVERY, "comment", false, []],
+  ])
+  // Avery is: Avery's changes and Avery's lone planted comment go; the thread Morgan answered stays, its root ours.
+  expect(summary(counterpartyItems(source, markup, [AVERY.toUpperCase()]))).toEqual([
+    ...all.filter(item => item.change !== "comment" && item.author === MORGAN).map(item => [MORGAN, item.change, false, []]),
+    [AVERY, "comment", true, [[MORGAN, false]]],
+  ])
+  // Both: nothing is theirs.
+  expect(counterpartyItems(source, markup, [AVERY, MORGAN])).toEqual([])
+})
+
 test("a zero-width character in a comment is stripped and reported, and cannot hide an instruction from the scan", async () => {
   const hidden = plantedComment.replace("AI assistant", `AI assis${ZWSP}tant`)
   // Unnormalized, the split word escapes the AI-directive rule.
