@@ -760,6 +760,42 @@ test("Request edits on an uploaded markup proposes beside their changes under th
   }
 })
 
+// Their comments are shown to the legal pass as context, but their text is
+// theirs: a quote found only in a comment is never offered to the locator.
+test("Request edits on an uploaded markup never proposes a change inside their comment text", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-comment-"))
+  const comment = {before_quote:"stock levels monthly",replacement:"stock levels weekly",target_context:"stock reporting",reason:"Weekly reporting."}
+  const batches:LegalPass["amendments"][] = [[
+    comment,
+    {before_quote:"the law of the Province",replacement:"the law of the State",target_context:"governing law clause",reason:"Requested governing law update."},
+  ],[comment]]
+  const engine = syntheticEngine(() => ({amendments:batches.shift()!,open_items:[]}),firstCandidate)
+  const onlyInComment = "The change to \"stock levels monthly\" was not proposed: those words appear only in a comment, which doc.haus does not edit. Reply to that comment instead, or say where in the document the change goes."
+  try {
+    const file = await registeredSource(temporary,counterpartyMarkupDocx())
+    await withPreparation(temporary,engine,async (prepare) => {
+      const response = await prepare("Ask for weekly stock reports and make the State's law govern.")
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({proposed:1,open_items:[onlyInComment]})
+      // The locator is offered the body quote alone, for the one amendment left.
+      const offered = JSON.parse(engine.prompts[1]!.match(/<candidates>([\s\S]*)<\/candidates>/)![1]!) as Array<{exact_text:string;paragraph:{scope:string}}>
+      expect(offered.map((row) => [row.paragraph.scope,row.exact_text])).toEqual([["body","the law of the Province"]])
+      // With nothing left to place, the locator is not asked.
+      const alone = await prepare("Ask for weekly stock reports.")
+      expect(alone.status).toBe(200)
+      expect(await alone.json()).toMatchObject({proposed:0,open_items:[onlyInComment]})
+      expect(engine.prompts).toHaveLength(3)
+    })
+    const db = openDb(temporary)
+    try {
+      expect((db.query("SELECT find_text FROM redlines").all() as Array<{find_text:string}>).map((row) => row.find_text)).toEqual(["the law of the Province"])
+    } finally {db.close()}
+    expect(readDocxComments(await Bun.file(file).bytes()).map((row) => row.text)).toEqual(COUNTERPARTY_MARKUP.comments.map((row) => row.text))
+  } finally {
+    engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+})
+
 test("Request edits prepares on a clean uploaded source and still refuses a deliverable with pending tracked changes", async () => {
   const source = await mkdtemp(path.join(tmpdir(),"dochaus-word-clean-source-"))
   const deliverable = await mkdtemp(path.join(tmpdir(),"dochaus-word-tracked-deliverable-"))
