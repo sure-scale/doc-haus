@@ -227,10 +227,12 @@ export async function bake(original: Uint8Array, rows: RedlineRow[], state?: Red
 }
 
 // Version 1 binds a proposal to the whole Word revision it was prepared against.
-// Version 2 binds it to one pointed body paragraph's exact text and the selected
+// Version 2 binds it to one body paragraph's exact text and the selected
 // occurrence of its quote inside that paragraph; base_sha256 is diagnostic only.
+// The paragraph is the one its doc.haus pointer names (pid) or, on an uploaded
+// source where it has none, the one Word's own unique w14:paraId names (para_id).
 type RevisionBinding = { version:1; source_sha256:string; amendment_id:string; target_handle:string }
-type ParagraphBinding = { version:2; amendment_id:string; pid:string; paragraph_sha256:string; occurrence:number; base_sha256:string }
+type ParagraphBinding = { version:2; amendment_id:string; paragraph_sha256:string; occurrence:number; base_sha256:string } & ({ pid:string } | { para_id:string })
 export function binding(row:RedlineRow):RevisionBinding|ParagraphBinding {
   if (!row.target_json) throw new Error("The proposal has no exact Word revision binding.")
   const parsed:unknown = JSON.parse(row.target_json)
@@ -239,7 +241,8 @@ export function binding(row:RedlineRow):RevisionBinding|ParagraphBinding {
   const named = (text:unknown) => typeof text === "string" && text.length > 0
   if (value.version === 1 && hex(value.source_sha256) && named(value.target_handle) && named(value.amendment_id))
     return value as RevisionBinding
-  if (value.version === 2 && named(value.amendment_id) && named(value.pid) && hex(value.paragraph_sha256) && hex(value.base_sha256) &&
+  if (value.version === 2 && named(value.amendment_id) && (named(value.pid) ? !("para_id" in value) : named(value.para_id) && !("pid" in value)) &&
+    hex(value.paragraph_sha256) && hex(value.base_sha256) &&
     typeof value.occurrence === "number" && Number.isSafeInteger(value.occurrence) && value.occurrence >= 0)
     return value as ParagraphBinding
   throw new Error("The proposal's Word revision binding is invalid.")
@@ -263,8 +266,9 @@ export async function redlineState(bytes:Uint8Array,rows:RedlineRow[],options:Do
     return {sha256,targets:null}
   }
 }
+// A target's para_id is null unless no other body paragraph repeats it.
 function boundParagraph(value:ParagraphBinding,targets:ParagraphTarget[]) {
-  const target = resolveParagraphTarget(targets,value.pid)
+  const target = "pid" in value ? resolveParagraphTarget(targets,value.pid) : targets.find((row) => row.para_id === value.para_id)
   return target?.sha256 === value.paragraph_sha256 ? target : undefined
 }
 export function redlineStaleReason(row:RedlineRow,state:RedlineState,protectedWord:boolean) {
@@ -280,7 +284,7 @@ export function redlineStaleReason(row:RedlineRow,state:RedlineState,protectedWo
 }
 // One all-or-nothing write. A version 1 row is located by its stored handle
 // through whole-revision localization of the version 1 rows. A version 2 row is
-// located directly: its pointer's unchanged paragraph in these bytes and the
+// located directly: its bound paragraph, unchanged, in these bytes and the
 // stored occurrence of its quote inside that paragraph, with no whole-document
 // candidate search. Overlapping spans in one paragraph are refused. `options`
 // are the reader's DocxRevisionOptions; with a revisionAuthor the edits are

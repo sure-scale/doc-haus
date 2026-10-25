@@ -43,6 +43,7 @@ export function amendmentText(amendment: Pick<Amendment, "operation" | "updated"
 }
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+const W14 = "http://schemas.microsoft.com/office/word/2010/wordml"
 const BODY = "word/document.xml"
 // Leading underscore keeps the bookmark hidden in Word's bookmark list.
 const PREFIX = "_dh_"
@@ -83,17 +84,23 @@ export function paragraphPointers(node: Element) {
 
 // Review-proposal identity of each body paragraph in this exact revision: its
 // single well-formed pointer (null when it has none or several), every pointer it
-// carries, its projection ordinal and handle, and the sha256 of its exact text.
+// carries, Word's own w14:paraId (null when absent or repeated on another body
+// paragraph, so at most one target has each), its projection ordinal and
+// handle, and the sha256 of its exact text.
 // Unlike paragraphSha256 the text is not normalized: this is the per-paragraph
 // content check at apply. Header, footer and note paragraphs carry no pointer.
 export async function paragraphTargets(bytes: Uint8Array, options: DocxRevisionOptions = {}) {
   const opened = await openRevision(new Uint8Array(bytes), options)
   try {
+    const paraId = (node: Element) => node.getAttributeNS(W14, "paraId") || null
+    const repeated = Map.groupBy(Array.from(opened.documents[BODY]!.getElementsByTagNameNS(W, "p")), paraId)
     return opened.paragraphs.flatMap((paragraph, ordinal) => {
       if (paragraph.part !== BODY) return []
       const view = opened.revision.paragraphs[ordinal]!
       const pids = paragraphPointers(paragraph.node).map(row => row.pid)
-      return [{ pid: pids.length === 1 && PID.test(pids[0]!) ? pids[0]! : null, pids, ordinal,
+      const id = paraId(paragraph.node)
+      return [{ pid: pids.length === 1 && PID.test(pids[0]!) ? pids[0]! : null, pids,
+        para_id: id && repeated.get(id)!.length === 1 ? id : null, ordinal,
         paragraph_handle: view.paragraph_handle, sha256: createHash("sha256").update(view.text).digest("hex") }]
     })
   } finally {

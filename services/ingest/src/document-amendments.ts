@@ -195,15 +195,19 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   await applyDocxLocalization(initial.bytes,admitted,resolved.map((value) => value.selection),layer)
   // A selection in a body paragraph with exactly one pointer binds to that
   // paragraph's exact text, so accepting a change elsewhere leaves it valid.
-  // Any other target keeps the whole-revision binding.
+  // Where an uploaded source's paragraph has no pointer, Word's own paragraph
+  // id serves when no other paragraph repeats it. Any other target keeps the
+  // whole-revision binding.
   const targets = await paragraphTargets(initial.bytes,layer)
   const bindings = resolved.map(({amendment,selection}) => {
     const candidates = admitted.candidates.filter((candidate) => candidate.amendment_id === amendment.id)
     const chosen = candidates.find((candidate) => candidate.target_handle === selection.target_handle)!
     const handle = chosen.paragraph.paragraph_handle
     const target = targets.find((row) => row.paragraph_handle === handle)
-    return target?.pid && resolveParagraphTarget(targets,target.pid) === target
-      ? {version:2,amendment_id:amendment.id,pid:target.pid,paragraph_sha256:target.sha256,
+    const paragraph = target?.pid && resolveParagraphTarget(targets,target.pid) === target ? {pid:target.pid}
+      : initial.role === "source" && target?.para_id ? {para_id:target.para_id} : undefined
+    return target && paragraph
+      ? {version:2,amendment_id:amendment.id,...paragraph,paragraph_sha256:target.sha256,
         occurrence:candidates.filter((candidate) => candidate.paragraph.paragraph_handle === handle).indexOf(chosen),base_sha256:revision.source_sha256}
       : {version:1,source_sha256:revision.source_sha256,amendment_id:amendment.id,target_handle:selection.target_handle}
   })

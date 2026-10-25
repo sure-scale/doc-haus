@@ -790,6 +790,74 @@ test("Request edits prepares on a clean uploaded source and still refuses a deli
   }
 })
 
+// Word gives each paragraph its own w14:paraId; the fixture's body has none.
+// `id` maps each body w:p, in order, to its id's number.
+function withParaIds(bytes:Uint8Array,id = (index:number) => index) {
+  const parts = unzipSync(bytes)
+  let index = 0
+  parts["word/document.xml"] = strToU8(strFromU8(parts["word/document.xml"]!)
+    .replaceAll("<w:p>",() => `<w:p w14:paraId="${(0x3A000000 + id(index++)).toString(16).toUpperCase()}">`))
+  return zipSync(parts,{mtime:new Date(1980,0,1)})
+}
+
+test("on an uploaded markup with Word paragraph ids, accepting one proposal leaves the other valid, and one whose paragraph changed is still refused", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-para-ids-"))
+  const layer = {pendingRevisions:"layer"} as const
+  const batches:LegalPass["amendments"][] = [[
+    {before_quote:"the Province",replacement:"the State",target_context:"governing law clause",reason:"Requested governing law update."},
+    {before_quote:"without consent",replacement:"without prior written consent",target_context:"assignment clause",reason:"Consent must be written."},
+  ],[
+    {before_quote:"the State",replacement:"the Commonwealth",target_context:"governing law clause",reason:"Requested governing law update."},
+    {before_quote:"prior written consent",replacement:"prior written and signed consent",target_context:"assignment clause",reason:"Consent must be signed."},
+  ]]
+  const engine = syntheticEngine(() => ({amendments:batches.shift()!,open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  try {
+    await ingest.start("only")
+    const matter = await ingest.matter("Markup accepted one at a time")
+    expect((await ingest.request(`${matter.route}/documents`,{method:"POST",body:wordForm(withParaIds(counterpartyMarkupDocx()))})).status).toBe(200)
+    const markup = await Bun.file(matter.file).bytes()
+    const body = async (bytes:Uint8Array) => (await createDocxRevision(bytes,layer)).paragraphs.filter((row) => row.scope === "body").map((row) => row.text)
+    // Clause 9 and the continuation of clause 7, the two paragraphs without a pending change.
+    const [first,second] = (await (await matter.prepare("Make the State's law govern and require written consent to assign.")).json() as {redline_ids:number[]}).redline_ids
+    expect(await matter.accept(first)).toBe(200)
+    expect(await matter.pending()).toEqual([[second,undefined,undefined]])
+    // The tracked export holds it, a deletion and an insertion, beside their changes.
+    const exported = await ingest.request(`${matter.route}/documents/redlined?name=working.docx`)
+    expect(exported.status).toBe(200)
+    expect((await (await docxodus()).getRevisions(new Uint8Array(await exported.arrayBuffer()))).length)
+      .toBe((await (await docxodus()).getRevisions(markup)).length+2)
+    expect(await matter.accept(second)).toBe(200)
+    const accepted = await Bun.file(matter.file).bytes()
+    expect(await body(accepted)).toEqual((await body(markup)).map((text,ordinal) => ordinal === 9 ? "9. Governing law. This Agreement is governed by the law of the State."
+      : ordinal === 7 ? " without prior written consent." : text))
+    expect((await (await ingest.request(`${matter.route}/documents/markup?name=working.docx`)).json() as {revisions:unknown[]}).revisions).toHaveLength(10)
+    // Each was bound to its paragraph's Word id and exact text, not the whole file.
+    const targets = await paragraphTargets(markup,layer)
+    expect(matter.bindings([first,second])).toEqual([9,7].map((ordinal,index) => ({version:2,amendment_id:`amendment-${index+1}`,
+      para_id:targets[ordinal]!.para_id,paragraph_sha256:targets[ordinal]!.sha256,occurrence:0,base_sha256:sha256(markup)})))
+    expect(targets.map((row) => row.para_id)).toEqual(targets.map(() => expect.stringMatching(/^3A0000[0-9A-F]{2}$/)))
+    // A paragraph id another paragraph repeats names neither.
+    expect((await paragraphTargets(withParaIds(counterpartyMarkupDocx(),(index) => index === 10 ? 8 : index),layer)).map((row) => row.para_id === null))
+      .toEqual(targets.map((_,ordinal) => ordinal === 7 || ordinal === 9))
+
+    const [law,consent] = (await (await matter.prepare("Make the Commonwealth's law govern and require signed consent.")).json() as {redline_ids:number[]}).redline_ids
+    expect(await matter.pending()).toEqual([[law,undefined,undefined],[consent,undefined,undefined]])
+    // A lawyer's saved version adds to the continuation; Word keeps its paragraph id.
+    const parts = unzipSync(accepted)
+    parts["word/document.xml"] = strToU8(strFromU8(parts["word/document.xml"]!).replace(new RegExp(`(<w:p\\b[^>]*w14:paraId="${targets[7]!.para_id}"[^>]*>[\\s\\S]*?)</w:p>`),
+      '$1<w:r><w:t xml:space="preserve"> Any other assignment is void.</w:t></w:r></w:p>'))
+    const saved = zipSync(parts,{mtime:new Date(1980,0,1)})
+    expect((await body(saved))[7]).toBe(" without prior written consent. Any other assignment is void.")
+    expect((await ingest.request(`${matter.route}/documents/revisions`,{method:"POST",body:wordForm(saved)})).status).toBe(200)
+    expect(await matter.pending()).toEqual([[law,undefined,undefined],[consent,true,paragraphChanged]])
+    expect(await matter.accept(consent)).toBe(409)
+    expect(sha256(await Bun.file(matter.file).bytes())).toBe(sha256(saved))
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
 test("accepting paragraph-bound amendments to a numbered list paragraph and a table paragraph preserves numbering, tables, sibling paragraphs and untouched runs", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-numbered-"))
   const file = path.join(directory,"working.docx")
