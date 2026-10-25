@@ -1053,6 +1053,44 @@ test("on an uploaded markup, a proposal whose paragraph gains their formatting c
   }
 },120000)
 
+// An edit Accept kept tracked as "doc.haus", before the lawyer saved a name,
+// is still ours once they have: it holds no paragraph.
+test("on an uploaded markup, doc.haus's tracked change from before an attorney was saved holds no paragraph after", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-own-"))
+  const batches:LegalPass["amendments"][] = [
+    [{before_quote:"the Province",replacement:"the State",target_context:"governing law clause",reason:"Requested governing law update."}],
+    [{before_quote:"governed by the law",replacement:"governed by the laws",target_context:"governing law clause",reason:"Requested wording."}],
+  ]
+  const engine = syntheticEngine(() => ({amendments:batches.shift()!,open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  const by = (author:string,rows:Awaited<ReturnType<typeof listedRevisions>>) => rows.filter((row) => row.author === author).map((row) => [row.type,row.text])
+  try {
+    await ingest.start("only")
+    const matter = await ingest.matter("Markup accepted before and after naming the attorney")
+    expect((await ingest.request(`${matter.route}/documents`,{method:"POST",body:wordForm(withParaIds(counterpartyMarkupDocx()))})).status).toBe(200)
+    const theirs = await listedRevisions(await Bun.file(matter.file).bytes())
+    const [law] = (await (await matter.prepare("Make the State's law govern.")).json() as {redline_ids:number[]}).redline_ids
+    expect(await matter.accept(law!)).toBe(200)
+    expect(by("doc.haus",await listedRevisions(await Bun.file(matter.file).bytes()))).toEqual([["delete","Province"],["insert","State"]])
+    // The lawyer saves their name, as the Tracked changes panel asks for it.
+    expect((await ingest.request("/preferences",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({attorney:"Riley Chen"})})).status).toBe(200)
+    const prepared = await (await matter.prepare("Make the laws govern.")).json() as {redline_ids:number[]}
+    expect(prepared).toMatchObject({proposed:1,open_items:[]})
+    const [laws] = prepared.redline_ids
+    expect(await matter.pending()).toEqual([[laws,undefined,undefined]])
+    expect(await matter.accept(laws!)).toBe(200)
+    // Tracked beside doc.haus's change under the attorney, theirs as they were.
+    const accepted = await Bun.file(matter.file).bytes()
+    expect((await createDocxRevision(accepted,{pendingRevisions:"layer"})).paragraphs[9]!.text).toBe("9. Governing law. This Agreement is governed by the laws of the State.")
+    const after = await listedRevisions(accepted)
+    expect(by("Riley Chen",after)).toEqual([["delete","law"],["insert","laws"]])
+    expect(by("doc.haus",after)).toEqual([["delete","Province"],["insert","State"]])
+    expect(after.filter((row) => row.author !== "doc.haus" && row.author !== "Riley Chen")).toEqual(theirs)
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
 test("accepting paragraph-bound amendments to a numbered list paragraph and a table paragraph preserves numbering, tables, sibling paragraphs and untouched runs", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-numbered-"))
   const file = path.join(directory,"working.docx")

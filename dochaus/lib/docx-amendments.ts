@@ -31,10 +31,10 @@ export type DocxLocalizationLimits = Limits
 // DocxTrackedRevisionsError. "layer" projects their accepted text and leaves them
 // pending: an edit in a paragraph with a pending revision is refused, and other
 // edits are written beside them. With "layer", a revisionAuthor writes edits as
-// native tracked changes under that name, and pending revisions by ownAuthor
-// (doc.haus's own name: edits an earlier Accept kept tracked) hold no paragraph:
-// an edit beside them is written, one inside their text is refused.
-export type DocxRevisionOptions = { pendingRevisions?: "refuse" | "layer"; revisionAuthor?: string; ownAuthor?: string }
+// native tracked changes under that name, and pending revisions by ownAuthors
+// (every name doc.haus signs with: edits an earlier Accept kept tracked) hold no
+// paragraph: an edit beside them is written, one inside their text is refused.
+export type DocxRevisionOptions = { pendingRevisions?: "refuse" | "layer"; revisionAuthor?: string; ownAuthors?: readonly string[] }
 
 // A working-document projection is a view, not legal source authority. No native
 // UNIDs or offsets leave this module. Handles are valid only for this exact base.
@@ -150,7 +150,7 @@ function admitted(opened: Opened, binding: Binding) {
   const { amendment, match, ordinal } = binding
   // The touch rule (see pendingRevisionParagraphs); only a layer-mode reader marks paragraphs.
   const pending = opened.paragraphs[ordinal]!.pending
-  if (othersPending(pending, opened.options.ownAuthor)) throw new Error(`docx_pending_revision:${amendment.id}`)
+  if (othersPending(pending, opened.options.ownAuthors).length) throw new Error(`docx_pending_revision:${amendment.id}`)
   if (/[\r\n\t]/.test(amendment.replacement)) throw new Error("unsupported_structural_replacement")
   if (!amendment.replacement && match.text === opened.paragraphs[ordinal].match.text)
     throw new Error("unsupported_empty_paragraph_replacement")
@@ -185,7 +185,7 @@ function insideRevision(opened: Opened, match: Match) {
 }
 
 /** Each selected amendment the writer would refuse for landing inside
- * doc.haus's own pending change (ownAuthor), by amendment id; nothing is
+ * doc.haus's own pending change (ownAuthors), by amendment id; nothing is
  * written. Prepare reports these as open items before qualifying the batch. */
 export async function ownRevisionRefusals(bytes: Uint8Array, packet: DocxLocalizationPacket, selections: unknown, options: DocxRevisionOptions) {
   const opened = await openRevision(new Uint8Array(bytes), options)
@@ -383,15 +383,18 @@ export class DocxTrackedRevisionsError extends Error {
 // pending when the native revision listing names it (both ends of a move
 // included), or when its own markup, paragraph mark included, or an enclosing
 // table, row or cell's properties carry a revision element. Any author counts,
-// but doc.haus's own (ownAuthor; see othersPending): an edit there would merge
+// but doc.haus's own (ownAuthors; see othersPending): an edit there would merge
 // with their change in Word, or untracked become their text. doc.haus's own are
 // edits an Accept wrote tracked into their markup; an edit may stand beside
 // those, never inside them.
 
-/** Whether a paragraph's pending revisions, by their authors as pendingAuthors
- * lists them ("" for none named), include one by someone other than `own`. */
-export function othersPending(authors: readonly string[] | undefined, own?: string) {
-  return Boolean(authors?.some(author => author !== own))
+/** The authors of a paragraph's pending revisions, as pendingAuthors lists them
+ * ("" for none named), that are not one of `own`: someone else holds the
+ * paragraph when any is left. Names match trimmed and case-insensitively, as
+ * counterpartyItems matches ours. */
+export function othersPending(authors: readonly string[] | undefined, own: readonly string[] = []) {
+  const names = new Set(own.map(name => name.trim().toLowerCase()).filter(Boolean))
+  return (authors ?? []).filter(author => !names.has(author.trim().toLowerCase()))
 }
 
 /** Each paragraph of these bytes with a pending revision, by paragraph_handle,

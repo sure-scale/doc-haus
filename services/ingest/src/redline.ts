@@ -2,9 +2,9 @@ import { docxodus } from "./docxodus"
 import { compareDocxWithPointers, paragraphTargets, resolveParagraphTarget, withStableRevisionDates, type ParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import type { RedlineRow } from "./db"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { createDocxLocalization, applyDocxParagraphEdits, DocxTrackedRevisionsError, openRevision, pendingRevisionAnchors, pendingRevisionRefusal, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
+import { createDocxLocalization, applyDocxParagraphEdits, DocxTrackedRevisionsError, openRevision, othersPending, pendingRevisionAnchors, pendingRevisionRefusal, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { createHash } from "node:crypto"
-import { draftingAttribution } from "../../../dochaus/lib/docx-attribution"
+import { draftingAttribution, ourAuthors } from "../../../dochaus/lib/docx-attribution"
 import { normalizeUntrustedText } from "../../../dochaus/lib/untrusted-text"
 import { listNames } from "./document-versions"
 import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphPositions, readDocxCommentParagraphs } from "../../../dochaus/lib/docx-comments"
@@ -180,8 +180,9 @@ export function layeredRedline(rows: RedlineRow[], options: DocxRevisionOptions)
 // would accept them. Track Changes is left on, as a returned redline travels.
 async function layeredExport(original: Uint8Array, rows: RedlineRow[], state: RedlineState | undefined, options: DocxRevisionOptions) {
   const author = previewAuthor(rows)
-  const baked = await bakeBound(original, rows, state, { ...options, ownAuthor: author })
-  const tracked = await bakeBound(original, rows, state, { ...options, ownAuthor: author, revisionAuthor: author })
+  const ownAuthors = ours(author)
+  const baked = await bakeBound(original, rows, state, { ...options, ownAuthors })
+  const tracked = await bakeBound(original, rows, state, { ...options, ownAuthors, revisionAuthor: author })
   let output = tracked.bytes
   if (rows.some(row => row.review_comment.trim())) {
     // An edit keeps every w:p in place, so the edited paragraph's position in
@@ -209,6 +210,10 @@ async function bodyParagraphPositions(bytes: Uint8Array, options: DocxRevisionOp
   } finally { opened.session.close() }
 }
 
+// Our own side's names on a document: every name doc.haus signs with and the
+// proposals' recorded author. Their pending changes hold no paragraph.
+const ours = (author: string) => [...ourAuthors(), author]
+
 function previewAuthor(rows: RedlineRow[]) {
   const fallback = draftingAttribution().author
   const authors = [...new Set(rows.map(row => row.author || fallback))]
@@ -232,12 +237,13 @@ function previewAuthor(rows: RedlineRow[]) {
 export async function bake(original: Uint8Array, rows: RedlineRow[], state?: RedlineState, options: DocxRevisionOptions = {}): Promise<Uint8Array> {
   const bound = rows.some((row) => row.target_json != null)
   if (bound && rows.some((row) => row.target_json == null)) throw new Error("Revision-bound and older proposals require separate review. Prepare a fresh change list.")
-  const write = async (author?: string, revisionAuthor?: string) => bound
-    ? (await bakeBound(original,rows,state,{...options,...author ? {ownAuthor:author} : {},...revisionAuthor ? {revisionAuthor} : {}})).bytes
+  const write = async (ownAuthors?: readonly string[], revisionAuthor?: string) => bound
+    ? (await bakeBound(original,rows,state,{...options,...ownAuthors ? {ownAuthors} : {},...revisionAuthor ? {revisionAuthor} : {}})).bytes
     : bakeOlder(original,rows,revisionAuthor)
   if (options.pendingRevisions !== "layer" || !(await (await docxodus()).getRevisions(original)).length) return write()
   const author = previewAuthor(rows)
-  const [plain,tracked] = [await write(author),await write(author,author)]
+  const own = ours(author)
+  const [plain,tracked] = [await write(own),await write(own,author)]
   await assertLayeredRoundTrip(tracked,original,plain)
   return tracked
 }
@@ -314,10 +320,10 @@ export function redlineStaleReason(row:RedlineRow,state:RedlineState,protectedWo
   // Never rebased: the pointed paragraph must still read exactly as prepared.
   const target = boundParagraph(value,state.targets)
   if (!target) return paragraphChanged
-  // The touch rule (othersPending): a later pending change by anyone but the
-  // proposal's author holds the paragraph, one that leaves its text as it was
-  // (a formatting change) included.
-  const others = target.pending.filter((author) => author !== (row.author || draftingAttribution().author))
+  // The touch rule (othersPending): a later pending change by anyone but our
+  // own side (every name doc.haus signs with, and the proposal's author) holds
+  // the paragraph, one that leaves its text as it was (a formatting change) included.
+  const others = target.pending.length ? othersPending(target.pending,ours(row.author)) : []
   return others.length ? heldParagraph(row.find_text,others) : undefined
 }
 function heldParagraph(text:string,authors:string[]) {
