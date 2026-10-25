@@ -18,6 +18,14 @@ import { withArtifactMutationLocksAsync } from "../capabilities/artifacts/mutati
 // and rebuilds a saved combined file. Edits here are plain (non-tracked);
 // tracked changes are a separate tool.
 
+// This edit is untracked, so beside tracked changes it would not show. As
+// Request edits does, a Word file other than an uploaded source is refused while
+// it has them; an uploaded markup is left to Request edits, which tracks.
+const trackedRefusal = (directory: string, name: string, bytes: Uint8Array) => !hasTrackedRevisions(bytes) ? undefined
+  : registeredWordSource(directory, name)
+    ? "This uploaded markup has tracked changes, so an untracked edit would not show in it. Use Request edits, which makes tracked changes."
+    : trackedRevisionsReason
+
 export default tool({
   description:
     'Read or edit the matter\'s canonical Word (.docx) document in place. Use action "read" to get the document text, or "replace" to change wording. Edits are plain (not tracked changes) and re-open correctly in Microsoft Word, so a file with tracked changes is refused; an uploaded markup is edited with Request edits instead. A list number Word prints before a paragraph ("2.1") is not text; leave it out of find and replace.',
@@ -48,6 +56,9 @@ export default tool({
     // asked before the Docxodus session opens so a rejection leaks nothing.
     // "Always" approves future edits to this document only.
     if (!args.find || args.replace === undefined) return 'Replace requires both "find" and "replace".'
+    // The file alone decides this refusal, so no one approves an edit it refuses.
+    const refused = trackedRefusal(ctx.directory, name, await Bun.file(file).bytes())
+    if (refused) return refused
     await ctx.ask({
       permission: "word-integration",
       patterns: [file],
@@ -60,12 +71,9 @@ export default tool({
     const edit = await withArtifactMutationLocksAsync(ctx.directory,[file],async () => {
       assertDirectWorkingDocxWriteAllowed(ctx.directory,file)
       const original = await Bun.file(file).bytes()
-      // This edit is untracked, so beside tracked changes it would not show. As
-      // Request edits does, a Word file other than an uploaded source is refused
-      // while it has them; an uploaded markup is left to Request edits, which tracks.
-      if (hasTrackedRevisions(original)) return registeredWordSource(ctx.directory,name)
-        ? "This uploaded markup has tracked changes, so an untracked edit would not show in it. Use Request edits, which makes tracked changes."
-        : trackedRevisionsReason
+      // Again for the bytes edited: the file may have changed while the lawyer was asked.
+      const changed = trackedRefusal(ctx.directory,name,original)
+      if (changed) return changed
       const session = (await docxodus()).openDocxSession(original,{})
       try {
         const {find,replace,targets,error} = findPastListLabel(args.find!,args.replace!,(text) => session.findAllByText(text),(id) => session.getAnchorInfo(id)?.visibleText)

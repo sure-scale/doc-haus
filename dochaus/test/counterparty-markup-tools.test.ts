@@ -37,6 +37,9 @@ function register(root: string, role: "source" | "deliverable") {
 
 // word-integration's edit is untracked, so it would not show in their markup.
 const untracked = "This uploaded markup has tracked changes, so an untracked edit would not show in it. Use Request edits, which makes tracked changes."
+// A tool context in which asking the lawyer to approve fails the test: a file
+// the tools refuse is refused before anyone is asked.
+const unasked = <T extends object>(context: T) => ({ ...context, async ask(): Promise<void> { throw new Error("Approval was requested for a refused edit.") } })
 
 const refusal = (text: string, author: string, verb = "proposed") =>
   `The change to ${JSON.stringify(text)} was not ${verb}: that paragraph has a pending change by ${author}. Accept or reject it under Tracked changes, then request edits again.`
@@ -63,7 +66,7 @@ test("the chat tools refuse a paragraph with their pending change, and record or
       .toBe(refusal("Notices must be in writing.", "Avery Lindqvist"))
     expect(pendingRedlinesForDoc(root, document)).toEqual([])
     // Inside Avery's insertion in clause 1.
-    expect(await wordIntegration.execute({ document: COUNTERPARTY_MARKUP.name, action: "replace", find: "forty-five days of each", replace: "sixty days of each" }, context))
+    expect(await wordIntegration.execute({ document: COUNTERPARTY_MARKUP.name, action: "replace", find: "forty-five days of each", replace: "sixty days of each" }, unasked(context)))
       .toBe(untracked)
     expect(saved).toEqual([])
     expect(new Uint8Array(readFileSync(document))).toEqual(counterpartyMarkupDocx())
@@ -104,7 +107,7 @@ test("the chat tools edit beside doc.haus's own pending change and refuse to rew
     // Beside it, in the same paragraph.
     await trackedChanges.execute({ document: COUNTERPARTY_MARKUP.name, find: "governed by", replace: "construed under", comment }, context)
     expect(proposed()).toEqual([["governed by", "construed under"]])
-    expect(await wordIntegration.execute({ document: COUNTERPARTY_MARKUP.name, action: "replace", find: "governed by", replace: "construed under" }, context))
+    expect(await wordIntegration.execute({ document: COUNTERPARTY_MARKUP.name, action: "replace", find: "governed by", replace: "construed under" }, unasked(context)))
       .toBe(untracked)
 
     // Inside its insertion of "State", and a rewrite of its whole clause.
@@ -112,7 +115,7 @@ test("the chat tools edit beside doc.haus's own pending change and refuse to rew
       .toBe(inside("the State"))
     expect(await redline.execute({ document: COUNTERPARTY_MARKUP.name, clause: "This Agreement is governed by the law of the State.", replacement: "This Agreement is construed under the law of the State.", comment }, context))
       .toBe(inside("This Agreement is governed by the law of the State."))
-    expect(await wordIntegration.execute({ document: COUNTERPARTY_MARKUP.name, action: "replace", find: "the State", replace: "the Commonwealth" }, context))
+    expect(await wordIntegration.execute({ document: COUNTERPARTY_MARKUP.name, action: "replace", find: "the State", replace: "the Commonwealth" }, unasked(context)))
       .toBe(untracked)
     expect(proposed()).toEqual([["governed by", "construed under"]])
     expect(saved).toEqual([])
@@ -143,10 +146,10 @@ test("on a deliverable with doc.haus's own pending change the chat tools refuse 
   process.env.INGEST_URL = ingest.url.href.replace(/\/$/, "")
   const refused = "This Word file contains tracked changes. Accept or reject them in Word before preparing changes."
   try {
-    expect(await trackedChanges.execute({ document: COUNTERPARTY_MARKUP.name, find: "governed by", replace: "construed under", comment }, context)).toBe(refused)
-    expect(await redline.execute({ document: COUNTERPARTY_MARKUP.name, clause: "This Agreement is governed by the law of the State.", replacement: "This Agreement is construed under the law of the State.", comment }, context))
+    expect(await trackedChanges.execute({ document: COUNTERPARTY_MARKUP.name, find: "governed by", replace: "construed under", comment }, unasked(context))).toBe(refused)
+    expect(await redline.execute({ document: COUNTERPARTY_MARKUP.name, clause: "This Agreement is governed by the law of the State.", replacement: "This Agreement is construed under the law of the State.", comment }, unasked(context)))
       .toBe(refused)
-    expect(await wordIntegration.execute({ document: COUNTERPARTY_MARKUP.name, action: "replace", find: "governed by", replace: "construed under" }, context)).toBe(refused)
+    expect(await wordIntegration.execute({ document: COUNTERPARTY_MARKUP.name, action: "replace", find: "governed by", replace: "construed under" }, unasked(context))).toBe(refused)
     expect(pendingRedlinesForDoc(root, document)).toEqual([])
     expect(saved).toEqual([])
     expect(new Uint8Array(readFileSync(document))).toEqual(tracked)
