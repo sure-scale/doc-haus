@@ -10,10 +10,13 @@ import { readChangeList, readParagraphs } from "../workflows/lean/checks"
 import { readLeanPlan } from "../workflows/lean/plan"
 import { UNTRUSTED_DOCUMENT_NOTICE } from "./untrusted"
 import { readDocxBodyView } from "./docx-revision-views"
+import { readMarkupComments } from "./docx-markup"
+import { detectInjection, normalizeUntrustedText } from "./untrusted-text"
 
 export type CurrentDocumentView = "current_body" | "baseline_body" | "marked_up_body" | "comments" | "deleted_text" | "proposed_body"
 /** `label` is the list number Word prints before a body paragraph ("2.1"); it is not part of `text`. */
-export type CurrentDocumentEntry = { index: number; artifact: string; sha256: string; label?: string; text: string; paragraph_index?: number; pids?: string[]; comment_id?: string; markers?: unknown; representation?: "generated_proposal"; initial_pid?: string; proposed_part_index?: number; basis?: string[] }
+/** `flagged` names the injection rules an untrusted entry matched; its text is normalized (invisible characters removed). */
+export type CurrentDocumentEntry = { index: number; artifact: string; sha256: string; label?: string; text: string; flagged?: string[]; paragraph_index?: number; pids?: string[]; comment_id?: string; author?: string; date?: string | null; parent?: string | null; resolved?: boolean | null; markers?: unknown; representation?: "generated_proposal"; initial_pid?: string; proposed_part_index?: number; basis?: string[] }
 type CurrentView = { status: "available"; document: string; view: CurrentDocumentView; entries: CurrentDocumentEntry[] } | { status: "unavailable"; document: string; view: CurrentDocumentView; reason: string }
 
 /** Actual Word and the explicitly requested pending projection remain distinct evidence views. */
@@ -71,17 +74,35 @@ export async function currentDocumentView(directory: string, document: string, v
     for (const row of artifacts) {
       const bytes = row.bytes!
       const identity = { artifact: row.artifact, sha256: createHash("sha256").update(bytes).digest("hex") }
+      // A planned document's body text stays exact: amendments target it. An
+      // uploaded source's views, and every comment and deleted text, are
+      // third-party text, read as ingest indexes it.
       if (view === "current_body" || revisionView) for (const paragraph of await readDocxBodyView(bytes, view as "current_body" | "baseline_body" | "marked_up_body")) {
         const label = view === "current_body" ? paragraph.pids.map(pid => labels.get(pid)).find(Boolean) : undefined
-        entries.push({ index: entries.length, ...identity, paragraph_index: paragraph.paragraph_index, pids: paragraph.pids, ...(label ? { label } : {}), text: paragraph.paragraph_text })
+        entries.push({ index: entries.length, ...identity, paragraph_index: paragraph.paragraph_index, pids: paragraph.pids, ...(label ? { label } : {}), ...(uploaded ? screened(paragraph.paragraph_text) : { text: paragraph.paragraph_text }) })
       }
-      if (view === "comments") for (const comment of readDocxComments(bytes)) entries.push({ index: entries.length, ...identity, comment_id: comment.comment_id, markers: comment.markers.map(marker => ({ kind: marker.kind, paragraph_index: marker.paragraph_index, xml_paragraph_index: marker.xml_paragraph_index, pids: marker.pids })), text: comment.text })
-      if (view === "deleted_text") for (const text of readDocxRevisionText(bytes).deleted_text) entries.push({ index: entries.length, ...identity, text })
+      if (view === "comments") {
+        const native = readDocxComments(bytes)
+        for (const comment of await readMarkupComments(bytes, native)) {
+          const markers = native.find(row => row.comment_id === String(comment.id))?.markers ?? []
+          // The commented body text is screened as body text, not as this comment.
+          const rules = [...new Set(comment.findings.filter(finding => finding.field !== "quote").map(finding => finding.rule))]
+          entries.push({ index: entries.length, ...identity, comment_id: String(comment.id), author: comment.author, date: comment.date, parent: comment.parent === null ? null : String(comment.parent), resolved: comment.resolved,
+            markers: markers.map(marker => ({ kind: marker.kind, paragraph_index: marker.paragraph_index, xml_paragraph_index: marker.xml_paragraph_index, pids: marker.pids })), text: comment.text, ...(rules.length ? { flagged: rules } : {}) })
+        }
+      }
+      if (view === "deleted_text") for (const text of readDocxRevisionText(bytes).deleted_text) entries.push({ index: entries.length, ...identity, ...screened(text) })
     }
     return { status: "available", document, view, entries }
   } catch {
     return { status: "unavailable", document, view, reason: view === "proposed_body" ? "Pending projection could not be validated or read safely. No proposed-body search or absence conclusion was made." : "Current Word artifact could not be read safely or parsed. No search or absence conclusion was made." }
   }
+}
+
+function screened(raw: string) {
+  const normalized = normalizeUntrustedText(raw)
+  const rules = [...new Set([...normalized.findings, ...detectInjection(normalized.text)].map(finding => finding.rule))]
+  return { text: normalized.text, ...(rules.length ? { flagged: rules } : {}) }
 }
 
 function registeredWordSource(directory: string, document: string) {
@@ -98,7 +119,8 @@ function registeredWordSource(directory: string, document: string) {
 function response(value: Record<string, unknown>, truncated = false) {
   const representation = value.view === "proposed_body" ? "Generated pending revision derived from initial paragraphs and current amendments; not actual Word, adopted wording, or source/instruction authority. Initial PIDs and part indices are projection coordinates, not final native Word PIDs."
     : value.view === "baseline_body" ? "Reject-all text projection of the named Word artifact. This is an original reading, not the agreed/current text. Its paragraph ordinals and PIDs are projection coordinates, never current amendment targets."
-    : value.view === "marked_up_body" ? "Marked-up text projection: inline insert/delete/move markers name their recorded authors. Includes proposed and deleted text; no accept/reject decision is implied. Paragraph positions refer to this projection, never current amendment targets." : undefined
+    : value.view === "marked_up_body" ? "Marked-up text projection: inline insert/delete/move markers name their recorded authors. Includes proposed and deleted text; no accept/reject decision is implied. Paragraph positions refer to this projection, never current amendment targets."
+    : value.view === "comments" ? "Native Word comments, separate from body text. parent is the comment_id a reply answers; resolved is null when the file records no thread state." : undefined
   return { title: "Current document evidence", output: JSON.stringify({ ...value, notice: UNTRUSTED_DOCUMENT_NOTICE, ...(representation ? { representation } : {}) }), metadata: { truncated } }
 }
 
