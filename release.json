@@ -1,5 +1,5 @@
 {
   "version": 10,
   "name": "2.0.8",
-  "notes": "Respond to the other side's markup in one place. Your edits stay as tracked changes under your name beside theirs, doc.haus drafts replies to their comments for you to check and approve, and after you save it lists the cross-references and defined terms to re-check. A simpler Tracked changes panel that works like Word, with comments shown as Word-style bubbles beside the page. Hover over marked-up text to see who changed that clause and when. Various minor bug fixes."
+  "notes": "Respond to the other side's markup in one place. Your edits stay as tracked changes under your name beside theirs, doc.haus drafts replies to their comments for you to check and approve, and after you save it lists the cross-references and defined terms to re-check. A simpler Tracked changes panel that feels familiar, with comments shown as bubbles beside the page. Hover over marked-up text to see who changed that clause and when. Various minor bug fixes."
 }
