@@ -1,16 +1,19 @@
 import { afterEach, expect, test } from "bun:test"
+import { Database } from "bun:sqlite"
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { counterpartyItems, readDocxMarkup } from "../../lib/docx-markup"
+import { docxodus } from "../../lib/docxodus"
 import { liveText } from "../../lib/extract"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx } from "../../test/support/counterparty-markup-fixture"
 import type { RegisterEntry } from "./register"
+import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { stageInputs } from "./stages"
-import { leanFile, readLeanJson, writeLeanText } from "./state"
+import { leanFile, readLeanJson, readQuestions, writeLeanText } from "./state"
 import { AGENT, cleanupMatters, drafter, happyPath, listedFindingIDs, matter, NO_FINDINGS, noChanges, scriptedModel, SOURCE, type Reply } from "./test-support"
 
 // A revision of the other side's markup (test/support/counterparty-markup-fixture.ts):
@@ -43,6 +46,11 @@ async function revise(original: Uint8Array, plan?: Reply, before?: (directory: s
   writeFileSync(path.join(directory, SOURCE), original)
   writeLeanText(directory, "request.md", "Respond to the other side's markup of the supply agreement.")
   before?.(directory)
+  return { directory, ...await run(directory, plan) }
+}
+
+/** The revising run in `directory`, started or resumed, and the change-plan prompts it sent. */
+async function run(directory: string, plan?: Reply) {
   const agent = drafter(REVISED)
   const model = scriptedModel({ ...happyPath, [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: noChanges, ...(plan ? { [AGENT["change-plan"]]: plan } : {}),
     [AGENT.draft]: (prompt, index) => {
@@ -51,7 +59,7 @@ async function revise(original: Uint8Array, plan?: Reply, before?: (directory: s
     } })
   const result = await runLean(directory, { sessions: model.port, registerDeliverable: async (dir, name, bytes) => { writeFileSync(path.join(dir, name), bytes); return name } })
   const plans = model.prompts.filter(prompt => prompt.agent === AGENT["change-plan"]).map(prompt => prompt.text)
-  return { directory, result, plans }
+  return { result, plans }
 }
 
 /** A change plan that rejects each listed finding with the position the draft takes. */
@@ -125,6 +133,34 @@ test("the lawyer's own changes and replies in the original are not put to the pl
     else process.env.WORKSPACE_ROOT = previous
     rmSync(workspace, { recursive: true, force: true })
   }
+})
+
+test("a change plan re-run after the lawyer decides their changes adjudicates the markup the source now holds", async () => {
+  // The plan asks a question first, so the run waits with every item listed.
+  const asked: Reply = (prompt, index) => {
+    const value = JSON.parse(rejectAll(listedFindingIDs(prompt)))
+    return index ? JSON.stringify(value) : JSON.stringify({ ...value, questions: [{ pid: /^\[(p[0-9a-f]{12})\] /m.exec(prompt)![1], question: "Is the forty-five day lead time agreed?", kind: "instruction", context: "Clause 1 depends on it." }] })
+  }
+  const original = counterpartyMarkupDocx()
+  const { directory, result, plans } = await revise(original, asked)
+  expect(result.status).toBe("blocked")
+  expect(listedFindingIDs(plans[0]!)).toHaveLength(11)
+  // Meanwhile, in Their changes, the lawyer accepts every change: the Apply
+  // writes the source's next version, which ingest indexes again. Its two open
+  // comment threads are all that is left to answer.
+  const applied = await (await docxodus()).docxDiffAcceptRevisions(original)
+  writeFileSync(path.join(directory, SOURCE), applied)
+  const text = await liveText(path.join(directory, SOURCE))
+  const db = new Database(path.join(directory, ".dochaus", "legal.db"))
+  try { db.query("UPDATE chunks SET text = ?, char_end = ? WHERE doc_name = ?").run(text, text.length, SOURCE) } finally { db.close() }
+  enqueueLeanRequest(directory, { kind: "answer", question_id: readQuestions(directory).find(row => row.stage === "change-plan")!.id, answer: "Yes, it is agreed." })
+  const resumed = await run(directory, asked)
+  expect(resumed.result.status).toBe("completed")
+  const items = counterpartyItems({ name: SOURCE, sha256: createHash("sha256").update(applied).digest("hex") }, await readDocxMarkup(applied))
+  expect(items.map(item => item.change)).toEqual(["comment", "comment"])
+  const theirs = (readLeanJson(directory, "register.json") as { entries: RegisterEntry[] }).entries.filter(entry => entry.origin === "counterparty")
+  expect(theirs.map(entry => entry.counterparty)).toEqual(items)
+  expect(resumed.plans.map(listedFindingIDs).map(ids => ids.toSorted())).toEqual([theirs.map(entry => entry.id).toSorted()])
 })
 
 test("a run without markup keeps its change-plan key, and a stale snapshot of earlier markup is removed", async () => {

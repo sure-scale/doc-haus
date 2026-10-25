@@ -24,8 +24,7 @@ import { numberDocxClauses, numberedList } from "../../lib/docx-numbering"
 import { linkCrossReferences } from "../../lib/docx-crossrefs"
 import { withTemplateStyleIds } from "../../lib/template-seed"
 import { presentDraft, type DraftPresentation } from "./draft-presentation"
-import { carryRevisionParagraphs, carryRevisionTables, draftedTablesNotes, revisionOriginal } from "./original-tables"
-import { writeCounterpartyItems } from "./counterparty"
+import { carryRevisionParagraphs, carryRevisionTables, draftedTablesNotes } from "./original-tables"
 import { checkChanges, parseJsonObject } from "./change-checks"
 import {
   checkDraft,
@@ -401,8 +400,6 @@ export async function acceptStageReply(directory: string, step: StepID, reply: s
     const rows = (await paragraphRows(leanFile(directory, `${document}/body.docx`))).map(row => ({ ...row, ...rendered.attribution?.get(row.pid) }))
     if (!rows.length) return { issues: ["The document has no body paragraphs."], openItems: [], outputs: [] }
     writeLeanText(directory, `${document}/paragraphs.json`, `${JSON.stringify(rows, null, 2)}\n`)
-    // The other side's changes and comments in the original, which its change plan adjudicates.
-    await writeCounterpartyItems(directory, document, revisionOriginal(directory, document))
     return { ...check, outputs: stepOutputs(step) }
   }
   if (isReviewStage(stage)) {

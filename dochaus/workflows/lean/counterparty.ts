@@ -8,17 +8,18 @@ import { leanFile, readLeanJson, shortHash, writeLeanText } from "./state"
 import { templateSource } from "./template-contract"
 
 // The other side's changes and comments in the Word original a document
-// revises, as findings its change plan adjudicates like any review's. When the
-// draft is accepted, code reads the original's markup (lib/docx-markup.ts) into
-// <document>/counterparty.json: each pending insert, delete and move and each
-// open comment thread, with the indexed passage that quotes it where there is
-// one. Our own changes and comments in it (a doc.haus redline, the lawyer's
-// accepted edits and replies) are left out, and a thread the other side
-// answered says which entries are ours. It is a derived read of the source,
-// like paragraphs.json, and lives as long as the draft's own reading of the
-// original. Each item is one finding of stage and origin "counterparty", which
-// no review reply can give, so the change plan, the register and the notes take
-// it as they take any finding.
+// revises, as findings its change plan adjudicates like any review's. Before
+// the change plan is keyed, code reads the original's markup as it is then
+// (lib/docx-markup.ts) into <document>/counterparty.json: each pending insert,
+// delete and move and each open comment thread, with the indexed passage that
+// quotes it where there is one. Our own changes and comments in it (a doc.haus
+// redline, the lawyer's accepted edits and replies) are left out, and a thread
+// the other side answered says which entries are ours. It is a derived read of
+// the source, like paragraphs.json: once the lawyer decides some of their
+// changes, the plan's next run adjudicates what is left, by the new version's
+// ids. Each item is one finding of stage and origin "counterparty", which no
+// review reply can give, so the change plan, the register and the notes take it
+// as they take any finding.
 
 type CounterpartyRow = CounterpartyItem & { sources: SourceQuote[] }
 type CounterpartyRecord = { source: CounterpartyItem["source"]; items: CounterpartyRow[] }
