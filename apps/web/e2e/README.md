@@ -128,8 +128,9 @@ show one muted line. A reply written by hand to the marked-up supply agreement
 and saved with no decision must be listed by the replies it added, not as a
 save from Word. A fresh copy of that agreement, with a drafting run's issue
 register delivered beside it, must show the run's answer on each change and open
-thread: changed in response, suggested, left for the lawyer to decide or not
-changed with its reason. After a Save that accepts one of their changes and
+thread: edited in response, suggested, left for the lawyer to decide or no
+edit made, with its reason, which names the run's document by its title. Each
+tag's full sentence is captured on hover. After a Save that accepts one of their changes and
 rejects another, the cards it leaves must keep those answers, marked as the
 run's on version 1, after a reload too.
 Each state is captured at desktop and 400 px.

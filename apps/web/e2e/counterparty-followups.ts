@@ -48,10 +48,11 @@ const UNCHECKED_LINE = "References and defined terms were not checked for this v
 // What the drafting run did with an item, as its card's tag says it: the
 // short text and the full sentence it gives on hover or focus.
 const TAGS = {
-  amended: ["Draft: changed", "doc.haus draft: changed in response"],
-  suggested: ["Suggestion", "doc.haus suggests: Fixing the price for the first twelve months leaves it open to review at renewal."],
+  amended: ["Draft: edited", "doc.haus draft: edited in response"],
+  suggested: ["doc.haus suggests", "doc.haus suggests: Fixing the price for the first twelve months leaves it open to review at renewal."],
   deferred: ["Draft: left to you", "doc.haus draft: left for you to decide"],
-  rejected: ["Draft: not changed", "doc.haus draft: not changed — The draft keeps the original wording."],
+  // The run's reason names its document by id; the card names it by title.
+  rejected: ["Draft: no edit", "doc.haus draft: made no edit for this — “Supply Agreement” keeps the original wording."],
 } as const
 const DESKTOP = { width: 1440, height: 1000 }
 const PHONE = { width: 400, height: 860 }
@@ -337,7 +338,7 @@ try {
       findings: [
         finding("recommendation", "Fix the price for the first twelve months only.", "Fixing the price for the first twelve months leaves it open to review at renewal.", suggested),
         finding("deferred", "Whether forty-five days suits the Buyer's stock plan.", "The Buyer's stock plan is not in the matter.", deferred),
-        finding("rejected", "Keep the draft's remaining positions.", "The draft keeps the original wording.", rejected),
+        finding("rejected", "Keep the draft's remaining positions.", "d1 keeps the original wording.", rejected),
       ] }))
     writeLeanText(file.dir, "d1/changes.json", JSON.stringify({ amendments: [{ id: "a1", pid: "p1" }], questions: [] }))
     writeLeanText(file.dir, "d1/apply.json", JSON.stringify({ applied: [{ id: "a1" }], unapplied: [] }))

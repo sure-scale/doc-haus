@@ -1677,19 +1677,21 @@ function Chip({ tone, icon, children }: { tone: "done" | "quiet"; icon: IconName
 }
 
 // What the drafting run did with this change or thread, as a small tag that
-// says it in full on hover or focus; nothing for an item it left open. A run
-// that read an earlier version says which. The reason is model text, shown as
-// text.
+// says it in full on hover or focus; nothing for an item it left open. Each
+// tag names doc.haus's draft or doc.haus, so it never reads as a word about
+// the other side's change ("not changed" read as their change taken as it
+// is). A run that read an earlier version says which. The reason is model
+// text, shown as text.
 function RunTag({ response }: { response?: MarkupResponse }) {
   const current = useContext(VersionContext)
   const reason = response?.reason?.trim()
   const answered = response?.question?.status === "answered"
   const tags: Record<string, [string, string]> = {
-    amended: ["Draft: changed", "doc.haus draft: changed in response"],
-    rejected: ["Draft: not changed", `doc.haus draft: not changed${reason ? ` — ${reason}` : ""}`],
+    amended: ["Draft: edited", "doc.haus draft: edited in response"],
+    rejected: ["Draft: no edit", `doc.haus draft: made no edit for this${reason ? ` — ${reason}` : ""}`],
     deferred: ["Draft: left to you", "doc.haus draft: left for you to decide"],
     question: answered ? ["Draft: answered", "doc.haus draft: you answered its question on this"] : ["Draft: question", "doc.haus draft: waiting for your answer to its question"],
-    recommendation: ["Suggestion", `doc.haus suggests: ${reason || "a change here"}`],
+    recommendation: ["doc.haus suggests", `doc.haus suggests: ${reason || "a change here"}`],
   }
   const tag = response && tags[response.disposition]
   if (!tag) return null
