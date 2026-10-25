@@ -5,7 +5,10 @@ import path from "node:path"
 import mammoth from "mammoth"
 import { strToU8, unzipSync, zipSync } from "fflate"
 import { writeListLabels } from "./docx-list-labels"
+import * as docxodusEngine from "./docxodus"
+import { docxodus } from "./docxodus"
 import { liveText } from "./extract"
+import { markupConsistency } from "../workflows/lean/version-consistency"
 
 // Every fixture is invented text: no actual party or transaction.
 
@@ -113,5 +116,44 @@ test("a file the numbering reader cannot open extracts exactly as before, is log
   } finally {
     warn.mockRestore()
     rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test("a body the two readers count differently keeps its text unlabelled, and the post-Apply check is told it is unread", async () => {
+  // Clause 2 cites clause 3, which the other side deletes; accepting it makes the old clause 4 clause 3.
+  const clauses = ["Services. The Provider shall perform the services.", "Termination. Either party may end this agreement as set out in clause 3.",
+    "Termination procedure. A party ending this agreement must give thirty days' notice.", "Assignment. Neither party may assign this agreement without consent."]
+  const by = 'w:author="Avery Lindqvist" w:date="2026-10-20T09:00:00Z"'
+  const deleted = `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr><w:rPr><w:del w:id="2" ${by}/></w:rPr></w:pPr><w:del w:id="1" ${by}><w:r><w:delText xml:space="preserve">${clauses[2]}</w:delText></w:r></w:del></w:p>`
+  const numbered = (third: string) => docx(clauses.map((text, at) => at === 2 ? third : para(text, [1, 0])).join(""), NUMBERING)
+  const before = numbered(deleted), after = numbered("")
+  const warn = spyOn(console, "warn").mockImplementation(() => {})
+  try {
+    expect(await markupConsistency("Services.docx", before, after)).toEqual([{ detail: expect.stringMatching(/^Clause 2 refers to clause 3\b.*which was clause 4 before/) }])
+    // Docxodus now lists one body paragraph fewer than the XML holds.
+    const real = await docxodus()
+    const engine = spyOn(docxodusEngine, "docxodus").mockResolvedValue(new Proxy(real, { get: (target, key) => key !== "openDocxSession" ? Reflect.get(target, key)
+      : (...args: Parameters<typeof real.openDocxSession>) => {
+        const session = target.openDocxSession(...args), project = session.project.bind(session)
+        return Object.assign(session, { project: () => {
+          const projection = project(), index = projection.anchorIndex as Record<string, { partUri: string; kind: string }>
+          delete index[Object.keys(index).find(id => index[id]!.partUri === "/word/document.xml" && index[id]!.kind === "li")!]
+          return projection
+        } })
+      } }))
+    try {
+      // Ingest's text reads the same each time, so it keeps the text and is not told to read again.
+      let unread = false
+      const plain = numbered(para(clauses[2]!, [1, 0]))
+      expect(await writeListLabels(plain, () => { unread = true })).toBe(plain)
+      expect(unread).toBe(false)
+      // The check reads every clause number or none: it does not report a clean check without them.
+      await expect(markupConsistency("Services.docx", before, after)).rejects.toThrow("list_labels_unread")
+    } finally {
+      engine.mockRestore()
+    }
+    expect(warn.mock.calls.map(([message, detail]) => [message, (detail as { reason?: string }).reason])).toEqual(Array(2).fill(["list labels not read", "paragraph_count_mismatch"]))
+  } finally {
+    warn.mockRestore()
   }
 })

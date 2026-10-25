@@ -14,15 +14,16 @@ export type RevisionBodyView = "current_body" | "baseline_body" | "marked_up_bod
  * paragraph ordinals in a baseline belong to that projected artifact; they are
  * never amendment targets in current Word. `labels`: the projected views read
  * each numbered paragraph with the label Word shows, as ingest's text does
- * (writeListLabels); a file whose labels cannot be read throws rather than
- * reading without its numbers. The marked-up view is read as saved. */
+ * (writeListLabels); a file whose labels cannot all be read (a failure, or a
+ * body Docxodus and the XML count differently) throws rather than reading
+ * without its numbers. The marked-up view is read as saved. */
 export async function readDocxBodyView(bytes: Uint8Array, view: RevisionBodyView, options: { labels?: boolean } = {}) {
   if (view !== "marked_up_body") {
     const dx = await docxodus()
     const projected = view === "baseline_body" ? await dx.docxDiffRejectRevisions(bytes) : await dx.docxDiffAcceptRevisions(bytes)
     if (!options.labels) return readDocxCommentParagraphs(projected)
     let unread = false
-    const labelled = await writeListLabels(Buffer.from(projected), () => { unread = true })
+    const labelled = await writeListLabels(Buffer.from(projected), () => { unread = true }, { complete: true })
     if (unread) throw new Error("list_labels_unread")
     return readDocxCommentParagraphs(labelled)
   }
