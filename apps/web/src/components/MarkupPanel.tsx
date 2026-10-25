@@ -1818,14 +1818,17 @@ function ChangeCard({ revision, comments, state, own, disabled, carried, respons
     <li ref={cardRef} title={placeText(places) || undefined} onClick={() => onLocate(true)} onFocus={() => onLocate(false)}
       className={`change-card markup-card is-${state}${own ? " is-own" : ""}${failure ? " is-refused" : ""}`}>
       <div className="markup-card-top">
-        <span className={`markup-kind is-${type}`}>
-          <Icon name={type} />
-          {TYPES.find((entry) => entry.value === type)!.label}
+        {/* The badge keeps its author beside it; on a narrow card the date goes under the name. */}
+        <span className="markup-card-lead">
+          <span className={`markup-kind is-${type}`}>
+            <Icon name={type} />
+            {TYPES.find((entry) => entry.value === type)!.label}
+          </span>
+          <Byline name={revision.author} date={revision.date} small inline />
         </span>
-        {detail && <span className="markup-kind-detail">{detail}</span>}
-        <Byline name={revision.author} date={revision.date} small inline />
-        {/* Its tags go to the next line, not the date, when the line is full. */}
+        {/* The badge's detail and the tags go to the next line, not the author, when the line is full. */}
         <span className="markup-byline-end">
+          {detail && <span className="markup-kind-detail">{detail}</span>}
           {own && <span className="markup-own">Your edit</span>}
           {carried && <span className="version-tag">Carried over</span>}
           <RunTag response={response} />

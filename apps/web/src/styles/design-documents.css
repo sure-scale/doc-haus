@@ -281,6 +281,8 @@
 /* A change card shows its change in the document when clicked. */
 .markup-card:not(.markup-thread) { cursor: pointer; }
 .markup-card-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--space-2); }
+.markup-card-lead { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.markup-card-lead .markup-kind { flex: none; }
 .markup-card-top .markup-byline { flex: 0 1 auto; }
 .markup-card-top time { font-size: 0.6875rem; }
 .markup-kind { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px 2px 7px; font-size: 0.75rem; font-weight: 700; color: var(--text); background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-pill); }
