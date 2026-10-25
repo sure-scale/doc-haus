@@ -57,7 +57,7 @@ function decideInOrder(dx: Docxodus, bytes: Uint8Array, decisions: ReadonlyMap<s
     const byId = new Map(listed.map(entry => [entry.id, entry]))
     for (const id of decisions.keys())
       if (!byId.has(id))
-        throw new MarkupDecisionError("unknown_revision", "A decided change is not in this version of the document. Refresh the list and decide again.", id)
+        throw new MarkupDecisionError("unknown_revision", "This change is no longer in the document. Hold it to apply the other decisions.", id)
     const decision = (entry: RevisionListEntry) => decisions.get(entry.id) ?? "hold"
     const unsupported = listed.find(entry => decision(entry) !== "hold" && entry.resolutionStatus !== "supported")
     if (unsupported)
@@ -66,8 +66,8 @@ function decideInOrder(dx: Docxodus, bytes: Uint8Array, decisions: ReadonlyMap<s
     const order = [...first.map(id => byId.get(id)!), ...listed.filter(entry => !promoted.has(entry.id))]
     const outcomes = new Map<string, MarkupOutcome>()
     const resolve = (entry: RevisionListEntry, id: string) => decision(entry) === "accept" ? session.acceptRevision(id) : session.rejectRevision(id)
-    const failed = (entry: RevisionListEntry, code = "refused") =>
-      new MarkupDecisionError("decision_failed", `A change could not be ${decision(entry)}ed (${code}). Nothing was changed; resolve it in Word.`, entry.id)
+    const failed = (entry: RevisionListEntry) =>
+      new MarkupDecisionError("decision_failed", `This change could not be ${decision(entry)}ed here. Nothing was changed; hold it to apply the other decisions, and resolve it in Word.`, entry.id)
     // Each by its listed id; a change whose id is gone waits until the others are done.
     const moved: RevisionListEntry[] = []
     for (const entry of order) {
@@ -75,7 +75,7 @@ function decideInOrder(dx: Docxodus, bytes: Uint8Array, decisions: ReadonlyMap<s
       const result = resolve(entry, entry.id)
       if (result.success) outcomes.set(entry.id, "applied")
       else if (result.error?.code === "revision_not_found") moved.push(entry)
-      else throw failed(entry, result.error?.code)
+      else throw failed(entry)
     }
     // The session's listing, kept until its next change: a carrier gone never
     // comes back, so consumed changes share one listing.
@@ -90,7 +90,7 @@ function decideInOrder(dx: Docxodus, bytes: Uint8Array, decisions: ReadonlyMap<s
         merged.push(entry.id)
       } else {
         const result = resolve(entry, unit.id)
-        if (!result.success) throw failed(entry, result.error?.code)
+        if (!result.success) throw failed(entry)
         outcomes.set(entry.id, "applied")
         live = undefined
       }
