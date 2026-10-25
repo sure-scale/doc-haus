@@ -54,9 +54,11 @@ export function documentAmendmentRoutes(options: { directory: (id: string) => st
         return c.json({error:"Provide a Word filename and focused editing instructions."},400)
       return c.json(await prepareDocumentAmendments(options.directory(c.req.param("id")), body.name, body.instructions))
     } catch(error) {
-      console.warn("[document-amendments] preparation failed", diagnosticErrorMetadata(error))
+      // The engine's own message (its HTTP status) stays in the log; the lawyer
+      // gets what happened and what to do.
+      console.warn("[document-amendments] preparation failed", { ...diagnosticErrorMetadata(error), ...error instanceof EngineGenerationError ? { detail: error.message } : {} })
       const reference = error && typeof error === "object" ? preparationReferences.get(error) : undefined
-      return c.json({error:error instanceof DocumentAmendmentConflictError || error instanceof EngineGenerationError ? error.message :
+      return c.json({error:error instanceof EngineGenerationError ? "No changes were prepared. Try again." : error instanceof DocumentAmendmentConflictError ? error.message :
         error instanceof DocxTrackedRevisionsError ? "This Word file contains tracked changes. Accept or reject them in Word before preparing changes." : "Preparation could not be confirmed.",
         ...(reference ? {diagnostic_ref:reference,diagnostic_hint:"Inspect the latest private preparation diagnostic in this matter before trying again."} : {})},409)
     }
