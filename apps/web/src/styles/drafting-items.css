@@ -154,6 +154,24 @@ button.question-dock-cta:focus-visible {
   outline-offset: 2px;
 }
 
+.question-dock.is-history {
+  border-color: var(--border);
+  background: var(--panel);
+  animation: none;
+}
+
+.question-dock.is-history .question-dock-icon {
+  background: var(--bg-sunken);
+  color: var(--text-secondary);
+}
+
+.question-dock.is-history .question-dock-cta {
+  border-color: var(--border-strong);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: none;
+}
+
 /* Questions use the shared modal scrim so legal context stays legible. */
 .question-dialog {
   width: min(560px, calc(var(--viewport-inline) - 32px));
@@ -219,6 +237,61 @@ button.question-dock-cta:focus-visible {
   color: var(--faint);
   border-color: var(--border);
   opacity: 1;
+}
+
+.question-views {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.question-views button[aria-pressed="true"],
+.question-related button[aria-current="step"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.question-topics select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+}
+
+.question-related {
+  display: grid;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+}
+
+.question-related button {
+  min-height: 40px;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.question-basis-relevance {
+  margin: 2px 0 0;
+  padding-left: var(--space-3);
+  color: var(--muted);
+}
+
+.question-saved-answer {
+  margin-top: var(--space-3);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.question-saved-text {
+  margin: var(--space-2) 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* Answered and left: a dot per question, filled once answered. */

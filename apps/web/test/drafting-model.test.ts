@@ -27,6 +27,7 @@ import {
   openItemsSentence,
   openItemTag,
   openQuestions,
+  questionGroups,
   queuedNote,
   unresolvedChecklistFindings,
   runPosition,
@@ -65,6 +66,20 @@ test("steps read as plain names, run-level and per document", () => {
   ])
   // A stage this build does not know still reads as words, not a key.
   expect(stepName("d2.cross_check")).toBe("Cross check")
+})
+
+test("equivalent topic labels keep separate decisions in one group and retain the first display label", () => {
+  const question = lean(blockedQuestion).questions[0]!
+  const groups = questionGroups([
+    { ...question, id: "q1", group: "Payment terms" },
+    { ...question, id: "q2", group: "payment   terms" },
+    { ...question, id: "q3", group: "Café terms" },
+    { ...question, id: "q4", group: "CAFE\u0301 TERMS" },
+  ])
+  expect(groups.map(group => [group.label, group.questions.map(row => row.id)])).toEqual([
+    ["Payment terms", ["q1", "q2"]],
+    ["Café terms", ["q3", "q4"]],
+  ])
 })
 
 test("planned titles lose markdown ticks; an untitled document gets its position", () => {

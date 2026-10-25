@@ -8,6 +8,8 @@ export default function QuestionDock(props: {
   ownerSessionID: string
   questions: LeanQuestion[]
   answered: number
+  answeredQuestions?: LeanQuestion[]
+  queuedAnswerIDs?: string[]
   titles: Map<string, string>
   busy: boolean
   error: string
@@ -19,6 +21,7 @@ export default function QuestionDock(props: {
   return (
     <QuestionDockShell
       count={props.questions.length}
+      answeredCount={props.answeredQuestions?.length ?? 0}
       preview={props.questions[0]?.question ?? ""}
       subject="The drafting run"
       renderQuestions={(titleId, onClose) => <Questions {...props} titleId={titleId} onClose={onClose} />}
