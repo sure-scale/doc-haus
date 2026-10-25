@@ -160,8 +160,8 @@ function admitted(opened: Opened, binding: Binding) {
   // is inside a change when the text on both sides of it is.
   const whole = opened.paragraphs[ordinal]!.match
   const at = change.match.span.start - whole.span.start
-  if (pending && (change.match.text || !change.replacement ? insideRevision(opened, paragraphSpan(whole, at, change.match.text.length))
-    : at > 0 && insideRevision(opened, paragraphSpan(whole, at - 1, 1)) && insideRevision(opened, paragraphSpan(whole, at, 1))))
+  if (pending && (change.match.text || !change.replacement ? insideRevision(opened.session, paragraphSpan(whole, at, change.match.text.length))
+    : at > 0 && insideRevision(opened.session, paragraphSpan(whole, at - 1, 1)) && insideRevision(opened.session, paragraphSpan(whole, at, 1))))
     throw new Error(`docx_own_revision:${amendment.id}`)
   const xml = parse(opened.session.raw.getXml(match.enclosingAnchor.id))
   if (!elements(xml, "fldChar").length && !elements(xml, "instrText").length) return { ...binding, change, unlinks: [] as number[] }
@@ -179,8 +179,8 @@ function admitted(opened: Opened, binding: Binding) {
 }
 
 // Whether a run of the changed span lies inside a tracked insertion, deletion or move.
-function insideRevision(opened: Opened, match: Match) {
-  const runs = new Map(elements(parse(opened.session.raw.getXml(match.enclosingAnchor.id)), "r").map(run => [run.getAttributeNS(PT, "Unid"), run]))
+function insideRevision(session: Session, match: Match) {
+  const runs = new Map(elements(parse(session.raw.getXml(match.enclosingAnchor.id)), "r").map(run => [run.getAttributeNS(PT, "Unid"), run]))
   return match.fragments.some(fragment => {
     for (let node = runs.get(fragment.unid)?.parentNode; node && node.nodeType === 1; node = node.parentNode)
       if ((node as Element).namespaceURI === W && ["ins", "del", "moveFrom", "moveTo"].includes((node as Element).localName)) return true
@@ -199,6 +199,12 @@ export async function ownRevisionRefusals(bytes: Uint8Array, packet: DocxLocaliz
       catch (error) { return error instanceof Error && error.message === `docx_own_revision:${binding.amendment.id}` ? [binding.amendment.id] : [] }
     }))
   } finally { opened.session.close() }
+}
+
+/** Why an edit inside doc.haus's own pending change was not made: Prepare's
+ * open item, and the older chat tools' refusal (pendingRevisionRefusal). */
+export function ownRevisionReason(text: string, verb: "proposed" | "applied" | "made") {
+  return `The change to ${JSON.stringify(text)} was not ${verb}: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.`
 }
 
 // The source with the REF fields the edits touch unwrapped to their text, for
@@ -452,13 +458,24 @@ export function pendingRevisionAnchors(session: Session) {
 }
 
 /** The touch rule's refusal of an older chat-tool edit of `text` in these
- * paragraphs (anchor ids, as findAllByText names them), given their session's
- * pendingRevisionAnchors, in the words of Prepare's open item; undefined when
- * none has a pending revision. `verb` says what did not happen to the change. */
-export function pendingRevisionRefusal(pending: Map<string, string[]>, anchors: string[], text: string, verb: "proposed" | "applied" | "made") {
+ * paragraphs (anchor ids, as findAllByText names them) of `session`, given its
+ * pendingRevisionAnchors, in the words of Prepare's open items; undefined when
+ * the edit may be made. As in Prepare, pending changes by `own` (every name our
+ * side signs with; see othersPending) hold no paragraph, but the edit may not
+ * rewrite one (insideRevision). These tools rewrite all of `text` wherever it
+ * occurs in the paragraphs, or with `whole` the paragraph itself, so that is
+ * the span checked. `verb` says what did not happen to the change. */
+export function pendingRevisionRefusal(session: Session, pending: Map<string, string[]>, anchors: string[], text: string,
+  verb: "proposed" | "applied" | "made", own: readonly string[], whole = false) {
   const touched = anchors.filter(id => pending.has(id))
   if (!touched.length) return
-  const names = [...new Set(touched.flatMap(id => pending.get(id)!).map(author => normalizeUntrustedText(author).text.trim()).filter(Boolean))]
+  const others = touched.flatMap(id => othersPending(pending.get(id), own))
+  if (!others.length) {
+    const inside = whole || session.grep(literal(text), { scope: 63, whitespace: 0 })
+      .some(match => touched.includes(match.enclosingAnchor.id) && insideRevision(session, match))
+    return inside ? ownRevisionReason(text, verb) : undefined
+  }
+  const names = [...new Set(others.map(author => normalizeUntrustedText(author).text.trim()).filter(Boolean))]
   const many = names.length > 1
   // As Prepare lists them: three names, then a count.
   const shown = names.length > 3 ? [...names.slice(0, 3), `${names.length - 3} other${names.length === 4 ? "" : "s"}`] : names

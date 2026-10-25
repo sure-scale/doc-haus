@@ -3,7 +3,7 @@ import { existsSync, lstatSync, realpathSync } from "node:fs"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { recordRedlineProposal, withRedlineDocumentLock } from "../lib/redlines"
-import { draftingAttribution } from "../lib/docx-attribution"
+import { draftingAttribution, ourAuthors } from "../lib/docx-attribution"
 import { findPastListLabel } from "../lib/list-label"
 import { pendingRevisionAnchors, pendingRevisionRefusal } from "../lib/docx-amendments"
 
@@ -33,16 +33,18 @@ export default tool({
     const file = path.isAbsolute(args.document) ? args.document : path.join(ctx.directory, args.document)
     if (!matterDocument(ctx.directory, file)) return `Document not found in this matter: ${args.document}`
 
+    const author = args.author ?? draftingAttribution().author
+    // Our side's names, as Accept counts them (ingest's redline.ts).
+    const own = [...ourAuthors(), author]
     const dx = await docxodus()
     const session = dx.openDocxSession(await Bun.file(file).bytes(), {})
 
-    const located = locate(session, args.find, args.replace)
+    const located = locate(session, args.find, args.replace, own)
     session.close()
     if (!located.targets.length) return `Text not found in ${path.basename(file)}: ${JSON.stringify(args.find)}`
     if (located.error) return located.error
     const { find, replace } = located
 
-    const author = args.author ?? draftingAttribution().author
     // Recording the proposal is gated on the matter owner's approval (permission
     // "tracked-changes" in opencode.json) — the redline review queue is itself a
     // work product, so the assistant must not stack proposals into it unasked.
@@ -58,7 +60,7 @@ export default tool({
     const proposal = await withRedlineDocumentLock(ctx.directory, file, async () => {
       if (!existsSync(file)) return { error: `Document not found in this matter: ${args.document}` }
       const current = dx.openDocxSession(await Bun.file(file).bytes(), {})
-      const again = locate(current, args.find, args.replace)
+      const again = locate(current, args.find, args.replace, own)
       // Accepting the change replaces every occurrence of the recorded text.
       const matches = again.find === find ? current.findAllByText(find).length : 0
       current.close()
@@ -104,10 +106,11 @@ function matterDocument(directory: string, file: string) {
 }
 
 /** Where `find` is in the document, past a copied list number (findPastListLabel).
- * Accept replaces the recorded text wherever it occurs, untracked, so an
- * occurrence in a paragraph with a pending revision is refused (the touch rule). */
-function locate(session: ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"]>, find: string, replace: string) {
+ * Accept replaces the recorded text wherever it occurs, so an occurrence in a
+ * paragraph with someone else's pending revision, or inside one of `own`, is
+ * refused (the touch rule). */
+function locate(session: ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"]>, find: string, replace: string, own: readonly string[]) {
   const located = findPastListLabel(find, replace, text => session.findAllByText(text), id => session.getAnchorInfo(id)?.visibleText, { recorded: true })
-  const refused = located.targets.length && !located.error ? pendingRevisionRefusal(pendingRevisionAnchors(session), located.targets.map(target => target.id), located.find, "proposed") : undefined
+  const refused = located.targets.length && !located.error ? pendingRevisionRefusal(session, pendingRevisionAnchors(session), located.targets.map(target => target.id), located.find, "proposed", own) : undefined
   return refused ? { ...located, error: refused } : located
 }

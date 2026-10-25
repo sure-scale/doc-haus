@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
-import { createDocxRevision, createDocxLocalization, applyDocxLocalization, DocxTrackedRevisionsError, othersPending, ownRevisionRefusals, pendingRevisionParagraphs, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
+import { createDocxRevision, createDocxLocalization, applyDocxLocalization, DocxTrackedRevisionsError, othersPending, ownRevisionReason, ownRevisionRefusals, pendingRevisionParagraphs, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { workingDocxKey, readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { paragraphTargets, resolveParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
@@ -209,7 +209,7 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   const inside = resolved.length && pending?.size ? await ownRevisionRefusals(initial.bytes,
     await createDocxLocalization(initial.bytes,resolved.map((value) => value.amendment),{},written),resolved.map((value) => value.selection),written) : new Set<string>()
   for (const {row,amendment} of resolved) if (inside.has(amendment.id))
-    refused.push(`The change to ${JSON.stringify(row.before_quote)} was not proposed: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.`)
+    refused.push(ownRevisionReason(row.before_quote,"proposed"))
   resolved = resolved.filter(({amendment}) => !inside.has(amendment.id))
   const openItems = [...legal.open_items,...selections.flatMap((row) => typeof row.unresolved_reason === "string" ? [row.unresolved_reason] : []),...refused]
   if (!resolved.length) {
