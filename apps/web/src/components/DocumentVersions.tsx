@@ -42,6 +42,11 @@ const ORIGIN: Record<string, string> = {
 export function versionOrigin(version: Pick<DocumentVersion, "id" | "origin" | "parent">, events: VersionEvent[] = []) {
   if (version.origin === "system" && !version.parent) return "Added by doc.haus"
   if (version.origin === "unknown" && version.parent) return "Changed outside doc.haus"
+  // Saved from the "Their changes" panel (#200): the lawyer's accept, reject and
+  // hold decisions on the other side's tracked changes, which its event lists,
+  // rather than doc.haus's own proposals accepted.
+  if (version.origin === "accept" && events.some((event) => event.kind === "accept" && event.version_id === version.id && Array.isArray(event.detail?.markup)))
+    return "Their changes decided"
   if (version.origin === "restore") {
     const restored = events.find((event) => event.kind === "restore" && event.version_id === version.id)?.detail?.restored_number
     return typeof restored === "number" ? `Restored from version ${restored}` : ORIGIN.restore!

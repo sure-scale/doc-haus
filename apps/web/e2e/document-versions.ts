@@ -91,7 +91,7 @@ const comparisonFor = (url: URL) => {
   const hunk = { kind: "modified", location: { scope: "body", paragraph: 3, side: "right", number: "2" }, before: "Invoices are payable within sixty days of receipt.", after: "Invoices are payable within forty-five days of receipt.", untracked: true }
   return { left, right, options: { ignoreFormatting: true, detectMoves: true, headersFooters: true }, attribution: "authors", changes: [{ id: "C1", ...hunk }], untracked: [{ id: "U1", ...hunk }], blacklineName: `Blackline - ${left.label} vs ${right.label}.docx` }
 }
-const NOTICE = "Saved as version 6, with 2 tracked changes by Pat Reviewer; resolve them in Word before doc.haus edits it."
+const NOTICE = "Saved as version 6, with 2 tracked changes by Pat Reviewer; review them in the viewer before doc.haus edits it."
 const proposal = { id: 7, doc_name: NAME, scope: "phrase", find_text: "forty-five", old_text: "forty-five days", new_text: "thirty days", author: "doc.haus", review_comment: "Align with clause 3.", created_at: timestamp }
 
 type Options = {
@@ -211,6 +211,8 @@ async function open(state: Fixture, width: number, height: number) {
     if (pathname === `${prefix}/documents/text` && name === EMAIL) { state.texts++; return reply({ text: EMAIL_TEXT, injection: null }) }
     if (pathname === `${prefix}/redlines`) return reply(name === NAME ? (state.opts.redlines ?? []) : [])
     if (pathname === `${prefix}/documents/amendments`) return reply(null)
+    // Their changes (#200): these synthetic Word files carry no tracked changes or comments.
+    if (pathname === `${prefix}/documents/markup`) return reply({ name, version: { id: "fixture", number: 1, sha256: "" }, current: true, revisions: [], comments: [], authors: [] })
     if (pathname === `${prefix}/compare`) {
       state.compares.push(url.search)
       return url.searchParams.get("format") === "json" ? reply(comparisonFor(url)) : word(bytes["v-4"]!)

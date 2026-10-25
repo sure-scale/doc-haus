@@ -64,6 +64,7 @@ import { researchConnectionRoutes } from "./research-connections"
 import { readLeanPayload, readDetailPayload, readStoragePayload } from "./telemetry"
 import { openTelemetryDb, applyRetentionPolicy, clearTelemetry } from "../../../dochaus/lib/telemetry"
 import { documentAmendmentRoutes, acceptedWorkingDocxUpdate } from "./document-amendments"
+import { documentMarkupRoutes } from "./document-markup"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { withParagraphPointers, withStableRevisionDates } from "../../../dochaus/lib/drafting-amendment"
 import { DocxTrackedRevisionsError } from "../../../dochaus/lib/docx-amendments"
@@ -570,6 +571,11 @@ app.post("/matters/:id/continuations/dispatch", async (c) => {
 })
 
 app.route("/matters", documentAmendmentRoutes({ directory: matterDir }))
+app.route("/matters", documentMarkupRoutes({
+  directory: matterDir,
+  locks: (dir, file) => [path.basename(file), ...runRedlineLock(dir, file), ...runNotesLock(dir), ...runCombinedLock(dir, file), ".dochaus/source-corpus"],
+  write: (dir, name, bytes, version) => writeDocumentRevision(dir, name, bytes, [], undefined, false, { version }),
+}))
 app.route("/matters", leanDraftingRoutes({ directory: matterDir }))
 
 app.get("/telemetry/storage", (c) => c.json(readStoragePayload(listMatters().map((m) => m.dir), readDraftingPreferences().telemetry.rate_overrides)))

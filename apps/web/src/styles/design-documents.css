@@ -61,7 +61,14 @@
 /* The citation line names the page first; its quoted excerpt is clipped past three lines. */
 .pdf-reader .pdf-doc > p[role="status"] { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 .pdf-reader .pdf-doc .pdf-render { flex: 1 1 0; min-height: 0; height: auto; background: var(--md-sys-color-surface); }
-.document-reader .docx-render { background: var(--md-sys-color-surface); line-height: 1.85; border-color: var(--md-sys-color-outline-variant); }
+.document-reader .docx-render { background: var(--md-sys-color-surface); line-height: 1.85; border-color: var(--md-sys-color-outline-variant); container: docx-page / inline-size; }
+/* Docxodus sets margin comments in a fixed 250px column beside the text. Where
+   the page is too narrow for both (a phone, or a side panel open on a small
+   screen), the comments follow the text instead, as Docxodus prints them. */
+@container docx-page (max-width: 560px) {
+  .docx-render .comment-margin-container { display: block; }
+  .docx-render .comment-margin-column { width: auto; margin-top: var(--space-6); }
+}
 .document-reader .changes-panel { background: var(--panel); padding: 0 var(--space-5) var(--space-5); }
 .document-reader .changes-head { background: var(--panel); }
 .document-reader .change-card { border: 0; border-bottom: 1px solid var(--border); border-radius: 0; padding: var(--space-5) 0; box-shadow: none; }
@@ -150,6 +157,85 @@
 @media (max-width: 720px) {
   /* Above the page, and first in the markup so the tab order matches. */
   .document-reader .versions-panel { border-top: 0; border-bottom: 1px solid var(--border); }
+}
+
+/* ---------- Their changes (#200) ---------- */
+/* The other side's tracked changes and comment threads, in the side-panel slot:
+   filter chips and the set-shown row in the pinned head, cards in document
+   order, the decision tally and Apply pinned at the foot. */
+.document-reader .viewer-bar-actions > button.viewer-markup-toggle[aria-expanded="true"] { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent); }
+.document-reader .viewer-bar-actions > button.viewer-markup-toggle[aria-expanded="true"] svg { color: var(--accent); }
+/* The count on the icon, shown only where the label is hidden. */
+.viewer-markup-badge { display: none; }
+/* A failed reading, with Retry, where the toggle or the panel would be. */
+.document-reader .markup-read-status { max-width: 760px; margin: 0 auto var(--space-4); font-size: 0.8125rem; line-height: 1.5; color: var(--warn); }
+.markup-read-status .linklike { min-height: 0; font-size: inherit; line-height: inherit; }
+.document-reader .markup-panel { width: 360px; padding-bottom: 0; }
+.markup-panel .changes-head { gap: var(--space-2); font-weight: 400; }
+.markup-head h3 { display: flex; align-items: center; gap: var(--space-2); margin: 0; font-family: var(--font-sans); font-size: 0.875rem; font-weight: 600; color: var(--text); }
+.markup-head p { margin: 0; font-size: 0.75rem; line-height: 1.5; color: var(--muted); }
+.markup-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.markup-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px; font-size: 0.75rem; font-weight: 500; color: var(--text-secondary); background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm); overflow-wrap: anywhere; text-align: left; }
+.markup-chip:hover:not(:disabled) { border-color: var(--border-strong); background: var(--panel-hover); }
+.markup-chip[aria-pressed="true"] { color: var(--text); background: var(--accent-soft); border-color: var(--accent-border); }
+.markup-chip:disabled { opacity: .5; cursor: default; }
+.markup-chip-count { font-variant-numeric: tabular-nums; color: var(--muted); }
+.markup-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--text-secondary); }
+.markup-bulk span { margin-right: 2px; }
+.markup-list { margin: 0; padding: 0; list-style: none; }
+.markup-empty { margin: var(--space-4) 0; font-size: 0.8125rem; }
+.markup-card-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--space-2); margin-bottom: var(--space-2); }
+.markup-card-head .change-author { margin: 0; overflow-wrap: anywhere; }
+.markup-card-head time { font-size: 0.6875rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.markup-kind { font-size: 0.75rem; font-weight: 600; color: var(--text); }
+.markup-text { font-size: 13px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; padding: 6px var(--space-2); border-left: 2px solid var(--border-strong); border-radius: 0 4px 4px 0; background: var(--bg-sunken); color: var(--text); }
+.markup-card .change-old, .markup-card .change-new { overflow-wrap: anywhere; }
+.markup-place, .markup-hint { margin: 6px 0 0; font-size: 0.75rem; line-height: 1.45; color: var(--muted); }
+.markup-place { display: flex; flex-direction: column; gap: 2px; }
+.markup-place q { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; color: var(--text-secondary); overflow-wrap: anywhere; }
+.markup-flag { display: flex; align-items: flex-start; gap: 6px; margin-top: var(--space-2); padding: 6px var(--space-2); font-size: 0.75rem; line-height: 1.45; color: var(--text); background: var(--warn-soft); border: 1px solid var(--warn-border); border-radius: var(--radius-sm); }
+.markup-flag svg { flex: none; margin-top: 2px; color: var(--warn); }
+.markup-flag > span > span { display: block; }
+.markup-decision { display: flex; gap: 6px; margin-top: 10px; }
+.markup-choice { flex: 1; min-height: 32px; padding: 0; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.markup-choice:hover:not(:disabled) { border-color: var(--border-strong); background: var(--panel-hover); }
+.markup-choice.is-accept[aria-checked="true"] { color: var(--text-on-accent); background: var(--accent); border-color: var(--accent); }
+.markup-choice.is-reject[aria-checked="true"] { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-border); }
+.markup-choice.is-hold[aria-checked="true"] { color: var(--text); background: var(--bg-sunken); border-color: var(--border-strong); }
+.markup-choice:disabled { opacity: .5; cursor: default; }
+.document-reader .markup-card.is-accept { padding-left: 14px; box-shadow: inset 3px 0 var(--accent); }
+.document-reader .markup-card.is-reject { padding-left: 14px; box-shadow: inset 3px 0 var(--danger); }
+.document-reader .markup-card.is-refused { outline: 1px solid var(--danger-border); outline-offset: -1px; }
+.markup-word { margin: var(--space-2) 0 0; font-size: 0.75rem; line-height: 1.45; color: var(--text-secondary); }
+.markup-quote { margin: 0 0 var(--space-2); padding: 4px var(--space-2); font-size: 0.8125rem; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-secondary); border-left: 2px solid var(--border-strong); }
+.markup-comment-text { margin: 0; font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+.markup-replies { margin: var(--space-3) 0 0; padding: 0 0 0 var(--space-3); list-style: none; border-left: 2px solid var(--border-soft); }
+.markup-replies li + li { margin-top: var(--space-3); }
+.markup-apply { position: sticky; bottom: 0; z-index: 1; display: flex; flex-direction: column; gap: var(--space-2); margin: var(--space-2) calc(-1 * var(--space-5)) 0; padding: var(--space-4) var(--space-5); background: var(--panel); border-top: 1px solid var(--border); }
+.markup-tally { margin: 0; font-size: 0.8125rem; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; }
+.markup-tally span { font-weight: 400; color: var(--muted); }
+.markup-actor { margin: 0; font-size: 0.75rem; color: var(--text-secondary); overflow-wrap: anywhere; }
+.markup-actor strong { color: var(--text); font-weight: 600; }
+.markup-name label { display: block; margin-bottom: 4px; font-size: 0.8125rem; font-weight: 500; color: var(--text); }
+.markup-name input { box-sizing: border-box; width: 100%; }
+.markup-name small { display: block; margin-top: 4px; font-size: 0.6875rem; color: var(--muted); }
+.markup-blocked { margin: 0; font-size: 0.75rem; line-height: 1.45; color: var(--muted); }
+.markup-apply-button { align-self: stretch; }
+.markup-apply .version-confirm { margin-top: 0; }
+.markup-apply .version-confirm .markup-actor { margin-bottom: var(--space-3); }
+.markup-apply .version-error { margin: 0; }
+@media (max-width: 720px) {
+  /* Above the page, as the versions list is, and first in the markup. */
+  .document-reader .markup-panel { width: 100%; padding-bottom: 18px; border-top: 0; border-bottom: 1px solid var(--border); }
+  .markup-apply { position: static; margin: var(--space-2) 0 0; padding: var(--space-4) 0 0; }
+  .document-reader .viewer-body > .markup-read-status { flex: none; max-width: none; margin: 0; padding: var(--space-3) 18px; border-bottom: 1px solid var(--border); }
+}
+@media (max-width: 420px) {
+  .document-reader .viewer-bar-actions > button.viewer-markup-toggle { position: relative; }
+  .viewer-markup-badge { position: absolute; top: -6px; right: -6px; display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--radius-pill); background: var(--accent); color: var(--text-on-accent); font-size: 0.6875rem; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
+}
+@media (hover: none) {
+  .markup-chip, .markup-choice { min-height: 44px; }
 }
 
 /* ---------- Documents drawer ---------- */

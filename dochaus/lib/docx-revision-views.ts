@@ -8,8 +8,10 @@ const KINDS = new Map([["ins", "insert"], ["del", "delete"], ["moveFrom", "move 
 
 export type RevisionBodyView = "current_body" | "baseline_body" | "marked_up_body"
 
-/** A read-only projection. PIDs/paragraph ordinals in a baseline belong to
- * that projected artifact; they are never amendment targets in current Word. */
+/** A read-only projection of the main body (word/document.xml); formatting
+ * changes are not marked. readDocxMarkup lists every part's changes. PIDs/
+ * paragraph ordinals in a baseline belong to that projected artifact; they are
+ * never amendment targets in current Word. */
 export async function readDocxBodyView(bytes: Uint8Array, view: RevisionBodyView) {
   if (view !== "marked_up_body") {
     const dx = await docxodus()

@@ -81,22 +81,33 @@ export function readDocxComments(bytes: Uint8Array) {
   const commentPart = path.posix.resolve("/word", target).slice(1)
   if (!parts[commentPart]) throw new Error("missing_docx_comments_part")
   const doc = parse(strFromU8(parts[commentPart]))
-  const accepted = acceptedParagraphs(body)
-  const allParagraphs = elements(body, W, "p")
-  return elements(doc, W, "comment").map(comment => {
+  const comments = elements(doc, W, "comment")
+  const ids = new Set(comments.map(comment => comment.getAttributeNS(W, "id") ?? ""))
+  // The body is indexed once: each paragraph's accepted row and position, each
+  // marked paragraph's anchor, then each comment's markers in kind and document order.
+  const accepted = new Map(acceptedParagraphs(body).flatMap(row => row.nodes.map(node => [node, row] as const)))
+  const positions = new Map(elements(body, W, "p").map((paragraph, index) => [paragraph, index]))
+  const anchors = new Map<Element | null, DocxCommentAnchor>([[null, { paragraph_index: null, xml_paragraph_index: null, pids: [], accepted_paragraph_text: "", deleted_paragraph_text: "" }]])
+  const anchor = (paragraph: Element) => {
+    const row = accepted.get(paragraph)
+    return { paragraph_index: row?.index ?? null, xml_paragraph_index: positions.get(paragraph)!, pids: row ? row.pids : paragraphPIDs(paragraph),
+      accepted_paragraph_text: row ? row.text : acceptedText(paragraph), deleted_paragraph_text: deletedText(paragraph) }
+  }
+  const markers = new Map<string, Array<DocxCommentAnchor & { kind: string }>>()
+  for (const kind of ["commentRangeStart", "commentRangeEnd", "commentReference"]) for (const marker of elements(body, W, kind)) {
+    const id = marker.getAttributeNS(W, "id") ?? ""
+    if (!ids.has(id)) continue
+    const paragraph = owningParagraph(marker) as Element | null
+    if (!anchors.has(paragraph)) anchors.set(paragraph, anchor(paragraph!))
+    if (!markers.has(id)) markers.set(id, [])
+    markers.get(id)!.push({ kind, ...anchors.get(paragraph)! })
+  }
+  return comments.map(comment => {
     const id = comment.getAttributeNS(W, "id") ?? ""
-    const markers = ["commentRangeStart", "commentRangeEnd", "commentReference"].flatMap(kind =>
-      elements(body, W, kind).filter(marker => marker.getAttributeNS(W, "id") === id).map(marker => {
-        const paragraph = owningParagraph(marker) as Element | null
-        const row = paragraph ? accepted.find(candidate => candidate.nodes.includes(paragraph)) : undefined
-        return { kind, paragraph_index: row?.index ?? null, xml_paragraph_index: paragraph ? allParagraphs.indexOf(paragraph) : null,
-          pids: row ? row.pids : paragraph ? paragraphPIDs(paragraph) : [],
-          accepted_paragraph_text: row ? row.text : paragraph ? acceptedText(paragraph) : "",
-          deleted_paragraph_text: paragraph ? deletedText(paragraph) : "" }
-      }))
-    return { comment_id: id, text: elements(comment, W, "p").map(acceptedText).join("\n"), markers }
+    return { comment_id: id, text: elements(comment, W, "p").map(acceptedText).join("\n"), markers: markers.get(id) ?? [] }
   })
 }
+type DocxCommentAnchor = { paragraph_index: number | null; xml_paragraph_index: number | null; pids: string[]; accepted_paragraph_text: string; deleted_paragraph_text: string }
 
 /** Comparison can discard native comments or carry them to positions this export
  * has not verified. Remove any carried copies, then restore the original
