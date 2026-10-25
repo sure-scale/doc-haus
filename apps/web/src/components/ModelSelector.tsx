@@ -51,6 +51,7 @@ export default function ModelSelector({
                 <button
                   key={a.name}
                   className={`assistant-option${a.name === value ? " selected" : ""}`}
+                  aria-pressed={a.name === value}
                   onClick={() => {
                     onChange(a.name)
                     setOpen(false)

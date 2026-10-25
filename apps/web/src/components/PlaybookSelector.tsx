@@ -59,6 +59,7 @@ export default function PlaybookSelector({
                 <button
                   key={p.name}
                   className={`assistant-option${p.name === value ? " selected" : ""}`}
+                  aria-pressed={p.name === value}
                   onClick={() => {
                     onChange(p.name)
                     setOpen(false)
@@ -70,6 +71,7 @@ export default function PlaybookSelector({
               ))}
               <button
                 className={`assistant-option${value ? "" : " selected"}`}
+                aria-pressed={!value}
                 onClick={() => {
                   onChange(undefined)
                   setOpen(false)

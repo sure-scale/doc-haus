@@ -6,7 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
-import type { Page } from "@playwright/test"
+import type { Locator, Page } from "@playwright/test"
 import blockedQuestion from "../../../dochaus/workflows/lean/fixtures/status-blocked-question.json"
 import start from "../../../dochaus/workflows/lean/fixtures/start.json"
 import { CHAT_ASSISTANTS } from "../src/agents"
@@ -112,6 +112,8 @@ async function check(name: string, width: number, height: number, run: (page: Pa
     await context.close()
   }
 }
+// The names of a picker's options that read as chosen.
+const chosen = (picker: Locator) => picker.getByRole("button", { pressed: true }).locator(".assistant-name").allTextContents()
 const focusWithin = (page: Page, selector: string) => page.evaluate(selector => Boolean(document.activeElement?.closest(selector)), selector)
 // The run's status poll runs every five seconds.
 const poll = { timeout: 12_000 }
@@ -127,6 +129,7 @@ try {
       const picker = page.getByRole("dialog", { name: "Choose an assistant" })
       await picker.waitFor()
       assert.equal(await picker.getAttribute("aria-modal"), "true")
+      assert.deepEqual(await chosen(picker), ["Auto"], "the chosen assistant reads as chosen")
       // Every option shows its whole description; a list taller than the window scrolls.
       const clipped = await picker.locator(".assistant-option").evaluateAll(options =>
         options.filter(option => option.scrollHeight > option.clientHeight + 1).map(option => option.querySelector(".assistant-name")?.textContent))
@@ -149,6 +152,10 @@ try {
       await page.getByRole("button", { name: "Q&A", exact: true }).waitFor()
       // Choosing an assistant leaves the lawyer in the message box, as before.
       await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Message")
+      await page.getByRole("button", { name: "Q&A", exact: true }).click()
+      await picker.waitFor()
+      await shot("assistant-picker-chosen")
+      assert.deepEqual(await chosen(picker), ["Q&A"], "the newly chosen assistant reads as chosen")
     })
 
     await check("the playbook picker is a labelled dialog that takes focus, keeps it and gives it back", width, height, async (page, shot) => {
@@ -161,6 +168,7 @@ try {
       const picker = page.getByRole("dialog", { name: "Playbook" })
       await picker.waitFor()
       assert.equal(await picker.getAttribute("aria-modal"), "true")
+      assert.deepEqual(await chosen(picker), ["No playbook"], "with none bound, No playbook reads as chosen")
       assert.ok(await focusWithin(page, ".picker-panel"), "focus moves into the picker")
       for (let step = 0; step < 6; step++) {
         await page.keyboard.press("Tab")
