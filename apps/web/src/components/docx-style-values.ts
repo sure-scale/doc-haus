@@ -2,15 +2,17 @@ import { unzipSync, zipSync } from "fflate"
 
 // The converter copies some values from a Word file into the page's stylesheet
 // without escaping them: font names inside single quotes (font-family: 'Name',
-// serif) and colours bare (color: #RRGGBB; background: #RRGGBB). A value
-// carrying a quote, semicolon, brace or line break could end its string or
-// declaration and add CSS rules to the whole page: hide doc.haus's own flags,
-// restyle the tracked changes, or fetch a remote image when the file is opened.
-// So every viewer renders a copy in which those values keep only the characters
-// they are made of. A font name keeps letters, marks and digits in any script,
-// spaces and - _ . , + & @ ( ); a colour, letters and digits (hex digits or a
-// named colour). The file, its download and its versions are untouched, and a
-// file whose values are all ordinary renders from its own bytes.
+// serif), colours bare (color: #RRGGBB; background: #RRGGBB) and style ids as
+// selector text (p.docx-<styleId> {). A value carrying a quote, semicolon,
+// brace or line break could end its string, declaration or selector and add
+// CSS rules to the whole page: hide doc.haus's own flags, restyle the tracked
+// changes, or fetch a remote image when the file is opened. So every viewer
+// renders a copy in which those values keep only the characters they are made
+// of. A font name keeps letters, marks and digits in any script, spaces and
+// - _ . , + & @ ( ); a colour, letters and digits (hex digits or a named
+// colour); a style id, letters, marks and digits in any script, - and _. The
+// file, its download and its versions are untouched, and a file whose values
+// are all ordinary renders from its own bytes.
 
 // The elements that name a font, by local name, and the attributes holding the
 // name: run fonts, the font table, symbol characters and DrawingML (theme and
@@ -30,8 +32,22 @@ const FONT_ATTRIBUTES: Record<string, readonly string[]> = {
 // of a color or highlight element; and DrawingML colour values.
 const COLOUR_ATTRIBUTES = ["color", "fill"]
 const COLOUR_VALUES: Record<string, readonly string[]> = { color: ["val"], highlight: ["val"], srgbClr: ["val"], sysClr: ["lastClr"] }
+// Style ids: a style's own id and every reference to one, cleaned alike so a
+// paragraph, run, table or numbering level keeps the style it names.
+const STYLE_ID_VALUES: Record<string, readonly string[]> = {
+  style: ["styleId"],
+  pStyle: ["val"],
+  rStyle: ["val"],
+  tblStyle: ["val"],
+  basedOn: ["val"],
+  next: ["val"],
+  link: ["val"],
+  numStyleLink: ["val"],
+  styleLink: ["val"],
+}
 const NOT_FONT = /[^\p{L}\p{M}\p{N} \-_.,+&@()]/gu
 const NOT_COLOUR = /[^0-9A-Za-z]/g
+const NOT_STYLE_ID = /[^\p{L}\p{M}\p{N}\-_]/gu
 
 // A start tag. Quoted values are matched whole, as a value may hold a raw ">".
 const TAG = /<([A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?)((?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*)(\s*\/?>)/g
@@ -53,6 +69,7 @@ function unsafeCharacters(element: string, key: string) {
   const local = key.slice(key.indexOf(":") + 1)
   if (FONT_ATTRIBUTES[element]?.includes(local)) return NOT_FONT
   if (COLOUR_VALUES[element]?.includes(local) || (prefixed && COLOUR_ATTRIBUTES.includes(local))) return NOT_COLOUR
+  if (STYLE_ID_VALUES[element]?.includes(local)) return NOT_STYLE_ID
 }
 
 // One part's text with its unsafe style values cleaned, or undefined when
