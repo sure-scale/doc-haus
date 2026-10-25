@@ -69,6 +69,7 @@ const server = Bun.serve({
       return json({ current_activity: null, today: { cost_usd: 0, turns: 0 }, matter_total: { cost_usd: 0, turns: 0, sessions: 1, since_ts: 1 }, current_session: null, rate_card_as_of: null, unknown_models: [] })
     if (route === "GET /ingest/matters/matter/drafting-status") return json(drafting)
     if (url.pathname.startsWith("/ingest/matters/matter/answer-drafts/")) return json({ answers: {}, revision: 0 })
+    if (route === "GET /ingest/preferences") return json({ attorney: "" })
     if (route === "GET /ingest/engine/config") return json({ model: "test/model", small_model: "test/model" })
     if (route === "GET /api/event") return new Response(new ReadableStream<Uint8Array>(), { headers: { "content-type": "text/event-stream" } })
     if (route === "GET /api/session/active") return json({ data: {} })
@@ -100,7 +101,7 @@ async function check(name: string, width: number, height: number, run: (page: Pa
     console.log(`PASS ${name} (${width}px)`)
   } catch (error) {
     failures.push(`${name} (${width}px)`)
-    console.log(`FAIL ${name} (${width}px): ${error instanceof Error ? error.message.split("\n").slice(0, 3).join(" | ") : error}`)
+    console.log(`FAIL ${name} (${width}px): ${error instanceof Error ? error.message.split("\n").slice(0, 8).join(" | ") : error}`)
   } finally {
     await context.close()
   }
@@ -182,6 +183,29 @@ try {
       assert.ok(await composer.evaluate(field => field === document.activeElement), "the composer keeps focus")
       await page.getByRole("button", { name: "Answer 2", exact: true }).click()
       await page.getByRole("dialog", { name: "Question 1 of 2" }).waitFor()
+    })
+
+    await check("questions asked while another dialog is open open when it closes", width, height, async (page, shot) => {
+      drafting = working
+      await page.goto(server.url.href)
+      await page.getByRole("button", { name: "Pause drafting", exact: true }).waitFor()
+      // By keyboard: in this bare page the run's header covers the chip at 400 px.
+      await page.getByRole("button", { name: /^Conflicts: not recorded/ }).focus()
+      await page.keyboard.press("Enter")
+      const conflicts = page.getByRole("dialog", { name: "Conflicts check" })
+      await conflicts.waitFor()
+      drafting = asking
+      await page.locator(".question-dock").waitFor(poll)
+      await page.waitForTimeout(500)
+      await shot("run-asks-behind-dialog")
+      const questions = page.getByRole("dialog", { name: "Question 1 of 2" })
+      assert.equal(await questions.count(), 0, "the questions do not open over another dialog")
+      await conflicts.getByRole("button", { name: "Close", exact: true }).click()
+      await conflicts.waitFor({ state: "detached" })
+      await page.waitForTimeout(500)
+      await shot("run-asks-after-dialog")
+      await questions.waitFor()
+      assert.ok(await focusWithin(page, "dialog.question-dialog"), "focus moves to the question")
     })
   }
   assert.deepEqual(unknown, [])

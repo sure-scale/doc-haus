@@ -34,16 +34,36 @@ export default function QuestionDockShell({
   }, [open])
 
   // A newly asked question opens the dialog, so the lawyer need not find the
-  // dock. It waits there instead while they type or another dialog is open, and
-  // one they closed stays closed until something new is asked. The dialog
-  // closes once the last asked question is settled.
+  // dock. While they type it waits there; asked while another dialog is open,
+  // it opens once that dialog has gone, unless they are typing by then. One
+  // they closed stays closed until something new is asked. The dialog closes
+  // once the last asked question is settled.
   const asked = useRef(0)
+  const [waiting, setWaiting] = useState(false)
   useEffect(() => {
     const more = count > asked.current
     asked.current = count
-    if (count === 0) setOpen(false)
-    else if (more && !occupied()) setOpen(true)
+    if (count === 0) {
+      setOpen(false)
+      setWaiting(false)
+    } else if (more && dialogOpen()) setWaiting(true)
+    else if (more && !typing()) setOpen(true)
   }, [count])
+  useEffect(() => {
+    if (!waiting) return
+    if (open) {
+      setWaiting(false)
+      return
+    }
+    // A closing dialog removes its open attribute or its own elements.
+    const observer = new MutationObserver(() => {
+      if (dialogOpen()) return
+      setWaiting(false)
+      if (!typing()) setOpen(true)
+    })
+    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["open", "aria-modal"] })
+    return () => observer.disconnect()
+  }, [waiting, open])
 
   if (count === 0 && answeredCount === 0) return null
   const historyOnly = count === 0
@@ -89,10 +109,9 @@ export default function QuestionDockShell({
   )
 }
 
-// Whether the lawyer is typing (the focused field holds their words; an empty
-// one, such as the composer just sent from, does not count) or another dialog
-// holds the page.
-function occupied() {
+// Whether the lawyer is typing: the focused field holds their words. An empty
+// one, such as the composer just sent from, does not count.
+function typing() {
   const active = document.activeElement
   const words =
     active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
@@ -100,5 +119,10 @@ function occupied() {
       : active instanceof HTMLElement && active.isContentEditable
         ? active.textContent
         : ""
-  return Boolean(words?.trim()) || document.querySelector("dialog[open], [aria-modal='true']") !== null
+  return Boolean(words?.trim())
+}
+
+// Whether another dialog holds the page.
+function dialogOpen() {
+  return document.querySelector("dialog[open], [aria-modal='true']") !== null
 }
