@@ -1,5 +1,5 @@
 {
   "version": 9,
   "name": "2.0.7",
-  "notes": "Drafts that behave like real Word documents. Native clause numbering, live cross-references, and every open point and placeholder shaded so nothing is missed. Redlines that show only what changed. Revisions keep the original's formatting, tables, signature blocks, header and footer. More ways to work with documents. Upload Outlook emails with their attachments, view and restore earlier versions, and open citations at the right page in PDFs."
+  "notes": "Drafts that behave like real Word documents. Native clause numbering, live cross-references, and every open point and placeholder shaded so nothing is missed. Redlines that show only what changed. Revisions preserve formatting, tables, signature blocks, headers and footers, with text checks against both versions. doc.haus reads the original, accepted and marked-up wording separately. More ways to work with documents. Upload Outlook emails with their attachments, view and restore earlier versions, and open citations at the right page in PDFs. Fewer drafting questions: sources are checked before asking, related questions are grouped, and you can correct earlier answers."
 }
