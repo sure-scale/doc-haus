@@ -37,7 +37,21 @@ export async function readDocxBodyView(bytes: Uint8Array, view: RevisionBodyView
     const marks = children(paragraph, "pPr").flatMap(properties =>
       children(properties, "rPr").flatMap(run => Array.from(run.childNodes)
         .filter((child): child is Element => child.nodeType === 1 && KINDS.has((child as Element).localName))))
-    const paragraphText = text(paragraph) + marks.map(mark => `⟦${KINDS.get(mark.localName)} paragraph break by ${JSON.stringify(mark.getAttributeNS(W, "author") || "unknown author")}⟧`).join("")
+    let paragraphText = text(paragraph) + marks.map(mark => `⟦${KINDS.get(mark.localName)} paragraph break by ${JSON.stringify(mark.getAttributeNS(W, "author") || "unknown author")}⟧`).join("")
+    // Row/cell revisions are siblings of the paragraph in trPr/tcPr. Without
+    // their enclosing marks a deleted row would look like ordinary body text.
+    for (let parent = paragraph.parentNode; parent; parent = parent.parentNode) {
+      if (parent.nodeType !== 1 || (parent as Element).namespaceURI !== W) continue
+      const container = parent as Element
+      const property = container.localName === "tr" ? "trPr" : container.localName === "tc" ? "tcPr" : undefined
+      if (!property) continue
+      for (const properties of children(container, property)) for (const mark of Array.from(properties.childNodes)) {
+        if (mark.nodeType !== 1 || (mark as Element).namespaceURI !== W) continue
+        const revision = mark as Element
+        const operation = KINDS.get(revision.localName) ?? ({ cellIns: "insert", cellDel: "delete", cellMerge: "merge" } as Record<string, string>)[revision.localName]
+        if (operation) paragraphText = `⟦${operation} ${container.localName === "tr" ? "row" : "cell"} by ${JSON.stringify(revision.getAttributeNS(W, "author") || "unknown author")}: ${paragraphText}⟧`
+      }
+    }
     return paragraphText ? [{ paragraph_index: xmlIndex, paragraph_text: paragraphText, pids: [] as string[] }] : []
   })
 }
@@ -55,10 +69,13 @@ export async function sourceRevisionDisclosure(source: Uint8Array) {
 export async function discloseSourceRevisions(redline: Uint8Array, source: Uint8Array, author: string) {
   const disclosure = await sourceRevisionDisclosure(source)
   if (!disclosure) return { bytes: redline, disclosure }
-  const first = readDocxCommentParagraphs(redline)[0]
-  if (!first) return { bytes: redline, disclosure }
-  const annotated = exportDocxComments(redline, [{ id: "source-pending-revisions", author, text: disclosure.message,
-    anchor: { paragraph_index: first.paragraph_index, paragraph_text: first.paragraph_text } }])
-  if (annotated.unresolved.length) throw new Error("The source's pending-revision notice could not be attached to this redline.")
-  return { bytes: annotated.bytes, disclosure }
+  // This document-level notice has no original paragraph anchor to preserve.
+  // A changed first paragraph may have an unresolved deleted boundary; use the
+  // first surviving paragraph whose exact accepted range is safe instead.
+  for (const paragraph of readDocxCommentParagraphs(redline)) {
+    const annotated = exportDocxComments(redline, [{ id: "source-pending-revisions", author, text: disclosure.message,
+      anchor: { paragraph_index: paragraph.paragraph_index, paragraph_text: paragraph.paragraph_text } }])
+    if (!annotated.unresolved.length) return { bytes: annotated.bytes, disclosure }
+  }
+  throw new Error("The source's pending-revision notice could not be attached to a safe surviving paragraph. Review its tracked changes in Word before exporting this comparison.")
 }
