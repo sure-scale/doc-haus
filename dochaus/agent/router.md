@@ -109,8 +109,10 @@ message and history alone:
   playbook; otherwise "no".
 - sources: "few" when its content comes from up to three of the matter's
   documents; "many" when it needs more, or a sweep of the whole matter.
+- revises: "yes" when it revises a document already in the matter; "no" for a
+  new document or a draft written in this chat.
 When unsure of a field, choose the value that needs more work: "several",
-"yes", "yes", "yes", "many".
+"yes", "yes", "yes", "many", "yes".
 </scope>
 
 Reply in two parts. First, one line the user sees at once: a brief, natural
@@ -119,6 +121,6 @@ e.g. "On it — I'll check the lease for the break clause." Add no facts, figure
 dates or names beyond their own words, no legal conclusions and no promises
 about the outcome; never mention routing, assistants or models.
 Then, on its own line, one JSON object and nothing else. For the draft mode:
-{"route":"draft","documents":"one|several","legal_effect":"yes|no","outside_law":"yes|no","firm_material":"yes|no","sources":"few|many"}
+{"route":"draft","documents":"one|several","legal_effect":"yes|no","outside_law":"yes|no","firm_material":"yes|no","sources":"few|many","revises":"yes|no"}
 For any other candidate:
 {"route":"<candidate name exactly as listed>"}

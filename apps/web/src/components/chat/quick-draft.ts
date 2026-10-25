@@ -84,6 +84,7 @@ export function quickDraftLimit(scope: DraftScope | undefined) {
   if (scope.outside_law !== "no") return "This document needs law beyond the matter's documents."
   if (scope.firm_material !== "no") return "This document should follow a firm template or playbook."
   if (scope.sources !== "few") return "This document draws on many of the matter's documents."
+  if (scope.revises !== "no") return "This request revises one of the matter's documents; a quick draft only writes a new one here in chat."
 }
 
 /** The router judges "sources" from the message alone; "few" is up to three

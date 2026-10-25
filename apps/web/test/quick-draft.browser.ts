@@ -37,7 +37,7 @@ const GRID = {
   cells: { "Letter.docx::c1": { answer: "Both invoices.", citation: { documentName: "Letter.docx", docPath: "/matter/Letter.docx", section: "1", excerpt: "Both invoices remain unpaid.", charStart: 0, charEnd: 28 }, status: "filled", questionHash: "unused" } },
 }
 const scope = (change: Record<string, string> = {}) =>
-  JSON.stringify({ route: "draft", documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few", ...change })
+  JSON.stringify({ route: "draft", documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few", revises: "no", ...change })
 
 // What the mocked services answer, set per scenario.
 const config = { router: scope(), offer: "ask", settled: false, legend: "", preferencesDown: false, hold: undefined as Promise<void> | undefined }
