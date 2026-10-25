@@ -11,6 +11,7 @@ import { existsSync, statSync } from "node:fs"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { strToU8, zipSync } from "fflate"
 import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx } from "../../../dochaus/test/support/counterparty-markup-fixture"
 
 const { chromium } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
@@ -37,6 +38,36 @@ const markup = {
   })),
   authors: COUNTERPARTY_MARKUP.reviewers.map((name) => ({ name, revisions: 0, comments: 2 })),
 }
+
+// A small synthetic Word file: body paragraphs (WordprocessingML) and comments, one paragraph each.
+type Crafted = { id: number; author: string; text: string }
+const DATE = "2026-10-20T09:00:00Z"
+const PKG = "http://schemas.openxmlformats.org/package/2006"
+const RELS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+const WML = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+const escaped = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;")
+const run = (text: string) => `<w:r><w:t xml:space="preserve">${escaped(text)}</w:t></w:r>`
+const reference = (id: number) => `<w:r><w:commentReference w:id="${id}"/></w:r>`
+const commented = (id: number, text: string) => `<w:commentRangeStart w:id="${id}"/>${run(text)}<w:commentRangeEnd w:id="${id}"/>${reference(id)}`
+const para = (inner: string) => `<w:p>${inner}</w:p>`
+function wordFile(body: string[], comments: Crafted[]) {
+  const part = (xml: string) => strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${xml}`)
+  return zipSync({
+    "[Content_Types].xml": part(`<Types xmlns="${PKG}/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>` +
+      `<Override PartName="/word/document.xml" ContentType="${CT}.document.main+xml"/><Override PartName="/word/comments.xml" ContentType="${CT}.comments+xml"/></Types>`),
+    "_rels/.rels": part(`<Relationships xmlns="${PKG}/relationships"><Relationship Id="rId1" Type="${RELS}/officeDocument" Target="word/document.xml"/></Relationships>`),
+    "word/_rels/document.xml.rels": part(`<Relationships xmlns="${PKG}/relationships"><Relationship Id="rId1" Type="${RELS}/comments" Target="comments.xml"/></Relationships>`),
+    "word/document.xml": part(`<w:document ${WML}><w:body>${body.join("")}<w:sectPr/></w:body></w:document>`),
+    "word/comments.xml": part(`<w:comments ${WML}>${comments.map(({ id, author, text }) => `<w:comment w:id="${id}" w:author="${escaped(author)}" w:date="${DATE}"><w:p>${run(text)}</w:p></w:comment>`).join("")}</w:comments>`),
+  })
+}
+// What ingest lists for such a file: each comment as screened (hidden characters stripped, findings by field).
+type Listed = Crafted & { findings?: { field: string; rule: string; detail: string }[] }
+const listing = (comments: Listed[]) => ({
+  name: NAME, version: { id: "v1", number: 1, sha256: "synthetic" }, current: true, revisions: [],
+  comments: comments.map(({ id, author, text, findings = [] }) => ({ id, author, initials: null, date: DATE, text, parent: null, resolved: null, quote: "", paragraph: null, findings })),
+  authors: [...new Set(comments.map((comment) => comment.author))].map((name) => ({ name, revisions: 0, comments: comments.filter((comment) => comment.author === name).length })),
+})
 
 const entry = path.join((await import("node:os")).tmpdir(), `dochaus-comments-${process.pid}.tsx`)
 await Bun.write(entry, `
@@ -66,8 +97,9 @@ const screenshots = process.env.SCREENSHOT_DIR
 if (screenshots) await mkdir(screenshots, { recursive: true })
 
 // Without the file's markup the panel stays closed, so the cards show from the start.
-async function open(viewport: { width: number; height: number }, citation?: { section: string; excerpt: string }, withMarkup = true) {
+async function open(viewport: { width: number; height: number }, citation?: { section: string; excerpt: string }, withMarkup = true, file: { bytes: Uint8Array; markup: unknown } = { bytes, markup }) {
   const page = await browser.newPage({ viewport })
+  pages.push(page)
   page.setDefaultTimeout(60_000)
   const errors: string[] = []
   page.on("pageerror", error => errors.push(error.message))
@@ -75,10 +107,10 @@ async function open(viewport: { width: number; height: number }, citation?: { se
     const url = new URL(route.request().url())
     const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) })
     if (/^\/matters\/matter-comments\/documents\/(redlined|content)$/.test(url.pathname))
-      return route.fulfill({ status: 200, contentType: `${CT}.document`, body: Buffer.from(bytes) })
+      return route.fulfill({ status: 200, contentType: `${CT}.document`, body: Buffer.from(file.bytes) })
     if (url.pathname === "/matters/matter-comments/redlines") return json([])
     if (url.pathname === "/matters/matter-comments/documents/amendments") return json(null)
-    if (url.pathname === "/matters/matter-comments/documents/markup" && route.request().method() === "GET" && withMarkup) return json(markup)
+    if (url.pathname === "/matters/matter-comments/documents/markup" && route.request().method() === "GET" && withMarkup) return json(file.markup)
     if (url.pathname === "/preferences") return json({ attorney: LAWYER, firm: "Synthetic Firm" })
     return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: `Unexpected ${url.pathname}` }) })
   })
@@ -94,6 +126,26 @@ const avatars = (page: Awaited<ReturnType<typeof open>>["page"], scope: string) 
   return `${author}: ${avatar.className.replace(" is-small", "")} ${avatar.textContent}`
 }))
 const linked = (page: Awaited<ReturnType<typeof open>>["page"]) => page.locator(".docx-render .is-linked").evaluateAll(nodes => nodes.map(node => `${node.classList.contains("comment-highlight") ? "text" : node.classList.contains("doc-comment-pin") ? "pin" : "card"}#${node.getAttribute("data-comment-id")}`).sort())
+const closePanel = async (page: Awaited<ReturnType<typeof open>>["page"]) => {
+  await page.getByRole("button", { name: "Close tracked changes" }).click()
+  await page.locator('.docx-render:not([data-comments="pane"]) .comment-margin-note').first().waitFor({ state: "visible" })
+}
+// Each crafted file's case runs on its own and reports, so one failure does not hide the next.
+const pages: import("@playwright/test").Page[] = []
+const failures: string[] = []
+async function check(name: string, body: () => Promise<void>) {
+  const from = pages.length
+  try {
+    await body()
+    console.log(`PASS ${name}`)
+  } catch (error) {
+    failures.push(name)
+    console.log(`FAIL ${name}\n${error instanceof Error ? error.message : String(error)}`)
+  } finally {
+    for (const page of pages.splice(from)) await page.close()
+  }
+}
+const HIDDEN = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/u
 
 try {
   const { page, errors } = await open({ width: 1440, height: 900 })
@@ -213,6 +265,33 @@ try {
   assert.equal(await cited.page.locator(".doc-comment-stack mark.citation-passage").count(), 0)
   console.log("PASS a citation across a stacked card selects only the document's text")
   await cited.page.close()
+
+  await check("a card shows its comment without the hidden characters its flag says were removed", async () => {
+    // A right-to-left override shows "0001" as "1000"; ingest strips it, and a zero-width space in the name, and says so.
+    const author = "Avery Lindqvist", text = "Price is USD 0001 per unit."
+    const file = {
+      bytes: wordFile([para(run("1. Price. ") + commented(0, "The unit price is fixed."))], [{ id: 0, author: "Avery\u200B Lindqvist", text: "Price is USD \u202E0001\u202C per unit." }]),
+      markup: listing([{ id: 0, author, text, findings: [
+        { field: "author", rule: "zero-width", detail: "zero-width characters invisible to a human reader (1 removed)" },
+        { field: "text", rule: "bidi-control", detail: "Unicode bidirectional controls that can visually reorder or mask text (2 removed)" },
+      ] }]),
+    }
+    const { page, errors } = await open({ width: 1440, height: 900 }, undefined, true, file)
+    const pin = page.locator('.docx-render[data-comments="pane"] .doc-comment-pin')
+    await pin.waitFor({ state: "attached" })
+    assert.equal(await pin.getAttribute("aria-label"), `Comment by ${author}`)
+    await closePanel(page)
+    const card = note(page, 0)
+    assert.equal(await card.locator(".comment-margin-note-body").textContent(), text)
+    assert.equal(await card.locator(".comment-margin-author").textContent(), author)
+    assert.equal(HIDDEN.test(await card.textContent() ?? ""), false, "no hidden character anywhere in the card")
+    assert.equal(await card.getAttribute("aria-label"), `Comment by ${author}`)
+    assert.match(await card.locator(".markup-flag").textContent() ?? "", /Hidden characters were removed from this text/)
+    assert.deepEqual(await page.locator(".docx-render a.comment-marker").allTextContents(), [`(comment by ${author})`])
+    assert.deepEqual(errors, [])
+  })
+
+  assert.deepEqual(failures, [], "every crafted file's case passes")
 } finally {
   await browser.close()
   server.stop(true)

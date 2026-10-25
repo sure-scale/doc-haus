@@ -1,3 +1,4 @@
+import { STRIP_RE } from "../../../../dochaus/lib/untrusted-text"
 import type { DocumentMarkup } from "../api/ingest/markup"
 import { formatDateTime } from "../lib/format"
 import { authorTones, initialsOf, nameKey, toneClass, toneOf } from "./comment-authors"
@@ -33,6 +34,11 @@ export type CommentDecoration = {
 const NARROW = 560
 const BLOCKS = "p,li,td,th,h1,h2,h3,h4,h5,h6"
 const SVG = "http://www.w3.org/2000/svg"
+// The characters ingest strips from the file's comments, and flags: bidi
+// controls, zero-width and tag characters. A card shows its text as the
+// panel and the agents read it, so a right-to-left override cannot show
+// "0001" as "1000" beside a flag saying it was removed.
+const visible = (text: string) => text.replace(STRIP_RE, "")
 
 // What the panel knows about the comments in the working file. An older
 // version's comments may carry other ids, so it gets none of this.
@@ -81,10 +87,23 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
     added.push(node)
     return node
   }
+  // Each card's own text (author, date, comment) without them; the file's
+  // text is kept to put back.
+  const stripped: [Text, string][] = []
+  for (const note of all) {
+    const walker = document.createTreeWalker(note, NodeFilter.SHOW_TEXT)
+    for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
+      const text = visible(node.data)
+      if (text === node.data) continue
+      stripped.push([node, node.data])
+      node.data = text
+    }
+  }
+  const authorOf = (note: HTMLElement) => visible(note.dataset.author ?? "").trim()
 
   // Colours exactly as the panel's: its list of names when given, else every
   // author the page names (tracked changes and comments alike).
-  const names = decoration.authors ?? [...root.querySelectorAll<HTMLElement>("[data-author]")].map((node) => node.dataset.author ?? "")
+  const names = decoration.authors ?? [...root.querySelectorAll<HTMLElement>("[data-author]")].map((node) => visible(node.dataset.author ?? ""))
   const tones = authorTones(names)
   const self = decoration.self?.trim()
   const toneFor = (author: string) => toneOf(tones, author, self ? (name) => nameKey(name) === nameKey(self) : undefined)
@@ -95,7 +114,7 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
   const rootOf = (note: Element) => (note.parentElement?.closest<HTMLElement>(".comment-margin-note") ?? note) as HTMLElement
   const byId = new Map(all.map((note) => [note.dataset.commentId ?? "", note]))
   const named = (note: HTMLElement) => {
-    const author = note.dataset.author?.trim()
+    const author = authorOf(note)
     return `${note.classList.contains("comment-resolved") ? "Resolved comment" : "Comment"}${author ? ` by ${author}` : ""}`
   }
   // The paragraph a thread's text is in: its highlight's, else its marker's.
@@ -106,7 +125,7 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
 
   for (const note of all) {
     const id = note.dataset.commentId ?? ""
-    const author = note.dataset.author ?? ""
+    const author = authorOf(note)
     const reply = note.classList.contains("comment-margin-reply")
     const resolved = note.classList.contains("comment-resolved")
     note.style.setProperty("--comment-tone", toneVariable(author))
@@ -139,7 +158,7 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
     if (!reply) {
       note.tabIndex = 0
       note.setAttribute("role", "note")
-      const by = author.trim() ? ` by ${author.trim()}` : ""
+      const by = author ? ` by ${author}` : ""
       note.setAttribute("aria-label", `Comment${by}${resolved ? ", resolved" : ""}`)
     }
   }
@@ -147,7 +166,7 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
   // The commented text takes its thread's colour, for the tint and underline.
   for (const anchor of anchors) {
     const note = byId.get(anchor.dataset.commentId ?? "")
-    if (note) anchor.style.setProperty("--comment-tone", toneVariable(rootOf(note).dataset.author ?? ""))
+    if (note) anchor.style.setProperty("--comment-tone", toneVariable(authorOf(rootOf(note))))
   }
 
   // "[0]" means nothing to a lawyer; the marker is kept, out of sight, as
@@ -155,7 +174,7 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
   for (const marker of markers) {
     const id = marker.dataset.commentId ?? marker.id.replace(/^comment-ref-/, "")
     const note = byId.get(id)
-    const author = (note?.dataset.author ?? marker.title.replace(/^Comment by /, "")).trim()
+    const author = visible(note?.dataset.author ?? marker.title.replace(/^Comment by /, "")).trim()
     const kind = marker.dataset.parentId !== undefined || note?.classList.contains("comment-margin-reply") ? "reply" : note?.classList.contains("comment-resolved") ? "resolved comment" : "comment"
     marker.dataset.markerText = marker.textContent ?? ""
     marker.textContent = `(${kind}${author ? ` by ${author}` : ""})`
@@ -292,6 +311,7 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
     root.removeEventListener("click", click)
     if (stacked) unstack()
     for (const node of added.splice(0)) node.remove()
+    for (const [node, text] of stripped.splice(0)) node.data = text
     for (const block of pinned.splice(0)) block.classList.remove("doc-comment-block")
     delete root.dataset.comments
     for (const node of [...all, ...anchors]) {

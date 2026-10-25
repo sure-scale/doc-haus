@@ -32,8 +32,10 @@ const INVISIBLE_CATEGORIES = [
 
 // Everything the categories above match, plus soft hyphens and stray C0 controls
 // (kept out of the report — they occur in honest documents) but never \t, \n or \r,
-// which line-ending normalization handles.
-const STRIP_RE =
+// which line-ending normalization handles. The web viewer strips the same set
+// from the comment cards Docxodus renders (apps/web document-comments.ts), so a
+// card never shows what the reader removed. Global: use it with replace only.
+export const STRIP_RE =
   /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u00AD\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/gu
 
 // Normalize text straight off the extractor: report invisible characters that can
