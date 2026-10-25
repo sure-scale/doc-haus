@@ -7,7 +7,8 @@
 // under its paragraph (once) and goes back when the page widens, with citations still found across it.
 // Small synthetic files then cover the other side's tricks and crowded pages: a card shows no hidden character its
 // flag says was removed, a bookmark named like a comment's marker moves nothing, several buttons on one short clause
-// or in a table cell can each be clicked and cover no text, and a comment with no range leaves no invisible Tab stop.
+// or in a table cell can each be clicked and cover no text, a comment with no range leaves no invisible Tab stop, and
+// on a phone a clause's history card stays on the page rather than over the Tracked changes panel above it.
 // Set PLAYWRIGHT_CHROMIUM_PATH=<chromium> when Playwright's own browser is missing; SCREENSHOT_DIR=<dir> saves one screenshot per state.
 import assert from "node:assert/strict"
 import { existsSync, statSync } from "node:fs"
@@ -86,7 +87,8 @@ const build = await Bun.build({ entrypoints: [entry], target: "browser", define:
 assert.equal(build.success, true, build.logs.join("\n"))
 const script = await build.outputs.find(output => output.kind === "entry-point")!.text()
 const css = ["design-system", "primitives", "design-documents"].map(name => path.resolve(import.meta.dir, `../src/styles/${name}.css`))
-const styles = (await Promise.all(css.map(file => Bun.file(file).text()))).join("\n") + "\n" + (await Bun.file(path.resolve(import.meta.dir, "../src/styles.css")).text())
+// The page's styles, and the history card's own, which its component imports.
+const styles = (await Promise.all([...css, "../src/styles.css", "../src/components/ChangeTimeline.css"].map(file => Bun.file(path.resolve(import.meta.dir, file)).text()))).join("\n")
 const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: request => {
   const { pathname } = new URL(request.url)
   if (pathname === "/harness.js") return new Response(script, { headers: { "content-type": "text/javascript" } })
@@ -404,6 +406,29 @@ try {
     assert.match(await page.locator(".change-timeline .change-timeline-place").textContent() ?? "", /Paragraph 1/)
     assert.deepEqual(errors, [])
   })
+  await check("on a phone, a clause's history card opened under the Tracked changes panel stays on the page", async () => {
+    const comments = REVIEWERS.map((author, id) => ({ id, author, text: `Point ${id + 1} to settle.` }))
+    const file = { bytes: wordFile(comments.map(({ id }) => para(commented(id, `${id + 1}. The Supplier delivers each order within ten business days.`))), comments), markup: listing(comments) }
+    const { page, errors } = await open({ width: 400, height: 640 }, undefined, true, file)
+    await page.locator('.docx-render[data-comments="pane"] .doc-comment-pin').first().waitFor({ state: "attached" })
+    // The panel above the page in one scroller: scrolled so the page starts near the window's foot.
+    const start = await page.evaluate(() => {
+      const column = document.querySelector(".viewer-doc")!
+      let scroller = column.parentElement
+      while (scroller && getComputedStyle(scroller).overflowY === "visible") scroller = scroller.parentElement
+      scroller!.scrollTop += column.getBoundingClientRect().top - (innerHeight - 140)
+      return { column: column.getBoundingClientRect().top, panel: document.querySelector("#document-markup")!.getBoundingClientRect().bottom }
+    })
+    assert.ok(start.column > 400 && start.panel > 300, `setup: the panel fills the window above the page ${JSON.stringify(start)}`)
+    await page.locator('.docx-render .comment-highlight[data-comment-id="0"]').hover()
+    await page.locator(".change-timeline").waitFor({ state: "visible" })
+    const placed = await page.evaluate(() => ({ card: document.querySelector(".change-timeline")!.getBoundingClientRect().top, column: document.querySelector(".viewer-doc")!.getBoundingClientRect().top }))
+    assert.ok(placed.card >= placed.column - 1, `the card starts on the page, below the panel ${JSON.stringify(placed)}`)
+    // After the card's fade-in.
+    if (screenshots) await page.waitForTimeout(400).then(() => page.screenshot({ path: path.join(screenshots, "history-card-under-panel-400.png") }))
+    assert.deepEqual(errors, [])
+  })
+
   assert.deepEqual(failures, [], "every crafted file's case passes")
 } finally {
   await browser.close()
