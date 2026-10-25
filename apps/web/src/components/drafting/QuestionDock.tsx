@@ -20,6 +20,7 @@ export default function QuestionDock(props: {
 }) {
   return (
     <QuestionDockShell
+      id={props.ownerSessionID}
       count={props.questions.length}
       answeredCount={props.answeredQuestions?.length ?? 0}
       preview={props.questions[0]?.question ?? ""}

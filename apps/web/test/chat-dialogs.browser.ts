@@ -33,11 +33,17 @@ const source = (file: string) => JSON.stringify(path.resolve(import.meta.dir, ".
 await Bun.write(entry, `
 import { createElement } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react")))}
 import { createRoot } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-dom/client")))}
-import { MemoryRouter, Route, Routes } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-router-dom")))}
+import { MemoryRouter, Route, Routes, useNavigate } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-router-dom")))}
 import MatterDetail from ${source("pages/MatterDetail.tsx")}
 import { ToastProvider } from ${source("components/Toast.tsx")}
+// Opens another conversation, as the sidebar does.
+function Go() {
+  window.go = useNavigate()
+  return null
+}
 createRoot(document.getElementById("root")).render(createElement(ToastProvider, null,
   createElement(MemoryRouter, { initialEntries: ["/matter/matter?view=chat&session=${sessionID}"] },
+    createElement(Go),
     createElement(Routes, null, createElement(Route, { path: "/matter/:id", element: createElement(MatterDetail, { onSessionsChanged: () => {} }) })))))
 `)
 const build = await Bun.build({ entrypoints: [entry], target: "browser", define: { "import.meta.env": JSON.stringify({ VITE_OPENCODE_URL: "/", VITE_INGEST_URL: "/ingest" }) } })
@@ -219,6 +225,28 @@ try {
       const questions = page.getByRole("dialog", { name: "Question 1 of 2" })
       await questions.waitFor()
       assert.ok(await focusWithin(page, "dialog.question-dialog"), "focus moves to the question")
+    })
+
+    await check("questions closed in one conversation stay closed on coming back until a new one is asked", width, height, async (page, shot) => {
+      drafting = asking
+      await page.goto(server.url.href)
+      const questions = page.getByRole("dialog", { name: "Question 1 of 2" })
+      await questions.waitFor(poll)
+      await page.keyboard.press("Escape")
+      await questions.waitFor({ state: "hidden" })
+      const go = (to: string) => page.evaluate(to => (window as unknown as { go: (to: string) => void }).go(to), to)
+      await go("/matter/matter?view=chat")
+      await page.locator(".question-dock").waitFor({ state: "detached" })
+      await go(`/matter/matter?view=chat&session=${sessionID}`)
+      await page.locator(".question-dock").waitFor(poll)
+      // Past the next status poll.
+      await page.waitForTimeout(6000)
+      await shot("run-asks-returned")
+      assert.equal(await questions.count(), 0, "the questions the lawyer closed stay in the dock")
+      drafting = { ...asking, questions: [...asking.questions, { ...asking.questions[0], id: "q-insurance", question: "Who insures the goods in transit?" }] }
+      const more = page.getByRole("dialog", { name: "Question 1 of 3" })
+      await more.waitFor(poll)
+      assert.ok(await focusWithin(page, "dialog.question-dialog"), "a new question opens them again")
     })
 
     await check("questions asked while the lawyer types wait in the dock", width, height, async (page, shot) => {

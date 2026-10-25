@@ -233,6 +233,7 @@ export default function SessionQuestions({
   return (
     <QuestionDockShell
       key={form.id}
+      id={form.id}
       count={fields.length}
       preview={fields[0]?.description ?? fields[0]?.title ?? ""}
       subject="The assistant"

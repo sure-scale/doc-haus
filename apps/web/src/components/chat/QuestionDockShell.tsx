@@ -2,13 +2,20 @@ import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } f
 import backdropClose from "../backdropClose"
 import useExit, { useClosed } from "../useExit"
 
+// How many questions each set of questions last held, kept while the app is
+// open, so coming back to a conversation reopens nothing the lawyer closed.
+const seen = new Map<string, number>()
+
 export default function QuestionDockShell({
+  id,
   count,
   preview,
   subject,
   answeredCount = 0,
   renderQuestions,
 }: {
+  /** Whose questions these are: a run's conversation or an assistant's form. */
+  id: string
   /** Questions asked; the dock counts them. */
   count: number
   preview: string
@@ -36,19 +43,19 @@ export default function QuestionDockShell({
   // A newly asked question opens the dialog, so the lawyer need not find the
   // dock. While they type it waits there; asked while another dialog is open,
   // it opens once that dialog has gone, unless they are typing by then. One
-  // they closed stays closed until something new is asked. The dialog closes
-  // once the last asked question is settled.
-  const asked = useRef(0)
+  // they closed stays closed until something new is asked, also after visiting
+  // another conversation. The dialog closes once the last asked question is
+  // settled.
   const [waiting, setWaiting] = useState(false)
   useEffect(() => {
-    const more = count > asked.current
-    asked.current = count
+    const more = count > (seen.get(id) ?? 0)
+    seen.set(id, count)
     if (count === 0) {
       setOpen(false)
       setWaiting(false)
     } else if (more && dialogOpen()) setWaiting(true)
     else if (more && !typing()) setOpen(true)
-  }, [count])
+  }, [id, count])
   useEffect(() => {
     if (!waiting) return
     if (open) {
