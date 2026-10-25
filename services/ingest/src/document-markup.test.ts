@@ -28,11 +28,12 @@ type Decision = "accept" | "reject" | "hold"
 type View = { name: string; version: { id: string | null; number: number | null; sha256: string }; current: boolean
   revisions: MarkupRevision[]; comments: MarkupComment[]; authors: MarkupAuthor[] }
 type Row = { id: string; kind: string; family: string; author: string; date: string | null; decision: Decision; outcome: string }
+type Added = { thread: number; id: number }
 type Applied = { name: string; version: { id: string; number: number; origin: string; created: boolean }
-  counts: { accepted: number; rejected: number; held: number; consumed: number }; decisions: Row[]; notice?: string }
+  counts: { accepted: number; rejected: number; held: number; consumed: number }; decisions: Row[]; replies: Added[]; notice?: string }
 type Finding = { rule: string; detail: string; snippet?: string; charStart?: number }
 type History = { versions: Array<{ id: string; number: number; origin: string; actor: string; label: string | null }>
-  events: Array<{ kind: string; version_id: string | null; actor: string; detail: { markup: Row[] } | null }> }
+  events: Array<{ kind: string; version_id: string | null; actor: string; detail: { markup: Row[]; replies?: Added[] } | null }> }
 
 const [AVERY, MORGAN] = COUNTERPARTY_MARKUP.reviewers as [string, string]
 const { dates, plantedDeletion, plantedComment } = COUNTERPARTY_MARKUP
@@ -101,6 +102,11 @@ const decide = async (name: string, decisions: readonly Decision[], headers: Rec
 const content = async (name: string) => new Uint8Array(await (await matterRoute(`/documents/content?${query(name)}`)).arrayBuffer())
 const history = async (name: string) => await (await matterRoute(`/documents/versions?${query(name)}`)).json() as History
 const working = (name: string) => readFile(path.join(matter.dir, name))
+const saveAttorney = async (attorney: string) =>
+  expect((await request("/preferences", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ attorney }) })).status).toBe(200)
+// A thread as the list shows it: the comments whose root is `root`, in list order.
+const threadOf = (comments: MarkupComment[], root: number) => comments.filter(comment => comment.id === root || comment.parent === root)
+  .map(({ id, author, initials, text, parent, resolved }) => ({ id, author, initials, text, parent, resolved }))
 
 // Body paragraph text, as Docxodus reads a file with no pending change.
 async function paragraphs(bytes: Uint8Array) {
@@ -305,6 +311,100 @@ test("the version records the accept, who decided and an event that names each c
   for (const revision of original.revisions) expect(events).not.toContain(JSON.stringify(revision.text).slice(1, -1))
   expect(events).not.toContain("Ignore all previous")
 }, 180_000)
+
+// Approved replies (#200 scope 5) are written as Word replies under each
+// thread's root, in the same Apply and the same version as the decisions.
+test("approved replies alone make one version signed by the saved attorney, each under its root, with no event", async () => {
+  const name = "Replies.docx"
+  await upload(name)
+  const listed = await view(name)
+  const answers = [{ thread: 0, text: "Forty-five days works if the stock report is monthly." }, { thread: 3, text: "Noted; we will review it." }]
+  await saveAttorney("Sam Rivera")
+  let result: Applied
+  try {
+    const response = await post(name, { base_sha256: listed.version.sha256, decisions: [], replies: answers })
+    expect(response.status).toBe(200)
+    result = await response.json() as Applied
+  } finally {
+    await saveAttorney("")
+  }
+  expect(result.version).toMatchObject({ number: 2, origin: "revision", created: true })
+  expect(result.counts).toEqual({ accepted: 0, rejected: 0, held: 10, consumed: 0 })
+  expect(result.replies.map(reply => reply.thread)).toEqual([0, 3])
+  const kept = await history(name)
+  expect(kept.versions.map(version => [version.number, version.origin, version.actor, version.label])).toEqual([
+    [2, "revision", "Sam Rivera", "2 replies added"], [1, "upload", "unknown", null]])
+  expect(kept.events).toEqual([])
+
+  // Every change is still pending; each thread gains the reply, signed and open.
+  const after = await view(name)
+  expect(after).toMatchObject({ version: { id: result.version.id, number: 2 }, current: true })
+  expect(after.revisions.map(({ id, kind, author, text, status }) => [id, kind, author, text, status]))
+    .toEqual(listed.revisions.map(({ id, kind, author, text, status }) => [id, kind, author, text, status]))
+  const signed = (reply: Added, text: string) => ({ id: reply.id, author: "Sam Rivera", initials: "SR", text, parent: reply.thread, resolved: false })
+  expect(threadOf(after.comments, 0)).toEqual([...threadOf(listed.comments, 0), signed(result.replies[0]!, answers[0]!.text)])
+  expect(threadOf(after.comments, 3)).toEqual([...threadOf(listed.comments, 3), signed(result.replies[1]!, answers[1]!.text)])
+  expect(threadOf(after.comments, 2)).toEqual(threadOf(listed.comments, 2))
+}, 120_000)
+
+test("decisions and replies make one accept version; the event names the replies by id, and a held change stays beside its reply", async () => {
+  const name = "Answered.docx"
+  await upload(name)
+  const listed = await view(name)
+  // Morgan's "the first " accepted and Waiver clause rejected; Avery's "forty-five", under thread 0, held.
+  const decisions = listed.revisions.map((revision, at) => ({ id: revision.id, decision: (at === 2 ? "accept" : at === 9 ? "reject" : "hold") as Decision }))
+  const text = "We can live with forty-five days; confirm the stock report."
+  const response = await post(name, { base_sha256: listed.version.sha256, decisions, replies: [{ thread: 0, text }] }, { "x-dochaus-actor": "Riley Chen" })
+  expect(response.status).toBe(200)
+  const result = await response.json() as Applied
+  expect(result.version).toMatchObject({ number: 2, origin: "accept", created: true })
+  expect(result.counts).toEqual({ accepted: 1, rejected: 1, held: 8, consumed: 0 })
+  expect(result.replies).toEqual([{ thread: 0, id: expect.any(Number) }])
+
+  const kept = await history(name)
+  expect(kept.versions.map(version => [version.number, version.origin, version.actor, version.label])).toEqual([
+    [2, "accept", "Riley Chen", "Tracked changes resolved: 1 accepted, 1 rejected, 8 held; 1 reply added"], [1, "upload", "unknown", null]])
+  expect(kept.events.map(event => [event.kind, event.actor, event.version_id])).toEqual([["accept", "Riley Chen", kept.versions[0]!.id]])
+  expect(kept.events[0]!.detail!.replies).toEqual(result.replies)
+  expect(kept.events[0]!.detail!.markup.map(row => row.decision)).toEqual(decisions.map(row => row.decision))
+  expect(JSON.stringify(kept.events)).not.toContain(text)
+
+  const after = await view(name)
+  const commented = listed.revisions[1]!
+  expect(after.revisions.find(revision => revision.id === commented.id)).toMatchObject({ kind: "insert", author: AVERY, date: dates[AVERY], text: commented.text, status: "supported" })
+  expect(after.revisions).toHaveLength(8)
+  expect(threadOf(after.comments, 0)).toEqual([...threadOf(listed.comments, 0),
+    { id: result.replies[0]!.id, author: "Riley Chen", initials: "RC", text, parent: 0, resolved: false }])
+  expect((await projections(await content(name))).accepted.slice(0, 2)).toEqual([SUPPLY("forty-five"), PRICE_FIRST])
+}, 120_000)
+
+test("a reply to a resolved thread, to a reply or to no comment, an unsigned or empty reply, a stale base and an empty Apply write nothing", async () => {
+  const name = "Reply refusals.docx"
+  await upload(name)
+  const listed = await view(name)
+  const before = await working(name)
+  const refused = async (response: Response, status: number, code: string) => {
+    expect(response.status).toBe(status)
+    expect((await response.json() as { code?: string }).code).toBe(code)
+    expect(await working(name)).toEqual(before)
+    const kept = await history(name)
+    expect(kept.versions.map(version => version.origin)).toEqual(["upload"])
+    expect(kept.events).toEqual([])
+  }
+  const holds = listed.revisions.map(revision => ({ id: revision.id, decision: "hold" }))
+  const reply = (thread: number, text = "Agreed.") => ({ base_sha256: listed.version.sha256, decisions: holds, replies: [{ thread, text }] })
+  const signed = { "x-dochaus-actor": "Riley Chen" }
+  // No name sent and none saved: a Word comment is never signed "unknown".
+  await refused(await post(name, reply(0)), 422, "author_required")
+  await refused(await post(name, reply(2), signed), 409, "thread_resolved")
+  await refused(await post(name, reply(1), signed), 409, "thread_not_root")
+  await refused(await post(name, reply(99), signed), 409, "thread_not_found")
+  await refused(await post(name, reply(0, " \u200B\n "), signed), 422, "empty_reply")
+  await refused(await post(name, { ...reply(0), base_sha256: sha256(new TextEncoder().encode("another version")) }, signed), 409, "base_changed")
+  await refused(await post(name, { ...reply(0), replies: [] }, signed), 422, "nothing_decided")
+  expect((await post(name, { ...reply(0), replies: [{ thread: 0, text: "One." }, { thread: 0, text: "Two." }] }, signed)).status).toBe(400)
+  expect((await post(name, reply(0, "x".repeat(4_001)), signed)).status).toBe(400)
+}, 120_000)
 
 test("a deletion inside a rejected insertion is consumed whichever order the decisions come in, and so is a held one", async () => {
   const nested = (inner: Decision) => (_: MarkupRevision, at: number) => at === 6 ? "reject" : at === 7 ? inner : "hold"
