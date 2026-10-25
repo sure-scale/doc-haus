@@ -1961,8 +1961,8 @@ function marked(text: string) {
 // behind ⋯; what to check before sending under it) or approved (shown as the
 // next reply in the thread, with Edit and Remove). The box grows with its text
 // and marks the bracketed parts still to fill. The control the panel focuses
-// after an action carries data-reply-focus. A thread flagged for planted
-// instructions repeats its flag above the draft.
+// after an action carries data-reply-focus. A flag stays on its comment, not
+// above the draft; doc.haus's own note on it is under the draft.
 function ReplyArea({ thread, awaiting, reply, drafting, steer, carried, you, undo, failure, disabled, canDraft, actions }: ReplyAreaProps) {
   const id = useId()
   const [steering, setSteering] = useState(steer !== "")
@@ -1971,7 +1971,6 @@ function ReplyArea({ thread, awaiting, reply, drafting, steer, carried, you, und
   const menuButton = useRef<HTMLButtonElement>(null)
   const steerInput = useRef<HTMLInputElement>(null)
   useDismiss(menu, menuWrap, () => setMenu(false))
-  const planted = [thread.root, ...thread.replies].flatMap((comment) => comment.findings).filter((finding) => !HIDDEN.has(finding.rule))
   const hold = !reply || reply.approved ? undefined : !reply.text.trim() ? "Write the reply first." : PLACEHOLDER.test(reply.text) ? "Fill the bracketed parts first." : undefined
   const steerNow = () => {
     setMenu(false)
@@ -2029,7 +2028,6 @@ function ReplyArea({ thread, awaiting, reply, drafting, steer, carried, you, und
         </div>
       ) : (
         <>
-          {planted.length > 0 && <Flags findings={planted} />}
           {reply.changed && (
             <p className="markup-reply-changed"><Icon name="warning" /><span>The thread changed since you drafted this — check before approving.</span></p>
           )}

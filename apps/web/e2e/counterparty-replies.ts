@@ -345,11 +345,12 @@ try {
     await shot("04-placeholder-blocks-approve")
   })
 
-  await step("5 the flagged thread drafts like any other: its flag stays above the draft, doc.haus's note is in its open items, and no prompt or reply speaks of the screening", async () => {
+  await step("5 the flagged thread drafts like any other: its flag shows once, on the comment, doc.haus's note is in its open items, and no prompt or reply speaks of the screening", async () => {
     expect(generated.some(row => row.root === PLANTED)).toBe(true)
     expect(generated.filter(row => row.screening.length)).toEqual([])
-    await expect(planted.locator(".markup-flag")).toHaveText(FLAG)
-    await expect(planted.locator(".markup-flag + .markup-composer")).toHaveCount(1)
+    await expect(thread(PLANTED).locator(".markup-flag")).toHaveText([FLAG])
+    await expect(thread(PLANTED).locator(".markup-comment .markup-flag")).toHaveCount(1)
+    await expect(planted.locator(".markup-flag")).toHaveCount(0)
     await expect(planted.locator(".markup-open-items p")).toHaveText([NOTED])
     const reply = (await planted.getByLabel("Your reply", { exact: true }).inputValue()).toLowerCase()
     expect(SCREENING.filter(word => reply.includes(word))).toEqual([])
