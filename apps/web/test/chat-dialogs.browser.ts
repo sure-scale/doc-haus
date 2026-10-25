@@ -50,6 +50,11 @@ const css = (await Promise.all([...main.matchAll(/^import "\.\/(.+\.css)"$/gm)]
 const json = (body: unknown) => Response.json(body)
 const session = { id: sessionID, projectID: "project", agent: "qa", model, location: { directory: "/matter" }, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: 1, updated: 1 } }
 const transcript = [{ type: "user", id: "msg_u1", text: "Please prepare our revised supply agreement.", time: { created: 1 } }]
+// Synthetic firm playbooks; the matter binds none.
+const playbooks = [
+  { name: "playbook-supply", description: "Standard supply positions", content: "", version: "1", last_reviewed: "2026-01-01", builtin: false, updated_at: 1 },
+  { name: "playbook-nda", description: "Mutual confidentiality positions", content: "", version: "1", last_reviewed: "2026-01-01", builtin: false, updated_at: 1 },
+]
 const unknown: string[] = []
 const server = Bun.serve({
   port: 0,
@@ -62,7 +67,8 @@ const server = Bun.serve({
     if (route === "GET /") return new Response(`<html><meta charset="utf-8"><style>body{font-family:sans-serif;margin:0}${css}</style><div id="root" style="display:flex;flex-direction:column;height:100vh"></div><script type="module" src="/harness.js"></script></html>`, { headers: { "content-type": "text/html" } })
     if (route === "GET /ingest/matters/matter")
       return json({ id: "matter", title: "Supply agreement", dir: "/matter", created_at: 1, documents: [{ id: 1, name: "Supply terms.docx", doc_path: "/matter/Supply terms.docx", created_at: 1, role: "source" }] })
-    if (route === "GET /ingest/jurisdictions" || route === "GET /ingest/playbooks") return json([])
+    if (route === "GET /ingest/jurisdictions") return json([])
+    if (route === "GET /ingest/playbooks") return json(playbooks)
     if (route === "GET /ingest/workflows") return json({ dir: "/workflows", workflows: [] })
     if (route === "GET /api/agent") return json({ data: CHAT_ASSISTANTS.map(({ name }) => ({ id: name, description: name, mode: "primary" })) })
     if (route === "GET /ingest/matters/matter/telemetry")
@@ -143,6 +149,28 @@ try {
       await page.getByRole("button", { name: "Q&A", exact: true }).waitFor()
       // Choosing an assistant leaves the lawyer in the message box, as before.
       await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Message")
+    })
+
+    await check("the playbook picker is a labelled dialog that takes focus, keeps it and gives it back", width, height, async (page, shot) => {
+      drafting = null
+      await page.goto(server.url.href)
+      const trigger = page.getByRole("button", { name: "Playbook", exact: true })
+      await trigger.click()
+      await page.getByText("Skip playbook checks for this matter", { exact: true }).waitFor()
+      await shot("playbook-picker")
+      const picker = page.getByRole("dialog", { name: "Playbook" })
+      await picker.waitFor()
+      assert.equal(await picker.getAttribute("aria-modal"), "true")
+      assert.ok(await focusWithin(page, ".picker-panel"), "focus moves into the picker")
+      for (let step = 0; step < 6; step++) {
+        await page.keyboard.press("Tab")
+        assert.ok(await focusWithin(page, ".picker-panel"), "Tab stays inside the picker")
+      }
+      await page.keyboard.press("Shift+Tab")
+      assert.ok(await focusWithin(page, ".picker-panel"), "Shift+Tab stays inside the picker")
+      await page.keyboard.press("Escape")
+      await picker.waitFor({ state: "detached" })
+      assert.ok(await trigger.evaluate(button => button === document.activeElement), "Escape hands focus back to the picker's button")
     })
 
     await check("a run that stops to ask opens its questions", width, height, async (page, shot) => {
