@@ -48,7 +48,9 @@ export type MarkupRevision = {
 // One comment; `parent` is the id of the comment it replies to and `resolved`
 // is null when the file does not say. `paragraph` counts its part's paragraphs
 // and `label` is the list number Word prints there, as a location's is;
-// `scope` names that part when it is not the body.
+// `scope` names that part when it is not the body. `detached`: its reference
+// is no longer in the document (the text it was on was removed), so it takes
+// no reply.
 export type MarkupComment = {
   id: number
   author: string
@@ -61,6 +63,7 @@ export type MarkupComment = {
   paragraph: number | null
   label?: string
   scope?: "footnote" | "endnote"
+  detached?: true
   findings: MarkupFinding[]
 }
 
@@ -106,8 +109,9 @@ export type MarkupDecisionResult = {
 
 // The service refused a request: the file changed since the list was read, a
 // change can no longer be decided here, doc.haus proposals are pending, a
-// thread is gone or resolved (409), nothing was accepted, rejected or replied
-// (422), or a reply could not be drafted (409 unreadable, 502). `message` is
+// thread is gone, resolved or detached (409), nothing was accepted, rejected or
+// replied, or a decision removes the text a reply's comment is on (422), or a
+// reply could not be drafted (409 unreadable, 502). `message` is
 // the service's own words; `code` is whatever reason string it sent, known to
 // this build or not; `ids` are the listed changes the refusal is about (`id`,
 // then those it `merged_with`), empty when it names none; `thread` is the

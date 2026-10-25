@@ -119,8 +119,8 @@ export function markupCount(markup: Pick<DocumentMarkup, "revisions" | "comments
 }
 
 // A thread takes a reply while it starts from a root comment (not a reply whose
-// parent is gone) that is not resolved.
-const isOpen = (thread: Thread) => thread.root.parent === null && thread.root.resolved !== true
+// parent is gone) that is not resolved and still has its place in the text.
+const isOpen = (thread: Thread) => thread.root.parent === null && thread.root.resolved !== true && !thread.root.detached
 const threadCard = (thread: Thread) => `comment-${thread.root.id}`
 
 // Cards in document order: by part, then paragraph (unknown places last), a
@@ -1119,7 +1119,8 @@ function CommentBody({ comment }: { comment: MarkupComment }) {
   )
 }
 
-// A thread, read-only, with the reply area while it is open.
+// A thread, read-only, with the reply area while it is open. A detached one
+// says why it takes no reply.
 function ThreadCard({ thread, open, response, cardRef, ...area }: { thread: Thread; open: boolean; response?: MarkupResponse; cardRef: (node: HTMLLIElement | null) => void } & Omit<ReplyAreaProps, "thread">) {
   const { root, replies } = thread
   return (
@@ -1127,6 +1128,7 @@ function ThreadCard({ thread, open, response, cardRef, ...area }: { thread: Thre
       <div className="markup-card-head">
         <span className="markup-kind is-comment">Comment</span>
         {root.resolved === true && <span className="version-tag is-viewing">Resolved</span>}
+        {root.detached && <span className="version-tag is-viewing">Text removed</span>}
       </div>
       {root.quote && <blockquote className="markup-quote">{root.quote}</blockquote>}
       <CommentBody comment={root} />
@@ -1141,6 +1143,7 @@ function ThreadCard({ thread, open, response, cardRef, ...area }: { thread: Thre
       )}
       {root.paragraph !== null && <p className="markup-place"><span>{capital(placeName(root.scope ?? "body", root)!)}</span></p>}
       <RunResponse response={response} />
+      {root.detached && <p className="markup-hint">The text this comment was on is no longer in the document, so it takes no reply here.</p>}
       {open && <ReplyArea thread={thread} {...area} />}
     </li>
   )

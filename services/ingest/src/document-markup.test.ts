@@ -411,6 +411,47 @@ test("a reply to a resolved thread, to a reply or to no comment, an unsigned or 
   expect((await post(name, reply(0, "x".repeat(4_001)), signed)).status).toBe(400)
 }, 120_000)
 
+test("a reply to a comment the same Apply takes out of the document is refused on its thread; applied without it, the comment is detached and takes no reply", async () => {
+  // Morgan comments on the Waiver clause Morgan inserted; the comment's reference is tracked with the insertion.
+  const signed = { "x-dochaus-actor": "Riley Chen" }
+  const answer = { thread: 5, text: "Our template uses the same waiver wording." }
+  const waiver = (listed: View, decision: Decision) => listed.revisions.map(revision => ({ id: revision.id, decision: revision.text.startsWith(WAIVER) ? decision : "hold" }))
+  // Accepted, the clause keeps the comment's place and the reply is saved under it.
+  const kept = "Waiver kept.docx"
+  await upload(kept, counterpartyMarkupDocx({ waiver: true }))
+  const keptList = await view(kept)
+  const saved = await post(kept, { base_sha256: keptList.version.sha256, decisions: waiver(keptList, "accept"), replies: [answer] }, signed)
+  expect(saved.status).toBe(200)
+  expect((await saved.json() as Applied).replies).toEqual([{ thread: 5, id: expect.any(Number) }])
+
+  // Rejected, the clause goes with the reference: the Apply is refused on that thread and writes nothing.
+  const name = "Waiver rejected.docx"
+  await upload(name, counterpartyMarkupDocx({ waiver: true }))
+  const listed = await view(name)
+  expect(listed.comments.find(comment => comment.id === 5)).toMatchObject({ author: MORGAN, quote: WAIVER, resolved: false })
+  expect(listed.comments.filter(comment => comment.detached)).toEqual([])
+  const before = await working(name)
+  const refused = await post(name, { base_sha256: listed.version.sha256, decisions: waiver(listed, "reject"), replies: [answer] }, signed)
+  expect(refused.status).toBe(422)
+  expect(await refused.json()).toEqual({
+    error: "Your decision removes the text this comment is on, so this reply can't be saved. Keep the change or drop the reply.", code: "anchor_removed", thread: 5 })
+  expect(await working(name)).toEqual(before)
+  expect((await history(name)).versions.map(version => version.origin)).toEqual(["upload"])
+
+  // Without the reply the rejection applies, and the comment stays in the file with no place in its text.
+  expect((await post(name, { base_sha256: listed.version.sha256, decisions: waiver(listed, "reject") }, signed)).status).toBe(200)
+  const after = await view(name)
+  expect(after.comments.filter(comment => comment.detached).map(comment => comment.id)).toEqual([5])
+  // It takes no reply, applied or drafted.
+  const late = await post(name, { base_sha256: after.version.sha256, decisions: after.revisions.map(revision => ({ id: revision.id, decision: "hold" })), replies: [answer] }, signed)
+  expect(late.status).toBe(409)
+  expect(await late.json()).toMatchObject({ code: "thread_detached", thread: 5 })
+  const drafted = await matterRoute(`/documents/markup/replies/draft?${query(name)}`,
+    { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ base_sha256: after.version.sha256, thread: 5 }) })
+  expect(drafted.status).toBe(409)
+  expect((await drafted.json() as { code?: string }).code).toBe("thread_detached")
+}, 120_000)
+
 test("a deletion inside a rejected insertion is consumed whichever order the decisions come in, and so is a held one", async () => {
   const nested = (inner: Decision) => (_: MarkupRevision, at: number) => at === 6 ? "reject" : at === 7 ? inner : "hold"
   const outcomes = new Map<string, Row[]>()

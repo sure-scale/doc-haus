@@ -102,7 +102,10 @@ service, whose model calls go to a local engine fixture with scripted drafts.
 It drafts the open threads together, cancels one, checks that Approve waits for
 the bracketed part, edits and approves two replies, discards and restores one,
 and applies them with one Reject as one version. At 400 px it applies the last
-reply alone.
+reply alone. A second upload's comment sits on a clause the other side
+inserted: a reply to it with that clause rejected is refused on the thread's
+card, and once applied without the reply the comment shows its text was removed
+and offers no reply.
 
 Run what follows an Apply in their changes (#200, #198) the same way:
 

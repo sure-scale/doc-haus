@@ -9,7 +9,11 @@
 // two replies are approved, one draft is discarded and brought back; Apply
 // saves one version with a rejected change and the two replies under the
 // lawyer's name; then, at phone width, the remaining reply is approved and
-// applied alone. The ingest service's model calls reach a scripted engine
+// applied alone. A second upload has a comment on a clause the other side
+// inserted, its reference tracked with the insertion: a reply to it with that
+// clause rejected is refused on its thread card and nothing is saved; applied
+// without the reply, the comment says its text was removed and offers no reply.
+// The ingest service's model calls reach a scripted engine
 // fixture here (one per thread, answers fixed by the thread's first comment);
 // browser engine traffic is intercepted and unexpected requests fail the run.
 // Screenshots and the JSON summary go beneath DOCHAUS_EVIDENCE_DIR.
@@ -46,6 +50,9 @@ const DRAFTS: Record<string, { reply: string; open_items: string[] }> = {
   [FOOTNOTE]: { reply: "Schedule 1 names the Province.", open_items: [] },
 }
 const EDITED = "We can agree to forty-five days if the Supplier reports its stock levels by the fifth Business Day of each month."
+// The upload whose comment sits on Morgan's inserted Waiver clause.
+const WAIVER_NAME = "supply-agreement-waiver.docx"
+const WAIVER_REPLY = "Our template uses the same waiver wording."
 
 const results: { step: string; status: "passed" | "failed"; error?: string }[] = []
 const pageErrors: string[] = []
@@ -218,16 +225,17 @@ try {
   const draftAll = panel.getByRole("button", { name: /^Draft replies \(\d+\)$/ })
   const [answered, planted, footnote] = [AVERY_ROOT, PLANTED, FOOTNOTE].map(replyArea) as [Locator, Locator, Locator]
 
-  async function openDocument(navigate = true) {
+  async function openDocument(navigate = true, name = NAME) {
     if (navigate) await page.goto(`${baseURL!.replace(/\/$/, "")}/matter/${file.matter}`)
     const documents = page.locator(".sidebar").getByRole("button", { name: /^Documents(?: \d+)?$/ })
     await expect(documents).toBeVisible()
     if (await documents.getAttribute("aria-expanded") !== "true") await documents.click()
-    await page.getByRole("button", { name: NAME, exact: true }).click()
-    await expect(dialog).toBeVisible()
+    await page.getByRole("button", { name, exact: true }).click()
+    const opened = page.getByRole("dialog", { name, exact: true })
+    await expect(opened).toBeVisible()
     // The first open loads the Word runtime; later renders are quick.
-    await expect(dialog.locator(".docx-render:not(.docx-skeleton)")).toBeVisible({ timeout: 30_000 })
-    await expect(panel).toBeVisible()
+    await expect(opened.locator(".docx-render:not(.docx-skeleton)")).toBeVisible({ timeout: 30_000 })
+    await expect(opened.locator("#document-markup")).toBeVisible()
   }
 
   async function threadReplies() {
@@ -476,6 +484,71 @@ try {
     await page.emulateMedia({ colorScheme: "light", forcedColors: "active" })
     await shot("16-forced-colors")
     await page.emulateMedia({ forcedColors: "none" })
+  })
+
+  // The second upload's panel, and Morgan's comment on the Waiver clause.
+  const waiverPanel = page.getByRole("dialog", { name: WAIVER_NAME, exact: true }).locator("#document-markup")
+  const waiverThread = waiverPanel.locator(".markup-list > li.markup-thread").filter({ has: page.locator(":scope > .markup-comment-text", { hasText: COUNTERPARTY_MARKUP.waiverComment.text }) })
+  const waiverReply = waiverThread.getByRole("group", { name: /^Your reply to / })
+  const applyWaiver = async (status: number) => {
+    await waiverPanel.getByRole("button", { name: "Apply decisions…", exact: true }).click()
+    const confirm = waiverPanel.getByRole("group", { name: "Apply decisions", exact: true })
+    const applied = page.waitForResponse(response => new URL(response.url()).pathname.endsWith("/documents/markup/decisions"))
+    await confirm.getByRole("button", { name: "Apply decisions", exact: true }).click()
+    const response = await applied
+    expect(response.status()).toBe(status)
+    return await response.json() as { code?: string; thread?: number }
+  }
+  const phoneShot = async (target: Locator, name: string) => {
+    await page.setViewportSize({ width: 400, height: 860 })
+    await centre(target)
+    await shot(name)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1)
+    await page.setViewportSize({ width: 1440, height: 1000 })
+  }
+
+  await step("15 a reply on a clause the Apply rejects is refused on its thread card, and nothing is saved", async () => {
+    const source = new FormData(); source.append("file", new File([counterpartyMarkupDocx({ waiver: true })], WAIVER_NAME))
+    expect((await api(`/matters/${file.matter}/documents`, { method: "POST", body: source })).status).toBe(200)
+    await openDocument(true, WAIVER_NAME)
+    await waiverReply.getByRole("button", { name: "Write a reply", exact: true }).click()
+    await waiverReply.getByLabel("Your reply", { exact: true }).fill(WAIVER_REPLY)
+    await waiverReply.getByRole("button", { name: "Approve", exact: true }).click()
+    const clause = waiverPanel.locator(".markup-list > li:not(.markup-thread)").filter({ hasText: "8. Waiver." })
+    await clause.getByRole("radio", { name: "Reject", exact: true }).click()
+    await expect(waiverPanel.locator(".markup-tally")).toHaveText("0 to accept · 1 to reject · 9 held · 1 reply to add")
+    expect(await applyWaiver(422)).toMatchObject({ code: "anchor_removed", thread: COUNTERPARTY_MARKUP.waiverComment.id })
+    // The refusal is on the thread it names, with focus; Apply carries none of it.
+    await expect(waiverThread).toHaveClass(/\bis-refused\b/)
+    const message = waiverThread.locator(".version-error")
+    await expect(message).toHaveText("Your decision removes the text this comment is on, so this reply can't be saved. Keep the change or drop the reply.")
+    await expect(message).toBeFocused()
+    await expect(waiverPanel.locator(".markup-apply .version-error")).toHaveCount(0)
+    await expect(waiverReply.locator(".markup-reply-final")).toHaveText(WAIVER_REPLY)
+    const listed = await (await api(`/matters/${file.matter}/documents/versions?name=${encodeURIComponent(WAIVER_NAME)}`)).json() as { versions: { origin: string }[] }
+    expect(listed.versions.map(row => row.origin)).toEqual(["upload"])
+    await centre(waiverThread)
+    await shot("17-reply-on-removed-text-refused")
+    await cardShot(waiverThread, "17-reply-on-removed-text-refused-card")
+    await phoneShot(waiverThread, "18-phone-reply-on-removed-text-refused")
+  })
+
+  await step("16 applied without the reply, the comment says its text was removed and offers no reply", async () => {
+    await waiverReply.getByRole("button", { name: "Remove", exact: true }).click()
+    await expect(waiverThread).not.toHaveClass(/\bis-refused\b/)
+    await applyWaiver(200)
+    await expect(page.getByText("Saved as version 2: 0 accepted, 1 rejected, 9 held.", { exact: true })).toBeVisible()
+    await expect(waiverThread).toContainText("Text removed", { timeout: 30_000 })
+    await expect(waiverThread).toContainText("The text this comment was on is no longer in the document, so it takes no reply here.")
+    await expect(waiverReply).toHaveCount(0)
+    // Only the two open threads still placed in the text are offered a draft.
+    await expect(waiverPanel.getByRole("button", { name: /^Draft replies \(\d+\)$/ })).toHaveAccessibleName("Draft replies (2)")
+    const markup = await (await api(`/matters/${file.matter}/documents/markup?name=${encodeURIComponent(WAIVER_NAME)}`)).json() as { comments: { id: number; detached?: boolean }[] }
+    expect(markup.comments.filter(comment => comment.detached).map(comment => comment.id)).toEqual([COUNTERPARTY_MARKUP.waiverComment.id])
+    await centre(waiverThread)
+    await shot("19-detached-comment")
+    await cardShot(waiverThread, "19-detached-comment-card")
+    await phoneShot(waiverThread, "20-phone-detached-comment")
   })
 
   await step("no page errors or unexpected requests", async () => {

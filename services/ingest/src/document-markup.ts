@@ -4,7 +4,7 @@ import path from "node:path"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { addCommentReplies, CommentReplyError, replyInitials, type CommentReply } from "../../../dochaus/lib/docx-comment-replies"
-import { readDocxMarkup, type DocxMarkup } from "../../../dochaus/lib/docx-markup"
+import { commentReferences, readDocxMarkup, type DocxMarkup } from "../../../dochaus/lib/docx-markup"
 import { issueRegister } from "../../../dochaus/workflows/lean/register"
 import { markupConsistency } from "../../../dochaus/workflows/lean/version-consistency"
 import { getDocumentRole, listPendingRedlines, openDb } from "./db"
@@ -87,7 +87,8 @@ export function documentMarkupRoutes(options: Options) {
   // one new version. `base_sha256` is the version the list was read from; a
   // listed change left out is held. `replies` answer open threads by their
   // root's id, one per thread. Decisions go first, so a reply sits on the text
-  // as decided; any refusal writes nothing.
+  // as decided; a decision that takes a replied comment's reference out of the
+  // document refuses the Apply on that thread. Any refusal writes nothing.
   app.post("/:id/documents/markup/decisions", async (c) => {
     const directory = options.directory(c.req.param("id"))
     const name = wordName(c.req.query("name"))
@@ -128,6 +129,12 @@ export function documentMarkupRoutes(options: Options) {
         console.warn("[markup] decisions refused", diagnosticErrorMetadata(error))
         return c.json({ error: "The decisions could not be applied. Nothing was changed; refresh the list and try again.", code: "decision_failed" }, 409)
       }
+      // A rejected insertion or an accepted deletion that held a thread's
+      // reference leaves the comment nowhere in the document to reply on.
+      const placed = decided && body.replies.length ? commentReferences(applied.bytes) : undefined
+      const removed = placed && body.replies.find(({ thread }) => !placed.has(thread))
+      if (removed)
+        return c.json({ error: "Your decision removes the text this comment is on, so this reply can't be saved. Keep the change or drop the reply.", code: "anchor_removed", thread: removed.thread }, 422)
       let replied: Awaited<ReturnType<typeof addCommentReplies>> = { bytes: applied.bytes, added: [] }
       if (body.replies.length) try {
         replied = await addCommentReplies(applied.bytes, body.replies, { author: actor!, initials: replyInitials(actor!), date: new Date().toISOString() })
@@ -248,13 +255,15 @@ function decisionsBody(input: unknown) {
   return { base, decisions: map, replies: answers }
 }
 
-/** The first reply this listing cannot take: replies answer a thread's root, and
- * resolved threads stay as the other side left them. */
+/** The first reply this listing cannot take: replies answer a thread's root,
+ * resolved threads stay as the other side left them, and a detached comment is
+ * on no text left in the document. */
 function closedThread(markup: DocxMarkup, replies: readonly CommentReply[]) {
   for (const { thread } of replies) {
     const root = markup.comments.find((comment) => comment.id === thread)
     if (!root) return { error: "This comment is no longer in the document. Refresh the list and reply again.", code: "thread_not_found", thread }
     if (root.parent !== null) return { error: "Reply to the comment that starts this thread.", code: "thread_not_root", thread }
     if (root.resolved) return { error: "This thread is resolved, so it takes no reply here. Reopen it in Word to answer it.", code: "thread_resolved", thread }
+    if (root.detached) return { error: "The text this comment was on is no longer in the document, so it takes no reply here.", code: "thread_detached", thread }
   }
 }

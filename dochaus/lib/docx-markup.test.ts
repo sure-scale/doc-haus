@@ -7,6 +7,7 @@ import { Database } from "bun:sqlite"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { counterpartyItems, readDocxMarkup, readMarkupComments } from "./docx-markup"
 import { currentDocumentView } from "./current-document-retrieval"
+import { docxodus } from "./docxodus"
 import { exportDocxComments, readDocxCommentParagraphs } from "./docx-comments"
 import { renderMarkdownToDocx } from "./render"
 import { detectInjection } from "./untrusted-text"
@@ -219,6 +220,25 @@ test("a comment in a footnote or endnote has its quote and its place in that par
   expect([insertion.scope, insertion.locations]).toEqual(["footnote", [{ paragraph: 2, context: "Schedule 1 lists it and its courts." }]])
   // Body comments are placed as before, with no part named.
   expect(markup.comments.slice(0, 4).map(comment => [comment.paragraph, "scope" in comment])).toEqual([[1, false], [1, false], [2, false], [6, false]])
+})
+
+test("a comment whose reference a decision takes out of every part is detached, and only that one", async () => {
+  // Avery's planted comment has its reference deleted with the planted text, as Word tracks it.
+  const bytes = repackaged(counterpartyMarkupDocx({ waiver: true }), {
+    "word/document.xml": xml => xml.replace(/(<w:r><w:commentReference w:id="3"\/><\/w:r>)(<w:del w:id="11" [^>]*>)/, "$2$1") })
+  const detached = async (decided: Uint8Array) => (await readMarkupComments(decided)).filter(comment => comment.detached).map(comment => comment.id)
+  expect(await detached(bytes)).toEqual([])
+  const dx = await docxodus()
+  // Accepting every change takes the deletion with comment 3's reference; rejecting every change takes the
+  // inserted Waiver clause with comment 5's. Comment 0's text goes either way, but not its reference.
+  expect(await detached(await dx.docxDiffAcceptRevisions(bytes))).toEqual([3])
+  expect(await detached(await dx.docxDiffRejectRevisions(bytes))).toEqual([5])
+  // A comment Word places in a header still has its reference there.
+  const header = repackaged(counterpartyMarkupDocx(), {
+    "word/document.xml": xml => xml.replace('<w:r><w:commentReference w:id="3"/></w:r>', ""),
+    "word/header1.xml": () => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p>${run("Draft")}<w:r><w:commentReference w:id="3"/></w:r></w:p></w:hdr>`,
+  })
+  expect(await detached(header)).toEqual([])
 })
 
 test("a numbered paragraph's location carries the number Word prints, apart from its ordinal", async () => {

@@ -117,3 +117,20 @@ test("a move says where it left and where it landed, and a comment thread names 
   expect(html).toContain("<span>Clause 5</span>")
   expect(html).not.toContain("Paragraph 6")
 })
+
+test("a detached comment shows why it takes no reply, offers no draft and keeps no stored reply", () => {
+  const comment = (id: number, text: string, patch: Partial<MarkupComment> = {}): MarkupComment => ({
+    id, author: "Morgan Okafor", initials: "MO", date: null, text, parent: null, resolved: false, quote: "", paragraph: 10, findings: [], ...patch,
+  })
+  const reading = { ...markup("a", []), comments: [comment(0, "Our lead time needs forty-five days.", { paragraph: 1 }), comment(5, "We use this waiver wording.", { detached: true })] }
+  const html = renderToStaticMarkup(createElement(MarkupPanel, { matterId: "m-1", name: "Supply agreement.docx", markup: reading, onApplied: () => {}, onRefetch: () => {} }))
+  const [open, detached] = html.split('class="change-card markup-card markup-thread"').slice(1) as [string, string]
+  expect(open).toContain("Draft reply")
+  expect(detached).toContain("Text removed")
+  expect(detached).toContain("The text this comment was on is no longer in the document, so it takes no reply here.")
+  expect(detached).not.toContain("Your reply to")
+  expect(html).toContain("Draft replies (1)")
+  // A reply kept for it from earlier bytes is not carried over.
+  const reply: Reply = { text: "Agreed.", approved: true, open_items: [], root: { author: "Morgan Okafor", text: "We use this waiver wording." }, seen: 1 }
+  expect(carryReplies({ base: "old", replies: { 5: reply } }, reading)).toEqual({ replies: {}, carried: [], dropped: 1 })
+})

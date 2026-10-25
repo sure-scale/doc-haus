@@ -64,6 +64,8 @@ export function markupReplyRoutes(options: { directory: (id: string) => string }
     if (!root) return c.json({ error: "That comment does not start a thread in this document.", code: "thread_not_found" }, 404)
     if (root.resolved === true)
       return c.json({ error: "That thread is resolved. Replies are drafted to open threads only.", code: "thread_resolved" }, 409)
+    if (root.detached)
+      return c.json({ error: "The text this comment was on is no longer in the document, so it takes no reply here.", code: "thread_detached" }, 409)
     const prompt = replyPrompt(directory, await replyInput(bytes, markup, root, body.decisions), body.steer)
     // A closed panel or a Cancel ends this request, and with it the model call.
     const signal = c.req.raw.signal

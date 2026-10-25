@@ -13,13 +13,16 @@ import { strToU8, zipSync } from "fflate"
 //   7  Morgan deletes a paragraph mark, merging clause 7 with its continuation
 //   8  Morgan inserts the whole Waiver paragraph
 //   9  unchanged
-// Two variants add to these without changing them:
+// Three variants add to these without changing them:
 //   footnote  clause 9 gains a footnote, and Morgan comments on the footnote's text
 //             (LibreOffice 26.2 does not open a .docx with a comment in a footnote)
 //   modern    Word 2016+ comment parts: a durable id and a UTC date for each comment
+//   waiver    Morgan comments on the Waiver clause Morgan inserts, with tracking on:
+//             the comment's reference is tracked with the insertion, so rejecting
+//             the clause takes the comment out of the document
 // Tests use the bytes directly; a live check writes the file and uploads it:
 //
-//   bun dochaus/test/support/counterparty-markup-fixture.ts /path/to/supply-agreement-markup.docx [--footnote] [--modern]
+//   bun dochaus/test/support/counterparty-markup-fixture.ts /path/to/supply-agreement-markup.docx [--footnote] [--modern] [--waiver]
 
 const AVERY = "Avery Lindqvist", MORGAN = "Morgan Okafor"
 
@@ -40,9 +43,11 @@ export const COUNTERPARTY_MARKUP = {
   ],
   /** The footnote variant's open comment, after the four above. */
   footnoteComment: { id: 4, author: MORGAN, text: "Which schedule names the Province?" },
+  /** The waiver variant's open comment on the inserted Waiver clause, last. */
+  waiverComment: { id: 5, author: MORGAN, text: "We use this waiver wording in all our supply contracts." },
 }
 
-export type CounterpartyMarkupVariant = { footnote?: boolean; modern?: boolean }
+export type CounterpartyMarkupVariant = { footnote?: boolean; modern?: boolean; waiver?: boolean }
 
 const NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml"'
 
@@ -56,6 +61,7 @@ const ins = (id: number, author: string, content: string) => `<w:ins w:id="${id}
 const del = (id: number, author: string, content: string) => `<w:del w:id="${id}" ${by(author)}>${content}</w:del>`
 const reference = (id: number) => `<w:r><w:commentReference w:id="${id}"/></w:r>`
 const NOTICES = "3. Notices. Notices must be in writing."
+const WAIVER = "8. Waiver. No waiver is effective unless in writing."
 
 function documentXml(variant: CounterpartyMarkupVariant) {
   const body = [
@@ -76,10 +82,17 @@ function documentXml(variant: CounterpartyMarkupVariant) {
     // A deleted paragraph mark: clause 7 joins the next paragraph on acceptance.
     `<w:p><w:pPr><w:rPr><w:del w:id="15" ${by(MORGAN)}/></w:rPr></w:pPr>${run("7. Assignment. Neither party may assign")}</w:p>`,
     `<w:p>${run(" without consent.")}</w:p>`,
-    `<w:p><w:pPr><w:rPr><w:ins w:id="16" ${by(MORGAN)}/></w:rPr></w:pPr>${ins(17, MORGAN, run("8. Waiver. No waiver is effective unless in writing."))}</w:p>`,
+    `<w:p><w:pPr><w:rPr><w:ins w:id="16" ${by(MORGAN)}/></w:rPr></w:pPr>${variant.waiver ? waiverCommented() : ins(17, MORGAN, run(WAIVER))}</w:p>`,
     `<w:p>${run("9. Governing law. This Agreement is governed by the law of the Province.")}${variant.footnote ? '<w:r><w:footnoteReference w:id="1"/></w:r>' : ""}</w:p>`,
   ]
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document ${NS}><w:body>${body.join("")}<w:sectPr/></w:body></w:document>`
+}
+
+// Word's layout for a comment made with tracking on: the reference run is a
+// tracked insertion of its own, beside the one it comments on.
+function waiverCommented() {
+  const { id } = COUNTERPARTY_MARKUP.waiverComment
+  return `<w:commentRangeStart w:id="${id}"/>${ins(17, MORGAN, run(WAIVER))}<w:commentRangeEnd w:id="${id}"/>${ins(18, MORGAN, reference(id))}`
 }
 
 const paraId = (id: number) => `1000000${id + 1}`
@@ -87,7 +100,7 @@ const durableId = (id: number) => (0x2A3B4C01 + id).toString(16).toUpperCase()
 const initials = (author: string) => author.split(" ").map(part => part[0]).join("")
 type FixtureComment = { id: number; author: string; text: string; parent?: number; resolved?: boolean }
 const commentsOf = (variant: CounterpartyMarkupVariant): FixtureComment[] =>
-  [...COUNTERPARTY_MARKUP.comments, ...variant.footnote ? [COUNTERPARTY_MARKUP.footnoteComment] : []]
+  [...COUNTERPARTY_MARKUP.comments, ...variant.footnote ? [COUNTERPARTY_MARKUP.footnoteComment] : [], ...variant.waiver ? [COUNTERPARTY_MARKUP.waiverComment] : []]
 
 // Word's own note layout: the separator and continuation notes, then the note clause 9 cites.
 function footnotesXml() {
@@ -131,7 +144,7 @@ function peopleXml() {
 
 // Each variant's parts: file, content type, relationship type and content (relationship ids continue rId3).
 type VariantPart = [file: string, type: string, relationship: string, xml: (variant: CounterpartyMarkupVariant) => string]
-const VARIANT_PARTS: Record<keyof CounterpartyMarkupVariant, VariantPart[]> = {
+const VARIANT_PARTS: Record<"footnote" | "modern", VariantPart[]> = {
   footnote: [
     ["footnotes.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes", footnotesXml],
     ["settings.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings", () => SETTINGS],
@@ -205,8 +218,8 @@ export function numberedMarkupDocx(): Uint8Array {
 
 if (import.meta.main) {
   const [target, ...flags] = process.argv.slice(2)
-  if (!target || flags.some(flag => !["--footnote", "--modern"].includes(flag)))
-    throw new Error("Usage: bun dochaus/test/support/counterparty-markup-fixture.ts <output .docx path> [--footnote] [--modern]")
-  writeFileSync(target, counterpartyMarkupDocx({ footnote: flags.includes("--footnote"), modern: flags.includes("--modern") }))
+  if (!target || flags.some(flag => !["--footnote", "--modern", "--waiver"].includes(flag)))
+    throw new Error("Usage: bun dochaus/test/support/counterparty-markup-fixture.ts <output .docx path> [--footnote] [--modern] [--waiver]")
+  writeFileSync(target, counterpartyMarkupDocx({ footnote: flags.includes("--footnote"), modern: flags.includes("--modern"), waiver: flags.includes("--waiver") }))
   console.log(`Wrote ${target}`)
 }

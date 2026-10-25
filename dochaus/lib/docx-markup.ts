@@ -33,7 +33,9 @@ import { detectInjection, normalizeUntrustedText } from "./untrusted-text"
 //   no commentsExtended entry for it. `quote` is the commented text as marked up,
 //   deleted text included, capped; `paragraph` counts its part's paragraphs as
 //   above, `label` is that paragraph's list number as a location's is, and
-//   `scope` names that part when it is a footnote or endnote.
+//   `scope` names that part when it is a footnote or endnote. `detached`: no
+//   part holds its reference any more (a rejected insertion or an accepted
+//   deletion took it), so Word shows it nowhere and it takes no reply.
 // - authors: each name with its counts, in order of first appearance; "" is a
 //   change or comment that names no author.
 export type MarkupField = "text" | "author" | "quote" | "initials"
@@ -80,6 +82,8 @@ export type MarkupComment = {
   label?: string
   /** Absent for a comment in the body. */
   scope?: "footnote" | "endnote"
+  /** No reference to it is left in any part; absent while one is. */
+  detached?: true
   findings: MarkupFinding[]
 }
 export type MarkupAuthor = { name: string; revisions: number; comments: number }
@@ -289,6 +293,7 @@ export async function readMarkupComments(bytes: Uint8Array, native = readDocxCom
   if (!listed.length) return []
   const ids = new Map(listed.map(row => [row.anchorId, row.id]))
   const { quotes, places } = commentRanges(bytes, new Set(listed.map(row => String(row.id))))
+  const referenced = commentReferences(bytes)
   // The first native comment with each id, as a lookup.
   const natives = new Map(native.map(comment => [comment.comment_id, comment] as const).reverse())
   return listed.map(row => {
@@ -314,9 +319,25 @@ export async function readMarkupComments(bytes: Uint8Array, native = readDocxCom
       paragraph,
       ...label ? { label } : {},
       ...place ? { scope: place.scope } : {},
+      ...referenced.has(row.id) ? {} : { detached: true as const },
       findings,
     }
   })
+}
+
+/** The ids of the comments whose reference is still in the document: in the
+ * body, a note, a header or a footer. A comment with none is detached. */
+export function commentReferences(bytes: Uint8Array) {
+  const ids = new Set<number>()
+  for (const content of Object.values(unzipSync(bytes, { filter: file => file.name.startsWith("word/") && file.name.endsWith(".xml") }))) {
+    const xml = strFromU8(content)
+    if (!xml.includes("commentReference")) continue
+    for (const node of Array.from(new DOMParser().parseFromString(xml, "application/xml").getElementsByTagNameNS(W, "commentReference"))) {
+      const id = node.getAttributeNS(W, "id") ?? ""
+      if (/^\d+$/.test(id)) ids.add(Number(id))
+    }
+  }
+  return ids
 }
 
 function screened(findings: MarkupFinding[], field: MarkupField, raw: string) {
