@@ -142,6 +142,9 @@ const server = Bun.serve({
     }
     if (route === "GET /ingest/matters/matter/redlines") return json([])
     if (route === "GET /ingest/matters/matter/documents/amendments") return json(null)
+    // The viewer also reads the kept versions and the tracked changes: no versions are kept for a library snapshot, and its markup is not covered (404, nothing offered).
+    if (route === "GET /ingest/matters/matter/documents/versions") return json({ name: url.searchParams.get("name"), document: null, versions: [], events: [], working_version: null })
+    if (route === "GET /ingest/matters/matter/documents/markup") return Response.json({ error: "Not a registered source" }, { status: 404 })
     if (/^GET \/ingest\/matters\/matter\/documents\/(content|redlined)$/.test(route)) return new Response(original)
     if (route === "POST /ingest/matters/matter/template-drafts") {
       assert.deepEqual(await request.json(), { name: "Services.docx" })
