@@ -34,6 +34,8 @@
   .switch.on:hover:not(:disabled)::before { background: Highlight; border-color: Highlight; }
   .switch.on::after { background: HighlightText; }
 
+  /* A link-styled button reads as a link, not as plain text. */
+  button.linklike { color: LinkText; text-decoration: underline; text-underline-offset: 2px; }
   button.primary { border: 2px solid Highlight; }
   .split-button > button { border: 1px solid ButtonBorder; }
   .split-button-menu { border: 1px solid CanvasText; }

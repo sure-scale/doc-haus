@@ -31,7 +31,7 @@ const ORIGIN: Record<string, string> = {
   revision: "Saved from Word",
   "agent-edit": "Edited by doc.haus",
   redaction: "Redacted",
-  accept: "Changes accepted",
+  accept: "doc.haus proposals accepted",
   conversion: "Converted from PDF",
   copy: "Copied from another document",
   restore: "Restored",
@@ -39,7 +39,7 @@ const ORIGIN: Record<string, string> = {
   unknown: "Earlier file, not recorded how it was made",
 }
 
-// The label the "Their changes" panel gives a version that only adds the
+// The label the Tracked changes panel gives a version that only adds the
 // lawyer's replies to the other side's comments (#200).
 const REPLIES_ONLY = /^\d+ repl(?:y|ies) added$/
 
@@ -47,13 +47,15 @@ export function versionOrigin(version: Pick<DocumentVersion, "id" | "origin" | "
   if (version.origin === "system" && !version.parent) return "Added by doc.haus"
   if (version.origin === "unknown" && version.parent) return "Changed outside doc.haus"
   // Replies with no decision are saved as a revision with no event; only
-  // their label tells them from a save from Word.
-  if (version.origin === "revision" && REPLIES_ONLY.test(version.label?.trim() ?? "")) return "Replies added"
-  // Saved from the "Their changes" panel (#200): the lawyer's accept, reject and
+  // their label tells them from a save from Word. The label, with its count,
+  // is the origin, so the entry says it once.
+  const label = version.label?.trim() ?? ""
+  if (version.origin === "revision" && REPLIES_ONLY.test(label)) return label.charAt(0).toUpperCase() + label.slice(1)
+  // Saved from the Tracked changes panel (#200): the lawyer's accept, reject and
   // hold decisions on the other side's tracked changes, which its event lists,
   // rather than doc.haus's own proposals accepted.
   if (version.origin === "accept" && events.some((event) => event.kind === "accept" && event.version_id === version.id && Array.isArray(event.detail?.markup)))
-    return "Their changes decided"
+    return "Tracked changes decided"
   if (version.origin === "restore") {
     const restored = events.find((event) => event.kind === "restore" && event.version_id === version.id)?.detail?.restored_number
     return typeof restored === "number" ? `Restored from version ${restored}` : ORIGIN.restore!

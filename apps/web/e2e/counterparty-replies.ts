@@ -3,16 +3,17 @@
 // DOCHAUS_E2E_INGEST_PORT with a temporary data root and settings directory and
 // a saved attorney name, uploads the synthetic marked-up supply agreement with
 // its footnote comment (dochaus/test/support/counterparty-markup-fixture.ts) and
-// drives the "Their changes" panel: nothing drafts on open; Draft replies drafts
-// the three open threads at once, one is cancelled and drafted again on its
-// own; a draft with a [[…]] placeholder cannot be approved until it is edited;
-// two replies are approved, one draft is discarded and brought back; Apply
-// saves one version with a rejected change and the two replies under the
-// lawyer's name; then, at phone width, the remaining reply is approved and
-// applied alone. A second upload has a comment on a clause the other side
-// inserted, its reference tracked with the insertion: a reply to it with that
-// clause rejected is refused on its thread card and nothing is saved; applied
-// without the reply, the comment says its text was removed and offers no reply.
+// drives the Tracked changes panel's Comments tab: nothing drafts on open;
+// Draft replies drafts the three open threads at once, one is cancelled and
+// drafted again on its own; a draft with a [[…]] placeholder cannot be
+// approved until it is edited; two replies are approved, one draft is
+// discarded and brought back; Save saves one version with a rejected change
+// and the two replies under the lawyer's name; then, at phone width, the
+// remaining reply is approved and saved alone. A second upload has a comment
+// on a clause the other side inserted, its reference tracked with the
+// insertion: a reply to it with that clause rejected is refused on its thread
+// card and nothing is saved; saved without the reply, the comment says its
+// text was removed and offers no reply.
 // The ingest service's model calls reach a scripted engine
 // fixture here (one per thread, answers fixed by the thread's first comment);
 // browser engine traffic is intercepted and unexpected requests fail the run.
@@ -216,13 +217,23 @@ try {
   capture = shot
   const dialog = page.getByRole("dialog", { name: NAME, exact: true })
   const panel = dialog.locator("#document-markup")
-  const changes = panel.locator(".markup-list > li:not(.markup-thread)")
-  const threads = panel.locator(".markup-list > li.markup-thread")
-  const toggle = dialog.getByRole("button", { name: /^Their changes \(\d+\)$/ })
-  const tally = panel.locator(".markup-tally")
-  const thread = (text: string) => threads.filter({ has: page.locator(":scope > .markup-comment-text", { hasText: text }) })
+  // Both tabs' panels are rendered; the one not chosen is hidden.
+  const shown = panel.locator('[role="tabpanel"]:not([hidden])')
+  const changes = shown.locator(".markup-list > li:not(.markup-thread)")
+  const threads = shown.locator(".markup-list > li.markup-thread")
+  const tab = (name: "Changes" | "Comments") => panel.getByRole("tab", { name: new RegExp(`^${name} \\d+$`) })
+  const toggle = dialog.getByRole("button", { name: /^Tracked changes \(\d+\)$/ })
+  // The save bar's line: how many changes are decided, and what is left (changes to decide, drafts to approve).
+  const progress = panel.locator(".markup-progress p")
+  const live = panel.locator(":scope > p.sr-only[role=status]")
+  const save = panel.getByRole("button", { name: "Save decisions as a new version…", exact: true })
+  // A thread by its first comment, not a reply in it.
+  const thread = (text: string) => threads.filter({ has: page.locator(":scope > .markup-comment > .markup-comment-text", { hasText: text }) })
   const replyArea = (text: string) => thread(text).getByRole("group", { name: /^Your reply to / })
-  const draftAll = panel.getByRole("button", { name: /^Draft replies \(\d+\)$/ })
+  const draftAll = shown.getByRole("button", { name: /^Draft replies to \d+ comments?$/ })
+  const draftingLine = shown.locator(".markup-draft-all .markup-reply-status")
+  // The state beside a thread's first comment.
+  const chip = (text: string) => thread(text).locator(":scope > .markup-comment .markup-chip")
   const [answered, planted, footnote] = [AVERY_ROOT, PLANTED, FOOTNOTE].map(replyArea) as [Locator, Locator, Locator]
 
   async function openDocument(navigate = true, name = NAME) {
@@ -253,17 +264,22 @@ try {
 
   await step("2 nothing drafts on open: each open thread offers Draft reply and Write a reply", async () => {
     await openDocument()
-    await expect(toggle).toHaveAccessibleName("Their changes (14)")
+    await expect(toggle).toHaveAccessibleName("Tracked changes (14)")
+    // The file has changes, so the panel opens on them; nothing is decided yet.
+    await expect(tab("Changes")).toHaveAttribute("aria-selected", "true")
+    await expect(progress).toHaveText("0 of 10 decided · Still to do: 10 changes")
+    await tab("Comments").click()
+    await expect(tab("Comments")).toHaveAccessibleName("Comments 4")
     await expect(threads).toHaveCount(4)
-    await expect(draftAll).toHaveAccessibleName("Draft replies (3)")
+    await expect(draftAll).toHaveAccessibleName("Draft replies to 3 comments")
     for (const area of [answered, planted, footnote]) {
       await expect(area.getByRole("button", { name: "Draft reply", exact: true })).toBeVisible()
       await expect(area.getByRole("button", { name: "Write a reply", exact: true })).toBeVisible()
     }
+    for (const text of [AVERY_ROOT, PLANTED, FOOTNOTE]) await expect(chip(text)).toHaveText("Needs a reply")
     // A resolved thread takes no reply here.
-    await expect(thread(RESOLVED)).toContainText("Resolved")
+    await expect(chip(RESOLVED)).toHaveText("Resolved")
     await expect(thread(RESOLVED).getByRole("group", { name: /^Your reply to / })).toHaveCount(0)
-    await expect(tally).toHaveText("0 to accept · 0 to reject · 10 held")
     expect(generated).toEqual([])
     await shot("01-no-drafts")
   })
@@ -272,8 +288,9 @@ try {
     let open = () => {}
     gate = { opened: new Promise<void>(resolve => { open = resolve }), open: () => open() }
     await draftAll.click()
-    await expect(panel.getByRole("status").filter({ hasText: "Drafting 3 replies…" })).toBeVisible()
-    await expect(panel.getByRole("button", { name: "Cancel drafting", exact: true })).toBeFocused()
+    await expect(live).toHaveText("Drafting 3 replies…")
+    await expect(draftingLine).toHaveText("Drafting 3 replies…")
+    await expect(shown.getByRole("button", { name: "Cancel drafting", exact: true })).toBeFocused()
     for (const area of [answered, planted, footnote]) await expect(area).toContainText("Drafting a reply…")
     await expect.poll(() => generated.length).toBe(3)
     expect(mostAtOnce).toBe(3)
@@ -283,7 +300,8 @@ try {
     await shot("02-drafting")
     await footnote.getByRole("button", { name: "Cancel", exact: true }).click()
     await expect(footnote.getByRole("button", { name: "Draft reply", exact: true })).toBeFocused()
-    await expect(panel.getByRole("status").filter({ hasText: "Drafting 2 replies…" })).toBeVisible()
+    await expect(live).toHaveText("Drafting cancelled.")
+    await expect(draftingLine).toHaveText("Drafting 2 replies…")
     // The browser ends the request. Vite's dev proxy does not pass that on to
     // the service (the shipped stack calls ingest directly), so whether the
     // model call stopped too is only recorded here.
@@ -296,14 +314,17 @@ try {
     await expect.poll(() => generated.filter(row => row.root === FOOTNOTE).length).toBe(1)
     await page.waitForTimeout(500)
     await expect(footnote.getByLabel("Your reply", { exact: true })).toHaveCount(0)
-    await expect(panel.getByRole("status").filter({ hasText: "2 draft replies ready — read each one, then approve it." })).toBeVisible()
-    await expect(draftAll).toHaveAccessibleName("Draft replies (1)")
+    await expect(live).toHaveText("2 draft replies ready — read each one, then approve it.")
+    await expect(shown.locator(".markup-drafted")).toHaveText("2 draft replies ready — read each one, then approve it.")
+    for (const text of [AVERY_ROOT, PLANTED]) await expect(chip(text)).toHaveText("Reply to approve")
+    await expect(chip(FOOTNOTE)).toHaveText("Needs a reply")
+    await expect(draftAll).toHaveAccessibleName("Draft replies to 1 comment")
   })
 
-  await step("4 a draft lists what to check, and Approve waits until the bracketed part is filled", async () => {
+  await step("4 a draft lists what to check, and Approve reply waits until the bracketed part is filled", async () => {
     await expect(answered.locator(".markup-open-items")).toContainText("Check before sending")
     await expect(answered.locator(".markup-open-items")).toContainText(DRAFTS[AVERY_ROOT]!.open_items[0]!)
-    const approve = answered.getByRole("button", { name: "Approve", exact: true })
+    const approve = answered.getByRole("button", { name: "Approve reply", exact: true })
     await expect(approve).toBeDisabled()
     await expect(answered).toContainText("Fill the bracketed parts first.")
     await expect(approve).toHaveAccessibleDescription("Fill the bracketed parts first.")
@@ -331,13 +352,17 @@ try {
   await step("7 edit the placeholder out and approve two replies", async () => {
     await answered.getByLabel("Your reply", { exact: true }).fill(EDITED)
     await expect(answered.getByText("Fill the bracketed parts first.")).toHaveCount(0)
-    await answered.getByRole("button", { name: "Approve", exact: true }).click()
-    await expect(answered).toContainText("Reply approved, added when you apply")
+    await answered.getByRole("button", { name: "Approve reply", exact: true }).click()
+    await expect(answered).toContainText("Reply approved — added when you save")
     await expect(answered.locator(".markup-reply-final")).toHaveText(EDITED)
     await expect(answered.getByRole("button", { name: "Edit", exact: true })).toBeFocused()
-    await planted.getByRole("button", { name: "Approve", exact: true }).click()
+    await planted.getByRole("button", { name: "Approve reply", exact: true }).click()
     await expect(planted.locator(".markup-reply-final")).toHaveText(DRAFTS[PLANTED]!.reply)
-    await expect(tally).toHaveText("0 to accept · 0 to reject · 10 held · 2 replies to add")
+    for (const text of [AVERY_ROOT, PLANTED]) await expect(chip(text)).toHaveText("Reply approved")
+    // Two approved replies to add, and the footnote's draft still to approve; approving one is enough to save.
+    await expect(progress).toHaveText("0 of 10 decided · Still to do: 10 changes · 1 draft to approve")
+    await expect(panel.getByRole("button", { name: "Show the 1 draft to approve", exact: true })).toBeVisible()
+    await expect(save).toBeEnabled()
     await centre(thread(AVERY_ROOT))
     await shot("06-approved")
     await cardShot(thread(AVERY_ROOT), "06-approved-card")
@@ -346,37 +371,46 @@ try {
   await step("8 the replies survive a reload, approved ones still approved", async () => {
     await page.reload()
     await openDocument(false)
+    // The Comments tab is remembered for this document.
+    await expect(tab("Comments")).toHaveAttribute("aria-selected", "true")
     await expect(answered.locator(".markup-reply-final")).toHaveText(EDITED)
     await expect(planted.locator(".markup-reply-final")).toHaveText(DRAFTS[PLANTED]!.reply)
     await expect(footnote.getByLabel("Your reply", { exact: true })).toHaveValue(DRAFTS[FOOTNOTE]!.reply)
-    await expect(panel.locator(".markup-hint[role=status]")).toHaveCount(0)
+    // The same bytes: nothing was carried over, so no note says so.
+    await expect(panel.locator(".markup-notice")).toHaveCount(0)
+    await expect(panel.getByText("Carried over")).toHaveCount(0)
     const stored = await page.evaluate(key => localStorage.getItem(key), `dh.markup-replies.v1/${encodeURIComponent(file.matter)}/${encodeURIComponent(NAME)}`)
     expect(Object.keys((JSON.parse(stored!) as { replies: object }).replies).sort()).toEqual(["0", "3", "4"])
   })
 
   await step("9 discard a draft, then bring it back with Undo", async () => {
     await footnote.getByRole("button", { name: "Discard", exact: true }).click()
-    await expect(footnote.getByRole("status")).toHaveText("Draft discarded. Undo")
+    await expect(footnote.locator(".markup-hint")).toHaveText("Draft discarded. Undo")
+    await expect(live).toHaveText("Draft discarded.")
     await expect(footnote.getByRole("button", { name: "Draft reply", exact: true })).toBeFocused()
-    await expect(draftAll).toHaveAccessibleName("Draft replies (1)")
+    await expect(draftAll).toHaveAccessibleName("Draft replies to 1 comment")
     await cardShot(thread(FOOTNOTE), "07-discarded-with-undo")
     await footnote.getByRole("button", { name: "Undo", exact: true }).click()
     await expect(footnote.getByLabel("Your reply", { exact: true })).toHaveValue(DRAFTS[FOOTNOTE]!.reply)
     await expect(footnote.getByLabel("Your reply", { exact: true })).toBeFocused()
   })
 
-  await step("10 apply with one Reject: one version with the decision and the two approved replies", async () => {
-    const formatting = changes.filter({ hasText: "Formatting changed" })
+  await step("10 save with one Reject: one version with the decision and the two approved replies", async () => {
+    await tab("Changes").click()
+    // The formatting change, by what its decision group names.
+    const formatting = changes.filter({ has: page.getByRole("group", { name: /^Your decision: Formatting changed by / }) })
+    await expect(formatting).toHaveCount(1)
     await formatting.getByRole("radio", { name: "Reject", exact: true }).click()
-    await expect(tally).toHaveText("0 to accept · 1 to reject · 9 held · 2 replies to add")
-    await panel.getByRole("button", { name: "Apply decisions…", exact: true }).click()
-    const confirm = panel.getByRole("group", { name: "Apply decisions", exact: true })
+    await expect(formatting.getByRole("radio", { checked: true })).toHaveAccessibleName("Reject")
+    await expect(progress).toHaveText("1 of 10 decided · Still to do: 9 changes · 1 draft to approve")
+    await save.click()
+    const confirm = panel.getByRole("group", { name: "Save a new version", exact: true })
     await expect(confirm.locator("p").first()).toHaveText(`This saves a new version of ${NAME} with 0 changes accepted, 1 rejected and 2 replies added as ${LAWYER}. ` +
-      "9 held changes stay as tracked changes. 1 draft reply is not approved, so it is not added. The current version stays in the history.")
+      "9 changes you have not decided stay as tracked changes. 1 draft reply is not approved, so it is not added. The current version stays in the history.")
     await confirm.scrollIntoViewIfNeeded()
-    await shot("08-apply-confirmation")
+    await shot("08-save-confirmation")
     const applied = page.waitForResponse(response => new URL(response.url()).pathname.endsWith("/documents/markup/decisions"))
-    await confirm.getByRole("button", { name: "Apply decisions", exact: true }).click()
+    await confirm.getByRole("button", { name: "Save new version", exact: true }).click()
     const response = await applied
     expect(response.status()).toBe(200)
     expect((await response.json() as { replies: { thread: number }[] }).replies.map(row => row.thread).sort()).toEqual([0, 3])
@@ -387,11 +421,12 @@ try {
     expect(sent!.body.decisions.filter(row => row.decision === "reject")).toHaveLength(1)
     // Only the approved replies, as edited; the unapproved draft stays here.
     expect(sent!.body.replies).toEqual([{ thread: 0, text: EDITED }, { thread: 3, text: DRAFTS[PLANTED]!.reply }])
-    await expect(page.getByText("Saved as version 2: 0 accepted, 1 rejected, 9 held; 2 replies added.", { exact: true })).toBeVisible()
+    await expect(page.getByText("Saved as version 2: 0 accepted, 1 rejected, 9 left tracked; 2 replies added.", { exact: true })).toBeVisible()
   })
 
   await step("11 the threads end with the lawyer's replies; the unsent draft is kept", async () => {
-    await expect(toggle).toHaveAccessibleName("Their changes (13)", { timeout: 30_000 })
+    await expect(toggle).toHaveAccessibleName("Tracked changes (13)", { timeout: 30_000 })
+    await tab("Comments").click()
     const mine = thread(AVERY_ROOT).locator(".markup-replies > li")
     await expect(mine).toHaveCount(2)
     await expect(mine.nth(0)).toContainText(MORGAN_REPLY)
@@ -413,10 +448,10 @@ try {
     await answered.getByRole("button", { name: "Write a reply", exact: true }).click()
     const typed = answered.getByLabel("Your reply", { exact: true })
     await expect(typed).toBeFocused()
-    await expect(answered.getByRole("button", { name: "Approve", exact: true })).toBeDisabled()
+    await expect(answered.getByRole("button", { name: "Approve reply", exact: true })).toBeDisabled()
     await expect(answered).toContainText("Write the reply first.")
     await typed.fill("Thank you.")
-    await expect(answered.getByRole("button", { name: "Approve", exact: true })).toBeEnabled()
+    await expect(answered.getByRole("button", { name: "Approve reply", exact: true })).toBeEnabled()
     await answered.getByRole("button", { name: "Discard", exact: true }).click()
     await expect(answered.getByRole("button", { name: "Write a reply", exact: true })).toBeFocused()
   })
@@ -425,8 +460,8 @@ try {
     await dialog.getByRole("button", { name: /^Versions/ }).click()
     const newest = dialog.locator(".versions-list > li").first()
     await expect(newest).toContainText("Version 2")
-    await expect(newest.locator(".version-meta")).toHaveText(`Their changes decided · by ${LAWYER}`)
-    await expect(newest).toContainText("Tracked changes resolved: 0 accepted, 1 rejected, 9 held; 2 replies added")
+    await expect(newest.locator(".version-meta")).toHaveText(`Tracked changes decided · by ${LAWYER}`)
+    await expect(newest).toContainText("Tracked changes decided: 0 accepted, 1 rejected, 9 left tracked; 2 replies added")
     const listed = await (await api(`/matters/${file.matter}/documents/versions?name=${encodeURIComponent(NAME)}`)).json() as { versions: { number: number; origin: string; actor: string }[] }
     expect(listed.versions.map(row => [row.number, row.origin, row.actor])).toEqual([[2, "accept", LAWYER], [1, "upload", expect.any(String)]])
     await shot("10-versions")
@@ -434,30 +469,33 @@ try {
     await expect(panel).toBeVisible()
   })
 
-  await step("13 at phone width the last reply is approved and applied alone, with Apply in reach", async () => {
+  await step("13 at phone width the last reply is approved and saved alone, with Save in reach", async () => {
     await page.setViewportSize({ width: 400, height: 860 })
     await page.evaluate(() => localStorage.setItem("dh.sidebar", "1"))
     await openDocument()
     await expect(panel).toBeInViewport()
+    await expect(tab("Comments")).toHaveAttribute("aria-selected", "true")
     await centre(thread(FOOTNOTE))
     await shot("11-phone-draft")
-    await footnote.getByRole("button", { name: "Approve", exact: true }).click()
-    await expect(tally).toHaveText("0 to accept · 0 to reject · 9 held · 1 reply to add")
+    await expect(save).toBeDisabled()
+    await footnote.getByRole("button", { name: "Approve reply", exact: true }).click()
+    await expect(chip(FOOTNOTE)).toHaveText("Reply approved")
+    // No change decided and no draft left to approve.
+    await expect(progress).toHaveText("0 of 9 decided · Still to do: 9 changes")
     await shot("12-phone-approved")
-    const apply = panel.getByRole("button", { name: "Apply decisions…", exact: true })
-    await apply.scrollIntoViewIfNeeded()
-    await expect(apply).toBeEnabled()
-    expect(await apply.evaluate(node => {
+    await save.scrollIntoViewIfNeeded()
+    await expect(save).toBeEnabled()
+    expect(await save.evaluate(node => {
       const box = node.getBoundingClientRect()
       const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
       return Boolean(hit && node.contains(hit))
     })).toBe(true)
     expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1)
-    await apply.click()
-    const confirm = panel.getByRole("group", { name: "Apply decisions", exact: true })
-    await expect(confirm.locator("p").first()).toHaveText(`This saves a new version of ${NAME} with 1 reply added as ${LAWYER}. 9 held changes stay as tracked changes. The current version stays in the history.`)
-    await shot("13-phone-apply-confirmation")
-    await confirm.getByRole("button", { name: "Apply decisions", exact: true }).click()
+    await save.click()
+    const confirm = panel.getByRole("group", { name: "Save a new version", exact: true })
+    await expect(confirm.locator("p").first()).toHaveText(`This saves a new version of ${NAME} with 1 reply added as ${LAWYER}. 9 changes you have not decided stay as tracked changes. The current version stays in the history.`)
+    await shot("13-phone-save-confirmation")
+    await confirm.getByRole("button", { name: "Save new version", exact: true }).click()
     await expect(page.getByText("Saved as version 3: 1 reply added.", { exact: true })).toBeVisible()
     await expect(thread(FOOTNOTE).locator(".markup-replies > li")).toContainText(DRAFTS[FOOTNOTE]!.reply, { timeout: 30_000 })
     expect(decisionRequests.at(-1)!.body.replies).toEqual([{ thread: 4, text: DRAFTS[FOOTNOTE]!.reply }])
@@ -466,7 +504,7 @@ try {
     expect([listed.versions[0]!.number, listed.versions[0]!.origin, listed.versions[0]!.actor, listed.versions[0]!.label]).toEqual([3, "revision", LAWYER, "1 reply added"])
     expect(await threadReplies()).toEqual([{ parent: 0, text: EDITED }, { parent: 3, text: DRAFTS[PLANTED]!.reply }, { parent: 4, text: DRAFTS[FOOTNOTE]!.reply }])
     await centre(thread(FOOTNOTE))
-    await shot("14-phone-after-replies-only-apply")
+    await shot("14-phone-after-replies-only-save")
     expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1)
   })
 
@@ -477,7 +515,7 @@ try {
     await answered.getByLabel("Your reply", { exact: true }).fill("Noted, thank you. [[confirm with client]]")
     await planted.getByRole("button", { name: "Write a reply", exact: true }).click()
     await planted.getByLabel("Your reply", { exact: true }).fill("Noted.")
-    await planted.getByRole("button", { name: "Approve", exact: true }).click()
+    await planted.getByRole("button", { name: "Approve reply", exact: true }).click()
     await centre(thread(AVERY_ROOT))
     await page.emulateMedia({ colorScheme: "dark" })
     await shot("15-dark-scheme-request")
@@ -488,13 +526,17 @@ try {
 
   // The second upload's panel, and Morgan's comment on the Waiver clause.
   const waiverPanel = page.getByRole("dialog", { name: WAIVER_NAME, exact: true }).locator("#document-markup")
-  const waiverThread = waiverPanel.locator(".markup-list > li.markup-thread").filter({ has: page.locator(":scope > .markup-comment-text", { hasText: COUNTERPARTY_MARKUP.waiverComment.text }) })
+  const waiverShown = waiverPanel.locator('[role="tabpanel"]:not([hidden])')
+  const waiverTab = (name: "Changes" | "Comments") => waiverPanel.getByRole("tab", { name: new RegExp(`^${name} \\d+$`) })
+  const waiverThread = waiverShown.locator(".markup-list > li.markup-thread").filter({ has: page.locator(":scope > .markup-comment > .markup-comment-text", { hasText: COUNTERPARTY_MARKUP.waiverComment.text }) })
   const waiverReply = waiverThread.getByRole("group", { name: /^Your reply to / })
-  const applyWaiver = async (status: number) => {
-    await waiverPanel.getByRole("button", { name: "Apply decisions…", exact: true }).click()
-    const confirm = waiverPanel.getByRole("group", { name: "Apply decisions", exact: true })
+  // Save, checking what the confirmation says it saves first.
+  const applyWaiver = async (status: number, saves: string) => {
+    await waiverPanel.getByRole("button", { name: "Save decisions as a new version…", exact: true }).click()
+    const confirm = waiverPanel.getByRole("group", { name: "Save a new version", exact: true })
+    await expect(confirm.locator("p").first()).toHaveText(`This saves a new version of ${WAIVER_NAME} with ${saves} The current version stays in the history.`)
     const applied = page.waitForResponse(response => new URL(response.url()).pathname.endsWith("/documents/markup/decisions"))
-    await confirm.getByRole("button", { name: "Apply decisions", exact: true }).click()
+    await confirm.getByRole("button", { name: "Save new version", exact: true }).click()
     const response = await applied
     expect(response.status()).toBe(status)
     return await response.json() as { code?: string; thread?: number }
@@ -507,18 +549,22 @@ try {
     await page.setViewportSize({ width: 1440, height: 1000 })
   }
 
-  await step("15 a reply on a clause the Apply rejects is refused on its thread card, and nothing is saved", async () => {
+  await step("15 a reply on a clause the Save rejects is refused on its thread card, and nothing is saved", async () => {
     const source = new FormData(); source.append("file", new File([counterpartyMarkupDocx({ waiver: true })], WAIVER_NAME))
     expect((await api(`/matters/${file.matter}/documents`, { method: "POST", body: source })).status).toBe(200)
     await openDocument(true, WAIVER_NAME)
+    await waiverTab("Comments").click()
     await waiverReply.getByRole("button", { name: "Write a reply", exact: true }).click()
     await waiverReply.getByLabel("Your reply", { exact: true }).fill(WAIVER_REPLY)
-    await waiverReply.getByRole("button", { name: "Approve", exact: true }).click()
-    const clause = waiverPanel.locator(".markup-list > li:not(.markup-thread)").filter({ hasText: "8. Waiver." })
+    await waiverReply.getByRole("button", { name: "Approve reply", exact: true }).click()
+    await waiverTab("Changes").click()
+    const clause = waiverShown.locator(".markup-list > li:not(.markup-thread)").filter({ hasText: "8. Waiver." })
     await clause.getByRole("radio", { name: "Reject", exact: true }).click()
-    await expect(waiverPanel.locator(".markup-tally")).toHaveText("0 to accept · 1 to reject · 9 held · 1 reply to add")
-    expect(await applyWaiver(422)).toMatchObject({ code: "anchor_removed", thread: COUNTERPARTY_MARKUP.waiverComment.id })
-    // The refusal is on the thread it names, with focus; Apply carries none of it.
+    await expect(waiverPanel.locator(".markup-progress p")).toHaveText("1 of 10 decided · Still to do: 9 changes")
+    expect(await applyWaiver(422, `0 changes accepted, 1 rejected and 1 reply added as ${LAWYER}. 9 changes you have not decided stay as tracked changes.`))
+      .toMatchObject({ code: "anchor_removed", thread: COUNTERPARTY_MARKUP.waiverComment.id })
+    // The refusal is on the thread it names, on the Comments tab, with focus; Save carries none of it.
+    await expect(waiverTab("Comments")).toHaveAttribute("aria-selected", "true")
     await expect(waiverThread).toHaveClass(/\bis-refused\b/)
     const message = waiverThread.locator(".version-error")
     await expect(message).toHaveText("Your decision removes the text this comment is on, so this reply can't be saved. Keep the change or drop the reply.")
@@ -533,16 +579,17 @@ try {
     await phoneShot(waiverThread, "18-phone-reply-on-removed-text-refused")
   })
 
-  await step("16 applied without the reply, the comment says its text was removed and offers no reply", async () => {
+  await step("16 saved without the reply, the comment says its text was removed and offers no reply", async () => {
     await waiverReply.getByRole("button", { name: "Remove", exact: true }).click()
     await expect(waiverThread).not.toHaveClass(/\bis-refused\b/)
-    await applyWaiver(200)
-    await expect(page.getByText("Saved as version 2: 0 accepted, 1 rejected, 9 held.", { exact: true })).toBeVisible()
-    await expect(waiverThread).toContainText("Text removed", { timeout: 30_000 })
+    await applyWaiver(200, "0 changes accepted and 1 rejected. 9 changes you have not decided stay as tracked changes.")
+    await expect(page.getByText("Saved as version 2: 0 accepted, 1 rejected, 9 left tracked.", { exact: true })).toBeVisible()
+    await expect(waiverThread.locator(":scope > .markup-comment .markup-chip")).toHaveText("Text removed", { timeout: 30_000 })
     await expect(waiverThread).toContainText("The text this comment was on is no longer in the document, so it takes no reply here.")
     await expect(waiverReply).toHaveCount(0)
+    await expect(waiverThread.getByRole("button", { name: "Draft reply", exact: true })).toHaveCount(0)
     // Only the two open threads still placed in the text are offered a draft.
-    await expect(waiverPanel.getByRole("button", { name: /^Draft replies \(\d+\)$/ })).toHaveAccessibleName("Draft replies (2)")
+    await expect(waiverShown.getByRole("button", { name: /^Draft replies to \d+ comments?$/ })).toHaveAccessibleName("Draft replies to 2 comments")
     const markup = await (await api(`/matters/${file.matter}/documents/markup?name=${encodeURIComponent(WAIVER_NAME)}`)).json() as { comments: { id: number; detached?: boolean }[] }
     expect(markup.comments.filter(comment => comment.detached).map(comment => comment.id)).toEqual([COUNTERPARTY_MARKUP.waiverComment.id])
     await centre(waiverThread)

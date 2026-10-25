@@ -81,10 +81,13 @@ bun apps/web/e2e/counterparty-markup.ts
 
 It starts the real ingest service on a temporary data root, uploads the
 synthetic marked-up agreement as a source and the same bytes as a deliverable,
-then filters to one reviewer, sets the shown changes to Reject, accepts the
-other reviewer's replace, reloads to check the kept drafts, gives the attorney
-name once and applies. The new version must list its actor, held changes and
-both flagged items must remain, and the deliverable must offer no panel. The
+and opens the Tracked changes panel: Changes lists every change undecided and
+Comments holds the threads. While the panel is open the page shows a pin per
+thread instead of margin cards, and a pin opens its thread on Comments. It filters Changes to one reviewer, rejects the
+shown changes with Decide all, accepts the other reviewer's replace, reloads to
+check the kept drafts, gives the attorney name once and saves. The new version
+must list its actor, the undecided changes and both flagged items must remain,
+and the deliverable must offer no panel. The
 source's embeddings use the local model from `DOCHAUS_MODEL_CACHE_DIR` (default
 the per-user cache); no engine or provider is contacted.
 
@@ -99,15 +102,15 @@ bun apps/web/e2e/counterparty-replies.ts
 
 It uploads the agreement with its footnote comment against the real ingest
 service, whose model calls go to a local engine fixture with scripted drafts.
-It drafts the open threads together, cancels one, checks that Approve waits for
-the bracketed part, edits and approves two replies, discards and restores one,
-and applies them with one Reject as one version. At 400 px it applies the last
-reply alone. A second upload's comment sits on a clause the other side
-inserted: a reply to it with that clause rejected is refused on the thread's
-card, and once applied without the reply the comment shows its text was removed
-and offers no reply.
+On the Comments tab it drafts the open threads together, cancels one, checks
+that Approve reply waits for the bracketed part, edits and approves two
+replies, discards and restores one, and saves them with one Reject as one
+version. At 400 px it saves the last reply alone. A second upload's comment
+sits on a clause the other side inserted: a reply to it with that clause
+rejected is refused on the thread's card, and once saved without the reply the
+comment shows its text was removed and offers no reply.
 
-Run what follows an Apply in their changes (#200, #198) the same way:
+Run what follows a Save in Tracked changes (#200, #198) the same way:
 
 ```sh
 PLAYWRIGHT_BASE_URL=http://127.0.0.1:5231 \
@@ -122,10 +125,11 @@ ingest service. Accepting the deletion must show the broken reference above
 the page with an info toast, and viewing a kept version must end it; rejecting
 it must show nothing; a check that could not run (forced in the browser) must
 show one muted line. A reply written by hand to the marked-up supply agreement
-and applied with no decision must be listed as replies added, with its label.
-A fresh copy of that agreement, with a drafting run's issue register written
-beside it, must show the run's answer on each change and open thread: changed
-in the draft, suggested, for the lawyer to decide or no change with its reason.
+and saved with no decision must be listed by the replies it added, not as a
+save from Word. A fresh copy of that agreement, with a drafting run's issue
+register written beside it, must show the run's answer on each change and open
+thread: changed in response, suggested, left for the lawyer to decide or not
+changed with its reason.
 Each state is captured at desktop and 400 px.
 
 Run the matter chat layout regression with the same environment as the

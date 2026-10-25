@@ -130,6 +130,14 @@
   --danger-border: #e9bfba;
   --info: var(--md-sys-color-info);
   --info-soft: var(--md-sys-color-info-container);
+  /* Reviewer colours, as Word gives each author one (the Tracked changes panel's
+     initials); each carries white text at 5.5:1 or more. */
+  --author-1: #3b5ba5;
+  --author-2: #8a3f9e;
+  --author-3: #2f6f7e;
+  --author-4: #b03a5b;
+  --author-5: #7a5a12;
+  --author-6: #56618a;
   --font-sans: var(--md-ref-typeface-plain);
   --font-display: var(--md-ref-typeface-brand);
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;

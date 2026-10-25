@@ -87,7 +87,7 @@ export type DocumentMarkup = {
 export type MarkupResponse = {
   disposition: string
   // The number of the version the run read; after an Apply, an earlier one.
-  from_version?: number
+  from_version?: number | null
   reason?: string
   amendments?: { id: string; pid: string; outcome: string }[]
   question?: { id: string; status: string }

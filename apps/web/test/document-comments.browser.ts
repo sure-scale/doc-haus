@@ -1,0 +1,215 @@
+// Run from apps/web: PLAYWRIGHT_MODULE=<installed playwright module> bun test/document-comments.browser.ts
+// Mounts the real DocumentViewer on the Docxodus WASM runtime with the synthetic counterparty markup; only ingest HTTP is mocked.
+// While the Tracked changes panel lists the comments, the page shows no cards, only a comment button by each commented
+// paragraph, and a button or the commented text opens and focuses its thread in the panel. With the panel closed the
+// comments beside the page are Word-style cards: each author's initials and colour match the panel's, a resolved thread
+// says so, a screened comment is flagged, a card and its text light up together, and on a narrow page each card sits
+// under its paragraph (once) and goes back when the page widens, with citations still found across it.
+// Set PLAYWRIGHT_CHROMIUM_PATH=<chromium> when Playwright's own browser is missing; SCREENSHOT_DIR=<dir> saves one screenshot per state.
+import assert from "node:assert/strict"
+import { existsSync, statSync } from "node:fs"
+import { mkdir } from "node:fs/promises"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
+import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx } from "../../../dochaus/test/support/counterparty-markup-fixture"
+
+const { chromium } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
+const wasmDir = path.resolve(process.env.DOCXODUS_WASM_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.resolve("docxodus"))), "wasm"))
+
+const CT = "application/vnd.openxmlformats-officedocument.wordprocessingml"
+const NAME = COUNTERPARTY_MARKUP.name
+const bytes = counterpartyMarkupDocx()
+// The lawyer is Morgan here, so Morgan's comments take the brand colour in both places.
+const LAWYER = "Morgan Okafor"
+// The file's comments as ingest lists them: Word's own initials (Morgan's are
+// three letters, so they can only come from here) and a screening finding on
+// the comment addressed to an AI assistant.
+const markup = {
+  name: NAME,
+  version: { id: "v1", number: 1, sha256: "synthetic" },
+  current: true,
+  revisions: [],
+  comments: COUNTERPARTY_MARKUP.comments.map((comment) => ({
+    id: comment.id, author: comment.author, initials: comment.author === LAWYER ? "MOk" : "AL",
+    date: COUNTERPARTY_MARKUP.dates[comment.author], text: comment.text, parent: "parent" in comment ? comment.parent : null,
+    resolved: "resolved" in comment ? comment.resolved : null, quote: "", paragraph: null,
+    findings: comment.text === COUNTERPARTY_MARKUP.plantedComment ? [{ field: "text", rule: "instruction", detail: "Addressed to an AI assistant." }] : [],
+  })),
+  authors: COUNTERPARTY_MARKUP.reviewers.map((name) => ({ name, revisions: 0, comments: 2 })),
+}
+
+const entry = path.join((await import("node:os")).tmpdir(), `dochaus-comments-${process.pid}.tsx`)
+await Bun.write(entry, `
+import { createElement } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react")))}
+import { createRoot } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-dom/client")))}
+import DocumentViewer from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/DocumentViewer.tsx"))}
+const citation = location.hash.length > 1 ? JSON.parse(decodeURIComponent(location.hash.slice(1))) : undefined
+createRoot(document.getElementById("root")).render(createElement(DocumentViewer, { matterId: "matter-comments", name: ${JSON.stringify(NAME)}, citation, onClose: () => {} }))
+`)
+const build = await Bun.build({ entrypoints: [entry], target: "browser", define: { "import.meta.env": JSON.stringify({ VITE_INGEST_URL: "http://viewer.invalid" }) } })
+assert.equal(build.success, true, build.logs.join("\n"))
+const script = await build.outputs.find(output => output.kind === "entry-point")!.text()
+const css = ["design-system", "primitives", "design-documents"].map(name => path.resolve(import.meta.dir, `../src/styles/${name}.css`))
+const styles = (await Promise.all(css.map(file => Bun.file(file).text()))).join("\n") + "\n" + (await Bun.file(path.resolve(import.meta.dir, "../src/styles.css")).text())
+const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: request => {
+  const { pathname } = new URL(request.url)
+  if (pathname === "/harness.js") return new Response(script, { headers: { "content-type": "text/javascript" } })
+  if (pathname === "/app.css") return new Response(styles, { headers: { "content-type": "text/css" } })
+  if (pathname.startsWith("/wasm/")) {
+    const file = path.join(wasmDir, decodeURIComponent(pathname.slice("/wasm/".length)))
+    return file.startsWith(wasmDir + path.sep) && existsSync(file) && statSync(file).isFile() ? new Response(Bun.file(file)) : new Response("Not found", { status: 404 })
+  }
+  return new Response(`<html><meta charset="utf-8"><link rel="stylesheet" href="/app.css"><div id="root"></div><script type="module" src="/harness.js"></script></html>`, { headers: { "content-type": "text/html" } })
+} })
+const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } : {}) })
+const screenshots = process.env.SCREENSHOT_DIR
+if (screenshots) await mkdir(screenshots, { recursive: true })
+
+// Without the file's markup the panel stays closed, so the cards show from the start.
+async function open(viewport: { width: number; height: number }, citation?: { section: string; excerpt: string }, withMarkup = true) {
+  const page = await browser.newPage({ viewport })
+  page.setDefaultTimeout(60_000)
+  const errors: string[] = []
+  page.on("pageerror", error => errors.push(error.message))
+  await page.route("http://viewer.invalid/**", route => {
+    const url = new URL(route.request().url())
+    const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) })
+    if (/^\/matters\/matter-comments\/documents\/(redlined|content)$/.test(url.pathname))
+      return route.fulfill({ status: 200, contentType: `${CT}.document`, body: Buffer.from(bytes) })
+    if (url.pathname === "/matters/matter-comments/redlines") return json([])
+    if (url.pathname === "/matters/matter-comments/documents/amendments") return json(null)
+    if (url.pathname === "/matters/matter-comments/documents/markup" && route.request().method() === "GET" && withMarkup) return json(markup)
+    if (url.pathname === "/preferences") return json({ attorney: LAWYER, firm: "Synthetic Firm" })
+    return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: `Unexpected ${url.pathname}` }) })
+  })
+  await page.goto(`${server.url.href}${citation ? `#${encodeURIComponent(JSON.stringify(citation))}` : ""}`)
+  await page.locator(".docx-render:not(.docx-skeleton) .comment-margin-note .markup-avatar").first().waitFor({ state: "attached" })
+  return { page, errors }
+}
+const note = (page: Awaited<ReturnType<typeof open>>["page"], id: number) => page.locator(`.docx-render .comment-margin-note[data-comment-id="${id}"]`)
+// Each byline's author, avatar classes and initials, in the panel or beside the page.
+const avatars = (page: Awaited<ReturnType<typeof open>>["page"], scope: string) => page.locator(scope).evaluateAll((nodes) => nodes.map((node) => {
+  const avatar = node.querySelector(".markup-avatar")!
+  const author = node.matches(".comment-margin-note") ? node.getAttribute("data-author") : node.querySelector(".change-author")?.textContent
+  return `${author}: ${avatar.className.replace(" is-small", "")} ${avatar.textContent}`
+}))
+const linked = (page: Awaited<ReturnType<typeof open>>["page"]) => page.locator(".docx-render .is-linked").evaluateAll(nodes => nodes.map(node => `${node.classList.contains("comment-highlight") ? "text" : node.classList.contains("doc-comment-pin") ? "pin" : "card"}#${node.getAttribute("data-comment-id")}`).sort())
+
+try {
+  const { page, errors } = await open({ width: 1440, height: 900 })
+  // Once the panel has read the lawyer's name, both places colour Morgan as the lawyer.
+  await page.locator(`#document-markup .markup-byline:has(.change-author:text-is("${LAWYER}")) .markup-avatar.tone-self`).first().waitFor({ state: "attached" })
+  await note(page, 2).locator(".markup-avatar.tone-self").waitFor({ state: "attached" })
+  const panel = new Set(await avatars(page, "#document-markup .markup-thread .markup-byline"))
+  const margin = await avatars(page, ".docx-render .comment-margin-note")
+  assert.equal(margin.length, 4, "a card for each root comment and the reply")
+  for (const byline of margin) assert.ok(panel.has(byline), `the panel shows ${byline} too (panel: ${[...panel].join(", ")})`)
+  assert.ok(margin.includes(`${LAWYER}: markup-avatar tone-self MOK`), "the lawyer's own comments are in the brand colour, with Word's initials")
+  assert.equal(await note(page, 1).locator(".markup-avatar").getAttribute("class").then(value => value?.includes("is-small")), true, "a reply's initials are small")
+  assert.equal(await note(page, 0).locator(":scope > .comment-margin-note-header > .markup-avatar").getAttribute("class").then(value => value?.includes("is-small")), false)
+  assert.match(await note(page, 0).locator(":scope > .comment-margin-note-header time").textContent() ?? "", /^20 Oct 2026, \d\d:\d\d$/)
+
+  // The panel opens by default and lists the comments, so the page shows none of its cards and keeps its own
+  // width; each thread has a button in the right margin by its paragraph.
+  const render = page.locator(".docx-render:not(.docx-skeleton)")
+  await page.locator('.docx-render[data-comments="pane"]').waitFor({ state: "attached" })
+  assert.equal(await page.locator(".docx-render .comment-margin-note:visible").count(), 0, "no cards beside the page while the panel is open")
+  assert.equal(await render.evaluate(root => getComputedStyle(root).maxWidth), "760px")
+  const pins = page.locator(".docx-render button.doc-comment-pin")
+  assert.deepEqual(await pins.evaluateAll(nodes => nodes.map(node => node.getAttribute("aria-label"))), [
+    "Comment by Avery Lindqvist", `Resolved comment by ${LAWYER}`, "Comment by Avery Lindqvist",
+  ])
+  assert.equal(await pins.evaluateAll(nodes => nodes.every(node => {
+    const pin = node.getBoundingClientRect(), block = node.parentElement!.getBoundingClientRect(), page = node.closest(".docx-render")!.getBoundingClientRect()
+    return pin.width >= 22 && pin.left >= block.right && pin.right <= page.right
+  })), true, "each button sits in the page's right margin")
+  if (screenshots) await page.screenshot({ path: path.join(screenshots, "comments-pane.png") })
+  // Hovering a thread in the panel lights its text and button.
+  await page.locator('#document-markup li.markup-thread[data-comment-id="3"]').hover()
+  assert.deepEqual(await linked(page), ["card#3", "pin#3", "text#3"])
+  await page.mouse.move(2, 2)
+  assert.deepEqual(await linked(page), [])
+  // A button opens its thread in the Comments tab and focuses the card; so does the commented text.
+  await pins.nth(2).click()
+  await page.waitForFunction(() => document.activeElement?.matches('#document-markup li.markup-thread[data-comment-id="3"]'))
+  assert.equal(await page.locator("#document-markup [role=tab][aria-selected=true]").textContent().then(text => text?.startsWith("Comments")), true)
+  assert.deepEqual(await linked(page), ["card#3", "pin#3", "text#3"], "the focused card's text stays lit")
+  if (screenshots) await page.screenshot({ path: path.join(screenshots, "comments-pane-revealed.png") })
+  await page.locator('.docx-render .comment-highlight[data-comment-id="0"]').click()
+  await page.waitForFunction(() => document.activeElement?.matches('#document-markup li.markup-thread[data-comment-id="0"]'))
+  await page.locator('#document-markup li.markup-thread[data-comment-id="0"]').evaluate(card => (card as HTMLElement).blur())
+  await pins.first().click()
+  await page.waitForFunction(() => document.activeElement?.matches('#document-markup li.markup-thread[data-comment-id="0"]'))
+
+  // Closed, the panel gives the comments back to the page as cards.
+  await page.getByRole("button", { name: "Close tracked changes" }).click()
+  await page.locator('.docx-render:not([data-comments="pane"]) .comment-margin-note').first().waitFor({ state: "visible" })
+  assert.equal(await pins.count(), 0)
+  assert.equal(await page.locator(".docx-render .comment-margin-note:visible").count(), 4)
+  await page.mouse.move(2, 2)
+  if (screenshots) await page.screenshot({ path: path.join(screenshots, "comments-closed.png") })
+
+  // Resolved in words, in the card and its name; the screened comment flagged.
+  assert.equal(await note(page, 2).locator(".comment-resolved-badge").isVisible(), true)
+  assert.equal(await note(page, 2).locator(".comment-resolved-badge").textContent(), "Resolved")
+  assert.equal(await note(page, 2).getAttribute("aria-label"), `Comment by ${LAWYER}, resolved`)
+  const flag = note(page, 3).locator(".markup-flag")
+  assert.equal(await flag.isVisible(), true)
+  assert.match(await flag.textContent() ?? "", /looks like an instruction — doc\.haus did not follow it/)
+  assert.equal(await note(page, 0).locator(".markup-flag").count(), 0)
+  // No "[0]" in the text: each marker is words for a screen reader only.
+  assert.deepEqual(await page.locator(".docx-render a.comment-marker").allTextContents(), [
+    "(comment by Avery Lindqvist)", `(reply by ${LAWYER})`, `(resolved comment by ${LAWYER})`, "(comment by Avery Lindqvist)",
+  ])
+  assert.equal(await page.locator(".docx-render a.comment-marker").evaluateAll(nodes => nodes.every(node => node.getBoundingClientRect().width <= 1)), true)
+  assert.equal(await page.locator(".docx-render .comment-margin-backref").evaluateAll(nodes => nodes.every(node => (node as HTMLElement).offsetParent === null)), true, "no ↩ links")
+
+  // A card and its text light up together, by hover or focus; a reply lights its thread.
+  await note(page, 0).locator(":scope > .comment-margin-note-body").hover()
+  assert.deepEqual(await linked(page), ["card#0", "text#0"])
+  if (screenshots) await page.screenshot({ path: path.join(screenshots, "comments-linked.png") })
+  await note(page, 1).hover()
+  assert.deepEqual(await linked(page), ["card#0", "text#0"])
+  await page.locator('.docx-render .comment-highlight[data-comment-id="2"]').hover()
+  assert.deepEqual(await linked(page), ["card#2", "text#2"])
+  await page.mouse.move(2, 2)
+  assert.deepEqual(await linked(page), [])
+  await note(page, 3).focus()
+  assert.deepEqual(await linked(page), ["card#3", "text#3"])
+  await note(page, 3).blur()
+  assert.deepEqual(await linked(page), [])
+
+  // A narrow page: each card under its paragraph, its text there once; back in the margin when it widens.
+  await page.setViewportSize({ width: 400, height: 860 })
+  await page.locator(".docx-render .doc-comment-stack").first().waitFor({ state: "attached" })
+  const stacked = await page.locator(".docx-render").evaluate(root => ({
+    column: root.querySelector(".comment-margin-column")!.children.length,
+    stacks: [...root.querySelectorAll(".doc-comment-stack")].map(stack => [...stack.children].map(card => {
+      const id = card.getAttribute("data-comment-id")
+      return `${id}:${Boolean(stack.previousElementSibling?.querySelector(`.comment-highlight[data-comment-id="${id}"]`))}`
+    }).join(",")),
+  }))
+  assert.deepEqual(stacked, { column: 0, stacks: ["0:true", "2:true", "3:true"] })
+  const text = await page.locator(".docx-render").textContent() ?? ""
+  for (const { text: comment } of COUNTERPARTY_MARKUP.comments) assert.equal(text.split(comment).length - 1, 1, `once: ${comment}`)
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth) <= 1, "nothing wider than the phone")
+  if (screenshots) await page.screenshot({ path: path.join(screenshots, "comments-narrow.png") })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.waitForFunction(() => !document.querySelector(".docx-render .doc-comment-stack"))
+  assert.deepEqual(await page.locator(".docx-render .comment-margin-column > .comment-margin-note").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-comment-id"))), ["0", "2", "3"])
+  assert.deepEqual(errors, [])
+  console.log("PASS the open panel takes the comments, opened from their buttons and text; closed, the cards match its colours and initials, resolved and flagged in words, linked to their text, stacked and restored")
+  await page.close()
+
+  // A citation across a card stacked between two paragraphs and a marker still finds the document's text.
+  const cited = await open({ width: 400, height: 860 }, { section: "1", excerpt: "forty-five days of each Order. 2. Price. The Price" }, false)
+  await cited.page.locator(".docx-render .doc-comment-stack").first().waitFor({ state: "attached" })
+  await cited.page.locator("mark.citation-passage").first().waitFor()
+  assert.equal((await cited.page.locator("mark.citation-passage").allTextContents()).join(" ").replace(/\u00a0/g, " ").replace(/\s+/g, " "), "forty-five days of each Order. 2. Price. The Price")
+  assert.equal(await cited.page.locator(".doc-comment-stack mark.citation-passage").count(), 0)
+  console.log("PASS a citation across a stacked card selects only the document's text")
+  await cited.page.close()
+} finally {
+  await browser.close()
+  server.stop(true)
+}

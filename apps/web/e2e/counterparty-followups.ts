@@ -1,15 +1,15 @@
-// After "Their changes" Apply (#200, #198) against a separately started Vite
-// server. The runner starts a real ingest service on DOCHAUS_E2E_INGEST_PORT
-// with a temporary data root, a settings directory and a saved attorney name,
-// uploads a synthetic services agreement whose clauses Word numbers (clause 5
-// cites clause 7, and clause 7 is a tracked deletion), and applies it three
-// ways: accepting the deletion shows the notice of the reference it broke and
+// After a Save in the Tracked changes panel (#200, #198) against a separately
+// started Vite server. The runner starts a real ingest service on
+// DOCHAUS_E2E_INGEST_PORT with a temporary data root, a settings directory and
+// a saved attorney name, uploads a synthetic services agreement whose clauses
+// Word numbers (clause 5 cites clause 7, and clause 7 is a tracked deletion),
+// and saves it three ways: accepting the deletion shows the notice of the reference it broke and
 // an info toast; rejecting it shows nothing; and a check that could not run (the
 // response's `consistency` rewritten in the browser, as ingest's own refusal is
 // covered by services/ingest/src/document-markup.test.ts) shows one muted line.
 // A reply written by hand to the synthetic supply agreement's open thread
 // (dochaus/test/support/counterparty-markup-fixture.ts), applied with no
-// decision, is listed as replies added, not as a save from Word. A fresh copy
+// decision, is listed as the replies it added, not as a save from Word. A fresh copy
 // of that agreement, with a drafting run's issue register written beside it as
 // the lean workflow keeps one, shows the run's answer on each card.
 // Each state is captured at desktop and 400×860. Nothing reaches a model: the
@@ -42,7 +42,7 @@ const ANSWERED = "Answered supply agreement.docx"
 // checks their sources, not this package's stricter one.
 const lean = (module: string) => import(path.resolve(import.meta.dir, "../../../dochaus/workflows/lean", `${module}.ts`))
 const HEADING = "Check these references and defined terms after your decisions"
-const UNCHECKED_LINE = "References and defined terms were not checked for this version."
+const UNCHECKED_LINE = "References and defined terms were not checked for this version — check them yourself before sending."
 const DESKTOP = { width: 1440, height: 1000 }
 const PHONE = { width: 400, height: 860 }
 
@@ -167,20 +167,25 @@ try {
     return viewer
   }
 
-  // Sets every listed change of `name` to `decision` and applies them, with
-  // the response's `consistency` replaced by `forced` when given.
+  // Sets every listed change of `name` to `decision` with Decide all and saves
+  // them, with the response's `consistency` replaced by `forced` when given.
   async function apply(name: string, decision: "Accept" | "Reject", forced?: Consistency) {
     const viewer = await openDocument(name)
     const panel = viewer.locator("#document-markup")
     await expect(panel).toBeVisible()
-    await panel.getByRole("group", { name: /^Set all \d+ changes? to$/ }).getByRole("button", { name: decision, exact: true }).click()
+    await panel.getByRole("button", { name: /^Decide all \d+ shown$/ }).click()
+    const bulk = panel.getByRole("group", { name: /^Decide all \d+ shown$/ })
+    // No filter is in use, so it sets every change in the file.
+    await expect(bulk).toContainText("Sets every change of theirs in this file that doc.haus can apply.")
+    await bulk.getByRole("button", { name: new RegExp(`^${decision} all \\d+$`) }).click()
+    await expect(panel.locator(".markup-progress p")).toHaveText(/^(All \d+ changes decided|The change is decided)$/)
     if (forced) await page.route(url => url.pathname.endsWith("/documents/markup/decisions"), async route => {
       const response = await route.fetch()
       await route.fulfill({ response, json: { ...await response.json(), consistency: forced } })
     }, { times: 1 })
-    await panel.getByRole("button", { name: "Apply decisions…", exact: true }).click()
+    await panel.getByRole("button", { name: "Save decisions as a new version…", exact: true }).click()
     const done = page.waitForResponse(response => new URL(response.url()).pathname.endsWith("/documents/markup/decisions"))
-    await panel.getByRole("group", { name: "Apply decisions", exact: true }).getByRole("button", { name: "Apply decisions", exact: true }).click()
+    await panel.getByRole("group", { name: "Save a new version", exact: true }).getByRole("button", { name: "Save new version", exact: true }).click()
     const response = await done
     applied[name] = { status: response.status(), consistency: (await response.json() as { consistency?: Consistency }).consistency, ...(forced ? { forced: true } : {}) }
     expect(response.status()).toBe(200)
@@ -221,7 +226,7 @@ try {
     await expect(notice.locator("li")).toHaveCount(1)
     await expect(notice.locator("li")).toHaveText(/^Clause 5 refers to clause 7\b.*which was clause 8 before/)
     await expect(page.getByText("1 reference or defined term to check.", { exact: true })).toBeVisible()
-    await expect(page.getByText(/^Saved as version 2: \d+ accepted, 0 rejected, 0 held\.$/)).toBeVisible()
+    await expect(page.getByText(/^Saved as version 2: \d+ accepted, 0 rejected, 0 left tracked\.$/)).toBeVisible()
     await shot("6b2-notice-desktop")
     await phone(viewer, ".markup-consistency", "6b2-notice-phone")
     // Viewing a kept version ends the notice; it is not brought back.
@@ -234,10 +239,10 @@ try {
     await expect(notice).toHaveCount(0)
   })
 
-  await step("3 a clean Apply (the deletion rejected) shows no notice and no toast", async () => {
+  await step("3 a clean Save (the deletion rejected) shows no notice and no toast", async () => {
     const viewer = await apply(CLEAN, "Reject")
     expect(applied[CLEAN]!.consistency).toEqual({ status: "checked", findings: [] })
-    await expect(page.getByText(/^Saved as version 2: 0 accepted, \d+ rejected, 0 held\.$/)).toBeVisible()
+    await expect(page.getByText(/^Saved as version 2: 0 accepted, \d+ rejected, 0 left tracked\.$/)).toBeVisible()
     await expect(viewer.locator(".markup-consistency, .markup-consistency-unchecked")).toHaveCount(0)
     await expect(page.getByText(/to check\.$/)).toHaveCount(0)
     await shot("6b2-clean-desktop")
@@ -255,25 +260,28 @@ try {
     await phone(viewer, ".markup-consistency-unchecked", "6b2-not-checked-phone")
   })
 
-  await step("5 a reply applied with no decision is listed as replies added, with its label", async () => {
+  await step("5 a reply saved with no decision is listed as the replies it added", async () => {
     const body = new FormData(); body.append("file", new File([counterpartyMarkupDocx()], MARKUP))
     expect((await api(`/matters/${file.matter}/documents`, { method: "POST", body })).status).toBe(200)
     const viewer = await openDocument(MARKUP)
     const panel = viewer.locator("#document-markup")
-    const thread = panel.locator(".markup-list > li.markup-thread").filter({ hasText: COUNTERPARTY_MARKUP.comments[0]!.text })
+    await panel.getByRole("tab", { name: /^Comments \d+$/ }).click()
+    const thread = panel.locator('[role="tabpanel"]:not([hidden]) .markup-list > li.markup-thread').filter({ hasText: COUNTERPARTY_MARKUP.comments[0]!.text })
     await thread.getByRole("button", { name: "Write a reply", exact: true }).click()
     await thread.getByLabel("Your reply", { exact: true }).fill("Forty-five days is agreed if stock levels are reported monthly.")
-    await thread.getByRole("button", { name: "Approve", exact: true }).click()
-    await panel.getByRole("button", { name: "Apply decisions…", exact: true }).click()
-    await panel.getByRole("group", { name: "Apply decisions", exact: true }).getByRole("button", { name: "Apply decisions", exact: true }).click()
+    await thread.getByRole("button", { name: "Approve reply", exact: true }).click()
+    await panel.getByRole("button", { name: "Save decisions as a new version…", exact: true }).click()
+    await panel.getByRole("group", { name: "Save a new version", exact: true }).getByRole("button", { name: "Save new version", exact: true }).click()
     await expect(page.getByText("Saved as version 2: 1 reply added.", { exact: true })).toBeVisible({ timeout: 30_000 })
     const listed = await (await api(`/matters/${file.matter}/documents/versions?name=${encodeURIComponent(MARKUP)}`)).json() as { versions: { number: number; origin: string; label: string | null }[] }
     expect(listed.versions.map(({ number, origin, label }) => [number, origin, label])).toEqual([[2, "revision", "1 reply added"], [1, "upload", null]])
     await viewer.getByRole("button", { name: /^Versions/ }).click()
     const newest = viewer.locator(".versions-list > li").first()
     await expect(newest).toContainText("Version 2")
-    await expect(newest.locator(".version-meta")).toHaveText(`Replies added · by ${LAWYER}`)
-    await expect(newest.locator(".version-label")).toHaveText("1 reply added")
+    // The label, with its count, is the version's origin, so the entry says it once.
+    await expect(newest.locator(".version-meta")).toHaveText(`1 reply added · by ${LAWYER}`)
+    await expect(newest.locator(".version-label")).toHaveCount(0)
+    await expect(newest).not.toContainText("Saved from Word")
     await shot("versions-replies-only-desktop")
     await phone(viewer, "#document-versions", "versions-replies-only-phone")
   })
@@ -310,24 +318,30 @@ try {
 
     const viewer = await openDocument(ANSWERED)
     const panel = viewer.locator("#document-markup")
+    const tab = (name: "Changes" | "Comments") => panel.getByRole("tab", { name: new RegExp(`^${name} \\d+$`) })
+    // Both tabs' cards are rendered, the other tab's hidden: the answers are read on both.
     // A change's card by its own text, not the context its place quotes.
     const answer = (text: string) => panel.locator(".markup-list > li")
       .filter({ has: page.locator(":is(.change-old, .change-new)", { hasText: new RegExp(`^${text}\\s*$`) }) }).locator(".markup-response")
-    await expect(answer("thirty")).toHaveText("Changed in the draft")
-    await expect(answer("forty-five")).toHaveText("Changed in the draft")
-    await expect(answer("the first")).toHaveText("Suggested: Fixing the price for the first twelve months leaves it open to review at renewal.")
+    await expect(answer("thirty")).toHaveText("doc.haus draft: changed in response")
+    await expect(answer("forty-five")).toHaveText("doc.haus draft: changed in response")
+    await expect(answer("the first")).toHaveText("doc.haus suggests: Fixing the price for the first twelve months leaves it open to review at renewal.")
     const thread = panel.locator(".markup-list > li.markup-thread").filter({ hasText: COUNTERPARTY_MARKUP.comments[0]!.text })
-    await expect(thread.locator(".markup-response")).toHaveText("For you to decide")
-    await expect(panel.locator(".markup-response", { hasText: /^No change: The draft keeps the original wording\.$/ })).toHaveCount(rejected.length)
+    await expect(thread.locator(".markup-response")).toHaveText("doc.haus draft: left for you to decide")
+    await expect(panel.locator(".markup-response", { hasText: /^doc\.haus draft: not changed — The draft keeps the original wording\.$/ })).toHaveCount(rejected.length)
+    // The run read the version on screen, so no answer names another version.
+    await expect(panel.locator(".markup-response-from")).toHaveCount(0)
     // The resolved thread is no item of the run's, so it says nothing.
     await expect(panel.locator(".markup-list > li.markup-thread").filter({ hasText: COUNTERPARTY_MARKUP.comments[2]!.text }).locator(".markup-response")).toHaveCount(0)
-    // Each kind of answer, centred in the panel, at desktop and phone width.
-    const views = [["amended", answer("thirty")], ["deferred", thread.locator(".markup-response")], ["suggested", answer("the first")],
-      ["rejected", panel.locator(".markup-response", { hasText: /^No change/ }).first()]] as const
+    // Each kind of answer, on its tab and centred in the panel, at desktop and phone width.
+    const views = [["amended", answer("thirty"), "Changes"], ["deferred", thread.locator(".markup-response"), "Comments"], ["suggested", answer("the first"), "Changes"],
+      ["rejected", panel.locator(".markup-list > li:not(.markup-thread) .markup-response", { hasText: /^doc\.haus draft: not changed/ }).first(), "Changes"]] as const
     for (const [size, viewport] of [["desktop", DESKTOP], ["phone", PHONE]] as const) {
       await page.setViewportSize(viewport)
       expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(1)
-      for (const [name, target] of views) {
+      for (const [name, target, onTab] of views) {
+        await tab(onTab).click()
+        await expect(target).toBeVisible()
         await expect(async () => await target.evaluate(node => node.scrollIntoView({ block: "center" }), undefined, { timeout: 2_000 })).toPass()
         await shot(`6a3-card-responses-${name}-${size}`)
       }

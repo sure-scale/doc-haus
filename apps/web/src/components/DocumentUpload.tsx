@@ -252,7 +252,7 @@ export default function DocumentUpload({
               <span className="doc-row-name">{d.name}</span>
             )}
             {d.pending ? (
-              <span className="redline-badge" title={`${d.pending} pending change${d.pending === 1 ? "" : "s"} to review`}>
+              <span className="redline-badge" title={`${d.pending} proposal${d.pending === 1 ? "" : "s"} to review`}>
                 {d.pending}
               </span>
             ) : null}
@@ -392,7 +392,7 @@ export default function DocumentUpload({
   )
 
   const badge = pending > 0 && (
-    <span className="redline-badge" title={`${pending} pending change${pending === 1 ? "" : "s"} to review`}>
+    <span className="redline-badge" title={`${pending} proposal${pending === 1 ? "" : "s"} to review`}>
       {pending}
     </span>
   )
