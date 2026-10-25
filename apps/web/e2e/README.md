@@ -132,7 +132,10 @@ thread: edited in response, suggested, left for the lawyer to decide or no
 edit made, with its reason, which names the run's document by its title. Each
 tag's full sentence is captured on hover. After a Save that accepts one of their changes and
 rejects another, the cards it leaves must keep those answers, marked as the
-run's on version 1, after a reload too.
+run's on version 1, after a reload too. A copy with a doc.haus proposal accepted
+into it holds the lawyer's own two edits beside their ten changes: the save bar
+must read "0 of 10 decided", accepting an own edit must not move it, and the
+confirmation must still count the own edit left tracked.
 Each state is captured at desktop and 400 px.
 
 Run the change timeline card acceptance (#297) the same way, with its own ports:

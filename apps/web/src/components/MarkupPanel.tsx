@@ -738,6 +738,10 @@ export default function MarkupPanel({
   const rejected = listed.filter((revision) => decisionOf(revision) === "reject").length
   const held = listed.filter((revision) => decisionOf(revision) === "hold").length
   const undecided = listed.length - accepted - rejected - held
+  // The save bar's progress is the other side's changes only: the lawyer's
+  // own edits start as Leave tracked, so they would count as decided before
+  // the lawyer decided anything. Only theirs can be undecided.
+  const theirs = listed.filter((revision) => !yours(revision)).length
   const left = held + undecided
   const elsewhere = markup.revisions.length - listed.length
   // Open threads in document order. One awaits a reply while its latest
@@ -1415,18 +1419,18 @@ export default function MarkupPanel({
       {(listed.length > 0 || open.length > 0) && (
         <div className="markup-apply">
           {notice && <p className="markup-notice"><Icon name="warning" />{notice}</p>}
-          {listed.length > 0 && (
+          {theirs > 0 && (
             <div className="markup-progress">
               <span className="markup-progress-bar" aria-hidden="true">
-                <span style={{ width: `${Math.round(((listed.length - undecided) / listed.length) * 100)}%` }} />
+                <span style={{ width: `${Math.round(((theirs - undecided) / theirs) * 100)}%` }} />
               </span>
               <p>
                 {undecided > 0 ? (
-                  <button type="button" className="linklike markup-next" aria-label={`${listed.length - undecided} of ${listed.length} decided. Show the next change to decide`} onClick={showNext}>
-                    <strong>{listed.length - undecided} of {listed.length}</strong> decided
+                  <button type="button" className="linklike markup-next" aria-label={`${theirs - undecided} of ${theirs} decided. Show the next change to decide`} onClick={showNext}>
+                    <strong>{theirs - undecided} of {theirs}</strong> decided
                   </button>
                 ) : (
-                  <span className="markup-done"><Icon name="accept" />{listed.length === 1 ? "The change is decided" : `All ${listed.length} changes decided`}</span>
+                  <span className="markup-done"><Icon name="accept" />{theirs === 1 ? "The change is decided" : `All ${theirs} changes decided`}</span>
                 )}
                 {elsewhere > 0 && <span className="markup-tally-word"> · {elsewhere} to resolve in Word</span>}
               </p>

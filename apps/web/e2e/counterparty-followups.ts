@@ -13,7 +13,9 @@
 // of that agreement, with a drafting run's issue register delivered beside it as
 // the lean workflow's final gate writes one, shows the run's answer on each
 // card; after a Save that decides two of their changes, the cards it leaves
-// keep those answers, after a reload too.
+// keep those answers, after a reload too. A copy with a doc.haus proposal
+// accepted into it holds the lawyer's own two edits beside their ten changes:
+// the save bar counts only theirs.
 // Each state is captured at desktop and 400×860. Nothing reaches a model: the
 // sources' embeddings use the local model (DOCHAUS_MODEL_CACHE_DIR, else the
 // per-user cache), browser engine traffic is intercepted and unexpected
@@ -40,6 +42,7 @@ const CLEAN = "Unchanged agreement.docx"
 const UNCHECKED = "Unchecked agreement.docx"
 const MARKUP = COUNTERPARTY_MARKUP.name
 const ANSWERED = "Answered supply agreement.docx"
+const OWN = "Own edit supply agreement.docx"
 // The lean workflow's own writers, loaded at run time: dochaus's typecheck
 // checks their sources, not this package's stricter one.
 const lean = (module: string) => import(path.resolve(import.meta.dir, "../../../dochaus/workflows/lean", `${module}.ts`))
@@ -424,6 +427,48 @@ try {
     await openDocument(ANSWERED)
     await answered()
     await shot("6b-answers-after-reload-desktop")
+  })
+
+  await step("7 the save bar counts only their changes, not the lawyer's own edits beside them", async () => {
+    const body = new FormData(); body.append("file", new File([counterpartyMarkupDocx()], OWN))
+    expect((await api(`/matters/${file.matter}/documents`, { method: "POST", body })).status).toBe(200)
+    // A doc.haus proposal on clause 9, accepted through the proposals route:
+    // the file holds it as the lawyer's own tracked deletion and insertion.
+    const { recordRedlineProposal } = await import(path.resolve(import.meta.dir, "../../../dochaus/lib/redlines.ts"))
+    const { id } = recordRedlineProposal(file.dir, { docPath: path.join(file.dir, OWN), docName: OWN, scope: "phrase", findText: "the law of the Province",
+      oldText: "the law of the Province", newText: "the law of the State", author: "doc.haus", reviewComment: "Review this proposed wording.", anchorId: "governing-law" }) as { id: number }
+    const accepted = await api(`/matters/${file.matter}/redlines/${id}/accept`, { method: "POST", headers: { "x-dochaus-actor": LAWYER } })
+    expect(accepted.status).toBe(200)
+    const viewer = await openDocument(OWN)
+    const panel = viewer.locator("#document-markup")
+    const changes = panel.locator('[role="tabpanel"]:not([hidden]) .markup-list > li:not(.markup-thread)')
+    const progress = panel.locator(".markup-progress p")
+    const save = panel.getByRole("button", { name: "Save as new version", exact: true })
+    await expect(panel.getByRole("tab", { name: /^Changes \d+$/ })).toHaveAccessibleName("Changes 12")
+    const own = changes.filter({ has: page.locator(".markup-own", { hasText: "Your edit" }) })
+    await expect(own).toHaveCount(2)
+    // Their ten wait for the lawyer; the own edits, left tracked, are not counted.
+    await expect(progress).toHaveText("0 of 10 decided")
+    await expect(panel.getByRole("button", { name: "0 of 10 decided. Show the next change to decide", exact: true })).toBeVisible()
+    await expect(save).toHaveAccessibleDescription("Accept or reject a change, or approve a reply, to save.")
+    await expect(async () => await own.first().evaluate(node => node.scrollIntoView({ block: "center" }), undefined, { timeout: 2_000 })).toPass()
+    await shot("7-own-edits-not-counted-desktop")
+    await phone(viewer, ".markup-progress", "7-own-edits-not-counted-phone")
+    // One of theirs accepted is one of ten; accepting an own edit moves nothing.
+    const card = (selector: string, text: string) => changes.filter({ has: page.locator(selector, { hasText: new RegExp(`^${text}\\s*$`) }) })
+    await card(".change-old", "thirty").getByRole("radio", { name: "Accept", exact: true }).click()
+    await expect(progress).toHaveText("1 of 10 decided")
+    await own.first().getByRole("radio", { name: "Accept", exact: true }).click()
+    await expect(progress).toHaveText("1 of 10 decided")
+    await expect(save).toBeEnabled()
+    await save.click()
+    const confirm = panel.getByRole("group", { name: "Save a new version", exact: true })
+    // The other own edit stays tracked with the nine of theirs not decided.
+    await expect(confirm.locator("p").first()).toHaveText(`This saves a new version of ${OWN} with 2 changes accepted and 0 rejected. ` +
+      "10 changes stay as tracked changes, including 9 you have not decided. The current version stays in the history.")
+    await shot("7-own-edits-confirm-desktop")
+    await confirm.getByRole("button", { name: "Cancel", exact: true }).click()
+    await expect(progress).toHaveText("1 of 10 decided")
   })
 
   await step("no page errors or unexpected requests", async () => {
