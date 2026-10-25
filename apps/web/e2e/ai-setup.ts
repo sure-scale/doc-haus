@@ -297,6 +297,20 @@ try {
       expect(f.state.completed).toContain("models")
       await dialog.getByRole("button", { name: "Save and continue", exact: true }).click()
       await expect(dialog.getByRole("heading", { name: "Make doc.haus yours", exact: true })).toBeVisible()
+      // A reload stays on Details and shows every saved step as done and open.
+      const saved = ["Provider", "Connection", "Models", "Test", "Research"]
+      for (const stage of saved) await expect(navigation.getByRole("button", { name: new RegExp(`${stage}$`) })).toHaveAccessibleName(`Completed: ${stage}`)
+      await f.page.reload()
+      await expect(dialog.getByRole("heading", { name: "Make doc.haus yours", exact: true })).toBeVisible()
+      for (const stage of saved) {
+        await expect(navigation.getByRole("button", { name: new RegExp(`${stage}$`) })).toHaveAccessibleName(`Completed: ${stage}`)
+        await expect(navigation.getByRole("button", { name: new RegExp(`${stage}$`) })).toBeEnabled()
+      }
+      await f.page.screenshot({ path: path.join(evidence, `onboarding-details-reloaded-${width}.png`) })
+      await navigation.getByRole("button", { name: /Models$/ }).click()
+      await expect(dialog.getByLabel("Primary model", { exact: true })).toHaveValue("fixture-models/primary")
+      await f.page.screenshot({ path: path.join(evidence, `onboarding-models-reloaded-${width}.png`) })
+      await navigation.getByRole("button", { name: /Details$/ }).click()
       await dialog.getByLabel("Attorney", { exact: true }).fill("Fixture Counsel")
       await dialog.getByLabel("Firm", { exact: true }).fill("Fixture Practice")
       await noOverflow(f.page)
