@@ -1814,7 +1814,7 @@ function ChangeCard({ revision, comments, state, own, disabled, carried, respons
   const places = placeLines(revision, comments)
   const described = [failure ? `${id}-refused` : "", state === "undecided" ? `${id}-state` : ""].filter(Boolean).join(" ") || undefined
   return (
-    <li ref={cardRef} title={placeText(places) || undefined} onClick={() => onLocate(true)} onFocus={() => onLocate(false)}
+    <li ref={cardRef} data-change-id={revision.id} title={placeText(places) || undefined} onClick={() => onLocate(true)} onFocus={() => onLocate(false)}
       className={`change-card markup-card is-${state}${own ? " is-own" : ""}${failure ? " is-refused" : ""}`}>
       <div className="markup-card-top">
         {/* The badge keeps its author beside it; on a narrow card the date goes under the name. */}

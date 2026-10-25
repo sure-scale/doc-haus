@@ -62,21 +62,35 @@ export default function DocumentViewer(props: Parameters<typeof WordDocumentView
 
 // On a narrow screen the versions list and the Tracked changes panel sit above
 // the page, so they come first in the markup too and the tab order follows what
-// the lawyer sees. Moving a panel remounts it, so focus inside it goes back to
-// the same control once the window crosses the width.
+// the lawyer sees. Moving a panel remounts it with its filters, menus and help
+// reset, so a control's position may then belong to another change. Focus goes
+// back to the same control of the same card (a change or a comment thread),
+// found by what it is; failing that, to the panel's heading, never to another
+// card's control.
 const NARROW = "(max-width: 720px)"
 const MOVED = "#document-markup, #document-versions"
-const controls = (panel: Element) => [...panel.querySelectorAll<HTMLElement>("button, a[href], input, select, textarea, summary, [tabindex]")]
+const CARD = "[data-change-id], [data-comment-id]"
+const CONTROLS = "button, a[href], input, select, textarea, summary, [tabindex]"
+// A control's kind and name: its role, its radio or checkbox value (Accept,
+// Reject or Leave tracked) and its label.
+const what = (el: Element) => [el.tagName, el.getAttribute("role"), el.getAttribute("type"),
+  el.matches("input[type=radio], input[type=checkbox]") ? (el as HTMLInputElement).value : "",
+  el.getAttribute("aria-label") ?? el.textContent?.trim()].join("|")
+const cardOf = (card: Element | null) => {
+  if (!card) return null
+  const key = card.hasAttribute("data-change-id") ? "data-change-id" : "data-comment-id"
+  return `[${key}="${CSS.escape(card.getAttribute(key) ?? "")}"]`
+}
 function useNarrow() {
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && Boolean(window.matchMedia?.(NARROW).matches))
-  const held = useRef<{ id: string; index: number } | null>(null)
+  const held = useRef<{ panel: string; card: string | null; control: string } | null>(null)
   useEffect(() => {
     const query = window.matchMedia?.(NARROW)
     if (!query) return
     const change = () => {
       const active = document.activeElement instanceof HTMLElement ? document.activeElement : null
       const panel = active?.closest(MOVED)
-      held.current = active && panel ? { id: panel.id, index: controls(panel).indexOf(active) } : null
+      held.current = active && panel ? { panel: panel.id, card: cardOf(active.closest(CARD)), control: what(active) } : null
       setNarrow(query.matches)
     }
     change()
@@ -87,8 +101,13 @@ function useNarrow() {
     const target = held.current
     held.current = null
     if (!target) return
-    const panel = document.getElementById(target.id)
-    if (panel && !panel.contains(document.activeElement)) controls(panel)[target.index]?.focus()
+    const panel = document.getElementById(target.panel)
+    if (!panel || panel.contains(document.activeElement)) return
+    const card = target.card ? panel.querySelector(target.card) : null
+    const same = !target.card || card
+      ? [...panel.querySelectorAll<HTMLElement>(CONTROLS)].find((el) => el.closest(CARD) === card && what(el) === target.control && el.getClientRects().length > 0)
+      : undefined
+    ;(same ?? panel.querySelector<HTMLElement>(':is(h2, h3)[tabindex="-1"]'))?.focus()
   }, [narrow])
   return narrow
 }
