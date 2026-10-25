@@ -359,10 +359,12 @@ export function changedRange(text: string, replacement: string, words = false) {
 // alone (an empty span, which Docxodus writes as one insertion), a pure
 // deletion alone, and a replacement as the words between the first and last
 // that differ. An insertion or deletion that could stand at several places,
-// because the words around it repeat, stands at the first that follows a
-// space or the start of the quote: a new sentence goes after the full stop and
-// space, before the sentence that opens with the same word, and an inserted
-// word before the word it qualifies. With no such place it stands at the last.
+// because the words around it repeat, stands at the last whose both ends are
+// sentence boundaries (the quote's start or end, or either side of the space
+// after a full stop): a whole sentence goes between sentences, never inside
+// the one whose words it repeats. Otherwise it stands at the first place that
+// follows a space or the quote's start, so an inserted word goes before the
+// word it qualifies; with no such place, at the last.
 function changedWords(text: string, replacement: string) {
   const words = (value: string) => value.match(/[\p{L}\p{N}_]+|\s+|[^\p{L}\p{N}_\s]/gu) ?? []
   const before = words(text)
@@ -376,10 +378,20 @@ function changedWords(text: string, replacement: string) {
     lastAfter--
   }
   const inserted = first === lastBefore
-  let shift = 0
+  // The text holding the inserted or deleted words, which end at `end`.
+  const [holding, end] = inserted ? [after, lastAfter] : [before, lastBefore]
+  const space = (token?: string) => token !== undefined && /^\s/.test(token)
+  const stop = (token?: string) => token !== undefined && /^[.!?]$/.test(token)
+  const boundary = (at: number) => at === 0 || at === holding.length
+    || (space(holding[at - 1]) && stop(holding[at - 2])) || (stop(holding[at - 1]) && space(holding[at]))
+  let sentence: number | undefined
+  let spaced = 0
   if (inserted !== (first === lastAfter))
-    for (let k = 1; k <= first && (inserted ? after[lastAfter - k] : before[lastBefore - k]) === before[first - k]; k++)
-      if (k === first || /^\s/.test(before[first - k - 1]!)) shift = k
+    for (let k = 0; k <= first && (!k || holding[end - k] === before[first - k]); k++) {
+      if (sentence === undefined && boundary(first - k) && boundary(end - k)) sentence = k
+      if (k && (k === first || space(before[first - k - 1]))) spaced = k
+    }
+  const shift = sentence ?? spaced
   return { offset: before.slice(0, first - shift).join("").length, replaced: before.slice(first - shift, lastBefore - shift).join(""),
     changed: after.slice(first - shift, lastAfter - shift).join("") }
 }

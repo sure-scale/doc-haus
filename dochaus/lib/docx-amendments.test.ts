@@ -549,8 +549,11 @@ describe("layered edits on a counterparty markup", () => {
     const bold = (text: string) => `<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${text}</w:t></w:r>`
     const heading = restyled(bold("9. Governing law.") + plain(" This Agreement is governed by the law of the Province."))
     const term = restyled(plain("9. Governing law. This Agreement is governed by the law of the ") + bold("Province") + plain("."))
+    const notices = restyled(plain("9. Governing law. This Agreement is governed by the law of the Province. Notices are served in the Province."))
     const whole = "9. Governing law. This Agreement is governed by the law of the Province."
     const sentence = "Each party submits to the courts."
+    // A sentence that ends with the words before it could also stand inside the sentence before.
+    const repeat = "Each party submits to the courts of the Province."
     for (const [bytes, before_quote, replacement, expected] of [
       [source, whole, `9. Governing law. ${sentence} This Agreement is governed by the law of the Province.`, ["insert", `${sentence} `]],
       [heading, whole, `9. Governing law. ${sentence} This Agreement is governed by the law of the Province.`, ["insert", `${sentence} `]],
@@ -558,6 +561,11 @@ describe("layered edits on a counterparty markup", () => {
       [source, "the law of the Province.", `the law of the Province. ${sentence}`, ["insert", ` ${sentence}`]],
       [term, "the law of the Province.", `the law of the Province. ${sentence}`, ["insert", ` ${sentence}`]],
       [source, whole, "9. Governing law.", ["delete", " This Agreement is governed by the law of the Province."]],
+      [source, whole, `${whole} ${repeat}`, ["insert", ` ${repeat}`]],
+      [source, "the Province.", `the Province. ${repeat}`, ["insert", ` ${repeat}`]],
+      [notices, "the Province. Notices", `the Province. ${repeat} Notices`, ["insert", `${repeat} `]],
+      [notices, "the law of the Province. Notices are served in the Province.", "the law of the Province.", ["delete", " Notices are served in the Province."]],
+      [source, "the law of the Province", "the law of the Province and its courts", ["insert", " and its courts"]],
     ] as const) {
       const packet = await createDocxLocalization(bytes, [{ id: "law", before_quote, replacement }], {}, layer)
       const clause = packet.candidates.find(row => row.paragraph.text.startsWith("9."))!
