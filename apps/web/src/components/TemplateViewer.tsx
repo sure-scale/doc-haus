@@ -7,6 +7,7 @@ import { ModalClose } from "./ModalHeader"
 import { decorateMarkers, markerEntries, type MarkerEntry } from "./document-markers"
 import backdropClose from "./backdropClose"
 import useModalFocus from "./useModalFocus"
+import { withSafeStyleValues } from "./docx-style-values"
 
 // In-browser template viewer. Renders a library template's .docx to HTML with the
 // WASM runtime and lists the markers it carries, so the lawyer reads
@@ -66,7 +67,7 @@ export default function TemplateViewer({
     setMarkers([])
     documentHost.current?.replaceChildren()
     ;(loadBytes ? loadBytes() : fetchTemplateBytes(name))
-      .then((bytes) => createViewer(mount, bytes, { wasmBasePath: "/wasm/", renderHeadersAndFooters: true }))
+      .then((bytes) => createViewer(mount, withSafeStyleValues(bytes), { wasmBasePath: "/wasm/", renderHeadersAndFooters: true }))
       .then((result) => {
         if (cancelled) { result.destroy(); return }
         viewer = result

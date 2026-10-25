@@ -19,6 +19,7 @@ import { DOCX_RENDER_OPTIONS, ViewerTitle } from "./DocumentViewer"
 import { ModalClose } from "./ModalHeader"
 import useModalFocus from "./useModalFocus"
 import backdropClose from "./backdropClose"
+import { withSafeStyleValues } from "./docx-style-values"
 
 // The blackline of two Word versions beside a list of the edits the later
 // version made without tracked changes, what became of the earlier version's
@@ -84,7 +85,7 @@ export default function BlacklineViewer({ matterId, params, focus, onClose }: { 
   useEffect(() => {
     if (!isReady || !blackline) return
     let cancelled = false
-    convertToHtml(blackline, BLACKLINE_RENDER_OPTIONS).then(
+    convertToHtml(withSafeStyleValues(blackline), BLACKLINE_RENDER_OPTIONS).then(
       (out) => !cancelled && setHtml(out),
       (cause) => !cancelled && setRenderError(humanizeError(cause, "Could not show the blackline.")),
     )

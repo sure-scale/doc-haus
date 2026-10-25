@@ -31,6 +31,7 @@ import { decorateMarkers, markerSummary, type MarkerCounts } from "./document-ma
 import { useToast } from "./Toast"
 import useModalFocus from "./useModalFocus"
 import backdropClose from "./backdropClose"
+import { withSafeStyleValues } from "./docx-style-values"
 
 // How a Word file with tracked changes is painted: insertions green, deletions
 // struck red, moves, headers and footers, comments in the margin. Shared with
@@ -201,7 +202,7 @@ function WordDocumentViewer({
     // An older version shows exactly as kept, with no proposals over it.
     if (shown) {
       fetchVersionBytes(matterId, shown.id)
-        .then((bytes) => convertToHtml(bytes, DOCX_RENDER_OPTIONS))
+        .then((bytes) => convertToHtml(withSafeStyleValues(bytes), DOCX_RENDER_OPTIONS))
         .then((out) => !cancelled && setHtml(out))
         .catch((cause) => {
           if (cancelled) return
@@ -221,7 +222,7 @@ function WordDocumentViewer({
       return new Uint8Array(await current.arrayBuffer())
     }), fetchRedlines(matterId, name), fetchPreparedChanges(matterId, name)])
       .then(async ([bytes, changes, prepared]) => {
-        const out = await convertToHtml(bytes, DOCX_RENDER_OPTIONS)
+        const out = await convertToHtml(withSafeStyleValues(bytes), DOCX_RENDER_OPTIONS)
         if (cancelled) return
         setHtml(out)
         setRedlines(changes)
