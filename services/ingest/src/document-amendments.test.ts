@@ -800,15 +800,27 @@ function withParaIds(bytes:Uint8Array,id = (index:number) => index) {
   return zipSync(parts,{mtime:new Date(1980,0,1)})
 }
 
-test("on an uploaded markup with Word paragraph ids, accepting one proposal leaves the other valid, and one whose paragraph changed is still refused", async () => {
+// Each tracked revision as Word lists it, and the w:id of every revision mark
+// in every part, which Word needs to be unique.
+const listedRevisions = async (bytes:Uint8Array) => {
+  const session = (await docxodus()).openDocxSession(bytes,{persistAnchorIds:false})
+  try {return session.listRevisions().map(({id,type,author,text,date}) => ({id,type,author,text,date}))} finally {session.close()}
+}
+const revisionMarkIds = (bytes:Uint8Array) => Object.entries(unzipSync(bytes)).filter(([name]) => name.endsWith(".xml")).flatMap(([,xml]) =>
+  [...strFromU8(xml).matchAll(/<w:(?:ins|del|moveFrom|moveTo|moveFromRangeStart|moveToRangeStart|rPrChange|pPrChange|sectPrChange|tblPrChange|trPrChange|tcPrChange|numberingChange)\b[^>]*?\bw:id="(\d+)"/g)].map((match) => match[1]))
+const commentIds = (bytes:Uint8Array) => [...strFromU8(unzipSync(bytes)["word/comments.xml"]!).matchAll(/<w:comment\b[^>]*?\bw:id="(\d+)"/g)].map((match) => match[1])
+
+test("on an uploaded markup with Word paragraph ids, each Accept keeps doc.haus's edit tracked beside their changes and leaves the other proposal valid", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-para-ids-"))
   const layer = {pendingRevisions:"layer"} as const
   const batches:LegalPass["amendments"][] = [[
     {before_quote:"the Province",replacement:"the State",target_context:"governing law clause",reason:"Requested governing law update."},
     {before_quote:"without consent",replacement:"without prior written consent",target_context:"assignment clause",reason:"Consent must be written."},
   ],[
+    {before_quote:"governed by the law",replacement:"governed by the laws",target_context:"governing law clause",reason:"Requested wording."},
+    {before_quote:"without prior written consent",replacement:"except with prior written consent",target_context:"assignment clause",reason:"Requested wording."},
+  ],[
     {before_quote:"the State",replacement:"the Commonwealth",target_context:"governing law clause",reason:"Requested governing law update."},
-    {before_quote:"prior written consent",replacement:"prior written and signed consent",target_context:"assignment clause",reason:"Consent must be signed."},
   ]]
   const engine = syntheticEngine(() => ({amendments:batches.shift()!,open_items:[]}),firstCandidate)
   const ingest = await isolatedIngest(temporary,engine.server)
@@ -818,20 +830,41 @@ test("on an uploaded markup with Word paragraph ids, accepting one proposal leav
     expect((await ingest.request(`${matter.route}/documents`,{method:"POST",body:wordForm(withParaIds(counterpartyMarkupDocx()))})).status).toBe(200)
     const markup = await Bun.file(matter.file).bytes()
     const body = async (bytes:Uint8Array) => (await createDocxRevision(bytes,layer)).paragraphs.filter((row) => row.scope === "body").map((row) => row.text)
+    const theirs = await listedRevisions(markup)
+    // No preferences here, so proposals are doc.haus's.
+    const ours = async (bytes:Uint8Array) => (await listedRevisions(bytes)).filter((row) => row.author === "doc.haus").map((row) => [row.type,row.text])
+    const kept = async (bytes:Uint8Array) => expect((await listedRevisions(bytes)).filter((row) => row.author !== "doc.haus")).toEqual(theirs)
     // Clause 9 and the continuation of clause 7, the two paragraphs without a pending change.
     const [first,second] = (await (await matter.prepare("Make the State's law govern and require written consent to assign.")).json() as {redline_ids:number[]}).redline_ids
     expect(await matter.accept(first)).toBe(200)
+    // The saved file is the redline: their ten changes as they were, by id,
+    // author, type, text and date, and doc.haus's tracked beside them, with
+    // Track Changes on.
+    const once = await Bun.file(matter.file).bytes()
+    await kept(once)
+    expect(await ours(once)).toEqual([["delete","Province"],["insert","State"]])
+    expect(strFromU8(unzipSync(once)["word/settings.xml"]!)).toContain("<w:trackRevisions")
     expect(await matter.pending()).toEqual([[second,undefined,undefined]])
-    // The tracked export holds it, a deletion and an insertion, beside their changes.
+    // The tracked export of the other is layered on the saved file, beside both.
     const exported = await ingest.request(`${matter.route}/documents/redlined?name=working.docx`)
     expect(exported.status).toBe(200)
-    expect((await (await docxodus()).getRevisions(new Uint8Array(await exported.arrayBuffer()))).length)
-      .toBe((await (await docxodus()).getRevisions(markup)).length+2)
+    const redline = new Uint8Array(await exported.arrayBuffer())
+    await kept(redline)
+    expect(await ours(redline)).toEqual([["delete","consent"],["insert","prior written consent"],["delete","Province"],["insert","State"]])
+    expect(readDocxComments(redline).map((row) => row.text)).toEqual([...COUNTERPARTY_MARKUP.comments.map((row) => row.text),"Consent must be written."])
+    expect(new Set(commentIds(redline)).size).toBe(commentIds(redline).length)
     expect(await matter.accept(second)).toBe(200)
     const accepted = await Bun.file(matter.file).bytes()
     expect(await body(accepted)).toEqual((await body(markup)).map((text,ordinal) => ordinal === 9 ? "9. Governing law. This Agreement is governed by the law of the State."
       : ordinal === 7 ? " without prior written consent." : text))
-    expect((await (await ingest.request(`${matter.route}/documents/markup?name=working.docx`)).json() as {revisions:unknown[]}).revisions).toHaveLength(10)
+    await kept(accepted)
+    expect(await ours(accepted)).toEqual([["delete","consent"],["insert","prior written consent"],["delete","Province"],["insert","State"]])
+    // Each accept numbers its revisions after every mark already in the package.
+    expect(new Set(revisionMarkIds(accepted)).size).toBe(revisionMarkIds(accepted).length)
+    expect(revisionMarkIds(accepted)).toHaveLength(revisionMarkIds(markup).length+4)
+    expect(commentIds(accepted)).toEqual(commentIds(markup))
+    const listed = (await (await ingest.request(`${matter.route}/documents/markup?name=working.docx`)).json() as {revisions:Array<{author:string}>}).revisions
+    expect(listed.filter((row) => row.author !== "doc.haus")).toHaveLength(10)
     // Each was bound to its paragraph's Word id and exact text, not the whole file.
     const targets = await paragraphTargets(markup,layer)
     expect(matter.bindings([first,second])).toEqual([9,7].map((ordinal,index) => ({version:2,amendment_id:`amendment-${index+1}`,
@@ -841,7 +874,9 @@ test("on an uploaded markup with Word paragraph ids, accepting one proposal leav
     expect((await paragraphTargets(withParaIds(counterpartyMarkupDocx(),(index) => index === 10 ? 8 : index),layer)).map((row) => row.para_id === null))
       .toEqual(targets.map((_,ordinal) => ordinal === 7 || ordinal === 9))
 
-    const [law,consent] = (await (await matter.prepare("Make the Commonwealth's law govern and require signed consent.")).json() as {redline_ids:number[]}).redline_ids
+    // doc.haus's own tracked change holds no paragraph: the next change list
+    // proposes beside it.
+    const [law,consent] = (await (await matter.prepare("Make the laws govern and allow assignment with written consent.")).json() as {redline_ids:number[]}).redline_ids
     expect(await matter.pending()).toEqual([[law,undefined,undefined],[consent,undefined,undefined]])
     // A lawyer's saved version adds to the continuation; Word keeps its paragraph id.
     const parts = unzipSync(accepted)
@@ -851,8 +886,64 @@ test("on an uploaded markup with Word paragraph ids, accepting one proposal leav
     expect((await body(saved))[7]).toBe(" without prior written consent. Any other assignment is void.")
     expect((await ingest.request(`${matter.route}/documents/revisions`,{method:"POST",body:wordForm(saved)})).status).toBe(200)
     expect(await matter.pending()).toEqual([[law,undefined,undefined],[consent,true,paragraphChanged]])
-    expect(await matter.accept(consent)).toBe(409)
+    expect(await matter.acceptResult(consent)).toEqual({status:409,body:{error:paragraphChanged}})
     expect(sha256(await Bun.file(matter.file).bytes())).toBe(sha256(saved))
+    // The second edit to clause 9 is tracked beside the first, which stays as it was.
+    expect(await matter.accept(law)).toBe(200)
+    const twice = await Bun.file(matter.file).bytes()
+    expect((await body(twice))[9]).toBe("9. Governing law. This Agreement is governed by the laws of the State.")
+    await kept(twice)
+    expect(await ours(twice)).toEqual([["delete","consent"],["insert","prior written consent"],["delete","law"],["insert","laws"],["delete","Province"],["insert","State"]])
+    expect((await listedRevisions(twice)).filter((row) => row.author === "doc.haus" && /^(Province|State)$/.test(row.text)))
+      .toEqual((await listedRevisions(saved)).filter((row) => row.author === "doc.haus" && /^(Province|State)$/.test(row.text)))
+    expect(new Set(revisionMarkIds(twice)).size).toBe(revisionMarkIds(twice).length)
+    // An edit inside doc.haus's own tracked change is not proposed, and says why.
+    const inside = await matter.prepare("Make the Commonwealth's law govern.")
+    expect(await inside.json()).toMatchObject({proposed:0,open_items:[
+      "The change to \"the State\" was not proposed: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Their changes and request edits again.",
+    ]})
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
+// Prepare places two proposals in one paragraph when they do not overlap.
+test("on an uploaded markup, a same-paragraph sibling of an accepted proposal goes stale with its reason, and Accept all writes the pair tracked together", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-pair-"))
+  const pair:LegalPass["amendments"] = [
+    {before_quote:"the Province",replacement:"the State",target_context:"governing law clause",reason:"Requested governing law update."},
+    {before_quote:"governed by",replacement:"construed under",target_context:"governing law clause",reason:"Requested wording."},
+  ]
+  const engine = syntheticEngine(() => ({amendments:pair,open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  const ours = async (bytes:Uint8Array) => (await listedRevisions(bytes)).filter((row) => row.author === "doc.haus").map((row) => [row.type,row.text])
+  try {
+    await ingest.start("only")
+    const single = await ingest.matter("Markup pair accepted one at a time")
+    expect((await ingest.request(`${single.route}/documents`,{method:"POST",body:wordForm(withParaIds(counterpartyMarkupDocx()))})).status).toBe(200)
+    const [law,wording] = (await (await single.prepare("Make the State's law govern; say construed.")).json() as {redline_ids:number[]}).redline_ids
+    expect(single.bindings([law,wording]).map((row) => row.para_id)).toEqual([expect.any(String),single.bindings([law])[0]!.para_id])
+    expect(await single.accept(law)).toBe(200)
+    // Never rebased: the sibling's paragraph no longer reads as it was prepared.
+    expect(await single.pending()).toEqual([[wording,true,paragraphChanged]])
+    const accepted = await Bun.file(single.file).bytes()
+    expect(await single.acceptResult(wording)).toEqual({status:409,body:{error:paragraphChanged}})
+    expect(sha256(await Bun.file(single.file).bytes())).toBe(sha256(accepted))
+    // The export leaves the stale sibling out: the saved file as it is.
+    const exported = await ingest.request(`${single.route}/documents/redlined?name=working.docx`)
+    expect(exported.status).toBe(200)
+    expect(sha256(new Uint8Array(await exported.arrayBuffer()))).toBe(sha256(accepted))
+
+    const batch = await ingest.matter("Markup pair accepted together")
+    expect((await ingest.request(`${batch.route}/documents`,{method:"POST",body:wordForm(withParaIds(counterpartyMarkupDocx()))})).status).toBe(200)
+    const ids = (await (await batch.prepare("Make the State's law govern; say construed.")).json() as {redline_ids:number[]}).redline_ids
+    const response = await ingest.request(`${batch.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ok:true,accepted:2})
+    const both = await Bun.file(batch.file).bytes()
+    expect((await createDocxRevision(both,{pendingRevisions:"layer"})).paragraphs[9]!.text).toBe("9. Governing law. This Agreement is construed under the law of the State.")
+    expect(await ours(both)).toEqual([["delete","governed by"],["insert","construed under"],["delete","Province"],["insert","State"]])
+    expect(ids.map(batch.status)).toEqual(["accepted","accepted"])
   } finally {
     await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
   }

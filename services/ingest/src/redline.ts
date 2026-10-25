@@ -9,10 +9,11 @@ import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphPosit
 import { assertLayeredRoundTrip, assertRedlineRoundTrip } from "../../../dochaus/lib/redline-round-trip"
 import { discloseSourceRevisions } from "../../../dochaus/lib/docx-revision-views"
 
-// Replay and bake pending redline proposals against a clean .docx.
+// Replay and bake pending redline proposals against a .docx.
 //
-// The canonical document on disk is always the accepted ("clean") state. A
-// proposal records how to reproduce one edit — a surgical find/replace ('phrase')
+// The canonical document on disk is the accepted state: clean, except that an
+// uploaded source keeps the other side's pending revisions and takes accepted
+// edits beside them as tracked changes (bake). A proposal records how to reproduce one edit — a surgical find/replace ('phrase')
 // or a whole-paragraph rewrite ('clause') — located the same way the dochaus tools
 // located it originally. We never store offsets: text is re-resolved against the
 // live document every time, so edits stay valid as the document changes underneath.
@@ -33,8 +34,9 @@ const pendingIn = (session: Session) => pendingRevisions.get(session)
 // earlier proposal in the same replay already rewrote the passage this one
 // anchors to. Callers decide whether that is fatal: the redlined view skips the
 // row and renders the rest; accept must fail loudly rather than bake a partial set.
-// The edit is untracked, so it is refused in a paragraph with a pending revision
-// (the touch rule): there doc.haus's words would become that revision's author's.
+// It is refused in a paragraph with a pending revision, doc.haus's own included
+// (the touch rule): untracked, doc.haus's words would become that revision's
+// author's, and a whole-clause rewrite would rewrite that revision.
 function applyProposal(session: Session, row: RedlineRow): { ok: true } | { ok: false; error: string } {
   if (row.scope === "clause") {
     const target = session.findByText(row.find_text, { ignoreWhitespace: true })
@@ -175,8 +177,9 @@ export function layeredRedline(rows: RedlineRow[], options: DocxRevisionOptions)
 // comments. Their revisions and comments are kept as they are; comparison
 // would accept them. Track Changes is left on, as a returned redline travels.
 async function layeredExport(original: Uint8Array, rows: RedlineRow[], state: RedlineState | undefined, options: DocxRevisionOptions) {
-  const baked = await bakeBound(original, rows, state, options)
-  const tracked = await bakeBound(original, rows, state, { ...options, revisionAuthor: previewAuthor(rows) })
+  const author = previewAuthor(rows)
+  const baked = await bakeBound(original, rows, state, { ...options, ownAuthor: author })
+  const tracked = await bakeBound(original, rows, state, { ...options, ownAuthor: author, revisionAuthor: author })
   let output = tracked.bytes
   if (rows.some(row => row.review_comment.trim())) {
     // An edit keeps every w:p in place, so the edited paragraph's position in
@@ -214,20 +217,34 @@ function previewAuthor(rows: RedlineRow[]) {
   return authors[0]!
 }
 
-// Bake the given proposals into the clean document, returning new canonical bytes
-// with the edits applied and no tracked changes — the new accepted state. Accept
-// fails loudly: a proposal that no longer resolves throws rather than silently
-// baking a partial set into the canonical document. `state` is the request's
-// redlineState for these bytes, when already read for the stale check. In
-// layer mode (an uploaded source) revision-bound edits are baked in beside the
-// document's pending revisions, which stay pending.
+// Bake the given proposals into the document, returning its new canonical bytes:
+// the new accepted state. Accept fails loudly: a proposal that no longer
+// resolves throws rather than silently baking a partial set into the canonical
+// document. `state` is the request's redlineState for these bytes, when already
+// read for the stale check. A clean document takes the edits untracked. In layer
+// mode (an uploaded source) a document with pending revisions keeps them
+// pending and takes the edits beside them as native tracked changes under the
+// proposals' author, so the accepted file is itself the redline that goes back;
+// the round trip proves rejecting only those gives the document as it was, and
+// accepting them the same edits untracked.
 export async function bake(original: Uint8Array, rows: RedlineRow[], state?: RedlineState, options: DocxRevisionOptions = {}): Promise<Uint8Array> {
-  if (rows.some((row) => row.target_json != null)) {
-    if (rows.some((row) => row.target_json == null)) throw new Error("Revision-bound and older proposals require separate review. Prepare a fresh change list.")
-    return (await bakeBound(original,rows,state,options)).bytes
-  }
+  const bound = rows.some((row) => row.target_json != null)
+  if (bound && rows.some((row) => row.target_json == null)) throw new Error("Revision-bound and older proposals require separate review. Prepare a fresh change list.")
+  const write = async (author?: string, revisionAuthor?: string) => bound
+    ? (await bakeBound(original,rows,state,{...options,...author ? {ownAuthor:author} : {},...revisionAuthor ? {revisionAuthor} : {}})).bytes
+    : bakeOlder(original,rows,revisionAuthor)
+  if (options.pendingRevisions !== "layer" || !(await (await docxodus()).getRevisions(original)).length) return write()
+  const author = previewAuthor(rows)
+  const [plain,tracked] = [await write(author),await write(author,author)]
+  await assertLayeredRoundTrip(tracked,original,plain)
+  return tracked
+}
+
+// Older proposals, replayed by their text; with a revisionAuthor, as native
+// tracked changes under that name.
+async function bakeOlder(original: Uint8Array, rows: RedlineRow[], revisionAuthor?: string) {
   const dx = await docxodus()
-  const session = dx.openDocxSession(original, {})
+  const session = dx.openDocxSession(original, revisionAuthor ? { trackedChanges: "render_inline", revisionAuthor } : {})
   try {
     for (const row of rows) {
       const result = applyProposal(session, row)

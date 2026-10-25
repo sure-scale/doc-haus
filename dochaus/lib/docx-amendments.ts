@@ -31,8 +31,10 @@ export type DocxLocalizationLimits = Limits
 // DocxTrackedRevisionsError. "layer" projects their accepted text and leaves them
 // pending: an edit in a paragraph with a pending revision is refused, and other
 // edits are written beside them. With "layer", a revisionAuthor writes edits as
-// native tracked changes under that name.
-export type DocxRevisionOptions = { pendingRevisions?: "refuse" | "layer"; revisionAuthor?: string }
+// native tracked changes under that name, and pending revisions by ownAuthor
+// (doc.haus's own name: edits an earlier Accept kept tracked) hold no paragraph:
+// an edit beside them is written, one inside their text is refused.
+export type DocxRevisionOptions = { pendingRevisions?: "refuse" | "layer"; revisionAuthor?: string; ownAuthor?: string }
 
 // A working-document projection is a view, not legal source authority. No native
 // UNIDs or offsets leave this module. Handles are valid only for this exact base.
@@ -147,11 +149,16 @@ function paragraphSpan(paragraph: Match, start: number, length: number): Match {
 function admitted(opened: Opened, binding: Binding) {
   const { amendment, match, ordinal } = binding
   // The touch rule (see pendingRevisionParagraphs); only a layer-mode reader marks paragraphs.
-  if (opened.paragraphs[ordinal]!.pending) throw new Error(`docx_pending_revision:${amendment.id}`)
+  const pending = opened.paragraphs[ordinal]!.pending
+  if (othersPending(pending, opened.options.ownAuthor)) throw new Error(`docx_pending_revision:${amendment.id}`)
   if (/[\r\n\t]/.test(amendment.replacement)) throw new Error("unsupported_structural_replacement")
   if (!amendment.replacement && match.text === opened.paragraphs[ordinal].match.text)
     throw new Error("unsupported_empty_paragraph_replacement")
   const change = changedDocxSpan(match, amendment.replacement, Boolean(opened.options.revisionAuthor))
+  // Beside doc.haus's own pending change, never inside it: Docxodus would nest
+  // the new revision in that one.
+  if (pending && insideRevision(opened, paragraphSpan(match, change.match.span.start - match.span.start, change.match.text.length)))
+    throw new Error(`docx_own_revision:${amendment.id}`)
   const xml = parse(opened.session.raw.getXml(match.enclosingAnchor.id))
   if (!elements(xml, "fldChar").length && !elements(xml, "instrText").length) return { ...binding, change, unlinks: [] as number[] }
   // A live cross-reference (a REF field) is the only field an edit may stand
@@ -165,6 +172,29 @@ function admitted(opened: Opened, binding: Binding) {
   const start = change.match.span.start - paragraph.match.span.start
   const end = start + change.match.text.length
   return { ...binding, change, unlinks: fields.flatMap((field, index) => start < field.to && field.from < end ? [index] : []) }
+}
+
+// Whether a run of the changed span lies inside a tracked insertion, deletion or move.
+function insideRevision(opened: Opened, match: Match) {
+  const runs = new Map(elements(parse(opened.session.raw.getXml(match.enclosingAnchor.id)), "r").map(run => [run.getAttributeNS(PT, "Unid"), run]))
+  return match.fragments.some(fragment => {
+    for (let node = runs.get(fragment.unid)?.parentNode; node && node.nodeType === 1; node = node.parentNode)
+      if ((node as Element).namespaceURI === W && ["ins", "del", "moveFrom", "moveTo"].includes((node as Element).localName)) return true
+    return false
+  })
+}
+
+/** Each selected amendment the writer would refuse for landing inside
+ * doc.haus's own pending change (ownAuthor), by amendment id; nothing is
+ * written. Prepare reports these as open items before qualifying the batch. */
+export async function ownRevisionRefusals(bytes: Uint8Array, packet: DocxLocalizationPacket, selections: unknown, options: DocxRevisionOptions) {
+  const opened = await openRevision(new Uint8Array(bytes), options)
+  try {
+    return new Set(selectedBindings(opened, packet, selectionSchema.parse(selections)).flatMap(binding => {
+      try { admitted(opened, binding); return [] }
+      catch (error) { return error instanceof Error && error.message === `docx_own_revision:${binding.amendment.id}` ? [binding.amendment.id] : [] }
+    }))
+  } finally { opened.session.close() }
 }
 
 // The source with the REF fields the edits touch unwrapped to their text, for
@@ -352,12 +382,20 @@ export class DocxTrackedRevisionsError extends Error {
 // The touch rule. Its unit is one projection paragraph in any story, which is
 // pending when the native revision listing names it (both ends of a move
 // included), or when its own markup, paragraph mark included, or an enclosing
-// table, row or cell's properties carry a revision element. Any author counts:
-// the working file never holds doc.haus's own pending revisions. An edit there
-// would merge with their change in Word, or untracked become their text.
+// table, row or cell's properties carry a revision element. Any author counts,
+// but doc.haus's own (ownAuthor; see othersPending): an edit there would merge
+// with their change in Word, or untracked become their text. doc.haus's own are
+// edits an Accept wrote tracked into their markup; an edit may stand beside
+// those, never inside them.
+
+/** Whether a paragraph's pending revisions, by their authors as pendingAuthors
+ * lists them ("" for none named), include one by someone other than `own`. */
+export function othersPending(authors: readonly string[] | undefined, own?: string) {
+  return Boolean(authors?.some(author => author !== own))
+}
 
 /** Each paragraph of these bytes with a pending revision, by paragraph_handle,
- * with the authors of its revisions in document order. */
+ * with the authors of its revisions in document order ("" for none named). */
 export async function pendingRevisionParagraphs(bytes: Uint8Array) {
   const opened = await openRevision(new Uint8Array(bytes), { pendingRevisions: "layer" })
   try {
@@ -416,7 +454,7 @@ function pendingAuthors(listed: Set<string> | undefined, paragraph: Element) {
   }
   const marked = [paragraph, ...properties].flatMap(node => REVISION_ELEMENTS.flatMap(name => elements(node, name)))
   if (!listed?.size && !marked.length) return
-  return [...new Set([...listed ?? [], ...marked.map(node => node.getAttributeNS(W, "author") ?? "")])].filter(Boolean)
+  return [...new Set([...listed ?? [], ...marked.map(node => node.getAttributeNS(W, "author") ?? "")])]
 }
 
 export async function openRevision(source: Uint8Array, options: DocxRevisionOptions = {}) {

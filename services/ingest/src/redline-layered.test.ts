@@ -16,8 +16,9 @@ import { docxodus } from "./docxodus"
 import { bake, buildRedlined } from "./redline"
 
 // #200 scope 4: on an uploaded counterparty markup, doc.haus's proposals are
-// written into their file as native tracked changes beside theirs, and Accept
-// bakes them in untracked; their ten revisions and four comments stay pending.
+// written into their file as native tracked changes beside theirs, in the
+// export and on Accept, so the accepted file is the redline that goes back;
+// their ten revisions and four comments stay pending.
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const layer = { pendingRevisions: "layer" } as const
 const AUTHOR = "Jordan Example"
@@ -35,6 +36,15 @@ const revisions = async (bytes: Uint8Array) => {
 const clause9 = async (bytes: Uint8Array) => {
   const opened = await openRevision(bytes, layer)
   try { return opened.revision.paragraphs[9]!.text } finally { opened.session.close() }
+}
+// The file with doc.haus's own tracked changes accepted: its edits untracked.
+async function decideOurs(bytes: Uint8Array, source: Uint8Array) {
+  const theirs = new Set((await revisions(source)).map(revision => revision.id))
+  const session = (await docxodus()).openDocxSession(bytes, { persistAnchorIds: false })
+  try {
+    for (const { id } of session.listRevisions().filter(revision => !theirs.has(revision.id))) expect(session.acceptRevision(id).success).toBe(true)
+    return session.save()
+  } finally { session.close() }
 }
 const xml = (bytes: Uint8Array, part: string) => new DOMParser().parseFromString(strFromU8(unzipSync(bytes)[part]!), "application/xml")
 const commentAuthors = (bytes: Uint8Array) => Array.from(xml(bytes, "word/comments.xml").getElementsByTagNameNS(W, "comment")).map(node => node.getAttributeNS(W, "author"))
@@ -86,24 +96,37 @@ describe("layered redline on an uploaded markup", () => {
     try { expect(() => verifyPreservation(before, sent, new Set([9]))).not.toThrow() } finally { [before, sent].forEach(opened => opened.session.close()) }
 
     // The round trip both ways: rejecting doc.haus's changes gives their file,
-    // accepting them gives what Accept stores; the round trip refuses otherwise.
-    const baked = await bake(source, [row], undefined, layer)
-    await assertLayeredRoundTrip(exported, source, baked)
+    // accepting them gives what Accept stores (itself layered the same way);
+    // the round trip refuses otherwise, an edit written untracked included.
+    const accepted = await bake(source, [row], undefined, layer)
+    await assertLayeredRoundTrip(exported, source, accepted)
+    await assertLayeredRoundTrip(accepted, source, exported)
     await expect(assertLayeredRoundTrip(exported, source, source)).rejects.toThrow("accepting only doc.haus's changes leaves text that differs at body paragraph 9")
-    await expect(assertLayeredRoundTrip(baked, source, baked)).rejects.toThrow("rejecting only doc.haus's changes leaves text that differs at body paragraph 9")
+    const untracked = await decideOurs(accepted, source)
+    expect(await revisions(untracked)).toEqual(theirs)
+    await expect(assertLayeredRoundTrip(untracked, source, accepted)).rejects.toThrow("rejecting only doc.haus's changes leaves text that differs at body paragraph 9")
   })
 
-  test("Accept bakes the edit in untracked and leaves their ten revisions pending", async () => {
-    const baked = await bake(source, [await proposal(source, "the Province", "the State")], undefined, layer)
-    expect(await revisions(baked)).toEqual(await revisions(source))
-    expect(await clause9(baked)).toBe(LAW)
+  test("Accept writes the edit as tracked changes under the proposal's author and leaves their ten revisions pending", async () => {
+    const accepted = await bake(source, [await proposal(source, "the Province", "the State")], undefined, layer)
+    const after = await revisions(accepted)
+    expect(after.filter(revision => revision.author !== AUTHOR)).toEqual(await revisions(source))
+    expect(after.filter(revision => revision.author === AUTHOR).map(revision => [revision.type, revision.text])).toEqual([["delete", "Province"], ["insert", "State"]])
+    expect(await clause9(accepted)).toBe(LAW)
+    expect(strFromU8(unzipSync(accepted)["word/settings.xml"]!)).toContain("<w:trackRevisions")
+    // Their comments are left as they were (only the XML declaration is rewritten).
+    const body = (bytes: Uint8Array) => strFromU8(unzipSync(bytes)["word/comments.xml"]!).replace(/^<\?xml[^>]*\?>/, "")
+    expect(body(accepted)).toBe(body(source))
   })
 
-  test("a clean source exports exactly as before", async () => {
+  test("a clean source exports and accepts exactly as before", async () => {
     const clean = (await renderMarkdownToDocx("Current review period is five days.\n\nThe Province governs.")).bytes
     const row = await proposal(clean, "five days", "seven days")
     setSystemTime(new Date("2026-10-25T12:00:00Z"))
     expect(sha256(await buildRedlined(clean, [row], undefined, layer))).toBe(sha256(await buildRedlined(clean, [row])))
+    const accepted = await bake(clean, [row], undefined, layer)
+    expect(sha256(accepted)).toBe(sha256(await bake(clean, [row])))
+    expect(await revisions(accepted)).toEqual([])
   })
 })
 
@@ -123,7 +146,7 @@ test("an older proposal in a paragraph with their pending change is refused at a
   expect(await revisions(baked)).toEqual(await revisions(source))
 })
 
-test("over HTTP an uploaded markup exports layered, and Accept keeps their changes listed", async () => {
+test("over HTTP an uploaded markup exports layered, and Accept keeps their changes listed and doc.haus's tracked", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(), "dochaus-redline-layered-"))
   const config = path.join(temporary, "config")
   await mkdir(path.join(temporary, "workspace"))
@@ -174,10 +197,12 @@ test("over HTTP an uploaded markup exports layered, and Accept keeps their chang
 
     expect((await request(`/matters/${matter.id}/redlines/${row.id}/accept`, { method: "POST" })).status).toBe(200)
     const accepted = await Bun.file(file).bytes()
-    expect(await revisions(accepted)).toEqual(await revisions(uploaded))
+    const after = await revisions(accepted)
+    expect(after.filter(revision => revision.author !== AUTHOR)).toEqual(await revisions(uploaded))
+    expect(after.filter(revision => revision.author === AUTHOR).map(revision => [revision.type, revision.text])).toEqual([["delete", "Province"], ["insert", "State"]])
     expect(await clause9(accepted)).toBe(LAW)
-    const markup = await (await request(`/matters/${matter.id}/documents/markup?name=${name}`)).json() as { revisions: unknown[] }
-    expect(markup.revisions).toHaveLength(10)
+    const markup = await (await request(`/matters/${matter.id}/documents/markup?name=${name}`)).json() as { revisions: Array<{ author: string }> }
+    expect(markup.revisions.filter(revision => revision.author !== AUTHOR)).toHaveLength(10)
   } finally {
     service.kill()
     await service.exited

@@ -724,7 +724,8 @@ app.post("/matters/:id/documents/revisions", async (c) => {
       // part's text, whatever the parts (the tool saved the part in place first).
       const combined = await prepareCombinedFile(dir, target.docPath, { redaction: origin === "redaction" })
       // A lawyer's save is kept even with pending tracked changes; doc.haus edits
-      // on top of it then wait until they are resolved.
+      // on top of it then wait until they are resolved, except on an uploaded
+      // source, where they go beside them.
       const revision = await writeDocumentRevision(dir, target.name, bytes, [], priorSha256, false, { version, keepTracked: origin === "revision" })
       const rebuilt = await rebuildCombinedFile(combined)
       const purgeFailed = [revision, rebuilt].map((result) => result && "purge_failed" in result ? result.purge_failed : undefined).filter(Boolean).join(" ")
@@ -1057,9 +1058,10 @@ app.get("/matters/:id/redlines", async (c) => {
   })
 })
 
-// The redlined view: the clean .docx compared against itself with every pending
-// proposal applied, so the viewer renders native tracked changes green/red. Falls
-// back to the clean bytes when nothing is pending. Stale proposals (the ones the
+// The redlined view: the saved .docx with every pending proposal applied as
+// native tracked changes, so the viewer renders them green/red (on an uploaded
+// source, written beside the tracked changes the file already holds). Falls
+// back to the saved bytes when nothing is pending. Stale proposals (the ones the
 // change list marks stale and refuses to accept) are left out: they cannot be
 // replayed against this revision, and they stay pending and visible as stale
 // until the reviewer rejects them. Nothing here changes a proposal's status.
@@ -1229,7 +1231,9 @@ app.get("/matters/:id/compare", async (c) => {
 })
 
 // Accept a single redline: bake it into the canonical .docx (the new accepted
-// state, no tracked changes) and mark it accepted. Source revisions are
+// state, no tracked changes; on an uploaded source with pending revisions, its
+// edit stays a tracked change under the proposal's author, beside theirs, so the
+// saved file is the redline) and mark it accepted. Source revisions are
 // re-indexed; deliverable revisions remain outside source retrieval. Re-resolves
 // the anchor text against the live doc, so a clause an earlier accept already
 // rewrote fails loudly instead of corrupting.
