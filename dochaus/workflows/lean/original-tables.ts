@@ -204,7 +204,7 @@ export function carryRevisionParagraphs(directory: string, document: DocID, rend
   try {
     const { bytes, carry } = carryOriginalParagraphs(rendered, original.bytes)
     if (carry.paragraphs) appendLeanEvent(directory, { stage: "draft", document, event: "paragraphs", step: "paragraphs",
-      outcome: `carried ${carry.carried} of ${carry.paragraphs}${carry.breaks ? `, page breaks ${carry.breaks}` : ""}${carry.spaced ? `, number spacing ${carry.spaced}` : ""}` })
+      outcome: `carried ${carry.carried} of ${carry.paragraphs}${carry.breaks ? `, page breaks ${carry.breaks}` : ""}${carry.spaced ? `, number spacing ${carry.spaced}` : ""}${carry.restyled ? `, paragraph style ${carry.restyled}` : ""}` })
     return bytes
   } catch (error) {
     appendLeanEvent(directory, { stage: "draft", document, event: "paragraphs", step: "paragraphs", outcome: "failed", reason: error instanceof Error ? error.message : String(error) })
