@@ -20,6 +20,7 @@ import { convertPdfToDocx, documentContentUrl, fetchDocumentText, locatePdfPassa
 import type { CompareParams } from "../api/ingest/compare"
 import { fetchVersionBytes, type DocumentVersion, type RestoreResult } from "../api/ingest/versions"
 import { fetchDocumentMarkup, MarkupRefusedError, type DocumentMarkup } from "../api/ingest/markup"
+import { getPreferences } from "../api/ingest/preferences"
 import { formatDateTime } from "../lib/format"
 import { ModalClose } from "./ModalHeader"
 import { CompareIcon } from "./CompareDialog"
@@ -144,6 +145,8 @@ function WordDocumentViewer({
   // change list, so they survive closing the viewer. The count line is derived
   // from the refetched list; the open items stay until the next Prepare.
   const [preparation,setPreparation] = useState<PreparedChanges | null>(null)
+  // The name doc.haus's changes carry: the saved attorney, else the firm, as ingest records it.
+  const [reviser,setReviser] = useState<string>()
   // Bumped after an accept/reject resolves so the load effect re-runs — the
   // document re-renders and the change list shrinks without duplicating fetch logic.
   const [reload, setReload] = useState(0)
@@ -261,6 +264,19 @@ function WordDocumentViewer({
     markupDefaulted.current = true
     if (markupItems > 0 && !redlines.length && !versionsOpen) setMarkupOpen(true)
   }, [html, shown, markup.key, markup.failed, markup.data, markupItems, redlines.length, versionsOpen])
+
+  // Read when the request opens on a file with their changes, so a name just
+  // saved in Settings shows; without it the line names no one.
+  const hasTheirs = Boolean(markup.data?.revisions.length)
+  useEffect(() => {
+    if (!editing || !hasTheirs) return
+    let cancelled = false
+    getPreferences().then(
+      (prefs) => !cancelled && setReviser(prefs.attorney?.trim() || prefs.firm?.trim() || "doc.haus"),
+      () => !cancelled && setReviser(undefined),
+    )
+    return () => { cancelled = true }
+  }, [editing, hasTheirs])
 
   // A PDF's older version is read once and shown from memory, so a copy that
   // cannot be served is reported here rather than as an error page in the frame.
@@ -506,6 +522,10 @@ function WordDocumentViewer({
   }
   const staleNotice = staleExportNotice(redlines)
   const prepared = preparation && preparedNotice(preparation.redline_ids, redlines)
+  // Request edits on an uploaded markup keeps their changes pending (#200).
+  const theirs = !shown ? markup.data?.revisions.length ?? 0 : 0
+  const layered = theirs > 0 && `Their ${theirs === 1 ? "1 change stays as it is" : `${theirs} changes stay as they are`}; ` +
+    `doc.haus adds its changes beside ${theirs === 1 ? "it" : "them"}${reviser ? ` under ${reviser}` : ""}.`
 
   // Convert this PDF into an editable .docx sibling, index it, and swap the viewer
   // onto the new document so it can be redlined like any other contract.
@@ -645,6 +665,7 @@ function WordDocumentViewer({
             {citation && !shown && <p role="status">{citationStatus(citation.section, passage)}</p>}
             {editing && !shown && <div id="document-edit-request" className="change-card document-edit-request">
               <label htmlFor="document-edit-instructions">Describe the changes you want to review</label>
+              {layered && <p className="muted">{layered}</p>}
               <textarea id="document-edit-instructions" value={instructions} maxLength={24000} disabled={busy !== undefined}
                 onChange={(event) => setInstructions(event.target.value)} rows={4} style={{width:"100%"}} />
               <button className="primary" onClick={prepare} disabled={busy !== undefined || !instructions.trim()}>{busy === "prepare" ? "Preparing changes…" : "Prepare changes"}</button>

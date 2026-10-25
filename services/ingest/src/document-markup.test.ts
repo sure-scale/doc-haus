@@ -429,7 +429,7 @@ test("a deletion inside a rejected insertion is consumed whichever order the dec
 test("the injection report names the planted deletion and the planted comment", async () => {
   const uploaded = await upload("Planted.docx")
   expect(uploaded.tracked_changes).toEqual({ count: 10, authors: [AVERY, MORGAN] })
-  expect(uploaded.notice).toBe(`Saved as version 1, with 10 tracked changes by ${AVERY} and ${MORGAN}; review them in the viewer before doc.haus edits it.`)
+  expect(uploaded.notice).toBe(`Saved as version 1, with 10 tracked changes by ${AVERY} and ${MORGAN}; review them in the viewer. doc.haus adds its edits beside them.`)
   const text = await (await matterRoute(`/documents/text?${query("Planted.docx")}`)).json() as { injection: { findings: Finding[] } }
   expect(text.injection.findings).toEqual(uploaded.injection!.findings)
   // The deleted instruction is in the indexed text (#267), with its offsets.
