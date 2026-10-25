@@ -151,7 +151,7 @@ test("mixed and malformed targeting never silently export or apply legacy propos
   const legacy={id:1,doc_path:"working.docx",doc_name:"working.docx",scope:"phrase" as const,find_text:"Original",old_text:"Original",new_text:"Changed",author:"Review",review_comment:"",anchor_id:null,created_at:1,status:"pending" as const}
   const bound={...legacy,id:2,target_json:"{invalid"}
   await expect(buildRedlined(original,[legacy,bound])).rejects.toThrow("cannot share one redline export")
-  await expect(bake(original,[legacy,bound])).rejects.toThrow("separate review")
+  await expect(bake(original,[legacy,bound])).rejects.toThrow()
   await expect(bake(original,[bound])).rejects.toThrow()
 })
 
@@ -1160,6 +1160,58 @@ test("on an uploaded markup, Accept all writes proposals prepared under differen
       "The changes to \"the Province\" and \"law of the Province\" overlap, so Accept all cannot write both. Accept the one you want on its own, then reject the other and request that edit again."}})
     expect(sha256(await Bun.file(overlap.file).bytes())).toBe(sha256(before))
     expect([first[1]!,wording!].map(overlap.status)).toEqual(["pending","pending"])
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
+test("on an uploaded markup, Accept all writes a prepared proposal and an older chat proposal together, and names an older one the other rewrites", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-older-"))
+  const law = {before_quote:"the Province",replacement:"the State",target_context:"governing law clause",reason:"Requested governing law update."}
+  const engine = syntheticEngine(() => ({amendments:[law],open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  // As the chat tools record a proposal: replayed by its text, with no Word binding.
+  const older = (matter:Awaited<ReturnType<typeof ingest.matter>>,find:string,replacement:string) => {
+    const db = openDb(matter.dir)
+    try {
+      return Number(db.run("INSERT INTO redlines (doc_path,doc_name,scope,find_text,old_text,new_text,author,review_comment,anchor_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        [matter.file,"working.docx","phrase",find,find,replacement,"Review","",null,Date.now()]).lastInsertRowid)
+    } finally {db.close()}
+  }
+  try {
+    await ingest.start("only")
+    const both = await ingest.matter("Markup with prepared and older proposals")
+    const rewritten = await ingest.matter("Markup with an older proposal the prepared one rewrites")
+    for (const matter of [both,rewritten])
+      expect((await ingest.request(`${matter.route}/documents`,{method:"POST",body:wordForm(withParaIds(counterpartyMarkupDocx()))})).status).toBe(200)
+    const theirs = await listedRevisions(await Bun.file(both.file).bytes())
+    const [prepared] = (await (await both.prepare("Make the State's law govern.")).json() as {redline_ids:number[]}).redline_ids
+    const consent = older(both,"without consent","without prior written consent")
+    expect(await both.pending()).toEqual([[prepared!,undefined,undefined],[consent,undefined,undefined]])
+
+    const response = await ingest.request(`${both.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect({status:response.status,body:await response.json()}).toEqual({status:200,body:{ok:true,accepted:2}})
+    const accepted = await Bun.file(both.file).bytes()
+    const body = (await createDocxRevision(accepted,{pendingRevisions:"layer"})).paragraphs
+    expect([body[7]!.text,body[9]!.text]).toEqual([" without prior written consent.","9. Governing law. This Agreement is governed by the law of the State."])
+    // Each is tracked under its own author, beside their changes as they were.
+    const after = await listedRevisions(accepted)
+    const by = (author:string) => after.filter((row) => row.author === author).map((row) => [row.type,row.text])
+    expect([by("doc.haus"),by("Review")]).toEqual([[["delete","Province"],["insert","State"]],[["delete","without consent"],["insert","without prior written consent"]]])
+    expect(after.filter((row) => row.author !== "doc.haus" && row.author !== "Review")).toEqual(theirs)
+    expect(new Set(revisionMarkIds(accepted)).size).toBe(revisionMarkIds(accepted).length)
+    expect([prepared!,consent].map(both.status)).toEqual(["accepted","accepted"])
+
+    // An older proposal whose words the prepared one rewrites cannot follow
+    // it: Accept all names it and says what to do, and changes nothing.
+    const [law2] = (await (await rewritten.prepare("Make the State's law govern.")).json() as {redline_ids:number[]}).redline_ids
+    const plural = older(rewritten,"law of the Province","laws of the Province")
+    const before = await Bun.file(rewritten.file).bytes()
+    const refused = await ingest.request(`${rewritten.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect({status:refused.status,body:await refused.json()}).toEqual({status:409,body:{error:
+      "The change to \"law of the Province\" cannot be written with the rest: its words have changed, or another proposal in this list changes them. Reject it, accept the rest, then request that edit again."}})
+    expect(sha256(await Bun.file(rewritten.file).bytes())).toBe(sha256(before))
+    expect([law2!,plural].map(rewritten.status)).toEqual(["pending","pending"])
   } finally {
     await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
   }

@@ -24,6 +24,17 @@ type Session = ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"
 export class RedlinePreviewConflictError extends Error {}
 /** A batch Accept refused for a reason the lawyer can act on; its message says which proposals and what to do. */
 export class RedlineAcceptConflictError extends Error {}
+/** An older proposal its text replay could not write. The message is the
+ * replay's reason; `refusal` is Accept all's, which names the proposal. */
+export class RedlineReplayError extends Error {
+  readonly refusal: string
+  constructor(row: RedlineRow, reason: string) {
+    super(reason)
+    // The touch rule's refusal already names the change and what to do.
+    this.refusal = reason.startsWith("The change to ") ? reason
+      : `The change to ${JSON.stringify(row.find_text)} cannot be written with the rest: its words have changed, or another proposal in this list changes them. Reject it, accept the rest, then request that edit again.`
+  }
+}
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 // Ingest's own install of the same Docxodus package declares the session type
@@ -242,13 +253,17 @@ function previewAuthor(rows: RedlineRow[]) {
 // its proposal's author (an attorney named between two Prepares leaves two), so
 // the accepted file is itself the redline that goes back; the round trip proves
 // rejecting only those gives the document as it was, and accepting them the
-// same edits untracked.
+// same edits untracked. Revision-bound proposals are written against these
+// bytes and older ones then replayed by their text, as accepting each in turn would.
 export async function bake(original: Uint8Array, rows: RedlineRow[], state?: RedlineState, options: DocxRevisionOptions = {}): Promise<Uint8Array> {
-  const bound = rows.some((row) => row.target_json != null)
-  if (bound && rows.some((row) => row.target_json == null)) throw new Error("Revision-bound and older proposals require separate review. Prepare a fresh change list.")
-  const write = async (ownAuthors?: readonly string[], tracked = false) => bound
-    ? (await bakeBound(original,rows,state,{...options,...ownAuthors ? {ownAuthors} : {},...tracked ? trackedAs(rows) : {}})).bytes
-    : bakeOlder(original,rows,tracked)
+  const bound = rows.filter((row) => row.target_json != null)
+  const older = rows.filter((row) => row.target_json == null)
+  const write = async (ownAuthors?: readonly string[], tracked = false) => {
+    const written = bound.length
+      ? (await bakeBound(original,bound,state,{...options,...ownAuthors ? {ownAuthors} : {},...tracked ? trackedAs(bound) : {}})).bytes
+      : original
+    return older.length ? bakeOlder(written,older,tracked) : written
+  }
   try {
     if (options.pendingRevisions !== "layer" || !(await (await docxodus()).getRevisions(original)).length) return await write()
     // Every proposal's author is our side, whichever name it was prepared under.
@@ -272,7 +287,7 @@ async function bakeOlder(original: Uint8Array, rows: RedlineRow[], tracked = fal
     for (const row of rows) {
       if (tracked) session.setRevisionAuthor(rowAuthor(row))
       const result = applyProposal(session, row)
-      if (!result.ok) throw new Error(result.error)
+      if (!result.ok) throw new RedlineReplayError(row, result.error)
     }
     return session.save()
   } finally {
