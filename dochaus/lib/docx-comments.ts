@@ -41,6 +41,21 @@ export function readDocxCommentParagraphs(bytes: Uint8Array) {
   }))
 }
 
+/** The same rows, each with its members' positions among the body's w:p
+ * elements (empty and deleted-only paragraphs counted, as readDocxComments'
+ * xml_paragraph_index counts them): the accepted row of a paragraph known by
+ * its position. Kept off readDocxCommentParagraphs, whose rows checklist
+ * document records copy whole. */
+export function readDocxCommentParagraphPositions(bytes: Uint8Array) {
+  const parts = unzipSync(bytes)
+  if (!parts[BODY]) throw new Error("invalid_docx_package")
+  const body = parse(strFromU8(parts[BODY]))
+  const positions = new Map(elements(body, W, "p").map((paragraph, index) => [paragraph, index]))
+  return acceptedParagraphs(body).map(row => ({
+    paragraph_index: row.index, paragraph_text: row.text, pids: row.pids, xml_paragraph_indexes: row.nodes.map(node => positions.get(node)!),
+  }))
+}
+
 /** Reads actual tracked text from the exported OOXML package. The accepted
  * clean body is a separate artifact and cannot establish redline presence. */
 export function readDocxRevisionText(bytes: Uint8Array) {

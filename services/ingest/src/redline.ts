@@ -2,11 +2,11 @@ import { docxodus } from "./docxodus"
 import { compareDocxWithPointers, paragraphTargets, resolveParagraphTarget, withStableRevisionDates, type ParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import type { RedlineRow } from "./db"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { createDocxLocalization, applyDocxParagraphEdits, DocxTrackedRevisionsError } from "../../../dochaus/lib/docx-amendments"
+import { createDocxLocalization, applyDocxParagraphEdits, DocxTrackedRevisionsError, openRevision, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { createHash } from "node:crypto"
 import { draftingAttribution } from "../../../dochaus/lib/docx-attribution"
-import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphs } from "../../../dochaus/lib/docx-comments"
-import { assertRedlineRoundTrip } from "../../../dochaus/lib/redline-round-trip"
+import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphPositions, readDocxCommentParagraphs } from "../../../dochaus/lib/docx-comments"
+import { assertLayeredRoundTrip, assertRedlineRoundTrip } from "../../../dochaus/lib/redline-round-trip"
 import { discloseSourceRevisions } from "../../../dochaus/lib/docx-revision-views"
 
 // Replay and bake pending redline proposals against a clean .docx.
@@ -19,6 +19,7 @@ import { discloseSourceRevisions } from "../../../dochaus/lib/docx-revision-view
 
 type Session = ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"]>
 export class RedlinePreviewConflictError extends Error {}
+const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 // Reproduce one proposal's edit on an open session. Returns an error message
 // (rather than throwing) when the anchor text can no longer be found — e.g. an
@@ -51,7 +52,10 @@ function applyProposal(session: Session, row: RedlineRow): { ok: true } | { ok: 
 // Revision-bound proposals and annotated proposals fail closed: exporting only
 // part of their tracked changes or silently losing a stored note is misleading.
 // `state` is the request's redlineState for these bytes, when already read.
-export async function buildRedlined(original: Uint8Array, rows: RedlineRow[], state?: RedlineState): Promise<Uint8Array> {
+// `options` is how the document is read. In layer mode (an uploaded source)
+// with pending revisions, revision-bound proposals are written into it instead
+// (layeredExport).
+export async function buildRedlined(original: Uint8Array, rows: RedlineRow[], state?: RedlineState, options: DocxRevisionOptions = {}): Promise<Uint8Array> {
   if (!rows.length) return original
   const annotated = rows.some(row => row.review_comment.trim())
   // Paragraph comments cannot safely follow a structural replay by ordinal.
@@ -61,6 +65,8 @@ export async function buildRedlined(original: Uint8Array, rows: RedlineRow[], st
     if (rows.some((row) => row.target_json == null))
       throw new RedlinePreviewConflictError("Older and revision-bound proposals cannot share one redline export. Resolve the older proposals or prepare a fresh change list.")
     try {
+      if (layeredRedline(rows, options) && (await (await docxodus()).getRevisions(original)).length)
+        return await layeredExport(original, rows, state, options)
       const result = await bakeBound(original, rows, state)
       const paragraphs = result.revision.paragraphs.filter(row => row.scope === "body")
       const source = readDocxCommentParagraphs(original)
@@ -119,23 +125,70 @@ async function commentRedline(original: Uint8Array, modified: Uint8Array, rows: 
   const exported = readDocxCommentParagraphs(redline)
   if (JSON.stringify(paragraphs.map(row => row.paragraph_text)) !== JSON.stringify(exported.map(row => row.paragraph_text)))
     throw new RedlinePreviewConflictError("The Word comparison changed paragraph boundaries; review comments cannot be attached safely. Prepare a fresh change list.")
+  return finish(withReviewComments(redline, rows, targets.map(target => paragraphs[target])))
+}
+
+// Each annotated row's review comment, under its stored author, on its
+// accepted paragraph of `bytes` (paragraphs[i] for rows[i]).
+function withReviewComments(bytes: Uint8Array, rows: RedlineRow[], paragraphs: ({ paragraph_index: number; paragraph_text: string } | undefined)[]) {
   const comments = rows.flatMap((row, index) => {
     if (!row.review_comment.trim()) return []
-    const paragraph = paragraphs[targets[index]]
+    const paragraph = paragraphs[index]
     if (!paragraph || !row.author.trim())
       throw new RedlinePreviewConflictError(`Review comment for proposal #${row.id} has no supported body paragraph or stored author. Prepare a fresh change list before exporting.`)
     return [{ id: String(row.id), text: row.review_comment, author: row.author,
       anchor: { paragraph_index: paragraph.paragraph_index, paragraph_text: paragraph.paragraph_text } }]
   })
   try {
-    const output = exportDocxComments(redline, comments)
+    const output = exportDocxComments(bytes, comments)
     if (output.unresolved.length)
       throw new RedlinePreviewConflictError(`Word review comments could not be attached: ${output.unresolved.map(row => `proposal #${row.id}: ${row.reason}`).join(" ")}`)
-    return finish(output.bytes)
+    return output.bytes
   } catch (error) {
     if (error instanceof RedlinePreviewConflictError) throw error
     throw new RedlinePreviewConflictError("The stored Word review comments could not be exported safely. Check their text, authors and document anchors before exporting again.")
   }
+}
+
+/** Whether these proposals export layered on the document's own pending
+ * revisions: revision-bound proposals read in layer mode (an uploaded source).
+ * Nothing of theirs is accepted, so such an export has no disclosure. */
+export function layeredRedline(rows: RedlineRow[], options: DocxRevisionOptions) {
+  return options.pendingRevisions === "layer" && rows.some(row => row.target_json != null)
+}
+
+// The other side's markup with the proposals written into it in place, as
+// native tracked changes under the proposals' author, and their review
+// comments. Their revisions and comments are kept as they are; comparison
+// would accept them. Track Changes is left on, as a returned redline travels.
+async function layeredExport(original: Uint8Array, rows: RedlineRow[], state: RedlineState | undefined, options: DocxRevisionOptions) {
+  const baked = await bakeBound(original, rows, state, options)
+  const tracked = await bakeBound(original, rows, state, { ...options, revisionAuthor: previewAuthor(rows) })
+  let output = tracked.bytes
+  if (rows.some(row => row.review_comment.trim())) {
+    // An edit keeps every w:p in place, so the edited paragraph's position in
+    // the original finds its accepted row, which a deleted mark may join to another.
+    const positions = await bodyParagraphPositions(original, options)
+    const accepted = readDocxCommentParagraphPositions(output)
+    output = withReviewComments(output, rows, tracked.bindings.map(binding => {
+      const at = positions.get(binding.paragraph_handle)
+      return at === undefined ? undefined : accepted.find(row => row.xml_paragraph_indexes.includes(at))
+    }))
+  }
+  try { await assertLayeredRoundTrip(output, original, baked.bytes) }
+  catch (error) { throw new RedlinePreviewConflictError(error instanceof Error ? error.message : "The Word redline could not be checked against its source and intended text.") }
+  return output
+}
+
+// The position among the main body's w:p elements of each body paragraph of
+// this revision, by paragraph_handle.
+async function bodyParagraphPositions(bytes: Uint8Array, options: DocxRevisionOptions) {
+  const opened = await openRevision(new Uint8Array(bytes), options)
+  try {
+    const positions = new Map(Array.from(opened.documents["word/document.xml"]!.getElementsByTagNameNS(W, "p")).map((node, index) => [node, index]))
+    return new Map(opened.paragraphs.flatMap((paragraph, ordinal) => paragraph.part === "word/document.xml"
+      ? [[opened.revision.paragraphs[ordinal]!.paragraph_handle, positions.get(paragraph.node)!] as const] : []))
+  } finally { opened.session.close() }
 }
 
 function previewAuthor(rows: RedlineRow[]) {
@@ -152,11 +205,13 @@ function previewAuthor(rows: RedlineRow[]) {
 // with the edits applied and no tracked changes — the new accepted state. Accept
 // fails loudly: a proposal that no longer resolves throws rather than silently
 // baking a partial set into the canonical document. `state` is the request's
-// redlineState for these bytes, when already read for the stale check.
-export async function bake(original: Uint8Array, rows: RedlineRow[], state?: RedlineState): Promise<Uint8Array> {
+// redlineState for these bytes, when already read for the stale check. In
+// layer mode (an uploaded source) revision-bound edits are baked in beside the
+// document's pending revisions, which stay pending.
+export async function bake(original: Uint8Array, rows: RedlineRow[], state?: RedlineState, options: DocxRevisionOptions = {}): Promise<Uint8Array> {
   if (rows.some((row) => row.target_json != null)) {
     if (rows.some((row) => row.target_json == null)) throw new Error("Revision-bound and older proposals require separate review. Prepare a fresh change list.")
-    return (await bakeBound(original,rows,state)).bytes
+    return (await bakeBound(original,rows,state,options)).bytes
   }
   const dx = await docxodus()
   const session = dx.openDocxSession(original, {})
@@ -197,11 +252,11 @@ export type RedlineState = { sha256:string; targets:ParagraphTarget[]|null; trac
 // read only when a paragraph-bound proposal needs them, or to explain why a
 // whole-revision proposal is stale; an unreadable revision leaves those
 // proposals stale rather than failing the whole change list.
-export async function redlineState(bytes:Uint8Array,rows:RedlineRow[]):Promise<RedlineState> {
+export async function redlineState(bytes:Uint8Array,rows:RedlineRow[],options:DocxRevisionOptions = {}):Promise<RedlineState> {
   const sha256 = createHash("sha256").update(bytes).digest("hex")
   const bindings = rows.flatMap((row) => {try {return [binding(row)]} catch {return []}})
   if (!bindings.some((value) => value.version === 2 || value.source_sha256 !== sha256)) return {sha256,targets:[]}
-  try {return {sha256,targets:await paragraphTargets(bytes)}}
+  try {return {sha256,targets:await paragraphTargets(bytes,options)}}
   catch (error) {
     if (error instanceof DocxTrackedRevisionsError) return {sha256,targets:null,tracked:true}
     console.warn("[redline] paragraph targets unavailable",diagnosticErrorMetadata(error))
@@ -227,13 +282,15 @@ export function redlineStaleReason(row:RedlineRow,state:RedlineState,protectedWo
 // through whole-revision localization of the version 1 rows. A version 2 row is
 // located directly: its pointer's unchanged paragraph in these bytes and the
 // stored occurrence of its quote inside that paragraph, with no whole-document
-// candidate search. Overlapping spans in one paragraph are refused.
-async function bakeBound(original:Uint8Array,rows:RedlineRow[],state?:RedlineState) {
+// candidate search. Overlapping spans in one paragraph are refused. `options`
+// are the reader's DocxRevisionOptions; with a revisionAuthor the edits are
+// written as tracked changes.
+async function bakeBound(original:Uint8Array,rows:RedlineRow[],state?:RedlineState,options:DocxRevisionOptions = {}) {
   const current = createHash("sha256").update(original).digest("hex")
   const bindings = rows.map(binding)
   if (bindings.some((value) => value.version === 1 && value.source_sha256 !== current)) throw new Error("This proposal targets an earlier Word revision. Prepare changes against the current document.")
   const targets = !bindings.some((value) => value.version === 2) ? []
-    : state?.sha256 === current && state.targets?.length ? state.targets : await paragraphTargets(original)
+    : state?.sha256 === current && state.targets?.length ? state.targets : await paragraphTargets(original,options)
   // Use stored row identity here: separate proposal batches can reuse model-local IDs.
   const amendment = (row:RedlineRow) => ({id:String(row.id),before_quote:row.find_text,replacement:row.new_text})
   const revisionBound = rows.flatMap((row,index) => {
@@ -241,7 +298,7 @@ async function bakeBound(original:Uint8Array,rows:RedlineRow[],state?:RedlineSta
     return value.version === 1 ? [{row,target_handle:value.target_handle}] : []
   })
   const localized = revisionBound.length ? {
-    packet:await createDocxLocalization(original,revisionBound.map(({row}) => amendment(row))),
+    packet:await createDocxLocalization(original,revisionBound.map(({row}) => amendment(row)),{},options),
     selections:revisionBound.map(({row,target_handle}) => ({amendment_id:String(row.id),target_handle})),
   } : undefined
   const edits = rows.flatMap((row,index) => {
@@ -251,7 +308,7 @@ async function bakeBound(original:Uint8Array,rows:RedlineRow[],state?:RedlineSta
     if (!paragraph) throw new Error(paragraphChanged)
     return [{...amendment(row),paragraph_handle:paragraph.paragraph_handle,occurrence:value.occurrence}]
   })
-  const result = await applyDocxParagraphEdits(original,edits,localized)
+  const result = await applyDocxParagraphEdits(original,edits,localized,options)
   // Each row's applied span and paragraph, in row order, for comment mapping.
   return { ...result, bindings:rows.map((row) => result.report.amendments.find((applied) => applied.amendment_id === String(row.id))!) }
 }
