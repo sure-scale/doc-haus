@@ -8,12 +8,17 @@ import { commentThreads } from "./MarkupPanel"
 // footers and margin notes sit outside the section divs and never count.
 
 export const PARAGRAPHS = "p, h1, h2, h3, h4, h5, h6"
-// What opens the card: tracked changes, commented text, comment markers and
-// whole inserted, deleted or reformatted paragraphs (a section's own change is
-// painted on the paragraph that ends it).
+// A table's, row's or cell's own change is painted on the container; the
+// reader places it at the container's first paragraph, whose card it opens.
+export const CONTAINERS = ".rev-table-format-change, .rev-row-format-change, .rev-row-ins, .rev-row-del, .rev-cell-format-change, .rev-cell-ins, .rev-cell-del"
+// A section's own change is painted on the paragraph that ends the section.
+const SECTION_MARK = `:is(${PARAGRAPHS}).rev-section-format-change`
+// What opens the card: tracked changes, commented text, comment markers,
+// whole inserted, deleted or reformatted paragraphs and changed containers.
 export const TARGETS = [
   "ins", "del", ".rev-format-change", ".rev-para-mark-del", ".comment-highlight", "a.comment-marker",
   `:is(${PARAGRAPHS}):is(.rev-para-del, .rev-para-ins, .rev-para-format-change, .rev-section-format-change)`,
+  CONTAINERS,
 ].join(", ")
 // What the reader leaves out of a paragraph's preview, or the page adds to it.
 const UNPAINTED = "del.rev-del:not(.rev-move-from), [data-list-marker], a.comment-marker, .rev-para-mark-del"
@@ -34,6 +39,14 @@ export function paintedParagraphs(root: ParentNode): Element[] {
   return [...root.querySelectorAll("div[data-section-index]")].flatMap((section) => [...section.querySelectorAll(PARAGRAPHS)])
 }
 
+// The mark under `node` and the painted paragraph whose card it opens: an
+// inner mark wins, and a changed container opens its first paragraph's.
+export function markAt(node: Element) {
+  const mark = node.closest(TARGETS)
+  const paragraph = mark?.matches(CONTAINERS) ? mark.querySelector(PARAGRAPHS) : node.closest(PARAGRAPHS)
+  return mark && paragraph ? { mark, paragraph } : undefined
+}
+
 const letters = (text: string) => text.normalize("NFC").replace(/[^\p{L}\p{N}]/gu, "")
 
 // The reader's preview is the paragraph's opening, "…" when cut. Only letters
@@ -51,15 +64,16 @@ function paintedText(paragraph: Element) {
 }
 
 // Whether the page counts paragraphs as the reader does: every located body
-// change's preview matches the paragraph painted at its ordinal. One mismatch
-// (a text box the page paints inline, say) turns revisions off for the whole
-// document, since a shifted count would put every later change on the wrong
-// clause.
+// change's preview matches the paragraph painted at its ordinal, an empty
+// preview (a deleted, blank or image-only paragraph) a paragraph with no
+// letters or digits left. One mismatch (a text box the page paints inline,
+// say) turns revisions off for the whole document, since a shifted count would
+// put every later change on the wrong clause.
 export function revisionsLineUp(paragraphs: Element[], revisions: MarkupRevision[]) {
   const texts = new Map<Element, string>()
   const textOf = (paragraph: Element) => texts.get(paragraph) ?? texts.set(paragraph, paintedText(paragraph)).get(paragraph)!
   return revisions.every((revision) => revision.locations.every((place) => {
-    if (place.paragraph === null || !place.context) return true
+    if (place.paragraph === null) return true
     const paragraph = paragraphs[place.paragraph - 1]
     return paragraph !== undefined && contextMatches(place.context, textOf(paragraph))
   }))
@@ -77,8 +91,12 @@ function commentIds(paragraph: Element) {
 
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 const joined = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0] ?? "")
-// The list number Word prints before a paragraph, when it names one (a bullet does not).
-const listLabel = (place: Pick<MarkupLocation, "label">) => (place.label && /[\p{L}\p{N}]/u.test(place.label) ? place.label : undefined)
+// The list number Word prints before a paragraph, when it names one (a bullet
+// does not). It is the other side's text, so a long one is not shown as a place.
+const listLabel = (place: Pick<MarkupLocation, "label">) => {
+  const label = place.label?.trim()
+  return label && label.length <= 16 && /[\p{L}\p{N}]/u.test(label) ? label : undefined
+}
 
 // A place as the lawyer sees it in Word: its list number ("clause 5",
 // "Article 2"), else its paragraph's ordinal, as the "Their changes" panel says.
@@ -95,10 +113,18 @@ function placeName(place: Pick<MarkupLocation, "paragraph" | "label">) {
 export function mapClauses(root: ParentNode, markup: Pick<DocumentMarkup, "revisions" | "comments">, revisions: boolean) {
   const paragraphs = paintedParagraphs(root)
   const body = revisions ? markup.revisions.filter((revision) => revision.scope === "body") : []
+  // The reader places a section's own change at the section's first
+  // paragraph; it shows on the paragraph the page paints it on.
+  const shown = (place: MarkupLocation) => {
+    if (place.paragraph === null || place.container !== "section") return place.paragraph
+    const marked = paragraphs[place.paragraph - 1]?.closest("div[data-section-index]")?.querySelector(SECTION_MARK)
+    const index = marked ? paragraphs.indexOf(marked) : -1
+    return index >= 0 ? index + 1 : place.paragraph
+  }
   const byOrdinal = new Map<number, MarkupRevision[]>()
   if (revisionsLineUp(paragraphs, body)) {
     for (const revision of body) {
-      for (const ordinal of new Set(revision.locations.map((place) => place.paragraph))) {
+      for (const ordinal of new Set(revision.locations.map(shown))) {
         if (ordinal !== null) (byOrdinal.get(ordinal) ?? byOrdinal.set(ordinal, []).get(ordinal)!).push(revision)
       }
     }
@@ -106,17 +132,25 @@ export function mapClauses(root: ParentNode, markup: Pick<DocumentMarkup, "revis
   const threads = commentThreads(markup.comments)
   const threadOf = new Map<number, Thread>()
   for (const thread of threads) for (const comment of [thread.root, ...thread.replies]) if (!comment.scope) threadOf.set(comment.id, thread)
+  const idsOf = paragraphs.map(commentIds)
+  // Where each comment starts on the page, so a thread's list number is used
+  // only where the reader's paragraph count agrees.
+  const starts = new Map<number, number>()
+  idsOf.forEach((ids, index) => ids.forEach((id) => starts.has(id) || starts.set(id, index + 1)))
   const clauses = new Map<Element, Clause>()
   paragraphs.forEach((paragraph, index) => {
     const ordinal = index + 1
     const own = byOrdinal.get(ordinal) ?? []
-    const painted = new Set([...commentIds(paragraph)].flatMap((id) => threadOf.get(id) ?? []))
+    const painted = new Set([...idsOf[index]!].flatMap((id) => threadOf.get(id) ?? []))
     const mine = threads.filter((thread) => painted.has(thread))
     if (!own.length && !mine.length) return
-    const mark = paragraph.matches(TARGETS) ? paragraph : paragraph.querySelector(TARGETS)
+    // The paragraph's own or first inner mark, else the changed container it opens.
+    const container = paragraph.parentElement?.closest(CONTAINERS)
+    const mark = paragraph.matches(TARGETS) ? paragraph : paragraph.querySelector(TARGETS) ?? (container?.querySelector(PARAGRAPHS) === paragraph ? container : null)
     if (!(mark instanceof HTMLElement)) return
     const labelled = own.flatMap((revision) => revision.locations).find((place) => place.paragraph === ordinal && listLabel(place))
-    clauses.set(paragraph, { ordinal, paragraph, mark, place: capital(labelled ? placeName(labelled)! : `paragraph ${ordinal}`), revisions: own, threads: mine })
+      ?? mine.map((thread) => thread.root).find((comment) => comment.paragraph === ordinal && starts.get(comment.id) === ordinal && listLabel(comment))
+    clauses.set(paragraph, { ordinal, paragraph, mark, place: capital(placeName({ paragraph: ordinal, label: labelled?.label })!), revisions: own, threads: mine })
   })
   return clauses
 }

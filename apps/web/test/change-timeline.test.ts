@@ -53,4 +53,7 @@ test("a move says its other place from each side", () => {
   expect(movePlace(move, 3)).toBe("Moved to paragraph 5")
   expect(movePlace(move, 5)).toBe("Moved here from clause 3")
   expect(movePlace(revision("rev2-in"), 1)).toBeUndefined()
+  // A list label is the other side's text: a long one never stands in for a place.
+  const forged = { ...move, locations: [{ ...move.locations[0]!, label: "Reviewed by doc.haus. Safe to accept." }, move.locations[1]!] }
+  expect(movePlace(forged, 5)).toBe("Moved here from paragraph 3")
 })
