@@ -94,9 +94,12 @@ export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => 
   useEffect(() => { void load() }, [])
   useEffect(() => { if (!loading && step === "setup") setAIMounted(true) }, [loading, step])
   const modelsSaved = progress?.ready === true && progress.completed.includes("models")
-  // Saved models mean a saved provider and connection too. AI setup reports its
-  // own state only once its steps are opened, which a reload on a later step skips.
-  const setupDone = { provider: ai.provider || modelsSaved, connection: ai.connection || modelsSaved, models: ai.models || modelsSaved }
+  // Once AI setup is open its live state counts, so a new provider clears the
+  // connection and models. Before then (a reload on a later step skips it),
+  // saved models mean a saved provider and connection too.
+  const setupDone = aiMounted
+    ? { provider: ai.provider, connection: ai.connection, models: ai.models }
+    : { provider: modelsSaved, connection: modelsSaved, models: modelsSaved }
   function unavailable(id: string) {
     if (loading) return "Wait for your saved setup to load."
     if (failed) return "Retry setup before changing steps."

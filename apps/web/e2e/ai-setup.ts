@@ -324,6 +324,35 @@ try {
     } finally { await f.context.close() }
   })
 
+  for (const width of [1440, 390]) await scenario(`Onboarding locks the later AI steps again when the provider changes after saving at ${width}px`, async () => {
+    const f = await fixture(`onboarding-provider-change-${width}`, width, true)
+    try {
+      const dialog = f.page.getByRole("dialog", { name: "Let's get you set up", exact: true })
+      const navigation = dialog.getByRole("navigation", { name: "Setup progress", exact: true })
+      const step = (stage: string) => navigation.getByRole("button", { name: new RegExp(`${stage}$`) })
+      await dialog.getByLabel("Provider", { exact: true }).selectOption("fixture-models")
+      await dialog.getByRole("button", { name: "Continue to connection", exact: true }).click()
+      await dialog.getByRole("button", { name: "Continue to models", exact: true }).click()
+      await dialog.getByLabel("Primary model", { exact: true }).selectOption("fixture-models/primary")
+      await dialog.getByRole("button", { name: "Continue to test", exact: true }).click()
+      await dialog.getByRole("button", { name: "Test connection", exact: true }).click()
+      await dialog.getByRole("button", { name: "Save and continue", exact: true }).click()
+      await expect(dialog.getByRole("heading", { name: "Set up legal research", exact: true })).toBeVisible()
+      for (const stage of ["Provider", "Connection", "Models"]) await expect(step(stage)).toHaveAccessibleName(`Completed: ${stage}`)
+      await dialog.getByRole("button", { name: "Back to AI setup", exact: true }).click()
+      await expect(dialog.getByRole("heading", { name: "Choose your model provider", exact: true })).toBeVisible()
+      // A new provider clears its connection and models, so their steps lock again.
+      await dialog.getByLabel("Provider", { exact: true }).selectOption("other-fixture")
+      await expect(dialog.getByLabel("Provider", { exact: true })).toHaveValue("other-fixture")
+      await f.page.screenshot({ path: path.join(evidence, `onboarding-provider-changed-${width}.png`) })
+      await expect(step("Connection")).toHaveAccessibleName("Step 2: Connection")
+      await expect(step("Models")).toHaveAccessibleName("Step 3: Models")
+      await expect(step("Models")).toBeDisabled()
+      await expect(step("Test")).toBeDisabled()
+      expect(f.state.config).toEqual({ model: "fixture-models/primary", small_model: "fixture-models/primary" })
+    } finally { await f.context.close() }
+  })
+
   await scenario("Saved cloud metadata takes precedence over host detection and edits require a new test", async () => {
     const f = await fixture("cloud-prefill", 1440, false, true)
     try {
