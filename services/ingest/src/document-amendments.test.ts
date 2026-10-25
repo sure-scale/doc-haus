@@ -150,9 +150,23 @@ test("mixed and malformed targeting never silently export or apply legacy propos
   const original=await Packer.toBuffer(new Document({sections:[{children:[new Paragraph("Original wording remains.")]}]}))
   const legacy={id:1,doc_path:"working.docx",doc_name:"working.docx",scope:"phrase" as const,find_text:"Original",old_text:"Original",new_text:"Changed",author:"Review",review_comment:"",anchor_id:null,created_at:1,status:"pending" as const}
   const bound={...legacy,id:2,target_json:"{invalid"}
-  await expect(buildRedlined(original,[legacy,bound])).rejects.toThrow("cannot share one redline export")
+  await expect(buildRedlined(original,[legacy,bound])).rejects.toThrow("no longer resolves")
   await expect(bake(original,[legacy,bound])).rejects.toThrow()
   await expect(bake(original,[bound])).rejects.toThrow()
+})
+
+test("on a clean document the preview of prepared and older proposals together is what Accept writes, each review comment on its paragraph",async () => {
+  const original=await Packer.toBuffer(new Document({sections:[{children:[new Paragraph("Delivery within thirty days."),new Paragraph("Notices must be in writing.")]}]}))
+  const packet=await createDocxLocalization(original,[{id:"1",before_quote:"thirty days",replacement:"ten days"}])
+  const prepared={id:1,doc_path:"working.docx",doc_name:"working.docx",scope:"phrase" as const,find_text:"thirty days",old_text:"thirty days",new_text:"ten days",author:"Review",
+    review_comment:"Requested delivery update.",anchor_id:null,created_at:1,status:"pending" as const,
+    target_json:JSON.stringify({version:1,source_sha256:packet.revision.source_sha256,target_handle:packet.candidates[0]!.target_handle,amendment_id:"1"})}
+  const older={...prepared,id:2,find_text:"in writing",old_text:"in writing",new_text:"in writing or by email",review_comment:"Requested notice method.",target_json:null}
+  const preview=await buildRedlined(original,[prepared,older])
+  const accepted=(bytes:Uint8Array) => readDocxCommentParagraphs(bytes).map((row) => row.paragraph_text)
+  expect(accepted(preview)).toEqual(accepted(await bake(original,[prepared,older])))
+  expect(readDocxComments(preview).map((row) => [row.text,row.markers[0]!.accepted_paragraph_text])).toEqual([
+    ["Requested delivery update.","Delivery within ten days."],["Requested notice method.","Notices must be in writing or by email."]])
 })
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -1165,17 +1179,17 @@ test("on an uploaded markup, Accept all writes proposals prepared under differen
   }
 },120000)
 
-test("on an uploaded markup, Accept all writes a prepared proposal and an older chat proposal together, and names an older one the other rewrites", async () => {
+test("on an uploaded markup, the preview and Accept all write a prepared proposal and an older chat proposal together, and name an older one the other rewrites", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-older-"))
   const law = {before_quote:"the Province",replacement:"the State",target_context:"governing law clause",reason:"Requested governing law update."}
   const engine = syntheticEngine(() => ({amendments:[law],open_items:[]}),firstCandidate)
   const ingest = await isolatedIngest(temporary,engine.server)
   // As the chat tools record a proposal: replayed by its text, with no Word binding.
-  const older = (matter:Awaited<ReturnType<typeof ingest.matter>>,find:string,replacement:string) => {
+  const older = (matter:Awaited<ReturnType<typeof ingest.matter>>,find:string,replacement:string,comment = "") => {
     const db = openDb(matter.dir)
     try {
       return Number(db.run("INSERT INTO redlines (doc_path,doc_name,scope,find_text,old_text,new_text,author,review_comment,anchor_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-        [matter.file,"working.docx","phrase",find,find,replacement,"Review","",null,Date.now()]).lastInsertRowid)
+        [matter.file,"working.docx","phrase",find,find,replacement,"Review",comment,null,Date.now()]).lastInsertRowid)
     } finally {db.close()}
   }
   try {
@@ -1186,8 +1200,14 @@ test("on an uploaded markup, Accept all writes a prepared proposal and an older 
       expect((await ingest.request(`${matter.route}/documents`,{method:"POST",body:wordForm(withParaIds(counterpartyMarkupDocx()))})).status).toBe(200)
     const theirs = await listedRevisions(await Bun.file(both.file).bytes())
     const [prepared] = (await (await both.prepare("Make the State's law govern.")).json() as {redline_ids:number[]}).redline_ids
-    const consent = older(both,"without consent","without prior written consent")
+    const consent = older(both,"without consent","without prior written consent","Consent must be written.")
     expect(await both.pending()).toEqual([[prepared!,undefined,undefined],[consent,undefined,undefined]])
+    // The preview shows both as Accept all writes them, each review comment on its paragraph.
+    const preview = await ingest.request(`${both.route}/documents/redlined?name=working.docx`)
+    expect(preview.status).toBe(200)
+    const previewed = new Uint8Array(await preview.arrayBuffer())
+    expect(readDocxComments(previewed).slice(COUNTERPARTY_MARKUP.comments.length).map((row) => [row.text,row.markers[0]!.accepted_paragraph_text])).toEqual([
+      ["Requested governing law update.","9. Governing law. This Agreement is governed by the law of the State."],["Consent must be written.","7. Assignment. Neither party may assign without prior written consent."]])
 
     const response = await ingest.request(`${both.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
     expect({status:response.status,body:await response.json()}).toEqual({status:200,body:{ok:true,accepted:2}})
@@ -1199,17 +1219,22 @@ test("on an uploaded markup, Accept all writes a prepared proposal and an older 
     const by = (author:string) => after.filter((row) => row.author === author).map((row) => [row.type,row.text])
     expect([by("doc.haus"),by("Review")]).toEqual([[["delete","Province"],["insert","State"]],[["delete","without consent"],["insert","without prior written consent"]]])
     expect(after.filter((row) => row.author !== "doc.haus" && row.author !== "Review")).toEqual(theirs)
+    const shown = (rows:Awaited<ReturnType<typeof listedRevisions>>) => rows.map((row) => [row.author,row.type,row.text])
+    expect(shown(after)).toEqual(shown(await listedRevisions(previewed)))
     expect(new Set(revisionMarkIds(accepted)).size).toBe(revisionMarkIds(accepted).length)
     expect([prepared!,consent].map(both.status)).toEqual(["accepted","accepted"])
 
     // An older proposal whose words the prepared one rewrites cannot follow
-    // it: Accept all names it and says what to do, and changes nothing.
+    // it: the preview and Accept all name it and say what to do, and Accept
+    // all changes nothing.
     const [law2] = (await (await rewritten.prepare("Make the State's law govern.")).json() as {redline_ids:number[]}).redline_ids
     const plural = older(rewritten,"law of the Province","laws of the Province")
     const before = await Bun.file(rewritten.file).bytes()
+    const refusal = "The change to \"law of the Province\" cannot be written with the rest: its words have changed, or another proposal in this list changes them. Reject it, accept the rest, then request that edit again."
+    const unpreviewed = await ingest.request(`${rewritten.route}/documents/redlined?name=working.docx`)
+    expect({status:unpreviewed.status,body:await unpreviewed.json()}).toEqual({status:409,body:{error:refusal}})
     const refused = await ingest.request(`${rewritten.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
-    expect({status:refused.status,body:await refused.json()}).toEqual({status:409,body:{error:
-      "The change to \"law of the Province\" cannot be written with the rest: its words have changed, or another proposal in this list changes them. Reject it, accept the rest, then request that edit again."}})
+    expect({status:refused.status,body:await refused.json()}).toEqual({status:409,body:{error:refusal}})
     expect(sha256(await Bun.file(rewritten.file).bytes())).toBe(sha256(before))
     expect([law2!,plural].map(rewritten.status)).toEqual(["pending","pending"])
   } finally {
