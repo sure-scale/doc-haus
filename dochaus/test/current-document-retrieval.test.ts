@@ -156,11 +156,13 @@ test("generated and registered uploaded Word files expose separate accepted, bas
   const name = "received.docx"
   writeFileSync(path.join(dir, name), markup)
   const db = new Database(path.join(dir, ".dochaus/legal.db"))
-  db.exec("CREATE TABLE documents (name TEXT, role TEXT)")
+  db.exec("CREATE TABLE documents (name TEXT, role TEXT); CREATE TABLE chunks (doc_name TEXT, text TEXT)")
   db.query("INSERT INTO documents VALUES (?, 'source')").run(name)
   db.close()
   for (const document of ["d1", name]) {
-    expect((await read(dir, { document, view: "current_body" })).entries.map(row => row.text)).toEqual(["Revised violet condition."])
+    const accepted = await read(dir, { document, view: "current_body" })
+    expect(accepted.status, `${document}: ${JSON.stringify(accepted)}`).toBe("read")
+    expect(accepted.entries.map(row => row.text)).toEqual(["Revised violet condition."])
     const baseline = await read(dir, { document, view: "baseline_body" })
     expect(baseline.entries.map(row => row.text)).toEqual(["Original violet condition."])
     expect(baseline.representation).toContain("not the agreed/current text")

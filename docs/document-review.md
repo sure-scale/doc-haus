@@ -21,7 +21,8 @@ exact registered uploaded Word filename:
 - `baseline_body`: reject-all text. For a generated document this reads its current
   redline when one exists.
 - `marked_up_body`: a text projection with insertions, deletions and moves labelled
-  inline with their recorded authors, also using the current generated redline.
+  inline with their recorded authors, including enclosing tracked rows and cells,
+  also using the current generated redline.
 
 The latter two are projections, not agreed text or current amendment targets.
 They retain the source artifact name and byte identity, and use the same bounded
