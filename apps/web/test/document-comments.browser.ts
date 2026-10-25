@@ -50,6 +50,7 @@ const run = (text: string) => `<w:r><w:t xml:space="preserve">${escaped(text)}</
 const reference = (id: number) => `<w:r><w:commentReference w:id="${id}"/></w:r>`
 const commented = (id: number, text: string) => `<w:commentRangeStart w:id="${id}"/>${run(text)}<w:commentRangeEnd w:id="${id}"/>${reference(id)}`
 const para = (inner: string) => `<w:p>${inner}</w:p>`
+const cell = (inner: string) => `<w:tc><w:tcPr><w:tcW w:w="4000" w:type="dxa"/></w:tcPr>${para(inner)}</w:tc>`
 function wordFile(body: string[], comments: Crafted[]) {
   const part = (xml: string) => strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${xml}`)
   return zipSync({
@@ -356,6 +357,25 @@ try {
       assert.deepEqual(await reach(page), comments.map(({ id }) => ({ id: String(id), hit: String(id), covers: false })), `${width}px`)
       await clickEach(page, comments.map(({ id }) => id))
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth) <= 1, `${width}px: nothing wider than the window`)
+      assert.deepEqual(errors, [])
+    }
+  })
+
+  await check("a table cell's buttons sit inside the cell, clickable and over none of its text", async () => {
+    const comments = [{ id: 0, author: REVIEWERS[0]!, text: "Left." }, { id: 1, author: REVIEWERS[1]!, text: "Right." }, { id: 2, author: REVIEWERS[2]!, text: "Right again." }]
+    const table = '<w:tbl><w:tblPr><w:tblW w:w="8000" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid><w:tr>' +
+      cell(commented(0, "The Supplier delivers the goods to the Buyer's warehouse within ten business days of each order.")) +
+      cell(commented(1, "Price") + run(" and ") + commented(2, "terms")) + "</w:tr></w:tbl>"
+    const file = { bytes: wordFile([para(run("1. Schedule.")), table, para(run("2. After the schedule."))], comments), markup: listing(comments) }
+    for (const width of [1440, 400]) {
+      const { page, errors } = await open({ width, height: 900 }, undefined, true, file)
+      await page.locator('.docx-render[data-comments="pane"] .doc-comment-pin').first().waitFor({ state: "attached" })
+      assert.deepEqual(await reach(page), comments.map(({ id }) => ({ id: String(id), hit: String(id), covers: false })), `${width}px`)
+      assert.deepEqual(await page.locator(".docx-render .doc-comment-pin").evaluateAll(pins => pins.map(pin => {
+        const box = pin.getBoundingClientRect(), cell = pin.parentElement!.getBoundingClientRect()
+        return `${pin.parentElement!.tagName}:${box.left >= cell.left && box.right <= cell.right && box.top >= cell.top && box.bottom <= cell.bottom}`
+      })), ["TD:true", "TD:true", "TD:true"], `${width}px: each button inside its cell`)
+      await clickEach(page, comments.map(({ id }) => id))
       assert.deepEqual(errors, [])
     }
   })

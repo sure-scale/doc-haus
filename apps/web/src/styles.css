@@ -3740,7 +3740,7 @@ button.linklike:hover:not(:disabled) {
    side, three to a row (a page's right margin holds three), and the paragraph
    keeps the height of any rows below its first, so they never reach the next
    paragraph's. On a phone's narrow margin they stand in one column. In a table
-   cell the button sits inside the cell's right edge. */
+   cell they stand in one column inside the cell's right edge. */
 .docx-render[data-comments="pane"] .comment-highlight[data-comment-id] {
   cursor: pointer;
 }
@@ -3775,7 +3775,14 @@ button.linklike:hover:not(:disabled) {
   transition: border-color var(--duration-fast) var(--ease-out), background-color var(--duration-fast) var(--ease-out);
 }
 
+/* A cell keeps room for its buttons, one column of them, beside its text. */
+.docx-render :is(td, th).doc-comment-block {
+  padding-right: 30px;
+  height: calc(var(--pin-count, 1) * 28px);
+}
+
 .docx-render :is(td, th).doc-comment-block > .doc-comment-pin {
+  top: calc(2px + var(--pin-index, 0) * 28px);
   left: auto;
   right: 2px;
 }
