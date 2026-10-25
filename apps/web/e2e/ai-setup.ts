@@ -139,7 +139,8 @@ async function fixture(name: string, width: number, onboarding = false, cloud = 
       { id: "other-login", name: "Other sign-in", methods: [{ type: "key", label: "New API key" }], connections: [] },
       ...(cloud ? [{ id: "google-vertex", name: "Google Vertex AI", methods: [], connections: [] }] : []),
     ] })
-    if (pathname === "/matters") return reply([])
+    if (pathname === "/matters" || pathname === "/clients") return reply([])
+    if (pathname === "/templates") return reply({ dir: "/fixture/templates", templates: [] })
     if (pathname === "/jurisdictions") return reply([{ code: "england-wales", name: "England and Wales" }])
     if (pathname === "/updates") return reply({ current: { version: 1, name: "Fixture", notes: "" }, available: false })
     if (pathname === "/api/event") return route.fulfill({ status: 200, headers, contentType: "text/event-stream", body: "" })
