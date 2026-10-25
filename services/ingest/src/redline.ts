@@ -59,7 +59,7 @@ function applyProposal(session: Session, row: RedlineRow): { ok: true } | { ok: 
   if (row.scope === "clause") {
     const target = session.findByText(row.find_text, { ignoreWhitespace: true })
     if (!target) return { ok: false, error: `Clause no longer found for redline #${row.id}: ${JSON.stringify(row.find_text)}` }
-    const refused = pendingRevisionRefusal(shared(session), pendingIn(session), [target.id], row.find_text, "applied", ours(row.author), true)
+    const refused = pendingRevisionRefusal(shared(session), pendingIn(session), [target.id], row.find_text, "applied", ours([rowAuthor(row)]), true)
     if (refused) return { ok: false, error: refused }
     const result = session.replaceText(target.id, row.new_text)
     if (!result.success) return { ok: false, error: `Redline #${row.id} failed: ${result.error?.message ?? "unknown error"}` }
@@ -68,7 +68,7 @@ function applyProposal(session: Session, row: RedlineRow): { ok: true } | { ok: 
 
   const targets = session.findAllByText(row.find_text)
   if (!targets.length) return { ok: false, error: `Text no longer found for redline #${row.id}: ${JSON.stringify(row.find_text)}` }
-  const refused = pendingRevisionRefusal(shared(session), pendingIn(session), targets.map((t) => t.id), row.find_text, "applied", ours(row.author))
+  const refused = pendingRevisionRefusal(shared(session), pendingIn(session), targets.map((t) => t.id), row.find_text, "applied", ours([rowAuthor(row)]))
   if (refused) return { ok: false, error: refused }
   const results = targets.flatMap((t) => session.replaceTextRange(t.id, row.find_text, row.new_text))
   const failed = results.find((r) => !r.success)

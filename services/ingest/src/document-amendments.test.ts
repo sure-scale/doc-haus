@@ -1143,7 +1143,7 @@ test("on an uploaded markup, Accept all writes proposals prepared under differen
     // changes, which stay as they were.
     const after = await listedRevisions(accepted)
     expect(by("doc.haus",after)).toEqual([["delete","Province"],["insert","State"]])
-    expect(by("Riley Chen",after)).toEqual([["delete","consent"],["insert","prior written consent"],["delete","governed by"],["insert","construed under"]])
+    expect(by("Riley Chen",after)).toEqual([["insert","prior written "],["delete","governed by"],["insert","construed under"]])
     expect(after.filter((row) => row.author !== "doc.haus" && row.author !== "Riley Chen")).toEqual(theirs)
     const shown = (rows:Awaited<ReturnType<typeof listedRevisions>>) => rows.map((row) => [row.author,row.type,row.text])
     expect(shown(after)).toEqual(shown(await listedRevisions(previewed)))
