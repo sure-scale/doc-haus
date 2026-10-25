@@ -217,6 +217,8 @@ async function open(state: Fixture, width: number, height: number) {
     if (pathname === `${prefix}/documents/text` && name === EMAIL) { state.texts++; return reply({ text: EMAIL_TEXT, injection: null }) }
     if (pathname === `${prefix}/redlines`) return reply(name === NAME ? (state.opts.redlines ?? []) : [])
     if (pathname === `${prefix}/documents/amendments`) return reply(null)
+    // Their changes (#200): these synthetic Word files carry no tracked changes or comments.
+    if (pathname === `${prefix}/documents/markup`) return reply({ name, version: { id: "fixture", number: 1, sha256: "" }, current: true, revisions: [], comments: [], authors: [] })
     if (pathname === `${prefix}/compare`) {
       state.compares.push(url.search)
       return url.searchParams.get("format") === "json" ? reply(comparisonFor(url)) : word(bytes["v-4"]!)

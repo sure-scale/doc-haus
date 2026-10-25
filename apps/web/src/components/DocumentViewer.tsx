@@ -19,10 +19,12 @@ import {
 import { convertPdfToDocx, documentContentUrl, fetchDocumentText, locatePdfPassage, matterDocumentKind, type PdfPassagePage } from "../api/ingest/documents"
 import type { CompareParams } from "../api/ingest/compare"
 import { fetchVersionBytes, type DocumentVersion, type RestoreResult } from "../api/ingest/versions"
+import { fetchDocumentMarkup, type DocumentMarkup } from "../api/ingest/markup"
 import { formatDateTime } from "../lib/format"
 import { ModalClose } from "./ModalHeader"
 import { CompareIcon } from "./CompareDialog"
 import VersionsPanel, { saveVersionFile, unavailableReason, useDocumentVersions, versionOrigin } from "./DocumentVersions"
+import MarkupPanel, { markupCount } from "./MarkupPanel"
 import { citationPassage, focusCitationPassage, type CitationFocus } from "./citation-target"
 import { decorateMarkers, markerSummary, type MarkerCounts } from "./document-markers"
 import { useToast } from "./Toast"
@@ -167,6 +169,15 @@ function WordDocumentViewer({
   const [versionStatus, setVersionStatus] = useState<string>()
   const [pdfVersionUrl, setPdfVersionUrl] = useState<string>()
   const markUnavailable = (id: string, reason: string) => setUnavailable((current) => ({ ...current, [id]: reason }))
+  // The other side's tracked changes and comments in an uploaded Word source
+  // (#200), read again with the document. The route refuses anything else (a
+  // generated deliverable), which leaves the toggle out. The last reading stays
+  // shown while a newer one loads.
+  const isDocx = name.toLowerCase().endsWith(".docx")
+  const [markup, setMarkup] = useState<{ data?: DocumentMarkup; reload?: number }>({})
+  const [markupOpen, setMarkupOpen] = useState(false)
+  const markupDefaulted = useRef(false)
+  const markupItems = markup.data ? markupCount(markup.data) : 0
   // Keep React from resetting the HTML when passage status or viewer controls
   // re-render. The citation effect owns only its temporary text highlights.
   const documentPreview = useMemo(() => html && <div className="docx-render" ref={documentRef} dangerouslySetInnerHTML={{ __html: html }} />, [html])
@@ -211,6 +222,26 @@ function WordDocumentViewer({
       cancelled = true
     }
   }, [isReady, matterId, name, reload, shown])
+
+  useEffect(() => {
+    if (!isDocx) return
+    let cancelled = false
+    fetchDocumentMarkup(matterId, name).then(
+      (data) => !cancelled && setMarkup({ data, reload }),
+      () => !cancelled && setMarkup({ reload }),
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [isDocx, matterId, name, reload])
+
+  // Their changes open by default once, when the file has some and doc.haus
+  // has no proposals of its own waiting on it.
+  useEffect(() => {
+    if (markupDefaulted.current || !html || shown || markup.reload === undefined) return
+    markupDefaulted.current = true
+    if (markupItems > 0 && !redlines.length && !versionsOpen) setMarkupOpen(true)
+  }, [html, shown, markup.reload, markupItems, redlines.length, versionsOpen])
 
   // A PDF's older version is read once and shown from memory, so a copy that
   // cannot be served is reported here rather than as an error page in the frame.
@@ -288,7 +319,33 @@ function WordDocumentViewer({
     />
   )
   const versionsToggle = (
-    <VersionsToggle open={versionsOpen} count={versions.data?.versions.length} onToggle={toggleVersions} />
+    <VersionsToggle open={versionsOpen} count={versions.data?.versions.length} onToggle={() => {
+      if (!versionsOpen) setMarkupOpen(false)
+      toggleVersions()
+    }} />
+  )
+  // One side panel at a time: their changes replace the versions list and
+  // doc.haus's proposals while open. Never over an older version.
+  const markupShown = markupOpen && !versionsOpen && !shown && markupItems > 0
+  const markupToggle = !shown && markupItems > 0 && (
+    <MarkupToggle open={markupShown} count={markupItems} onToggle={() => {
+      if (!markupShown && versionsOpen) toggleVersions()
+      setMarkupOpen(!markupShown)
+    }} />
+  )
+  const markupPanel = markupShown && markup.data && (
+    <MarkupPanel
+      matterId={matterId}
+      name={name}
+      markup={markup.data}
+      loading={markup.reload !== reload}
+      proposalsPending={redlines.length}
+      onApplied={() => {
+        setReload((value) => value + 1)
+        onChanged?.()
+      }}
+      onRefetch={() => setReload((value) => value + 1)}
+    />
   )
   const versionBanner = shown && (
     <VersionBanner key={shown.id} version={shown} origin={versionOrigin(shown, versions.data?.events)} onBack={back} />
@@ -471,6 +528,7 @@ function WordDocumentViewer({
           <ViewerTitle name={name} kind={shown ? `Word document · version ${shown.number}` : "Word document"} pending={shown ? 0 : redlines.length} markers={markers && markerSummary(markers)} />
           <div className="viewer-bar-actions">
             <DownloadActions redlines={redlines} preview={Boolean(html)} onDownload={download} version={shown?.number} />
+            {markupToggle}
             {versionsToggle}
             <button className="primary" onClick={() => setEditing((value) => !value)} disabled={busy !== undefined || shown !== undefined} aria-expanded={editing} aria-controls="document-edit-request"
               title={shown ? "Go back to the current version to request edits" : undefined}>
@@ -555,7 +613,8 @@ function WordDocumentViewer({
             {documentPreview}
           </div>
           {!narrow && versionsPanel}
-          {!versionsPanel && !shown && redlines.length > 0 && (
+          {markupPanel}
+          {!versionsPanel && !markupPanel && !shown && redlines.length > 0 && (
             <aside className="changes-panel">
               <div className="changes-head">
                 <span className="changes-count">
@@ -913,6 +972,23 @@ function VersionsToggle({ open, count, onToggle }: { open: boolean; count?: numb
       </svg>
       <span className="viewer-action-label">
         Versions{count ? <span className="viewer-versions-count"> {count}</span> : null}
+      </span>
+    </button>
+  )
+}
+
+// Opens and closes the other side's changes beside the document, counted the
+// way the panel lists them: one per change and one per comment thread.
+function MarkupToggle({ open, count, onToggle }: { open: boolean; count: number; onToggle: () => void }) {
+  return (
+    <button type="button" className="viewer-markup-toggle" aria-expanded={open} aria-controls={open ? "document-markup" : undefined} onClick={onToggle}
+      title={open ? "Hide the tracked changes and comments in this file" : "Review the tracked changes and comments in this file"}>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        <path d="M9 10h6M12 7v6" />
+      </svg>
+      <span className="viewer-action-label">
+        Their changes<span className="viewer-versions-count"> ({count})</span>
       </span>
     </button>
   )

@@ -70,6 +70,24 @@ the restart and reload, and a second seeded deliverable must show none of
 them until the first is opened again.
 The temporary data root is removed afterwards.
 
+Run the counterparty markup triage (#200) the same way, with its own ports:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:5474 \
+DOCHAUS_E2E_INGEST_PORT=4801 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-markup-evidence \
+bun apps/web/e2e/counterparty-markup.ts
+```
+
+It starts the real ingest service on a temporary data root, uploads the
+synthetic marked-up agreement as a source and the same bytes as a deliverable,
+then filters to one reviewer, sets the shown changes to Reject, accepts the
+other reviewer's replace, reloads to check the kept drafts, gives the attorney
+name once and applies. The new version must list its actor, held changes and
+both flagged items must remain, and the deliverable must offer no panel. The
+source's embeddings use the local model from `DOCHAUS_MODEL_CACHE_DIR` (default
+the per-user cache); no engine or provider is contacted.
+
 Run the matter chat layout regression with the same environment as the
 setup and settings checks:
 
