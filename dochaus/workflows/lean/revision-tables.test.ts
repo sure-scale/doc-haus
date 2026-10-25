@@ -301,6 +301,19 @@ test("an open-item marker the drafter writes in a carried table cell is highligh
   expect([schedule, approvalRecord, buyer].join("")).not.toContain("FFF2CC")
 }, 120_000)
 
+test("a placeholder the lawyer shaded in a carried cell keeps the lawyer's shading, and the redline tracks no formatting change", async () => {
+  const own = '<w:shd w:val="clear" w:color="auto" w:fill="FFFF00"/>'
+  const original = editedOriginal(xml => xml.replace('<w:r><w:t xml:space="preserve">1 March 2027</w:t></w:r>', `<w:r><w:rPr>${own}</w:rPr><w:t xml:space="preserve">[insert date]</w:t></w:r>`))
+  const rows = readDocxTables(original)[0]!.rows
+  const { directory } = await revise(TABLE_FIXTURE.untouched, revisedAgreement({ rows: (table, drafted) => table === 0 ? rows : drafted }), undefined, { original })
+  for (const name of ["d1/body.docx", "d1/body-applied.docx", "d1/redline.docx"]) {
+    const particulars = tables(file(directory, name))[0]!
+    expect([name, particulars]).toEqual([name, expect.stringMatching(/w:fill="FFFF00"\/><\/w:rPr><w:t[^>]*>\[insert date\]<\/w:t>/)])
+    expect([name, particulars.includes("FFF2CC")]).toEqual([name, false])
+  }
+  expect(strFromU8(unzipSync(file(directory, "d1/redline.docx"))["word/document.xml"]!)).not.toContain("w:rPrChange")
+}, 120_000)
+
 test("a carried cell Word writes as one run of several lines keeps its text once, its blanks highlighted", async () => {
   // A signature cell as Word writes it: two lines in one run, a line break between.
   const original = editedOriginal(xml => {
