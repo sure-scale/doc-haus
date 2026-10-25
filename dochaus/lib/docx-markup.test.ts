@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { Database } from "bun:sqlite"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
-import { readDocxMarkup } from "./docx-markup"
+import { readDocxMarkup, readMarkupComments } from "./docx-markup"
 import { currentDocumentView } from "./current-document-retrieval"
 import { exportDocxComments, readDocxCommentParagraphs } from "./docx-comments"
 import { renderMarkdownToDocx } from "./render"
@@ -76,6 +76,21 @@ test("a zero-width character in a comment is stripped and reported, and cannot h
   expect(markup.comments[2]!.findings.map(finding => [finding.field, finding.rule])).toEqual([["text", "zero-width"]])
   expect(markup.comments[3]!.text).toBe(plantedComment)
   expect(markup.comments[3]!.findings.map(finding => finding.rule)).toEqual(["zero-width", "ai-directive", "concealment"])
+})
+
+test("ranges that never close, or name no comment, keep each quote to its cap", async () => {
+  // Every run was once appended to every open range: 2,000 unclosed ranges over
+  // 20,000 paragraphs took seconds and gigabytes.
+  const starts = Array.from({ length: 2_000 }, (_, at) => `<w:commentRangeStart w:id="${100 + at}"/>`).join("")
+  const words = `<w:p><w:r><w:t xml:space="preserve">word </w:t></w:r></w:p>`.repeat(20_000)
+  const bytes = edited("word/document.xml", xml => xml.replace("<w:p>", `<w:p>${starts}`)
+    .replace(`<w:commentRangeEnd w:id="3"/>`, "").replace("<w:sectPr/>", `${words}<w:sectPr/>`))
+  const started = performance.now()
+  const comments = await readMarkupComments(bytes)
+  expect(performance.now() - started).toBeLessThan(2_000)
+  expect(comments.map(comment => [comment.id, comment.quote.slice(0, 20)])).toEqual([[0, "forty-five"], [1, ""], [2, "twelve months"], [3, "5. Term. This Agreem"]])
+  // Comment 3's range now runs to the end of the document.
+  expect(Array.from(comments[3]!.quote)).toHaveLength(201)
 })
 
 test("a comment with no thread records has an unknown resolved state, and a clean file gives empty lists", async () => {

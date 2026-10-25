@@ -13,6 +13,8 @@ import { detectInjection, normalizeUntrustedText } from "./untrusted-text"
 //   untrusted-text rules: invisible characters are stripped and reported, the
 //   visible text is otherwise verbatim, and `findings` names each match by field.
 //   Location `context` is body text (ingest scans it) and is only normalized.
+//   A date is the recorded timestamp as a normalized ISO string (a change's
+//   w16du:dateUtc before its w:date), or null when it does not parse.
 // - MarkupRevision is one Docxodus unit, decided as a whole: a move with both
 //   its locations, an inserted paragraph with its mark, adjacent same-author
 //   insertions together. `id` is Docxodus's opaque `rev2-…` id for these bytes;
@@ -65,6 +67,8 @@ const PARAGRAPHS = new Set(["p", "h", "li"])
 // Property subtrees hold formatting, never text.
 const PROPERTIES = new Set(["pPr", "rPr", "tblPr", "tcPr", "trPr", "sectPr"])
 const QUOTE_CAP = 200
+// A range collects up to this many UTF-16 units, room for stripped characters.
+const QUOTE_COLLECTED = QUOTE_CAP * 4
 
 export async function readDocxMarkup(bytes: Uint8Array): Promise<DocxMarkup> {
   const revisions = await readMarkupRevisions(bytes)
@@ -100,7 +104,7 @@ async function readMarkupRevisions(bytes: Uint8Array): Promise<MarkupRevision[]>
       return {
         id: row.id, kind: row.type, family: row.family,
         author: screened(findings, "author", row.author),
-        date: row.date ?? null,
+        date: timestamp(row.dateUtc ?? row.date),
         text: screened(findings, "text", row.text),
         scope: scopeOf(row.scope),
         locations: locations.length ? locations : [{ paragraph: null, context: "" }],
@@ -119,9 +123,11 @@ export async function readMarkupComments(bytes: Uint8Array, native = readDocxCom
   const listed = await (await docxodus()).getComments(bytes)
   if (!listed.length) return []
   const ids = new Map(listed.map(row => [row.anchorId, row.id]))
-  const quotes = commentQuotes(bytes)
+  const quotes = commentQuotes(bytes, new Set(listed.map(row => String(row.id))))
+  // The first native comment with each id, as a lookup.
+  const natives = new Map(native.map(comment => [comment.comment_id, comment] as const).reverse())
   return listed.map(row => {
-    const own = native.find(comment => comment.comment_id === String(row.id))
+    const own = natives.get(String(row.id))
     // The range start places a comment; a reply often has only a reference.
     const marker = ["commentRangeStart", "commentReference", "commentRangeEnd"]
       .map(kind => own?.markers.find(marker => marker.kind === kind && marker.xml_paragraph_index !== null)).find(Boolean)
@@ -130,12 +136,12 @@ export async function readMarkupComments(bytes: Uint8Array, native = readDocxCom
       id: row.id,
       author: screened(findings, "author", row.author),
       initials: row.initials === undefined ? null : screened(findings, "initials", row.initials),
-      date: row.date ?? null,
+      date: timestamp(row.date),
       // The native text keeps the comment's paragraph breaks; Docxodus joins them with spaces.
       text: screened(findings, "text", own?.text ?? row.text),
       parent: row.parentAnchorId === undefined ? null : ids.get(row.parentAnchorId) ?? null,
       resolved: row.resolved ?? null,
-      // Scanned whole; only the shown quote is capped.
+      // Scanned as collected; only the shown quote is capped.
       quote: capped(screened(findings, "quote", quotes.get(String(row.id)) ?? "")),
       paragraph: marker ? marker.xml_paragraph_index! + 1 : null,
       findings,
@@ -150,6 +156,12 @@ function screened(findings: MarkupFinding[], field: MarkupField, raw: string) {
   return normalized.text
 }
 
+function timestamp(raw: string | undefined) {
+  // A time without a zone keeps the clock it records, not the server's offset.
+  const time = raw === undefined ? NaN : Date.parse(/T[\d:.]+$/.test(raw) ? `${raw}Z` : raw)
+  return Number.isNaN(time) ? null : new Date(time).toISOString().replace(/\.000Z$/, "Z")
+}
+
 function capped(text: string) {
   const points = Array.from(text)
   return points.length > QUOTE_CAP ? `${points.slice(0, QUOTE_CAP).join("")}…` : text
@@ -159,22 +171,29 @@ function scopeOf(scope: string): MarkupRevision["scope"] {
   return scope.startsWith("hdr") ? "header" : scope.startsWith("ftr") ? "footer" : scope.startsWith("fn") ? "footnote" : scope.startsWith("en") ? "endnote" : "body"
 }
 
-// The body text inside each comment's range, in document order: inserted and
-// deleted text alike, paragraphs joined by newlines.
-function commentQuotes(bytes: Uint8Array) {
+// The body text inside each listed comment's range, in document order: inserted
+// and deleted text alike, paragraphs joined by newlines. Ranges naming no listed
+// comment are skipped, and a range closes once its quote is collected.
+function commentQuotes(bytes: Uint8Array, listed: Set<string>) {
   const part = unzipSync(bytes)["word/document.xml"]
   if (!part) throw new Error("invalid_docx_package")
   const fail = () => { throw new Error("invalid_docx_xml") }
   const doc = new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(strFromU8(part), "application/xml")
   const open = new Set<string>(), quotes = new Map<string, string>()
-  const add = (text: string) => { for (const id of open) quotes.set(id, (quotes.get(id) ?? "") + text) }
+  const add = (text: string) => {
+    if (text) for (const id of open) {
+      const quote = quotes.get(id)!
+      quotes.set(id, quote + text.slice(0, QUOTE_COLLECTED - quote.length))
+      if (quote.length + text.length >= QUOTE_COLLECTED) open.delete(id)
+    }
+  }
   const visit = (node: Element) => {
     const name = node.namespaceURI === W ? node.localName : ""
     if (PROPERTIES.has(name)) return
     if (name === "commentRangeStart" || name === "commentRangeEnd") {
       const id = node.getAttributeNS(W, "id") ?? ""
       if (name === "commentRangeEnd") open.delete(id)
-      else { open.add(id);if (!quotes.has(id)) quotes.set(id, "") }
+      else if (listed.has(id) && (quotes.get(id) ?? "").length < QUOTE_COLLECTED) { open.add(id);quotes.set(id, quotes.get(id) ?? "") }
       return
     }
     if (name === "t" || name === "delText") return add(node.textContent ?? "")

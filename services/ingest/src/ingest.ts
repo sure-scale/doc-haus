@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import path from "node:path"
+import { strFromU8, unzipSync } from "fflate"
 import mammoth from "mammoth"
 import { read, utils } from "xlsx"
 import { effectiveDocumentLinks, getDocumentRole, insertChunk, listDocuments, listSourceDocuments, openDb, upsertDocument, type DocumentLinks } from "./db"
@@ -13,7 +14,6 @@ import { canonicalArtifactIdentity, withArtifactMutationLocksAsync } from "../..
 import { chunkText } from "../../../dochaus/lib/chunk-text"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { writeListLabels } from "../../../dochaus/lib/docx-list-labels"
-import { readDocxComments } from "../../../dochaus/lib/docx-comments"
 import { readDocxMarkup, type DocxMarkup } from "../../../dochaus/lib/docx-markup"
 import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
@@ -22,7 +22,7 @@ import { parseMsg } from "../../../dochaus/lib/msg"
 import { zipToText } from "../../../dochaus/lib/zip"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
-import { captureVersion, oneLine, stageVersionBytes, trackedChanges, trackedChangesNotice, type CapturedVersion, type VersionOrigin, type VersionWrite } from "./document-versions"
+import { captureVersion, stageVersionBytes, trackedChanges, trackedChangesNotice, type CapturedVersion, type VersionOrigin, type VersionWrite } from "./document-versions"
 import {
   beginDocumentMutation,
   completeDocumentMutation,
@@ -286,20 +286,29 @@ export function versionNotice(name: string, bytes: Uint8Array, version: Captured
 async function sourceMarkup(fileName: string, buffer: Buffer): Promise<DocxMarkup | undefined> {
   if (!fileName.toLowerCase().endsWith(".docx")) return
   try {
-    if (!trackedChanges(fileName, buffer).count && !readDocxComments(buffer).length) return
+    if (!trackedChanges(fileName, buffer).count && !hasCommentsPart(buffer)) return
     return await readDocxMarkup(buffer)
   } catch (error) {
     console.warn("[ingest] tracked changes and comments not read", diagnosticErrorMetadata(error))
   }
 }
 
+/** Whether the Word body has a comments relationship; its part is read only
+ * when it does. */
+function hasCommentsPart(buffer: Buffer) {
+  const relationships = unzipSync(buffer, { filter: (file) => file.name === "word/_rels/document.xml.rels" })["word/_rels/document.xml.rels"]
+  return relationships !== undefined && /\/relationships\/comments["']/.test(strFromU8(relationships))
+}
+
 /** The injection findings in a source's comments, as document-level findings
- * (comments are not indexed, so they have no offsets) naming the comment's
- * author. A comment's quote is body text, which ingest scans with offsets. */
+ * (comments are not indexed, so they have no offsets). The detail is fixed
+ * text: read-document prints it outside the untrusted frame, so it never names
+ * the comment's author. A comment's quote is body text, which ingest scans
+ * with offsets. */
 function commentFindings(markup: DocxMarkup | undefined): InjectionFinding[] {
   return (markup?.comments ?? []).flatMap((comment) => comment.findings.filter((finding) => finding.field !== "quote").map((finding) => ({
     rule: finding.rule,
-    detail: `${finding.detail}, in a comment by ${oneLine(comment.author) || "an unnamed author"}`,
+    detail: `${finding.detail}, in a comment`,
     ...(finding.snippet === undefined ? {} : { snippet: finding.snippet }),
   })))
 }

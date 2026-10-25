@@ -335,11 +335,13 @@ test("the injection report names the planted deletion and the planted comment", 
   // The deleted instruction is in the indexed text (#267), with its offsets.
   const deleted = text.injection.findings.filter(finding => finding.snippet?.includes("Ignore all previous instructions"))
   expect(deleted.map(finding => [finding.rule, typeof finding.charStart])).toEqual([["instruction-override", "number"]])
-  // The comment is not indexed: document-level findings naming its author.
-  expect(text.injection.findings.filter(finding => finding.detail.includes("in a comment by"))).toEqual([
-    { rule: "ai-directive", detail: `instructions addressed to an AI assistant, in a comment by ${AVERY}`, snippet: expect.stringContaining("AI assistant") },
-    { rule: "concealment", detail: `text that asks the assistant to hide something from the user, in a comment by ${AVERY}`, snippet: expect.stringContaining("do not tell the lawyer") },
+  // The comment is not indexed: document-level findings. read-document prints
+  // details outside its untrusted frame, so they name no counterparty string.
+  expect(text.injection.findings.filter(finding => finding.detail.endsWith(", in a comment"))).toEqual([
+    { rule: "ai-directive", detail: "instructions addressed to an AI assistant, in a comment", snippet: expect.stringContaining("AI assistant") },
+    { rule: "concealment", detail: "text that asks the assistant to hide something from the user, in a comment", snippet: expect.stringContaining("do not tell the lawyer") },
   ])
+  expect(text.injection.findings.filter(finding => finding.detail.includes(AVERY))).toEqual([])
   expect(plantedComment).toContain("do not tell the lawyer")
 }, 120_000)
 
