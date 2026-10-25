@@ -465,7 +465,7 @@ test("a paragraph is carried as the original's only when its words and emphasis 
   ].join("\n\n"))
   const { bytes, carry } = carryOriginalParagraphs(rendered, zipSync(parts))
   // The heading and the clause are the original's; emphasis, case, a placeholder and a tracked revision keep the others as drafted.
-  expect(carry).toEqual({ paragraphs: 6, carried: 2, breaks: 0, spaced: 0 })
+  expect(carry).toEqual({ paragraphs: 6, carried: 2, breaks: 0, spaced: 0, restyled: 0 })
   const document = new DOMParser().parseFromString(strFromU8(unzipSync(bytes)["word/document.xml"]!), "application/xml")
   const text = (paragraph: Element) => Array.from(paragraph.getElementsByTagNameNS(W, "t")).map(node => node.textContent).join("")
   expect(Array.from(document.getElementsByTagNameNS(W, "p")).map(text).filter(Boolean)).toEqual(["Supply terms",
@@ -484,7 +484,7 @@ test("a heading drafted in bold is carried as the original's, while strikethroug
   // The title, the schedule heading and the last line are the original's; the
   // struck, italic and part-bold paragraphs stay as drafted. Of the drafted
   // "(a)" and "(b)", only "(b)" is drafted once, so it alone takes the two spaces.
-  expect(carry).toEqual({ paragraphs: 8, carried: 3, breaks: 0, spaced: 1 })
+  expect(carry).toEqual({ paragraphs: 8, carried: 3, breaks: 0, spaced: 1, restyled: 0 })
   const document = new DOMParser().parseFromString(strFromU8(unzipSync(bytes)["word/document.xml"]!), "application/xml")
   const paragraphs = Array.from(document.getElementsByTagNameNS(W, "p")).filter(paragraph => paragraph.getElementsByTagNameNS(W, "t").length)
   const text = (paragraph: Element) => Array.from(paragraph.getElementsByTagNameNS(W, "t")).map(node => node.textContent).join("")
@@ -493,4 +493,35 @@ test("a heading drafted in bold is carried as the original's, while strikethroug
   expect(paragraphs.map(paragraph => [emphasised(paragraph, "b"), emphasised(paragraph, "i"), emphasised(paragraph, "strike")])).toEqual([
     [false, false, false], [false, false, false], [false, false, false], [true, false, false], [false, false, false], [false, false, false], [false, false, false], [false, false, false], [false, false, false]])
   expect(paragraphs[4]!.getElementsByTagNameNS(W, "pStyle")[0]?.getAttributeNS(W, "val")).toBe("Heading2")
+}, 60_000)
+
+test("a reworded clause paired with the original's by its number takes the original's paragraph style, never its section break, revision marks or list numbering", async () => {
+  const typed = (markdown: string) => renderMarkdownToDocx(markdown, undefined, undefined, { numbering: false }).then(result => result.bytes)
+  const parts = unzipSync(await typed(["# Terms", "## 4  Orders supply and stock rotation", "4.1 The Buyer shall order in writing.", "## 5 Quality", "5.1 Goods shall conform.", "6 Termination", "The end."].join("\n\n")))
+  // The original's heading 4 ends a section and holds a tracked formatting
+  // change; its clause 6 is a list item that also types its number.
+  parts["word/document.xml"] = strToU8(strFromU8(parts["word/document.xml"]!)
+    .replace(/(<w:p\b(?:(?!<\/w:p>)[\s\S])*?<w:pPr>(?:(?!<\/w:p>)[\s\S])*?)(<\/w:pPr>)(?=(?:(?!<\/w:p>)[\s\S])*4 {2}Orders)/,
+      '$1<w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr><w:pPrChange w:id="91" w:author="Firm"><w:pPr/></w:pPrChange>$2')
+    .replace(/<w:p\b([^>]*)>((?:(?!<\/w:p>)[\s\S])*?<w:t[^>]*>6 Termination)/, '<w:p$1><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr>$2'))
+  const rendered = await typed(["# Terms", "4 Orders, supply and stock rotation", "4.1 The Buyer shall order in writing.", "5 Product quality", "5 Recall", "5.1 Goods shall conform.", "6 Ending", "The end."].join("\n\n"))
+  const { bytes, carry } = carryOriginalParagraphs(rendered, zipSync(parts))
+  // Heading 4 is reworded but paired by its number; the drafted "5" twice pairs with neither original.
+  expect(carry).toEqual({ paragraphs: 7, carried: 4, breaks: 0, spaced: 1, restyled: 1 })
+  const document = new DOMParser().parseFromString(strFromU8(unzipSync(bytes)["word/document.xml"]!), "application/xml")
+  const paragraphs = Array.from(document.getElementsByTagNameNS(W, "p")).filter(paragraph => paragraph.getElementsByTagNameNS(W, "t").length)
+  const text = (paragraph: Element) => Array.from(paragraph.getElementsByTagNameNS(W, "t")).map(node => node.textContent).join("")
+  expect(paragraphs.map(text)).toEqual(["Terms", "4  Orders, supply and stock rotation", "4.1 The Buyer shall order in writing.", "5 Product quality", "5 Recall",
+    "5.1 Goods shall conform.", "6 Ending", "The end."])
+  const properties = (paragraph: Element) => {
+    const pPr = Array.from(paragraph.childNodes).find(node => node.nodeType === 1 && (node as Element).localName === "pPr") as Element | undefined
+    return pPr ? new XMLSerializer().serializeToString(pPr).replace(/ xmlns:w="[^"]*"/g, "") : ""
+  }
+  // The reworded heading is the original's Heading2 with its spacing, its own words and runs, and its pointer after its properties.
+  expect(properties(paragraphs[1]!)).toBe('<w:pPr><w:pStyle w:val="Heading2"/><w:spacing w:before="280" w:after="140"/></w:pPr>')
+  expect((Array.from(paragraphs[1]!.childNodes).find(node => node.nodeType === 1) as Element).localName).toBe("pPr")
+  expect(paragraphs[1]!.getElementsByTagNameNS(W, "bookmarkStart").length).toBe(1)
+  // The unpaired "5" paragraphs and the clause whose original is a list item stay as drafted: no style and no second number.
+  expect([3, 4, 6].map(at => properties(paragraphs[at]!))).toEqual(["", "", ""])
+  expect(document.getElementsByTagNameNS(W, "numPr").length).toBe(0)
 }, 60_000)

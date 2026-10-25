@@ -160,8 +160,8 @@ export function carryOriginalTables(rendered: Uint8Array, original: Uint8Array):
 /** Of the original's body paragraphs outside tables: how many have text, how
  * many of those were carried, and how many page breaks were carried with them;
  * and how many drafted paragraphs took an original's spacing after their
- * clause number. */
-export type ParagraphCarry = { paragraphs: number; carried: number; breaks: number; spaced: number }
+ * clause number, and how many its paragraph properties. */
+export type ParagraphCarry = { paragraphs: number; carried: number; breaks: number; spaced: number; restyled: number }
 
 /** The rendered body, drafted on the original's own styles, with each of its
  * paragraphs outside tables that reads as an original one replaced by the
@@ -180,10 +180,11 @@ export type ParagraphCarry = { paragraphs: number; carried: number; breaks: numb
  * a carried paragraph and the start or end of the body, a drafted paragraph
  * left as drafted and an original one not carried that open with the same
  * clause number, one that each side has only once there (paired in order),
- * give the drafted one the original's spaces after its number, and nothing
- * else of the original. */
+ * give the drafted one the original's spaces after its number and the
+ * original's paragraph properties (restyle); its runs and words stay as
+ * drafted. */
 export function carryOriginalParagraphs(rendered: Uint8Array, original: Uint8Array): { bytes: Uint8Array; carry: ParagraphCarry } {
-  const none = { bytes: rendered, carry: { paragraphs: 0, carried: 0, breaks: 0, spaced: 0 } }
+  const none = { bytes: rendered, carry: { paragraphs: 0, carried: 0, breaks: 0, spaced: 0, restyled: 0 } }
   const originalParts = unzipSync(original)
   const parts = unzipSync(rendered)
   if (!originalParts[BODY] || !parts[BODY]) return none
@@ -244,9 +245,10 @@ export function carryOriginalParagraphs(rendered: Uint8Array, original: Uint8Arr
   // A drafted paragraph left as drafted whose clause number is an uncarried
   // original paragraph's, between the same carried paragraphs (or a carried
   // one and the body's start or end), keeps the original's spacing after that
-  // number; the rest of it stays as drafted. A number either side has more
-  // than once there pairs with none.
-  let spaced = 0
+  // number and takes its paragraph properties, so a reworded heading keeps
+  // its heading style; its runs stay as drafted. A number either side has
+  // more than once there pairs with none.
+  let [spaced, restyled] = [0, 0]
   const numbered = (rows: typeof left) => {
     const labelled = rows.flatMap(row => {
       const label = CLAUSE_NUMBER.exec(row.words)?.[0]
@@ -258,11 +260,15 @@ export function carryOriginalParagraphs(rendered: Uint8Array, original: Uint8Arr
   for (const [gap, [fromLeft, fromRight]] of bounds.slice(0, -1).entries()) {
     const [toLeft, toRight] = bounds[gap + 1]!
     const [was, now] = [numbered(left.slice(fromLeft + 1, toLeft)), numbered(right.slice(fromRight + 1, toRight))]
-    for (const [index, at] of alignWords(was.map(row => row.label), now.map(row => row.label)).entries())
-      if (at !== undefined && respace(now[at]!.node, now[at]!.label, labelSpace(was[index]!.node, was[index]!.label))) spaced++
+    for (const [index, at] of alignWords(was.map(row => row.label), now.map(row => row.label)).entries()) {
+      if (at === undefined) continue
+      const [from, into] = [was[index]!, now[at]!]
+      if (respace(into.node, into.label, labelSpace(from.node, from.label))) spaced++
+      if (restyle(into.node, from.node, sourceStyles, targetStyles)) restyled++
+    }
   }
-  const carry = { paragraphs: left.length, carried, breaks, spaced }
-  if (!carried && !breaks && !spaced) return { ...none, carry }
+  const carry = { paragraphs: left.length, carried, breaks, spaced, restyled }
+  if (!carried && !breaks && !spaced && !restyled) return { ...none, carry }
   parts[BODY] = strToU8(new XMLSerializer().serializeToString(target))
   return { bytes: zipSync(parts, { mtime: new Date(1980, 0, 1) }), carry }
 }
@@ -335,6 +341,30 @@ function respace(paragraph: Element, label: string, space: string | undefined) {
     offset += piece.text.length
   }
   return written
+}
+
+/** A drafted paragraph given the paragraph properties of the original one it
+ * stands for: its style and direct paragraph formatting, its paragraph mark's
+ * included, without the section break and revision marks they may hold. It
+ * keeps its own where the original's would number it (list numbering, or a
+ * style with list numbering, beside the number it types), hold content that
+ * cannot move between packages (refusal), or name a style the rendered body
+ * lacks. Whether it changed. */
+function restyle(paragraph: Element, original: Element, sourceStyles: Map<string, Element>, targetStyles: Map<string, Element>) {
+  const own = children(paragraph, "pPr")[0]
+  const theirs = children(original, "pPr")[0]
+  const copy = theirs && paragraph.ownerDocument!.importNode(theirs, true) as Element
+  if (copy) {
+    Array.from(copy.getElementsByTagName("*")).filter(node => UNCARRIED.has(node.localName)).forEach(node => node.parentNode?.removeChild(node))
+    clean(copy)
+    if (refusal(copy, sourceStyles) || referencedStyles(copy).some(id => !targetStyles.has(id))) return false
+  }
+  const properties = copy && Array.from(copy.childNodes).some(node => node.nodeType === 1) ? copy : undefined
+  const xml = (node: Element | undefined) => node ? new XMLSerializer().serializeToString(node).replace(/ xmlns(?::\w+)?="[^"]*"/g, "") : ""
+  if (xml(own) === xml(properties)) return false
+  if (own) paragraph.removeChild(own)
+  if (properties) paragraph.insertBefore(properties, paragraph.firstChild)
+  return true
 }
 
 // A drafted paragraph with one of these is never carried: what it marks is the
