@@ -13,13 +13,15 @@ export type MarkupFinding = { field: "text" | "author" | "quote" | "initials"; r
 // and a short preview of it. `label` is the list number Word prints before it
 // ("5.", "(a)"), not part of `context`; `container` is set for a table's,
 // row's, cell's or section's own formatting, placed at its first paragraph;
-// `comment` is the id of the comment whose text the paragraph is.
+// `comment` is the id of the comment whose text the paragraph is; `side` is
+// the place a move leaves (`from`) or lands in (`to`), absent when not known.
 export type MarkupLocation = {
   paragraph: number | null
   context: string
   label?: string
   container?: "table" | "row" | "cell" | "section"
   comment?: number
+  side?: "from" | "to"
 }
 
 // One change, decided as a whole: a move with both its places, an inserted
@@ -43,7 +45,8 @@ export type MarkupRevision = {
 }
 
 // One comment; `parent` is the id of the comment it replies to and `resolved`
-// is null when the file does not say. `paragraph` counts its part's paragraphs;
+// is null when the file does not say. `paragraph` counts its part's paragraphs
+// and `label` is the list number Word prints there, as a location's is;
 // `scope` names that part when it is not the body.
 export type MarkupComment = {
   id: number
@@ -55,6 +58,7 @@ export type MarkupComment = {
   resolved: boolean | null
   quote: string
   paragraph: number | null
+  label?: string
   scope?: "footnote" | "endnote"
   findings: MarkupFinding[]
 }

@@ -78,3 +78,25 @@ test("an edit inside a comment is placed in that comment's thread, and a list nu
   expect(at("Clause 5")).toBeLessThan(at("markup-thread"))
   expect(at("markup-thread")).toBeLessThan(at("In a comment by Morgan Okafor"))
 })
+
+test("a move says where it left and where it landed, and a comment thread names its clause as a change card does", () => {
+  const text = "Confidentiality. Each party keeps the other's information confidential."
+  // Moved up: its places come in document order, destination first.
+  const up = revision("rev2-up", { kind: "move", family: "move", text: `${text}¶`, locations: [
+    { paragraph: 5, context: text, label: "4.", side: "to" },
+    { paragraph: 7, context: text, label: "6.", side: "from" },
+  ] })
+  const unknown = revision("rev2-unknown", { kind: "move", family: "move", text: `${text}¶`, locations: [{ paragraph: 3, context: text }, { paragraph: 9, context: text }] })
+  const comment: MarkupComment = {
+    id: 2, author: "Morgan Okafor", initials: "MO", date: null, text: "Limit audits to once a year.", parent: null, resolved: null,
+    quote: "the Supplier's records", paragraph: 6, label: "5.", findings: [],
+  }
+  const html = renderToStaticMarkup(createElement(MarkupPanel, {
+    matterId: "m-1", name: "Supply agreement.docx", markup: { ...markup("a", [up, unknown]), comments: [comment] }, onApplied: () => {}, onRefetch: () => {},
+  }))
+  expect(html).toContain("Moved from clause 6 to clause 4")
+  // Without sides the card keeps naming both places in document order.
+  expect(html).toContain("Old and new places: paragraphs 3 and 9")
+  expect(html).toContain("<span>Clause 5</span>")
+  expect(html).not.toContain("Paragraph 6")
+})

@@ -158,6 +158,7 @@ function changeText(revision: MarkupRevision) {
 
 const clip = (text: string, max = 48) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text)
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+const joined = (names: (string | number)[]) => (names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : `${names[0]}`)
 // The list number Word prints before a paragraph, when it names one (a bullet does not).
 const listLabel = (place: Pick<MarkupLocation, "label">) => (place.label && /[\p{L}\p{N}]/u.test(place.label) ? place.label : undefined)
 
@@ -645,19 +646,28 @@ function Places({ revision, comments }: { revision: MarkupRevision; comments: Ma
     const head = context.replace(/…$/, "")
     return head && (!text || (!text.startsWith(head) && !head.startsWith(text))) ? context : ""
   }
-  // A move's places come in document order, which does not say which one it
-  // left; the document shows that.
   if (revision.kind === "move" && places.length > 1 && places.every((place) => place.paragraph !== null && !preview(place.context))) {
+    // A move says where it left and where it landed when the reader knows each
+    // place's side.
+    const from = places.filter((place) => place.side === "from")
+    const to = places.filter((place) => place.side === "to")
+    const side = (list: MarkupLocation[]) =>
+      list.length > 1 && !list.some(listLabel) ? `paragraphs ${joined(list.map((place) => place.paragraph!))}` : joined(list.map((place) => placeName("body", place)!))
+    if (from.length && to.length && from.length + to.length === places.length)
+      return <p className="markup-place">Moved from {PART[revision.scope]}{side(from)} to {side(to)}</p>
+    // Otherwise its places come in document order, which does not say which
+    // one it left; the document shows that.
     const labelled = places.some(listLabel)
-    const names = places.map((place) => (labelled ? placeName(revision.scope, place)! : place.paragraph!))
-    const where = `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`
+    const where = joined(places.map((place) => (labelled ? placeName(revision.scope, place)! : place.paragraph!)))
     return <p className="markup-place">Old and new places: {labelled ? where : `${PART[revision.scope]}paragraphs ${where}`}</p>
   }
   return (
     <>
       {places.map((place, index) => {
         const context = preview(place.context)
-        const where = revision.scope === "comment" ? commentPlace(place, comments, !!context) : placeName(revision.scope, place)
+        const named = revision.scope === "comment" ? commentPlace(place, comments, !!context) : placeName(revision.scope, place)
+        // A move whose places are quoted says which one each is.
+        const where = named && revision.scope !== "comment" && place.side ? `${place.side} ${named}` : named
         return (
           <p className="markup-place" key={index}>
             {where && <span>{capital(where)}</span>}
@@ -769,7 +779,7 @@ function ThreadCard({ thread }: { thread: Thread }) {
           ))}
         </ol>
       )}
-      {root.paragraph !== null && <p className="markup-place"><span>{capital(placeName(root.scope ?? "body", { paragraph: root.paragraph })!)}</span></p>}
+      {root.paragraph !== null && <p className="markup-place"><span>{capital(placeName(root.scope ?? "body", root)!)}</span></p>}
     </li>
   )
 }

@@ -63,6 +63,15 @@ test("every tracked change and comment is listed with its author, kind, date and
   expect(markup.authors).toEqual([{ name: AVERY, revisions: 5, comments: 2 }, { name: MORGAN, revisions: 5, comments: 2 }])
 })
 
+test("a move's places say which one it leaves and which one it lands in, whichever way it moves", async () => {
+  const sides = async (bytes: Uint8Array) => (await readDocxMarkup(bytes)).revisions.filter(row => row.kind === "move").map(row => row.locations.map(at => [at.paragraph, at.side]))
+  // The Notices clause moves down, below clause 4.
+  expect(await sides(counterpartyMarkupDocx())).toEqual([[[3, "from"], [5, "to"]]])
+  // With its sides swapped it moves up: its places still come in document order, so the first is where it lands.
+  const up = edited("word/document.xml", xml => xml.replace(/move(From|To)/g, (_, side) => `move${side === "From" ? "To" : "From"}`))
+  expect(await sides(up)).toEqual([[[3, "to"], [5, "from"]]])
+})
+
 test("both planted instructions are flagged on the item that carries them, their visible text unchanged", async () => {
   const markup = await readDocxMarkup(counterpartyMarkupDocx())
   const flagged = [...markup.revisions, ...markup.comments].filter(item => item.findings.length)
@@ -164,6 +173,24 @@ test("a numbered paragraph's location carries the number Word prints, apart from
   expect((await readDocxMarkup(bytes)).revisions.map(row => row.locations)).toEqual([
     [{ paragraph: 1, context: "Terms. Revised." }],
     [{ paragraph: 4, context: "Term. Revised.", label: "3." }],
+  ])
+})
+
+test("a comment in a numbered clause carries the number Word prints there, as a change there does", async () => {
+  const rendered = (await renderMarkdownToDocx("Terms.\n\n1. Supply.\n2. Price.\n3. Term.")).bytes
+  const paragraphs = readDocxCommentParagraphs(rendered)
+  const on = (text: string) => {
+    const { paragraph_text, paragraph_index } = paragraphs.find(row => row.paragraph_text === text)!
+    return { paragraph_text, paragraph_index }
+  }
+  const { bytes } = exportDocxComments(rendered, [
+    { id: "term", author: "Reviewer", text: "Shorten the term?", anchor: on("Term.") },
+    { id: "terms", author: "Reviewer", text: "Define the terms.", anchor: on("Terms.") },
+  ])
+  // A file with comments and no tracked changes; the unnumbered paragraph has no label.
+  expect((await readDocxMarkup(bytes)).comments.map(comment => [comment.text, comment.paragraph, comment.label])).toEqual([
+    ["Shorten the term?", 4, "3."],
+    ["Define the terms.", 1, undefined],
   ])
 })
 
