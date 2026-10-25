@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { z } from "zod"
-import { openRevision } from "./docx-amendments"
+import { openRevision, type DocxRevisionOptions } from "./docx-amendments"
 import { clauseNumbering } from "./docx-numbering"
 import { writeDurableBytes } from "./durable-json"
 import { docxodus } from "./docxodus"
@@ -86,8 +86,8 @@ export function paragraphPointers(node: Element) {
 // carries, its projection ordinal and handle, and the sha256 of its exact text.
 // Unlike paragraphSha256 the text is not normalized: this is the per-paragraph
 // content check at apply. Header, footer and note paragraphs carry no pointer.
-export async function paragraphTargets(bytes: Uint8Array) {
-  const opened = await openRevision(new Uint8Array(bytes))
+export async function paragraphTargets(bytes: Uint8Array, options: DocxRevisionOptions = {}) {
+  const opened = await openRevision(new Uint8Array(bytes), options)
   try {
     return opened.paragraphs.flatMap((paragraph, ordinal) => {
       if (paragraph.part !== BODY) return []

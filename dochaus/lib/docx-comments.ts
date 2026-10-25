@@ -51,14 +51,16 @@ export function readDocxRevisionText(bytes: Uint8Array) {
   return { inserted_text: text(["ins", "moveTo"]), deleted_text: text(["del", "moveFrom"]) }
 }
 
+/** The WordprocessingML elements Word writes for a tracked revision. */
+export const REVISION_ELEMENTS = ["ins", "del", "moveFrom", "moveTo", "rPrChange", "pPrChange", "tblPrChange", "trPrChange", "tcPrChange", "sectPrChange", "tblGridChange", "numberingChange"] as const
+
 /** Counts actual revision elements in the main Word body only. These are
  * package observations, not a judgment that a comparison or legal review is complete. */
 export function readDocxRevisionProperties(bytes: Uint8Array) {
   const parts = unzipSync(bytes)
   if (!parts[BODY]) throw new Error("invalid_docx_package")
   const body = parse(strFromU8(parts[BODY]))
-  const names = ["ins", "del", "moveFrom", "moveTo", "rPrChange", "pPrChange", "tblPrChange", "trPrChange", "tcPrChange", "sectPrChange", "tblGridChange", "numberingChange"]
-  return { part: BODY, revision_elements: Object.fromEntries(names.map(name => [name, elements(body, W, name).length])) }
+  return { part: BODY, revision_elements: Object.fromEntries(REVISION_ELEMENTS.map(name => [name, elements(body, W, name).length])) }
 }
 
 /** Read native comment text separately from current body text. Anchor records

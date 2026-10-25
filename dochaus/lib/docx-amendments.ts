@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { z } from "zod"
+import { REVISION_ELEMENTS } from "./docx-comments"
 import { paragraphFields, refInstruction, runText, unlink } from "./docx-fields"
 import { docxodus } from "./docxodus"
 import { shownText } from "./list-label"
@@ -25,17 +26,23 @@ type Opened = Awaited<ReturnType<typeof openRevision>>
 type Binding = { handle: string; amendment: DocxAmendment; match: Match; ordinal: number }
 type Limits = { maxCandidates?: number; maxContextCharacters?: number }
 export type DocxLocalizationLimits = Limits
+// How the reader treats pending tracked revisions. "refuse" (the default) throws
+// DocxTrackedRevisionsError. "layer" projects their accepted text and leaves them
+// pending: an edit in a paragraph with a pending revision is refused, and other
+// edits are written beside them. With "layer", a revisionAuthor writes edits as
+// native tracked changes under that name.
+export type DocxRevisionOptions = { pendingRevisions?: "refuse" | "layer"; revisionAuthor?: string }
 
 // A working-document projection is a view, not legal source authority. No native
 // UNIDs or offsets leave this module. Handles are valid only for this exact base.
-export async function createDocxRevision(bytes: Uint8Array) {
-  const opened = await openRevision(new Uint8Array(bytes))
+export async function createDocxRevision(bytes: Uint8Array, options: DocxRevisionOptions = {}) {
+  const opened = await openRevision(new Uint8Array(bytes), options)
   try { return opened.revision } finally { opened.session.close() }
 }
 export type DocxRevisionPacket = Awaited<ReturnType<typeof createDocxRevision>>
 
-export async function createDocxLocalization(bytes: Uint8Array, amendments: DocxAmendment[], limits: Limits = {}) {
-  const opened = await openRevision(new Uint8Array(bytes))
+export async function createDocxLocalization(bytes: Uint8Array, amendments: DocxAmendment[], limits: Limits = {}, options: DocxRevisionOptions = {}) {
+  const opened = await openRevision(new Uint8Array(bytes), options)
   try { return localize(opened, amendments, limits).packet } finally { opened.session.close() }
 }
 export type DocxLocalizationPacket = Awaited<ReturnType<typeof createDocxLocalization>>
@@ -56,8 +63,8 @@ export async function docxLocalizationCandidateOccurrences(bytes: Uint8Array, pa
 // Call under the caller's existing document mutation lock, with freshly read
 // canonical bytes. Admission is all-or-nothing; this function never writes files.
 // The locator can select a handle or refuse. It cannot supply replacement text.
-export async function applyDocxLocalization(bytes: Uint8Array, packet: DocxLocalizationPacket, selections: unknown) {
-  return applyDocxParagraphEdits(bytes, [], { packet, selections })
+export async function applyDocxLocalization(bytes: Uint8Array, packet: DocxLocalizationPacket, selections: unknown, options: DocxRevisionOptions = {}) {
+  return applyDocxParagraphEdits(bytes, [], { packet, selections }, options)
 }
 
 // Paragraph-addressed amendments for this exact base: each names one projection
@@ -67,12 +74,12 @@ export async function applyDocxLocalization(bytes: Uint8Array, packet: DocxLocal
 // handle-selected amendments for the same base under applyDocxLocalization's
 // rules. Admission is all-or-nothing across both; this never writes files.
 export async function applyDocxParagraphEdits(bytes: Uint8Array, edits: DocxParagraphEdit[],
-  localized?: { packet: DocxLocalizationPacket; selections: unknown }) {
+  localized?: { packet: DocxLocalizationPacket; selections: unknown }, options: DocxRevisionOptions = {}) {
   const source = new Uint8Array(bytes)
   if (localized && digest(source) !== localized.packet.revision.source_sha256) throw new Error("stale_docx_revision")
   const selected = localized ? selectionSchema.parse(localized.selections) : []
   const addressed = z.array(paragraphEditSchema).parse(edits)
-  const opened = await openRevision(source)
+  const opened = await openRevision(source, options)
   try {
     const bindings = [
       ...localized ? selectedBindings(opened, localized.packet, selected) : [],
@@ -138,10 +145,12 @@ function paragraphSpan(paragraph: Match, start: number, length: number): Match {
 
 function admitted(opened: Opened, binding: Binding) {
   const { amendment, match, ordinal } = binding
+  // The touch rule (see pendingRevisionParagraphs); only a layer-mode reader marks paragraphs.
+  if (opened.paragraphs[ordinal]!.pending) throw new Error(`docx_pending_revision:${amendment.id}`)
   if (/[\r\n\t]/.test(amendment.replacement)) throw new Error("unsupported_structural_replacement")
   if (!amendment.replacement && match.text === opened.paragraphs[ordinal].match.text)
     throw new Error("unsupported_empty_paragraph_replacement")
-  const change = changedDocxSpan(match, amendment.replacement)
+  const change = changedDocxSpan(match, amendment.replacement, Boolean(opened.options.revisionAuthor))
   const xml = parse(opened.session.raw.getXml(match.enclosingAnchor.id))
   if (!elements(xml, "fldChar").length && !elements(xml, "instrText").length) return { ...binding, change, unlinks: [] as number[] }
   // A live cross-reference (a REF field) is the only field an edit may stand
@@ -198,7 +207,7 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
   // Edits touching a live cross-reference are written to the source with that
   // field unwrapped: the same paragraphs and text, so the same spans.
   const unlinked = unlinkedSource(opened, edits)
-  const target = unlinked ? await openRevision(unlinked) : opened
+  const target = unlinked ? await openRevision(unlinked, opened.options) : opened
   try {
     for (const edit of ordered) {
       const text = expected[edit.ordinal]
@@ -208,13 +217,14 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
       // context keeps its own runs; only the changed text is mutated.
       const paragraph = target.paragraphs[edit.ordinal]!.match
       const change = target === opened ? edit.change : changedDocxSpan(paragraphSpan(paragraph,
-        edit.match.span.start - opened.paragraphs[edit.ordinal]!.match.span.start, edit.match.text.length), edit.amendment.replacement)
+        edit.match.span.start - opened.paragraphs[edit.ordinal]!.match.span.start, edit.match.text.length), edit.amendment.replacement,
+        Boolean(opened.options.revisionAuthor))
       if (!change.match.text && !change.replacement) continue
       const result = target.session.replaceMatch(change.match, change.replacement)
       if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
     }
     const output = target.session.save()
-    const reopened = await openRevision(output)
+    const reopened = await openRevision(output, opened.options)
     try {
       if (JSON.stringify(reopened.paragraphs.map(p => p.match.text)) !== JSON.stringify(expected))
         throw new Error("docx_saved_text_mismatch")
@@ -239,7 +249,9 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
           })),
           unchanged_paragraphs_verified: opened.paragraphs.length - changed.size,
           package_structure_verified: true,
-          limitation: ["changed text inherits first touched run formatting; structural edits and existing tracked revisions unsupported",
+          limitation: [`changed text inherits first touched run formatting; structural edits and ${opened.options.pendingRevisions === "layer"
+            ? "edits in paragraphs with pending tracked revisions" : "existing tracked revisions"} unsupported`,
+            ...opened.options.revisionAuthor ? [`changes tracked as ${opened.options.revisionAuthor}`] : [],
             ...unlinkedFields(opened, edits)].join("; "),
         },
       }
@@ -247,8 +259,8 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
   } finally { if (target !== opened) target.session.close() }
 }
 
-export function changedDocxSpan(match: Match, replacement: string) {
-  const { offset, replaced, changed } = changedRange(match.text, replacement)
+export function changedDocxSpan(match: Match, replacement: string, words = false) {
+  const { offset, replaced, changed } = changedRange(match.text, replacement, words)
   const formatting = match.fragments.find((fragment, index) => match.fragments.slice(0, index + 1)
     .reduce((length, row) => length + row.text.length, 0) > offset)?.formatting ?? match.fragments.at(-1)?.formatting
   return { match: { ...match, text: replaced, span: { start: match.span.start + offset, length: replaced.length } },
@@ -256,8 +268,8 @@ export function changedDocxSpan(match: Match, replacement: string) {
 }
 
 /** The part of `text` a replacement by `replacement` rewrites: from `offset`
- * (UTF-16 units), `replaced` becomes `changed`. */
-export function changedRange(text: string, replacement: string) {
+ * (UTF-16 units), `replaced` becomes `changed`. With `words`, whole words. */
+export function changedRange(text: string, replacement: string, words = false) {
   // Native offsets count UTF-16 units, but trim whole code points so a shared
   // surrogate never becomes an unchanged half of a changed character.
   const before = Array.from(text)
@@ -269,6 +281,17 @@ export function changedRange(text: string, replacement: string) {
   while (lastBefore > first && lastAfter > first && before[lastBefore - 1] === after[lastAfter - 1]) {
     lastBefore--
     lastAfter--
+  }
+  if (words && (first < lastBefore || first < lastAfter)) {
+    // A tracked change reads as Word records overtyped words: whole words, and
+    // a pure insertion takes the adjacent word as its anchor.
+    const word = (char?: string) => char !== undefined && /[\p{L}\p{N}_]/u.test(char)
+    if (first === lastBefore) if (lastBefore < before.length) { lastBefore++; lastAfter++ } else first--
+    while (first > 0 && word(before[first - 1]) && (word(before[first]) || word(after[first]))) first--
+    while (lastBefore < before.length && word(before[lastBefore]) && (word(before[lastBefore - 1]) || word(after[lastAfter - 1]))) {
+      lastBefore++
+      lastAfter++
+    }
   }
   const removed = before.slice(first, lastBefore).join("")
   const inserted = after.slice(first, lastAfter).join("")
@@ -325,16 +348,76 @@ export class DocxTrackedRevisionsError extends Error {
   constructor() { super("unsupported_existing_tracked_revisions") }
 }
 
-export async function openRevision(source: Uint8Array) {
+// The touch rule. Its unit is one projection paragraph in any story, which is
+// pending when the native revision listing names it (both ends of a move
+// included), or when its own markup, paragraph mark included, or an enclosing
+// table, row or cell's properties carry a revision element. Any author counts:
+// the working file never holds doc.haus's own pending revisions. An edit there
+// would merge with their change in Word, or untracked become their text.
+
+/** Each paragraph of these bytes with a pending revision, by paragraph_handle,
+ * with the authors of its revisions in document order. */
+export async function pendingRevisionParagraphs(bytes: Uint8Array) {
+  const opened = await openRevision(new Uint8Array(bytes), { pendingRevisions: "layer" })
+  try {
+    return new Map(opened.paragraphs.flatMap((paragraph, ordinal) =>
+      paragraph.pending ? [[opened.revision.paragraphs[ordinal]!.paragraph_handle, paragraph.pending] as const] : []))
+  } finally { opened.session.close() }
+}
+
+/** The same paragraphs in a caller's own session, by the anchor id grep and
+ * findAllByText name them, with the authors of their revisions. */
+export function pendingRevisionAnchors(session: Session) {
+  const listed = listedRevisions(session)
+  // A table paragraph is read inside its outermost table, for the table, row
+  // and cell properties.
+  const inTables = new Map<string, Element>()
+  for (const [token, anchor] of Object.entries(session.project().anchorIndex)) if (anchor.kind === "tbl")
+    for (const node of elements(parse(session.raw.getXml(token)), "p")) if (!inTables.has(node.getAttributeNS(PT, "Unid") ?? ""))
+      inTables.set(node.getAttributeNS(PT, "Unid") ?? "", node)
+  const pending = new Map<string, string[]>()
+  for (const { enclosingAnchor: { id, unid } } of session.grep("^[\\s\\S]*$", { scope: 63, whitespace: 0 })) {
+    const node = inTables.get(unid) ?? parse(session.raw.getXml(id)).documentElement
+    const authors = pendingAuthors(listed.get(id), node)
+    if (authors) pending.set(id, authors)
+  }
+  return pending
+}
+
+function listedRevisions(session: Session) {
+  const authors = new Map<string, Set<string>>()
+  for (const revision of session.listRevisions())
+    for (const id of [revision.anchorId, ...revision.affectedAnchors.map(anchor => anchor.id)])
+      if (id) authors.set(id, (authors.get(id) ?? new Set()).add(revision.author))
+  return authors
+}
+
+function pendingAuthors(listed: Set<string> | undefined, paragraph: Element) {
+  const properties = [] as Element[]
+  for (let node = paragraph.parentNode; node && node.nodeType === 1; node = node.parentNode) {
+    const element = node as Element
+    if (element.namespaceURI === W && ["tbl", "tr", "tc"].includes(element.localName)) properties.push(...children(element, `${element.localName}Pr`))
+  }
+  const marked = [paragraph, ...properties].flatMap(node => REVISION_ELEMENTS.flatMap(name => elements(node, name)))
+  if (!listed?.size && !marked.length) return
+  return [...new Set([...listed ?? [], ...marked.map(node => node.getAttributeNS(W, "author") ?? "")])].filter(Boolean)
+}
+
+export async function openRevision(source: Uint8Array, options: DocxRevisionOptions = {}) {
   const parts = unzipSync(source)
   const documents = Object.fromEntries(Object.entries(parts).filter(([name]) => name.endsWith(".xml"))
     .map(([name, bytes]) => [name, parse(strFromU8(bytes))]))
   if (!documents["word/document.xml"]) throw new Error("invalid_docx_package")
-  if (Object.values(documents).some(doc => ["ins", "del", "moveFrom", "moveTo"].some(name => elements(doc, name).length)))
+  const layer = options.pendingRevisions === "layer"
+  if (!layer && Object.values(documents).some(doc => ["ins", "del", "moveFrom", "moveTo"].some(name => elements(doc, name).length)))
     throw new DocxTrackedRevisionsError()
   const dx = await docxodus()
-  const session = dx.openDocxSession(source, { smartQuotes: false, persistAnchorIds: false })
+  // The projection is the accepted text in either mode; render_inline changes
+  // only how this session's edits are written.
+  const session = dx.openDocxSession(source, { smartQuotes: false, persistAnchorIds: false,
+    ...options.revisionAuthor ? { trackedChanges: "render_inline" as const, revisionAuthor: options.revisionAuthor } : {} })
   try {
+    const listed = layer ? listedRevisions(session) : undefined
     const projection = session.project()
     const tables = Object.entries(projection.anchorIndex).filter(([, anchor]) => anchor.kind === "tbl")
       .map(([token, anchor]) => ({ ...anchor, xml: session.raw.getXml(token) }))
@@ -354,7 +437,9 @@ export async function openRevision(source: Uint8Array) {
       const xml = parse(session.raw.getXml(match.enclosingAnchor.id)).documentElement
       if (!node || canonical(node) !== canonical(xml)) throw new Error("unsupported_docx_projection_mapping")
       const metadata = session.getBlockMetadata(match.enclosingAnchor.id)!
-      return { match, part, node, xml, metadata }
+      // Kept off the revision views, so prompts and projection hashes do not change.
+      const pending = listed && pendingAuthors(listed.get(match.enclosingAnchor.id), node)
+      return { match, part, node, xml, metadata, pending }
     })
     if ([...counts].some(([part, count]) => elements(documents[part], "p").slice(count).some(node => !emptyParagraph(node))))
       throw new Error("incomplete_docx_projection")
@@ -409,11 +494,12 @@ export async function openRevision(source: Uint8Array) {
       }).join("")
     }).join("\n\n")
     const revision = { schema, source_sha256, projection_sha256: digest(JSON.stringify(views)), markdown, paragraphs: views }
-    return { session, parts, documents, paragraphs, revision }
+    return { session, parts, documents, paragraphs, revision, options }
   } catch (error) { session.close(); throw error }
 }
 
-export function verifyPreservation(before: Awaited<ReturnType<typeof openRevision>>, after: Awaited<ReturnType<typeof openRevision>>, changed: Set<number>) {
+export function verifyPreservation(before: Awaited<ReturnType<typeof openRevision>>, saved: Awaited<ReturnType<typeof openRevision>>, changed: Set<number>) {
+  const after = before.options.revisionAuthor ? withoutTrackChangesSetting(before, saved) : saved
   if (before.paragraphs.length !== after.paragraphs.length) throw new Error("docx_paragraph_structure_changed")
   const ignoredBefore = new Set([...changed].map(ordinal => before.paragraphs[ordinal].node))
   const ignoredAfter = new Set([...changed].map(ordinal => after.paragraphs[ordinal].node))
@@ -444,6 +530,40 @@ export function verifyPreservation(before: Awaited<ReturnType<typeof openRevisio
   }
 }
 
+// A tracked-change save switches Track Changes on: Docxodus adds
+// w:trackRevisions to the settings part and, when the package has none, creates
+// the part with its relationship and content type. A part that differs only by
+// that is compared as it was; any other change still refuses.
+function withoutTrackChangesSetting(before: Opened, after: Opened): Opened {
+  const settings = "word/settings.xml"
+  const created = !before.parts[settings]
+  const parts = { ...after.parts }
+  const documents = { ...after.documents }
+  const tolerated: [string, (node: Element) => boolean][] = [[settings, node => node.namespaceURI === W && node.localName === "trackRevisions"]]
+  if (created) tolerated.push(
+    ["[Content_Types].xml", node => node.localName === "Override" && node.getAttribute("PartName") === `/${settings}`],
+    ["word/_rels/document.xml.rels", node => node.localName === "Relationship"
+      && node.getAttribute("Type") === "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings"])
+  const stripped = (bytes: Uint8Array, added: (node: Element) => boolean) => {
+    const root = parse(strFromU8(bytes)).documentElement
+    for (const node of Array.from(root.childNodes)) if (node.nodeType === 1 && added(node as Element)) root.removeChild(node)
+    return root
+  }
+  for (const [name, added] of tolerated) {
+    if (!after.parts[name]) continue
+    const root = stripped(after.parts[name], added)
+    if (name === settings && created) {
+      if (Array.from(root.childNodes).some(node => node.nodeType === 1)) continue
+      delete parts[name]
+      delete documents[name]
+    } else if (before.parts[name] && canonical(root) === canonical(stripped(before.parts[name], added))) {
+      parts[name] = before.parts[name]
+      if (documents[name]) documents[name] = before.documents[name]!
+    }
+  }
+  return { ...after, parts, documents }
+}
+
 function parse(xml: string) {
   const fail = (message: string) => { throw new Error(`invalid_docx_xml:${message}`) }
   return new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(xml, "application/xml")
@@ -454,10 +574,17 @@ function partLabel(scope: string) {
   return ({ body: "Body text", fn: "Footnotes", en: "Endnotes", cmt: "Comments" } as Record<string, string>)[scope] ?? scope
 }
 function elements(node: Document | Element, name: string) { return Array.from(node.getElementsByTagNameNS(W, name)) }
-// grep projects w:t text only: breaks of any type, tabs and field codes add
-// nothing, so a paragraph holding only those has no match and is skipped here.
+// grep projects accepted w:t text only: breaks of any type, tabs, field codes
+// and text a pending deletion or move removes add nothing, so a paragraph holding
+// only those has no match and is skipped here. Only a layer-mode reader meets
+// such text; refuse mode has thrown before.
 function emptyParagraph(node: Element) {
-  return elements(node, "t").every(text => !text.textContent)
+  return elements(node, "t").every(text => !text.textContent || removedByRevision(text, node))
+}
+function removedByRevision(text: Element, paragraph: Element) {
+  for (let node = text.parentNode; node && node !== paragraph; node = node.parentNode)
+    if ((node as Element).namespaceURI === W && ["del", "moveFrom"].includes((node as Element).localName)) return true
+  return false
 }
 function children(node: Element, name: string) {
   return Array.from(node.childNodes).filter((child): child is Element => child.nodeType === 1)
