@@ -59,8 +59,11 @@ export function Tooltip({ label, children, describes = true }: { label: string; 
     return () => { window.removeEventListener("resize", hide); window.removeEventListener("scroll", hide, true); document.removeEventListener("keydown", onEscape, true) }
   }, [anchor])
   const child = isValidElement(children) ? children as ReactElement<{ "aria-describedby"?: string }> : null
+  // Over rather than enter: a control rendered under a pointer that has not
+  // moved (Save again after saving) gets a mouseover from the control it
+  // replaced and no mouseout, so React never reports an enter.
   return (
-    <span ref={host} style={{ display: "contents" }} onMouseEnter={() => { pointerWithin.current = true; show() }} onMouseLeave={leave} onFocus={show} onBlur={() => { if (!pointerWithin.current) hide() }}>
+    <span ref={host} style={{ display: "contents" }} onMouseOver={() => { pointerWithin.current = true; show() }} onMouseLeave={leave} onFocus={show} onBlur={() => { if (!pointerWithin.current) hide() }}>
       {child && describes ? cloneElement(child, { "aria-describedby": [child.props["aria-describedby"], anchor ? id : undefined].filter(Boolean).join(" ") || undefined }) : children}
       {anchor && createPortal(<span ref={bubble} id={id} role="tooltip" className="tip-bubble" onMouseEnter={() => { pointerWithin.current = true; cancelDismissal() }} onMouseLeave={leave} style={{ left: position.x, top: position.y, transform: "none", width: "max-content" }}>{label}</span>, host.current?.closest("dialog[open]") ?? document.body)}
     </span>
