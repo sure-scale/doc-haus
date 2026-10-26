@@ -113,7 +113,8 @@ between simultaneous engines.
 
 ## Start on Windows
 
-Run start.cmd from a clone in Command Prompt or PowerShell. It uses x64 Bun 1.4.0
+Run start.cmd from a clone in Command Prompt or PowerShell; in Git Bash,
+./start.sh hands over to it. It uses x64 Bun 1.4.0
 or newer from BUN_BIN, then PATH, then %USERPROFILE%\.bun\bin\bun.exe (or
 %BUN_INSTALL%\bin), and offers Bun's official PowerShell installer when none
 works. Some native dependencies ship for x64 Windows only, so on Windows on Arm

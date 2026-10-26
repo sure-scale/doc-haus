@@ -8,9 +8,11 @@ if defined BUN_INSTALL set "BUN_ROOT=%BUN_INSTALL%"
 set "BUN_HOME=%BUN_ROOT%\bin\bun.exe"
 :: Some native dependencies ship for x64 Windows only, so Windows on Arm runs
 :: x64 Bun under emulation, kept beside Bun's own install.
+:: The registry holds the machine's architecture: programs under x64 emulation,
+:: such as Git Bash, pass on PROCESSOR_ARCHITECTURE=AMD64. Git Bash also puts
+:: its own find first on PATH.
 set "ARM64="
-if /i "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "ARM64=1"
-if /i "%PROCESSOR_ARCHITEW6432%"=="ARM64" set "ARM64=1"
+reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PROCESSOR_ARCHITECTURE 2>nul | "%SystemRoot%\System32\find.exe" /i "ARM64" >nul && set "ARM64=1"
 if defined ARM64 set "BUN_HOME=%BUN_ROOT%\x64\bun.exe"
 if defined BUN_BIN call :supported "%BUN_BIN%" && goto run
 if defined BUN_BIN echo doc.haus could not run x64 Bun 1.4.0 or newer at %BUN_BIN%. Set BUN_BIN to a working x64 Bun executable, then run start.cmd again. 1>&2
