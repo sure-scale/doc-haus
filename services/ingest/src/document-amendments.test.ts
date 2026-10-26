@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { expect, setSystemTime, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { mkdtemp, mkdir, rm } from "node:fs/promises"
 import { chmodSync, existsSync, realpathSync, rmSync } from "node:fs"
@@ -12,7 +12,7 @@ import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { createDocxLocalization, createDocxRevision, openRevision, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import wordIntegration from "../../../dochaus/tool/word-integration"
-import { acceptedWorkingDocxUpdate, documentAmendmentRoutes } from "./document-amendments"
+import { acceptedWorkingDocxUpdate, documentAmendmentRoutes, readDocumentAmendmentDiagnostic } from "./document-amendments"
 import { writeDeliverable, writeDeliverableRevision } from "./deliverable"
 import { buildRedlined, bake, redlineState, redlineStaleReason } from "./redline"
 import { docxodus } from "./docxodus"
@@ -500,7 +500,7 @@ test("a revision-API edit or a removed pointer stales only the proposals on thos
     // Accept all names the first stale proposal and counts the others.
     const all = await ingest.request(`${matter.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
     expect({status:all.status,body:await all.json()}).toEqual({status:409,body:{error:
-      `The change to "five days" can no longer be accepted. ${paragraphChanged} 1 other proposal can no longer be accepted either; the change list says why.`}})
+      `The change to “five days” can no longer be accepted. ${paragraphChanged} 1 other proposal can no longer be accepted either; the change list says why.`}})
     expect(sha256(await Bun.file(matter.file).bytes())).toBe(sha256(current))
     // Stale proposals are left out of the tracked-changes export; the valid one remains.
     const exported = await ingest.request(`${matter.route}/documents/redlined?name=working.docx`)
@@ -720,6 +720,68 @@ test("a failed Request edits replaces the earlier request's open items and keeps
       expect(await failed.json()).toMatchObject({error:"The requested changes could not be placed in the document. No proposals were recorded; try again, or say where each change goes."})
       expect(await prepared()).toEqual({redline_ids,open_items:[]})
       expect(pending()).toEqual([{id:redline_ids[0],find_text:"three months",status:"pending"}])
+    })
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("a Request edits that fails waiting for the document's lock says the document is busy and replaces the earlier request's open items", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-locked-prepare-"))
+  const policy = "Confirm the client's retention policy."
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:"three months",replacement:"six months",target_context:"retention period",reason:"Requested retention update."},
+  ],open_items:[policy]}),firstCandidate)
+  try {
+    await writeDeliverable(directory,"working.docx",Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph("Retain records for three months."),
+    ]}]})))))
+    const prepared = async () => await (await documentAmendmentRoutes({directory:() => directory}).request("http://local/matter/documents/amendments?name=working.docx")).json()
+    const pending = () => {const db=openDb(directory);try {return db.query("SELECT id,find_text,status FROM redlines").all()} finally {db.close()}}
+    await withPreparation(directory,engine,async (prepare) => {
+      const first = await prepare("Extend the retention period to six months.")
+      expect(first.status).toBe(200)
+      const {redline_ids} = await first.json() as {redline_ids:number[]}
+      expect(await prepared()).toEqual({redline_ids,open_items:[policy]})
+      // Another change to the document holds its lock for longer than Prepare waits.
+      let held!:() => void;let release!:() => void
+      const holding = new Promise<void>((resolve) => {held=resolve})
+      const done = new Promise<void>((resolve) => {release=resolve})
+      const owner = withArtifactMutationLocksAsync(directory,["working.docx"],async () => {held();await done})
+      await holding
+      const locked = prepare("Extend the retention period to six months and keep it under review.")
+      // Prepare starts waiting as its diagnostic opens; the clock then passes the wait's end.
+      while (readDocumentAmendmentDiagnostic(directory,"working.docx")?.status !== "running") await Bun.sleep(5)
+      setSystemTime(new Date(Date.now()+31_000))
+      let failed:Response
+      try {failed = await locked} finally {setSystemTime();release();await owner}
+      expect(failed.status).toBe(409)
+      expect(await failed.json()).toMatchObject({error:"This document is busy with another change. Try again in a moment."})
+      // It failed before it read the file, which it does holding the lock.
+      expect(readDocumentAmendmentDiagnostic(directory,"working.docx")).toMatchObject({status:"failed",phase:"source_read"})
+      expect(await prepared()).toEqual({redline_ids,open_items:[]})
+      expect(pending()).toEqual([{id:redline_ids[0],find_text:"three months",status:"pending"}])
+    })
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("a failed Request edits after one that proposed nothing leaves no earlier result", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-failed-after-none-"))
+  const policy = "Confirm the client's retention policy."
+  // The first request proposes nothing; the second's locator answer cannot be read.
+  let amend = false
+  const engine = syntheticEngine(() => ({amendments:amend ? [
+    {before_quote:"three months",replacement:"six months",target_context:"retention period",reason:"Requested retention update."},
+  ] : [],open_items:[policy]}),() => ({}))
+  try {
+    await writeDeliverable(directory,"working.docx",Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph("Retain records for three months."),
+    ]}]})))))
+    const prepared = async () => await (await documentAmendmentRoutes({directory:() => directory}).request("http://local/matter/documents/amendments?name=working.docx")).json()
+    await withPreparation(directory,engine,async (prepare) => {
+      expect((await prepare("Check the retention period.")).status).toBe(200)
+      expect(await prepared()).toEqual({redline_ids:[],open_items:[policy]})
+      amend = true
+      expect((await prepare("Extend the retention period to six months.")).status).toBe(409)
+      expect(await prepared()).toBeNull()
     })
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
@@ -1242,7 +1304,7 @@ test("on an uploaded markup with Word paragraph ids, each Accept keeps doc.haus'
     // An edit inside doc.haus's own tracked change is not proposed, and says why.
     const inside = await matter.prepare("Make the Commonwealth's law govern.")
     expect(await inside.json()).toMatchObject({proposed:0,open_items:[
-      "The change to \"the State\" was not proposed: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.",
+      "The change to “the State” was not proposed: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.",
     ]})
   } finally {
     await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
@@ -1300,7 +1362,7 @@ test("on an uploaded markup, a proposal whose paragraph gains their formatting c
     {before_quote:"without consent",replacement:"without prior written consent",target_context:"assignment clause",reason:"Consent must be written."},
   ],open_items:[]}),firstCandidate)
   const ingest = await isolatedIngest(temporary,engine.server)
-  const formatted = "The change to \"the Province\" can no longer be accepted: its paragraph now has a pending change by Morgan Okafor. Reject this proposal, decide that change under Tracked changes, then request edits again."
+  const formatted = "The change to “the Province” can no longer be accepted: its paragraph now has a pending change by Morgan Okafor. Reject this proposal, decide that change under Tracked changes, then request edits again."
   try {
     await ingest.start("only")
     const matter = await ingest.matter("Markup reformatted after preparing")
@@ -1431,7 +1493,7 @@ test("on an uploaded markup, Accept all writes proposals prepared under differen
     expect(await overlap.pending()).toEqual([[first[1]!,undefined,undefined],[wording!,undefined,undefined]])
     const refused = await ingest.request(`${overlap.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
     expect({status:refused.status,body:await refused.json()}).toEqual({status:409,body:{error:
-      "The changes to \"the Province\" and \"law of the Province\" overlap, so Accept all cannot write both. Accept the one you want on its own, then reject the other and request that edit again."}})
+      "The changes to “the Province” and “law of the Province” overlap, so Accept all cannot write both. Accept the one you want on its own, then reject the other and request that edit again."}})
     expect(sha256(await Bun.file(overlap.file).bytes())).toBe(sha256(before))
     expect([first[1]!,wording!].map(overlap.status)).toEqual(["pending","pending"])
   } finally {
@@ -1490,7 +1552,7 @@ test("on an uploaded markup, the preview and Accept all write a prepared proposa
     const [law2] = (await (await rewritten.prepare("Make the State's law govern.")).json() as {redline_ids:number[]}).redline_ids
     const plural = older(rewritten,"law of the Province","laws of the Province")
     const before = await Bun.file(rewritten.file).bytes()
-    const refusal = "The change to \"law of the Province\" cannot be written with the rest: its words have changed, or another proposal in this list changes them. Reject it, accept the rest, then request that edit again."
+    const refusal = "The change to “law of the Province” cannot be written with the rest: its words have changed, or another proposal in this list changes them. Reject it, accept the rest, then request that edit again."
     const unpreviewed = await ingest.request(`${rewritten.route}/documents/redlined?name=working.docx`)
     expect({status:unpreviewed.status,body:await unpreviewed.json()}).toEqual({status:409,body:{error:refusal}})
     const refused = await ingest.request(`${rewritten.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
@@ -1562,9 +1624,13 @@ test("accepting paragraph-bound amendments to a numbered list paragraph and a ta
         rPr:Array.from(run.getElementsByTagNameNS(W,"rPr")).map(String).join(""),markup:String(run)}))
       const beforeRuns = runs(before.paragraphs[listOrdinal].node)
       const afterRuns = runs(after.paragraphs[listOrdinal].node)
-      expect(afterRuns.filter((run) => !run.text.includes("ten days")).map((run) => run.markup))
-        .toEqual(beforeRuns.filter((run) => !run.text.includes("thirty days")).map((run) => run.markup))
-      expect(afterRuns.find((run) => run.text.includes("ten days"))!.rPr).toBe(beforeRuns.find((run) => run.text.includes("thirty days"))!.rPr)
+      // The edited run is written in pieces where its words change, each in its formatting.
+      const edited = beforeRuns.find((run) => run.text.includes("thirty days"))!
+      const kept = beforeRuns.filter((run) => run !== edited).map((run) => run.markup)
+      expect(afterRuns.filter((run) => kept.includes(run.markup)).map((run) => run.markup)).toEqual(kept)
+      const pieces = afterRuns.filter((run) => !kept.includes(run.markup))
+      expect(pieces.map((run) => run.text).join("")).toBe(edited.text.replace("thirty","ten"))
+      expect(pieces.every((run) => run.rPr === edited.rPr)).toBe(true)
       // The table cell's added words keep the cell run's underline.
       const cellRuns = runs(after.paragraphs[cellOrdinal].node)
       expect(cellRuns.map((run) => run.text).join("")).toBe("In writing or by email")
@@ -1800,7 +1866,7 @@ test("a quote with one space where the document has two is placed in the documen
       expect(response.status).toBe(200)
       return await response.json() as {redline_ids:number[];open_items:string[]}
     })
-    expect(body.open_items).toEqual(["The change to “Each invoice is final. It binds the Client.” was not proposed: those words are not in the document. Say which words it changes, then request edits again."])
+    expect(body.open_items).toEqual(["The change to “Each invoice is final. It binds the Client.” was not proposed: those words appear more than once in the document. Say which of them it changes, then request edits again."])
     const db = openDb(temporary)
     const rows = (() => {try {return body.redline_ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
     expect(rows.map((row) => [row.find_text,row.new_text])).toEqual([[
@@ -1843,6 +1909,143 @@ test("a replacement with one space where its quote has the document's two keeps 
       `5. Notices. Notices must be given in writing.  ${added}A notice sent by email is effective on the next Business Day.`,
       "Each invoice is final. It binds the Client."])
   } finally {engine.server.stop(true);await rm(temporary,{recursive:true,force:true})}
+})
+
+// The model writes as its draft view reads: asterisks touching the words they
+// enclose mark them bold or italic, and a backslash escapes a character. Its
+// other asterisks are words: a placeholder, a footnote, a formula, or the
+// document's own that it quotes as they are.
+test("a replacement written with the draft view's bold marks or escapes is proposed as plain words, keeping its placeholder, footnote and formula asterisks; one that only adds marks changes no words", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-replacement-markup-"))
+  const change = (before_quote:string,replacement:string) => ({before_quote,replacement,target_context:"the clause quoted",reason:"Requested."})
+  const engine = syntheticEngine(() => ({amendments:[
+    change("the services described in Schedule 1.","the services described in Schedule 1 (the **\"Services\"**)."),
+    change("within thirty days","within \\[number\\] days"),
+    change("The Purchase Price is £[*].","The Purchase Price is £[*] plus VAT, payable on [*]."),
+    change("The Fee* is payable monthly.","The Fee*, Costs* and Expenses* are payable monthly."),
+    change("Fee * Index.","Fee * Index * 1.05."),
+    change("Fee*Index.","Fee*Index*1.05."),
+    change("The **\\[Buyer\\]** shall pay the Price.","The **[Buyer]** shall promptly pay the Price."),
+    change("The **Deposit** is £\\[\\*\\].","The **Deposit** is £[*], payable on [*]."),
+    change("The Charges, *Costs* and Expenses are payable monthly.","The Charges, *Costs* and Expenses are payable quarterly."),
+    change("shall *not* subcontract","shall *not* subcontract or assign"),
+    change("The Customer shall pay","The **Customer** shall pay"),
+  ],open_items:[]}),firstCandidate)
+  try {
+    await writeDeliverable(directory,"working.docx",await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph("The Supplier shall provide the services described in Schedule 1."),
+      new Paragraph("The Buyer shall pay each invoice within thirty days."),
+      new Paragraph("The Purchase Price is £[*]."),
+      new Paragraph("The Fee* is payable monthly."),
+      new Paragraph("The Adjusted Fee = Fee * Index."),
+      new Paragraph("The Indexed Fee = Fee*Index."),
+      new Paragraph({children:[new TextRun("The "),new TextRun({text:"[Buyer]",bold:true}),new TextRun(" shall pay the Price.")]}),
+      new Paragraph({children:[new TextRun("The "),new TextRun({text:"Deposit",bold:true}),new TextRun(" is £[*].")]}),
+      new Paragraph({children:[new TextRun("The Charges"),new TextRun({text:", Costs",italics:true}),new TextRun(" and Expenses are payable monthly.")]}),
+      new Paragraph("The Supplier shall *not* subcontract."),
+      new Paragraph("The Customer shall pay the Fees."),
+    ]}]})))
+    const original = await Bun.file(path.join(directory,"working.docx")).bytes()
+    const body = await withPreparation(directory,engine,async (prepare) => {
+      const response = await prepare("Define the services, leave the payment period and payment date for the client to fill in, add VAT, the expenses, the 5% uplift and assignment, and put the Customer in bold.")
+      expect(response.status).toBe(200)
+      return await response.json() as {redline_ids:number[];open_items:string[]}
+    })
+    // A mark touches a word on its inner side: punctuation that starts a run
+    // after a word stays outside it.
+    expect(engine.prompts[0]).toContain("The Charges, *Costs* and Expenses are payable monthly.")
+    expect(body.open_items).toEqual(["The change to “The Customer shall pay” was not proposed: it changes no words. Say which words change, then request edits again."])
+    const db = openDb(directory)
+    const rows = (() => {try {return body.redline_ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect(rows.map((row) => [row.find_text,row.new_text])).toEqual([
+      ["the services described in Schedule 1.","the services described in Schedule 1 (the \"Services\")."],
+      ["within thirty days","within [number] days"],
+      ["The Purchase Price is £[*].","The Purchase Price is £[*] plus VAT, payable on [*]."],
+      ["The Fee* is payable monthly.","The Fee*, Costs* and Expenses* are payable monthly."],
+      ["Fee * Index.","Fee * Index * 1.05."],
+      ["Fee*Index.","Fee*Index*1.05."],
+      ["The [Buyer] shall pay the Price.","The [Buyer] shall promptly pay the Price."],
+      ["The Deposit is £[*].","The Deposit is £[*], payable on [*]."],
+      ["The Charges, Costs and Expenses are payable monthly.","The Charges, Costs and Expenses are payable quarterly."],
+      ["shall *not* subcontract","shall *not* subcontract or assign"]])
+    const after = await openRevision(await bake(original,rows,await redlineState(original,rows)))
+    try {
+      expect(after.revision.paragraphs.map((row) => row.text)).toEqual([
+        "The Supplier shall provide the services described in Schedule 1 (the \"Services\").","The Buyer shall pay each invoice within [number] days.",
+        "The Purchase Price is £[*] plus VAT, payable on [*].","The Fee*, Costs* and Expenses* are payable monthly.","The Adjusted Fee = Fee * Index * 1.05.",
+        "The Indexed Fee = Fee*Index*1.05.","The [Buyer] shall promptly pay the Price.","The Deposit is £[*], payable on [*].",
+        "The Charges, Costs and Expenses are payable quarterly.",
+        "The Supplier shall *not* subcontract or assign.","The Customer shall pay the Fees."])
+    } finally {after.session.close()}
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+// A quote that starts or ends inside a bold or italic run copies one of the
+// draft view's marks around it and not the other. A replacement that closes
+// the run itself would write the words before the quote twice.
+test("a quote that cuts through a bold run is placed without the mark it copied, and the run stays bold; one whose replacement closes the run is an open item", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-cut-run-"))
+  const bold = (text:string) => new TextRun({text,bold:true})
+  const change = (before_quote:string,replacement:string) => ({before_quote,replacement,target_context:"the clause quoted",reason:"Requested."})
+  const engine = syntheticEngine(() => ({amendments:[
+    change("Information** means any information disclosed by a party.","Information** means any information, in any form, disclosed by a party."),
+    change("made between the **Supplier","made on 1 May 2026 between the **Supplier"),
+    change("Information** means any information","**Confidential Information** means all information"),
+  ],open_items:[]}),firstCandidate)
+  try {
+    await writeDeliverable(directory,"working.docx",await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph({children:[bold("Confidential Information"),new TextRun(" means any information disclosed by a party.")]}),
+      new Paragraph({children:[new TextRun("This Agreement is made between the"),bold(" Supplier Group "),new TextRun("and the Customer.")]}),
+    ]}]})))
+    const original = await Bun.file(path.join(directory,"working.docx")).bytes()
+    const body = await withPreparation(directory,engine,async (prepare) => {
+      const response = await prepare("Cover information in any form, and date the agreement 1 May 2026.")
+      expect(response.status).toBe(200)
+      return await response.json() as {redline_ids:number[];open_items:string[]}
+    })
+    // The marks touch the words, whatever spaces the bold run holds.
+    expect(engine.prompts[0]).toContain("This Agreement is made between the **Supplier Group** and the Customer.")
+    expect(body.open_items).toEqual(["The change to “Information** means any information” was not proposed: those words are not in the document. Say which words it changes, then request edits again."])
+    const db = openDb(directory)
+    const rows = (() => {try {return body.redline_ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect(rows.map((row) => [row.find_text,row.new_text])).toEqual([
+      ["Information means any information disclosed by a party.","Information means any information, in any form, disclosed by a party."],
+      ["made between the Supplier","made on 1 May 2026 between the Supplier"]])
+    const after = await openRevision(await bake(original,rows,await redlineState(original,rows)))
+    try {
+      expect(after.revision.paragraphs.map((row) => row.text)).toEqual([
+        "Confidential Information means any information, in any form, disclosed by a party.","This Agreement is made on 1 May 2026 between the Supplier Group and the Customer."])
+      expect(after.revision.paragraphs.flatMap((row) => row.formatting.filter((fragment) => fragment.formatting.bold).map((fragment) => fragment.text)))
+        .toEqual(["Confidential Information"," Supplier Group "])
+    } finally {after.session.close()}
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+// Word documents keep a number with its word or currency sign by a
+// non-breaking space, which the model may quote as an ordinary one.
+test("a quote with ordinary spaces where the document has non-breaking ones is placed in the document's words, which keep them; one found so more than once is an open item", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-nonbreaking-"))
+  const fee = (amount:string) => `Subject to clause\u00a05, the Fee is £\u202f${amount} per month.`
+  const engine = syntheticEngine(() => ({amendments:[{before_quote:"Subject to clause 5, the Fee is £ 100 per month.",
+    replacement:"Subject to clause 5, the Fee is £ 120 per month.",target_context:"fee clause",reason:"Requested fee increase."},
+  {before_quote:"£ 100",replacement:"£ 150",target_context:"deposit clause",reason:"Requested deposit increase."}],open_items:[]}),firstCandidate)
+  try {
+    await writeDeliverable(directory,"working.docx",await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph(fee("100")),new Paragraph("A deposit of £  100 is payable on signing."),
+    ]}]})))
+    const original = await Bun.file(path.join(directory,"working.docx")).bytes()
+    const body = await withPreparation(directory,engine,async (prepare) => {
+      const response = await prepare("Raise the monthly fee to £120 and the deposit to £150.")
+      expect(response.status).toBe(200)
+      return await response.json() as {redline_ids:number[];open_items:string[]}
+    })
+    expect(body.open_items).toEqual(["The change to “£ 100” was not proposed: those words appear more than once in the document. Say which of them it changes, then request edits again."])
+    const db = openDb(directory)
+    const rows = (() => {try {return body.redline_ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect(rows.map((row) => [row.find_text,row.new_text])).toEqual([[fee("100"),fee("120")]])
+    expect(readDocxRevisionText(await buildRedlined(original,rows))).toEqual({inserted_text:["120"],deleted_text:["100"]})
+    expect((await createDocxRevision(await bake(original,rows))).paragraphs[0]!.text).toBe(fee("120"))
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
 test("a same-paragraph sibling goes stale and stays pending and visible while plain download and fresh tracked changes remain available", async () => {

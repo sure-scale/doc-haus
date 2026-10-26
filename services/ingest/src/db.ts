@@ -431,7 +431,7 @@ export function listPendingRedlines(db: Database, docPath: string): RedlineRow[]
 // The latest Prepare for one Word document: its batch and the open items it
 // reported. Open items are stored nowhere else, so the viewer lists them from
 // here until the next Prepare, one that fails included, replaces them or the
-// document is deleted.
+// document is deleted. A Prepare that leaves nothing of the last one stores none.
 export type PreparedChanges = { redline_ids: number[]; open_items: string[] }
 const preparedKey = (docPath: string) => `document-amendment-prepared:${documentRegistryIdentity(docPath)}`
 
@@ -440,8 +440,9 @@ export function getPreparedChanges(db: Database, docPath: string): PreparedChang
   return value ? JSON.parse(value) as PreparedChanges : null
 }
 
-export function setPreparedChanges(db: Database, docPath: string, prepared: PreparedChanges) {
-  setMeta(db, preparedKey(docPath), JSON.stringify(prepared))
+export function setPreparedChanges(db: Database, docPath: string, prepared: PreparedChanges | null) {
+  if (prepared) setMeta(db, preparedKey(docPath), JSON.stringify(prepared))
+  else db.run("DELETE FROM meta WHERE key = ?", [preparedKey(docPath)])
 }
 
 export function getRedline(db: Database, id: number): RedlineRow | null {

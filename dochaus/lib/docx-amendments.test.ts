@@ -5,6 +5,7 @@ import { createDocxRevision, createDocxLocalization, applyDocxLocalization, appl
   pendingRevisionAnchors, pendingRevisionParagraphs, verifyPreservation } from "./docx-amendments"
 import { paragraphTargets } from "./drafting-amendment"
 import { renderMarkdownToDocx } from "./render"
+import { wordChanges } from "./word-changes"
 import { docxodus } from "./docxodus"
 import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx } from "../test/support/counterparty-markup-fixture"
 import { revisionTablesOriginalDocx } from "../test/support/revision-tables-fixture"
@@ -232,7 +233,8 @@ for (const [name, middle] of [["bold", "**then**"], ["italic", "*then*"], ["hype
 test("context localization retains run formatting for insertion, deletion, no-op and changed Unicode text", async () => {
   const source = (await renderMarkdownToDocx("# Working note\n\nLead **value** tail.\n\nLead **😀** tail.\n\nThe Supplier must notify the **Buyer** in writing.\n")).bytes
   for (const [before_quote, replacement, expected] of [
-    ["Lead value", "Lead new value", "Lead **new value** tail."],
+    // An inserted word is typed after the text before it, not into the bold word after it.
+    ["Lead value", "Lead new value", "Lead new **value** tail."],
     ["value tail.", "value.", "Lead **value**."],
     ["Lead value tail.", "Lead value tail.", "Lead **value** tail."],
     ["Lead 😀 tail.", "Lead 😁 tail.", "Lead **😁** tail."],
@@ -287,6 +289,106 @@ for (const [name, content] of [
     expect(after[1]).toContain(content)
   })
 }
+
+// A paragraph with its tabs and breaks as \t and \n, as the reader of the saved file sees it.
+function laidOut(bytes: Uint8Array, start: string) {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const doc = new DOMParser().parseFromString(strFromU8(unzipSync(bytes)["word/document.xml"]!), "application/xml")
+  const shown = (paragraph: Element) => Array.from(paragraph.getElementsByTagNameNS(W, "*")).map(node => {
+    for (let at = node.parentNode; at && at !== paragraph; at = at.parentNode) if ((at as Element).localName === "del") return ""
+    return node.localName === "t" ? node.textContent : node.localName === "tab" ? "\t" : node.localName === "br" ? "\n" : ""
+  }).join("")
+  return Array.from(doc.getElementsByTagNameNS(W, "p")).map(shown).find(text => text.startsWith(start))
+}
+
+// A document whose paragraphs after the first are these runs.
+async function runsDocx(paragraphs: string[]) {
+  const markers = paragraphs.map((_, index) => `Marker ${index + 1}.`)
+  const rendered = unzipSync((await renderMarkdownToDocx(`First paragraph.\n\n${markers.join("\n\n")}\n`)).bytes)
+  const xml = paragraphs.reduce((text, runs, index) => {
+    const placed = text.replace(`<w:r><w:t xml:space="preserve">${markers[index]}</w:t></w:r>`, runs)
+    expect(placed).not.toBe(text)
+    return placed
+  }, strFromU8(rendered["word/document.xml"]!))
+  return zipSync({ ...rendered, "word/document.xml": strToU8(xml) })
+}
+
+// Docxodus writes an edited run as its tabs and breaks, then all its text.
+test("a tab or break stays where it was in a run the edit rewrites, and an insertion in that run is written, tracked or not", async () => {
+  const source = await runsDocx(["<w:r><w:t>Acme Ltd</w:t><w:br/><w:t>1 Main Street, London</w:t></w:r>",
+    '<w:r><w:t>(a)</w:t><w:tab/><w:t xml:space="preserve">the Supplier shall pay the Fee;</w:t></w:r>'])
+  const revision = await createDocxRevision(source)
+  for (const [start, before_quote, replacement, after] of [
+    ["Acme", "London", "Leeds", "Acme Ltd\n1 Main Street, Leeds"],
+    ["Acme", "Main Street", "Main High Street", "Acme Ltd\n1 Main High Street, London"],
+    ["(a)", "shall pay", "shall promptly pay", "(a)\tthe Supplier shall promptly pay the Fee;"],
+    ["(a)", "(a)", "(b)", "(b)\tthe Supplier shall pay the Fee;"],
+  ] as const) {
+    const paragraph_handle = revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle
+    for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
+      const output = await applyDocxParagraphEdits(source, [{ id: "edit", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options)
+      expect(laidOut(output.bytes, after.slice(0, 2))).toBe(after)
+    }
+  }
+})
+
+// The text reads through a tab or break: "1.1<tab>Definitions" is "1.1Definitions".
+test("a change of a word read across a tab or break leaves the tab or break between the same characters, tracked or not", async () => {
+  const bold = (text: string) => `<w:r><w:rPr><w:b/></w:rPr><w:t>${text}</w:t></w:r>`
+  const source = await runsDocx([`${bold("1.1")}<w:r><w:tab/></w:r>${bold("Definitions")}`,
+    "<w:r><w:t>Acme Ltd</w:t><w:br/><w:t>1 Main Street</w:t></w:r>"])
+  const revision = await createDocxRevision(source)
+  for (const [start, before_quote, replacement, after] of [
+    ["1.1", "1.1Definitions", "1.2Definitions", "1.2\tDefinitions"],
+    ["1.1", "1.1Definitions", "1.1Definitions and Interpretation", "1.1\tDefinitions and Interpretation"],
+    ["Acme", "Acme Ltd1 Main Street", "Acme Limited1 Main Street", "Acme Limited\n1 Main Street"],
+  ] as const) {
+    const paragraph_handle = revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle
+    for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
+      const output = await applyDocxParagraphEdits(source, [{ id: "edit", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options)
+      expect(laidOut(output.bytes, after.slice(0, 2))).toBe(after)
+    }
+  }
+})
+
+// Words that lead into the text after a tab or break are typed after it, in
+// that text's formatting; words that trail the text before it stay before it.
+test("an insertion at a tab or break lands on the side of the words it joins, tracked or not", async () => {
+  const bold = (text: string) => `<w:r><w:rPr><w:b/></w:rPr><w:t>${text}</w:t></w:r>`
+  const source = await runsDocx(['<w:r><w:t>(a)</w:t><w:tab/><w:t xml:space="preserve">the Supplier shall pay the Fee;</w:t></w:r>',
+    `${bold("1.1")}<w:r><w:tab/></w:r>${bold("Definitions")}`, "<w:r><w:t>Acme Ltd</w:t><w:br/><w:t>London</w:t></w:r>"])
+  const revision = await createDocxRevision(source)
+  for (const [start, before_quote, replacement, after] of [
+    ["(a)", "(a)the Supplier", "(a)subject to clause 3, the Supplier", "(a)\tsubject to clause 3, the Supplier shall pay the Fee;"],
+    ["1.1", "1.1Definitions", "1.1General Definitions", "1.1\tGeneral Definitions"],
+    ["Acme", "Acme LtdLondon", "Acme LtdCentral London", "Acme Ltd\nCentral London"],
+    ["Acme", "Acme LtdLondon", "Acme Ltd (UK)London", "Acme Ltd (UK)\nLondon"],
+  ] as const) {
+    const paragraph_handle = revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle
+    for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
+      const output = await applyDocxParagraphEdits(source, [{ id: "edit", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options)
+      expect(laidOut(output.bytes, after.slice(0, 2))).toBe(after)
+      if (start !== "1.1") continue
+      const shown = Array.from(new DOMParser().parseFromString(strFromU8(unzipSync(output.bytes)["word/document.xml"]!), "application/xml")
+        .getElementsByTagName("w:t")).filter(node => node.textContent?.includes("General") && (node.parentNode!.parentNode as Element).localName !== "del")
+      expect(shown.map(node => (node.parentNode as Element).getElementsByTagName("w:b").length > 0)).toEqual([true])
+    }
+  }
+})
+
+// LibreOffice saves each paragraph mark's run properties, an empty w:rPr too.
+test("an edit keeps a paragraph mark's empty run properties, as LibreOffice saves them, tracked or not", async () => {
+  const parts = unzipSync(await runsDocx(["<w:r><w:rPr/><w:t>Notices must be given in writing.</w:t></w:r>"]))
+  const xml = strFromU8(parts["word/document.xml"]!)
+  const marked = xml.replace('<w:p><w:bookmarkStart w:id="2"', '<w:p><w:pPr><w:rPr/></w:pPr><w:bookmarkStart w:id="2"')
+  expect(marked).not.toBe(xml)
+  const source = zipSync({ ...parts, "word/document.xml": strToU8(marked) })
+  const paragraph_handle = (await createDocxRevision(source)).paragraphs.find(row => row.text.startsWith("Notices"))!.paragraph_handle
+  for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
+    const output = await applyDocxParagraphEdits(source, [{ id: "edit", paragraph_handle, occurrence: 0, before_quote: "in writing", replacement: "in writing or by email" }], undefined, options)
+    expect(laidOut(output.bytes, "No")).toBe("Notices must be given in writing or by email.")
+  }
+})
 
 // A rendered deliverable's page furniture, as raw OOXML: a header with a legend
 // and a draft line, and a footer whose page number is a PAGE field.
@@ -411,6 +513,66 @@ describe("live cross-references", () => {
     }
   })
 
+  // Inserted words are typed where they stand: they take the formatting of the
+  // text before them, never that of a bold or italic term after them, and a
+  // live cross-reference beside them stays live. Characters added at a word's
+  // end take that word's formatting.
+  test("inserted text takes the formatting before it and leaves a REF field beside it live, tracked or not", async () => {
+    // The text with its bold and italic words marked, however Word splits them into runs.
+    const marked = (row: Awaited<ReturnType<typeof createDocxRevision>>["paragraphs"][number]) => {
+      let text = "", open = ""
+      for (const fragment of row.formatting) {
+        const mark = fragment.formatting.bold ? "**" : fragment.formatting.italic ? "*" : ""
+        if (mark !== open) [text, open] = [text + open + mark, mark]
+        text += fragment.text
+      }
+      return text + open
+    }
+    const source = (await renderMarkdownToDocx(AGREEMENT.replace("\n\n## Schedule 1",
+      "\n\n2.3 The Supplier must notify the **Buyer** in writing under clause 2.1, and pay *the Fee* monthly.\n\n## Schedule 1"),
+    undefined, undefined, { form: "agreement" })).bytes
+    const revision = await createDocxRevision(source, { pendingRevisions: "layer" })
+    const paragraph_handle = revision.paragraphs.find(row => row.text.startsWith("The Supplier must"))!.paragraph_handle
+    for (const [before_quote, replacement, after] of [
+      ["notify the Buyer", "notify the or Buyer", "The Supplier must notify the or **Buyer** in writing under clause 2.1, and pay *the Fee* monthly."],
+      ["Supplier must notify the Buyer in writing under clause 2.1, and pay the Fee",
+        "Vendor must notify the or Buyer in writing under clause 2.1, and pay Part A of the Fee",
+        "The Vendor must notify the or **Buyer** in writing under clause 2.1, and pay Part A of *the Fee* monthly."],
+      ["pay the Fee monthly", "pay the Fees monthly", "The Supplier must notify the **Buyer** in writing under clause 2.1, and pay *the Fees* monthly."],
+      ["notify the Buyer in writing under clause 2.1, and pay the Fee monthly", "notify the Buyers in writing under clause 2.1, and pay the Fees monthly",
+        "The Supplier must notify the **Buyers** in writing under clause 2.1, and pay *the Fees* monthly."],
+      // Inserted just after the cross-reference, as the last change.
+      ["Supplier must notify the Buyer in writing under clause 2.1,", "Vendor must notify the Buyer in writing under clause 2.1 in full,",
+        "The Vendor must notify the **Buyer** in writing under clause 2.1 in full, and pay *the Fee* monthly."],
+      // Two insertions around kept words, as Prepare joins them, the second just before the cross-reference.
+      ["The Supplier must notify the Buyer in writing under clause 2.1,",
+        "Notice is required. The Supplier must notify the Buyer in writing under clause 1.4 and 2.1,",
+        "Notice is required. The Supplier must notify the **Buyer** in writing under clause 1.4 and 2.1, and pay *the Fee* monthly."],
+    ] as const) {
+      for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
+        const output = await applyDocxParagraphEdits(source, [{ id: "words", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options)
+        expect(refs(output.bytes)).toEqual(refs(source))
+        expect(output.report.limitation).not.toContain("cross-reference")
+        expect(marked((await createDocxRevision(output.bytes, { pendingRevisions: "layer" })).paragraphs.find(row => row.label === "2.3")!)).toBe(after)
+      }
+    }
+  })
+
+  test("a cross-reference added beside a live one leaves it live, and the change is the whole numbers added, tracked or not", async () => {
+    const source = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes
+    const paragraph_handle = (await createDocxRevision(source)).paragraphs.find(row => row.label === "2.2")!.paragraph_handle
+    const [before_quote, replacement] = ["set out in clause 2.1.", "set out in clauses 3.2 and 2.1, as amended."]
+    expect(wordChanges(before_quote, replacement)).toEqual([
+      { offset: 11, replaced: "clause ", changed: "clauses 3.2 and " }, { offset: 21, replaced: "", changed: ", as amended" }])
+    for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
+      const output = await applyDocxParagraphEdits(source, [{ id: "reference", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options)
+      expect(refs(output.bytes)).toEqual(refs(source))
+      expect(output.report.limitation).not.toContain("cross-reference")
+      expect((await createDocxRevision(output.bytes, { pendingRevisions: "layer" })).paragraphs.find(row => row.label === "2.2")!.text)
+        .toBe("The Customer shall pay as set out in clauses 3.2 and 2.1, as amended.")
+    }
+  })
+
   test("a changed format of an existing run is refused, also in a batch that rewrites a cross-reference number", async () => {
     // Clause 2.3 sits in clause 2: numbers after the schedule heading stay typed.
     const source = (await renderMarkdownToDocx(AGREEMENT.replace("\n\n## Schedule 1", "\n\n2.3 Nothing here limits the **Supplier**.\n\n## Schedule 1"),
@@ -429,7 +591,7 @@ describe("live cross-references", () => {
     prototype.replaceMatch = function (this: typeof probe, ...args: Parameters<typeof probe.replaceMatch>) {
       const result = replaceMatch.apply(this, args)
       const id = args[0].enclosingAnchor.id
-      if (!this.raw.getXml(id).includes("Nothing in this clause")) return result
+      if (!this.raw.getXml(id).includes("in this clause")) return result
       const doc = new DOMParser().parseFromString(this.raw.getXml(id), "application/xml")
       const run = Array.from(doc.getElementsByTagNameNS(W, "r")).find(row => row.getElementsByTagNameNS(W, "t")[0]?.textContent === "Supplier")!
       run.getElementsByTagNameNS(W, "rPr")[0]!.appendChild(doc.createElementNS(W, "w:caps"))

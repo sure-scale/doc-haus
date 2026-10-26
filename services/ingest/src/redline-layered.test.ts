@@ -138,7 +138,7 @@ test("an older proposal in a paragraph with their pending change is refused at a
   const source = counterpartyMarkupDocx()
   const inside = older(1, "forty-five days of each", "sixty days of each")
   await expect(bake(source, [inside])).rejects.toThrow(
-    "The change to \"forty-five days of each\" was not applied: that paragraph has a pending change by Avery Lindqvist. Accept or reject it under Tracked changes, then request edits again.")
+    "The change to “forty-five days of each” was not applied: that paragraph has a pending change by Avery Lindqvist. Accept or reject it under Tracked changes, then request edits again.")
   expect(await buildRedlined(source, [inside])).toEqual(source)
   // In a paragraph of theirs with no pending change, it bakes as before.
   const baked = await bake(source, [older(2, "the Province", "the State")])
@@ -161,7 +161,7 @@ test("an older proposal beside doc.haus's own pending change is accepted, and on
   expect(after.filter(revision => before.some(row => row.id === revision.id))).toEqual(before)
   expect(after.filter(revision => !before.some(row => row.id === revision.id)).map(revision => [revision.author, revision.type, revision.text]))
     .toEqual([[AUTHOR, "delete", "governed by"], [AUTHOR, "insert", "construed under"]])
-  const inside = (text: string) => `The change to ${JSON.stringify(text)} was not applied: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.`
+  const inside = (text: string) => `The change to “${text}” was not applied: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.`
   await expect(bake(ours, [older(2, "the State", "the Commonwealth")], undefined, layer)).rejects.toThrow(inside("the State"))
   const clause = "This Agreement is governed by the law of the State."
   await expect(bake(ours, [older(3, clause, "This Agreement is construed under the law of the State.", "clause")], undefined, layer)).rejects.toThrow(inside(clause))

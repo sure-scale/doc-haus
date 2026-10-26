@@ -2,10 +2,11 @@ import { Hono } from "hono"
 import path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
-import { createDocxRevision, createDocxLocalization, applyDocxLocalization, changedRange, DocxTrackedRevisionsError, othersPending, ownRevisionReason, ownRevisionRefusals, pendingRevisionParagraphs, trackedRevisionsReason, type DocxAmendment, type DocxLocalizationPacket, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
+import { createDocxRevision, createDocxLocalization, applyDocxLocalization, changedRange, DocxTrackedRevisionsError, othersPending, ownRevisionReason, ownRevisionRefusals, pendingRevisionParagraphs, quoted, balancedBrackets, trackedRevisionsReason, type DocxAmendment, type DocxLocalizationPacket, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { workingDocxKey, readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { paragraphTargets, resolveParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
+import { DirectoryLockContentionError } from "../../../dochaus/lib/directory-lock"
 import { existsSync } from "node:fs"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
 import { getDocumentRole, getMeta, getPreparedChanges, openDb, setMeta, setPreparedChanges, type PreparedChanges } from "./db"
@@ -60,7 +61,9 @@ export function documentAmendmentRoutes(options: { directory: (id: string) => st
       console.warn("[document-amendments] preparation failed", { ...diagnosticErrorMetadata(error), ...error instanceof EngineGenerationError ? { detail: error.message } : {} })
       const reference = error && typeof error === "object" ? preparationReferences.get(error) : undefined
       return c.json({error:error instanceof EngineGenerationError ? "No changes were prepared. Try again." : error instanceof DocumentAmendmentConflictError ? error.message :
-        error instanceof DocxTrackedRevisionsError ? trackedRevisionsReason : "Preparation could not be confirmed.",
+        error instanceof DocxTrackedRevisionsError ? trackedRevisionsReason :
+        // Another change held the document for longer than Prepare waits.
+        error instanceof DirectoryLockContentionError ? "This document is busy with another change. Try again in a moment." : "Preparation could not be confirmed.",
         ...(reference ? {diagnostic_ref:reference,diagnostic_hint:"Inspect the latest private preparation diagnostic in this matter before trying again."} : {})},409)
     }
   })
@@ -85,6 +88,16 @@ export async function prepareDocumentAmendments(directory: string, name: string,
   const diagnostic = preparationDiagnostic(directory,target.name)
   diagnostic.record("source_read")
   try {
+    // A new request replaces the last one's result as it starts, before it
+    // waits for the document's lock, so also when it fails: its open items
+    // go, and all of it when it proposed nothing; the proposals it prepared stay.
+    const db = openDb(directory)
+    try {
+      db.transaction(() => {
+        const prepared = getPreparedChanges(db,target.docPath)
+        if (prepared) setPreparedChanges(db,target.docPath,prepared.redline_ids.length ? {...prepared,open_items:[]} : null)
+      }).immediate()
+    } finally {db.close()}
     const result = await prepare(directory,name,instructions,diagnostic)
     diagnostic.finish("completed")
     return result
@@ -104,10 +117,6 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
       // changes; a deliverable keeps refusing them.
       const role = getDocumentRole(db,target.docPath)
       if (!role) throw new DocumentAmendmentConflictError("This editing workflow requires a registered Word document.")
-      // A new request replaces the last one's open items, also when it fails;
-      // the proposals that one prepared stay.
-      const prepared = getPreparedChanges(db,target.docPath)
-      if (prepared?.open_items.length) setPreparedChanges(db,target.docPath,{...prepared,open_items:[]})
       const bytes = await Bun.file(target.docPath).bytes()
       diagnostic.record("source_validation",{},hash(bytes))
       const prior = readWorkingDocx(directory,target.docPath)
@@ -388,14 +397,21 @@ function parseLegal(text:string) {
 // A quote that copies the list number the draft view prints before a paragraph
 // is that paragraph's text from its start; the number stays Word's, kept as
 // `label` to place the quote only in a paragraph with that number. A quote
-// found as written, or a different number, is kept as written. One found only
-// without the draft view's own markup copied it, so it and its replacement are
-// placed without it; the words keep their formatting. One found that way only
-// with other spaces between its words (one where the document has two) is
-// placed in the document's words, if they are there once. A quote found none
-// of these ways, or whose replacement then changes no words, is an open item.
-// However it was found, the words its replacement keeps keep the document's
-// spacing (withSpacesOf).
+// found as written, or a different number, is kept as written. Otherwise it
+// copied the draft view's own markup and is placed without it, or, where it
+// began or ended inside a bold or italic run, without that run's one mark too,
+// if its replacement is cut the same way or has no marks: one that closes the
+// run itself would write the words outside the quote again. Each way, one
+// found only with other white space between its words (one space where the
+// document has two, or an ordinary one for a non-breaking one) is placed in
+// the document's words, if they are there once. Its replacement is read as the
+// draft view too, so the words keep their own formatting, except beside a
+// quote found as written: if that quote has an asterisk or a backslash, they
+// are the document's words and its replacement's are read as written too;
+// otherwise only its double backslashes stay. A quote found none of these
+// ways, or whose replacement then changes no words, is an open item. However
+// it was found, the words its replacement keeps keep the document's spacing
+// (withSpacesOf).
 function withoutDraftViewMarks(paragraphs:{text:string;label?:string}[],legal:ReturnType<typeof parseLegal>) {
   type Row = (typeof legal.amendments)[number] & {label?:string}
   const placed = (row:Row):Row|undefined => {
@@ -406,39 +422,53 @@ function withoutDraftViewMarks(paragraphs:{text:string;label?:string}[],legal:Re
     })
     return owner ? {...row,before_quote:withoutListLabel(row.before_quote,owner.label),label:owner.label} : undefined
   }
-  const spaced = (row:Row):Row|undefined => {
-    const loose = new RegExp(row.before_quote.split(/[ \t]+/).map((word) => word.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join("[ \\t]+"),"g")
+  const spaced = (row:Row):Row|"repeated"|undefined => {
+    const loose = new RegExp(row.before_quote.split(spaces).map((word) => word.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join(spaces.source),"g")
     const found = paragraphs.flatMap((paragraph) => [...paragraph.text.matchAll(loose)].map((match) => match[0]))
-    return found.length === 1 ? {...row,before_quote:found[0]!} : undefined
+    return found.length > 1 ? "repeated" : found.length ? {...row,before_quote:found[0]!} : undefined
   }
   const unmatched:string[] = []
   const amendments = legal.amendments.flatMap((row):Row[] => {
-    const found = placed(row)
-    if (found) return [{...found,replacement:withSpacesOf(found.before_quote,row.before_quote,row.replacement)}]
-    const plain = {...row,before_quote:withoutDraftViewMarkup(row.before_quote),replacement:withoutDraftViewMarkup(row.replacement)}
-    const unmarked = placed(plain) ?? spaced(plain)
-    const replacement = unmarked && withSpacesOf(unmarked.before_quote,plain.before_quote,plain.replacement)
-    if (unmarked && withoutListLabel(replacement!,unmarked.label) !== unmarked.before_quote) return [{...unmarked,replacement:replacement!}]
-    unmatched.push(`The change to ${quoted(plain.before_quote)} was not proposed: ${unmarked ? "it changes no words. Say which words change"
+    const plain = withoutDraftViewMarkup(row.before_quote)
+    const cuts = (["start","end"] as const).flatMap((cut):Row[] => {
+      const quote = withoutCutMark(row.before_quote,cut), replacement = withoutCutMark(row.replacement,cut)
+      return quote && (replacement ? replacement.mark === quote.mark : !marks(row.replacement).length)
+        ? [{...row,before_quote:withoutDraftViewMarkup(quote.text),replacement:withoutDraftViewMarkup(replacement?.text ?? row.replacement)}] : []
+    })
+    const readings:Row[] = [{...row,replacement:/[*\\]/.test(row.before_quote) ? row.replacement : withoutDraftViewMarkup(row.replacement,false)},
+      {...row,before_quote:plain,replacement:withoutDraftViewMarkup(row.replacement)},...cuts]
+    let reading:Row|undefined, found:Row|undefined, repeated = false
+    for (reading of readings) {
+      const look = placed(reading) ?? spaced(reading)
+      if (look === "repeated") repeated = true
+      else if ((found = look)) break
+    }
+    const replacement = found && withSpacesOf(found.before_quote,reading!.before_quote,reading!.replacement)
+    if (found && withoutListLabel(replacement!,found.label) !== found.before_quote) return [{...found,replacement:replacement!}]
+    unmatched.push(`The change to ${quoted(found?.before_quote ?? plain)} was not proposed: ${found ? "it changes no words. Say which words change"
+      : repeated ? "those words appear more than once in the document. Say which of them it changes"
       : "those words are not in the document. Say which words it changes"}, then request edits again.`)
     return []
   })
   return {...legal,amendments,unmatched}
 }
+// The white space a quote may copy as any other: spaces, tabs, and the
+// non-breaking spaces that keep a number with its word or currency sign.
+const spaces = /[ \t\u00a0\u202f]+/g
 // `replacement` of `quote`, the model's copy of `text` (the document's words it
-// was placed in), as a change of `text`. Compared with each run of spaces as
-// one space, the words it changes (wordChanges, as Accept writes them), with
+// was placed in), as a change of `text`. Compared with each run of white space
+// as one space, the words it changes (wordChanges, as Accept writes them), with
 // the replacement's own spacing, replace theirs in `text`: the words it keeps
 // keep the document's spacing, and Accept changes only the words asked. A
 // replacement that differs from its quote only in spacing is that change.
 function withSpacesOf(text:string,quote:string,replacement:string) {
-  const collapsed = (value:string) => value.replace(/[ \t]+/g," ")
+  const collapsed = (value:string) => value.replace(spaces," ")
   const before = collapsed(text), after = collapsed(replacement)
   if (before === after) return replacement === quote ? text : replacement
   // Where an offset in collapsed `value` falls in `value`: the same place in
   // the same word, or the same end of the same space.
   const inside = (value:string) => {
-    const pieces = value.split(/([ \t]+)/)
+    const pieces = value.split(new RegExp(`(${spaces.source})`))
     return (offset:number) => {
       let from = 0, to = 0
       for (const [index,piece] of pieces.entries()) {
@@ -464,10 +494,30 @@ function withSpacesOf(text:string,quote:string,replacement:string) {
 }
 // The markup the draft view adds to a paragraph's words (createDocxRevision),
 // undone: a backslash before each of \ ` * _ { } [ ] < > |, and one to three *
-// on each side of a bold or italic run. Other asterisks are words.
-function withoutDraftViewMarkup(text:string):string {
-  return text.replace(/\\([\\`*_{}[\]<>|])|(\*{1,3})((?:\\.|[^*\\])+?)\2/g,(_,escaped:string|undefined,_marks,run:string|undefined) =>
-    escaped ?? withoutDraftViewMarkup(run!))
+// on each side of a bold or italic run's words, as CommonMark reads them. The
+// opening mark touches the word after it and the closing mark the word before
+// it; a mark beside punctuation there has white space, punctuation or the
+// line's end on its other side. The words between them pair their square
+// brackets (balancedBrackets). Other asterisks, as in "£[*] plus VAT, payable
+// on [*]" or a footnote's "Fee*, Costs*", are words. Without `backslashes`, a
+// double backslash stays, as in a network path.
+function withoutDraftViewMarkup(text:string,backslashes = true):string {
+  return text.replace(/\\([\\`*_{}[\]<>|])|(?:(?<![^\s\p{P}\p{S}])|(?=\*{1,3}[^\s\p{P}\p{S}]))(\*{1,3})(?=\S)((?:\\.|[^*\\])+?)(?<=\S)(?:(?<=[^\s\p{P}\p{S}])|(?=\2(?![^\s\p{P}\p{S}])))\2/gu,
+    (match,escaped:string|undefined,mark:string|undefined,run:string|undefined) => {
+      if (escaped) return escaped === "\\" && !backslashes ? match : escaped
+      const words = withoutDraftViewMarkup(run!,backslashes)
+      return balancedBrackets(run!) ? words : mark + words + mark
+    })
+}
+// The draft view's unescaped runs of asterisks in `text`.
+function marks(text:string) {return [...text.matchAll(/\\.|\*{1,3}/g)].filter((match) => match[0].startsWith("*"))}
+// `text`, cut from the draft view inside a bold or italic run at its "start"
+// or "end", without the run's one mark in it: its first, which closes the run
+// after a word, or its last, which opens it before one.
+function withoutCutMark(text:string,cut:"start"|"end") {
+  const found = marks(text), mark = cut === "start" ? found[0] : found.at(-1)
+  if (!mark || !/\S/.test(text[cut === "start" ? mark.index - 1 : mark.index + mark[0].length] ?? "")) return
+  return {mark:mark[0],text:text.slice(0,mark.index) + text.slice(mark.index + mark[0].length)}
 }
 // Document text, the other side's comments included, is screened by the shared
 // injection rules before a pass reads it. A match is named by part and rule
@@ -488,8 +538,6 @@ function injectionWarning(paragraphs:{scope:string;text:string}[]) {
 }
 function parseJSON(text:string):unknown {return JSON.parse(text.trim().replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/, ""))}
 function object(value:unknown):Record<string,unknown> {return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string,unknown> : {}}
-// Words quoted to the lawyer, as they read them.
-function quoted(text:string) {return `“${text}”`}
 function data(value:unknown) {return JSON.stringify(value).replace(/</g,"\\u003c")}
 function hash(bytes:Uint8Array) {return createHash("sha256").update(bytes).digest("hex")}
 function pass(value:Awaited<ReturnType<typeof generate>>) {return {model:value.model,elapsed_ms:value.elapsed_ms,usage:value.usage}}
