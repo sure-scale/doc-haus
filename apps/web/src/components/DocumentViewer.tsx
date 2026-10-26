@@ -192,7 +192,7 @@ function WordDocumentViewer({
   // that fails included.
   const [preparation,setPreparation] = useState<PreparedChanges | null>(null)
   // Counts Prepare presses: a load started before the last one answers with
-  // the open items that request replaced, so they are not put back.
+  // the result that request replaced, so it is not put back.
   const prepares = useRef(0)
   // The name doc.haus's changes carry: the saved attorney, else the firm, else
   // doc.haus, as ingest records it; null when the settings could not be read.
@@ -294,7 +294,7 @@ function WordDocumentViewer({
         if (cancelled) return
         setHtml(out)
         setRedlines(changes)
-        setPreparation(prepared && pressed !== prepares.current ? {...prepared,open_items:[]} : prepared)
+        setPreparation(pressed !== prepares.current ? replacedPreparation(prepared) : prepared)
       })
       .catch((e) => !cancelled && setError(e instanceof Error ? e.message : String(e)))
     return () => {
@@ -618,10 +618,10 @@ function WordDocumentViewer({
     setConsistency(undefined)
     setBusy("prepare")
     setError(undefined)
-    // Ingest replaces the last request's open items as this one starts; a
-    // failed request reloads nothing, so they go here too.
+    // Ingest replaces the last request's result as this one starts; a failed
+    // request reloads nothing, so it goes here too.
     prepares.current++
-    setPreparation((value) => value && {...value,open_items:[]})
+    setPreparation(replacedPreparation)
     try {
       await prepareDocumentChanges(matterId,name,instructions)
       onChanged?.()
@@ -1146,6 +1146,13 @@ export function acceptedEditsHint(revisions: Pick<MarkupRevision, "author">[], r
 // Prepare's batch counted against the refetched change list: accepted, rejected
 // and stale proposals drop out (the stale notice names the last), so the line
 // goes once none is left to review. An empty batch says so.
+// What a new Request edits leaves of the last one's result, as ingest stores
+// it: the batch, whose proposals stay, without its open items; nothing when it
+// proposed nothing.
+function replacedPreparation(prepared: PreparedChanges | null) {
+  return prepared?.redline_ids.length ? {...prepared,open_items:[]} : null
+}
+
 export function preparedNotice(batch: number[], redlines: Redline[]) {
   if (!batch.length) return "No changes were proposed."
   const fresh = redlines.filter((row) => batch.includes(row.id) && !row.stale).length

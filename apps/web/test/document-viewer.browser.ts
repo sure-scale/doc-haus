@@ -151,9 +151,10 @@ try {
   assert.deepEqual(shown, expected, "Each proposal reads as one passage with only its changed words marked")
   await page.close()
 
-  // Request edits pressed while the reload after an Accept is still loading,
-  // and that Prepare fails: the earlier request's open items, which the late
-  // load read before ingest replaced them, do not come back beside the error.
+  // Request edits pressed while the reload after an Accept (of an older
+  // proposal) is still loading, and that Prepare fails: the earlier request's
+  // result, which proposed nothing and listed an open item, goes on the press
+  // and does not come back beside the error when the late load answers with it.
   const earlier = "Confirm the client's retention policy."
   const failure = "No changes were prepared. Try again."
   let pending = [proposals[2]]
@@ -173,7 +174,7 @@ try {
     }
     if (url.pathname === "/matters/matter-viewer/documents/amendments") {
       if (request.method() === "POST") return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: failure }) })
-      const stored = JSON.stringify({ redline_ids: [3], open_items: [earlier] })
+      const stored = JSON.stringify({ redline_ids: [], open_items: [earlier] })
       if (++loads === 2) await new Promise<void>(resolve => { release = resolve })
       return route.fulfill({ status: 200, contentType: "application/json", body: stored })
     }
@@ -185,14 +186,18 @@ try {
   await viewer.locator(".changes-panel .change-card").getByRole("button", { name: "Accept", exact: true }).click()
   for (const deadline = Date.now() + 60_000; !release; await Bun.sleep(10)) assert.ok(Date.now() < deadline, "the reload after Accept never asked for the open items")
   await viewer.getByRole("button", { name: "Request edits", exact: true }).click()
+  const line = viewer.locator("#document-edit-request [role=status]")
+  await line.filter({ hasText: "No changes were proposed." }).waitFor()
   await viewer.getByLabel("Describe the changes you want to review", { exact: true }).fill("Shorten the notice period to sixty days.")
   await viewer.getByRole("button", { name: "Prepare changes", exact: true }).click()
   await viewer.getByText(failure, { exact: true }).waitFor()
+  const pressed = { line: await line.allTextContents(), open: await openItems.allTextContents() }
   release!()
   await viewer.locator(".changes-panel").waitFor({ state: "detached" })
-  const after = await openItems.allTextContents()
-  console.log(`${after.length ? "FAIL" : "PASS"} failed Prepare during a reload: open items ${JSON.stringify(after)}`)
-  assert.deepEqual(after, [], "A load started before Request edits is pressed does not put back the earlier open items")
+  const after = { line: await line.allTextContents(), open: await openItems.allTextContents() }
+  const ok = JSON.stringify([pressed, after]) === JSON.stringify([{ line: [], open: [] }, { line: [], open: [] }])
+  console.log(`${ok ? "PASS" : "FAIL"} failed Prepare during a reload: on the press ${JSON.stringify(pressed)}, after the late load ${JSON.stringify(after)}`)
+  assert.deepEqual([pressed, after], [{ line: [], open: [] }, { line: [], open: [] }], "The earlier result goes on the press, and a load started before it does not put it back")
   assert.equal(await viewer.getByText(failure, { exact: true }).count(), 1, "The failed Prepare's error stays")
   await viewer.close()
 } finally {

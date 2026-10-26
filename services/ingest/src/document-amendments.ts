@@ -88,14 +88,14 @@ export async function prepareDocumentAmendments(directory: string, name: string,
   const diagnostic = preparationDiagnostic(directory,target.name)
   diagnostic.record("source_read")
   try {
-    // A new request replaces the last one's open items as it starts, before
-    // it waits for the document's lock, so also when it fails; the proposals
-    // that one prepared stay.
+    // A new request replaces the last one's result as it starts, before it
+    // waits for the document's lock, so also when it fails: its open items
+    // go, and all of it when it proposed nothing; the proposals it prepared stay.
     const db = openDb(directory)
     try {
       db.transaction(() => {
         const prepared = getPreparedChanges(db,target.docPath)
-        if (prepared?.open_items.length) setPreparedChanges(db,target.docPath,{...prepared,open_items:[]})
+        if (prepared) setPreparedChanges(db,target.docPath,prepared.redline_ids.length ? {...prepared,open_items:[]} : null)
       }).immediate()
     } finally {db.close()}
     const result = await prepare(directory,name,instructions,diagnostic)

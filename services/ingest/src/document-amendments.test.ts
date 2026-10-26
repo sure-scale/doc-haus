@@ -763,6 +763,29 @@ test("a Request edits that fails waiting for the document's lock says the docume
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
+test("a failed Request edits after one that proposed nothing leaves no earlier result", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-failed-after-none-"))
+  const policy = "Confirm the client's retention policy."
+  // The first request proposes nothing; the second's locator answer cannot be read.
+  let amend = false
+  const engine = syntheticEngine(() => ({amendments:amend ? [
+    {before_quote:"three months",replacement:"six months",target_context:"retention period",reason:"Requested retention update."},
+  ] : [],open_items:[policy]}),() => ({}))
+  try {
+    await writeDeliverable(directory,"working.docx",Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph("Retain records for three months."),
+    ]}]})))))
+    const prepared = async () => await (await documentAmendmentRoutes({directory:() => directory}).request("http://local/matter/documents/amendments?name=working.docx")).json()
+    await withPreparation(directory,engine,async (prepare) => {
+      expect((await prepare("Check the retention period.")).status).toBe(200)
+      expect(await prepared()).toEqual({redline_ids:[],open_items:[policy]})
+      amend = true
+      expect((await prepare("Extend the retention period to six months.")).status).toBe(409)
+      expect(await prepared()).toBeNull()
+    })
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
 // Seen live: one quote not in the document refused the whole batch with 409.
 test("a quote not found in the document becomes a plain open item and the rest of the batch is proposed", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-unfound-"))
