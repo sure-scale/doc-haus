@@ -2,6 +2,8 @@ import { expect, test } from "bun:test"
 import { cp, mkdtemp, mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { Permission } from "@opencode/core/permission"
+import { Skill } from "@opencode/core/skill"
 
 const upstream = ["build", "general", "explore", "plan"]
 
@@ -30,6 +32,31 @@ test("a cold matter's inventory lists answer only with its activated legal confi
     expect(agents[0]).toBe("draft")
     expect(agents.filter((id) => upstream.includes(id))).toEqual([])
     expect(observed[1]!.at(-1)!.ids).toEqual(agents)
+    // A shipped skill must survive actual native discovery and Q&A's own
+    // permission rules, then load into a matter conversation without a model.
+    const inventory: { data: Skill.Info[] } = await (await fetch(engine.base + "/api/skill" + query)).json()
+    const assistants: { data: { id: string; permissions: Permission.Ruleset }[] } =
+      await (await fetch(engine.base + "/api/agent" + query)).json()
+    const qa = assistants.data.find(agent => agent.id === "qa")!
+    const precedent = inventory.data.find(skill => skill.id === "precedent-search")
+    expect(precedent).toBeDefined()
+    expect(Skill.available(inventory.data, qa.permissions)).toContainEqual(precedent!)
+    for (const action of ["search-document", "get-section", "define", "cite"])
+      expect(Permission.evaluate(action, "*", qa.permissions).effect).toBe("allow")
+    for (const action of ["edit", "redline", "tracked-changes", "draft-document"])
+      expect(Permission.evaluate(action, "*", qa.permissions).effect).toBe("deny")
+    const headers = { "content-type": "application/json", "x-opencode-directory": matter }
+    expect((await fetch(engine.base + "/api/session", { method: "POST", headers,
+      body: JSON.stringify({ id: "ses_precedent_inventory", agent: "qa", location: { directory: matter } }),
+    })).status).toBe(200)
+    expect((await fetch(engine.base + "/api/experimental/session/ses_precedent_inventory/skill", { method: "POST", headers,
+      body: JSON.stringify({ id: "precedent-search", resume: false }),
+    })).status).toBe(204)
+    const history: { data: { type: string; skill?: string; text?: string }[] } = await (await fetch(
+      engine.base + "/api/session/ses_precedent_inventory/message", { headers },
+    )).json()
+    expect(history.data.find(message => message.type === "skill" && message.skill === "precedent-search")?.text)
+      .toBe(precedent!.content)
   } finally {
     await engine.stop()
     await rm(temporary, { recursive: true, force: true })
