@@ -353,15 +353,19 @@ try {
   const bounds = await viewer.boundingBox()
   assert.ok(bounds && bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= 375 && bounds.y + bounds.height <= 812,
     `mobile document reader stays inside 375x812: ${JSON.stringify(bounds)}`)
-  // Focus opens on the first control, the Versions toggle; Tab reaches Close, then wraps back inside the dialog.
+  // Focus opens on the first control, the Versions toggle; Tab reaches Close,
+  // then Find in the bar beneath the header, then wraps back inside the dialog.
   const versionsToggle = viewer.getByRole("button", { name: /^Versions/ })
+  const find = viewer.getByRole("button", { name: "Find", exact: true })
   await expect(versionsToggle).toBeFocused()
   await page.keyboard.press("Tab")
   await expect(viewer.getByRole("button", { name: "Close", exact: true })).toBeFocused()
+  await page.keyboard.press("Tab")
+  await expect(find).toBeFocused()
   await page.keyboard.press("Tab")
   await expect(versionsToggle).toBeFocused()
   await page.keyboard.press("Shift+Tab")
-  await expect(viewer.getByRole("button", { name: "Close", exact: true })).toBeFocused()
+  await expect(find).toBeFocused()
   await page.keyboard.press("Escape")
   await expect(viewer).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Read source email" })).toBeFocused()
