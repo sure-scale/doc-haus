@@ -385,6 +385,21 @@ describe("live cross-references", () => {
     }
   })
 
+  // Each changed word is its own change, so the words between them, a live
+  // cross-reference included, are never deleted and typed again.
+  test("two word changes on either side of REF fields keep them live, tracked or not", async () => {
+    const source = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes
+    const revision = await createDocxRevision(source, { pendingRevisions: "layer" })
+    const edit = { id: "words", paragraph_handle: revision.paragraphs.find(row => row.text.startsWith("In this Agreement"))!.paragraph_handle,
+      occurrence: 0, before_quote: "the terms in clause 2.1 and Schedule 1 apply.", replacement: "the words in clause 2.1 and Schedule 1 govern." }
+    for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, { pendingRevisions: "layer" }, {}] as const) {
+      const output = await applyDocxParagraphEdits(source, [edit], undefined, options)
+      expect(refs(output.bytes)).toEqual(refs(source))
+      expect(output.report.limitation).not.toContain("cross-reference")
+      expect(output.report.amendments[0]!.paragraph_after).toBe("In this Agreement the words in clause 2.1 and Schedule 1 govern.")
+    }
+  })
+
   test("a changed format of an existing run is refused, also in a batch that rewrites a cross-reference number", async () => {
     // Clause 2.3 sits in clause 2: numbers after the schedule heading stay typed.
     const source = (await renderMarkdownToDocx(AGREEMENT.replace("\n\n## Schedule 1", "\n\n2.3 Nothing here limits the **Supplier**.\n\n## Schedule 1"),
@@ -534,6 +549,9 @@ describe("layered edits on a counterparty markup", () => {
         "9. Governing law. This Agreement is governed by the law."],
       ["the law of the Province", "the laws of the Province", [["delete", "law"], ["insert", "laws"]],
         "9. Governing law. This Agreement is governed by the laws of the Province."],
+      // Two changed words, each its own change; the words between stay as they are.
+      ["governed by the law of the Province", "governed by the laws of the State", [["delete", "law"], ["insert", "laws"], ["delete", "Province"], ["insert", "State"]],
+        "9. Governing law. This Agreement is governed by the laws of the State."],
     ] as const) {
       const packet = await createDocxLocalization(source, [{ id: "law", before_quote, replacement }], {}, layer)
       const clause = packet.candidates.find(row => row.paragraph.text.startsWith("9."))!

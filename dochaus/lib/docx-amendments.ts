@@ -7,6 +7,7 @@ import { paragraphFields, refInstruction, runText, unlink } from "./docx-fields"
 import { docxodus } from "./docxodus"
 import { shownText } from "./list-label"
 import { normalizeUntrustedText } from "./untrusted-text"
+import { changedWords, wordChanges, type WordChange } from "./word-changes"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const PT = "http://powertools.codeplex.com/2011"
@@ -324,8 +325,8 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
   } finally { if (target !== opened) target.session.close() }
 }
 
-export function changedDocxSpan(match: Match, replacement: string, words = false) {
-  const { offset, replaced, changed } = changedRange(match.text, replacement, words)
+// One change of the quote as the writer makes it: its span and replacement.
+function changedDocxSpan(match: Match, { offset, replaced, changed }: WordChange) {
   // A pure insertion takes the formatting of the text before it, as typing
   // there would; a sentence inserted before more text joins that text and
   // takes its formatting instead.
@@ -337,29 +338,28 @@ export function changedDocxSpan(match: Match, replacement: string, words = false
     replacement: changed, formatting, joinsAfter }
 }
 
-// The changes one amendment writes. Where all the words its whole-word change
-// replaces stand, together and once, inside its new words (as between two
-// insertions Prepare joins into one proposal), it is the insertion on each side
-// of them, each written as changedDocxSpan writes one, never those words
-// deleted and typed again. Otherwise it is the one change changedDocxSpan gives.
+// The changes one amendment writes: each run of whole words that differ, as
+// Word records them (wordChanges), so the words kept between two changes, and
+// a live field there, are never deleted and typed again. With `words` (a
+// tracked write) each change is those words. Untracked, one change is the
+// characters that differ in the whole quote; of several, each is the
+// characters that differ between the changes beside it, and if two of those
+// would overlap, the quote's characters that differ are one change.
 function changedDocxSpans(match: Match, replacement: string, words = false) {
-  const change = changedDocxSpan(match, replacement, true)
-  const single = [words ? change : changedDocxSpan(match, replacement)]
-  const kept = wordTokens(change.match.text)
-  const added = wordTokens(change.replacement)
-  const found = kept.length ? added.flatMap((_, index) => kept.every((token, k) => added[index + k] === token) ? [index] : []) : []
-  if (found.length !== 1) return single
-  const at = found[0]!
-  const start = change.match.span.start - match.span.start
-  const end = start + change.match.text.length
-  const [before, after] = [
-    changedDocxSpan(paragraphSpan(match, 0, end), match.text.slice(0, start) + added.slice(0, at).join("") + change.match.text, words),
-    changedDocxSpan(paragraphSpan(match, start, match.text.length - start),
-      change.match.text + added.slice(at + kept.length).join("") + match.text.slice(end), words),
-  ] as const
-  // Written right to left, the two may not overlap.
-  return before.match.span.start < after.match.span.start && before.match.span.start + before.match.span.length <= after.match.span.start
-    ? [before, after] : single
+  const changes = wordChanges(match.text, replacement)
+  if (words) return changes.map(change => changedDocxSpan(match, change))
+  const single = [changedDocxSpan(match, changedRange(match.text, replacement))]
+  if (changes.length === 1) return single
+  const spans = changes.map((change, index) => {
+    const from = index ? changes[index - 1]!.offset + changes[index - 1]!.replaced.length : 0
+    const to = changes[index + 1]?.offset ?? match.text.length
+    const range = changedRange(match.text.slice(from, to),
+      match.text.slice(from, change.offset) + change.changed + match.text.slice(change.offset + change.replaced.length, to))
+    return changedDocxSpan(match, { ...range, offset: from + range.offset })
+  })
+  // Written right to left, they may not overlap.
+  return spans.every((span, index) => !index || spans[index - 1]!.match.span.start + spans[index - 1]!.match.span.length <= span.match.span.start)
+    ? spans : single
 }
 
 // Docxodus writes a tracked insertion in the run properties of the character
@@ -419,49 +419,6 @@ export function changedRange(text: string, replacement: string, words = false) {
   const changed = !removed && inserted ? first < before.length ? inserted + replaced : replaced + inserted : inserted
   return { offset, replaced, changed }
 }
-
-// A tracked change reads as Word records one: whole words, only those that
-// differ. The texts are compared word by word, so a pure insertion is written
-// alone (an empty span, which Docxodus writes as one insertion), a pure
-// deletion alone, and a replacement as the words between the first and last
-// that differ. An insertion or deletion that could stand at several places,
-// because the words around it repeat, stands at the last whose both ends are
-// sentence boundaries (the quote's start or end, or either side of the space
-// after a full stop): a whole sentence goes between sentences, never inside
-// the one whose words it repeats. Otherwise it stands at the first place that
-// follows a space or the quote's start, so an inserted word goes before the
-// word it qualifies; with no such place, at the last.
-function changedWords(text: string, replacement: string) {
-  const before = wordTokens(text)
-  const after = wordTokens(replacement)
-  let first = 0
-  let lastBefore = before.length
-  let lastAfter = after.length
-  while (first < lastBefore && first < lastAfter && before[first] === after[first]) first++
-  while (lastBefore > first && lastAfter > first && before[lastBefore - 1] === after[lastAfter - 1]) {
-    lastBefore--
-    lastAfter--
-  }
-  const inserted = first === lastBefore
-  // The text holding the inserted or deleted words, which end at `end`.
-  const [holding, end] = inserted ? [after, lastAfter] : [before, lastBefore]
-  const space = (token?: string) => token !== undefined && /^\s/.test(token)
-  const stop = (token?: string) => token !== undefined && /^[.!?]$/.test(token)
-  const boundary = (at: number) => at === 0 || at === holding.length
-    || (space(holding[at - 1]) && stop(holding[at - 2])) || (stop(holding[at - 1]) && space(holding[at]))
-  let sentence: number | undefined
-  let spaced = 0
-  if (inserted !== (first === lastAfter))
-    for (let k = 0; k <= first && (!k || holding[end - k] === before[first - k]); k++) {
-      if (sentence === undefined && boundary(first - k) && boundary(end - k)) sentence = k
-      if (k && (k === first || space(before[first - k - 1]))) spaced = k
-    }
-  const shift = sentence ?? spaced
-  return { offset: before.slice(0, first - shift).join("").length, replaced: before.slice(first - shift, lastBefore - shift).join(""),
-    changed: after.slice(first - shift, lastAfter - shift).join("") }
-}
-// Words, runs of white space and single other characters, as changedWords compares them.
-function wordTokens(value: string) { return value.match(/[\p{L}\p{N}_]+|\s+|[^\p{L}\p{N}_\s]/gu) ?? [] }
 
 function targetHandle(source_sha256: string, ordinal: number, match: Match) {
   return `target-${digest(JSON.stringify([source_sha256, ordinal, match.span.start, match.span.length, match.text])).slice(0, 24)}`
