@@ -11,13 +11,23 @@ function visible(element: Element) {
 export function documentMatches(root: HTMLElement, query: string): Range[] {
   const needle = query.trim()
   if (!needle) return []
-  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT)
   const nodes: { node: Text; start: number; end: number }[] = []
   let text = ""
   let block: Element | null | undefined
   const visibility = new Map<Element, boolean>()
   while (walker.nextNode()) {
+    if (walker.currentNode.nodeType === Node.ELEMENT_NODE) {
+      const element = walker.currentNode as Element
+      // Word hard breaks render as <br> inside the same paragraph. They
+      // separate words even though there is no text node for the break.
+      if (element.tagName === "BR" && !element.closest(ignored) && visible(element)) text += "\n"
+      continue
+    }
     const node = walker.currentNode as Text
+    // Docxodus follows a hard break with a standalone direction mark. It has
+    // no visible characters and must not interrupt whitespace matching.
+    if (/^[\u200e\u200f]+$/.test(node.data)) continue
     const parent = node.parentElement
     if (!parent || parent.closest(ignored)) continue
     if (!visibility.has(parent)) visibility.set(parent, visible(parent))
