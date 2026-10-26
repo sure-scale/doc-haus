@@ -6,6 +6,7 @@ import { createDocxRevision, createDocxLocalization, applyDocxLocalization, chan
 import { workingDocxKey, readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { paragraphTargets, resolveParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
+import { DirectoryLockContentionError } from "../../../dochaus/lib/directory-lock"
 import { existsSync } from "node:fs"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
 import { getDocumentRole, getMeta, getPreparedChanges, openDb, setMeta, setPreparedChanges, type PreparedChanges } from "./db"
@@ -60,7 +61,9 @@ export function documentAmendmentRoutes(options: { directory: (id: string) => st
       console.warn("[document-amendments] preparation failed", { ...diagnosticErrorMetadata(error), ...error instanceof EngineGenerationError ? { detail: error.message } : {} })
       const reference = error && typeof error === "object" ? preparationReferences.get(error) : undefined
       return c.json({error:error instanceof EngineGenerationError ? "No changes were prepared. Try again." : error instanceof DocumentAmendmentConflictError ? error.message :
-        error instanceof DocxTrackedRevisionsError ? trackedRevisionsReason : "Preparation could not be confirmed.",
+        error instanceof DocxTrackedRevisionsError ? trackedRevisionsReason :
+        // Another change held the document for longer than Prepare waits.
+        error instanceof DirectoryLockContentionError ? "This document is busy with another change. Try again in a moment." : "Preparation could not be confirmed.",
         ...(reference ? {diagnostic_ref:reference,diagnostic_hint:"Inspect the latest private preparation diagnostic in this matter before trying again."} : {})},409)
     }
   })

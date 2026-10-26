@@ -724,7 +724,7 @@ test("a failed Request edits replaces the earlier request's open items and keeps
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
-test("a Request edits that fails waiting for the document's lock also replaces the earlier request's open items", async () => {
+test("a Request edits that fails waiting for the document's lock says the document is busy and replaces the earlier request's open items", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-locked-prepare-"))
   const policy = "Confirm the client's retention policy."
   const engine = syntheticEngine(() => ({amendments:[
@@ -751,7 +751,10 @@ test("a Request edits that fails waiting for the document's lock also replaces t
       // Prepare starts waiting as its diagnostic opens; the clock then passes the wait's end.
       while (readDocumentAmendmentDiagnostic(directory,"working.docx")?.status !== "running") await Bun.sleep(5)
       setSystemTime(new Date(Date.now()+31_000))
-      try {expect((await locked).status).toBe(409)} finally {setSystemTime();release();await owner}
+      let failed:Response
+      try {failed = await locked} finally {setSystemTime();release();await owner}
+      expect(failed.status).toBe(409)
+      expect(await failed.json()).toMatchObject({error:"This document is busy with another change. Try again in a moment."})
       // It failed before it read the file, which it does holding the lock.
       expect(readDocumentAmendmentDiagnostic(directory,"working.docx")).toMatchObject({status:"failed",phase:"source_read"})
       expect(await prepared()).toEqual({redline_ids,open_items:[]})
