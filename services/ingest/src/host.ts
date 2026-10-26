@@ -14,7 +14,9 @@ import { readEngineSettings } from "./engine-config"
 // service needs no GCP dependency — the same sign-in the engine's Vertex calls
 // rely on is the one being enumerated.
 export async function listGcpProjects() {
-  const proc = Bun.spawn(["gcloud", "auth", "application-default", "print-access-token"], {
+  const command = ["gcloud", "auth", "application-default", "print-access-token"]
+  // Windows gcloud is gcloud.cmd, which only runs through cmd.exe; the arguments are constants.
+  const proc = Bun.spawn(process.platform === "win32" ? ["cmd.exe", "/d", "/s", "/c", ...command] : command, {
     stdout: "pipe",
     stderr: "ignore",
   })

@@ -317,6 +317,8 @@ function writeDurableMutationPhase(
   writeFileSync(descriptor, content)
   fsyncSync(descriptor)
   closeSync(descriptor)
+  // Windows cannot fsync a directory handle (EPERM/EISDIR), so only the file is synced there.
+  if (process.platform === "win32") return
   const directory = openSync(mutation.directory, "r")
   fsyncSync(directory)
   closeSync(directory)

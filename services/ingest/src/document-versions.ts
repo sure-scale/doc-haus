@@ -202,6 +202,8 @@ function storeVersionBytes(matterDir: string, documentId: string, sha256: string
 }
 
 function syncDirectory(directory: string) {
+  // Windows cannot fsync a directory handle (EPERM/EISDIR), so only files are synced there.
+  if (process.platform === "win32") return
   const descriptor = openSync(directory, "r")
   try {
     fsyncSync(descriptor)

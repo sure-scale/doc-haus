@@ -13,6 +13,7 @@ import { withTemplateStyleIds } from "../lib/template-seed"
 import { normalizePreferences } from "../lib/drafting-preferences"
 import { pageFurniture } from "../lib/page-furniture"
 import { readFirmPreferences } from "../lib/preferences"
+import { safeFileName } from "../lib/safe-file-name"
 
 // doc.haus draft-document tool. Creates a NEW Word (.docx) document in the
 // current matter — either by filling a template from dochaus/templates, or from
@@ -75,7 +76,8 @@ export default tool({
     content: tool.schema.string().optional().describe("For from-scratch mode: the complete document body as markdown"),
   },
   async execute(args, ctx) {
-    const name = path.basename(args.name.endsWith(".docx") ? args.name : `${args.name}.docx`)
+    const base = path.basename(args.name.endsWith(".docx") ? args.name : `${args.name}.docx`)
+    const name = `${safeFileName(base.slice(0, -".docx".length)) || "Draft"}.docx`
     const target = path.join(ctx.directory, name)
     if (existsSync(target)) return `A document named ${name} already exists in this matter. Pick a different name.`
     if (!args.template && !args.content) return 'Pass either "template" (with "fills") or "content".'

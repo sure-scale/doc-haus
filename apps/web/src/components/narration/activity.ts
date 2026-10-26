@@ -97,7 +97,7 @@ export function clip(text: string, max: number) {
 }
 
 export function fileLabel(target: string) {
-  if (target.includes("/.dochaus/") || target.startsWith(".dochaus/"))
+  if (/(^|[\\/])\.dochaus[\\/]/.test(target))
     return RUN_FILES[basename(target)] ?? "the run's working files"
   return basename(target)
 }

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { workspaceRoot } from "./matter"
-import { DOCHAUS_DIR } from "./workflow"
+import { DOCHAUS_DIR, NAME_RE } from "./workflow"
 import { extractDocumentText } from "./ingest"
 import { disabledSkills, setSkillDisabled } from "./engine-config"
 
@@ -17,8 +17,6 @@ import { disabledSkills, setSkillDisabled } from "./engine-config"
 export const SKILLS_DIR = () => path.join(workspaceRoot(), ".skills")
 
 const BUILTIN_SKILL_DIR = () => path.join(DOCHAUS_DIR(), "skill")
-
-const NAME_RE = /^[a-z0-9][a-z0-9-]*$/
 
 export type Skill = {
   name: string

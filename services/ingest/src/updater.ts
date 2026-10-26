@@ -2,7 +2,11 @@ import path from "node:path"
 import { Hono } from "hono"
 import { RepoUpdater } from "../../../scripts/updater"
 
-export function updateRoutes(updater: RepoUpdater, busy: () => Promise<boolean>, restart: () => Promise<void>, signal = () => { process.kill(Number(process.env.DOCHAUS_LAUNCHER_PID), "SIGUSR1") }) {
+// Windows has no SIGUSR1: its launcher polls for update-request.json, so the
+// signal there only confirms that the launcher is still running.
+const signalLauncher = () => { process.kill(Number(process.env.DOCHAUS_LAUNCHER_PID), process.platform === "win32" ? 0 : "SIGUSR1") }
+
+export function updateRoutes(updater: RepoUpdater, busy: () => Promise<boolean>, restart: () => Promise<void>, signal = signalLauncher) {
   const app = new Hono()
   let updating = false
   let mutations = 0
@@ -54,8 +58,15 @@ export async function managedUpdateOwner(root: string, runtime: string) {
   const owner = Number(process.env.DOCHAUS_LAUNCHER_PID)
   const pid = (await Bun.file(path.join(runtime, "engine.lock/pid")).text().catch(() => "")).trim()
   if (!Number.isSafeInteger(owner) || owner <= 1 || pid !== String(owner))
-    throw new Error("Start Doc.Haus with start.sh to enable one-click updates.")
+    throw new Error(`Start Doc.Haus with ${process.platform === "win32" ? "start.cmd" : "start.sh"} to enable one-click updates.`)
   process.kill(owner, 0)
+  // Windows cannot read another process's working directory; the launcher's
+  // lock record identifies it instead.
+  if (process.platform === "win32") {
+    const { windowsLauncherRunning } = await import("../../../scripts/windows/start")
+    if (!await windowsLauncherRunning(runtime, owner)) throw new Error("The app launcher could not be identified. Restart Doc.Haus with start.cmd.")
+    return
+  }
   const child = Bun.spawn(["bash", "-c", '. scripts/start-runtime.sh; runtime_launcher "$1"', "update-owner", String(owner)], { cwd: root, stdout: "ignore", stderr: "ignore" })
   if (await child.exited !== 0) throw new Error("The app launcher could not be identified. Restart Doc.Haus with start.sh.")
 }
