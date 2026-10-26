@@ -291,12 +291,13 @@ async function consolidated(bytes:Uint8Array,options:DocxRevisionOptions,packet:
     const {offset,replaced,changed} = changedRange(amendment.before_quote,amendment.replacement,true)
     const made = {at:start+offset,replaced,changed}
     // The same change: the same words go and come at one place. Two insertions
-    // only white space apart are one place when the text reads the same after either.
+    // only white space apart are one place when they insert the same words,
+    // whatever spacing the document puts between its sentences.
     const same = groups.find((group) => group.paragraph.paragraph_handle === paragraph.paragraph_handle && group.made.some((row) => {
       if (row.replaced !== replaced || replaced && row.at !== made.at) return false
       const [early,late] = row.at < made.at ? [row,made] : [made,row]
       const between = paragraph.text.slice(early.at,late.at)
-      return !between.trim() && early.changed+between === between+late.changed
+      return !between.trim() && (early.changed+between === between+late.changed || !!early.changed.trim() && early.changed.trim() === late.changed.trim())
     }))
     if (same) {same.members.push(entry); continue}
     const overlapping = groups.filter((group) => group.paragraph.paragraph_handle === paragraph.paragraph_handle && group.start < end && start < group.end)

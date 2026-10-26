@@ -1041,6 +1041,32 @@ for (const [heading,replacement,reversed] of [
   }
 })
 
+// Two spaces between the heading and the sentence, the model's sentence with one.
+test("Request edits proposes once a sentence appended to a heading and put in front of the next sentence where two spaces separate them", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-two-spaces-"))
+  const sentence = "This clause survives the end of this Agreement."
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:"Governing law.",replacement:`Governing law. ${sentence}`,target_context:"the heading of the clause",reason:"Insert the survival sentence"},
+    {before_quote:governed,replacement:`${sentence} ${governed}`,target_context:"the opening of the clause",reason:"Insert the survival sentence"},
+  ],open_items:[]}),firstCandidate)
+  try {
+    const original = await Packer.toBuffer(new Document({sections:[{children:[new Paragraph(`Governing law.  ${governed}`)]}]}))
+    await registeredSource(temporary,original)
+    const ids = await withPreparation(temporary,engine,async (prepare) => {
+      const response = await prepare(`Insert "${sentence}" at the start of the governing law clause.`)
+      expect(response.status).toBe(200)
+      const body = await response.json() as {proposed:number;redline_ids:number[]}
+      expect(body).toMatchObject({proposed:1,open_items:[]})
+      return body.redline_ids
+    })
+    const db = openDb(temporary)
+    const rows = (() => {try {return ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect((await createDocxRevision(await bake(original,rows))).paragraphs[0]!.text).toBe(`Governing law. ${sentence}  ${governed}`)
+  } finally {
+    engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+})
+
 test("Request edits prepares on a clean uploaded source and still refuses a deliverable with pending tracked changes", async () => {
   const source = await mkdtemp(path.join(tmpdir(),"dochaus-word-clean-source-"))
   const deliverable = await mkdtemp(path.join(tmpdir(),"dochaus-word-tracked-deliverable-"))
