@@ -38,7 +38,8 @@ missing. The container includes every tool. See [setup](docs/setup.md).
 On Windows 10 or 11, install Git for Windows, clone the repository, then run
 `start.cmd` from its folder in Command Prompt or PowerShell (`.\start.cmd`). It
 finds x64 Bun 1.4.0 or newer (Windows on Arm runs it emulated), offers to
-install it when missing, and then starts the stack like `start.sh`. Press Ctrl+C to stop it. See
+install it when missing, and then starts the stack like `start.sh`. In Git Bash,
+`./start.sh` hands over to `start.cmd`. Press Ctrl+C to stop it. See
 [setup](docs/setup.md#start-on-windows).
 
 ## Local container

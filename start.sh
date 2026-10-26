@@ -6,6 +6,11 @@
 # This is additive (upstream has no start.sh) so it never affects `git merge upstream/dev`.
 set -euo pipefail
 cd "$(dirname "$0")"
+# Git Bash runs on Windows, where start.cmd is the launcher: it selects x64 Bun
+# and offers missing tools through winget.
+case "$(uname -s)" in
+  MINGW*|MSYS*) exec cmd.exe //c start.cmd "$@" ;;
+esac
 # Select Bun before anything else runs, offering to install it when it is
 # missing or too old. Optional host tools are checked later, before dependencies.
 . "$PWD/scripts/requirements.sh"
