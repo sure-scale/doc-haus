@@ -397,12 +397,17 @@ function parseLegal(text:string) {
 // A quote that copies the list number the draft view prints before a paragraph
 // is that paragraph's text from its start; the number stays Word's, kept as
 // `label` to place the quote only in a paragraph with that number. A quote
-// found as written, or a different number, is kept as written. One found only
-// without the draft view's own markup copied it, so it and its replacement are
-// placed without it; the words keep their formatting. One found that way only
-// with other spaces between its words (one where the document has two) is
-// placed in the document's words, if they are there once. A quote found none
-// of these ways, or whose replacement then changes no words, is an open item.
+// found as written, or a different number, is kept as written. Otherwise it
+// copied the draft view's own markup and is placed without it, or, where it
+// began or ended inside a bold or italic run, without that run's one mark too.
+// Each way, one found only with other white space between its words (one
+// space where the document has two, or an ordinary one for a non-breaking
+// one) is placed in the document's words, if they are there once. Its
+// replacement is read as the draft view too, so the words keep their own
+// formatting, except beside a quote found as written whose asterisks or
+// backslashes would read as markup: those are the document's own, and the
+// replacement's stay as written. A quote found none of these ways (marks alone
+// are no words), or whose replacement then changes no words, is an open item.
 // However it was found, the words its replacement keeps keep the document's
 // spacing (withSpacesOf).
 function withoutDraftViewMarks(paragraphs:{text:string;label?:string}[],legal:ReturnType<typeof parseLegal>) {
@@ -416,38 +421,43 @@ function withoutDraftViewMarks(paragraphs:{text:string;label?:string}[],legal:Re
     return owner ? {...row,before_quote:withoutListLabel(row.before_quote,owner.label),label:owner.label} : undefined
   }
   const spaced = (row:Row):Row|undefined => {
-    const loose = new RegExp(row.before_quote.split(/[ \t]+/).map((word) => word.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join("[ \\t]+"),"g")
+    const loose = new RegExp(row.before_quote.split(spaces).map((word) => word.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join(spaces.source),"g")
     const found = paragraphs.flatMap((paragraph) => [...paragraph.text.matchAll(loose)].map((match) => match[0]))
     return found.length === 1 ? {...row,before_quote:found[0]!} : undefined
   }
   const unmatched:string[] = []
   const amendments = legal.amendments.flatMap((row):Row[] => {
-    const found = placed(row)
-    if (found) return [{...found,replacement:withSpacesOf(found.before_quote,row.before_quote,row.replacement)}]
-    const plain = {...row,before_quote:withoutDraftViewMarkup(row.before_quote),replacement:withoutDraftViewMarkup(row.replacement)}
-    const unmarked = placed(plain) ?? spaced(plain)
-    const replacement = unmarked && withSpacesOf(unmarked.before_quote,plain.before_quote,plain.replacement)
-    if (unmarked && withoutListLabel(replacement!,unmarked.label) !== unmarked.before_quote) return [{...unmarked,replacement:replacement!}]
-    unmatched.push(`The change to ${quoted(plain.before_quote)} was not proposed: ${unmarked ? "it changes no words. Say which words change"
+    const plain = withoutDraftViewMarkup(row.before_quote)
+    const readings:Row[] = [{...row,replacement:plain !== row.before_quote ? row.replacement : withoutDraftViewMarkup(row.replacement)},
+      ...([undefined,"start","end"] as const).map((cut) => ({...row,
+        before_quote:withoutDraftViewMarkup(row.before_quote,cut),replacement:withoutDraftViewMarkup(row.replacement,cut)}))]
+    let reading:Row|undefined, found:Row|undefined
+    for (reading of readings) if (reading.before_quote.trim() && (found = placed(reading) ?? spaced(reading))) break
+    const replacement = found && withSpacesOf(found.before_quote,reading!.before_quote,reading!.replacement)
+    if (found && withoutListLabel(replacement!,found.label) !== found.before_quote) return [{...found,replacement:replacement!}]
+    unmatched.push(`The change to ${quoted(found?.before_quote ?? plain)} was not proposed: ${found ? "it changes no words. Say which words change"
       : "those words are not in the document. Say which words it changes"}, then request edits again.`)
     return []
   })
   return {...legal,amendments,unmatched}
 }
+// The white space a quote may copy as any other: spaces, tabs, and the
+// non-breaking spaces that keep a number with its word or currency sign.
+const spaces = /[ \t\u00a0\u202f]+/g
 // `replacement` of `quote`, the model's copy of `text` (the document's words it
-// was placed in), as a change of `text`. Compared with each run of spaces as
-// one space, the words it changes (wordChanges, as Accept writes them), with
+// was placed in), as a change of `text`. Compared with each run of white space
+// as one space, the words it changes (wordChanges, as Accept writes them), with
 // the replacement's own spacing, replace theirs in `text`: the words it keeps
 // keep the document's spacing, and Accept changes only the words asked. A
 // replacement that differs from its quote only in spacing is that change.
 function withSpacesOf(text:string,quote:string,replacement:string) {
-  const collapsed = (value:string) => value.replace(/[ \t]+/g," ")
+  const collapsed = (value:string) => value.replace(spaces," ")
   const before = collapsed(text), after = collapsed(replacement)
   if (before === after) return replacement === quote ? text : replacement
   // Where an offset in collapsed `value` falls in `value`: the same place in
   // the same word, or the same end of the same space.
   const inside = (value:string) => {
-    const pieces = value.split(/([ \t]+)/)
+    const pieces = value.split(new RegExp(`(${spaces.source})`))
     return (offset:number) => {
       let from = 0, to = 0
       for (const [index,piece] of pieces.entries()) {
@@ -473,8 +483,13 @@ function withSpacesOf(text:string,quote:string,replacement:string) {
 }
 // The markup the draft view adds to a paragraph's words (createDocxRevision),
 // undone: a backslash before each of \ ` * _ { } [ ] < > |, and one to three *
-// on each side of a bold or italic run. Other asterisks are words.
-function withoutDraftViewMarkup(text:string):string {
+// on each side of a bold or italic run. Other asterisks are words. Text that
+// starts (`cut` "start") or ends inside a run has an odd number of marks: its
+// first, or its last, is that run's, whose pair is outside the text.
+function withoutDraftViewMarkup(text:string,cut?:"start"|"end"):string {
+  const marks = cut ? [...text.matchAll(/\\.|\*{1,3}/g)].filter((match) => match[0].startsWith("*")) : []
+  const mark = marks.length % 2 ? marks[cut === "start" ? 0 : marks.length - 1]! : undefined
+  if (mark) return withoutDraftViewMarkup(text.slice(0,mark.index) + text.slice(mark.index + mark[0].length))
   return text.replace(/\\([\\`*_{}[\]<>|])|(\*{1,3})((?:\\.|[^*\\])+?)\2/g,(_,escaped:string|undefined,_marks,run:string|undefined) =>
     escaped ?? withoutDraftViewMarkup(run!))
 }

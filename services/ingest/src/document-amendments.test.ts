@@ -1907,6 +1907,108 @@ test("a replacement with one space where its quote has the document's two keeps 
   } finally {engine.server.stop(true);await rm(temporary,{recursive:true,force:true})}
 })
 
+// The model writes as its draft view reads: a pair of asterisks marks bold or
+// italic words and a backslash escapes a character. Asterisks of the
+// document's own that it quotes as they are stay.
+test("a replacement written with the draft view's bold marks or escapes is proposed as plain words; one that only adds marks changes no words", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-replacement-markup-"))
+  const change = (before_quote:string,replacement:string) => ({before_quote,replacement,target_context:"the clause quoted",reason:"Requested."})
+  const engine = syntheticEngine(() => ({amendments:[
+    change("the services described in Schedule 1.","the services described in Schedule 1 (the **\"Services\"**)."),
+    change("within thirty days","within \\[number\\] days"),
+    change("Fees marked * and expenses marked * are estimates.","Fees marked * and expenses marked * are estimates only."),
+    change("The Customer shall pay","The **Customer** shall pay"),
+  ],open_items:[]}),firstCandidate)
+  try {
+    await writeDeliverable(directory,"working.docx",await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph("The Supplier shall provide the services described in Schedule 1."),
+      new Paragraph("The Buyer shall pay each invoice within thirty days."),
+      new Paragraph("Fees marked * and expenses marked * are estimates."),
+      new Paragraph("The Customer shall pay the Fees."),
+    ]}]})))
+    const original = await Bun.file(path.join(directory,"working.docx")).bytes()
+    const body = await withPreparation(directory,engine,async (prepare) => {
+      const response = await prepare("Define the services, leave the payment period for the client to fill in, say the marked charges are estimates only and put the Customer in bold.")
+      expect(response.status).toBe(200)
+      return await response.json() as {redline_ids:number[];open_items:string[]}
+    })
+    expect(body.open_items).toEqual(["The change to “The Customer shall pay” was not proposed: it changes no words. Say which words change, then request edits again."])
+    const db = openDb(directory)
+    const rows = (() => {try {return body.redline_ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect(rows.map((row) => [row.find_text,row.new_text])).toEqual([
+      ["the services described in Schedule 1.","the services described in Schedule 1 (the \"Services\")."],
+      ["within thirty days","within [number] days"],
+      ["Fees marked * and expenses marked * are estimates.","Fees marked * and expenses marked * are estimates only."]])
+    const after = await openRevision(await bake(original,rows,await redlineState(original,rows)))
+    try {
+      expect(after.revision.paragraphs.map((row) => row.text)).toEqual([
+        "The Supplier shall provide the services described in Schedule 1 (the \"Services\").","The Buyer shall pay each invoice within [number] days.",
+        "Fees marked * and expenses marked * are estimates only.","The Customer shall pay the Fees."])
+    } finally {after.session.close()}
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+// A quote that starts or ends inside a bold or italic run copies one of the
+// draft view's marks around it and not the other.
+test("a quote that cuts through a bold run is placed without the mark it copied, and the run stays bold", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-cut-run-"))
+  const bold = (text:string) => new TextRun({text,bold:true})
+  const change = (before_quote:string,replacement:string) => ({before_quote,replacement,target_context:"the clause quoted",reason:"Requested."})
+  const engine = syntheticEngine(() => ({amendments:[
+    change("Information** means any information disclosed by a party.","Information** means any information, in any form, disclosed by a party."),
+    change("made between the **Supplier","made on 1 May 2026 between the **Supplier"),
+  ],open_items:[]}),firstCandidate)
+  try {
+    await writeDeliverable(directory,"working.docx",await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph({children:[bold("Confidential Information"),new TextRun(" means any information disclosed by a party.")]}),
+      new Paragraph({children:[new TextRun("This Agreement is made between the "),bold("Supplier Group"),new TextRun(" and the Customer.")]}),
+    ]}]})))
+    const original = await Bun.file(path.join(directory,"working.docx")).bytes()
+    const body = await withPreparation(directory,engine,async (prepare) => {
+      const response = await prepare("Cover information in any form, and date the agreement 1 May 2026.")
+      expect(response.status).toBe(200)
+      return await response.json() as {redline_ids:number[];open_items:string[]}
+    })
+    expect(body.open_items).toEqual([])
+    const db = openDb(directory)
+    const rows = (() => {try {return body.redline_ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect(rows.map((row) => [row.find_text,row.new_text])).toEqual([
+      ["Information means any information disclosed by a party.","Information means any information, in any form, disclosed by a party."],
+      ["made between the Supplier","made on 1 May 2026 between the Supplier"]])
+    const after = await openRevision(await bake(original,rows,await redlineState(original,rows)))
+    try {
+      expect(after.revision.paragraphs.map((row) => row.text)).toEqual([
+        "Confidential Information means any information, in any form, disclosed by a party.","This Agreement is made on 1 May 2026 between the Supplier Group and the Customer."])
+      expect(after.revision.paragraphs.flatMap((row) => row.formatting.filter((fragment) => fragment.formatting.bold).map((fragment) => fragment.text)))
+        .toEqual(["Confidential Information","Supplier Group"])
+    } finally {after.session.close()}
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+// Word documents keep a number with its word or currency sign by a
+// non-breaking space, which the model may quote as an ordinary one.
+test("a quote with ordinary spaces where the document has non-breaking ones is placed in the document's words, which keep them", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-nonbreaking-"))
+  const fee = (amount:string) => `Subject to clause\u00a05, the Fee is £\u202f${amount} per month.`
+  const engine = syntheticEngine(() => ({amendments:[{before_quote:"Subject to clause 5, the Fee is £ 100 per month.",
+    replacement:"Subject to clause 5, the Fee is £ 120 per month.",target_context:"fee clause",reason:"Requested fee increase."}],open_items:[]}),firstCandidate)
+  try {
+    await writeDeliverable(directory,"working.docx",await Packer.toBuffer(new Document({sections:[{children:[new Paragraph(fee("100"))]}]})))
+    const original = await Bun.file(path.join(directory,"working.docx")).bytes()
+    const body = await withPreparation(directory,engine,async (prepare) => {
+      const response = await prepare("Raise the monthly fee to £120.")
+      expect(response.status).toBe(200)
+      return await response.json() as {redline_ids:number[];open_items:string[]}
+    })
+    expect(body.open_items).toEqual([])
+    const db = openDb(directory)
+    const rows = (() => {try {return body.redline_ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect(rows.map((row) => [row.find_text,row.new_text])).toEqual([[fee("100"),fee("120")]])
+    expect(readDocxRevisionText(await buildRedlined(original,rows))).toEqual({inserted_text:["120"],deleted_text:["100"]})
+    expect((await createDocxRevision(await bake(original,rows))).paragraphs[0]!.text).toBe(fee("120"))
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
 test("a same-paragraph sibling goes stale and stays pending and visible while plain download and fresh tracked changes remain available", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-stale-"))
   const workspace = path.join(temporary,"workspace")
