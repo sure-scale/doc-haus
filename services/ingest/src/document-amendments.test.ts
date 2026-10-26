@@ -1659,6 +1659,45 @@ test("a replacement copying its clause's number is placed without it; a differen
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
+// Seen live: the legal pass copied the draft view's bold marks into its quote
+// and replacement, the quote was not found and the whole batch was lost.
+test("a quote and replacement copying the draft view's bold and italic marks are placed without them; a document's own asterisks still match", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-emphasis-"))
+  const file = path.join(directory,"working.docx")
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:"Neither party is liable for **indirect** or *consequential* loss.",
+      replacement:"Each party shall mitigate its loss. Neither party is liable for **indirect** or *consequential* loss.",target_context:"liability clause",reason:"Requested mitigation duty."},
+    {before_quote:"Charges marked ** are estimates.",replacement:"Charges marked ** are estimates only.",target_context:"charges note",reason:"Requested qualifier."},
+  ],open_items:[]}),firstCandidate)
+  try {
+    await writeDeliverable(directory,"working.docx",await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph({children:[new TextRun("Neither party is liable for "),new TextRun({text:"indirect",bold:true}),new TextRun(" or "),
+        new TextRun({text:"consequential",italics:true}),new TextRun(" loss.")]}),
+      new Paragraph("Charges marked ** are estimates."),
+    ]}]})))
+    const original = await Bun.file(file).bytes()
+    const ids = await withPreparation(directory,engine,async (prepare) => {
+      const response = await prepare("Add a mitigation duty to the liability clause and say the marked charges are estimates only.")
+      expect(response.status).toBe(200)
+      return (await response.json() as {redline_ids:number[]}).redline_ids
+    })
+    expect(engine.prompts[0]).toContain("Neither party is liable for **indirect** or *consequential* loss.\\n\\nCharges marked \\\\*\\\\* are estimates.")
+    const db = openDb(directory)
+    const rows = (() => {try {return ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect(rows.map((row) => [row.find_text,row.new_text])).toEqual([
+      ["Neither party is liable for indirect or consequential loss.","Each party shall mitigate its loss. Neither party is liable for indirect or consequential loss."],
+      ["Charges marked ** are estimates.","Charges marked ** are estimates only."]])
+    const after = await openRevision(await bake(original,rows,await redlineState(original,rows)))
+    try {
+      expect(after.revision.paragraphs.map((row) => row.text)).toEqual([
+        "Each party shall mitigate its loss. Neither party is liable for indirect or consequential loss.","Charges marked ** are estimates only."])
+      // The kept words keep their own formatting.
+      expect(after.revision.paragraphs[0]!.formatting.filter((row) => row.formatting.bold || row.formatting.italic).map((row) => [row.text,row.formatting.bold,row.formatting.italic]))
+        .toEqual([["indirect",true,false],["consequential",false,true]])
+    } finally {after.session.close()}
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
 test("a same-paragraph sibling goes stale and stays pending and visible while plain download and fresh tracked changes remain available", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-stale-"))
   const workspace = path.join(temporary,"workspace")

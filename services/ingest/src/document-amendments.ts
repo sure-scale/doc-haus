@@ -129,7 +129,7 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   diagnostic.record("legal_generation",{first_prompt:firstPrompt})
   const first = await generate(directory,firstPrompt)
   diagnostic.record("legal_parse",{first_text:first.text,first_pass:pass(first)})
-  const legal = withoutQuotedLabels(revision.paragraphs,parseLegal(first.text))
+  const legal = withoutDraftViewMarks(revision.paragraphs,parseLegal(first.text))
   diagnostic.record("candidate_extraction",{frozen_legal_proposals:legal})
   if (!legal.amendments.length) {
     await recordPrepared(directory,name,initial.role,{redline_ids:[],open_items:legal.open_items})
@@ -386,16 +386,23 @@ function parseLegal(text:string) {
 // A quote that copies the list number the draft view prints before a paragraph
 // is that paragraph's text from its start; the number stays Word's, kept as
 // `label` to place the quote only in a paragraph with that number. A quote
-// found as written, or a different number, is kept as written.
-function withoutQuotedLabels(paragraphs:{text:string;label?:string}[],legal:ReturnType<typeof parseLegal>) {
-  return {...legal,amendments:legal.amendments.map((row):typeof row & {label?:string} => {
+// found as written, or a different number, is kept as written. One found only
+// without the * marks the draft view puts around bold and italic words (it
+// escapes the document's own) copied them, so it and its replacement are
+// placed without them; the words keep their formatting.
+function withoutDraftViewMarks(paragraphs:{text:string;label?:string}[],legal:ReturnType<typeof parseLegal>) {
+  type Row = (typeof legal.amendments)[number] & {label?:string}
+  const placed = (row:Row):Row|undefined => {
     if (paragraphs.some((paragraph) => paragraph.text.includes(row.before_quote))) return row
     const owner = paragraphs.find((paragraph) => {
       const rest = withoutListLabel(row.before_quote,paragraph.label)
       return rest !== row.before_quote && paragraph.text.startsWith(rest)
     })
-    return owner ? {...row,before_quote:withoutListLabel(row.before_quote,owner.label),label:owner.label} : row
-  })}
+    return owner ? {...row,before_quote:withoutListLabel(row.before_quote,owner.label),label:owner.label} : undefined
+  }
+  const unmarked = (text:string) => text.replace(/\*+/g,"")
+  return {...legal,amendments:legal.amendments.map((row):Row => placed(row)
+    ?? placed({...row,before_quote:unmarked(row.before_quote),replacement:unmarked(row.replacement)}) ?? row)}
 }
 // Document text, the other side's comments included, is screened by the shared
 // injection rules before a pass reads it. A match is named by part and rule
