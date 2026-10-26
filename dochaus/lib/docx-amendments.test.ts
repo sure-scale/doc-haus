@@ -482,6 +482,18 @@ describe("layered edits on a counterparty markup", () => {
     } finally { session.close() }
   })
 
+  // Avery's move puts clause 3 below clause 4, its typed number unchanged, so
+  // the clauses read 2, 4, 3. Prepare's passes are told why.
+  test("the paragraph their pending move puts below clause 4 is marked in the draft view and as a candidate's neighbour", async () => {
+    const revision = await createDocxRevision(source, layer)
+    expect(revision.paragraphs.filter(row => row.moved_here).map(row => row.text)).toEqual(["3. Notices. Notices must be in writing."])
+    expect(revision.markdown).toContain("2. Price. The Price is fixed for the first twelve months.\n\n4. Liability. Neither party is liable for **indirect** loss.\n\n" +
+      "[Moved here by a pending tracked change]\n\n3. Notices. Notices must be in writing.\n\n5. Term.")
+    const packet = await createDocxLocalization(source, [{ id: "mitigation", before_quote: "Liability. Neither", replacement: "Liability. Each party shall mitigate its loss. Neither" }], {}, layer)
+    expect(packet.candidates.map(row => [row.previous_paragraph, row.next_paragraph])).toEqual([
+      ["2. Price. The Price is fixed for the first twelve months.", "[Moved here by a pending tracked change] 3. Notices. Notices must be in writing."]])
+  })
+
   test("an accept-mode edit to clause 9 is written untracked and keeps their ten revisions", async () => {
     const revision = await createDocxRevision(source, layer)
     const output = await applyDocxParagraphEdits(source, [{ ...clause9, paragraph_handle: handle(revision, "9.") }], undefined, layer)

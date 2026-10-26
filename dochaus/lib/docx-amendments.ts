@@ -433,8 +433,12 @@ function localize(opened: Opened, proposed: DocxAmendment[], limits: Limits) {
   const bindings = new Map<string, Binding>()
   const views = opened.revision.paragraphs
   // Context stops at the paragraph's edge, so a whole-paragraph quote has none;
-  // the adjacent paragraphs in the same part give its position.
-  const neighbour = (ordinal: number, index: number) => views[index]?.scope === views[ordinal]!.scope ? views[index]!.text : null
+  // the adjacent paragraphs in the same part give its position, one a pending
+  // move puts there marked as the draft view marks it.
+  const neighbour = (ordinal: number, index: number, part: (text: string) => string) => {
+    const view = views[index]
+    return view?.scope === views[ordinal]!.scope ? `${view.moved_here ? `[${MOVED_HERE}] ` : ""}${part(view.text)}` : null
+  }
   const candidates = amendments.flatMap(amendment => {
     if (/[\r\n\t]/.test(amendment.before_quote)) throw new Error("unsupported_cross_block_quote")
     const matches = opened.session.grep(literal(amendment.before_quote), { scope: 63, whitespace: 0, contextChars: 160 })
@@ -446,8 +450,8 @@ function localize(opened: Opened, proposed: DocxAmendment[], limits: Limits) {
       bindings.set(`${amendment.id}:${handle}`, { handle, amendment, match, ordinal })
       return { amendment_id: amendment.id, target_handle: handle, exact_text: match.text,
         context_before: match.contextBefore, context_after: match.contextAfter,
-        previous_paragraph: neighbour(ordinal, ordinal - 1)?.slice(-160) ?? null,
-        next_paragraph: neighbour(ordinal, ordinal + 1)?.slice(0, 160) ?? null,
+        previous_paragraph: neighbour(ordinal, ordinal - 1, text => text.slice(-160)),
+        next_paragraph: neighbour(ordinal, ordinal + 1, text => text.slice(0, 160)),
         paragraph: views[ordinal],
         touched_formatting: match.fragments.map(fragment => ({ text: fragment.text, formatting: fragment.formatting })),
       }
@@ -636,6 +640,8 @@ export async function openRevision(source: Uint8Array, options: DocxRevisionOpti
         scope,
         text: paragraph.match.text,
         ...(label ? { label } : {}),
+        // A layer-mode reader's paragraph that a pending move puts here (see movedHere).
+        ...(movedHere(paragraph.node) ? { moved_here: true as const } : {}),
         headings: headingStack.map(heading => ({ ...heading })),
         table: tableContext,
         style_id: paragraph.metadata.styleId ?? null,
@@ -650,8 +656,9 @@ export async function openRevision(source: Uint8Array, options: DocxRevisionOpti
       const part = view.scope !== (views[ordinal - 1]?.scope ?? "body") ? `[${partLabel(view.scope)}]\n\n` : ""
       const prefix = paragraphs[ordinal].match.enclosingAnchor.kind === "h" ? `${"#".repeat(view.headings.at(-1)!.level)} ` : ""
       const context = view.table ? `> Table ${view.table.table}, row ${view.table.row}, column ${view.table.column}\n\n` : ""
+      const moved = view.moved_here ? `[${MOVED_HERE}]\n\n` : ""
       const escape = (text: string) => text.replace(/[\\`*_{}[\]<>|]/g, "\\$&")
-      return part + context + prefix + (view.label ? `${escape(view.label)} ` : "") + view.formatting.map(fragment => {
+      return part + context + moved + prefix + (view.label ? `${escape(view.label)} ` : "") + view.formatting.map(fragment => {
         const text = escape(fragment.text)
         return fragment.formatting.bold && fragment.formatting.italic ? `***${text}***`
           : fragment.formatting.bold ? `**${text}**` : fragment.formatting.italic ? `*${text}*` : text
@@ -744,6 +751,15 @@ function elements(node: Document | Element, name: string) { return Array.from(no
 // such text; refuse mode has thrown before.
 function emptyParagraph(node: Element) {
   return elements(node, "t").every(text => !text.textContent || removedByRevision(text, node))
+}
+// A layer-mode reader shows a paragraph someone moved with tracking on where
+// the move puts it, and not where it came from (empty there, above). A typed
+// clause number moves with it, so the paragraphs around it can read out of
+// numbered order; the draft view and a candidate's neighbours say why.
+const MOVED_HERE = "Moved here by a pending tracked change"
+// Word marks the paragraph mark of a paragraph moved with tracking on.
+function movedHere(node: Element) {
+  return children(node, "pPr").some(properties => children(properties, "rPr").some(mark => children(mark, "moveTo").length > 0))
 }
 function removedByRevision(text: Element, paragraph: Element) {
   for (let node = text.parentNode; node && node !== paragraph; node = node.parentNode)
