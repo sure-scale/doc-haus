@@ -2,7 +2,7 @@ import { docxodus } from "./docxodus"
 import { compareDocxWithPointers, paragraphTargets, resolveParagraphTarget, withStableRevisionDates, type ParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import type { RedlineRow } from "./db"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { createDocxLocalization, applyDocxParagraphEdits, DocxOverlappingAmendmentsError, DocxTrackedRevisionsError, hasTrackedRevisions, openRevision, othersPending, pendingRevisionAnchors, pendingRevisionRefusal, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
+import { createDocxLocalization, applyDocxParagraphEdits, DocxOverlappingAmendmentsError, DocxTrackedRevisionsError, hasTrackedRevisions, openRevision, othersPending, pendingRevisionAnchors, pendingRevisionRefusal, quoted, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { createHash } from "node:crypto"
 import { draftingAttribution, ourAuthors } from "../../../dochaus/lib/docx-attribution"
 import { normalizeUntrustedText } from "../../../dochaus/lib/untrusted-text"
@@ -32,7 +32,7 @@ export class RedlineReplayError extends Error {
     super(reason)
     // The touch rule's refusal already names the change and what to do.
     this.refusal = reason.startsWith("The change to ") ? reason
-      : `The change to ${JSON.stringify(row.find_text)} cannot be written with the rest: its words have changed, or another proposal in this list changes them. Reject it, accept the rest, then request that edit again.`
+      : `The change to ${quoted(row.find_text)} cannot be written with the rest: its words have changed, or another proposal in this list changes them. Reject it, accept the rest, then request that edit again.`
   }
 }
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -267,7 +267,7 @@ export async function bake(original: Uint8Array, rows: RedlineRow[], state?: Red
   } catch (error) {
     if (!(error instanceof DocxOverlappingAmendmentsError)) throw error
     const [first,second] = rows.filter((row) => error.amendments.includes(String(row.id)))
-    throw new RedlineAcceptConflictError(`The changes to ${JSON.stringify(first!.find_text)} and ${JSON.stringify(second!.find_text)} overlap, so Accept all cannot write both. Accept the one you want on its own, then reject the other and request that edit again.`)
+    throw new RedlineAcceptConflictError(`The changes to ${quoted(first!.find_text)} and ${quoted(second!.find_text)} overlap, so Accept all cannot write both. Accept the one you want on its own, then reject the other and request that edit again.`)
   }
 }
 
@@ -388,7 +388,7 @@ export function staleBatchReason(stale:{row:RedlineRow;reason:string}[]) {
   const {row,reason} = stale[0]!
   // The file's own reason holds every proposal alike.
   if (reason === trackedChanges || reason === unreadableRevision) return reason
-  const change = `The change to ${JSON.stringify(row.find_text)}`
+  const change = `The change to ${quoted(row.find_text)}`
   // A held paragraph's reason already names its change.
   const named = reason.startsWith(change) ? reason : `${change} can no longer be accepted. ${reason}`
   const others = stale.length - 1
@@ -397,7 +397,7 @@ export function staleBatchReason(stale:{row:RedlineRow;reason:string}[]) {
 function heldParagraph(text:string,authors:string[]) {
   const names = [...new Set(authors.map((author) => normalizeUntrustedText(author).text.trim()).filter(Boolean))]
   const many = authors.length > 1
-  return `The change to ${JSON.stringify(text)} can no longer be accepted: its paragraph now has ${many ? "pending changes" : "a pending change"}${names.length ? ` by ${listNames(names)}` : ""}. Reject this proposal, decide ${many ? "those changes" : "that change"} under Tracked changes, then request edits again.`
+  return `The change to ${quoted(text)} can no longer be accepted: its paragraph now has ${many ? "pending changes" : "a pending change"}${names.length ? ` by ${listNames(names)}` : ""}. Reject this proposal, decide ${many ? "those changes" : "that change"} under Tracked changes, then request edits again.`
 }
 // One all-or-nothing write. A version 1 row is located by its stored handle
 // through whole-revision localization of the version 1 rows. A version 2 row is

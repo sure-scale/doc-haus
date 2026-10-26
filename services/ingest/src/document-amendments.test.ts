@@ -500,7 +500,7 @@ test("a revision-API edit or a removed pointer stales only the proposals on thos
     // Accept all names the first stale proposal and counts the others.
     const all = await ingest.request(`${matter.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
     expect({status:all.status,body:await all.json()}).toEqual({status:409,body:{error:
-      `The change to "five days" can no longer be accepted. ${paragraphChanged} 1 other proposal can no longer be accepted either; the change list says why.`}})
+      `The change to “five days” can no longer be accepted. ${paragraphChanged} 1 other proposal can no longer be accepted either; the change list says why.`}})
     expect(sha256(await Bun.file(matter.file).bytes())).toBe(sha256(current))
     // Stale proposals are left out of the tracked-changes export; the valid one remains.
     const exported = await ingest.request(`${matter.route}/documents/redlined?name=working.docx`)
@@ -1304,7 +1304,7 @@ test("on an uploaded markup with Word paragraph ids, each Accept keeps doc.haus'
     // An edit inside doc.haus's own tracked change is not proposed, and says why.
     const inside = await matter.prepare("Make the Commonwealth's law govern.")
     expect(await inside.json()).toMatchObject({proposed:0,open_items:[
-      "The change to \"the State\" was not proposed: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.",
+      "The change to “the State” was not proposed: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.",
     ]})
   } finally {
     await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
@@ -1362,7 +1362,7 @@ test("on an uploaded markup, a proposal whose paragraph gains their formatting c
     {before_quote:"without consent",replacement:"without prior written consent",target_context:"assignment clause",reason:"Consent must be written."},
   ],open_items:[]}),firstCandidate)
   const ingest = await isolatedIngest(temporary,engine.server)
-  const formatted = "The change to \"the Province\" can no longer be accepted: its paragraph now has a pending change by Morgan Okafor. Reject this proposal, decide that change under Tracked changes, then request edits again."
+  const formatted = "The change to “the Province” can no longer be accepted: its paragraph now has a pending change by Morgan Okafor. Reject this proposal, decide that change under Tracked changes, then request edits again."
   try {
     await ingest.start("only")
     const matter = await ingest.matter("Markup reformatted after preparing")
@@ -1493,7 +1493,7 @@ test("on an uploaded markup, Accept all writes proposals prepared under differen
     expect(await overlap.pending()).toEqual([[first[1]!,undefined,undefined],[wording!,undefined,undefined]])
     const refused = await ingest.request(`${overlap.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
     expect({status:refused.status,body:await refused.json()}).toEqual({status:409,body:{error:
-      "The changes to \"the Province\" and \"law of the Province\" overlap, so Accept all cannot write both. Accept the one you want on its own, then reject the other and request that edit again."}})
+      "The changes to “the Province” and “law of the Province” overlap, so Accept all cannot write both. Accept the one you want on its own, then reject the other and request that edit again."}})
     expect(sha256(await Bun.file(overlap.file).bytes())).toBe(sha256(before))
     expect([first[1]!,wording!].map(overlap.status)).toEqual(["pending","pending"])
   } finally {
@@ -1552,7 +1552,7 @@ test("on an uploaded markup, the preview and Accept all write a prepared proposa
     const [law2] = (await (await rewritten.prepare("Make the State's law govern.")).json() as {redline_ids:number[]}).redline_ids
     const plural = older(rewritten,"law of the Province","laws of the Province")
     const before = await Bun.file(rewritten.file).bytes()
-    const refusal = "The change to \"law of the Province\" cannot be written with the rest: its words have changed, or another proposal in this list changes them. Reject it, accept the rest, then request that edit again."
+    const refusal = "The change to “law of the Province” cannot be written with the rest: its words have changed, or another proposal in this list changes them. Reject it, accept the rest, then request that edit again."
     const unpreviewed = await ingest.request(`${rewritten.route}/documents/redlined?name=working.docx`)
     expect({status:unpreviewed.status,body:await unpreviewed.json()}).toEqual({status:409,body:{error:refusal}})
     const refused = await ingest.request(`${rewritten.route}/redlines/accept-all?name=working.docx`,{method:"POST"})

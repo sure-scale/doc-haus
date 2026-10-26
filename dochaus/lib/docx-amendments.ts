@@ -217,10 +217,13 @@ export async function ownRevisionRefusals(bytes: Uint8Array, packet: DocxLocaliz
   } finally { opened.session.close() }
 }
 
+/** Words quoted to the lawyer, as they read them. */
+export function quoted(text: string) { return `“${text}”` }
+
 /** Why an edit inside doc.haus's own pending change was not made: Prepare's
  * open item, and the older chat tools' refusal (pendingRevisionRefusal). */
 export function ownRevisionReason(text: string, verb: "proposed" | "applied" | "made") {
-  return `The change to ${JSON.stringify(text)} was not ${verb}: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.`
+  return `The change to ${quoted(text)} was not ${verb}: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.`
 }
 
 // The source with the REF fields the edits touch unwrapped to their text, for
@@ -556,7 +559,7 @@ export function pendingRevisionRefusal(session: Session, pending: Map<string, st
   // As Prepare lists them: three names, then a count.
   const shown = names.length > 3 ? [...names.slice(0, 3), `${names.length - 3} other${names.length === 4 ? "" : "s"}`] : names
   const by = shown.length ? ` by ${shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)}` : shown[0]}` : ""
-  return `The change to ${JSON.stringify(text)} was not ${verb}: that paragraph has ${many ? "pending changes" : "a pending change"}${by}. Accept or reject ${many ? "them" : "it"} under Tracked changes, then request edits again.`
+  return `The change to ${quoted(text)} was not ${verb}: that paragraph has ${many ? "pending changes" : "a pending change"}${by}. Accept or reject ${many ? "them" : "it"} under Tracked changes, then request edits again.`
 }
 
 function listedRevisions(session: Session) {
