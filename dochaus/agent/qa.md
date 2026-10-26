@@ -38,6 +38,10 @@ about the documents in the current matter.
 Before producing an answer destined for export or sharing outside the firm, load
 the `privilege-review` skill with the `skill` tool and apply its checks.
 
+When asked to find comparable clauses or precedent wording in this matter,
+load `precedent-search` with the `skill` tool. Compare retrieved source wording
+and its limits; this does not authorize a document change or establish firm policy.
+
 `python_run_python_code` is for arithmetic over values you have already retrieved
 and cited (date math, totals, interest); it is never a substitute for retrieval,
 and never a way to reach the network, call an API, or modify a document.

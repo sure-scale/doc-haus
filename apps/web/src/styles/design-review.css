@@ -79,6 +79,7 @@
 .review-comments { display: flex; flex-direction: column; gap: var(--space-3); margin-top: var(--space-6); padding-top: var(--space-5); border-top: 1px solid var(--border); }
 .review-comment { padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--md-sys-color-surface-container-low); }
 .review-comment-meta { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); font-size: .8rem; font-variant-numeric: tabular-nums; }
+.review-comment-meta > span { min-width: 0; overflow-wrap: anywhere; }
 .review-comment-text { font-size: .95rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .review-comment-compose { display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--space-2); }
 .review-comment-compose textarea { flex: 1 1 220px; min-height: 80px; resize: vertical; }

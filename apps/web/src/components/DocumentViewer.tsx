@@ -37,6 +37,7 @@ import useModalFocus from "./useModalFocus"
 import backdropClose from "./backdropClose"
 import { withSafeStyleValues } from "./docx-style-values"
 import { ProposalRedline } from "./redline"
+import { useDocumentNavigation } from "./DocumentNavigation"
 
 // How a Word file with tracked changes is painted: insertions underlined and
 // deletions struck through in their author's colour (styles.css), moves,
@@ -204,6 +205,7 @@ function WordDocumentViewer({
   useModalFocus(modalRef)
   const closing = useContext(Closing)
   const documentRef = useRef<HTMLDivElement>(null)
+  const navigation = useDocumentNavigation(documentRef, isPdf ? undefined : html)
   const [passage, setPassage] = useState<"matched" | "ambiguous" | "unavailable">()
   const [pdfLookup, setPdfLookup] = useState<{ excerpt: string; located: PdfLookup }>()
   const moreRef = useRef<HTMLDetailsElement>(null)
@@ -712,6 +714,7 @@ function WordDocumentViewer({
   return (
     <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
       <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
+        navigation.onKeyDown(e)
         if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); onClose() }
       }}>
         <div className="viewer-bar">
@@ -773,7 +776,10 @@ function WordDocumentViewer({
             <ModalClose onClose={onClose} />
           </div>
         </div>
-        <div className="viewer-body">
+        {navigation.bar}
+        <div className="viewer-with-navigation">
+          {navigation.outline}
+          <div className="viewer-body">
           {narrow && versionsPanel}
           {narrow && markupNotice}
           {narrow && markupPanel}
@@ -863,6 +869,7 @@ function WordDocumentViewer({
               ))}
             </aside>
           )}
+          </div>
         </div>
       </div>
     </div>
@@ -941,6 +948,8 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose, onChanged
   const [versionStatus, setVersionStatus] = useState<string>()
   const narrow = useNarrow()
   const markRef = useRef<HTMLElement>(null)
+  const textRef = useRef<HTMLDivElement>(null)
+  const navigation = useDocumentNavigation(textRef, text, false)
   const modalRef = useRef<HTMLDivElement>(null)
   useModalFocus(modalRef)
   const closing = useContext(Closing)
@@ -984,6 +993,7 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose, onChanged
   return (
     <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
       <div ref={modalRef} className="viewer-panel document-reader" role="dialog" aria-modal="true" aria-label={name} tabIndex={-1} onClick={(e) => e.stopPropagation()} onKeyDown={(e) => {
+        navigation.onKeyDown(e)
         if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); onClose() }
       }}>
         <div className="viewer-bar">
@@ -993,6 +1003,7 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose, onChanged
             <ModalClose onClose={onClose} />
           </div>
         </div>
+        {navigation.bar}
         <div className="viewer-body">
           {narrow && versionsPanel}
           <div className="viewer-doc">
@@ -1004,7 +1015,7 @@ function DocumentTextViewer({ matterId, name, kind, citation, onClose, onChanged
                 {Array.from({ length: 14 }, (_, i) => <div key={i} className="sk-line" />)}
               </div>
             )}
-            {text !== undefined && <ExtractedText kind={kind} text={text} match={match} markRef={markRef} />}
+            {text !== undefined && <div ref={textRef}><ExtractedText kind={kind} text={text} match={match} markRef={markRef} /></div>}
           </div>
           {!narrow && versionsPanel}
         </div>

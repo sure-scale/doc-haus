@@ -33,7 +33,9 @@ export type GridCell = {
   status: "filled" | "reviewed"
   questionHash: string
   // Reviewer comment thread on the cell; survives recomputes.
-  comments?: { id: string; text: string; at: number }[]
+  // `author` is the configured attorney at creation, never filled from today's
+  // preferences when reading an older comment.
+  comments?: { id: string; text: string; at: number; author?: string }[]
   // A cell computed without a citation gets one re-check of its own document
   // (see recheckPassages); this records its outcome and what it searched.
   recheck?: GridRecheck

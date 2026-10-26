@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { insertChunk, openDb, upsertDocument } from "./db"
-import { questionTerms, recheckPassages, recheckRequest } from "./grid"
+import { questionTerms, readGrid, recheckPassages, recheckRequest, writeGrid, type Grid } from "./grid"
 
 // Synthetic supply agreement: one clause per passage. The liquidated-damages
 // clause sits at passage 9, outside the five passages a first extraction saw.
@@ -51,6 +51,28 @@ function withMatter(run: (dir: string) => void) {
     rmSync(dir, { recursive: true, force: true })
   }
 }
+
+test("grid persistence keeps each recorded author and leaves older comments unattributed across saves", () => withMatter((dir) => {
+  const grid: Grid = {
+    columns: [{ id: "q1", question: "What is the governing law?" }],
+    cells: {
+      "Supply.docx::q1": {
+        answer: "England and Wales", status: "filled", questionHash: "law",
+        comments: [{ id: "old", text: "Check the signed copy.", at: 1 }, { id: "new", text: "Confirmed.", at: 2, author: "Amina Shah" }],
+      },
+    },
+  }
+  writeGrid(dir, grid)
+  expect(readGrid(dir)).toEqual(grid)
+  const next = readGrid(dir)
+  next.cells["Supply.docx::q1"]!.comments!.push({ id: "later", text: "Agreed.", at: 3, author: "Jordan Chen" })
+  writeGrid(dir, next)
+  expect(readGrid(dir).cells["Supply.docx::q1"]!.comments).toEqual([
+    { id: "old", text: "Check the signed copy.", at: 1 },
+    { id: "new", text: "Confirmed.", at: 2, author: "Amina Shah" },
+    { id: "later", text: "Agreed.", at: 3, author: "Jordan Chen" },
+  ])
+}))
 
 // Identity of a passage as the first extraction's search returned it.
 function seenPassages(dir: string, name: string, clauses: string[][], indexes: number[]) {
