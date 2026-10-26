@@ -36,6 +36,7 @@ import { useToast } from "./Toast"
 import useModalFocus from "./useModalFocus"
 import backdropClose from "./backdropClose"
 import { withSafeStyleValues } from "./docx-style-values"
+import { ProposalRedline } from "./redline"
 
 // How a Word file with tracked changes is painted: insertions underlined and
 // deletions struck through in their author's colour (styles.css), moves,
@@ -839,8 +840,7 @@ function WordDocumentViewer({
                   ref={r.id === focusId ? focusRef : undefined}
                 >
                   <div className="change-author">{r.author}</div>
-                  {r.old_text && <div className="change-old">{r.old_text}</div>}
-                  <div className="change-new">{r.new_text}</div>
+                  <ProposalRedline before={r.old_text} after={r.new_text} />
                   {r.review_comment && <div className="change-comment">{r.review_comment}</div>}
                   {r.stale_reason && <div className="change-comment">{r.stale_reason}</div>}
                   <div className="change-buttons">
