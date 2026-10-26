@@ -165,11 +165,13 @@ function admitted(opened: Opened, binding: Binding) {
   if (/[\r\n\t]/.test(amendment.replacement)) throw new Error("unsupported_structural_replacement")
   if (!amendment.replacement && match.text === opened.paragraphs[ordinal].match.text)
     throw new Error("unsupported_empty_paragraph_replacement")
-  const changes = changedDocxSpans(match, amendment.replacement)
+  const whole = opened.paragraphs[ordinal]!.match
+  // The paragraph's tabs and breaks, by offset in the quote.
+  const breaks = breakOffsets(opened.paragraphs[ordinal]!.node).map(at => at - (match.span.start - whole.span.start))
+  const changes = changedDocxSpans(match, amendment.replacement, breaks)
   // Beside doc.haus's own pending change, never inside it: Docxodus would nest
   // the new revision in that one. A pure insertion has no text of its own; it
   // is inside a change when the text on both sides of it is.
-  const whole = opened.paragraphs[ordinal]!.match
   if (pending && changes.some(change => {
     const at = change.match.span.start - whole.span.start
     return change.match.text || !change.replacement ? insideRevision(opened.session, paragraphSpan(whole, at, change.match.text.length))
@@ -177,7 +179,7 @@ function admitted(opened: Opened, binding: Binding) {
   }))
     throw new Error(`docx_own_revision:${amendment.id}`)
   const xml = parse(opened.session.raw.getXml(match.enclosingAnchor.id))
-  if (!elements(xml, "fldChar").length && !elements(xml, "instrText").length) return { ...binding, changes, unlinks: [] as number[] }
+  if (!elements(xml, "fldChar").length && !elements(xml, "instrText").length) return { ...binding, changes, breaks, unlinks: [] as number[] }
   // A live cross-reference (a REF field) is the only field an edit may stand
   // beside. One the edit's changed text touches becomes the text it shows.
   const paragraph = opened.paragraphs[ordinal]!
@@ -190,7 +192,7 @@ function admitted(opened: Opened, binding: Binding) {
     const start = change.match.span.start - paragraph.match.span.start
     return start < field.to && field.from < start + change.match.text.length
   })
-  return { ...binding, changes, unlinks: fields.flatMap((field, index) => touches(field) ? [index] : []) }
+  return { ...binding, changes, breaks, unlinks: fields.flatMap((field, index) => touches(field) ? [index] : []) }
 }
 
 // Whether a run of the changed span lies inside a tracked insertion, deletion or move.
@@ -322,7 +324,7 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
       // context keeps its own runs; only the changed text is mutated.
       const paragraph = target.paragraphs[edit.ordinal]!.match
       const changes = target === opened ? edit.changes : changedDocxSpans(paragraphSpan(paragraph,
-        edit.match.span.start - opened.paragraphs[edit.ordinal]!.match.span.start, edit.match.text.length), edit.amendment.replacement)
+        edit.match.span.start - opened.paragraphs[edit.ordinal]!.match.span.start, edit.match.text.length), edit.amendment.replacement, edit.breaks)
       for (const change of changes.toReversed()) {
         if (!change.match.text && !change.replacement) continue
         target.session.setRevisionAuthor(author(edit) ?? UNTRACKED)
@@ -389,9 +391,29 @@ function changedDocxSpan(match: Match, { offset, replaced, changed }: WordChange
 
 // The changes one amendment writes: each run of whole words that differ, as
 // Word records them (wordChanges), so the words kept between two changes, and
-// a live field there, are never deleted and typed again.
-function changedDocxSpans(match: Match, replacement: string) {
-  return wordChanges(match.text, replacement).map(change => changedDocxSpan(match, change))
+// a live field there, are never deleted and typed again. The text reads
+// through tabs and breaks, so a word can run across one ("1.1<tab>Definitions");
+// a change of such a word is only the characters that differ, so the tab or
+// break stays between the same characters.
+function changedDocxSpans(match: Match, replacement: string, breaks: number[] = []) {
+  return wordChanges(match.text, replacement).map(change => {
+    if (!change.replaced || !breaks.some(at => change.offset < at && at < change.offset + change.replaced.length))
+      return changedDocxSpan(match, change)
+    const range = changedCharacters(change.replaced, change.changed)
+    return changedDocxSpan(match, { ...range, offset: change.offset + range.offset })
+  })
+}
+
+// Where a paragraph's tabs and breaks fall in its text.
+function breakOffsets(paragraph: Element) {
+  const offsets = [] as number[]
+  let at = 0
+  for (const node of elements(paragraph, "*")) {
+    if (closest(node, "p") !== paragraph || removedByRevision(node, paragraph)) continue
+    if (node.localName === "t") at += node.textContent?.length ?? 0
+    else if (["tab", "br", "cr"].includes(node.localName) && (node.parentNode as Element).localName === "r") offsets.push(at)
+  }
+  return offsets
 }
 
 // Docxodus writes a tracked insertion in the run properties of the character
@@ -429,8 +451,22 @@ function insertBefore(session: Session, match: Match, text: string) {
  * (UTF-16 units), `replaced` becomes `changed`. With `words`, whole words. */
 export function changedRange(text: string, replacement: string, words = false) {
   if (words) return changedWords(text, replacement)
-  // Native offsets count UTF-16 units, but trim whole code points so a shared
-  // surrogate never becomes an unchanged half of a changed character.
+  const range = changedCharacters(text, replacement)
+  if (range.replaced || !range.changed) return range
+  // A pure insertion retains one adjacent code point inside the authenticated
+  // quote as its formatting anchor.
+  if (range.offset < text.length) {
+    const next = String.fromCodePoint(text.codePointAt(range.offset)!)
+    return { offset: range.offset, replaced: next, changed: range.changed + next }
+  }
+  const last = Array.from(text).at(-1)!
+  return { offset: text.length - last.length, replaced: last, changed: last + range.changed }
+}
+
+// The characters of `text` a replacement by `replacement` rewrites. Native
+// offsets count UTF-16 units, but trim whole code points so a shared surrogate
+// never becomes an unchanged half of a changed character.
+function changedCharacters(text: string, replacement: string) {
   const before = Array.from(text)
   const after = Array.from(replacement)
   let first = 0
@@ -441,15 +477,8 @@ export function changedRange(text: string, replacement: string, words = false) {
     lastBefore--
     lastAfter--
   }
-  const removed = before.slice(first, lastBefore).join("")
-  const inserted = after.slice(first, lastAfter).join("")
-  // An untracked pure insertion retains one adjacent code point inside the
-  // authenticated quote as its formatting anchor.
-  const anchor = !removed && inserted ? Math.min(first, before.length - 1) : first
-  const offset = before.slice(0, anchor).join("").length
-  const replaced = !removed && inserted ? before[anchor]! : removed
-  const changed = !removed && inserted ? first < before.length ? inserted + replaced : replaced + inserted : inserted
-  return { offset, replaced, changed }
+  return { offset: before.slice(0, first).join("").length, replaced: before.slice(first, lastBefore).join(""),
+    changed: after.slice(first, lastAfter).join("") }
 }
 
 function targetHandle(source_sha256: string, ordinal: number, match: Match) {

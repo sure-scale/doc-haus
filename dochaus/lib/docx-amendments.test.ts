@@ -301,23 +301,47 @@ function laidOut(bytes: Uint8Array, start: string) {
   return Array.from(doc.getElementsByTagNameNS(W, "p")).map(shown).find(text => text.startsWith(start))
 }
 
-// Docxodus writes an edited run as its tabs and breaks, then all its text.
-test("a tab or break stays where it was in a run the edit rewrites, and an insertion in that run is written, tracked or not", async () => {
-  const rendered = unzipSync((await renderMarkdownToDocx("First paragraph.\n\nAddress marker.\n\nItem marker.\n")).bytes)
-  const xml = strFromU8(rendered["word/document.xml"]!)
-  const runs = { "Address marker.": "<w:r><w:t>Acme Ltd</w:t><w:br/><w:t>1 Main Street, London</w:t></w:r>",
-    "Item marker.": '<w:r><w:t>(a)</w:t><w:tab/><w:t xml:space="preserve">the Supplier shall pay the Fee;</w:t></w:r>' }
-  const source = zipSync({ ...rendered, "word/document.xml": strToU8(Object.entries(runs).reduce((text, [marker, run]) => {
-    const placed = text.replace(`<w:r><w:t xml:space="preserve">${marker}</w:t></w:r>`, run)
+// A document whose paragraphs after the first are these runs.
+async function runsDocx(paragraphs: string[]) {
+  const markers = paragraphs.map((_, index) => `Marker ${index + 1}.`)
+  const rendered = unzipSync((await renderMarkdownToDocx(`First paragraph.\n\n${markers.join("\n\n")}\n`)).bytes)
+  const xml = paragraphs.reduce((text, runs, index) => {
+    const placed = text.replace(`<w:r><w:t xml:space="preserve">${markers[index]}</w:t></w:r>`, runs)
     expect(placed).not.toBe(text)
     return placed
-  }, xml)) })
+  }, strFromU8(rendered["word/document.xml"]!))
+  return zipSync({ ...rendered, "word/document.xml": strToU8(xml) })
+}
+
+// Docxodus writes an edited run as its tabs and breaks, then all its text.
+test("a tab or break stays where it was in a run the edit rewrites, and an insertion in that run is written, tracked or not", async () => {
+  const source = await runsDocx(["<w:r><w:t>Acme Ltd</w:t><w:br/><w:t>1 Main Street, London</w:t></w:r>",
+    '<w:r><w:t>(a)</w:t><w:tab/><w:t xml:space="preserve">the Supplier shall pay the Fee;</w:t></w:r>'])
   const revision = await createDocxRevision(source)
   for (const [start, before_quote, replacement, after] of [
     ["Acme", "London", "Leeds", "Acme Ltd\n1 Main Street, Leeds"],
     ["Acme", "Main Street", "Main High Street", "Acme Ltd\n1 Main High Street, London"],
     ["(a)", "shall pay", "shall promptly pay", "(a)\tthe Supplier shall promptly pay the Fee;"],
     ["(a)", "(a)", "(b)", "(b)\tthe Supplier shall pay the Fee;"],
+  ] as const) {
+    const paragraph_handle = revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle
+    for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
+      const output = await applyDocxParagraphEdits(source, [{ id: "edit", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options)
+      expect(laidOut(output.bytes, after.slice(0, 2))).toBe(after)
+    }
+  }
+})
+
+// The text reads through a tab or break: "1.1<tab>Definitions" is "1.1Definitions".
+test("a change of a word read across a tab or break leaves the tab or break between the same characters, tracked or not", async () => {
+  const bold = (text: string) => `<w:r><w:rPr><w:b/></w:rPr><w:t>${text}</w:t></w:r>`
+  const source = await runsDocx([`${bold("1.1")}<w:r><w:tab/></w:r>${bold("Definitions")}`,
+    "<w:r><w:t>Acme Ltd</w:t><w:br/><w:t>1 Main Street</w:t></w:r>"])
+  const revision = await createDocxRevision(source)
+  for (const [start, before_quote, replacement, after] of [
+    ["1.1", "1.1Definitions", "1.2Definitions", "1.2\tDefinitions"],
+    ["1.1", "1.1Definitions", "1.1Definitions and Interpretation", "1.1\tDefinitions and Interpretation"],
+    ["Acme", "Acme Ltd1 Main Street", "Acme Limited1 Main Street", "Acme Limited\n1 Main Street"],
   ] as const) {
     const paragraph_handle = revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle
     for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
