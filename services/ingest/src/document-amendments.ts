@@ -12,6 +12,7 @@ import { getDocumentRole, getMeta, getPreparedChanges, openDb, setMeta, setPrepa
 import { listNames, trackedChanges } from "./document-versions"
 import { draftingAttribution, ourAuthors } from "../../../dochaus/lib/docx-attribution"
 import { retypedListLabel, withoutListLabel } from "../../../dochaus/lib/list-label"
+import { wordChanges } from "../../../dochaus/lib/word-changes"
 import { EngineGenerationError, generate } from "./engine-generate"
 import { UNTRUSTED_DOCUMENT_NOTICE } from "../../../dochaus/lib/untrusted"
 import { detectInjection, normalizeUntrustedText } from "../../../dochaus/lib/untrusted-text"
@@ -389,8 +390,10 @@ function parseLegal(text:string) {
 // `label` to place the quote only in a paragraph with that number. A quote
 // found as written, or a different number, is kept as written. One found only
 // without the draft view's own markup copied it, so it and its replacement are
-// placed without it; the words keep their formatting. A quote found none of
-// these ways, or whose replacement then changes no words, is an open item.
+// placed without it; the words keep their formatting. One found that way only
+// with other spaces between its words (one where the document has two) is
+// placed in the document's words, if they are there once. A quote found none
+// of these ways, or whose replacement then changes no words, is an open item.
 function withoutDraftViewMarks(paragraphs:{text:string;label?:string}[],legal:ReturnType<typeof parseLegal>) {
   type Row = (typeof legal.amendments)[number] & {label?:string}
   const placed = (row:Row):Row|undefined => {
@@ -401,18 +404,44 @@ function withoutDraftViewMarks(paragraphs:{text:string;label?:string}[],legal:Re
     })
     return owner ? {...row,before_quote:withoutListLabel(row.before_quote,owner.label),label:owner.label} : undefined
   }
+  const spaced = (row:Row):Row|undefined => {
+    const loose = new RegExp(row.before_quote.split(/[ \t]+/).map((word) => word.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join("[ \\t]+"),"g")
+    const found = paragraphs.flatMap((paragraph) => [...paragraph.text.matchAll(loose)].map((match) => match[0]))
+    return found.length === 1 ? {...row,before_quote:found[0]!,replacement:withSpacesOf(found[0]!,row.before_quote,row.replacement)} : undefined
+  }
   const unmatched:string[] = []
   const amendments = legal.amendments.flatMap((row):Row[] => {
     const found = placed(row)
     if (found) return [found]
     const plain = {...row,before_quote:withoutDraftViewMarkup(row.before_quote),replacement:withoutDraftViewMarkup(row.replacement)}
-    const unmarked = placed(plain)
-    if (unmarked && plain.replacement !== plain.before_quote) return [unmarked]
+    const unmarked = placed(plain) ?? spaced(plain)
+    if (unmarked && withoutListLabel(unmarked.replacement,unmarked.label) !== unmarked.before_quote) return [unmarked]
     unmatched.push(`The change to ${quoted(plain.before_quote)} was not proposed: ${unmarked ? "it changes no words. Say which words change"
       : "those words are not in the document. Say which words it changes"}, then request edits again.`)
     return []
   })
   return {...legal,amendments,unmatched}
+}
+// `replacement` of `quote` as a change of `text`, the same words with other
+// spaces between them: the words it changes (wordChanges, as Accept writes
+// them) replace theirs in `text`, so the words it keeps keep the document's
+// spacing and Accept changes no spaces it does not change.
+function withSpacesOf(text:string,quote:string,replacement:string) {
+  const pieces = quote.split(/([ \t]+)/), own = text.split(/([ \t]+)/)
+  // Where an offset in `quote` falls in `text`: the same place in the same word,
+  // or the same end of the same space.
+  const at = (offset:number) => {
+    let from = 0, to = 0
+    for (const [index,piece] of pieces.entries()) {
+      const length = own[index]!.length
+      if (offset <= from + piece.length) return to + (offset === from + piece.length ? length : Math.min(offset - from,length))
+      from += piece.length
+      to += length
+    }
+    return to
+  }
+  return wordChanges(quote,replacement).reduceRight((result,change) =>
+    result.slice(0,at(change.offset)) + change.changed + result.slice(at(change.offset + change.replaced.length)),text)
 }
 // The markup the draft view adds to a paragraph's words (createDocxRevision),
 // undone: a backslash before each of \ ` * _ { } [ ] < > |, and one to three *

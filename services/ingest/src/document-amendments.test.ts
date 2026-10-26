@@ -1779,6 +1779,39 @@ test("a quote copying the draft view's markup keeps the asterisks and brackets o
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
+test("a quote with one space where the document has two is placed in the document's words, and Accept tracks only the words it adds", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-quote-spacing-"))
+  const added = "Notices to the Client must also be copied to its legal team. "
+  const change = (before_quote:string,replacement:string) => ({before_quote,replacement,target_context:"the clause quoted",reason:"Requested."})
+  const engine = syntheticEngine(() => ({amendments:[
+    change("Notices must be given in writing. A notice sent by email is effective on the next Business Day.",
+      `Notices must be given in writing. ${added}A notice sent by email is effective on the next Business Day.`),
+    change("Each invoice is final. It binds the Client.","Each invoice is final. It binds both parties."),
+  ],open_items:[]}),firstCandidate)
+  try {
+    const original = await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph("5. Notices. Notices must be given in writing.  A notice sent by email is effective on the next Business Day."),
+      new Paragraph("Each invoice is final.  It binds the Client."),
+      new Paragraph("Each invoice is final.   It binds the Client."),
+    ]}]}))
+    await registeredSource(temporary,original)
+    const body = await withPreparation(temporary,engine,async (prepare) => {
+      const response = await prepare("In clause 5, add that notices to the Client must also be copied to its legal team.")
+      expect(response.status).toBe(200)
+      return await response.json() as {redline_ids:number[];open_items:string[]}
+    })
+    expect(body.open_items).toEqual(["The change to “Each invoice is final. It binds the Client.” was not proposed: those words are not in the document. Say which words it changes, then request edits again."])
+    const db = openDb(temporary)
+    const rows = (() => {try {return body.redline_ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect(rows.map((row) => [row.find_text,row.new_text])).toEqual([[
+      "Notices must be given in writing.  A notice sent by email is effective on the next Business Day.",
+      `Notices must be given in writing.  ${added}A notice sent by email is effective on the next Business Day.`]])
+    expect(readDocxRevisionText(await buildRedlined(original,rows))).toEqual({inserted_text:[added],deleted_text:[]})
+    expect((await createDocxRevision(await bake(original,rows))).paragraphs[0]!.text)
+      .toBe(`5. Notices. Notices must be given in writing.  ${added}A notice sent by email is effective on the next Business Day.`)
+  } finally {engine.server.stop(true);await rm(temporary,{recursive:true,force:true})}
+})
+
 test("a same-paragraph sibling goes stale and stays pending and visible while plain download and fresh tracked changes remain available", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-stale-"))
   const workspace = path.join(temporary,"workspace")
