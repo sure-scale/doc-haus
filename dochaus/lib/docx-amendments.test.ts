@@ -230,12 +230,15 @@ for (const [name, middle] of [["bold", "**then**"], ["italic", "*then*"], ["hype
 }
 
 test("context localization retains run formatting for insertion, deletion, no-op and changed Unicode text", async () => {
-  const source = (await renderMarkdownToDocx("# Working note\n\nLead **value** tail.\n\nLead **😀** tail.\n")).bytes
+  const source = (await renderMarkdownToDocx("# Working note\n\nLead **value** tail.\n\nLead **😀** tail.\n\nThe Supplier must notify the **Buyer** in writing.\n")).bytes
   for (const [before_quote, replacement, expected] of [
     ["Lead value", "Lead new value", "Lead **new value** tail."],
     ["value tail.", "value.", "Lead **value**."],
     ["Lead value tail.", "Lead value tail.", "Lead **value** tail."],
     ["Lead 😀 tail.", "Lead 😁 tail.", "Lead **😁** tail."],
+    // After an earlier change, an inserted word is written with the text
+    // before it, as the whole change is, and the bold word after it is left alone.
+    ["Supplier must notify the Buyer", "Vendor must notify the new Buyer", "The Vendor must notify the new **Buyer** in writing."],
   ]) {
     const packet = await createDocxLocalization(source, [{ id: "change", before_quote, replacement }])
     expect(packet.candidates).toHaveLength(1)
@@ -386,17 +389,25 @@ describe("live cross-references", () => {
   })
 
   // Each changed word is its own change, so the words between them, a live
-  // cross-reference included, are never deleted and typed again.
-  test("two word changes on either side of REF fields keep them live, tracked or not", async () => {
+  // cross-reference included, are never deleted and typed again, and words
+  // inserted just before one, after an earlier change, leave it alone.
+  test("word changes around REF fields keep them live, tracked or not", async () => {
     const source = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes
     const revision = await createDocxRevision(source, { pendingRevisions: "layer" })
-    const edit = { id: "words", paragraph_handle: revision.paragraphs.find(row => row.text.startsWith("In this Agreement"))!.paragraph_handle,
-      occurrence: 0, before_quote: "the terms in clause 2.1 and Schedule 1 apply.", replacement: "the words in clause 2.1 and Schedule 1 govern." }
-    for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, { pendingRevisions: "layer" }, {}] as const) {
-      const output = await applyDocxParagraphEdits(source, [edit], undefined, options)
-      expect(refs(output.bytes)).toEqual(refs(source))
-      expect(output.report.limitation).not.toContain("cross-reference")
-      expect(output.report.amendments[0]!.paragraph_after).toBe("In this Agreement the words in clause 2.1 and Schedule 1 govern.")
+    for (const [start, before_quote, replacement, after] of [
+      ["In this Agreement", "the terms in clause 2.1 and Schedule 1 apply.", "the words in clause 2.1 and Schedule 1 govern.",
+        "In this Agreement the words in clause 2.1 and Schedule 1 govern."],
+      ["The Customer", "The Customer shall pay as set out in clause 2.1.", "The Buyer shall pay as set out in clause 1.4 and 2.1.",
+        "The Buyer shall pay as set out in clause 1.4 and 2.1."],
+    ] as const) {
+      const edit = { id: "words", paragraph_handle: revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle,
+        occurrence: 0, before_quote, replacement }
+      for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, { pendingRevisions: "layer" }, {}] as const) {
+        const output = await applyDocxParagraphEdits(source, [edit], undefined, options)
+        expect(refs(output.bytes)).toEqual(refs(source))
+        expect(output.report.limitation).not.toContain("cross-reference")
+        expect(output.report.amendments[0]!.paragraph_after).toBe(after)
+      }
     }
   })
 

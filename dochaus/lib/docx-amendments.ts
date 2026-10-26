@@ -344,15 +344,20 @@ function changedDocxSpan(match: Match, { offset, replaced, changed }: WordChange
 // tracked write) each change is those words. Untracked, one change is the
 // characters that differ in the whole quote; of several, each is the
 // characters that differ between the changes beside it, and if two of those
-// would overlap, the quote's characters that differ are one change.
+// would overlap, the quote's characters that differ are one change. The last
+// ends with its words, so words inserted there hold on to the character
+// before them, as the whole quote's change would, never a live field or
+// another run after them. Two insertions around kept words (as Prepare joins
+// them) are each written as an insertion alone.
 function changedDocxSpans(match: Match, replacement: string, words = false) {
   const changes = wordChanges(match.text, replacement)
   if (words) return changes.map(change => changedDocxSpan(match, change))
   const single = [changedDocxSpan(match, changedRange(match.text, replacement))]
   if (changes.length === 1) return single
+  const joined = changes.length === 2 && changes.every(change => !change.replaced)
   const spans = changes.map((change, index) => {
     const from = index ? changes[index - 1]!.offset + changes[index - 1]!.replaced.length : 0
-    const to = changes[index + 1]?.offset ?? match.text.length
+    const to = changes[index + 1]?.offset ?? (joined ? match.text.length : change.offset + change.replaced.length)
     const range = changedRange(match.text.slice(from, to),
       match.text.slice(from, change.offset) + change.changed + match.text.slice(change.offset + change.replaced.length, to))
     return changedDocxSpan(match, { ...range, offset: from + range.offset })
