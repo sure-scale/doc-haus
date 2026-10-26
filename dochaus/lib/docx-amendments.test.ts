@@ -351,6 +351,31 @@ test("a change of a word read across a tab or break leaves the tab or break betw
   }
 })
 
+// Words that lead into the text after a tab or break are typed after it, in
+// that text's formatting; words that trail the text before it stay before it.
+test("an insertion at a tab or break lands on the side of the words it joins, tracked or not", async () => {
+  const bold = (text: string) => `<w:r><w:rPr><w:b/></w:rPr><w:t>${text}</w:t></w:r>`
+  const source = await runsDocx(['<w:r><w:t>(a)</w:t><w:tab/><w:t xml:space="preserve">the Supplier shall pay the Fee;</w:t></w:r>',
+    `${bold("1.1")}<w:r><w:tab/></w:r>${bold("Definitions")}`, "<w:r><w:t>Acme Ltd</w:t><w:br/><w:t>London</w:t></w:r>"])
+  const revision = await createDocxRevision(source)
+  for (const [start, before_quote, replacement, after] of [
+    ["(a)", "(a)the Supplier", "(a)subject to clause 3, the Supplier", "(a)\tsubject to clause 3, the Supplier shall pay the Fee;"],
+    ["1.1", "1.1Definitions", "1.1General Definitions", "1.1\tGeneral Definitions"],
+    ["Acme", "Acme LtdLondon", "Acme LtdCentral London", "Acme Ltd\nCentral London"],
+    ["Acme", "Acme LtdLondon", "Acme Ltd (UK)London", "Acme Ltd (UK)\nLondon"],
+  ] as const) {
+    const paragraph_handle = revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle
+    for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
+      const output = await applyDocxParagraphEdits(source, [{ id: "edit", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options)
+      expect(laidOut(output.bytes, after.slice(0, 2))).toBe(after)
+      if (start !== "1.1") continue
+      const shown = Array.from(new DOMParser().parseFromString(strFromU8(unzipSync(output.bytes)["word/document.xml"]!), "application/xml")
+        .getElementsByTagName("w:t")).filter(node => node.textContent?.includes("General") && (node.parentNode!.parentNode as Element).localName !== "del")
+      expect(shown.map(node => (node.parentNode as Element).getElementsByTagName("w:b").length > 0)).toEqual([true])
+    }
+  }
+})
+
 // A rendered deliverable's page furniture, as raw OOXML: a header with a legend
 // and a draft line, and a footer whose page number is a PAGE field.
 function furnishedDocx() {

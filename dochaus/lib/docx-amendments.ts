@@ -394,13 +394,20 @@ function changedDocxSpan(match: Match, { offset, replaced, changed }: WordChange
 // a live field there, are never deleted and typed again. The text reads
 // through tabs and breaks, so a word can run across one ("1.1<tab>Definitions");
 // a change of such a word is only the characters that differ, so the tab or
-// break stays between the same characters.
+// break stays between the same characters. Words typed at a tab or break are
+// typed after the character before them; words that lead into the text after
+// it (ending, not starting, with white space) are written with its next word
+// typed again, so they land after the tab or break in that word's formatting.
 function changedDocxSpans(match: Match, replacement: string, breaks: number[] = []) {
   return wordChanges(match.text, replacement).map(change => {
-    if (!change.replaced || !breaks.some(at => change.offset < at && at < change.offset + change.replaced.length))
-      return changedDocxSpan(match, change)
-    const range = changedCharacters(change.replaced, change.changed)
-    return changedDocxSpan(match, { ...range, offset: change.offset + range.offset })
+    if (change.replaced && breaks.some(at => change.offset < at && at < change.offset + change.replaced.length)) {
+      const range = changedCharacters(change.replaced, change.changed)
+      change = { ...range, offset: change.offset + range.offset }
+    }
+    const next = Math.min(...breaks.filter(at => at > change.offset).map(at => at - change.offset))
+    const word = match.text.slice(change.offset).match(/^(?:[\p{L}\p{N}_]+|\S)/u)?.[0].slice(0, next)
+    return changedDocxSpan(match, change.replaced || !word || !breaks.includes(change.offset) || !/^\S[\s\S]*\s$/.test(change.changed)
+      ? change : { offset: change.offset, replaced: word, changed: change.changed + word })
   })
 }
 
