@@ -1624,9 +1624,13 @@ test("accepting paragraph-bound amendments to a numbered list paragraph and a ta
         rPr:Array.from(run.getElementsByTagNameNS(W,"rPr")).map(String).join(""),markup:String(run)}))
       const beforeRuns = runs(before.paragraphs[listOrdinal].node)
       const afterRuns = runs(after.paragraphs[listOrdinal].node)
-      expect(afterRuns.filter((run) => !run.text.includes("ten days")).map((run) => run.markup))
-        .toEqual(beforeRuns.filter((run) => !run.text.includes("thirty days")).map((run) => run.markup))
-      expect(afterRuns.find((run) => run.text.includes("ten days"))!.rPr).toBe(beforeRuns.find((run) => run.text.includes("thirty days"))!.rPr)
+      // The edited run is written in pieces where its words change, each in its formatting.
+      const edited = beforeRuns.find((run) => run.text.includes("thirty days"))!
+      const kept = beforeRuns.filter((run) => run !== edited).map((run) => run.markup)
+      expect(afterRuns.filter((run) => kept.includes(run.markup)).map((run) => run.markup)).toEqual(kept)
+      const pieces = afterRuns.filter((run) => !kept.includes(run.markup))
+      expect(pieces.map((run) => run.text).join("")).toBe(edited.text.replace("thirty","ten"))
+      expect(pieces.every((run) => run.rPr === edited.rPr)).toBe(true)
       // The table cell's added words keep the cell run's underline.
       const cellRuns = runs(after.paragraphs[cellOrdinal].node)
       expect(cellRuns.map((run) => run.text).join("")).toBe("In writing or by email")

@@ -10,6 +10,8 @@ import { normalizeUntrustedText } from "./untrusted-text"
 import { changedWords, wordChanges, type WordChange } from "./word-changes"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+// The author of an untracked write's changes until they are accepted.
+const UNTRACKED = "doc.haus untracked write"
 const PT = "http://powertools.codeplex.com/2011"
 const schema = "docx-amendments/1" as const
 const amendmentSchema = z.object({ id: z.string().min(1), before_quote: z.string().min(1), replacement: z.string() }).strict()
@@ -163,15 +165,12 @@ function admitted(opened: Opened, binding: Binding) {
   if (/[\r\n\t]/.test(amendment.replacement)) throw new Error("unsupported_structural_replacement")
   if (!amendment.replacement && match.text === opened.paragraphs[ordinal].match.text)
     throw new Error("unsupported_empty_paragraph_replacement")
-  const changes = changedDocxSpans(match, amendment.replacement, Boolean(opened.options.revisionAuthor))
+  const changes = changedDocxSpans(match, amendment.replacement)
   // Beside doc.haus's own pending change, never inside it: Docxodus would nest
   // the new revision in that one. A pure insertion has no text of its own; it
-  // is inside a change when the text on both sides of it is. The change is
-  // judged as the tracked write makes it, whole words, also for an untracked
-  // pass over the same file (Accept's), so both refuse what Prepare does.
+  // is inside a change when the text on both sides of it is.
   const whole = opened.paragraphs[ordinal]!.match
-  const guarded = opened.options.revisionAuthor ? changes : changedDocxSpans(match, amendment.replacement, true)
-  if (pending && guarded.some(change => {
+  if (pending && changes.some(change => {
     const at = change.match.span.start - whole.span.start
     return change.match.text || !change.replacement ? insideRevision(opened.session, paragraphSpan(whole, at, change.match.text.length))
       : at > 0 && insideRevision(opened.session, paragraphSpan(whole, at - 1, 1)) && insideRevision(opened.session, paragraphSpan(whole, at, 1))
@@ -286,6 +285,9 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
   const unlinked = unlinkedSource(opened, edits)
   const target = unlinked ? await openRevision(unlinked, opened.options) : opened
   try {
+    // An untracked write is the tracked write with its changes then accepted,
+    // so new words are typed as tracking types them.
+    if (!revisionAuthor) target.session.setTrackedChanges((await docxodus()).TrackedChangeMode.RenderInline)
     for (const edit of ordered) {
       const text = expected[edit.ordinal]
       expected[edit.ordinal] = text.slice(0, edit.match.span.start) + edit.amendment.replacement
@@ -294,17 +296,23 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
       // context keeps its own runs; only the changed text is mutated.
       const paragraph = target.paragraphs[edit.ordinal]!.match
       const changes = target === opened ? edit.changes : changedDocxSpans(paragraphSpan(paragraph,
-        edit.match.span.start - opened.paragraphs[edit.ordinal]!.match.span.start, edit.match.text.length), edit.amendment.replacement,
-        Boolean(opened.options.revisionAuthor))
+        edit.match.span.start - opened.paragraphs[edit.ordinal]!.match.span.start, edit.match.text.length), edit.amendment.replacement)
       for (const change of changes.toReversed()) {
         if (!change.match.text && !change.replacement) continue
-        if (revisionAuthor) target.session.setRevisionAuthor(author(edit)!)
-        const result = revisionAuthor && change.joinsAfter ? insertBefore(target.session, change.match, change.replacement)
+        target.session.setRevisionAuthor(author(edit) ?? UNTRACKED)
+        const result = change.joinsAfter ? insertBefore(target.session, change.match, change.replacement)
           : target.session.replaceMatch(change.match, change.replacement)
         if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
       }
     }
-    const output = target.session.save()
+    if (!revisionAuthor) for (const revision of target.session.listRevisions({ author: UNTRACKED })) {
+      const result = target.session.acceptRevision(revision.id)
+      if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
+    }
+    const saved = target.session.save()
+    // Accepting leaves Track Changes switched on, as any tracked write does.
+    const output = revisionAuthor ? saved
+      : zipSync(withoutTrackChangesSetting(opened, { ...opened, parts: unzipSync(saved), documents: {} }).parts, { mtime: new Date(1980, 0, 1) })
     const reopened = await openRevision(output, opened.options)
     try {
       if (JSON.stringify(reopened.paragraphs.map(p => p.match.text)) !== JSON.stringify(expected))
@@ -355,31 +363,9 @@ function changedDocxSpan(match: Match, { offset, replaced, changed }: WordChange
 
 // The changes one amendment writes: each run of whole words that differ, as
 // Word records them (wordChanges), so the words kept between two changes, and
-// a live field there, are never deleted and typed again. With `words` (a
-// tracked write) each change is those words. Untracked, one change is the
-// characters that differ in the whole quote; of several, each is the
-// characters that differ between the changes beside it, and if two of those
-// would overlap, the quote's characters that differ are one change. The last
-// ends with its words, so words inserted there hold on to the character
-// before them, as the whole quote's change would, never a live field or
-// another run after them. Two insertions around kept words (as Prepare joins
-// them) are each written as an insertion alone.
-function changedDocxSpans(match: Match, replacement: string, words = false) {
-  const changes = wordChanges(match.text, replacement)
-  if (words) return changes.map(change => changedDocxSpan(match, change))
-  const single = [changedDocxSpan(match, changedRange(match.text, replacement))]
-  if (changes.length === 1) return single
-  const joined = changes.length === 2 && changes.every(change => !change.replaced)
-  const spans = changes.map((change, index) => {
-    const from = index ? changes[index - 1]!.offset + changes[index - 1]!.replaced.length : 0
-    const to = changes[index + 1]?.offset ?? (joined ? match.text.length : change.offset + change.replaced.length)
-    const range = changedRange(match.text.slice(from, to),
-      match.text.slice(from, change.offset) + change.changed + match.text.slice(change.offset + change.replaced.length, to))
-    return changedDocxSpan(match, { ...range, offset: from + range.offset })
-  })
-  // Written right to left, they may not overlap.
-  return spans.every((span, index) => !index || spans[index - 1]!.match.span.start + spans[index - 1]!.match.span.length <= span.match.span.start)
-    ? spans : single
+// a live field there, are never deleted and typed again.
+function changedDocxSpans(match: Match, replacement: string) {
+  return wordChanges(match.text, replacement).map(change => changedDocxSpan(match, change))
 }
 
 // Docxodus writes a tracked insertion in the run properties of the character

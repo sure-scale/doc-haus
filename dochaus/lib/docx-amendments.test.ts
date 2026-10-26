@@ -233,7 +233,8 @@ for (const [name, middle] of [["bold", "**then**"], ["italic", "*then*"], ["hype
 test("context localization retains run formatting for insertion, deletion, no-op and changed Unicode text", async () => {
   const source = (await renderMarkdownToDocx("# Working note\n\nLead **value** tail.\n\nLead **😀** tail.\n\nThe Supplier must notify the **Buyer** in writing.\n")).bytes
   for (const [before_quote, replacement, expected] of [
-    ["Lead value", "Lead new value", "Lead **new value** tail."],
+    // An inserted word is typed after the text before it, not into the bold word after it.
+    ["Lead value", "Lead new value", "Lead new **value** tail."],
     ["value tail.", "value.", "Lead **value**."],
     ["Lead value tail.", "Lead value tail.", "Lead **value** tail."],
     ["Lead 😀 tail.", "Lead 😁 tail.", "Lead **😁** tail."],
@@ -412,13 +413,58 @@ describe("live cross-references", () => {
     }
   })
 
-  test("a cross-reference added beside a live one leaves it live, and the change is the whole numbers added", async () => {
+  // Inserted words are typed where they stand: they take the formatting of the
+  // text before them, never that of a bold or italic term after them, and a
+  // live cross-reference beside them stays live. Characters added at a word's
+  // end take that word's formatting.
+  test("inserted text takes the formatting before it and leaves a REF field beside it live, tracked or not", async () => {
+    // The text with its bold and italic words marked, however Word splits them into runs.
+    const marked = (row: Awaited<ReturnType<typeof createDocxRevision>>["paragraphs"][number]) => {
+      let text = "", open = ""
+      for (const fragment of row.formatting) {
+        const mark = fragment.formatting.bold ? "**" : fragment.formatting.italic ? "*" : ""
+        if (mark !== open) [text, open] = [text + open + mark, mark]
+        text += fragment.text
+      }
+      return text + open
+    }
+    const source = (await renderMarkdownToDocx(AGREEMENT.replace("\n\n## Schedule 1",
+      "\n\n2.3 The Supplier must notify the **Buyer** in writing under clause 2.1, and pay *the Fee* monthly.\n\n## Schedule 1"),
+    undefined, undefined, { form: "agreement" })).bytes
+    const revision = await createDocxRevision(source, { pendingRevisions: "layer" })
+    const paragraph_handle = revision.paragraphs.find(row => row.text.startsWith("The Supplier must"))!.paragraph_handle
+    for (const [before_quote, replacement, after] of [
+      ["notify the Buyer", "notify the or Buyer", "The Supplier must notify the or **Buyer** in writing under clause 2.1, and pay *the Fee* monthly."],
+      ["Supplier must notify the Buyer in writing under clause 2.1, and pay the Fee",
+        "Vendor must notify the or Buyer in writing under clause 2.1, and pay Part A of the Fee",
+        "The Vendor must notify the or **Buyer** in writing under clause 2.1, and pay Part A of *the Fee* monthly."],
+      ["pay the Fee monthly", "pay the Fees monthly", "The Supplier must notify the **Buyer** in writing under clause 2.1, and pay *the Fees* monthly."],
+      ["notify the Buyer in writing under clause 2.1, and pay the Fee monthly", "notify the Buyers in writing under clause 2.1, and pay the Fees monthly",
+        "The Supplier must notify the **Buyers** in writing under clause 2.1, and pay *the Fees* monthly."],
+      // Inserted just after the cross-reference, as the last change.
+      ["Supplier must notify the Buyer in writing under clause 2.1,", "Vendor must notify the Buyer in writing under clause 2.1 in full,",
+        "The Vendor must notify the **Buyer** in writing under clause 2.1 in full, and pay *the Fee* monthly."],
+      // Two insertions around kept words, as Prepare joins them, the second just before the cross-reference.
+      ["The Supplier must notify the Buyer in writing under clause 2.1,",
+        "Notice is required. The Supplier must notify the Buyer in writing under clause 1.4 and 2.1,",
+        "Notice is required. The Supplier must notify the **Buyer** in writing under clause 1.4 and 2.1, and pay *the Fee* monthly."],
+    ] as const) {
+      for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
+        const output = await applyDocxParagraphEdits(source, [{ id: "words", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options)
+        expect(refs(output.bytes)).toEqual(refs(source))
+        expect(output.report.limitation).not.toContain("cross-reference")
+        expect(marked((await createDocxRevision(output.bytes, { pendingRevisions: "layer" })).paragraphs.find(row => row.label === "2.3")!)).toBe(after)
+      }
+    }
+  })
+
+  test("a cross-reference added beside a live one leaves it live, and the change is the whole numbers added, tracked or not", async () => {
     const source = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes
     const paragraph_handle = (await createDocxRevision(source)).paragraphs.find(row => row.label === "2.2")!.paragraph_handle
     const [before_quote, replacement] = ["set out in clause 2.1.", "set out in clauses 3.2 and 2.1, as amended."]
     expect(wordChanges(before_quote, replacement)).toEqual([
       { offset: 11, replaced: "clause ", changed: "clauses 3.2 and " }, { offset: 21, replaced: "", changed: ", as amended" }])
-    for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }] as const) {
+    for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
       const output = await applyDocxParagraphEdits(source, [{ id: "reference", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options)
       expect(refs(output.bytes)).toEqual(refs(source))
       expect(output.report.limitation).not.toContain("cross-reference")
@@ -445,7 +491,7 @@ describe("live cross-references", () => {
     prototype.replaceMatch = function (this: typeof probe, ...args: Parameters<typeof probe.replaceMatch>) {
       const result = replaceMatch.apply(this, args)
       const id = args[0].enclosingAnchor.id
-      if (!this.raw.getXml(id).includes("Nothing in this clause")) return result
+      if (!this.raw.getXml(id).includes("in this clause")) return result
       const doc = new DOMParser().parseFromString(this.raw.getXml(id), "application/xml")
       const run = Array.from(doc.getElementsByTagNameNS(W, "r")).find(row => row.getElementsByTagNameNS(W, "t")[0]?.textContent === "Supplier")!
       run.getElementsByTagNameNS(W, "rPr")[0]!.appendChild(doc.createElementNS(W, "w:caps"))
