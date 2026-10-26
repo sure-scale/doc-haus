@@ -1,4 +1,5 @@
 import { WORD_LINK_SETTING } from "../../../dochaus/lib/word-addin-contract"
+import { readLink } from "./client"
 
 type Result<T> = { status: string; value: T }
 type Callback<T> = (result: Result<T>) => void
@@ -16,7 +17,11 @@ type OfficeRuntime = {
   onReady(): Promise<{ host: string }>
   context: {
     document: {
-      settings: { get(key: string): unknown }
+      settings: {
+        get(key: string): unknown
+        set(key: string, value: unknown): void
+        saveAsync(callback: Callback<void>): void
+      }
       getFileAsync(type: string, options: { sliceSize: number }, callback: Callback<OfficeFile>): void
     }
     requirements: { isSetSupported(name: string, version: string): boolean }
@@ -35,7 +40,7 @@ export interface WordHost {
   saved(): Promise<boolean>
   save(): Promise<void>
   export(): Promise<Uint8Array>
-  close?(): Promise<void>
+  close?(base: string): Promise<void>
 }
 
 export class DocumentStateError extends Error {
@@ -87,8 +92,11 @@ export async function connectOffice(): Promise<{ host: WordHost; link: unknown }
     throw new Error("Use a current desktop version of Microsoft Word to save to doc.haus.")
   }
   const word = window.Word
+  const link = office.context.document.settings.get(WORD_LINK_SETTING)
+  const initial = readLink(link, window.location.origin)
+  const identity = initial && [initial.apiOrigin, initial.origin, initial.matter, initial.document, initial.token]
   return {
-    link: office.context.document.settings.get(WORD_LINK_SETTING),
+    link,
     host: {
       saved: () =>
         word.run(async (context) => {
@@ -115,12 +123,30 @@ export async function connectOffice(): Promise<{ host: WordHost; link: unknown }
       },
       ...(office.context.requirements.isSetSupported("WordApi", "1.5")
         ? {
-            close: () =>
+            close: (base: string) =>
               word.run(async (context) => {
                 context.document.load("saved")
                 await context.sync()
                 if (!context.document.saved)
                   throw new DocumentStateError("Word has new changes. Choose Save to doc.haus before closing.")
+                const settings = office.context.document.settings
+                const raw = settings.get(WORD_LINK_SETTING)
+                const current = readLink(raw, window.location.origin)
+                if (
+                  !base ||
+                  !identity ||
+                  !current ||
+                  ![current.apiOrigin, current.origin, current.matter, current.document, current.token].every(
+                    (value, index) => value === identity[index],
+                  )
+                )
+                  throw new Error("Word could not update this document's link. Close it in Word.")
+                const updated = { ...current, baseVersion: base }
+                settings.set(WORD_LINK_SETTING, typeof raw === "string" ? JSON.stringify(updated) : updated)
+                await asyncResult<void>(
+                  (callback) => settings.saveAsync(callback),
+                  "Word could not update this document's link. Close it in Word.",
+                )
                 context.document.close("Save")
                 await context.sync()
               }),

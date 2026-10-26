@@ -3,7 +3,8 @@ import { strToU8, zipSync } from "fflate"
 import { documentFingerprint } from "./fingerprint"
 
 const word = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-const format = '<w:rPr><w:b/><w:rFonts w:ascii="Aptos" w:hAnsi="Aptos"/><w:lang w:val="en-GB"/><w:sz w:val="22"/><w:color w:val="123456"/></w:rPr>'
+const format =
+  '<w:rPr><w:b/><w:rFonts w:ascii="Aptos" w:hAnsi="Aptos"/><w:lang w:val="en-GB"/><w:sz w:val="22"/><w:color w:val="123456"/></w:rPr>'
 const run = (text: string, properties = "", space = "") =>
   `<w:r>${properties}<w:t${space ? ` xml:space="${space}"` : ""}>${text}</w:t></w:r>`
 const document = (content: string, paragraphAttributes = "") =>
@@ -19,7 +20,9 @@ test("proofing may split equivalent plain or explicitly formatted text without c
     const copy = original.slice()
     const baseline = await documentFingerprint(original)
     expect(await fingerprint(split(properties))).toBe(baseline)
-    expect(await fingerprint(split(properties).replaceAll("gramStart", "spellStart").replaceAll("gramEnd", "spellEnd"))).toBe(baseline)
+    expect(
+      await fingerprint(split(properties).replaceAll("gramStart", "spellStart").replaceAll("gramEnd", "spellEnd")),
+    ).toBe(baseline)
     expect(await fingerprint(run("Neutral sample text.", properties, "preserve"))).toBe(baseline)
     expect(original).toEqual(copy)
   }
@@ -36,7 +39,11 @@ test("text, complete formatting, revisions and unknown format payload remain sig
     format.replace('w:val="22"', 'w:val="24"'),
     format.replace("123456", "654321"),
   ])
-    expect(await fingerprint(`${run("Neutral ", format, "preserve")}${run("sample", changed)}${run(" text.", format, "preserve")}`)).not.toBe(baseline)
+    expect(
+      await fingerprint(
+        `${run("Neutral ", format, "preserve")}${run("sample", changed)}${run(" text.", format, "preserve")}`,
+      ),
+    ).not.toBe(baseline)
   for (const payload of [
     '<w:rPrChange w:id="1" w:author="Synthetic reviewer"><w:rPr><w:b/></w:rPr></w:rPrChange>',
     '<w:unknown w:val="preserved"/>',
@@ -47,12 +54,19 @@ test("text, complete formatting, revisions and unknown format payload remain sig
     const properties = `<w:rPr>${payload}</w:rPr>`
     expect(await fingerprint(split(properties))).not.toBe(await fingerprint(run("Neutral sample text.", properties)))
     expect(await fingerprint(run("Neutral sample text.", properties))).not.toBe(
-      await fingerprint(run("Neutral sample text.", properties.replace("preserved", "changed").replace('w:id="1"', 'w:id="2"'))),
+      await fingerprint(
+        run("Neutral sample text.", properties.replace("preserved", "changed").replace('w:id="1"', 'w:id="2"')),
+      ),
     )
   }
-  const revision = (id: string, author: string) => `<w:ins w:id="${id}" w:author="${author}">${run("Neutral sample text.")}</w:ins>`
-  expect(await fingerprint(revision("1", "Synthetic reviewer"))).not.toBe(await fingerprint(revision("2", "Synthetic reviewer")))
-  expect(await fingerprint(revision("1", "Synthetic reviewer"))).not.toBe(await fingerprint(revision("1", "Another reviewer")))
+  const revision = (id: string, author: string) =>
+    `<w:ins w:id="${id}" w:author="${author}">${run("Neutral sample text.")}</w:ins>`
+  expect(await fingerprint(revision("1", "Synthetic reviewer"))).not.toBe(
+    await fingerprint(revision("2", "Synthetic reviewer")),
+  )
+  expect(await fingerprint(revision("1", "Synthetic reviewer"))).not.toBe(
+    await fingerprint(revision("1", "Another reviewer")),
+  )
 })
 
 test("coalescing does not cross structural boundaries or discard unknown run and text attributes", async () => {
@@ -65,17 +79,19 @@ test("coalescing does not cross structural boundaries or discard unknown run and
     '<w:del w:id="1" w:author="Synthetic reviewer"/>',
     '<w:hyperlink w:anchor="Synthetic"/>',
     '<w:r><w:fldChar w:fldCharType="begin"/></w:r>',
-    '<w:r><w:instrText> DATE </w:instrText></w:r>',
-    '<w:r><w:tab/></w:r>',
-    '<c:boundary/>',
-    '<!-- preserved boundary -->',
+    "<w:r><w:instrText> DATE </w:instrText></w:r>",
+    "<w:r><w:tab/></w:r>",
+    "<c:boundary/>",
+    "<!-- preserved boundary -->",
   ])
-    expect(await fingerprint(`${run("one")}${boundary}${run("two")}`)).not.toBe(await fingerprint(`${run("onetwo")}${boundary}`))
+    expect(await fingerprint(`${run("one")}${boundary}${run("two")}`)).not.toBe(
+      await fingerprint(`${run("onetwo")}${boundary}`),
+    )
   for (const content of [
     '<w:r w:unknown="preserved"><w:t>one</w:t></w:r><w:r><w:t>two</w:t></w:r>',
     '<w:r c:value="preserved"><w:t>one</w:t></w:r><w:r><w:t>two</w:t></w:r>',
     '<w:r><w:t c:value="preserved">one</w:t></w:r><w:r><w:t>two</w:t></w:r>',
-    '<w:r><w:t>one<c:data/></w:t></w:r><w:r><w:t>two</w:t></w:r>',
+    "<w:r><w:t>one<c:data/></w:t></w:r><w:r><w:t>two</w:t></w:r>",
   ])
     expect(await fingerprint(content)).not.toBe(await fingerprint(run("onetwo")))
 })
@@ -138,7 +154,6 @@ test("a changed standard save timestamp does not hide real text edits or other c
     { lastModifiedBy: "Another editor" },
     { created: "2025-03-01T00:00:00Z" },
     { lastPrinted: "2025-04-01T00:00:00Z" },
-    { revision: "2" },
   ])
     expect(await documentFingerprint(fixture("2026-02-03T04:05:06Z", options))).not.toBe(baseline)
   expect(first).toEqual(copy)
@@ -153,13 +168,35 @@ test("modified timestamp comparison preserves nonstandard roots, opaque data, ex
     ["docProps/core.xml", (time) => coreProperties(time).replace(coreNamespace, "urn:synthetic:core")],
     ["docProps/core.xml", (time) => coreProperties(time).replaceAll("p:coreProperties", "p:other")],
     ["docProps/core.xml", (time) => coreProperties(time).replaceAll("t:modified", "c:modified")],
-    ["docProps/core.xml", (time) => coreProperties(time).replace("<t:modified", "<p:other><t:modified").replace("</t:modified>", "</t:modified></p:other>")],
+    [
+      "docProps/core.xml",
+      (time) =>
+        coreProperties(time)
+          .replace("<t:modified", "<p:other><t:modified")
+          .replace("</t:modified>", "</t:modified></p:other>"),
+    ],
     ["docProps/core.xml", (time) => coreProperties(time).replace("<t:modified", '<t:modified c:flag="preserved"')],
-    ["docProps/core.xml", (time) => coreProperties(time).replace(`>${time}</t:modified>`, `><c:data>${time}</c:data></t:modified>`)],
+    [
+      "docProps/core.xml",
+      (time) => coreProperties(time).replace(`>${time}</t:modified>`, `><c:data>${time}</c:data></t:modified>`),
+    ],
     ["docProps/core.xml", (time) => coreProperties(time).replaceAll('i:type="t:W3CDTF"', 'i:type="c:W3CDTF"')],
     ["docProps/core.xml", (time) => coreProperties(time).replaceAll('i:type="t:W3CDTF"', 'i:type="t:unknown"')],
-    ["docProps/core.xml", (time) => coreProperties(time).replace('<p:coreProperties ', `<p:coreProperties xmlns="${termsNamespace}" `).replaceAll('i:type="t:W3CDTF"', 'i:type=":W3CDTF"')],
-    ["docProps/core.xml", (time) => coreProperties(time).replace(`<t:modified i:type="t:W3CDTF">${time}</t:modified>`, `<t:modified i:type="t:W3CDTF">${time}</t:modified><t:modified i:type="t:W3CDTF">${time}</t:modified>`)],
+    [
+      "docProps/core.xml",
+      (time) =>
+        coreProperties(time)
+          .replace("<p:coreProperties ", `<p:coreProperties xmlns="${termsNamespace}" `)
+          .replaceAll('i:type="t:W3CDTF"', 'i:type=":W3CDTF"'),
+    ],
+    [
+      "docProps/core.xml",
+      (time) =>
+        coreProperties(time).replace(
+          `<t:modified i:type="t:W3CDTF">${time}</t:modified>`,
+          `<t:modified i:type="t:W3CDTF">${time}</t:modified><t:modified i:type="t:W3CDTF">${time}</t:modified>`,
+        ),
+    ],
   ]
   for (const [name, xml] of cases) {
     const hash = (time: string) => documentFingerprint(zipSync({ [name]: strToU8(xml(time)) }))
@@ -172,5 +209,68 @@ test("modified timestamp comparison preserves nonstandard roots, opaque data, ex
   ]) {
     const hash = (time: string) => documentFingerprint(zipSync({ "docProps/core.xml": strToU8(coreProperties(time)) }))
     expect(await hash(left!)).not.toBe(await hash(right!))
+  }
+})
+
+test("observed cached counts and numeric package revision can change without hiding content or other metadata", async () => {
+  const extended = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+  const app = `<e:Properties xmlns:e="${extended}"><e:Words>3</e:Words><e:Characters>15</e:Characters><e:Paragraphs>2</e:Paragraphs><e:CharactersWithSpaces>17</e:CharactersWithSpaces><e:Pages>1</e:Pages><e:Lines>2</e:Lines><e:Company>Synthetic company</e:Company><e:Unknown>preserved</e:Unknown></e:Properties>`
+  const core = coreProperties("2026-01-02T03:04:05Z")
+  const fixture = (application = app, properties = core, content = run("Neutral text.")) =>
+    zipSync({
+      "docProps/app.xml": strToU8(application),
+      "docProps/core.xml": strToU8(properties),
+      "word/document.xml": strToU8(document(content)),
+    })
+  const original = fixture()
+  const copy = original.slice()
+  const baseline = await documentFingerprint(original)
+  for (const property of ["Words", "Characters", "Paragraphs", "CharactersWithSpaces"])
+    expect(
+      await documentFingerprint(
+        fixture(app.replace(new RegExp(`<e:${property}>\\d+</e:${property}>`), `<e:${property}>99</e:${property}>`)),
+      ),
+    ).toBe(baseline)
+  expect(await documentFingerprint(fixture(app, core.replace("<p:revision>1", "<p:revision>2")))).toBe(baseline)
+  expect(await documentFingerprint(fixture(app, core, run("Changed text.")))).not.toBe(baseline)
+  expect(await documentFingerprint(fixture(app, core, run("Neutral text.", format)))).not.toBe(baseline)
+  for (const edit of [
+    app.replace("Synthetic company", "Another company"),
+    app.replace("preserved", "changed"),
+    app.replace("<e:Pages>1", "<e:Pages>2"),
+    app.replace("<e:Lines>2", "<e:Lines>3"),
+  ])
+    expect(await documentFingerprint(fixture(edit))).not.toBe(baseline)
+  expect(original).toEqual(copy)
+})
+
+test("numeric metadata comparison preserves duplicate leaves, extensions, unknown XML and invalid values", async () => {
+  const extended = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+  for (const [part, namespace, root, property] of [
+    ["docProps/app.xml", extended, "Properties", "Words"],
+    ["docProps/app.xml", extended, "Properties", "Characters"],
+    ["docProps/app.xml", extended, "Properties", "Paragraphs"],
+    ["docProps/app.xml", extended, "Properties", "CharactersWithSpaces"],
+    ["docProps/core.xml", coreNamespace, "coreProperties", "revision"],
+  ] as const) {
+    const wrapper = (child: string) => `<p:${root} xmlns:p="${namespace}" xmlns:c="urn:synthetic">${child}</p:${root}>`
+    const leaf = (value: string) => `<p:${property}>${value}</p:${property}>`
+    const cases: [string, (value: string) => string][] = [
+      ["customXml/item1.xml", (value) => wrapper(leaf(value))],
+      [part, (value) => wrapper(leaf(value)).replace(namespace, "urn:synthetic:wrong")],
+      [part, (value) => wrapper(leaf(value)).replaceAll(`p:${root}`, "p:UnknownRoot")],
+      [part, (value) => wrapper(leaf(value)).replaceAll(`p:${property}`, `c:${property}`)],
+      [part, (value) => wrapper(`<p:Other>${leaf(value)}</p:Other>`)],
+      [part, (value) => wrapper(leaf(value) + leaf(value))],
+      [part, (value) => wrapper(`<p:${property} c:flag="preserved">${value}</p:${property}>`)],
+      [part, (value) => wrapper(`<p:${property}><c:data>${value}</c:data></p:${property}>`)],
+      [part, (value) => wrapper(leaf(`custom-${value}`))],
+      [part, (value) => wrapper(leaf(`-${value}`))],
+      [part, (value) => wrapper(leaf(`${value}.5`))],
+    ]
+    for (const [name, xml] of cases) {
+      const hash = (value: string) => documentFingerprint(zipSync({ [name]: strToU8(xml(value)) }))
+      expect(await hash("1")).not.toBe(await hash("2"))
+    }
   }
 })

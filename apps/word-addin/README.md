@@ -23,8 +23,9 @@ manual-close confirmation on older hosts or when closing fails. It always uses
 Word's `Save` close behavior. New changes detected before closing or after a
 close error restore the heartbeat and need another save. See Microsoft's
 [Document.close documentation](https://learn.microsoft.com/en-us/javascript/api/word/word.document?view=word-js-1.5#word-word-document-close-member(1)).
-The final fingerprint check and native close are not atomic. A later edit is
-preserved locally by `Save` and can be recovered by reopening the file.
+The final fingerprint check, settings persistence and native close are not
+atomic. A later edit is preserved locally by `Save` and can be recovered by
+reopening the file.
 Save, export, retry, background sync,
 and Done run in a single queue. Failed uploads keep that saved snapshot in memory
 and retry the same bytes/base, at most twice per operation, before allowing the
@@ -40,9 +41,14 @@ foreign/unknown attributes remain significant too. Uploaded DOCX bytes are never
 rewritten by this comparison step.
 The standard application-properties `TotalTime` numeric leaf is also normalized
 for comparison, since it records editing duration (minutes by default), which
-can advance while Word is open without a content edit. Other application
-properties and custom XML remain significant. Uploaded DOCX bytes remain
-unchanged. See Microsoft's [TotalTime documentation](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.extendedproperties.totaltime?view=openxml-3.0.1).
+can advance while Word is open without a content edit. The four cached counts
+`Words`, `Characters`, `Paragraphs` and `CharactersWithSpaces` are normalized
+only as unique direct standard numeric leaves without attributes. Word can
+recount these on reopening without changing content. Other application
+properties, including `Pages` and `Lines`, and custom XML remain significant.
+Uploaded DOCX bytes remain unchanged. See Microsoft's
+[TotalTime documentation](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.extendedproperties.totaltime?view=openxml-3.0.1)
+and [cached word count definition](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.extendedproperties.words?view=openxml-3.0.1).
 Word can also add `proofState` after background spelling and grammar checking
 finishes. Comparison ignores only the direct standard settings leaf with known
 `spelling`/`grammar` completion flags. Unknown attributes, nested data and
@@ -66,20 +72,28 @@ and [whitespace rules](https://learn.microsoft.com/en-us/dotnet/api/documentform
 The standard core-properties `dcterms:modified` full timestamp is normalized for
 comparison because Word advances it on a native save after reopening, even
 without an edit. Only the direct, typed timestamp leaf is handled; creator,
-last-modified author, creation/printing dates, revision metadata, extensions and
-custom XML remain significant. Uploaded metadata is unchanged. See Microsoft's
-[package modified-time definition](https://learn.microsoft.com/en-us/dotnet/api/system.io.packaging.packageproperties.modified?view=netframework-4.8.1).
-It also captures the initial saved file on reopen. Unsaved edits are never
-automatically exported/uploaded. This is best-effort sync: several native saves
+last-modified author, creation/printing dates, extensions and custom XML remain
+significant. The standard core `revision` counter is normalized only as a
+unique direct numeric leaf without attributes; extended or nonnumeric values
+remain significant. Uploaded metadata is unchanged. See Microsoft's
+[package modified-time definition](https://learn.microsoft.com/en-us/dotnet/api/system.io.packaging.packageproperties.modified?view=netframework-4.8.1)
+and [package revision property](https://learn.microsoft.com/en-us/dotnet/api/system.io.packaging.packageproperties).
+On startup, an initial export can recover a matching acknowledgement even when
+Word reports unsaved; it stays Not saved and is never uploaded automatically.
+Unsaved edits are never automatically uploaded. This is best-effort sync: several native saves
 may become one version, and closing Word can stop a final upload. There is no
 native close-save guarantee. Use an explicit action and wait for Saved before
 closing.
 
 Acknowledgement metadata (version, fingerprint, receive time and overlap) is
 stored locally under a SHA-256 key derived from the link identity, original base
-and token. The token and document bytes are not stored there. Writing back to
-Word settings after each acknowledgement would dirty the document and risk save
-loops, so the add-in does not do it. On reopen, stored metadata is used only if
+and token. The token and document bytes are not stored there. Background acknowledgements
+do not write Word settings, avoiding document dirtying and save loops. Only
+Done, after the upload and Done responses are acknowledged and the current
+content matches, updates the existing validated link's `baseVersion`, awaits
+settings persistence, and closes with `Save`. The original link identity and
+other fields are preserved. Other physical copies are not modified. On reopen,
+stored metadata is used only if
 the current exported fingerprint matches. An edited/forwarded copy otherwise
 starts from its embedded base; the server can disclose overlapping changes
 instead of silently treating it as the latest copy. Storage may be unavailable

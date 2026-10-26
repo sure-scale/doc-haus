@@ -13,6 +13,7 @@ const corePropertiesNamespace = "http://schemas.openxmlformats.org/package/2006/
 const dublinCoreTermsNamespace = "http://purl.org/dc/terms/"
 const schemaInstanceNamespace = "http://www.w3.org/2001/XMLSchema-instance"
 const xmlNamespace = "http://www.w3.org/XML/1998/namespace"
+const cachedCountProperties = ["Words", "Characters", "Paragraphs", "CharactersWithSpaces"] as const
 const proofingAnchors = new Set(["spellStart", "spellEnd", "gramStart", "gramEnd"])
 const flowContainers = new Set(["body", "tbl", "tr", "tc", "sdt", "sdtContent", "footnote", "endnote", "comment"])
 // Only properties with ordinary character-format semantics. Other properties,
@@ -29,19 +30,56 @@ const simpleFormatAttributes: Record<string, readonly string[]> = {
   color: ["val"],
 }
 
+function normalizeNumericProperties(root: Element, namespace: string, names: readonly string[], max: number): boolean {
+  let changed = false
+  for (const name of names) {
+    const leaves = Array.from(root.childNodes).filter(
+      (node) =>
+        node.nodeType === 1 && (node as Element).namespaceURI === namespace && (node as Element).localName === name,
+    ) as Element[]
+    if (leaves.length !== 1) continue
+    const element = leaves[0]!
+    const value = element.textContent ?? ""
+    if (
+      element.attributes.length ||
+      !Array.from(element.childNodes).every((child) => child.nodeType === 3 || child.nodeType === 4) ||
+      !/^[\t\r\n ]*\+?\d+[\t\r\n ]*$/.test(value) ||
+      !Number.isSafeInteger(Number(value)) ||
+      Number(value) > max
+    )
+      continue
+    element.textContent = "0"
+    changed = true
+  }
+  return changed
+}
+
 function standardTimestamp(value: string): boolean {
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(value)
   if (!match) return false
   const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number) as [
-    number, number, number, number, number, number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
   ]
   const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
   const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
   const offsetHour = Number(match[7] ?? 0)
   const offsetMinute = Number(match[8] ?? 0)
   return (
-    year > 0 && month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1]! &&
-    hour < 24 && minute < 60 && second < 60 && offsetHour <= 14 && offsetMinute < 60 &&
+    year > 0 &&
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= days[month - 1]! &&
+    hour < 24 &&
+    minute < 60 &&
+    second < 60 &&
+    offsetHour <= 14 &&
+    offsetMinute < 60 &&
     (offsetHour !== 14 || offsetMinute === 0)
   )
 }
@@ -122,13 +160,19 @@ function simpleRun(node: Node, namespace: string, serializer: XMLSerializer): Si
 
 function normalizeTextFlow(name: string, root: Element): boolean {
   const expectedRoot =
-    name === "word/document.xml" ? "document"
-    : name === "word/comments.xml" ? "comments"
-    : name === "word/footnotes.xml" ? "footnotes"
-    : name === "word/endnotes.xml" ? "endnotes"
-    : /^word\/header\d+\.xml$/.test(name) ? "hdr"
-    : /^word\/footer\d+\.xml$/.test(name) ? "ftr"
-    : undefined
+    name === "word/document.xml"
+      ? "document"
+      : name === "word/comments.xml"
+        ? "comments"
+        : name === "word/footnotes.xml"
+          ? "footnotes"
+          : name === "word/endnotes.xml"
+            ? "endnotes"
+            : /^word\/header\d+\.xml$/.test(name)
+              ? "hdr"
+              : /^word\/footer\d+\.xml$/.test(name)
+                ? "ftr"
+                : undefined
   if (root.localName !== expectedRoot) return false
   const namespace = root.namespaceURI!
   const serializer = new XMLSerializer()
@@ -185,7 +229,6 @@ function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
   const coreProperties = name === "docProps/core.xml"
   if (!wordPart && !extendedProperties && !coreProperties) return bytes
   const text = strFromU8(bytes)
-  if ((extendedProperties && !text.includes("TotalTime")) || (coreProperties && !text.includes("modified"))) return bytes
   const fail = () => {
     throw new Error("Word could not read the document for comparison. Keep the file and try saving again.")
   }
@@ -198,36 +241,39 @@ function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
   const root = doc.documentElement
   if (coreProperties) {
     if (root.namespaceURI !== corePropertiesNamespace || root.localName !== "coreProperties") return bytes
+    let changed = normalizeNumericProperties(root, corePropertiesNamespace, ["revision"], Number.MAX_SAFE_INTEGER)
     const modified = Array.from(root.childNodes).filter(
       (node) =>
         node.nodeType === 1 &&
         (node as Element).namespaceURI === dublinCoreTermsNamespace &&
         (node as Element).localName === "modified",
     ) as Element[]
-    if (modified.length !== 1) return bytes
-    const element = modified[0]!
-    const attribute = element.attributes[0]
-    const type = attribute?.value.split(":")
-    if (
-      element.attributes.length !== 1 ||
-      attribute?.namespaceURI !== schemaInstanceNamespace ||
-      attribute.localName !== "type" ||
-      type?.length !== 2 ||
-      !type[0] ||
-      type[1] !== "W3CDTF" ||
-      element.lookupNamespaceURI(type[0]!) !== dublinCoreTermsNamespace ||
-      !Array.from(element.childNodes).every((child) => child.nodeType === 3 || child.nodeType === 4) ||
-      !standardTimestamp(element.textContent ?? "")
-    )
-      return bytes
-    // Native save/reopen advances the package save timestamp without an edit.
-    // Keep all other properties and preserve nonstandard/extended leaves.
-    element.textContent = "1970-01-01T00:00:00Z"
-    return strToU8(new XMLSerializer().serializeToString(doc))
+    const element = modified.length === 1 ? modified[0] : undefined
+    if (element) {
+      const attribute = element.attributes[0]
+      const type = attribute?.value.split(":")
+      if (
+        element.attributes.length !== 1 ||
+        attribute?.namespaceURI !== schemaInstanceNamespace ||
+        attribute.localName !== "type" ||
+        type?.length !== 2 ||
+        !type[0] ||
+        type[1] !== "W3CDTF" ||
+        element.lookupNamespaceURI(type[0]!) !== dublinCoreTermsNamespace ||
+        !Array.from(element.childNodes).every((child) => child.nodeType === 3 || child.nodeType === 4) ||
+        !standardTimestamp(element.textContent ?? "")
+      )
+        return changed ? strToU8(new XMLSerializer().serializeToString(doc)) : bytes
+      // Native save/reopen advances the package save timestamp without an edit.
+      // Keep all other properties and preserve nonstandard/extended leaves.
+      element.textContent = "1970-01-01T00:00:00Z"
+      changed = true
+    }
+    return changed ? strToU8(new XMLSerializer().serializeToString(doc)) : bytes
   }
   if (extendedProperties) {
     if (root.namespaceURI !== extendedPropertiesNamespace || root.localName !== "Properties") return bytes
-    let changed = false
+    let changed = normalizeNumericProperties(root, extendedPropertiesNamespace, cachedCountProperties, 2_147_483_647)
     for (const node of Array.from(root.childNodes)) {
       if (node.nodeType !== 1) continue
       const element = node as Element

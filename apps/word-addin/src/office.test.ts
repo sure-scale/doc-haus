@@ -250,55 +250,146 @@ test("proofState normalization preserves unknown attributes, nested data and opa
   expect(await invalid("future-one")).not.toBe(await invalid("future-two"))
 })
 
-test("document close feature detection preserves WordApi 1.1 and only closes saved documents with Save", async () => {
-  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
-  try {
-    for (const supported of [false, true]) {
-      const events: string[] = []
-      const context = {
-        document: {
-          saved: true,
-          load: (property: string) => {
-            events.push(`load:${property}`)
-          },
-          save: () => {},
-          close: (behavior: string) => {
-            events.push(`close:${behavior}`)
-          },
-        },
-        sync: async () => {
-          events.push("sync")
-        },
-      }
-      Object.defineProperty(globalThis, "window", {
-        configurable: true,
-        value: {
-          Office: {
-            onReady: async () => ({ host: "Word" }),
-            context: {
-              document: { settings: { get: () => null } },
-              requirements: {
-                isSetSupported: (name: string, version: string) =>
-                  name === "WordApi" && (version === "1.1" || (version === "1.5" && supported)),
+const linkedDocument = {
+  version: 1,
+  apiOrigin: "https://localhost:4612",
+  origin: "http://localhost:4444",
+  matter: "synthetic-matter",
+  matterName: "Synthetic matter",
+  document: "draft.docx",
+  documentName: "Draft",
+  baseVersion: "original-v1",
+  token: "synthetic-capability",
+  extension: { retained: true },
+}
+
+function installCloseHost(supported: boolean, encoded = false) {
+  const events: string[] = []
+  let raw: unknown = encoded ? JSON.stringify(linkedDocument) : { ...linkedDocument }
+  let callback: ((result: { status: string; value: void }) => void) | undefined
+  let started!: () => void
+  const saving = new Promise<void>((resolve) => {
+    started = resolve
+  })
+  const context = {
+    document: {
+      saved: true,
+      load: (property: string) => {
+        events.push(`load:${property}`)
+      },
+      save: () => {},
+      close: (behavior: string) => {
+        events.push(`close:${behavior}`)
+      },
+    },
+    sync: async () => {
+      events.push("sync")
+    },
+  }
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      location: { origin: linkedDocument.apiOrigin },
+      Office: {
+        onReady: async () => ({ host: "Word" }),
+        context: {
+          document: {
+            settings: {
+              get: () => raw,
+              set: (key: string, value: unknown) => {
+                expect(key).toBe("dochaus.link")
+                events.push("settings-set")
+                raw = value
+              },
+              saveAsync: (value: typeof callback) => {
+                events.push("settings-save")
+                callback = value
+                started()
               },
             },
           },
-          Word: { run: async (callback: (value: typeof context) => Promise<unknown>) => callback(context) },
+          requirements: {
+            isSetSupported: (name: string, version: string) =>
+              name === "WordApi" && (version === "1.1" || (version === "1.5" && supported)),
+          },
         },
-      })
+      },
+      Word: { run: async (action: (value: typeof context) => Promise<unknown>) => action(context) },
+    },
+  })
+  return {
+    events,
+    context,
+    saving,
+    get raw() {
+      return raw
+    },
+    set raw(value: unknown) {
+      raw = value
+    },
+    finish: (status = "succeeded") => callback!({ status, value: undefined }),
+  }
+}
+
+test("Done persists only its acknowledged base before Save-close, preserving link encoding and WordApi 1.1", async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+  try {
+    const unsupported = installCloseHost(false)
+    const oldHost = (await connectOffice()).host
+    expect(oldHost.close).toBeUndefined()
+    expect(await oldHost.saved()).toBe(true)
+    expect(unsupported.events).toEqual(["load:saved", "sync"])
+    for (const encoded of [false, true]) {
+      const fixture = installCloseHost(true, encoded)
       const { host } = await connectOffice()
-      if (!supported) {
-        expect(host.close).toBeUndefined()
-        expect(await host.saved()).toBe(true)
-        continue
-      }
-      await host.close!()
-      expect(events).toEqual(["load:saved", "sync", "close:Save", "sync"])
-      events.length = 0
-      context.document.saved = false
-      await expect(host.close!()).rejects.toBeInstanceOf(DocumentStateError)
-      expect(events).toEqual(["load:saved", "sync"])
+      const closing = host.close!("ack-v2")
+      await fixture.saving
+      expect(fixture.events).toEqual(["load:saved", "sync", "settings-set", "settings-save"])
+      expect(typeof fixture.raw).toBe(encoded ? "string" : "object")
+      expect(encoded ? JSON.parse(fixture.raw as string) : fixture.raw).toEqual({
+        ...linkedDocument,
+        baseVersion: "ack-v2",
+      })
+      fixture.finish()
+      await closing
+      expect(fixture.events).toEqual(["load:saved", "sync", "settings-set", "settings-save", "close:Save", "sync"])
+      fixture.events.length = 0
+      fixture.context.document.saved = false
+      await expect(host.close!("ack-v3")).rejects.toBeInstanceOf(DocumentStateError)
+      expect(fixture.events).toEqual(["load:saved", "sync"])
     }
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow)
+    else delete (globalThis as { window?: unknown }).window
+  }
+})
+
+test("Done cannot stamp another document's link or close after settings persistence fails", async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+  try {
+    for (const changed of [
+      null,
+      "invalid JSON",
+      { ...linkedDocument, token: "another-synthetic-capability" },
+      { ...linkedDocument, matter: "another-matter" },
+      { ...linkedDocument, document: "another.docx" },
+      { ...linkedDocument, origin: "http://localhost:4445" },
+      { ...linkedDocument, apiOrigin: "https://localhost:4613" },
+    ]) {
+      const fixture = installCloseHost(true)
+      const { host } = await connectOffice()
+      fixture.raw = changed
+      await expect(host.close!("ack-v2")).rejects.toThrow("could not update")
+      expect(fixture.events).toEqual(["load:saved", "sync"])
+      expect(fixture.raw).toEqual(changed)
+    }
+    const fixture = installCloseHost(true)
+    const { host } = await connectOffice()
+    const closing = host.close!("ack-v2")
+    await fixture.saving
+    fixture.finish("failed")
+    await expect(closing).rejects.toThrow("could not update")
+    expect(fixture.events).toEqual(["load:saved", "sync", "settings-set", "settings-save"])
   } finally {
     if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow)
     else delete (globalThis as { window?: unknown }).window

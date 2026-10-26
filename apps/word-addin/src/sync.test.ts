@@ -42,8 +42,8 @@ describe("confirmed Word saves", () => {
           events.push("export")
           return new Uint8Array([bytes])
         },
-        close: async () => {
-          events.push("close")
+        close: async (base) => {
+          events.push(`close:${base}`)
           closeStarted.resolve(true)
           await closeReleased.promise
         },
@@ -87,7 +87,7 @@ describe("confirmed Word saves", () => {
       "export",
       "done",
       "export",
-      "close",
+      "close:v1",
     ])
     expect(sync.snapshot().status).toBe("done")
     const completedEvents = [...events]
@@ -229,6 +229,59 @@ describe("confirmed Word saves", () => {
       await sync.start()
       expect(requests).toEqual(bytes === 1 ? [] : ["original"])
       expect(sync.snapshot().acknowledgement?.base).toBe(bytes === 1 ? "ack" : "new")
+    }
+  })
+
+  test("initial dirty export restores only an exact checkpoint before later editing and Done", async () => {
+    for (const matches of [true, false]) {
+      const previous: Acknowledgement = { base: "ack-v4", fingerprint: "1", number: 4, at: 1, overlap: false }
+      let bytes = matches ? 1 : 9
+      let saved = false
+      const bases: string[] = []
+      const statuses: string[] = []
+      const events: string[] = []
+      const sync = new WordSync(
+        "original-v1",
+        {
+          saved: async () => saved,
+          save: async () => {
+            saved = true
+          },
+          export: async () => {
+            events.push("export")
+            return new Uint8Array([bytes])
+          },
+        },
+        {
+          heartbeat: async () => {
+            events.push("heartbeat")
+          },
+          done: immediate,
+          save: async (_bytes, base) => {
+            bases.push(base)
+            return acknowledgement("new-v5", 5)
+          },
+        },
+        checkpoints(previous),
+        (state) => {
+          statuses.push(state.status)
+        },
+        fingerprint,
+        immediate,
+      )
+      await sync.start()
+      expect(events.slice(0, 2)).toEqual(["export", "heartbeat"])
+      expect(bases).toEqual([])
+      expect(statuses).not.toContain("saved")
+      expect(sync.snapshot().status).toBe("not-saved")
+      expect(sync.snapshot().acknowledgement?.base).toBe(matches ? "ack-v4" : undefined)
+      bytes = 2
+      await sync.tick()
+      expect(bases).toEqual([])
+      expect(sync.snapshot().status).toBe("not-saved")
+      expect(await sync.done()).toBe(true)
+      expect(bases).toEqual([matches ? "ack-v4" : "original-v1"])
+      expect(sync.snapshot().acknowledgement?.fingerprint).toBe("2")
     }
   })
 

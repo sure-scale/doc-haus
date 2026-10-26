@@ -65,7 +65,7 @@ export class WordSync {
   private queued = 0
   private completed = false
   private completedCheckedAt = -Infinity
-  private captured = false
+  private checkpointChecked = false
   private base: string
   private pending?: Pending
   private acknowledgement?: Acknowledgement
@@ -130,6 +130,7 @@ export class WordSync {
 
   start(): Promise<boolean> {
     return this.enqueue(async () => {
+      await this.restoreCheckpoint()
       await this.heartbeat()
       await this.capture()
     })
@@ -193,7 +194,7 @@ export class WordSync {
       }
       this.show("saving", "Your document is saved to doc.haus. Closing this document…")
       try {
-        await this.host.close()
+        await this.host.close(this.acknowledgement!.base)
         this.show("done", "Your document is saved to doc.haus.")
       } catch (error) {
         let unchanged: boolean | undefined
@@ -228,6 +229,7 @@ export class WordSync {
   private async explicitSave(): Promise<void> {
     this.completed = false
     this.show("saving", "Saving in Word…")
+    await this.restoreCheckpoint()
     await this.host.save()
     await this.flush()
     if (!(await this.capture(true)))
@@ -235,6 +237,7 @@ export class WordSync {
   }
 
   private async capture(requireAcknowledgement = false): Promise<boolean> {
+    await this.restoreCheckpoint()
     if (!(await this.host.saved())) {
       this.show("not-saved", "You have changes in Word. Choose Save to doc.haus before closing.")
       return false
@@ -249,16 +252,6 @@ export class WordSync {
       this.show("not-saved", "You have new changes in Word. Choose Save to doc.haus before closing.")
       return false
     }
-    if (!this.captured) {
-      this.captured = true
-      const previous = this.checkpoints.read()
-      // A forwarded or separately edited physical copy may share the token.
-      // Reuse an acknowledgement only when this saved file actually matches it.
-      if (previous?.fingerprint === fingerprint) {
-        this.acknowledgement = previous
-        this.base = previous.base
-      }
-    }
     if (!requireAcknowledgement && fingerprint === this.acknowledgement?.fingerprint) {
       this.showSaved()
       return true
@@ -271,6 +264,21 @@ export class WordSync {
     }
     this.showSaved()
     return true
+  }
+
+  private async restoreCheckpoint(): Promise<void> {
+    if (this.checkpointChecked) return
+    const previous = this.checkpoints.read()
+    if (previous) {
+      // Probe before editing/saving can replace an initially matching snapshot.
+      // A dirty native flag is not an upload permission or a new acknowledgement.
+      const fingerprint = await this.fingerprint(await this.host.export())
+      if (previous.fingerprint === fingerprint) {
+        this.acknowledgement = previous
+        this.base = previous.base
+      }
+    }
+    this.checkpointChecked = true
   }
 
   private async matchesAcknowledgement(): Promise<boolean> {
