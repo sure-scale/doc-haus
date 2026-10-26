@@ -55,6 +55,12 @@ runs and bytes are uploaded unchanged.
 See Microsoft's [proofing-anchor documentation](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.prooferror?view=openxml-3.0.1),
 [run structure](https://learn.microsoft.com/en-us/office/open-xml/word/how-to-open-and-add-text-to-a-word-processing-document)
 and [whitespace rules](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.texttype.space?view=openxml-3.0.1).
+The standard core-properties `dcterms:modified` full timestamp is normalized for
+comparison because Word advances it on a native save after reopening, even
+without an edit. Only the direct, typed timestamp leaf is handled; creator,
+last-modified author, creation/printing dates, revision metadata, extensions and
+custom XML remain significant. Uploaded metadata is unchanged. See Microsoft's
+[package modified-time definition](https://learn.microsoft.com/en-us/dotnet/api/system.io.packaging.packageproperties.modified?view=netframework-4.8.1).
 It also captures the initial saved file on reopen. Unsaved edits are never
 automatically exported/uploaded. This is best-effort sync: several native saves
 may become one version, and closing Word can stop a final upload. There is no
@@ -70,6 +76,9 @@ the current exported fingerprint matches. An edited/forwarded copy otherwise
 starts from its embedded base; the server can disclose overlapping changes
 instead of silently treating it as the latest copy. Storage may be unavailable
 or cleared; the saved file is still recoverable on reopen.
+A changed comparison algorithm can invalidate an older stored fingerprint. One
+new acknowledged save establishes the current checkpoint; an unmatched old
+checkpoint still uses the embedded base and preserves overlap reporting.
 
 A save is confirmed only after a fresh saved-file fingerprint matches the
 acknowledged upload. Done checks again after its server response and restores

@@ -115,3 +115,62 @@ test("only standard empty proofing anchors in Word flow are ignored", async () =
     documentFingerprint(zipSync({ "word/document.xml": strToU8(document(`<c:data><w:p>${content}</w:p></c:data>`)) }))
   expect(await foreign(run("Neutral sample text."))).not.toBe(await foreign(split()))
 })
+
+const coreNamespace = "http://schemas.openxmlformats.org/package/2006/metadata/core-properties"
+const termsNamespace = "http://purl.org/dc/terms/"
+const coreProperties = (modified: string, options: Record<string, string | undefined> = {}) =>
+  `<p:coreProperties xmlns:p="${coreNamespace}" xmlns:t="${termsNamespace}" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:i="http://www.w3.org/2001/XMLSchema-instance" xmlns:c="urn:synthetic"><dc:creator>${options.creator ?? "Synthetic author"}</dc:creator><p:lastModifiedBy>${options.lastModifiedBy ?? "Synthetic editor"}</p:lastModifiedBy><t:created i:type="t:W3CDTF">${options.created ?? "2025-01-01T00:00:00Z"}</t:created><p:lastPrinted>${options.lastPrinted ?? "2025-02-01T00:00:00Z"}</p:lastPrinted><p:revision>${options.revision ?? "1"}</p:revision><t:modified i:type="t:W3CDTF">${modified}</t:modified></p:coreProperties>`
+
+test("a changed standard save timestamp does not hide real text edits or other core metadata", async () => {
+  const fixture = (modified: string, options: Record<string, string | undefined> = {}, text = "Neutral text.") =>
+    zipSync({
+      "docProps/core.xml": strToU8(coreProperties(modified, options)),
+      "word/document.xml": strToU8(document(run(text))),
+    })
+  const first = fixture("2026-01-02T03:04:05Z")
+  const copy = first.slice()
+  const baseline = await documentFingerprint(first)
+  expect(await documentFingerprint(fixture("2026-02-03T04:05:06Z"))).toBe(baseline)
+  expect(await documentFingerprint(fixture("2024-02-29T03:04:05.123+01:00"))).toBe(baseline)
+  expect(await documentFingerprint(fixture("2026-02-03T04:05:06Z", {}, "Changed text."))).not.toBe(baseline)
+  for (const options of [
+    { creator: "Another author" },
+    { lastModifiedBy: "Another editor" },
+    { created: "2025-03-01T00:00:00Z" },
+    { lastPrinted: "2025-04-01T00:00:00Z" },
+    { revision: "2" },
+  ])
+    expect(await documentFingerprint(fixture("2026-02-03T04:05:06Z", options))).not.toBe(baseline)
+  expect(first).toEqual(copy)
+})
+
+test("modified timestamp comparison preserves nonstandard roots, opaque data, extensions and invalid dates", async () => {
+  const first = "2026-01-02T03:04:05Z"
+  const second = "2026-02-03T04:05:06Z"
+  const cases: [string, (time: string) => string][] = [
+    ["customXml/item1.xml", (time) => coreProperties(time)],
+    ["docProps/custom.xml", (time) => coreProperties(time)],
+    ["docProps/core.xml", (time) => coreProperties(time).replace(coreNamespace, "urn:synthetic:core")],
+    ["docProps/core.xml", (time) => coreProperties(time).replaceAll("p:coreProperties", "p:other")],
+    ["docProps/core.xml", (time) => coreProperties(time).replaceAll("t:modified", "c:modified")],
+    ["docProps/core.xml", (time) => coreProperties(time).replace("<t:modified", "<p:other><t:modified").replace("</t:modified>", "</t:modified></p:other>")],
+    ["docProps/core.xml", (time) => coreProperties(time).replace("<t:modified", '<t:modified c:flag="preserved"')],
+    ["docProps/core.xml", (time) => coreProperties(time).replace(`>${time}</t:modified>`, `><c:data>${time}</c:data></t:modified>`)],
+    ["docProps/core.xml", (time) => coreProperties(time).replaceAll('i:type="t:W3CDTF"', 'i:type="c:W3CDTF"')],
+    ["docProps/core.xml", (time) => coreProperties(time).replaceAll('i:type="t:W3CDTF"', 'i:type="t:unknown"')],
+    ["docProps/core.xml", (time) => coreProperties(time).replace('<p:coreProperties ', `<p:coreProperties xmlns="${termsNamespace}" `).replaceAll('i:type="t:W3CDTF"', 'i:type=":W3CDTF"')],
+    ["docProps/core.xml", (time) => coreProperties(time).replace(`<t:modified i:type="t:W3CDTF">${time}</t:modified>`, `<t:modified i:type="t:W3CDTF">${time}</t:modified><t:modified i:type="t:W3CDTF">${time}</t:modified>`)],
+  ]
+  for (const [name, xml] of cases) {
+    const hash = (time: string) => documentFingerprint(zipSync({ [name]: strToU8(xml(time)) }))
+    expect(await hash(first)).not.toBe(await hash(second))
+  }
+  for (const [left, right] of [
+    ["future-one", "future-two"],
+    ["2026-02-30T03:04:05Z", "2026-02-31T03:04:05Z"],
+    ["2026-01-02T25:04:05Z", "2026-01-02T26:04:05Z"],
+  ]) {
+    const hash = (time: string) => documentFingerprint(zipSync({ "docProps/core.xml": strToU8(coreProperties(time)) }))
+    expect(await hash(left!)).not.toBe(await hash(right!))
+  }
+})
