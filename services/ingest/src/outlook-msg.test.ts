@@ -467,7 +467,7 @@ test("attachments are named and sized as the message states them, inline images 
   expect(parsed.embedded).toBe(2)
   expect(parsed.attachments.map(({ name, size }) => [name, size])).toEqual([
     // A slash in a subject is not a folder.
-    ["RE: 12-03 call.msg", REWRITTEN_MESSAGE_SIZE],
+    ["RE 12-03 call.msg", REWRITTEN_MESSAGE_SIZE],
     ["Sized reply.msg", 4321],
     ["photo.jpg", 19],
     ["Missing.docx", 0],
@@ -475,7 +475,7 @@ test("attachments are named and sized as the message states them, inline images 
   const directory = matter()
   const result = await ingestEmailDocument(directory, "Attachments.msg", msg)
   expect(result.attachments.map((entry) => [entry.name, entry.status, entry.document])).toEqual([
-    ["RE: 12/03 call", "indexed", "RE: 12-03 call.msg"],
+    ["RE: 12/03 call", "indexed", "RE 12-03 call.msg"],
     ["Sized reply", "indexed", "Sized reply.msg"],
     ["photo.jpg", "unsupported", undefined],
     ["Missing.docx", "failed", undefined],

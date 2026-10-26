@@ -239,7 +239,7 @@ function partsToSteps(parts: Part[], matter: string, pool?: Part[]): Step[] {
         status === "error" &&
         p.tool === "read" &&
         typeof input?.filePath === "string" &&
-        input.filePath.endsWith(".dochaus/profile.md")
+        /\.dochaus[\\/]profile\.md$/.test(input.filePath)
       )
         return [{ kind: "tool", label: "No practice profile on file", status: "done", detail }]
       return [{ kind: "tool", label: emptyTemplates ? "No saved templates found" : stepLabel(p, matter), status, detail, children, ...(formatted ? { templateResult: formatted } : {}) }]

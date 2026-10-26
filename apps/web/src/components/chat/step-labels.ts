@@ -27,7 +27,8 @@ const TOOL_VERBS: Record<string, string> = {
   redline: "Redlined",
 }
 
-export const basename = (s: string) => s.split("/").filter(Boolean).pop() ?? s
+// A Windows server sends paths with backslashes; split on either separator.
+export const basename = (s: string) => s.split(/[\\/]/).filter(Boolean).pop() ?? s
 
 // The matter's internal bookkeeping files are plumbing, not legal work — name
 // them in plain language instead of leaking raw filenames into the timeline.

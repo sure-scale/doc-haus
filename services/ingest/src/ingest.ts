@@ -19,6 +19,7 @@ import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { parseEmail, type ParsedEmail } from "../../../dochaus/lib/email"
 import { parseMsg } from "../../../dochaus/lib/msg"
+import { safeFileName } from "../../../dochaus/lib/safe-file-name"
 import { zipToText } from "../../../dochaus/lib/zip"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
@@ -88,11 +89,16 @@ export async function ingestDocument(
     version?: IngestVersion
   } = {},
 ) {
-  const requested = matterDocumentName(fileName)
+  const { existing = "refuse" } = options
+  // A new document takes a name every platform can hold. A file already in the
+  // matter under the stated name keeps it, so a replace or a revision finds it.
+  const stated = matterDocumentName(fileName)
+  const safe = stated && matterDocumentName(safeFileName(stated))
+  const kept = stated && safe !== stated && existing !== "keep-both" && readdirSync(matterDir).includes(stated)
+  const requested = kept ? stated : safe
   if (!requested) throw new Error(`Matter documents must use a supported document filename and extension.`)
   // Keep both picks a free name before locking it; the locked write still refuses
   // a source that took the name meanwhile, so it never replaces one.
-  const { existing = "refuse" } = options
   const name = existing === "keep-both" ? freeDocumentName(matterDir, requested) : requested
   return withArtifactMutationLocksAsync(
     matterDir,

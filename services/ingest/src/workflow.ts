@@ -26,7 +26,9 @@ const AGENT_DIR = () => path.join(DOCHAUS_DIR(), "agent")
 // with agent.ts — custom specialist agents land in the same namespace.
 export const RESERVED_NAMES = ["auto", "build", "plan", "general", "explore", "summary", "title", "compaction", "triage"]
 
-export const NAME_RE = /^[a-z0-9][a-z0-9-]*$/
+// A lowercase, hyphenated slug that names a file or folder, never a Windows
+// device name (safe-file-name.ts).
+export const NAME_RE = /^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$)[a-z0-9][a-z0-9-]*$/
 
 export type WorkflowStep = {
   agent: string

@@ -110,3 +110,27 @@ services and preserve native /api paths and streaming. /wasm hosts Docxodus asse
 The launcher identifies an existing runtime owner. Preserve an existing stack
 unless its owner has explicitly agreed to a restart. Never share one runtime
 between simultaneous engines.
+
+## Start on Windows
+
+Run start.cmd from a clone in Command Prompt or PowerShell. It uses x64 Bun 1.4.0
+or newer from BUN_BIN, then PATH, then %USERPROFILE%\.bun\bin\bun.exe (or
+%BUN_INSTALL%\bin), and offers Bun's official PowerShell installer when none
+works. Some native dependencies ship for x64 Windows only, so on Windows on Arm
+it uses %USERPROFILE%\.bun\x64\bun.exe instead and installs Bun's x64 release
+there, which Windows runs under emulation. It then runs scripts\windows\start.ts, which follows the start.sh steps
+with the same environment variables, ports and data paths:
+
+```bat
+set DOCHAUS_DATA_ROOT=C:\dochaus-data
+start.cmd
+```
+
+In PowerShell, set `$env:DOCHAUS_DATA_ROOT = "C:\dochaus-data"` first.
+dochaus\.env.local is read as a dotenv file, and its values replace inherited
+ones as they do with start.sh. Ctrl+C, Ctrl+Break or closing the window stops
+the stack; services still running after 10 seconds are ended with taskkill.
+Command Prompt may then ask "Terminate batch job (Y/N)?"; either answer is
+fine. Choosing to restart a stack that runs in another window ends it with
+taskkill rather than a graceful stop. A one-click update restarts the services
+in the same window; run start.cmd again afterwards to use an updated launcher.

@@ -3,3 +3,10 @@ packages/core/src/database/migration.gen.ts linguist-generated
 packages/core/src/models-dev/snapshot.txt linguist-generated
 packages/core/src/**/*.txt text eol=lf
 packages/httpapi-codegen/test/generated/*.ts text eol=lf
+
+# doc.haus: check out with LF on every platform (Git for Windows defaults to
+# CRLF), so frontmatter parsers, shell scripts and prompt bytes match across
+# hosts. Windows batch files keep CRLF.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf

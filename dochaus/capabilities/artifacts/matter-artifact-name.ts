@@ -1,4 +1,5 @@
 import path from "node:path"
+import { safeFileName } from "../../lib/safe-file-name"
 
 const reservedMarkdownBasenames = new Set([
   "draft-document",
@@ -21,10 +22,13 @@ export function matterArtifactName(
   if (!name || name === ".md") return { ok: false, message: "File name must include a non-empty basename." }
   if (name !== input && name !== `${input}.md`)
     return { ok: false, message: `Refusing path-like name "${input}". Pass only a markdown basename.` }
-  if (reservedMarkdownBasenames.has(name.replace(/\.md$/, "")))
+  // A name every platform can hold; the write reports the name it used.
+  const stem = safeFileName(name.slice(0, -".md".length))
+  if (!stem) return { ok: false, message: "File name must include a non-empty basename." }
+  if (reservedMarkdownBasenames.has(stem))
     return {
       ok: false,
       message: `Refusing tool-name file "${input}". Pass the intended markdown artifact filename, not a tool name.`,
     }
-  return { ok: true, name }
+  return { ok: true, name: `${stem}.md` }
 }

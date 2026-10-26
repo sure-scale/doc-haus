@@ -1,6 +1,3 @@
-import { fileURLToPath } from "node:url"
-import path from "node:path"
-
 // Docxodus engine bootstrap for the ingest service — the same .NET 10 OOXML engine
 // (compiled to WASM) the dochaus tools use, loaded headless under Bun. Ingest owns
 // all document I/O, so it owns baking accepted redlines into the canonical .docx and
@@ -8,8 +5,10 @@ import path from "node:path"
 //
 // Docxodus ships its WASM runtime alongside its entrypoint (dist/index.js →
 // dist/wasm). The package's exports map hides package.json, so resolve the main
-// entry with import.meta.resolve and walk to its sibling wasm dir.
-const wasmBase = path.join(path.dirname(fileURLToPath(import.meta.resolve("docxodus"))), "wasm")
+// entry with import.meta.resolve and walk to its sibling wasm dir. Keep it a file
+// URL: Docxodus imports base + "_framework/dotnet.js", and a Windows drive path
+// is not a valid import specifier.
+const wasmBase = new URL("wasm/", import.meta.resolve("docxodus")).href
 
 let engine: Promise<typeof import("docxodus")> | undefined
 

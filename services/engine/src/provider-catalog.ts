@@ -10,6 +10,8 @@ type ProviderMetadata = { id: string; name: string; activation: "auto" | "enable
 // leave the engine; provider settings can otherwise contain credentials.
 export function providerCatalog(providers: readonly ProviderMetadata[], environment: Record<string, string | undefined> = process.env,
   home = os.homedir(), exists: (file: string) => boolean = existsSync) {
+  // gcloud keeps its configuration under %APPDATA% on Windows.
+  const gcloud = process.platform === "win32" ? path.join(environment.APPDATA ?? path.join(home, "AppData", "Roaming"), "gcloud") : path.join(home, ".config", "gcloud")
   return providers.filter(provider => !isRemovedProvider(provider.id)).map(provider => {
     const google = provider.id === "google-vertex" || provider.id === "google-vertex-anthropic"
     const aws = provider.id === "amazon-bedrock"
@@ -21,7 +23,7 @@ export function providerCatalog(providers: readonly ProviderMetadata[], environm
     if (aws && !options.profile && environment.AWS_PROFILE) options.profile = environment.AWS_PROFILE
     const sources = google ? [
       ...(environment.GOOGLE_APPLICATION_CREDENTIALS ? ["GOOGLE_APPLICATION_CREDENTIALS"] : []),
-      ...(exists(path.join(home, ".config", "gcloud", "application_default_credentials.json")) ? ["Google ADC file"] : []),
+      ...(exists(path.join(gcloud, "application_default_credentials.json")) ? ["Google ADC file"] : []),
     ] : aws ? [
       ...["AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_BEARER_TOKEN_BEDROCK"].filter(key => environment[key]),
       ...(exists(environment.AWS_SHARED_CREDENTIALS_FILE ?? path.join(home, ".aws", "credentials")) || exists(environment.AWS_CONFIG_FILE ?? path.join(home, ".aws", "config")) ? ["AWS shared profiles"] : []),

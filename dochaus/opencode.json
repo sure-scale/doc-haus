@@ -7,8 +7,8 @@
   },
   "skills": {
     "paths": [
-      "{env:WORKSPACE_ROOT}/.playbooks",
-      "{env:WORKSPACE_ROOT}/.skills"
+      "{env:DOCHAUS_CONFIG_WORKSPACE}/.playbooks",
+      "{env:DOCHAUS_CONFIG_WORKSPACE}/.skills"
     ]
   },
   "mcp": {
@@ -16,10 +16,16 @@
       "python": {
         "type": "local",
         "command": [
-          "sh",
-          "-c",
-          "cd \"$OPENCODE_CONFIG_DIR/mcp/python\" && exec deno run --config=deno.json -N=cdn.jsdelivr.net,pypi.org,files.pythonhosted.org -R=node_modules -W=node_modules jsr:@pydantic/mcp-run-python@0.0.18 stdio"
+          "deno",
+          "run",
+          "--config=deno.json",
+          "-N=cdn.jsdelivr.net,pypi.org,files.pythonhosted.org",
+          "-R=node_modules",
+          "-W=node_modules",
+          "jsr:@pydantic/mcp-run-python@0.0.18",
+          "stdio"
         ],
+        "cwd": "{env:DOCHAUS_CONFIG_LEGAL_DIR}/mcp/python",
         "timeout": {
           "startup": 120000,
           "catalog": 60000,

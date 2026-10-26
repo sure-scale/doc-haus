@@ -7,6 +7,7 @@ import { buildCombinedFile } from "../../lib/combined-docx"
 import { readDocxCommentParagraphs, readDocxRevisionProperties } from "../../lib/docx-comments"
 import { withParagraphPointers } from "../../lib/drafting-amendment"
 import { sha256File } from "../../lib/lineage"
+import { safeFileName } from "../../lib/safe-file-name"
 import { ownedDeliverable, readSystemDocx, replaceableDeliverable } from "../../lib/system-docx"
 import { readWorkingDocx } from "../../lib/working-docx"
 import { appendLeanEvent } from "./events"
@@ -821,9 +822,10 @@ export function deliverableTitle(markdown: string) {
 
 const NAME_STEM_MAX = 120
 
-/** Characters a file name cannot carry, and Markdown code marks, are dropped. */
+/** A name every platform can hold (safeFileName), without Markdown code marks
+ * or lone surrogates. */
 function fileNameStem(text: string) {
-  const stem = characters(text.replace(/[\\/:*?"<>|`\u0000-\u001f]|\p{Cs}/gu, " ").replace(/\s+/g, " ").replace(/^[.\s]+|[.\s]+$/g, ""), NAME_STEM_MAX).trim()
+  const stem = characters(safeFileName(text.replace(/`|\p{Cs}/gu, " ").replace(/\s+/g, " ")), NAME_STEM_MAX).trim()
   return stem || "Draft"
 }
 

@@ -5,6 +5,7 @@ import path from "node:path"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { applyDocxParagraphEdits, createDocxRevision, DocxTrackedRevisionsError, type DocxParagraphEdit } from "../../../dochaus/lib/docx-amendments"
+import { safeFileName } from "../../../dochaus/lib/safe-file-name"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { commitDocumentWrite } from "./atomic-document-write"
 import { inlineDocumentDisposition } from "./content-disposition"
@@ -248,7 +249,8 @@ function wordName(value: unknown) {
 function templateName(value: unknown) {
   const name = wordName(value)
   if (!name || name.startsWith(".") || Buffer.byteLength(name) > 255) return
-  return name.slice(0, -5) + ".docx"
+  const stem = safeFileName(name.slice(0, -5))
+  return stem ? stem + ".docx" : undefined
 }
 
 function templateDescription(value: unknown) {

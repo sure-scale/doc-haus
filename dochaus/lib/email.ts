@@ -1,4 +1,5 @@
 import PostalMime, { type Attachment } from "postal-mime"
+import { safeFileName } from "./safe-file-name"
 
 // Email sources (.eml) are MIME documents, not zip-based Office files, so they go
 // through a real RFC822 parser. This is the one email extractor: ingest indexes
@@ -169,14 +170,13 @@ export function emailAttachment(filename: string | null | undefined, type: strin
 }
 
 // The stated name is the sender's: take its last path segment, drop control and
-// format characters (bidi overrides, zero-width marks) and leading dots, keep its extension, add one from the type when it
+// format characters (bidi overrides, zero-width marks), make it a name every
+// platform can hold (safe-file-name.ts), keep its extension, add one from the type when it
 // has none, and fall back to a name from the type and position when nothing is
 // left. Never refused, so no attachment is lost to its name.
 export function safeAttachmentName(filename: string | null | undefined, mimeType: string, position: number) {
   const base = (filename ?? "").split(/[\\/]/).pop() ?? ""
-  const clean = oneLine(base.replace(/\p{Cf}/gu, "").replace(/[\u0000-\u001f\u007f-\u009f]/g, " "))
-    .replace(/^[.\s]+/, "")
-    .replace(/[.\s]+$/, "")
+  const clean = safeFileName(oneLine(base.replace(/\p{Cf}/gu, "").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")))
   const typed = TYPE_EXTENSION[mimeType] ?? ""
   if (!clean) return `${MESSAGE_TYPES.has(mimeType) ? "message" : "attachment"}-${position}${typed}`
   const own = extension(clean)

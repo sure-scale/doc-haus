@@ -5,7 +5,7 @@ test("setup catalog retains inactive cloud providers and emits only nonsecret me
   const providers = [{ id: "google-vertex", name: "Vertex", activation: "auto" as const, integrationID: "google-vertex",
     settings: { project: "synthetic-project", location: "global", apiKey: "synthetic-private-key", headers: { Authorization: "synthetic-private-header" } } },
   { id: "amazon-bedrock", name: "Bedrock", activation: "auto" as const, integrationID: "amazon-bedrock", settings: { region: "us-east-1" } }]
-  const result = providerCatalog(providers, { AWS_PROFILE: "work", AWS_SECRET_ACCESS_KEY: "synthetic-private-secret" }, "/fixture-home", file => file.endsWith("application_default_credentials.json") || file.endsWith(".aws/config"))
+  const result = providerCatalog(providers, { AWS_PROFILE: "work", AWS_SECRET_ACCESS_KEY: "synthetic-private-secret" }, "/fixture-home", file => file.endsWith("application_default_credentials.json") || /\.aws[\\/]config$/.test(file))
   expect(result[0]).toEqual({ id: "google-vertex", name: "Vertex", activation: "auto", integrationID: "google-vertex", host: { type: "google-adc", options: { project: "synthetic-project", location: "global" }, sources: ["Google ADC file"] } })
   expect(result[1]?.host).toEqual({ type: "aws-chain", options: { region: "us-east-1", profile: "work" }, sources: ["AWS_PROFILE", "AWS shared profiles"] })
   expect(JSON.stringify(result)).not.toContain("synthetic-private")

@@ -75,6 +75,7 @@ import { containerAttachmentsPending, ingestEmailDocument, isContainerName, isEm
 import { ingestZipDocument, ZipFormatError, ZipTooLargeError } from "./zip-archive"
 import { MsgFormatError } from "../../../dochaus/lib/msg"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
+import { safeFileName } from "../../../dochaus/lib/safe-file-name"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { healSourceArtifacts } from "./source-artifacts"
@@ -122,6 +123,11 @@ app.onError((error, c) => {
   if (error instanceof EmbeddingModelUnavailableError)
     return c.json({ error: error.message, code: "embedding_model_unavailable" }, 503)
   if (error instanceof HTTPException) return error.getResponse()
+  // Windows refuses to open, replace or rename a file another program holds
+  // (Word, a sync or backup client). The writes leave the document as it was.
+  const { code, path: file } = error as NodeJS.ErrnoException
+  if ((code === "EBUSY" || code === "EPERM" || code === "EACCES") && typeof file === "string")
+    return c.json({ error: `${path.basename(file)} is open in another program, such as Word, or can't be changed right now. Close it there, then try again.`, code: "document_in_use" }, 423)
   console.error(error)
   return c.text("Internal Server Error", 500)
 })
@@ -988,7 +994,7 @@ app.post("/templates", async (c) => {
   const body = await c.req.parseBody()
   const file = body["file"] as File
   const buffer = Buffer.from(await file.arrayBuffer())
-  const name = path.basename(file.name)
+  const name = safeFileName(path.basename(file.name))
   mkdirSync(TEMPLATES_DIR, { recursive: true })
   writeFileSync(templatePath(name), buffer)
   const description = typeof body["description"] === "string" ? body["description"] : ""

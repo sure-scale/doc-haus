@@ -65,6 +65,12 @@ const cachedProviderTest = providerTestCache()
 process.env.OPENCODE_CONFIG_DIR = legal
 process.env.WORKSPACE_ROOT = workspace
 process.env.DOCHAUS_RUNTIME_DIR = runtime
+// Config substitution pastes {env:…} values into the JSON text unescaped, so a
+// Windows path's backslashes would invalidate the whole legal config. The config
+// reads these copies instead, with forward slashes on Windows (which it accepts).
+const configPath = (value: string) => (process.platform === "win32" ? value.replaceAll("\\", "/") : value)
+process.env.DOCHAUS_CONFIG_LEGAL_DIR = configPath(legal)
+process.env.DOCHAUS_CONFIG_WORKSPACE = configPath(workspace)
 
 if (!["127.0.0.1", "localhost", "::1"].includes(hostname) && !password)
   throw new Error("OPENCODE_SERVER_PASSWORD is required for non-loopback binding")
@@ -98,13 +104,32 @@ const ChildInput = Schema.Struct({
 // closed on an abandoned lock: deleting it is safe only after checking its PID.
 mkdirSync(runtime, { recursive: true })
 const ownerFile = path.join(runtime, "engine-process.lock")
-try {
-  const descriptor = openSync(ownerFile, "wx", 0o600)
-  writeFileSync(descriptor, String(process.pid))
-  closeSync(descriptor)
-} catch {
-  throw new Error(`Engine runtime ownership is already recorded at ${ownerFile}; verify that its PID has exited before removing an abandoned lock`)
+function processRunning(pid: number) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM"
+  }
 }
+const claimOwnership = (retry: boolean): void => {
+  try {
+    const descriptor = openSync(ownerFile, "wx", 0o600)
+    writeFileSync(descriptor, String(process.pid))
+    closeSync(descriptor)
+  } catch {
+    // A hard stop (taskkill, a closed console window, SIGKILL) skips the exit
+    // handler below, so a well-formed record whose PID has exited is stale.
+    const recorded = existsSync(ownerFile) ? readFileSync(ownerFile, "utf8") : ""
+    if (retry && /^\d+$/.test(recorded) && Number(recorded) > 1 && !processRunning(Number(recorded))) {
+      console.warn(`doc.haus: clearing a stale engine lock (pid ${recorded})`)
+      unlinkSync(ownerFile)
+      return claimOwnership(false)
+    }
+    throw new Error(`Engine runtime ownership is already recorded at ${ownerFile}; verify that its PID has exited before removing an abandoned lock`)
+  }
+}
+claimOwnership(true)
 process.once("exit", () => {
   if (readFileSync(ownerFile, "utf8") === String(process.pid)) unlinkSync(ownerFile)
 })
@@ -218,7 +243,9 @@ await runEngine(
           if (shuttingDown) return
           Effect.runSync(Deferred.succeed(restartRelease, undefined))
         }
-        process.on("SIGUSR2", releaseRestart)
+        // Windows has no SIGUSR2; its launcher writes a line to this pipe instead.
+        if (process.platform === "win32") process.stdin.on("data", releaseRestart)
+        else process.on("SIGUSR2", releaseRestart)
       }
       const reusableConnections = credentialReuse({
         directory: nativeCredentialDirectory(), targetDirectory: path.dirname(databasePath),
