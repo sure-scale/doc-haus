@@ -10,7 +10,12 @@ export type OfficeFile = {
   closeAsync(callback: Callback<void>): void
 }
 type WordContext = {
-  document: { saved: boolean; load(properties: string): void; save(): void; close(behavior: "Save"): void }
+  document: {
+    saved: boolean
+    load(properties: string): void
+    save(behavior?: "Save"): void
+    close(behavior: "Save"): void
+  }
   sync(): Promise<void>
 }
 type OfficeRuntime = {
@@ -147,6 +152,14 @@ export async function connectOffice(): Promise<{ host: WordHost; link: unknown }
                   (callback) => settings.saveAsync(callback),
                   "Word could not update this document's link. Close it in Word.",
                 )
+                // Settings persistence dirties the document. Save that change
+                // explicitly before closing, rather than relying on close to save.
+                context.document.save("Save")
+                await context.sync()
+                context.document.load("saved")
+                await context.sync()
+                if (!context.document.saved)
+                  throw new DocumentStateError("Word has new changes. Choose Save to doc.haus before closing.")
                 context.document.close("Save")
                 await context.sync()
               }),

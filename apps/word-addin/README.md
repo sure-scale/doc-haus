@@ -91,7 +91,9 @@ and token. The token and document bytes are not stored there. Background acknowl
 do not write Word settings, avoiding document dirtying and save loops. Only
 Done, after the upload and Done responses are acknowledged and the current
 content matches, updates the existing validated link's `baseVersion`, awaits
-settings persistence, and closes with `Save`. The original link identity and
+settings persistence, explicitly saves the Word document, and closes with
+`Save` only after Word reports saved. This separate save persists the settings
+change before close. The original link identity and
 other fields are preserved. Other physical copies are not modified. On reopen,
 stored metadata is used only if
 the current exported fingerprint matches. An edited/forwarded copy otherwise

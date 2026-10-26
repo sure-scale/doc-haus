@@ -263,8 +263,9 @@ const linkedDocument = {
   extension: { retained: true },
 }
 
-function installCloseHost(supported: boolean, encoded = false) {
+function installCloseHost(supported: boolean, encoded = false, saveMode: "saved" | "dirty" | "failed" = "saved") {
   const events: string[] = []
+  let nativeSaved = true
   let raw: unknown = encoded ? JSON.stringify(linkedDocument) : { ...linkedDocument }
   let callback: ((result: { status: string; value: void }) => void) | undefined
   let started!: () => void
@@ -273,12 +274,22 @@ function installCloseHost(supported: boolean, encoded = false) {
   })
   const context = {
     document: {
-      saved: true,
+      get saved() {
+        return nativeSaved
+      },
+      set saved(value: boolean) {
+        nativeSaved = value
+      },
       load: (property: string) => {
         events.push(`load:${property}`)
       },
-      save: () => {},
+      save: (behavior?: string) => {
+        events.push(`save:${behavior}`)
+        if (saveMode === "failed") throw new Error("Synthetic native save failure")
+        nativeSaved = saveMode === "saved"
+      },
       close: (behavior: string) => {
+        expect(nativeSaved).toBe(true)
         events.push(`close:${behavior}`)
       },
     },
@@ -300,6 +311,7 @@ function installCloseHost(supported: boolean, encoded = false) {
                 expect(key).toBe("dochaus.link")
                 events.push("settings-set")
                 raw = value
+                nativeSaved = false
               },
               saveAsync: (value: typeof callback) => {
                 events.push("settings-save")
@@ -345,6 +357,7 @@ test("Done persists only its acknowledged base before Save-close, preserving lin
       const closing = host.close!("ack-v2")
       await fixture.saving
       expect(fixture.events).toEqual(["load:saved", "sync", "settings-set", "settings-save"])
+      expect(fixture.context.document.saved).toBe(false)
       expect(typeof fixture.raw).toBe(encoded ? "string" : "object")
       expect(encoded ? JSON.parse(fixture.raw as string) : fixture.raw).toEqual({
         ...linkedDocument,
@@ -352,7 +365,18 @@ test("Done persists only its acknowledged base before Save-close, preserving lin
       })
       fixture.finish()
       await closing
-      expect(fixture.events).toEqual(["load:saved", "sync", "settings-set", "settings-save", "close:Save", "sync"])
+      expect(fixture.events).toEqual([
+        "load:saved",
+        "sync",
+        "settings-set",
+        "settings-save",
+        "save:Save",
+        "sync",
+        "load:saved",
+        "sync",
+        "close:Save",
+        "sync",
+      ])
       fixture.events.length = 0
       fixture.context.document.saved = false
       await expect(host.close!("ack-v3")).rejects.toBeInstanceOf(DocumentStateError)
@@ -390,6 +414,32 @@ test("Done cannot stamp another document's link or close after settings persiste
     fixture.finish("failed")
     await expect(closing).rejects.toThrow("could not update")
     expect(fixture.events).toEqual(["load:saved", "sync", "settings-set", "settings-save"])
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow)
+    else delete (globalThis as { window?: unknown }).window
+  }
+})
+
+test("Done does not close if saving its settings fails or Word remains dirty", async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+  try {
+    for (const mode of ["failed", "dirty"] as const) {
+      const fixture = installCloseHost(true, false, mode)
+      const { host } = await connectOffice()
+      const closing = host.close!("ack-v2")
+      await fixture.saving
+      fixture.finish()
+      await expect(closing).rejects.toThrow(mode === "failed" ? "native save failure" : "new changes")
+      expect(fixture.events).not.toContain("close:Save")
+      expect(fixture.events).toEqual([
+        "load:saved",
+        "sync",
+        "settings-set",
+        "settings-save",
+        "save:Save",
+        ...(mode === "dirty" ? ["sync", "load:saved", "sync"] : []),
+      ])
+    }
   } finally {
     if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow)
     else delete (globalThis as { window?: unknown }).window
