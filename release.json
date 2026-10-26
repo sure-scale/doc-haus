@@ -1,5 +1,5 @@
 {
-  "version": 10,
-  "name": "2.0.8",
-  "notes": "Respond to the other side's markup in one place. Your edits stay as tracked changes under your name beside theirs, doc.haus drafts replies to their comments for you to check and approve, and after you save it lists the cross-references and defined terms to re-check. A simpler Tracked changes panel that feels familiar, with comments shown as bubbles beside the page. Hover over marked-up text to see who changed that clause and when. Various minor bug fixes."
+  "version": 11,
+  "name": "2.0.9",
+  "notes": "Each reviewer's tracked changes now show in their own colour, matching the panel and comment bubbles. Asking for a revised draft in answer to the other side's markup starts a full drafting run, and its questions open by themselves. Requested edits read as clean tracked changes, with a new sentence shown as one insertion, and several changes to one clause can be asked for together. Various minor bug fixes and UI improvements."
 }
