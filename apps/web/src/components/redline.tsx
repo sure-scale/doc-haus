@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useState } from "react"
+import { wordChanges } from "../../../../dochaus/lib/word-changes"
 
 // A change's text as a redline: unchanged words plain, deletions struck,
 // insertions underlined, moved text marked as moved. Shared by the
@@ -9,21 +10,15 @@ export type Piece = { kind: "same" | "del" | "ins" | "move"; text: string }
 // reads whole.
 const tokens = (text: string) => text.match(/\s+|[\p{L}\p{N}\p{M}]+|[^\s\p{L}\p{N}\p{M}]/gu) ?? []
 
-// How many tokens two texts share at their start, then at their end.
-function shared(a: string[], b: string[]) {
-  let head = 0
-  while (head < a.length && head < b.length && a[head] === b[head]) head++
-  let tail = 0
-  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++
-  return [head, tail] as const
-}
-
 // Word-level redline of one change. The common start and end are set aside
 // first, so the table covers only the changed middle; a middle too large to
 // align reads as one deletion and one insertion.
 export function wordDiff(before: string, after: string): Piece[] {
   const a = tokens(before), b = tokens(after)
-  const [head, tail] = shared(a, b)
+  let head = 0
+  while (head < a.length && head < b.length && a[head] === b[head]) head++
+  let tail = 0
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++
   const x = a.slice(head, a.length - tail), y = b.slice(head, b.length - tail)
   const middle: Piece[] = []
   if (x.length * y.length > 250_000) middle.push({ kind: "del", text: x.join("") }, { kind: "ins", text: y.join("") })
@@ -73,66 +68,17 @@ function merged(pieces: Piece[]): Piece[] {
   return out
 }
 
-// A doc.haus proposal as Word shows a tracked change: each run's deleted
-// words before its inserted ones. A lone insertion or deletion that the words
-// around it repeat could stand at several places; it stands at the nearest
-// whose both ends are sentence boundaries, as the tracked write places it
-// (changedRange in dochaus/lib/docx-amendments.ts), so a new sentence is never
-// shown inside the one whose words it repeats. Where the changed words all
-// stand, together and once, inside the new ones (two insertions Prepare joined
-// into one proposal), it is the insertion on each side of them, each placed so,
-// as the tracked write splits it (changedDocxSpans).
+// A doc.haus proposal as its tracked change is written: the same changes the
+// docx writer makes (wordChanges in dochaus/lib/word-changes.ts), each one's
+// deleted words before its inserted ones, the words between them plain.
 export function proposalPieces(before: string, after: string): Piece[] {
-  const a = tokens(before), b = tokens(after)
-  const [head, tail] = shared(a, b)
-  const kept = a.slice(head, a.length - tail), added = b.slice(head, b.length - tail)
-  const found = kept.length ? added.flatMap((_, index) => kept.every((token, k) => added[index + k] === token) ? [index] : []) : []
-  const at = found[0]!
-  if (found.length !== 1 || !at || at + kept.length === added.length) return placed(before, after)
-  // Each side as one insertion, and where in the old text it stands.
-  const side = (from: string[], words: string[], to: string[]) => {
-    const pieces = placed([...from, ...to].join(""), [...from, ...words, ...to].join(""))
-    const index = pieces.findIndex((piece) => piece.kind !== "same")
-    return pieces.filter((piece) => piece.kind !== "same").length === 1 && pieces[index]!.kind === "ins"
-      ? { text: pieces[index]!.text, at: pieces.slice(0, index).reduce((length, piece) => length + piece.text.length, 0) } : undefined
-  }
-  const left = side(a.slice(0, head), added.slice(0, at), kept)
-  const right = side(kept, added.slice(at + kept.length), a.slice(a.length - tail))
-  const offset = a.slice(0, head).join("").length
-  if (!left || !right || left.at >= offset + right.at) return placed(before, after)
-  return [
-    { kind: "same", text: before.slice(0, left.at) },
-    { kind: "ins", text: left.text },
-    { kind: "same", text: before.slice(left.at, offset + right.at) },
-    { kind: "ins", text: right.text },
-    { kind: "same", text: before.slice(offset + right.at) },
-  ].filter((piece): piece is Piece => !!piece.text)
-}
-
-function placed(before: string, after: string): Piece[] {
-  const pieces = wordDiff(before, after)
-  for (let i = 0; i + 1 < pieces.length; i++)
-    if (pieces[i]!.kind === "ins" && pieces[i + 1]!.kind === "del") [pieces[i], pieces[i + 1]] = [pieces[i + 1]!, pieces[i]!]
-  const changed = pieces.filter((piece) => piece.kind !== "same")
-  if (changed.length !== 1) return pieces
-  const at = pieces.indexOf(changed[0]!)
-  const head = tokens(at ? pieces[at - 1]!.text : ""), run = tokens(changed[0]!.text)
-  const text = [...head, ...run, ...tokens(pieces[at + 1]?.text ?? "")]
-  const start = head.length, end = start + run.length
-  const space = (token?: string) => token !== undefined && /^\s/.test(token)
-  const stop = (token?: string) => token !== undefined && /^[.!?]$/.test(token)
-  const boundary = (i: number) => i === 0 || i === text.length || (space(text[i - 1]) && stop(text[i - 2])) || (stop(text[i - 1]) && space(text[i]))
-  if (boundary(start) && boundary(end)) return pieces
-  // Moved k tokens earlier, the run still reads the same where the k tokens
-  // before it match its own last k.
-  for (let k = 1; k <= start && text[start - k] === text[end - k]; k++)
-    if (boundary(start - k) && boundary(end - k))
-      return [
-        { kind: "same", text: text.slice(0, start - k).join("") },
-        { kind: changed[0]!.kind, text: text.slice(start - k, end - k).join("") },
-        { kind: "same", text: text.slice(end - k).join("") },
-      ].filter((piece): piece is Piece => !!piece.text)
-  return pieces
+  let at = 0
+  const pieces = wordChanges(before, after).flatMap(({ offset, replaced, changed }): Piece[] => {
+    const same = before.slice(at, offset)
+    at = offset + replaced.length
+    return [{ kind: "same", text: same }, { kind: "del", text: replaced }, { kind: "ins", text: changed }]
+  })
+  return [...pieces, { kind: "same" as const, text: before.slice(at) }].filter((piece) => piece.text)
 }
 
 // Unchanged words kept either side of a change, and the characters of an
