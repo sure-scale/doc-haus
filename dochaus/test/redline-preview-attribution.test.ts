@@ -46,7 +46,7 @@ test("revision-bound preview preserves the stored proposal author and defaults o
   expect(original).toEqual(snapshot)
 })
 
-test("mixed-author previews refuse false shared attribution while exact same-author edits still export", async () => {
+test("a mixed-author preview writes each change under its own author; an older replay refuses false shared attribution", async () => {
   const rendered = (await renderMarkdownToDocx("Current review period is five days and retention is three months.\n\nHistorical review period was five days.")).bytes
   const original = exportDocxComments(rendered, [{ id: "history", text: "Earlier reviewer explanation.", author: "Historical Reviewer", anchor: { quote: "Historical review period" } }]).bytes
   const snapshot = new Uint8Array(original)
@@ -64,9 +64,15 @@ test("mixed-author previews refuse false shared attribution while exact same-aut
       target_handle: packet.candidates.find(candidate => candidate.amendment_id === amendment.id)!.target_handle, amendment_id: amendment.id }),
   }))
   const stored = structuredClone(rows)
-  await expect(buildRedlined(original, rows)).rejects.toBeInstanceOf(RedlinePreviewConflictError)
-  await expect(buildRedlined(original, rows)).rejects.toThrow("different authors")
-  // Legacy replay without review notes has the same comparison-wide author constraint.
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const revisions = (bytes: Uint8Array) => Array.from(new DOMParser().parseFromString(strFromU8(unzipSync(bytes)["word/document.xml"]!), "application/xml")
+    .getElementsByTagNameNS(W, "*")).filter(node => node.localName === "ins" || node.localName === "del")
+    .map(node => [node.localName, node.getAttributeNS(W, "author"), node.textContent])
+  // Each change is written under its own proposal's author, as Accept writes it.
+  expect(revisions(await buildRedlined(original, rows))).toEqual([["del", "Explicit Reviewer A", "five"], ["ins", "Explicit Reviewer A", "seven"],
+    ["del", "Explicit Reviewer B", "three"], ["ins", "Explicit Reviewer B", "six"]])
+  // Legacy replay without review notes is a comparison, which takes one author for every revision.
+  await expect(buildRedlined(original, rows.map(row => ({ ...row, target_json: null, review_comment: "" })))).rejects.toBeInstanceOf(RedlinePreviewConflictError)
   await expect(buildRedlined(original, rows.map(row => ({ ...row, target_json: null, review_comment: "" })))).rejects.toThrow("different authors")
   expect(rows).toEqual(stored)
   expect(original).toEqual(snapshot)
@@ -74,17 +80,13 @@ test("mixed-author previews refuse false shared attribution while exact same-aut
 
   const sameAuthor = rows.map(row => ({ ...row, author: "Explicit Reviewer A" }))
   const preview = await buildRedlined(original, sameAuthor)
-  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-  const body = new DOMParser().parseFromString(strFromU8(unzipSync(preview)["word/document.xml"]!), "application/xml")
-  const revisions = ["ins", "del"].flatMap(name => Array.from(body.getElementsByTagNameNS(W, name)))
-  expect(revisions.length).toBeGreaterThan(0)
-  expect(new Set(revisions.map(node => node.getAttributeNS(W, "author")))).toEqual(new Set(["Explicit Reviewer A"]))
+  expect(revisions(preview).length).toBeGreaterThan(0)
+  expect(new Set(revisions(preview).map(([, author]) => author))).toEqual(new Set(["Explicit Reviewer A"]))
   const accepted = await bake(original, rows)
   const text = new DOMParser().parseFromString(strFromU8(unzipSync(accepted)["word/document.xml"]!), "application/xml")
   expect(Array.from(text.getElementsByTagNameNS(W, "t")).map(node => node.textContent).join(""))
     .toBe("Current review period is seven days and retention is six months.Historical review period was five days.")
-  // A stale, unknown or overlapping second target fails the whole preview closed;
-  // exact target validation still takes precedence over the mixed-author export limitation.
+  // A stale, unknown or overlapping second target fails the whole preview closed.
   await expect(buildRedlined(original, [rows[0]!, { ...rows[1]!, target_json: JSON.stringify({ ...JSON.parse(rows[1]!.target_json), source_sha256: "0".repeat(64) }) }])).rejects.toThrow("no longer resolves")
   await expect(buildRedlined(original, [rows[0]!, { ...rows[1]!, target_json: JSON.stringify({ ...JSON.parse(rows[1]!.target_json), target_handle: "unknown-target" }) }])).rejects.toThrow("no longer resolves")
   await expect(buildRedlined(original, [rows[0]!, { ...rows[0]!, id: 3, author: "Explicit Reviewer B" }])).rejects.toThrow("no longer resolves")

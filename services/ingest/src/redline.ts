@@ -76,20 +76,19 @@ function applyProposal(session: Session, row: RedlineRow): { ok: true } | { ok: 
   return { ok: true }
 }
 
-// The redlined view the viewer renders: clean document compared against the same
-// document with every pending proposal applied, so Docxodus emits native w:ins/w:del
-// the browser paints green/red. With no pending rows the compare is a no-op and the
-// clean document round-trips unchanged.
+// The redlined view the viewer renders and the download with proposals: the
+// document with every pending proposal as native w:ins/w:del the browser paints
+// green/red. With no pending rows it is the document unchanged.
 //
-// Older proposals without review notes retain the tolerant preview replay.
-// Revision-bound proposals and annotated proposals fail closed: exporting only
-// part of their tracked changes or silently losing a stored note is misleading.
-// A list with revision-bound proposals is written as Accept writes it
-// (writeProposals), older proposals in it included.
+// A list with revision-bound proposals is the file with them written in place
+// as tracked changes, as Accept writes them (trackedExport), older proposals in
+// it included, on a plain file and an uploaded markup alike. Older proposals
+// alone are replayed and compared with the document; without review notes
+// they retain the tolerant preview replay. Revision-bound proposals and
+// annotated proposals fail closed: exporting only part of their tracked
+// changes or silently losing a stored note is misleading.
 // `state` is the request's redlineState for these bytes, when already read.
-// `options` is how the document is read. In layer mode (an uploaded source)
-// with pending revisions, the proposals are written into it instead
-// (layeredExport).
+// `options` is how the document is read.
 export async function buildRedlined(original: Uint8Array, rows: RedlineRow[], state?: RedlineState, options: DocxRevisionOptions = {}): Promise<Uint8Array> {
   if (!rows.length) return original
   const annotated = rows.some(row => row.review_comment.trim())
@@ -98,20 +97,8 @@ export async function buildRedlined(original: Uint8Array, rows: RedlineRow[], st
     throw new RedlinePreviewConflictError("Word review comments require paragraph-preserving proposals. Prepare a fresh change list without structural replacements.")
   if (rows.some((row) => row.target_json != null)) {
     try {
-      if (layeredRedline(rows, options) && (await (await docxodus()).getRevisions(original)).length)
-        return await layeredExport(original, rows, state, options)
-      if (rows.some((row) => row.target_json == null)) {
-        const written = await writeProposals(original, rows, state, options, { locate: annotated })
-        const paragraphs = readDocxCommentParagraphPositions(written.bytes)
-        return commentRedline(original, written.bytes, rows, written.positions.map(at => paragraphs.findIndex(row => at !== undefined && row.xml_paragraph_indexes.includes(at))))
-      }
-      const result = await bakeBound(original, rows, state)
-      const paragraphs = result.revision.paragraphs.filter(row => row.scope === "body")
-      const source = readDocxCommentParagraphs(original)
-      if (annotated && JSON.stringify(paragraphs.map(row => row.text)) !== JSON.stringify(source.map(row => row.paragraph_text)))
-        throw new Error("unsupported_comment_paragraph_mapping")
-      const targets = result.bindings.map(binding => paragraphs.findIndex(paragraph => paragraph.paragraph_handle === binding.paragraph_handle))
-      return commentRedline(original, result.bytes, rows, targets)
+      // The tracked write reads its own changes back beside any the file has.
+      return await trackedExport(original, rows, state, { ...options, pendingRevisions: "layer" })
     } catch (error) {
       if (error instanceof RedlinePreviewConflictError) throw error
       if (error instanceof RedlineReplayError) throw new RedlinePreviewConflictError(error.refusal)
@@ -196,12 +183,12 @@ export function layeredRedline(rows: RedlineRow[], options: DocxRevisionOptions)
   return options.pendingRevisions === "layer" && rows.some(row => row.target_json != null)
 }
 
-// The other side's markup with the proposals written into it in place, as
-// native tracked changes each under its proposal's author, as Accept writes
-// them, and their review comments. Their revisions and comments are kept as
-// they are; comparison would accept them. Track Changes is left on, as a
-// returned redline travels.
-async function layeredExport(original: Uint8Array, rows: RedlineRow[], state: RedlineState | undefined, options: DocxRevisionOptions) {
+// The file with the proposals written into it in place, as native tracked
+// changes each under its proposal's author, and their review comments:
+// accepting those changes gives what Accept writes. On the other side's markup
+// their revisions and comments are kept as they are; comparison would accept
+// them. Track Changes is left on, as a returned redline travels.
+async function trackedExport(original: Uint8Array, rows: RedlineRow[], state: RedlineState | undefined, options: DocxRevisionOptions) {
   const ownAuthors = ours(rows.map(rowAuthor))
   const annotated = rows.some(row => row.review_comment.trim())
   const baked = await writeProposals(original, rows, state, options, { ownAuthors })

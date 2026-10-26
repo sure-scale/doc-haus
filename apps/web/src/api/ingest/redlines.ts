@@ -15,9 +15,9 @@ export type Redline = {
   stale_reason?: string
 }
 
-// The redlined view: the clean .docx compared against itself with every pending
-// proposal applied, so the bytes carry native tracked changes the viewer paints
-// green/red. Identical to the clean bytes when nothing is pending.
+// The redlined view: the saved .docx with every pending proposal written in as
+// native tracked changes, as Accept writes them, which the viewer paints
+// green/red. Identical to the saved bytes when nothing is pending.
 export async function fetchRedlinedBytes(id: string, name: string, notice?: (message: string | undefined) => void): Promise<Uint8Array> {
   const res = await fetch(`${INGEST_URL}/matters/${id}/documents/redlined?name=${encodeURIComponent(name)}`)
   if (!res.ok) {

@@ -1,7 +1,8 @@
 import { expect, setSystemTime, test } from "bun:test"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
-import { createDocxLocalization } from "./docx-amendments"
+import { createDocxLocalization, createDocxRevision } from "./docx-amendments"
+import { docxodus } from "./docxodus"
 import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphs, readDocxComments } from "./docx-comments"
 import { compareDocxWithPointers, withStableRevisionDates } from "./drafting-amendment"
 import { renderMarkdownToDocx } from "./render"
@@ -134,6 +135,31 @@ test("revision-bound notes follow a selected duplicate paragraph and preserve st
   const stale = new Uint8Array(await document("Notice is four days.", "Notice is five days."))
   await expect(buildRedlined(stale, [proposal])).rejects.toBeInstanceOf(RedlinePreviewConflictError)
   await expect(buildRedlined(original, [{ ...proposal, target_json: "{invalid" }])).rejects.toThrow("fresh change list")
+})
+
+// Request edits on a plain Word file: the preview and its download are the
+// proposals written as Accept writes them, tracked, so they read as the
+// proposal card does: deleted words before inserted ones, and a new sentence
+// whose words repeat the one beside it between sentences, never inside it.
+test("a plain file's preview is its proposals written as Accept writes them", async () => {
+  const law = "This Agreement is governed by the law of the Province."
+  const original = await document("Notice is seven days.", `Governing law. ${law}`)
+  const amendments = [
+    { id: "1", before_quote: "seven days", replacement: "five days" },
+    { id: "2", before_quote: `Governing law. ${law}`, replacement: `Governing law. This clause survives the end of this Agreement. ${law}` },
+  ]
+  const packet = await createDocxLocalization(original, amendments)
+  const rows = amendments.map((amendment, index) => ({ ...row(index + 1, amendment.before_quote, amendment.replacement),
+    target_json: JSON.stringify({ version: 1, source_sha256: packet.revision.source_sha256, amendment_id: amendment.id,
+      target_handle: packet.candidates.find(candidate => candidate.amendment_id === amendment.id)!.target_handle }) }))
+  const preview = await buildRedlined(original, rows)
+  const marked = Array.from(xml(preview, "word/document.xml").getElementsByTagNameNS(W, "*"))
+    .filter(node => (node.localName === "ins" || node.localName === "del") && (node.parentNode as Element).localName !== "rPr")
+    .map(node => [node.localName, Array.from(node.getElementsByTagNameNS(W, "*")).filter(text => text.localName === "t" || text.localName === "delText").map(text => text.textContent).join("")])
+  expect(marked).toEqual([["del", "seven"], ["ins", "five"], ["ins", "This clause survives the end of this Agreement. "]])
+  // Accepting every change in it gives the file Accept writes.
+  const text = async (bytes: Uint8Array) => (await createDocxRevision(bytes)).paragraphs.flatMap(paragraph => paragraph.scope === "body" ? [paragraph.text] : [])
+  expect(await text(await (await docxodus()).docxDiffAcceptRevisions(preview))).toEqual(await text(await bake(original, rows)))
 })
 
 test("annotated exports reject missing, ambiguous, structural and missing-author targets instead of losing notes", async () => {
