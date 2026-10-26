@@ -1004,16 +1004,19 @@ test("Request edits joins two sentences appended to one sentence in the order th
   }
 })
 
-test("Request edits proposes once a sentence two touching quotes insert where they meet", async () => {
+// The survival sentence appended to clause 9's heading and put in front of its
+// sentence: quoted with its trailing space, the heading ends where the sentence
+// starts; quoted without it, one space separates them. Either order.
+for (const [heading,replacement,reversed] of [
+  ["Governing law. ","Governing law. This clause survives the end of this Agreement. ",false],
+  ["Governing law.","Governing law. This clause survives the end of this Agreement.",false],
+  ["Governing law.","Governing law. This clause survives the end of this Agreement.",true],
+] as const) test(`Request edits proposes once a sentence appended to ${JSON.stringify(heading)} and put in front of the next sentence${reversed ? ", asked in that order" : ""}`, async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-touching-"))
   const survives = "Client instruction 1: insert the survival sentence"
-  // The heading, quoted with its trailing space, ends where the clause's
-  // sentence starts; each inserts the survival sentence there.
-  const engine = syntheticEngine(() => ({amendments:[
-    {before_quote:"Governing law. ",replacement:"Governing law. This clause survives the end of this Agreement. ",target_context:"the heading of clause 9",reason:survives},
-    {before_quote:governed,replacement:`This clause survives the end of this Agreement. ${governed}`,target_context:"the opening of clause 9",reason:survives},
-    approval,
-  ],open_items:[]}),firstCandidate)
+  const appendedToHeading = {before_quote:heading,replacement,target_context:"the heading of clause 9",reason:survives}
+  const inFront = {before_quote:governed,replacement:`This clause survives the end of this Agreement. ${governed}`,target_context:"the opening of clause 9",reason:survives}
+  const engine = syntheticEngine(() => ({amendments:[...reversed ? [inFront,appendedToHeading] : [appendedToHeading,inFront],approval],open_items:[]}),firstCandidate)
   try {
     const markup = counterpartyMarkupDocx()
     await registeredSource(temporary,markup)
@@ -1026,8 +1029,9 @@ test("Request edits proposes once a sentence two touching quotes insert where th
     })
     const db = openDb(temporary)
     const rows = (() => {try {return ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    const first = reversed ? inFront : appendedToHeading
     expect(rows.map((row) => [row.find_text,row.new_text,row.review_comment])).toEqual([
-      ["Governing law. ","Governing law. This clause survives the end of this Agreement. ","Client instruction 1: insert the survival sentence."],
+      [first.before_quote,first.replacement,"Client instruction 1: insert the survival sentence."],
       ["without consent.","without approval.","Say approval"],
     ])
     expect((await createDocxRevision(await bake(markup,rows,undefined,{pendingRevisions:"layer"}),{pendingRevisions:"layer"})).paragraphs[9]!.text)

@@ -273,9 +273,9 @@ type Resolved = {row:{before_quote:string;replacement:string;target_context:stri
 // to the union of their quotes, each later quote found exactly once in the text
 // the earlier ones give, they are one proposal under the first one's id; a later
 // one that is not stays out of it as an open item naming its quote. A later one
-// that makes a change an earlier one makes, also from a quote that only touches
-// the earlier one's, adds only its reason; one that inserts where an earlier one
-// inserts goes after it, as requested.
+// that makes a change an earlier one makes adds only its reason, whichever
+// quotes they come from; one that inserts where an earlier one inserts goes
+// after it, as requested.
 async function consolidated(bytes:Uint8Array,options:DocxRevisionOptions,packet:DocxLocalizationPacket,resolved:Resolved[],refused:string[]) {
   type Made = {at:number;replaced:string;changed:string}
   const groups:Array<{paragraph:DocxLocalizationPacket["candidates"][number]["paragraph"];start:number;end:number;text:string;members:Resolved[];made:Made[]}> = []
@@ -290,10 +290,16 @@ async function consolidated(bytes:Uint8Array,options:DocxRevisionOptions,packet:
     // paragraph, which words go and which come.
     const {offset,replaced,changed} = changedRange(amendment.before_quote,amendment.replacement,true)
     const made = {at:start+offset,replaced,changed}
-    const touching = groups.filter((group) => group.paragraph.paragraph_handle === paragraph.paragraph_handle && group.start <= end && start <= group.end)
-    const same = touching.find((group) => group.made.some((row) => row.at === made.at && row.replaced === replaced && row.changed === changed))
+    // The same change: the same words go and come at one place. Two insertions
+    // only white space apart are one place when the text reads the same after either.
+    const same = groups.find((group) => group.paragraph.paragraph_handle === paragraph.paragraph_handle && group.made.some((row) => {
+      if (row.replaced !== replaced || replaced && row.at !== made.at) return false
+      const [early,late] = row.at < made.at ? [row,made] : [made,row]
+      const between = paragraph.text.slice(early.at,late.at)
+      return !between.trim() && early.changed+between === between+late.changed
+    }))
     if (same) {same.members.push(entry); continue}
-    const overlapping = touching.filter((group) => group.start < end && start < group.end)
+    const overlapping = groups.filter((group) => group.paragraph.paragraph_handle === paragraph.paragraph_handle && group.start < end && start < group.end)
     if (!overlapping.length) {groups.push({paragraph,start,end,text:amendment.replacement,members:[entry],made:[made]}); continue}
     // The union of the quotes as the earlier changes leave it.
     const from = Math.min(start,...overlapping.map((group) => group.start))
