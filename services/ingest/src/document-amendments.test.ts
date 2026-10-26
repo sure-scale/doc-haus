@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { expect, setSystemTime, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { mkdtemp, mkdir, rm } from "node:fs/promises"
 import { chmodSync, existsSync, realpathSync, rmSync } from "node:fs"
@@ -12,7 +12,7 @@ import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { createDocxLocalization, createDocxRevision, openRevision, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import wordIntegration from "../../../dochaus/tool/word-integration"
-import { acceptedWorkingDocxUpdate, documentAmendmentRoutes } from "./document-amendments"
+import { acceptedWorkingDocxUpdate, documentAmendmentRoutes, readDocumentAmendmentDiagnostic } from "./document-amendments"
 import { writeDeliverable, writeDeliverableRevision } from "./deliverable"
 import { buildRedlined, bake, redlineState, redlineStaleReason } from "./redline"
 import { docxodus } from "./docxodus"
@@ -718,6 +718,42 @@ test("a failed Request edits replaces the earlier request's open items and keeps
       const failed = await prepare("Extend the retention period to six months and keep it under review.")
       expect(failed.status).toBe(409)
       expect(await failed.json()).toMatchObject({error:"The requested changes could not be placed in the document. No proposals were recorded; try again, or say where each change goes."})
+      expect(await prepared()).toEqual({redline_ids,open_items:[]})
+      expect(pending()).toEqual([{id:redline_ids[0],find_text:"three months",status:"pending"}])
+    })
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("a Request edits that fails waiting for the document's lock also replaces the earlier request's open items", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-locked-prepare-"))
+  const policy = "Confirm the client's retention policy."
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:"three months",replacement:"six months",target_context:"retention period",reason:"Requested retention update."},
+  ],open_items:[policy]}),firstCandidate)
+  try {
+    await writeDeliverable(directory,"working.docx",Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph("Retain records for three months."),
+    ]}]})))))
+    const prepared = async () => await (await documentAmendmentRoutes({directory:() => directory}).request("http://local/matter/documents/amendments?name=working.docx")).json()
+    const pending = () => {const db=openDb(directory);try {return db.query("SELECT id,find_text,status FROM redlines").all()} finally {db.close()}}
+    await withPreparation(directory,engine,async (prepare) => {
+      const first = await prepare("Extend the retention period to six months.")
+      expect(first.status).toBe(200)
+      const {redline_ids} = await first.json() as {redline_ids:number[]}
+      expect(await prepared()).toEqual({redline_ids,open_items:[policy]})
+      // Another change to the document holds its lock for longer than Prepare waits.
+      let held!:() => void;let release!:() => void
+      const holding = new Promise<void>((resolve) => {held=resolve})
+      const done = new Promise<void>((resolve) => {release=resolve})
+      const owner = withArtifactMutationLocksAsync(directory,["working.docx"],async () => {held();await done})
+      await holding
+      const locked = prepare("Extend the retention period to six months and keep it under review.")
+      // Prepare starts waiting as its diagnostic opens; the clock then passes the wait's end.
+      while (readDocumentAmendmentDiagnostic(directory,"working.docx")?.status !== "running") await Bun.sleep(5)
+      setSystemTime(new Date(Date.now()+31_000))
+      try {expect((await locked).status).toBe(409)} finally {setSystemTime();release();await owner}
+      // It failed before it read the file, which it does holding the lock.
+      expect(readDocumentAmendmentDiagnostic(directory,"working.docx")).toMatchObject({status:"failed",phase:"source_read"})
       expect(await prepared()).toEqual({redline_ids,open_items:[]})
       expect(pending()).toEqual([{id:redline_ids[0],find_text:"three months",status:"pending"}])
     })
