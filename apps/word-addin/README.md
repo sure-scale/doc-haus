@@ -35,6 +35,11 @@ for comparison, since it records editing duration (minutes by default), which
 can advance while Word is open without a content edit. Other application
 properties and custom XML remain significant. Uploaded DOCX bytes remain
 unchanged. See Microsoft's [TotalTime documentation](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.extendedproperties.totaltime?view=openxml-3.0.1).
+Word can also add `proofState` after background spelling and grammar checking
+finishes. Comparison ignores only the direct standard settings leaf with known
+`spelling`/`grammar` completion flags. Unknown attributes, nested data, proofing
+annotations and language preferences remain significant. See Microsoft's
+[ProofState documentation](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.proofstate?view=openxml-3.0.1).
 It also captures the initial saved file on reopen. Unsaved edits are never
 automatically exported/uploaded. This is best-effort sync: several native saves
 may become one version, and closing Word can stop a final upload. There is no

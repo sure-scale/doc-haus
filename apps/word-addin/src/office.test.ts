@@ -189,3 +189,59 @@ test("TotalTime normalization does not hide custom XML, foreign namespaces, nest
     )
   expect(await invalid("custom-one")).not.toBe(await invalid("custom-two"))
 })
+
+test("proofing completion cache may appear or change without hiding edits or proofing preferences", async () => {
+  const word = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const fixture = (proofState = "", text = "Neutral text.", language = "en-GB", proofError = "spellStart") =>
+    zipSync({
+      "word/settings.xml": strToU8(
+        `<m:settings xmlns:m="${word}"><m:zoom m:percent="100"/>${proofState}</m:settings>`,
+      ),
+      "word/document.xml": strToU8(
+        `<m:document xmlns:m="${word}"><m:body><m:p><m:proofErr m:type="${proofError}"/><m:r><m:rPr><m:lang m:val="${language}"/></m:rPr><m:t>${text}</m:t></m:r></m:p></m:body></m:document>`,
+      ),
+    })
+  const bytes = fixture()
+  const original = bytes.slice()
+  const baseline = await documentFingerprint(bytes)
+  for (const cache of [
+    '<m:proofState m:spelling="clean" m:grammar="clean"/>',
+    '<m:proofState m:spelling="dirty" m:grammar="dirty"/>',
+    '<m:proofState m:grammar="clean"/>',
+    '<m:proofState/>',
+    '<m:proofState m:spelling="clean"> \n </m:proofState>',
+  ])
+    expect(await documentFingerprint(fixture(cache))).toBe(baseline)
+  const cache = '<m:proofState m:spelling="clean" m:grammar="clean"/>'
+  expect(await documentFingerprint(fixture(cache, "Changed text."))).not.toBe(baseline)
+  expect(await documentFingerprint(fixture(cache, "Neutral text.", "en-US"))).not.toBe(baseline)
+  expect(await documentFingerprint(fixture(cache, "Neutral text.", "en-GB", "gramStart"))).not.toBe(baseline)
+  expect(bytes).toEqual(original)
+})
+
+test("proofState normalization preserves unknown attributes, nested data and opaque XML", async () => {
+  const word = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const settings = (child: string) => `<w:settings xmlns:w="${word}" xmlns:c="urn:synthetic">${child}</w:settings>`
+  const cases: [string, (value: string) => string][] = [
+    ["word/settings.xml", (value) => settings(`<w:proofState w:spelling="clean" w:unknown="${value}"/>`)],
+    ["word/settings.xml", (value) => settings(`<w:proofState w:spelling="clean" c:value="${value}"/>`)],
+    ["word/settings.xml", (value) => settings(`<w:proofState w:spelling="clean"><c:data>${value}</c:data></w:proofState>`)],
+    ["word/settings.xml", (value) => settings(`<w:proofState w:spelling="clean">${value}</w:proofState>`)],
+    ["word/settings.xml", (value) => settings(`<c:proofState w:spelling="${value}"/>`)],
+    ["word/settings.xml", (value) => settings(`<w:compat><w:proofState w:spelling="${value}"/></w:compat>`)],
+    ["word/document.xml", (value) => `<w:document xmlns:w="${word}"><w:proofState w:spelling="${value}"/></w:document>`],
+    ["customXml/item1.xml", (value) => settings(`<w:proofState w:spelling="${value}"/>`)],
+    [
+      "word/settings.xml",
+      (value) =>
+        `<c:settings xmlns:c="urn:synthetic" xmlns:w="${word}"><w:proofState w:spelling="${value}"/></c:settings>`,
+    ],
+  ]
+  for (const [name, xml] of cases) {
+    const fingerprint = (value: string) => documentFingerprint(zipSync({ [name]: strToU8(xml(value)) }))
+    expect(await fingerprint("clean")).not.toBe(await fingerprint("dirty"))
+  }
+  const invalid = (value: string) =>
+    documentFingerprint(zipSync({ "word/settings.xml": strToU8(settings(`<w:proofState w:spelling="${value}"/>`)) }))
+  expect(await invalid("future-one")).not.toBe(await invalid("future-two"))
+})

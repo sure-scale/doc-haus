@@ -15,7 +15,11 @@ function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
   const extendedProperties = name === "docProps/app.xml"
   if (!wordPart && !extendedProperties) return bytes
   const text = strFromU8(bytes)
-  if ((wordPart && !text.includes("rsid")) || (extendedProperties && !text.includes("TotalTime"))) return bytes
+  if (
+    (wordPart && !text.includes("rsid") && (name !== "word/settings.xml" || !text.includes("proofState"))) ||
+    (extendedProperties && !text.includes("TotalTime"))
+  )
+    return bytes
   const fail = () => {
     throw new Error("Word could not read the document for comparison. Keep the file and try saving again.")
   }
@@ -62,6 +66,24 @@ function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
       if (node.nodeType !== 1) continue
       const element = node as Element
       if (wordNamespaces.has(element.namespaceURI ?? "") && element.localName === "rsids") {
+        root.removeChild(element)
+        changed = true
+      }
+      // These two cached completion flags can change after Word finishes
+      // background proofing. Keep extensions, annotations and all other data.
+      if (
+        element.namespaceURI === root.namespaceURI &&
+        element.localName === "proofState" &&
+        Array.from(element.attributes).every(
+          (attribute) =>
+            attribute.namespaceURI === element.namespaceURI &&
+            (attribute.localName === "spelling" || attribute.localName === "grammar") &&
+            (attribute.value === "clean" || attribute.value === "dirty"),
+        ) &&
+        Array.from(element.childNodes).every(
+          (child) => (child.nodeType === 3 || child.nodeType === 4) && !child.nodeValue?.trim(),
+        )
+      ) {
         root.removeChild(element)
         changed = true
       }
