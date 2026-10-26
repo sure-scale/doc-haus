@@ -37,13 +37,16 @@ function Install-DocHaus {
   }
 
   # A Start menu entry to start doc.haus again later. cmd /k keeps the window,
-  # and any message in it, open after doc.haus stops.
+  # and any message in it, open after doc.haus stops. It shows the logo from
+  # scripts\icons, which copies made before it was added do not have.
   $dir = (Resolve-Path $dir).Path
   $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path ([Environment]::GetFolderPath('Programs')) 'doc.haus.lnk'))
   $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\cmd.exe'
   $shortcut.Arguments = '/k "' + (Join-Path $dir 'start.cmd') + '"'
   $shortcut.WorkingDirectory = $dir
   $shortcut.Description = 'Start doc.haus'
+  $icon = Join-Path $dir 'scripts\icons\doc-haus.ico'
+  if (Test-Path $icon) { $shortcut.IconLocation = "$icon,0" }
   $shortcut.Save()
 
   & (Join-Path $dir 'start.cmd')
