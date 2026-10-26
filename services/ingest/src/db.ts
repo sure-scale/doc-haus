@@ -430,7 +430,8 @@ export function listPendingRedlines(db: Database, docPath: string): RedlineRow[]
 
 // The latest Prepare for one Word document: its batch and the open items it
 // reported. Open items are stored nowhere else, so the viewer lists them from
-// here until the next Prepare replaces them or the document is deleted.
+// here until the next Prepare, one that fails included, replaces them or the
+// document is deleted.
 export type PreparedChanges = { redline_ids: number[]; open_items: string[] }
 const preparedKey = (docPath: string) => `document-amendment-prepared:${documentRegistryIdentity(docPath)}`
 

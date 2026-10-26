@@ -50,7 +50,7 @@ import { EmbeddingModelUnavailableError, migrateEmbeddings } from "./embed"
 import { migrateSections, migrateStructure } from "./structure"
 import { pdfToDocx } from "./convert"
 import { buildRedlined, bake, layeredRedline, redlineState, redlineStaleReason, RedlineAcceptConflictError, RedlinePreviewConflictError, RedlineReplayError, staleBatchReason } from "./redline"
-import { listMatters, createMatter, getMatter, renameMatter, deleteMatter, recordConflicts, matterDir, listJurisdictions, listPlaybooks, updatePlaybook, deletePlaybook, PlaybookError, PLAYBOOK_DIR, MatterValidationError, type Conflicts } from "./matter"
+import { listMatters, createMatter, getMatter, renameMatter, deleteMatter, recordConflicts, matterDir, listJurisdictions, listPlaybooks, updatePlaybook, deletePlaybook, PlaybookError, PLAYBOOK_DIR, MatterNotFoundError, MatterValidationError, type Conflicts } from "./matter"
 import { listTemplates, templatePath, setTemplateDescription, removeTemplateDescription, TEMPLATES_DIR } from "./template"
 import { listWorkflows, createWorkflow, updateWorkflow, deleteWorkflow, NAME_RE, WORKFLOWS_DIR } from "./workflow"
 import { listSkills, createSkill, updateSkill, deleteSkill, importSkill, setSkillEnabled, SKILLS_DIR } from "./skill"
@@ -118,6 +118,7 @@ app.onError((error, c) => {
   if (error instanceof PreferencesValidationError) return c.json({ error: error.message }, 400)
   if (error instanceof PreferencesUnavailableError) return c.json({ error: error.message }, 503)
   if (error instanceof MatterValidationError) return c.json({ error: error.message }, 400)
+  if (error instanceof MatterNotFoundError) return c.json({ error: error.message }, 404)
   if (error instanceof EmbeddingModelUnavailableError)
     return c.json({ error: error.message, code: "embedding_model_unavailable" }, 503)
   if (error instanceof HTTPException) return error.getResponse()

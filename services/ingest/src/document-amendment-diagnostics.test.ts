@@ -68,16 +68,11 @@ test("failed preparation retains bounded private phase evidence without publishi
     expect(listSourceDocuments(db)).toEqual([])
     expect(getDocumentRole(db,file)).toBe("deliverable")
     expect(readWorkingDocx(directory,file)).toBeUndefined()
+    // A quote not in the document is an open item, not a failed preparation.
     mode = "quote"
     const unmatched = await prepare()
-    const unmatchedBody = await unmatched.json() as {diagnostic_ref:string}
-    const latest = readDocumentAmendmentDiagnostic(directory,"working.docx")!
-    expect(unmatched.status).toBe(409)
-    expect(latest.attempt_ref).not.toBe(receipt.attempt_ref)
-    expect(unmatchedBody.diagnostic_ref).toBe(latest.attempt_ref)
-    expect(latest.phase).toBe("candidate_extraction")
-    expect(latest.captures.first_text.value).toBe(outputs[2])
-    expect(latest.captures.second_text).toBeUndefined()
+    expect(unmatched.status).toBe(200)
+    expect(await unmatched.json()).toMatchObject({proposed:0,open_items:[expect.stringContaining("words absent from this document")]})
     expect(requests).toHaveLength(3)
     expect(db.query("SELECT key FROM meta WHERE key LIKE 'document-amendment-diagnostic:%'").all()).toHaveLength(1)
     mode = "oversize"

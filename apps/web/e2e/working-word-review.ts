@@ -46,6 +46,8 @@ const OTHER = "synthetic-supply-schedule.docx"
 const FIRST = "Extend the delivery period to seven days, raise the service credit to three percent and say the services are performed."
 const SECOND = "Extend the payment period to forty-five days."
 const THIRD = "Raise the liability cap to two hundred thousand pounds."
+// The legal pass fails for this request, as when the configured model is unavailable.
+const FAILED = "Shorten the termination notice to sixty days."
 // Every legal-pass answer is scripted against the synthetic document below.
 const plans: Record<string, { before_quote: string; replacement: string; target_context: string; reason: string }[]> = {
   [FIRST]: [
@@ -171,6 +173,7 @@ const fixture = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: async (reques
     if (draft && prompt.includes("<draft_view")) {
       const instructions = JSON.parse(draft[1]) as string
       fixtureRequests.push({ method: "POST", path: url.pathname, directory, instructions })
+      if (instructions === FAILED) return new Response(null, { status: 503 })
       if (!plans[instructions]) { unexpected.push(`fixture instructions ${instructions}`); return new Response(null, { status: 500 }) }
       return reply({ amendments: plans[instructions], open_items: openItems[instructions] ?? [] })
     }
@@ -535,11 +538,33 @@ try {
     await expect(open).toHaveText(openItems[THIRD])
   })
 
+  await step("10 a failed Prepare shows only its error; the earlier request's open items go, also after a reload", async () => {
+    const request = dialog.getByRole("button", { name: "Request edits", exact: true })
+    if (await request.getAttribute("aria-expanded") !== "true") await request.click()
+    await dialog.getByLabel("Describe the changes you want to review", { exact: true }).fill(FAILED)
+    await dialog.getByRole("button", { name: "Prepare changes", exact: true }).click()
+    const failure = dialog.getByText("No changes were prepared. Try again.", { exact: true })
+    await expect(failure).toBeVisible({ timeout: 60_000 })
+    await failure.scrollIntoViewIfNeeded()
+    await shot("10-failed-prepare")
+    await page.setViewportSize({ width: 400, height: 900 })
+    await failure.scrollIntoViewIfNeeded()
+    await shot("10-failed-prepare-phone")
+    await page.setViewportSize({ width: 1440, height: 1000 })
+    await expect(open).toHaveCount(0)
+    await expect(status).toHaveCount(0)
+    expect(await (await api(`/matters/${file.matter}/documents/amendments?name=${encodeURIComponent(NAME)}`)).json()).toMatchObject({ open_items: [] })
+    expect(await current()).toBe(hashes.reaccepted)
+    await page.reload()
+    await openDocument(false)
+    await expect(open).toHaveCount(0)
+  })
+
   await step("no page errors, unexpected requests or unscripted generation", async () => {
     expect(pageErrors).toEqual([])
     expect(unexpected).toEqual([])
     const generations = fixtureRequests.filter(row => row.path.startsWith("/api/dochaus/generate"))
-    expect(generations.map(row => row.instructions ?? "locator")).toEqual([FIRST, "locator", SECOND, "locator", THIRD, "locator"])
+    expect(generations.map(row => row.instructions ?? "locator")).toEqual([FIRST, "locator", SECOND, "locator", THIRD, "locator", FAILED])
     expect(generations.every(row => row.directory === file.dir)).toBe(true)
   })
 }

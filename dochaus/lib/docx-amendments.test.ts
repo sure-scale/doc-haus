@@ -230,12 +230,15 @@ for (const [name, middle] of [["bold", "**then**"], ["italic", "*then*"], ["hype
 }
 
 test("context localization retains run formatting for insertion, deletion, no-op and changed Unicode text", async () => {
-  const source = (await renderMarkdownToDocx("# Working note\n\nLead **value** tail.\n\nLead **😀** tail.\n")).bytes
+  const source = (await renderMarkdownToDocx("# Working note\n\nLead **value** tail.\n\nLead **😀** tail.\n\nThe Supplier must notify the **Buyer** in writing.\n")).bytes
   for (const [before_quote, replacement, expected] of [
     ["Lead value", "Lead new value", "Lead **new value** tail."],
     ["value tail.", "value.", "Lead **value**."],
     ["Lead value tail.", "Lead value tail.", "Lead **value** tail."],
     ["Lead 😀 tail.", "Lead 😁 tail.", "Lead **😁** tail."],
+    // After an earlier change, an inserted word is written with the text
+    // before it, as the whole change is, and the bold word after it is left alone.
+    ["Supplier must notify the Buyer", "Vendor must notify the new Buyer", "The Vendor must notify the new **Buyer** in writing."],
   ]) {
     const packet = await createDocxLocalization(source, [{ id: "change", before_quote, replacement }])
     expect(packet.candidates).toHaveLength(1)
@@ -385,6 +388,29 @@ describe("live cross-references", () => {
     }
   })
 
+  // Each changed word is its own change, so the words between them, a live
+  // cross-reference included, are never deleted and typed again, and words
+  // inserted just before one, after an earlier change, leave it alone.
+  test("word changes around REF fields keep them live, tracked or not", async () => {
+    const source = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes
+    const revision = await createDocxRevision(source, { pendingRevisions: "layer" })
+    for (const [start, before_quote, replacement, after] of [
+      ["In this Agreement", "the terms in clause 2.1 and Schedule 1 apply.", "the words in clause 2.1 and Schedule 1 govern.",
+        "In this Agreement the words in clause 2.1 and Schedule 1 govern."],
+      ["The Customer", "The Customer shall pay as set out in clause 2.1.", "The Buyer shall pay as set out in clause 1.4 and 2.1.",
+        "The Buyer shall pay as set out in clause 1.4 and 2.1."],
+    ] as const) {
+      const edit = { id: "words", paragraph_handle: revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle,
+        occurrence: 0, before_quote, replacement }
+      for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, { pendingRevisions: "layer" }, {}] as const) {
+        const output = await applyDocxParagraphEdits(source, [edit], undefined, options)
+        expect(refs(output.bytes)).toEqual(refs(source))
+        expect(output.report.limitation).not.toContain("cross-reference")
+        expect(output.report.amendments[0]!.paragraph_after).toBe(after)
+      }
+    }
+  })
+
   test("a changed format of an existing run is refused, also in a batch that rewrites a cross-reference number", async () => {
     // Clause 2.3 sits in clause 2: numbers after the schedule heading stay typed.
     const source = (await renderMarkdownToDocx(AGREEMENT.replace("\n\n## Schedule 1", "\n\n2.3 Nothing here limits the **Supplier**.\n\n## Schedule 1"),
@@ -467,6 +493,18 @@ describe("layered edits on a counterparty markup", () => {
     } finally { session.close() }
   })
 
+  // Avery's move puts clause 3 below clause 4, its typed number unchanged, so
+  // the clauses read 2, 4, 3. Prepare's passes are told why.
+  test("the paragraph their pending move puts below clause 4 is marked in the draft view and as a candidate's neighbour", async () => {
+    const revision = await createDocxRevision(source, layer)
+    expect(revision.paragraphs.filter(row => row.moved_here).map(row => row.text)).toEqual(["3. Notices. Notices must be in writing."])
+    expect(revision.markdown).toContain("2. Price. The Price is fixed for the first twelve months.\n\n4. Liability. Neither party is liable for **indirect** loss.\n\n" +
+      "[Moved here by a pending tracked change]\n\n3. Notices. Notices must be in writing.\n\n5. Term.")
+    const packet = await createDocxLocalization(source, [{ id: "mitigation", before_quote: "Liability. Neither", replacement: "Liability. Each party shall mitigate its loss. Neither" }], {}, layer)
+    expect(packet.candidates.map(row => [row.previous_paragraph, row.next_paragraph])).toEqual([
+      ["2. Price. The Price is fixed for the first twelve months.", "[Moved here by a pending tracked change] 3. Notices. Notices must be in writing."]])
+  })
+
   test("an accept-mode edit to clause 9 is written untracked and keeps their ten revisions", async () => {
     const revision = await createDocxRevision(source, layer)
     const output = await applyDocxParagraphEdits(source, [{ ...clause9, paragraph_handle: handle(revision, "9.") }], undefined, layer)
@@ -534,6 +572,9 @@ describe("layered edits on a counterparty markup", () => {
         "9. Governing law. This Agreement is governed by the law."],
       ["the law of the Province", "the laws of the Province", [["delete", "law"], ["insert", "laws"]],
         "9. Governing law. This Agreement is governed by the laws of the Province."],
+      // Two changed words, each its own change; the words between stay as they are.
+      ["governed by the law of the Province", "governed by the laws of the State", [["delete", "law"], ["insert", "laws"], ["delete", "Province"], ["insert", "State"]],
+        "9. Governing law. This Agreement is governed by the laws of the State."],
     ] as const) {
       const packet = await createDocxLocalization(source, [{ id: "law", before_quote, replacement }], {}, layer)
       const clause = packet.candidates.find(row => row.paragraph.text.startsWith("9."))!

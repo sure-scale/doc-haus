@@ -217,17 +217,36 @@ export function deleteMatter(id: string) {
   rmSync(matterDir(id), { recursive: true, force: true })
 }
 
+// An id that names no matter: deleted, a wrong link, or a caller that sent
+// none. status lets routes that answer their own errors reply 404 too.
+export class MatterNotFoundError extends Error {
+  readonly status = 404
+  constructor() {
+    super("Matter not found.")
+  }
+}
+
+function readMatter(dir: string) {
+  try {
+    return JSON.parse(readFileSync(matterFile(dir), "utf8")) as Matter
+  } catch (error) {
+    // Only a missing file means no such matter; an unreadable one is a real error.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new MatterNotFoundError()
+    throw error
+  }
+}
+
 export function getMatter(id: string): Matter {
   const dir = matterDir(id)
   recoverMatterOriginMutation(dir)
-  return JSON.parse(readFileSync(matterFile(dir), "utf8")) as Matter
+  return readMatter(dir)
 }
 
 function mutateMatter(id: string, kind: Exclude<MatterMutationKind, "create">, update: (matter: Matter) => Matter) {
   const dir = matterDir(id)
   return withMatterMutationLocks(dir, () => {
     recoverMatterOriginMutationLocked(dir)
-    return persistMatterLocked(update(JSON.parse(readFileSync(matterFile(dir), "utf8")) as Matter), kind)
+    return persistMatterLocked(update(readMatter(dir)), kind)
   })
 }
 
