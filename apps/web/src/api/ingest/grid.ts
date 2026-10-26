@@ -25,7 +25,9 @@ export type GridCellData = {
   // searched (mirrors services/ingest/src/grid.ts).
   recheck?: GridRecheck
 }
-export type GridCellComment = { id: string; text: string; at: number }
+// Snapshot of the configured attorney when this comment was added. Older
+// comments, or comments made without a saved name, remain unattributed.
+export type GridCellComment = { id: string; text: string; at: number; author?: string }
 export type Grid = { columns: GridColumn[]; cells: Record<string, GridCellData> }
 
 export function cellKey(docName: string, columnId: string) {

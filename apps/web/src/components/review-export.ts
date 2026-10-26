@@ -1,7 +1,7 @@
 import { utils, write } from "xlsx"
-import { cellKey, isStale, type Grid, type GridCellData } from "../api/ingest/grid"
+import { cellKey, isStale, type Grid, type GridCellData, type GridCellComment } from "../api/ingest/grid"
 import { describeRecheck } from "../api/review-recheck"
-import { formatDate } from "../lib/format"
+import { formatDate, formatDateTime } from "../lib/format"
 
 // The review grid as exported: one model of what the grid shows, read by the
 // Excel, CSV and Word serializers, so the three files carry the same content.
@@ -16,7 +16,7 @@ export type ExportCell = {
   reviewed: boolean
   /** Computed for an earlier wording of the question (the grid's "stale"). */
   stale: boolean
-  comments: string[]
+  comments: GridCellComment[]
 }
 export type ReviewExport = { title: string; questions: string[]; rows: Array<{ document: string; cells: ExportCell[] }> }
 
@@ -35,18 +35,24 @@ function exportCell(cell: GridCellData | undefined, question: string): ExportCel
     recheck: cell?.recheck && describeRecheck(cell.recheck),
     reviewed: cell?.status === "reviewed",
     stale: isStale(cell, question),
-    comments: (cell?.comments ?? []).map((comment) => `Comment (${formatDate(comment.at)}): ${comment.text}`),
+    comments: cell?.comments ?? [],
   }
 }
 
 /** The lines that travel with an answer in Excel and Word: its reviewed or
  * stale state, source, re-check, then comments. */
 function notes(cell: ExportCell) {
-  return [cell.reviewed && "Reviewed", cell.stale && "Stale: question changed since this answer", cell.source && `Source: ${cell.source}`, cell.recheck, ...cell.comments]
+  return [cell.reviewed && "Reviewed", cell.stale && "Stale: question changed since this answer", cell.source && `Source: ${cell.source}`, cell.recheck, ...cell.comments.map(commentNote)]
     .filter((line): line is string => Boolean(line))
 }
 
-/** Excel: the grid's shape, with each answer's notes as a native hidden note on its cell. */
+function commentNote(comment: GridCellComment) {
+  return `Comment by ${comment.author || "Unattributed"} (${formatDate(comment.at)}): ${comment.text}`
+}
+
+/** Excel: the grid's shape with answer notes, plus visible, individually
+ * attributed comment records. These are ordinary worksheet rows, not native
+ * threaded Excel comments. Source citations remain separate from discussion. */
 export function reviewXlsx(model: ReviewExport): ArrayBuffer {
   const sheet = utils.aoa_to_sheet([["Document", ...model.questions], ...model.rows.map((row) => [row.document, ...row.cells.map((cell) => cell.answer)])])
   model.rows.forEach((row, r) =>
@@ -57,6 +63,14 @@ export function reviewXlsx(model: ReviewExport): ArrayBuffer {
   )
   const book = utils.book_new()
   utils.book_append_sheet(book, sheet, "Tabular review")
+  const comments = model.rows.flatMap((row) => row.cells.flatMap((cell, c) => cell.comments.map((comment) =>
+    [row.document, model.questions[c], cell.source ?? "", comment.author || "Unattributed", formatDateTime(comment.at), comment.text],
+  )))
+  if (comments.length) {
+    const discussion = utils.aoa_to_sheet([["Document", "Question", "Source", "Author", "Date", "Comment"], ...comments])
+    discussion["!cols"] = [28, 42, 34, 24, 24, 64].map((wch) => ({ wch }))
+    utils.book_append_sheet(book, discussion, "Comments")
+  }
   return write(book, { type: "array", bookType: "xlsx" })
 }
 
@@ -66,7 +80,7 @@ export function reviewCsv(model: ReviewExport) {
   const records = [
     ["Document", "Question", "Answer", "Source", "Reviewed", "Stale", "Re-check", "Comments"],
     ...model.rows.flatMap((row) =>
-      row.cells.map((cell, c) => [row.document, model.questions[c], cell.answer, cell.source ?? "", cell.reviewed ? "Yes" : "No", cell.stale ? "Yes" : "No", cell.recheck ?? "", cell.comments.join("\n")]),
+      row.cells.map((cell, c) => [row.document, model.questions[c], cell.answer, cell.source ?? "", cell.reviewed ? "Yes" : "No", cell.stale ? "Yes" : "No", cell.recheck ?? "", cell.comments.map(commentNote).join("\n")]),
     ),
   ]
   return `﻿${records.map((record) => record.map(csvField).join(",")).join("\r\n")}\r\n`
