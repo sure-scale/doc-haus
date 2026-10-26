@@ -8,11 +8,14 @@ const wordNamespaces = new Set([
 // Revision-session identifiers describe editing sessions, not the changes
 // themselves. Keep unknown attributes and every actual change/format payload.
 const sessionAttributes = new Set(["rsidR", "rsidRPr", "rsidDel", "rsidP", "rsidRDefault", "rsidTr", "rsidSect"])
+const extendedPropertiesNamespace = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
 
 function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
-  if (!name.startsWith("word/") || !name.endsWith(".xml")) return bytes
+  const wordPart = name.startsWith("word/") && name.endsWith(".xml")
+  const extendedProperties = name === "docProps/app.xml"
+  if (!wordPart && !extendedProperties) return bytes
   const text = strFromU8(bytes)
-  if (!text.includes("rsid")) return bytes
+  if ((wordPart && !text.includes("rsid")) || (extendedProperties && !text.includes("TotalTime"))) return bytes
   const fail = () => {
     throw new Error("Word could not read the document for comparison. Keep the file and try saving again.")
   }
@@ -23,6 +26,26 @@ function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
   )
   if (!doc.documentElement || doc.getElementsByTagName("parsererror").length) fail()
   const root = doc.documentElement
+  if (extendedProperties) {
+    if (root.namespaceURI !== extendedPropertiesNamespace || root.localName !== "Properties") return bytes
+    let changed = false
+    for (const node of Array.from(root.childNodes)) {
+      if (node.nodeType !== 1) continue
+      const element = node as Element
+      if (element.namespaceURI !== extendedPropertiesNamespace || element.localName !== "TotalTime") continue
+      // TotalTime is a numeric editing-duration leaf, not document content.
+      // Preserve its attributes and any nonstandard markup instead of dropping
+      // the whole property or application-properties part from comparison.
+      if (
+        !Array.from(element.childNodes).every((child) => child.nodeType === 3 || child.nodeType === 4) ||
+        !/^[\s]*[+-]?\d+[\s]*$/.test(element.textContent ?? "")
+      )
+        continue
+      element.textContent = "0"
+      changed = true
+    }
+    return changed ? strToU8(new XMLSerializer().serializeToString(doc)) : bytes
+  }
   if (!wordNamespaces.has(root.namespaceURI ?? "")) return bytes
   let changed = false
   for (const node of Array.from(doc.getElementsByTagName("*"))) {

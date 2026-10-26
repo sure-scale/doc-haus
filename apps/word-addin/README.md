@@ -30,6 +30,11 @@ WordprocessingML revision-session attributes and the direct `rsids` settings
 list. Actual text, formatting, comments and tracked changes remain significant;
 foreign/unknown attributes remain significant too. Uploaded DOCX bytes are never
 rewritten by this comparison step.
+The standard application-properties `TotalTime` numeric leaf is also normalized
+for comparison, since it records editing duration (minutes by default), which
+can advance while Word is open without a content edit. Other application
+properties and custom XML remain significant. Uploaded DOCX bytes remain
+unchanged. See Microsoft's [TotalTime documentation](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.extendedproperties.totaltime?view=openxml-3.0.1).
 It also captures the initial saved file on reopen. Unsaved edits are never
 automatically exported/uploaded. This is best-effort sync: several native saves
 may become one version, and closing Word can stop a final upload. There is no

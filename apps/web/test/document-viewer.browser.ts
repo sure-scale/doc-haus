@@ -49,7 +49,7 @@ import { createElement } from ${JSON.stringify(fileURLToPath(import.meta.resolve
 import { createRoot } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-dom/client")))}
 import DocumentViewer from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/DocumentViewer.tsx"))}
 import { WordDocumentsProvider } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/WordDocuments.tsx"))}
-const viewer = createElement(DocumentViewer, { matterId: "matter-viewer", name: decodeURIComponent(location.hash.slice(1)), onClose: () => {} })
+const viewer = createElement(DocumentViewer, { matterId: "matter-viewer", name: decodeURIComponent(location.hash.slice(1)), onClose: () => {}, onCompare: () => {} })
 createRoot(document.getElementById("root")).render(location.search.includes("word") ? createElement(WordDocumentsProvider, { matterId: "matter-viewer", onChanged: () => { window.matterRefreshes = (window.matterRefreshes || 0) + 1 } }, viewer) : viewer)
 `)
 const build = await Bun.build({ entrypoints: [entry], target: "browser", define: { "import.meta.env": JSON.stringify({ VITE_INGEST_URL: "http://viewer.invalid" }) } })
@@ -275,6 +275,30 @@ try {
   assert.equal(await request.evaluate(element => (element as HTMLElement & { wordFocusMarker?: string }).wordFocusMarker), "same textarea", "A received Word version did not remount the edit request")
   assert.ok((await linked.locator(".word-warning").textContent())?.includes("Save to doc.haus"))
   console.log("PASS Word focus and received-version refresh: preview and versions reloaded, typed edit request preserved, unchanged heartbeats did not reload")
+  // Use the shipped styles for the crowded Word toolbar: its badges and link
+  // controls must not push Request edits or More actions outside the panel.
+  const main = await Bun.file(path.resolve(import.meta.dir, "../src/main.tsx")).text()
+  const styles = await Promise.all([...main.matchAll(/import "(\.\/[^\"]+\.css)"/g)].map(match => Bun.file(path.resolve(import.meta.dir, "../src", match[1]!)).text()))
+  await linked.addStyleTag({ content: styles.join("\n") })
+  for (const width of [320, 375, 768, 1024, 1440]) {
+    await linked.setViewportSize({ width, height: 900 })
+    const outside = await linked.locator(".viewer-bar-actions > button, .viewer-bar-actions > .word-controls button, .viewer-more-actions > summary").evaluateAll(elements => elements.flatMap(element => {
+      const rect = element.getBoundingClientRect()
+      return rect.left < 0 || rect.right > window.innerWidth ? [element.getAttribute("aria-label") || element.textContent?.trim()] : []
+    }))
+    assert.deepEqual(outside, [], `Word toolbar actions stay inside a ${width}px viewport`)
+  }
+  await linked.setViewportSize({ width: 375, height: 900 })
+  const openWord = linked.getByRole("button", { name: "Open complete.docx in Word", exact: true })
+  await openWord.focus()
+  await linked.keyboard.press("Shift+Tab")
+  await linked.keyboard.press("Tab")
+  assert.equal(await openWord.evaluate(element => document.activeElement === element && element.matches(":focus-visible")), true, "Word remains reachable with visible keyboard focus")
+  await linked.locator(".viewer-more-actions > summary").focus()
+  await linked.keyboard.press("Enter")
+  const menu = await linked.locator(".viewer-more-menu").boundingBox()
+  assert.ok(menu && menu.x >= 0 && menu.x + menu.width <= 375, "The keyboard-opened More actions menu fits the mobile viewport")
+  console.log("PASS Word toolbar responsive layout: every action remains inside 320–1440px viewports and Word has visible keyboard focus")
   await linked.close()
 } finally {
   await browser.close()

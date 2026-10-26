@@ -135,3 +135,57 @@ test("tracked formatting payload stays significant while strict Word session att
   expect(await documentFingerprint(fixture("00BBBB02"))).toBe(baseline)
   expect(await documentFingerprint(fixture("00BBBB02", "FFFFFF"))).not.toBe(baseline)
 })
+
+test("editing-duration-only changes are ignored while other properties and document text remain significant", async () => {
+  const extended = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+  const fixture = (time: number, manager = "Synthetic manager", text = "Neutral text.", attribute = "preserved") =>
+    zipSync({
+      "docProps/app.xml": strToU8(
+        `<ep:Properties xmlns:ep="${extended}" xmlns:c="urn:synthetic"><ep:TotalTime c:metadata="${attribute}">${time}</ep:TotalTime><ep:Manager>${manager}</ep:Manager><ep:Pages>1</ep:Pages></ep:Properties>`,
+      ),
+      "word/document.xml": strToU8(
+        `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>`,
+      ),
+    })
+  const bytes = fixture(3)
+  const original = bytes.slice()
+  const baseline = await documentFingerprint(bytes)
+  expect(await documentFingerprint(fixture(4))).toBe(baseline)
+  expect(await documentFingerprint(fixture(4, "Different manager"))).not.toBe(baseline)
+  expect(await documentFingerprint(fixture(4, "Synthetic manager", "Changed text."))).not.toBe(baseline)
+  expect(await documentFingerprint(fixture(4, "Synthetic manager", "Neutral text.", "changed"))).not.toBe(baseline)
+  expect(bytes).toEqual(original)
+})
+
+test("TotalTime normalization does not hide custom XML, foreign namespaces, nested or nonnumeric data", async () => {
+  const extended = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+  const cases: [string, (value: string) => string][] = [
+    ["customXml/item1.xml", (value) => `<Properties xmlns="${extended}"><TotalTime>${value}</TotalTime></Properties>`],
+    ["docProps/custom.xml", (value) => `<Properties xmlns="${extended}"><TotalTime>${value}</TotalTime></Properties>`],
+    ["docProps/app.xml", (value) => `<Properties xmlns="urn:synthetic"><TotalTime>${value}</TotalTime></Properties>`],
+    [
+      "docProps/app.xml",
+      (value) =>
+        `<Properties xmlns="${extended}" xmlns:c="urn:synthetic"><c:TotalTime>${value}</c:TotalTime></Properties>`,
+    ],
+    [
+      "docProps/app.xml",
+      (value) => `<Properties xmlns="${extended}"><Other><TotalTime>${value}</TotalTime></Other></Properties>`,
+    ],
+    [
+      "docProps/app.xml",
+      (value) => `<Properties xmlns="${extended}"><TotalTime><Other>${value}</Other></TotalTime></Properties>`,
+    ],
+  ]
+  for (const [name, xml] of cases) {
+    const fingerprint = (value: string) => documentFingerprint(zipSync({ [name]: strToU8(xml(value)) }))
+    expect(await fingerprint("3")).not.toBe(await fingerprint("4"))
+  }
+  const invalid = (value: string) =>
+    documentFingerprint(
+      zipSync({
+        "docProps/app.xml": strToU8(`<Properties xmlns="${extended}"><TotalTime>${value}</TotalTime></Properties>`),
+      }),
+    )
+  expect(await invalid("custom-one")).not.toBe(await invalid("custom-two"))
+})
