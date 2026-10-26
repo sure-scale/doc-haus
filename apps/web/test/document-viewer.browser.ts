@@ -107,18 +107,21 @@ try {
   // writes it. The unchanged words stay plain and appear once; only the
   // deleted words are struck and only the inserted ones marked, deleted before
   // inserted, and each says which it is to a screen reader. A new sentence
-  // whose words repeat the sentence beside it stands between sentences.
+  // whose words repeat the sentence beside it stands between sentences, also
+  // one on each side of the words a joined proposal keeps.
   const law = "This Agreement is governed by the law of the Province."
   const proposals = [
     [law, `${law} Each party submits to the courts of the Province.`],
     [`Governing law. ${law}`, `Governing law. This clause survives the end of this Agreement. ${law}`],
     ["without consent.", "without approval."],
+    [law, `This clause applies to every dispute under this Agreement. ${law} Each party submits to the courts of the Province.`],
   ].map(([old_text, new_text], index) => ({ id: index + 1, doc_name: "complete.docx", scope: "phrase", find_text: old_text, old_text, new_text,
     author: "Jordan Example", review_comment: "Client instruction.", created_at: 0 }))
   const expected = [
     { once: law, marks: [["ins", "Inserted: Each party submits to the courts of the Province."]] },
     { once: law, marks: [["ins", "Inserted: This clause survives the end of this Agreement."]] },
     { once: "without", marks: [["del", "Deleted: consent"], ["ins", "Inserted: approval"]] },
+    { once: law, marks: [["ins", "Inserted: This clause applies to every dispute under this Agreement."], ["ins", "Inserted: Each party submits to the courts of the Province."]] },
   ]
   const page = await browser.newPage()
   page.setDefaultTimeout(60_000)

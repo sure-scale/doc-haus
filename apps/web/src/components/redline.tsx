@@ -9,15 +9,21 @@ export type Piece = { kind: "same" | "del" | "ins" | "move"; text: string }
 // reads whole.
 const tokens = (text: string) => text.match(/\s+|[\p{L}\p{N}\p{M}]+|[^\s\p{L}\p{N}\p{M}]/gu) ?? []
 
+// How many tokens two texts share at their start, then at their end.
+function shared(a: string[], b: string[]) {
+  let head = 0
+  while (head < a.length && head < b.length && a[head] === b[head]) head++
+  let tail = 0
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++
+  return [head, tail] as const
+}
+
 // Word-level redline of one change. The common start and end are set aside
 // first, so the table covers only the changed middle; a middle too large to
 // align reads as one deletion and one insertion.
 export function wordDiff(before: string, after: string): Piece[] {
   const a = tokens(before), b = tokens(after)
-  let head = 0
-  while (head < a.length && head < b.length && a[head] === b[head]) head++
-  let tail = 0
-  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++
+  const [head, tail] = shared(a, b)
   const x = a.slice(head, a.length - tail), y = b.slice(head, b.length - tail)
   const middle: Piece[] = []
   if (x.length * y.length > 250_000) middle.push({ kind: "del", text: x.join("") }, { kind: "ins", text: y.join("") })
@@ -72,8 +78,38 @@ function merged(pieces: Piece[]): Piece[] {
 // around it repeat could stand at several places; it stands at the nearest
 // whose both ends are sentence boundaries, as the tracked write places it
 // (changedRange in dochaus/lib/docx-amendments.ts), so a new sentence is never
-// shown inside the one whose words it repeats.
+// shown inside the one whose words it repeats. Where the changed words all
+// stand, together and once, inside the new ones (two insertions Prepare joined
+// into one proposal), it is the insertion on each side of them, each placed so,
+// as the tracked write splits it (changedDocxSpans).
 export function proposalPieces(before: string, after: string): Piece[] {
+  const a = tokens(before), b = tokens(after)
+  const [head, tail] = shared(a, b)
+  const kept = a.slice(head, a.length - tail), added = b.slice(head, b.length - tail)
+  const found = kept.length ? added.flatMap((_, index) => kept.every((token, k) => added[index + k] === token) ? [index] : []) : []
+  const at = found[0]!
+  if (found.length !== 1 || !at || at + kept.length === added.length) return placed(before, after)
+  // Each side as one insertion, and where in the old text it stands.
+  const side = (from: string[], words: string[], to: string[]) => {
+    const pieces = placed([...from, ...to].join(""), [...from, ...words, ...to].join(""))
+    const index = pieces.findIndex((piece) => piece.kind !== "same")
+    return pieces.filter((piece) => piece.kind !== "same").length === 1 && pieces[index]!.kind === "ins"
+      ? { text: pieces[index]!.text, at: pieces.slice(0, index).reduce((length, piece) => length + piece.text.length, 0) } : undefined
+  }
+  const left = side(a.slice(0, head), added.slice(0, at), kept)
+  const right = side(kept, added.slice(at + kept.length), a.slice(a.length - tail))
+  const offset = a.slice(0, head).join("").length
+  if (!left || !right || left.at >= offset + right.at) return placed(before, after)
+  return [
+    { kind: "same", text: before.slice(0, left.at) },
+    { kind: "ins", text: left.text },
+    { kind: "same", text: before.slice(left.at, offset + right.at) },
+    { kind: "ins", text: right.text },
+    { kind: "same", text: before.slice(offset + right.at) },
+  ].filter((piece): piece is Piece => !!piece.text)
+}
+
+function placed(before: string, after: string): Piece[] {
   const pieces = wordDiff(before, after)
   for (let i = 0; i + 1 < pieces.length; i++)
     if (pieces[i]!.kind === "ins" && pieces[i + 1]!.kind === "del") [pieces[i], pieces[i + 1]] = [pieces[i + 1]!, pieces[i]!]
