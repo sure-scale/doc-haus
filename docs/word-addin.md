@@ -80,6 +80,13 @@ changed the document meanwhile, both versions remain and the UI warns about the
 overlap. A clean Word revision becomes the accepted working base for subsequent
 drafting; unresolved tracked changes retain the existing review guard.
 
+Word can reload its pane while a file is open. If its saved content no longer
+matches the previous confirmation exactly, the pane keeps the last version link
+stored in that file. This can create an extra version and an overlap warning even
+when you are editing alone, especially on Windows. Your edits are retained;
+compare the versions in doc.haus. Done updates the link in this physical copy
+before closing, but cannot prevent every earlier pane reload.
+
 An active pane sends heartbeats. The matter warns before edits, acceptance or a
 drafting run while Word has a document open. The badge expires if the pane stops
 responding; it cannot prove a file is closed. Done in Word clears it promptly.

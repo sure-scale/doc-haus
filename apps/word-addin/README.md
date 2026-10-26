@@ -103,6 +103,12 @@ or cleared; the saved file is still recoverable on reopen.
 A changed comparison algorithm can invalidate an older stored fingerprint. One
 new acknowledged save establishes the current checkpoint; an unmatched old
 checkpoint still uses the embedded base and preserves overlap reporting.
+Office can reconstruct the pane before Done. A new client whose initial content
+differs from its cached acknowledgement retains the embedded base. This can
+conservatively branch two saves from that base and flag overlap within one
+physical copy; Done-only persistence does not cover earlier pane reconstructions.
+Never replace this check with token-wide latest-version adoption, which could
+hide a real forwarded-copy fork.
 
 A save is confirmed only after a fresh saved-file fingerprint matches the
 acknowledged upload. Done checks again after its server response and restores
