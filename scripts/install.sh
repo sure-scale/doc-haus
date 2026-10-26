@@ -45,7 +45,8 @@ fi
 dir="$(cd "$dir" && pwd)"
 # A doc.haus entry to start it again later, which opens a terminal window
 # running start.sh: an app in ~/Applications on macOS, which Spotlight and
-# Launchpad find, and an applications-menu entry on Linux.
+# Launchpad find, and an applications-menu entry on Linux. Both show the logo
+# from scripts/icons, which copies made before it was added do not have.
 if [ "$(uname -s)" = Darwin ]; then
   app="$HOME/Applications/doc.haus.app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
@@ -53,20 +54,24 @@ if [ "$(uname -s)" = Darwin ]; then
   # shellcheck disable=SC2016 # $0 belongs to the app's own script
   printf '#!/bin/bash\nexec open -a Terminal "$(dirname "$0")/../Resources/doc.haus.command"\n' > "$app/Contents/MacOS/doc.haus"
   chmod +x "$app/Contents/Resources/doc.haus.command" "$app/Contents/MacOS/doc.haus"
+  if [ -f "$dir/scripts/icons/doc-haus.icns" ]; then cp "$dir/scripts/icons/doc-haus.icns" "$app/Contents/Resources/AppIcon.icns"; fi
   cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleExecutable</key><string>doc.haus</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleIdentifier</key><string>haus.doc.start</string>
   <key>CFBundleName</key><string>doc.haus</string>
   <key>CFBundlePackageType</key><string>APPL</string>
 </dict></plist>
 PLIST
+  # Finder shows a changed icon once the app itself has changed.
+  touch "$app"
 else
   applications="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
   mkdir -p "$applications"
-  printf '[Desktop Entry]\nType=Application\nName=doc.haus\nComment=Start doc.haus\nExec="%s/start.sh"\nPath=%s\nTerminal=true\nCategories=Office;\n' "$dir" "$dir" > "$applications/doc-haus.desktop"
+  printf '[Desktop Entry]\nType=Application\nName=doc.haus\nComment=Start doc.haus\nExec="%s/start.sh"\nPath=%s\nIcon=%s/scripts/icons/doc-haus.png\nTerminal=true\nCategories=Office;\n' "$dir" "$dir" "$dir" > "$applications/doc-haus.desktop"
 fi
 
 cd "$dir"
