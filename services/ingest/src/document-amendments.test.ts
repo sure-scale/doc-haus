@@ -914,6 +914,38 @@ test("of two overlapping changes that cannot be joined, Request edits proposes t
   }
 })
 
+test("Request edits makes a change it is given twice once, also when the two quote different text", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-repeated-"))
+  const survives = "Client instruction 1: insert the survival sentence"
+  // The same sentence inserted at the start of clause 9 twice, quoting the
+  // whole clause and its last sentence, and the same sentence appended twice.
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:governingClause,replacement:`Governing law. This clause survives. ${governed}`,target_context:"the opening of clause 9",reason:survives},
+    {before_quote:governed,replacement:`This clause survives. ${governed}`,target_context:"the opening of clause 9",reason:survives},
+    appended,appended,
+  ],open_items:[]}),firstCandidate)
+  try {
+    const markup = counterpartyMarkupDocx()
+    await registeredSource(temporary,markup)
+    const ids = await withPreparation(temporary,engine,async (prepare) => {
+      const response = await prepare("Insert \"This clause survives.\" at the start of clause 9 and append \"Each party submits to the courts of the Province.\" to it.")
+      expect(response.status).toBe(200)
+      const body = await response.json() as {proposed:number;redline_ids:number[]}
+      expect(body).toMatchObject({proposed:1,open_items:[]})
+      return body.redline_ids
+    })
+    const db = openDb(temporary)
+    const rows = (() => {try {return ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect(rows.map((row) => [row.find_text,row.new_text,row.review_comment])).toEqual([[governingClause,
+      `Governing law. This clause survives. ${governed} Each party submits to the courts of the Province.`,
+      "Client instruction 1: insert the survival sentence. Client instruction 2: add the submission sentence."]])
+    expect((await createDocxRevision(await bake(markup,rows,undefined,{pendingRevisions:"layer"}),{pendingRevisions:"layer"})).paragraphs[9]!.text)
+      .toBe(`9. Governing law. This clause survives. ${governed} Each party submits to the courts of the Province.`)
+  } finally {
+    engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+})
+
 test("Request edits prepares on a clean uploaded source and still refuses a deliverable with pending tracked changes", async () => {
   const source = await mkdtemp(path.join(tmpdir(),"dochaus-word-clean-source-"))
   const deliverable = await mkdtemp(path.join(tmpdir(),"dochaus-word-tracked-deliverable-"))

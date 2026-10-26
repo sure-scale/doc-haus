@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
-import { createDocxRevision, createDocxLocalization, applyDocxLocalization, DocxTrackedRevisionsError, othersPending, ownRevisionReason, ownRevisionRefusals, pendingRevisionParagraphs, trackedRevisionsReason, type DocxAmendment, type DocxLocalizationPacket, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
+import { createDocxRevision, createDocxLocalization, applyDocxLocalization, changedRange, DocxTrackedRevisionsError, othersPending, ownRevisionReason, ownRevisionRefusals, pendingRevisionParagraphs, trackedRevisionsReason, type DocxAmendment, type DocxLocalizationPacket, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { workingDocxKey, readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { paragraphTargets, resolveParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
@@ -268,9 +268,10 @@ type Resolved = {row:{before_quote:string;replacement:string;target_context:stri
 // the batch is qualified: the writer refuses overlapping spans. Applied in order
 // to the union of their quotes, each later quote found exactly once in the text
 // the earlier ones give, they are one proposal under the first one's id; a later
-// one that is not stays out of it as an open item naming its quote.
+// one that is not stays out of it as an open item naming its quote. A later one
+// that makes a change an earlier one makes adds only its reason.
 async function consolidated(bytes:Uint8Array,options:DocxRevisionOptions,packet:DocxLocalizationPacket,resolved:Resolved[],refused:string[]) {
-  const groups:Array<{paragraph:DocxLocalizationPacket["candidates"][number]["paragraph"];start:number;end:number;text:string;members:Resolved[]}> = []
+  const groups:Array<{paragraph:DocxLocalizationPacket["candidates"][number]["paragraph"];start:number;end:number;text:string;members:Resolved[];made:string[]}> = []
   for (const entry of resolved) {
     const {amendment,selection} = entry
     const candidates = packet.candidates.filter((candidate) => candidate.amendment_id === amendment.id)
@@ -278,8 +279,14 @@ async function consolidated(bytes:Uint8Array,options:DocxRevisionOptions,packet:
     const paragraph = chosen.paragraph
     const start = occurrences(paragraph.text,amendment.before_quote)[candidates.filter((candidate) => candidate.paragraph.paragraph_handle === paragraph.paragraph_handle).indexOf(chosen)]!
     const end = start+amendment.before_quote.length
+    // The change itself, whole words as its tracked change reads: where in the
+    // paragraph, which words go and which come.
+    const {offset,replaced,changed} = changedRange(amendment.before_quote,amendment.replacement,true)
+    const made = JSON.stringify([start+offset,replaced,changed])
     const overlapping = groups.filter((group) => group.paragraph.paragraph_handle === paragraph.paragraph_handle && group.start < end && start < group.end)
-    if (!overlapping.length) {groups.push({paragraph,start,end,text:amendment.replacement,members:[entry]}); continue}
+    if (!overlapping.length) {groups.push({paragraph,start,end,text:amendment.replacement,members:[entry],made:[made]}); continue}
+    const same = overlapping.find((group) => group.made.includes(made))
+    if (same) {same.members.push(entry); continue}
     // The union of the quotes as the earlier changes leave it.
     const from = Math.min(start,...overlapping.map((group) => group.start))
     const to = Math.max(end,...overlapping.map((group) => group.end))
@@ -292,6 +299,7 @@ async function consolidated(bytes:Uint8Array,options:DocxRevisionOptions,packet:
       continue
     }
     groups.splice(groups.indexOf(overlapping[0]!),1,{paragraph,start:from,end:to,members:[...overlapping.flatMap((group) => group.members),entry],
+      made:[...overlapping.flatMap((group) => group.made),made],
       text:union.slice(0,found)+amendment.replacement+union.slice(found+amendment.before_quote.length)})
     for (const group of overlapping.slice(1)) groups.splice(groups.indexOf(group),1)
   }
