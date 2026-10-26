@@ -228,6 +228,15 @@ if [ "$(cat "$DOCHAUS_RUNTIME_DIR/engine-process.lock")" != "$engine_pid" ]; the
 fi
 kill -USR2 "$engine_pid"
 
+# Say how to start doc.haus again, through the entry the installer adds when
+# there is one.
+start_again="run $PWD/start.sh"
+if [ -d "$HOME/Applications/doc.haus.app" ]; then start_again="open doc.haus from Spotlight or Launchpad, or $start_again"
+elif [ -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/doc-haus.desktop" ]; then start_again="open doc.haus from your applications menu, or $start_again"
+fi
+echo "doc.haus: ready at $WEB_URL. Keep this window open while you use doc.haus; press Ctrl+C to stop it."
+echo "doc.haus: to start it again later, $start_again."
+
 # Open the web UI once vite is actually serving (poll the port via bash's /dev/tcp
 # so it works without curl). Vite binds IPv6 localhost (::1) by default, so probe
 # both stacks. Opt out with NO_OPEN=1; harmless if no opener exists.
