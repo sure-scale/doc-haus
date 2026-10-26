@@ -1,5 +1,5 @@
 {
   "version": 13,
   "name": "2.0.11",
-  "notes": "Various minor bug fixes."
+  "notes": "Search within an open document, step through matches and jump straight to a heading. Ask doc.haus to find comparable wording in the matter's documents, with the differences explained and the sources shown. New comments in review tables carry your saved name, including in Excel, Word and CSV exports. Various minor bug fixes."
 }
