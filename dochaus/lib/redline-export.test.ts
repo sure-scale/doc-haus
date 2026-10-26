@@ -19,6 +19,7 @@ const document = async (...text: string[]) => (await renderMarkdownToDocx(text.j
 const xml = (bytes: Uint8Array, part: string) => new DOMParser().parseFromString(strFromU8(unzipSync(bytes)[part]), "application/xml")
 const serialized = (bytes: Uint8Array, part: string, name: string) => Array.from(xml(bytes, part).getElementsByTagNameNS(W, name))
   .map(node => new XMLSerializer().serializeToString(node))
+const text = async (bytes: Uint8Array) => (await createDocxRevision(bytes)).paragraphs.flatMap(paragraph => paragraph.scope === "body" ? [paragraph.text] : [])
 
 test("legacy redline exports native notes on final paragraphs without changing revisions, embedded comments or inputs", async () => {
   const original = exportDocxComments(await document("The notice period is five days.", "Keep the retained record."), [
@@ -158,8 +159,25 @@ test("a plain file's preview is its proposals written as Accept writes them", as
     .map(node => [node.localName, Array.from(node.getElementsByTagNameNS(W, "*")).filter(text => text.localName === "t" || text.localName === "delText").map(text => text.textContent).join("")])
   expect(marked).toEqual([["del", "seven"], ["ins", "five"], ["ins", "This clause survives the end of this Agreement. "]])
   // Accepting every change in it gives the file Accept writes.
-  const text = async (bytes: Uint8Array) => (await createDocxRevision(bytes)).paragraphs.flatMap(paragraph => paragraph.scope === "body" ? [paragraph.text] : [])
   expect(await text(await (await docxodus()).docxDiffAcceptRevisions(preview))).toEqual(await text(await bake(original, rows)))
+})
+
+// An older whole-clause rewrite from chat beside a Request edits proposal, on a
+// plain file whose every paragraph carries its doc.haus pointer bookmark.
+test("a plain file previews a Request edits proposal and an older clause rewrite as Accept writes them", async () => {
+  const original = await document("Notice is seven days.", "Payment in thirty days.")
+  const packet = await createDocxLocalization(original, [{ id: "1", before_quote: "seven days", replacement: "five days" }])
+  const rows = [
+    { ...row(1, "seven days", "five days"), target_json: JSON.stringify({ version: 1, source_sha256: packet.revision.source_sha256,
+      amendment_id: "1", target_handle: packet.candidates[0]!.target_handle }) },
+    { ...row(2, "Payment in thirty days.", "Payment in sixty days."), scope: "clause" as const },
+  ]
+  const accepted = await text(await bake(original, rows))
+  expect(accepted).toEqual(["Notice is five days.", "Payment in sixty days."])
+  const preview = await buildRedlined(original, rows)
+  expect(await text(await (await docxodus()).docxDiffAcceptRevisions(preview))).toEqual(accepted)
+  expect(readDocxComments(preview).map(comment => [comment.text, comment.markers[0]!.accepted_paragraph_text]))
+    .toEqual(rows.map(row => [row.review_comment, accepted[row.id - 1]]))
 })
 
 test("annotated exports reject missing, ambiguous, structural and missing-author targets instead of losing notes", async () => {

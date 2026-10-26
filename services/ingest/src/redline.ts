@@ -82,11 +82,12 @@ function applyProposal(session: Session, row: RedlineRow): { ok: true } | { ok: 
 //
 // A list with revision-bound proposals is the file with them written in place
 // as tracked changes, as Accept writes them (trackedExport), older proposals in
-// it included, on a plain file and an uploaded markup alike. Older proposals
-// alone are replayed and compared with the document; without review notes
-// they retain the tolerant preview replay. Revision-bound proposals and
-// annotated proposals fail closed: exporting only part of their tracked
-// changes or silently losing a stored note is misleading.
+// it included, on a plain file and an uploaded markup alike; on a plain file,
+// a list with an older clause rewrite is what Accept writes compared with the
+// file. Older proposals alone are replayed and compared with the document;
+// without review notes they retain the tolerant preview replay. Revision-bound
+// proposals and annotated proposals fail closed: exporting only part of their
+// tracked changes or silently losing a stored note is misleading.
 // `state` is the request's redlineState for these bytes, when already read.
 // `options` is how the document is read.
 export async function buildRedlined(original: Uint8Array, rows: RedlineRow[], state?: RedlineState, options: DocxRevisionOptions = {}): Promise<Uint8Array> {
@@ -97,6 +98,15 @@ export async function buildRedlined(original: Uint8Array, rows: RedlineRow[], st
     throw new RedlinePreviewConflictError("Word review comments require paragraph-preserving proposals. Prepare a fresh change list without structural replacements.")
   if (rows.some((row) => row.target_json != null)) {
     try {
+      // An older clause rewrite replaces its whole paragraph, which a tracked
+      // write refuses where the paragraph holds a bookmark, as every deliverable
+      // paragraph holds its pointer's. A file without tracked changes takes
+      // Accept's edits untracked, so the comparison shows them.
+      if (rows.some((row) => row.target_json == null && row.scope === "clause") && !(await (await docxodus()).getRevisions(original)).length) {
+        const written = await writeProposals(original, rows, state, options, { locate: annotated })
+        const paragraphs = readDocxCommentParagraphPositions(written.bytes)
+        return commentRedline(original, written.bytes, rows, written.positions.map(at => paragraphs.findIndex(row => at !== undefined && row.xml_paragraph_indexes.includes(at))))
+      }
       // The tracked write reads its own changes back beside any the file has.
       return await trackedExport(original, rows, state, { ...options, pendingRevisions: "layer" })
     } catch (error) {
