@@ -8,7 +8,7 @@ import { ingestError } from "./errors"
 // What wrote a version, as its writer stated it. A value this build does not
 // know (a newer ingest's) still reads as something, never as nothing.
 export type VersionOrigin =
-  | "upload" | "replace" | "generated" | "revision" | "agent-edit" | "redaction"
+  | "upload" | "replace" | "generated" | "revision" | "word" | "agent-edit" | "redaction"
   | "accept" | "conversion" | "copy" | "restore" | "system" | "unknown"
 
 export type DocumentVersion = {

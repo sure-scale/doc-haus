@@ -3,6 +3,10 @@ import { clientRoutes } from "./clients"
 import { updateRoutes, managedUpdateOwner } from "./updater"
 import { RepoUpdater } from "../../../scripts/updater"
 import { documentCopyRoutes } from "./document-copy"
+import { wordCors, wordDocumentRoutes, wordTokenPath } from "./word-documents"
+import { startWordHttps, wordHttpsHandler } from "./word-https"
+import { wordHttpsConfiguration } from "./word-configuration"
+import { stripWordLink } from "../../../dochaus/lib/word-linked-docx"
 import { templateDraftRoutes } from "./template-drafts"
 import { registeredCombinedParts } from "./combined-output"
 import { documentLabelRoutes } from "./document-labels"
@@ -149,10 +153,39 @@ process.on("unhandledRejection", (reason) => {
 // on localhost; a wildcard would let any site in a user's browser hit this
 // service. Non-browser callers (curl, the opencode server) send no Origin and are
 // unaffected.
-app.use(
-  "*",
-  cors({ origin: (origin) => (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null), exposeHeaders: ["X-DocHaus-Revision-Notice"] }),
-)
+const localCors = cors({ origin: (origin) => (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null), exposeHeaders: ["X-DocHaus-Revision-Notice"] })
+app.use("*", async (c, next) => {
+  if (wordTokenPath(c.req.path)) return wordCors(c, next)
+  if (/^Bearer /i.test(c.req.header("Authorization") ?? ""))
+    return c.json({ error: "A Word save token cannot access the normal doc.haus API.", code: "word_scope_refused" }, 403)
+  return localCors(c, next)
+})
+app.on(["GET", "HEAD"], "/word-addin/*", (c) => {
+  try {
+    const configuration = wordHttpsConfiguration()
+    if (configuration?.external) return wordHttpsHandler(app.fetch, configuration)(c.req.raw)
+  } catch { /* The config route explains how to recover invalid setup. */ }
+  return c.notFound()
+})
+// Ordinary downloads are safe to share. Only the explicit linked hand-out
+// carries the write capability; stored Word saves are stripped before writing.
+app.use("*", async (c, next) => {
+  await next()
+  if (!c.res.ok || !c.res.headers.get("content-type")?.includes("wordprocessingml.document") ||
+    (c.req.method === "POST" && /^\/matters\/[^/]+\/documents\/word$/.test(c.req.path))) return
+  // Older generic content routes also use this MIME for spreadsheets/archives.
+  // Only Word attachments carry this add-in; keep other formats byte-identical.
+  const disposition = c.res.headers.get("content-disposition")
+  if (disposition && !/\.docx(?:[";]|$)/i.test(disposition)) return
+  try {
+    const bytes = new Uint8Array(await c.res.arrayBuffer())
+    const headers = new Headers(c.res.headers)
+    headers.delete("content-length")
+    c.res = new Response(new Uint8Array(stripWordLink(bytes)), { status: c.res.status, headers })
+  } catch {
+    c.res = c.json({ error: "This Word file could not be prepared for download.", code: "invalid_docx" }, 409)
+  }
+})
 
 const updateRoot = path.resolve(import.meta.dir, "../../..")
 const updateRuntime = process.env.DOCHAUS_RUNTIME_DIR ?? path.join(updateRoot, ".dochaus-runtime")
@@ -682,6 +715,16 @@ app.post("/matters/:id/deliverables", async (c) => {
 
 app.route("/", documentCopyRoutes(matterDir))
 app.route("/", templateDraftRoutes(matterDir))
+app.route("/", wordDocumentRoutes({
+  matter: getMatter, matters: listMatters,
+  locks: (directory, file) => [path.basename(file), ...runCombinedLock(directory, file), ".dochaus/source-corpus"],
+  write: async (directory, name, bytes, prior, version) => {
+    const combined = await prepareCombinedFile(directory, path.join(directory, name))
+    const written = await writeDocumentRevision(directory, name, bytes, [], prior, false, { version, exact: true, keepTracked: true })
+    await rebuildCombinedFile(combined)
+    return written
+  },
+}))
 
 // Persist an edit to an already registered document while preserving its role.
 // Editing a generated deliverable must never promote it into source retrieval.
@@ -1397,7 +1440,7 @@ async function writeDocumentRevision(
   const { role, bytes } = documentRevisionBytes(directory, name, input, options.exact)
   const existing = readWorkingDocx(directory,name)
   let working: Awaited<ReturnType<typeof acceptedWorkingDocxUpdate>> | undefined
-  if (role === "deliverable" && (boundAcceptance || existing) && name.toLowerCase().endsWith(".docx")) {
+  if (role === "deliverable" && (boundAcceptance || existing || options.version.origin === "word") && name.toLowerCase().endsWith(".docx")) {
     try {
       working = await acceptedWorkingDocxUpdate(directory,name,bytes)
     } catch (error) {
@@ -1973,4 +2016,5 @@ if (Number.isFinite(TELEMETRY_RETENTION_DAYS) && TELEMETRY_RETENTION_DAYS > 0) {
 const port = Number(process.env.INGEST_PORT ?? 4500)
 const hostname = process.env.INGEST_HOST ?? "127.0.0.1"
 console.log(`doc.haus ingest service listening on http://${hostname}:${port}`)
+startWordHttps(app.fetch)
 export default { port, hostname, fetch: app.fetch }

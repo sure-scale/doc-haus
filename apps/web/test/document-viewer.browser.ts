@@ -48,7 +48,9 @@ await Bun.write(entry, `
 import { createElement } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react")))}
 import { createRoot } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-dom/client")))}
 import DocumentViewer from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/DocumentViewer.tsx"))}
-createRoot(document.getElementById("root")).render(createElement(DocumentViewer, { matterId: "matter-viewer", name: decodeURIComponent(location.hash.slice(1)), onClose: () => {} }))
+import { WordDocumentsProvider } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/WordDocuments.tsx"))}
+const viewer = createElement(DocumentViewer, { matterId: "matter-viewer", name: decodeURIComponent(location.hash.slice(1)), onClose: () => {} })
+createRoot(document.getElementById("root")).render(location.search.includes("word") ? createElement(WordDocumentsProvider, { matterId: "matter-viewer", onChanged: () => { window.matterRefreshes = (window.matterRefreshes || 0) + 1 } }, viewer) : viewer)
 `)
 const build = await Bun.build({ entrypoints: [entry], target: "browser", define: { "import.meta.env": JSON.stringify({ VITE_INGEST_URL: "http://viewer.invalid" }) } })
 assert.equal(build.success, true, build.logs.join("\n"))
@@ -200,6 +202,80 @@ try {
   assert.deepEqual([pressed, after], [{ line: [], open: [] }, { line: [], open: [] }], "The earlier result goes on the press, and a load started before it does not put it back")
   assert.equal(await viewer.getByText(failure, { exact: true }).count(), 1, "The failed Prepare's error stays")
   await viewer.close()
+
+  // The matter's Word heartbeat refreshes received versions, never a native
+  // save timestamp. Returning from Word refreshes the working preview and
+  // versions while keeping an open, typed edit request in the same viewer.
+  const linked = await browser.newPage()
+  linked.setDefaultTimeout(60_000)
+  let wordVersion = "v-1"
+  let previewReads = 0
+  let versionReads = 0
+  let statusReads = 0
+  await linked.addInitScript(() => {
+    const interval = window.setInterval.bind(window)
+    window.setInterval = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      if (timeout === 5000 && typeof handler === "function") {
+        Object.assign(window, { pollWord: handler })
+        return 0
+      }
+      return interval(handler, timeout, ...args)
+    }) as typeof window.setInterval
+  })
+  await linked.route("http://viewer.invalid/**", route => {
+    const url = new URL(route.request().url())
+    const json = (value: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) })
+    if (url.pathname === "/word/config") return json({ available: true, origin: "https://word.example", manifestUrl: "https://word.example/word-addin/manifest.xml" })
+    if (url.pathname === "/matters/matter-viewer/documents/word") {
+      statusReads++
+      return json({ documents: [{ name: "complete.docx", open: true, currentVersion: wordVersion, overlap: wordVersion === "v-2" }] })
+    }
+    if (/^\/matters\/matter-viewer\/documents\/(redlined|content)$/.test(url.pathname)) {
+      previewReads++
+      return route.fulfill({ status: 200, contentType: `${CT}.document`, body: Buffer.from(files.get("complete.docx")!) })
+    }
+    if (url.pathname === "/matters/matter-viewer/documents/versions") {
+      versionReads++
+      return json({ name: "complete.docx", document: null, versions: [], events: [], working_version: wordVersion })
+    }
+    if (url.pathname === "/matters/matter-viewer/redlines") return json([])
+    if (url.pathname === "/matters/matter-viewer/documents/amendments") return json(null)
+    return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: `Unexpected ${url.pathname}` }) })
+  })
+  await linked.goto(`${server.url.href}?word#complete.docx`)
+  await linked.locator(".docx-render:not(.docx-skeleton)").waitFor()
+  await linked.getByText("Open in Word", { exact: true }).first().waitFor()
+  await linked.getByRole("button", { name: "Request edits", exact: true }).click()
+  const request = linked.getByLabel("Describe the changes you want to review", { exact: true })
+  const typed = "Keep this request while I check the Word copy."
+  await request.fill(typed)
+  await request.evaluate(element => Object.assign(element, { wordFocusMarker: "same textarea" }))
+  const waitForReads = async (count: number) => {
+    for (const deadline = Date.now() + 60_000; previewReads < count; await Bun.sleep(10)) assert.ok(Date.now() < deadline, "Word refresh never reloaded the preview")
+    await linked.locator(".docx-render:not(.docx-skeleton)").waitFor()
+  }
+  const readsAtFocus = previewReads
+  const versionsAtFocus = versionReads
+  await linked.evaluate(() => window.dispatchEvent(new Event("focus")))
+  await waitForReads(readsAtFocus + 1)
+  assert.ok(versionReads > versionsAtFocus, "Focus refreshed the kept versions")
+  assert.equal(await request.inputValue(), typed)
+  assert.equal(await request.evaluate(element => (element as HTMLElement & { wordFocusMarker?: string }).wordFocusMarker), "same textarea", "Focus did not remount the edit request")
+  const readsAtHeartbeat = previewReads
+  const heartbeat = statusReads
+  await linked.evaluate(() => (window as Window & { pollWord?: () => void }).pollWord!())
+  for (const deadline = Date.now() + 60_000; statusReads <= heartbeat; await Bun.sleep(10)) assert.ok(Date.now() < deadline, "Word status did not poll")
+  await linked.waitForTimeout(100)
+  assert.equal(previewReads, readsAtHeartbeat, "A heartbeat with unchanged received bytes did not reload the document")
+  wordVersion = "v-2"
+  await linked.evaluate(() => (window as Window & { pollWord?: () => void }).pollWord!())
+  await waitForReads(readsAtHeartbeat + 1)
+  await linked.getByText("Overlapping changes", { exact: true }).waitFor()
+  assert.equal(await request.inputValue(), typed)
+  assert.equal(await request.evaluate(element => (element as HTMLElement & { wordFocusMarker?: string }).wordFocusMarker), "same textarea", "A received Word version did not remount the edit request")
+  assert.ok((await linked.locator(".word-warning").textContent())?.includes("Save to doc.haus"))
+  console.log("PASS Word focus and received-version refresh: preview and versions reloaded, typed edit request preserved, unchanged heartbeats did not reload")
+  await linked.close()
 } finally {
   await browser.close()
   server.stop(true)

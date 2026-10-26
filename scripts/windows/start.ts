@@ -311,6 +311,14 @@ async function main(args: string[]) {
       }
     }
 
+    const paneStatus = await run([bun, "run", "--cwd", "apps/word-addin", "build"], ".")
+    if (paneStatus !== 0) return await stop(paneStatus)
+    if (process.env.DOCHAUS_SETUP_WORD_ADDIN === "1") {
+      delete process.env.DOCHAUS_SETUP_WORD_ADDIN
+      if (await run([bun, "run", "scripts/setup-word-addin.ts", "--offer"], ".") !== 0)
+        console.error("doc.haus: Word setup can be retried with bun scripts/setup-word-addin.ts")
+    }
+
     // Every upload and search needs the local embedding model; see start.sh.
     console.log(`doc.haus: checking the embedding model (${process.env.DOCHAUS_MODEL_CACHE_DIR})`)
     for (let attempt = 1; await run([bun, "run", "src/warm-embedding-model.ts"], "services/ingest") !== 0; attempt++) {

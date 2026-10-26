@@ -1,0 +1,110 @@
+import { WORD_LINK_SETTING } from "../../../dochaus/lib/word-addin-contract"
+
+type Result<T> = { status: string; value: T }
+type Callback<T> = (result: Result<T>) => void
+export type OfficeFile = {
+  size: number
+  sliceCount: number
+  getSliceAsync(index: number, callback: Callback<{ data: number[] }>): void
+  closeAsync(callback: Callback<void>): void
+}
+type WordContext = {
+  document: { saved: boolean; load(properties: string): void; save(): void }
+  sync(): Promise<void>
+}
+type OfficeRuntime = {
+  onReady(): Promise<{ host: string }>
+  context: {
+    document: {
+      settings: { get(key: string): unknown }
+      getFileAsync(type: string, options: { sliceSize: number }, callback: Callback<OfficeFile>): void
+    }
+    requirements: { isSetSupported(name: string, version: string): boolean }
+  }
+  FileType: { Compressed: string }
+}
+
+declare global {
+  interface Window {
+    Office?: OfficeRuntime
+    Word?: { run<T>(callback: (context: WordContext) => Promise<T>): Promise<T> }
+  }
+}
+
+export interface WordHost {
+  saved(): Promise<boolean>
+  save(): Promise<void>
+  export(): Promise<Uint8Array>
+}
+
+function asyncResult<T>(start: (callback: Callback<T>) => void, message: string): Promise<T> {
+  // Keep the host error out of UI/logs: it may include document paths.
+  return new Promise((resolve, reject) =>
+    start((result) => (result.status === "succeeded" ? resolve(result.value) : reject(new Error(message)))),
+  )
+}
+
+export async function exportFile(file: OfficeFile): Promise<Uint8Array> {
+  try {
+    if (!Number.isSafeInteger(file.size) || file.size < 1 || file.size > 128 * 1024 * 1024) {
+      throw new Error("This document is too large to send. Keep the Word file and return to doc.haus.")
+    }
+    const bytes = new Uint8Array(file.size)
+    let offset = 0
+    for (let index = 0; index < file.sliceCount; index++) {
+      const slice = await asyncResult<{ data: number[] }>(
+        (callback) => file.getSliceAsync(index, callback),
+        "Word could not read the document. Try saving again.",
+      )
+      if (offset + slice.data.length > bytes.length)
+        throw new Error("Word could not read the complete document. Try saving again.")
+      bytes.set(slice.data, offset)
+      offset += slice.data.length
+    }
+    if (offset !== bytes.length) throw new Error("Word could not read the complete document. Try saving again.")
+    return bytes
+  } finally {
+    await asyncResult<void>(
+      (callback) => file.closeAsync(callback),
+      "Word could not finish reading the document. Try saving again.",
+    )
+  }
+}
+
+export async function connectOffice(): Promise<{ host: WordHost; link: unknown }> {
+  const office = window.Office
+  if (!office) throw new Error("Open this pane in Microsoft Word.")
+  const ready = await office.onReady()
+  if (ready.host !== "Word" || !window.Word || !office.context.requirements.isSetSupported("WordApi", "1.1")) {
+    throw new Error("Use a current desktop version of Microsoft Word to save to doc.haus.")
+  }
+  const word = window.Word
+  return {
+    link: office.context.document.settings.get(WORD_LINK_SETTING),
+    host: {
+      saved: () =>
+        word.run(async (context) => {
+          context.document.load("saved")
+          await context.sync()
+          return context.document.saved
+        }),
+      save: () =>
+        word.run(async (context) => {
+          context.document.save()
+          await context.sync()
+          context.document.load("saved")
+          await context.sync()
+          if (!context.document.saved)
+            throw new Error("Word has not saved the document yet. Try Save to doc.haus again.")
+        }),
+      export: async () => {
+        const file = await asyncResult<OfficeFile>(
+          (callback) =>
+            office.context.document.getFileAsync(office.FileType.Compressed, { sliceSize: 1024 * 1024 }, callback),
+          "Word could not prepare the document. Try saving again.",
+        )
+        return exportFile(file)
+      },
+    },
+  }
+}

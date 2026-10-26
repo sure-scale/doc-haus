@@ -38,6 +38,7 @@ import backdropClose from "./backdropClose"
 import { withSafeStyleValues } from "./docx-style-values"
 import { ProposalRedline } from "./redline"
 import { useDocumentNavigation } from "./DocumentNavigation"
+import { WordBadge, WordOpenControl, WordSetup, WordWarning, useWordRefresh } from "./WordDocuments"
 
 // How a Word file with tracked changes is painted: insertions underlined and
 // deletions struck through in their author's colour (styles.css), moves,
@@ -204,6 +205,7 @@ function WordDocumentViewer({
   // Bumped after an accept/reject resolves so the load effect re-runs — the
   // document re-renders and the change list shrinks without duplicating fetch logic.
   const [reload, setReload] = useState(0)
+  useWordRefresh(() => setReload((value) => value + 1), busy !== undefined)
   const focusRef = useRef<HTMLDivElement>(null)
   const modalRef = useRef<HTMLDivElement>(null)
   useModalFocus(modalRef)
@@ -698,6 +700,7 @@ function WordDocumentViewer({
               <ModalClose onClose={onClose} />
             </div>
           </div>
+          <WordWarning />
           <div className="viewer-body">
             {narrow && versionsPanel}
             <div className="viewer-doc pdf-doc" ref={documentRef}>
@@ -729,6 +732,8 @@ function WordDocumentViewer({
         <div className="viewer-bar">
           <ViewerTitle name={name} kind={shown ? `Word document · version ${shown.number}` : "Word document"} pending={shown ? 0 : redlines.length} markers={markers && markerSummary(markers)} />
           <div className="viewer-bar-actions">
+            <WordBadge name={name} />
+            <WordOpenControl matterId={matterId} name={name} disabled={busy !== undefined || shown !== undefined} />
             <DownloadActions redlines={redlines} preview={Boolean(html)} onDownload={download} version={shown?.number} />
             {markupToggle}
             {versionsToggle}
@@ -785,6 +790,8 @@ function WordDocumentViewer({
             <ModalClose onClose={onClose} />
           </div>
         </div>
+        <WordSetup />
+        <WordWarning name={name} />
         {navigation.bar}
         <div className="viewer-with-navigation">
           {navigation.outline}

@@ -41,6 +41,7 @@ import QuestionDock from "./drafting/QuestionDock"
 import RunHeader from "./drafting/RunHeader"
 import useRunActions from "./drafting/useRunActions"
 import type { DraftingFeed } from "./drafting/useDraftingStatus"
+import { WordWarning } from "./WordDocuments"
 
 // Quiet starter prompts so a fresh matter is not a blank box and the user has
 // ready questions about the documents in scope.
@@ -433,6 +434,7 @@ export default function ChatPanel({
           <h2>{updatingRun ? "Update current draft" : title}</h2>
         </div>
       )}
+      <WordWarning />
       {run && (
         <RunHeader
           status={run}

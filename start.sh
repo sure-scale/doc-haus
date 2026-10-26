@@ -148,6 +148,13 @@ if [ -z "${SKIP_INSTALL:-}" ]; then
   done
 fi
 
+# The pane is served by this installation; rebuild it after dependency/update changes.
+"$BUN_BIN" run --cwd apps/word-addin build
+if [ "${DOCHAUS_SETUP_WORD_ADDIN:-}" = 1 ]; then
+  "$BUN_BIN" run scripts/setup-word-addin.ts --offer || echo "doc.haus: Word setup can be retried with bun scripts/setup-word-addin.ts" >&2
+  unset DOCHAUS_SETUP_WORD_ADDIN
+fi
+
 # Make sure the local embedding model loads before anything is declared ready:
 # every upload and every document search needs it, and its first download comes
 # from huggingface.co. The model is cached once per user, outside node_modules,
