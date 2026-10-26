@@ -5,6 +5,7 @@ import { createDocxRevision, createDocxLocalization, applyDocxLocalization, appl
   pendingRevisionAnchors, pendingRevisionParagraphs, verifyPreservation } from "./docx-amendments"
 import { paragraphTargets } from "./drafting-amendment"
 import { renderMarkdownToDocx } from "./render"
+import { wordChanges } from "./word-changes"
 import { docxodus } from "./docxodus"
 import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx } from "../test/support/counterparty-markup-fixture"
 import { revisionTablesOriginalDocx } from "../test/support/revision-tables-fixture"
@@ -408,6 +409,21 @@ describe("live cross-references", () => {
         expect(output.report.limitation).not.toContain("cross-reference")
         expect(output.report.amendments[0]!.paragraph_after).toBe(after)
       }
+    }
+  })
+
+  test("a cross-reference added beside a live one leaves it live, and the change is the whole numbers added", async () => {
+    const source = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes
+    const paragraph_handle = (await createDocxRevision(source)).paragraphs.find(row => row.label === "2.2")!.paragraph_handle
+    const [before_quote, replacement] = ["set out in clause 2.1.", "set out in clauses 3.2 and 2.1, as amended."]
+    expect(wordChanges(before_quote, replacement)).toEqual([
+      { offset: 11, replaced: "clause ", changed: "clauses 3.2 and " }, { offset: 21, replaced: "", changed: ", as amended" }])
+    for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }] as const) {
+      const output = await applyDocxParagraphEdits(source, [{ id: "reference", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options)
+      expect(refs(output.bytes)).toEqual(refs(source))
+      expect(output.report.limitation).not.toContain("cross-reference")
+      expect((await createDocxRevision(output.bytes, { pendingRevisions: "layer" })).paragraphs.find(row => row.label === "2.2")!.text)
+        .toBe("The Customer shall pay as set out in clauses 3.2 and 2.1, as amended.")
     }
   })
 

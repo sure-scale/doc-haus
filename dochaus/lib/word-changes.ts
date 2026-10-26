@@ -7,7 +7,12 @@
 export type WordChange = { offset: number; replaced: string; changed: string }
 
 // Words, runs of white space and single other characters, as changes compare them.
-function wordTokens(value: string) { return value.match(/[\p{L}\p{N}_]+|\s+|[^\p{L}\p{N}_\s]/gu) ?? [] }
+// A clause number (2.1, 4.1.2, 2.1A) is one word, so a reference added beside
+// it is never aligned into it; an amount's decimals after a thousands comma
+// (1,000.50) stay words of their own.
+function wordTokens(value: string) {
+  return value.match(/(?<!\p{N},)\p{N}+(?:\.\p{N}+)+[\p{L}\p{N}_]*|[\p{L}\p{N}_]+|\s+|[^\p{L}\p{N}_\s]/gu) ?? []
+}
 
 // Tokens before[b0, b1) of the old text become after[a0, a1) of the new.
 type Run = { b0: number; b1: number; a0: number; a1: number }
