@@ -97,3 +97,25 @@ test("heartbeat and Done release unused success bodies", async () => {
   await client.done()
   expect(cancelled).toBe(2)
 })
+
+test("default transport invokes native fetch with the global receiver", async () => {
+  const previous = globalThis.fetch
+  let called = false
+  globalThis.fetch = function (this: unknown) {
+    if (this !== globalThis) throw new TypeError("Illegal invocation")
+    called = true
+    return Promise.resolve(
+      Response.json({
+        version: { id: "v1", number: 1, parent: "original", created: true },
+        overlap: false,
+      }),
+    )
+  } as unknown as typeof fetch
+  try {
+    const client = new WordClient(link, "session")
+    expect((await client.save(new Uint8Array([1]), "original")).version.id).toBe("v1")
+    expect(called).toBe(true)
+  } finally {
+    globalThis.fetch = previous
+  }
+})

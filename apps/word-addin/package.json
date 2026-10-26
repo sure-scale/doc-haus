@@ -9,6 +9,7 @@
     "test": "bun test src"
   },
   "dependencies": {
+    "@xmldom/xmldom": "0.8.15",
     "fflate": "0.8.3"
   },
   "devDependencies": {

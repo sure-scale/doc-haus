@@ -58,7 +58,8 @@ export class WordClient {
   constructor(
     private readonly link: WordDocumentLink,
     private readonly session: string,
-    private readonly request: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> = fetch,
+    private readonly request: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> = (input, init) =>
+      globalThis.fetch(input, init),
     private readonly timeoutMs = 30_000,
   ) {
     this.receiver = httpsOrigin(link.apiOrigin)

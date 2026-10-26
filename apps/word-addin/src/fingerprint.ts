@@ -1,4 +1,51 @@
-import { unzipSync } from "fflate"
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
+import { strFromU8, strToU8, unzipSync } from "fflate"
+
+const wordNamespaces = new Set([
+  "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+  "http://purl.oclc.org/ooxml/wordprocessingml/main",
+])
+// Revision-session identifiers describe editing sessions, not the changes
+// themselves. Keep unknown attributes and every actual change/format payload.
+const sessionAttributes = new Set(["rsidR", "rsidRPr", "rsidDel", "rsidP", "rsidRDefault", "rsidTr", "rsidSect"])
+
+function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
+  if (!name.startsWith("word/") || !name.endsWith(".xml")) return bytes
+  const text = strFromU8(bytes)
+  if (!text.includes("rsid")) return bytes
+  const fail = () => {
+    throw new Error("Word could not read the document for comparison. Keep the file and try saving again.")
+  }
+  if (/<!DOCTYPE|<!ENTITY/i.test(text)) fail()
+  const doc = new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(
+    text,
+    "application/xml",
+  )
+  if (!doc.documentElement || doc.getElementsByTagName("parsererror").length) fail()
+  const root = doc.documentElement
+  if (!wordNamespaces.has(root.namespaceURI ?? "")) return bytes
+  let changed = false
+  for (const node of Array.from(doc.getElementsByTagName("*"))) {
+    if (!wordNamespaces.has(node.namespaceURI ?? "")) continue
+    for (const attribute of Array.from(node.attributes)) {
+      if (!wordNamespaces.has(attribute.namespaceURI ?? "") || !sessionAttributes.has(attribute.localName ?? ""))
+        continue
+      node.removeAttributeNode(attribute)
+      changed = true
+    }
+  }
+  if (name === "word/settings.xml" && wordNamespaces.has(root.namespaceURI ?? "") && root.localName === "settings") {
+    for (const node of Array.from(root.childNodes)) {
+      if (node.nodeType !== 1) continue
+      const element = node as Element
+      if (wordNamespaces.has(element.namespaceURI ?? "") && element.localName === "rsids") {
+        root.removeChild(element)
+        changed = true
+      }
+    }
+  }
+  return changed ? strToU8(new XMLSerializer().serializeToString(doc)) : bytes
+}
 
 /** Compare package contents, not ZIP timestamps, compression, or entry order. */
 export async function documentFingerprint(bytes: Uint8Array): Promise<string> {
@@ -20,7 +67,7 @@ export async function documentFingerprint(bytes: Uint8Array): Promise<string> {
   const encoder = new TextEncoder()
   const parts: Uint8Array[] = []
   for (const name of Object.keys(entries).sort()) {
-    const content = entries[name]!
+    const content = comparisonContent(name, entries[name]!)
     const label = encoder.encode(name)
     const lengths = new Uint8Array(8)
     const view = new DataView(lengths.buffer)

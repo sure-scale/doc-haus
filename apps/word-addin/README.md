@@ -24,6 +24,12 @@ user to retry. No document bytes are placed in browser storage.
 
 While the pane stays open, a five-second poll checks `document.saved` and hashes
 sorted uncompressed DOCX parts to ignore ZIP timestamp/order/compression churn.
+Some desktop Word exports also rotate revision-session identifiers without an
+edit. For comparison only, the fingerprint parses XML and removes the known
+WordprocessingML revision-session attributes and the direct `rsids` settings
+list. Actual text, formatting, comments and tracked changes remain significant;
+foreign/unknown attributes remain significant too. Uploaded DOCX bytes are never
+rewritten by this comparison step.
 It also captures the initial saved file on reopen. Unsaved edits are never
 automatically exported/uploaded. This is best-effort sync: several native saves
 may become one version, and closing Word can stop a final upload. There is no
