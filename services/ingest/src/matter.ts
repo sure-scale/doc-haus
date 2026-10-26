@@ -227,8 +227,13 @@ export class MatterNotFoundError extends Error {
 }
 
 function readMatter(dir: string) {
-  if (!existsSync(matterFile(dir))) throw new MatterNotFoundError()
-  return JSON.parse(readFileSync(matterFile(dir), "utf8")) as Matter
+  try {
+    return JSON.parse(readFileSync(matterFile(dir), "utf8")) as Matter
+  } catch (error) {
+    // Only a missing file means no such matter; an unreadable one is a real error.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new MatterNotFoundError()
+    throw error
+  }
 }
 
 export function getMatter(id: string): Matter {
