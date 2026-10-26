@@ -667,9 +667,12 @@ export async function openRevision(source: Uint8Array, options: DocxRevisionOpti
       const moved = view.moved_here ? `[${MOVED_HERE}]\n\n` : ""
       const escape = (text: string) => text.replace(/[\\`*_{}[\]<>|]/g, "\\$&")
       return part + context + moved + prefix + (view.label ? `${escape(view.label)} ` : "") + view.formatting.map(fragment => {
-        const text = escape(fragment.text)
-        return fragment.formatting.bold && fragment.formatting.italic ? `***${text}***`
-          : fragment.formatting.bold ? `**${text}**` : fragment.formatting.italic ? `*${text}*` : text
+        // Marks touch the words they mark: a run's own spaces at either end
+        // fall outside them, so an asterisk beside a space is a word.
+        const [, before, words, after] = fragment.text.match(/^(\s*)([\s\S]*?)(\s*)$/)!
+        const mark = !words ? "" : fragment.formatting.bold && fragment.formatting.italic ? "***"
+          : fragment.formatting.bold ? "**" : fragment.formatting.italic ? "*" : ""
+        return before + mark + escape(words!) + mark + after
       }).join("")
     }).join("\n\n")
     const revision = { schema, source_sha256, projection_sha256: digest(JSON.stringify(views)), markdown, paragraphs: views }

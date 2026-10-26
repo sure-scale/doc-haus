@@ -1862,7 +1862,7 @@ test("a quote with one space where the document has two is placed in the documen
       expect(response.status).toBe(200)
       return await response.json() as {redline_ids:number[];open_items:string[]}
     })
-    expect(body.open_items).toEqual(["The change to “Each invoice is final. It binds the Client.” was not proposed: those words are not in the document. Say which words it changes, then request edits again."])
+    expect(body.open_items).toEqual(["The change to “Each invoice is final. It binds the Client.” was not proposed: those words appear more than once in the document. Say which of them it changes, then request edits again."])
     const db = openDb(temporary)
     const rows = (() => {try {return body.redline_ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
     expect(rows.map((row) => [row.find_text,row.new_text])).toEqual([[
@@ -1907,28 +1907,35 @@ test("a replacement with one space where its quote has the document's two keeps 
   } finally {engine.server.stop(true);await rm(temporary,{recursive:true,force:true})}
 })
 
-// The model writes as its draft view reads: a pair of asterisks marks bold or
-// italic words and a backslash escapes a character. Asterisks of the
-// document's own that it quotes as they are stay.
-test("a replacement written with the draft view's bold marks or escapes is proposed as plain words; one that only adds marks changes no words", async () => {
+// The model writes as its draft view reads: asterisks touching the words they
+// enclose mark them bold or italic, and a backslash escapes a character. Its
+// other asterisks are words: a placeholder, a footnote, a formula, or the
+// document's own that it quotes as they are.
+test("a replacement written with the draft view's bold marks or escapes is proposed as plain words, keeping its placeholder, footnote and formula asterisks; one that only adds marks changes no words", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-replacement-markup-"))
   const change = (before_quote:string,replacement:string) => ({before_quote,replacement,target_context:"the clause quoted",reason:"Requested."})
   const engine = syntheticEngine(() => ({amendments:[
     change("the services described in Schedule 1.","the services described in Schedule 1 (the **\"Services\"**)."),
     change("within thirty days","within \\[number\\] days"),
-    change("Fees marked * and expenses marked * are estimates.","Fees marked * and expenses marked * are estimates only."),
+    change("The Purchase Price is £[*].","The Purchase Price is £[*] plus VAT, payable on [*]."),
+    change("The Fee* is payable monthly.","The Fee* and the Expenses* are payable monthly."),
+    change("Fee * Index.","Fee * Index * 1.05."),
+    change("shall *not* subcontract","shall *not* subcontract or assign"),
     change("The Customer shall pay","The **Customer** shall pay"),
   ],open_items:[]}),firstCandidate)
   try {
     await writeDeliverable(directory,"working.docx",await Packer.toBuffer(new Document({sections:[{children:[
       new Paragraph("The Supplier shall provide the services described in Schedule 1."),
       new Paragraph("The Buyer shall pay each invoice within thirty days."),
-      new Paragraph("Fees marked * and expenses marked * are estimates."),
+      new Paragraph("The Purchase Price is £[*]."),
+      new Paragraph("The Fee* is payable monthly."),
+      new Paragraph("The Adjusted Fee = Fee * Index."),
+      new Paragraph("The Supplier shall *not* subcontract."),
       new Paragraph("The Customer shall pay the Fees."),
     ]}]})))
     const original = await Bun.file(path.join(directory,"working.docx")).bytes()
     const body = await withPreparation(directory,engine,async (prepare) => {
-      const response = await prepare("Define the services, leave the payment period for the client to fill in, say the marked charges are estimates only and put the Customer in bold.")
+      const response = await prepare("Define the services, leave the payment period and payment date for the client to fill in, add VAT, the expenses, the 5% uplift and assignment, and put the Customer in bold.")
       expect(response.status).toBe(200)
       return await response.json() as {redline_ids:number[];open_items:string[]}
     })
@@ -1938,30 +1945,36 @@ test("a replacement written with the draft view's bold marks or escapes is propo
     expect(rows.map((row) => [row.find_text,row.new_text])).toEqual([
       ["the services described in Schedule 1.","the services described in Schedule 1 (the \"Services\")."],
       ["within thirty days","within [number] days"],
-      ["Fees marked * and expenses marked * are estimates.","Fees marked * and expenses marked * are estimates only."]])
+      ["The Purchase Price is £[*].","The Purchase Price is £[*] plus VAT, payable on [*]."],
+      ["The Fee* is payable monthly.","The Fee* and the Expenses* are payable monthly."],
+      ["Fee * Index.","Fee * Index * 1.05."],
+      ["shall *not* subcontract","shall *not* subcontract or assign"]])
     const after = await openRevision(await bake(original,rows,await redlineState(original,rows)))
     try {
       expect(after.revision.paragraphs.map((row) => row.text)).toEqual([
         "The Supplier shall provide the services described in Schedule 1 (the \"Services\").","The Buyer shall pay each invoice within [number] days.",
-        "Fees marked * and expenses marked * are estimates only.","The Customer shall pay the Fees."])
+        "The Purchase Price is £[*] plus VAT, payable on [*].","The Fee* and the Expenses* are payable monthly.","The Adjusted Fee = Fee * Index * 1.05.",
+        "The Supplier shall *not* subcontract or assign.","The Customer shall pay the Fees."])
     } finally {after.session.close()}
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
 // A quote that starts or ends inside a bold or italic run copies one of the
-// draft view's marks around it and not the other.
-test("a quote that cuts through a bold run is placed without the mark it copied, and the run stays bold", async () => {
+// draft view's marks around it and not the other. A replacement that closes
+// the run itself would write the words before the quote twice.
+test("a quote that cuts through a bold run is placed without the mark it copied, and the run stays bold; one whose replacement closes the run is an open item", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-cut-run-"))
   const bold = (text:string) => new TextRun({text,bold:true})
   const change = (before_quote:string,replacement:string) => ({before_quote,replacement,target_context:"the clause quoted",reason:"Requested."})
   const engine = syntheticEngine(() => ({amendments:[
     change("Information** means any information disclosed by a party.","Information** means any information, in any form, disclosed by a party."),
     change("made between the **Supplier","made on 1 May 2026 between the **Supplier"),
+    change("Information** means any information","**Confidential Information** means all information"),
   ],open_items:[]}),firstCandidate)
   try {
     await writeDeliverable(directory,"working.docx",await Packer.toBuffer(new Document({sections:[{children:[
       new Paragraph({children:[bold("Confidential Information"),new TextRun(" means any information disclosed by a party.")]}),
-      new Paragraph({children:[new TextRun("This Agreement is made between the "),bold("Supplier Group"),new TextRun(" and the Customer.")]}),
+      new Paragraph({children:[new TextRun("This Agreement is made between the"),bold(" Supplier Group "),new TextRun("and the Customer.")]}),
     ]}]})))
     const original = await Bun.file(path.join(directory,"working.docx")).bytes()
     const body = await withPreparation(directory,engine,async (prepare) => {
@@ -1969,7 +1982,9 @@ test("a quote that cuts through a bold run is placed without the mark it copied,
       expect(response.status).toBe(200)
       return await response.json() as {redline_ids:number[];open_items:string[]}
     })
-    expect(body.open_items).toEqual([])
+    // The marks touch the words, whatever spaces the bold run holds.
+    expect(engine.prompts[0]).toContain("This Agreement is made between the **Supplier Group** and the Customer.")
+    expect(body.open_items).toEqual(["The change to “Information** means any information” was not proposed: those words are not in the document. Say which words it changes, then request edits again."])
     const db = openDb(directory)
     const rows = (() => {try {return body.redline_ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
     expect(rows.map((row) => [row.find_text,row.new_text])).toEqual([
@@ -1980,27 +1995,30 @@ test("a quote that cuts through a bold run is placed without the mark it copied,
       expect(after.revision.paragraphs.map((row) => row.text)).toEqual([
         "Confidential Information means any information, in any form, disclosed by a party.","This Agreement is made on 1 May 2026 between the Supplier Group and the Customer."])
       expect(after.revision.paragraphs.flatMap((row) => row.formatting.filter((fragment) => fragment.formatting.bold).map((fragment) => fragment.text)))
-        .toEqual(["Confidential Information","Supplier Group"])
+        .toEqual(["Confidential Information"," Supplier Group "])
     } finally {after.session.close()}
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
 // Word documents keep a number with its word or currency sign by a
 // non-breaking space, which the model may quote as an ordinary one.
-test("a quote with ordinary spaces where the document has non-breaking ones is placed in the document's words, which keep them", async () => {
+test("a quote with ordinary spaces where the document has non-breaking ones is placed in the document's words, which keep them; one found so more than once is an open item", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-nonbreaking-"))
   const fee = (amount:string) => `Subject to clause\u00a05, the Fee is £\u202f${amount} per month.`
   const engine = syntheticEngine(() => ({amendments:[{before_quote:"Subject to clause 5, the Fee is £ 100 per month.",
-    replacement:"Subject to clause 5, the Fee is £ 120 per month.",target_context:"fee clause",reason:"Requested fee increase."}],open_items:[]}),firstCandidate)
+    replacement:"Subject to clause 5, the Fee is £ 120 per month.",target_context:"fee clause",reason:"Requested fee increase."},
+  {before_quote:"£ 100",replacement:"£ 150",target_context:"deposit clause",reason:"Requested deposit increase."}],open_items:[]}),firstCandidate)
   try {
-    await writeDeliverable(directory,"working.docx",await Packer.toBuffer(new Document({sections:[{children:[new Paragraph(fee("100"))]}]})))
+    await writeDeliverable(directory,"working.docx",await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph(fee("100")),new Paragraph("A deposit of £  100 is payable on signing."),
+    ]}]})))
     const original = await Bun.file(path.join(directory,"working.docx")).bytes()
     const body = await withPreparation(directory,engine,async (prepare) => {
-      const response = await prepare("Raise the monthly fee to £120.")
+      const response = await prepare("Raise the monthly fee to £120 and the deposit to £150.")
       expect(response.status).toBe(200)
       return await response.json() as {redline_ids:number[];open_items:string[]}
     })
-    expect(body.open_items).toEqual([])
+    expect(body.open_items).toEqual(["The change to “£ 100” was not proposed: those words appear more than once in the document. Say which of them it changes, then request edits again."])
     const db = openDb(directory)
     const rows = (() => {try {return body.redline_ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
     expect(rows.map((row) => [row.find_text,row.new_text])).toEqual([[fee("100"),fee("120")]])
