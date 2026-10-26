@@ -55,6 +55,10 @@ test("manifest uses the shared identity and designated auto-open pane", () => {
   expect(manifest).toContain(`<Version>${WORD_ADDIN_VERSION}</Version>`)
   expect(manifest).toContain("<TaskpaneId>Office.AutoShowTaskpaneWithDocument</TaskpaneId>")
   expect(manifest).toContain("https://localhost:4612/word-addin/pane.html")
+  expect(manifest.match(/xsi:type="ShowTaskpane"/g)).toHaveLength(1)
+  expect(manifest).not.toContain('xsi:type="ExecuteFunction"')
+  // A function runtime must not boot the pane's document writer as well.
+  expect(manifest).not.toContain("<FunctionFile")
   expect(() => renderManifest("http://localhost:4612")).toThrow()
 })
 
