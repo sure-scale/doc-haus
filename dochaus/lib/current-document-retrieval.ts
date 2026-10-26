@@ -1,7 +1,6 @@
 import { currentDocumentArtifacts } from "./current-document-artifacts"
 import path from "node:path"
-import { existsSync, realpathSync } from "node:fs"
-import { Database } from "bun:sqlite"
+import { realpathSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { readRegularFile } from "./regular-file"
 import { readDocxComments, readDocxRevisionText } from "./docx-comments"
@@ -12,6 +11,7 @@ import { UNTRUSTED_DOCUMENT_NOTICE } from "./untrusted"
 import { readDocxBodyView } from "./docx-revision-views"
 import { readDocxMarkup, readMarkupComments, type MarkupLocation, type MarkupRevision } from "./docx-markup"
 import { detectInjection, normalizeUntrustedText } from "./untrusted-text"
+import { registeredWordSource } from "./legal-db"
 
 export type CurrentDocumentView = "current_body" | "baseline_body" | "marked_up_body" | "comments" | "deleted_text" | "proposed_body" | "revisions"
 /** `label` is the list number Word prints before a body paragraph ("2.1"); it is not part of `text`. */
@@ -116,17 +116,6 @@ function screened(raw: string) {
   const normalized = normalizeUntrustedText(raw)
   const rules = [...new Set([...normalized.findings, ...detectInjection(normalized.text)].map(finding => finding.rule))]
   return { text: normalized.text, ...(rules.length ? { flagged: rules } : {}) }
-}
-
-function registeredWordSource(directory: string, document: string) {
-  if (path.basename(document) !== document || !/\.docx$/i.test(document)) return false
-  const file = path.join(directory, ".dochaus", "legal.db")
-  if (!existsSync(file)) return false
-  const relative = path.relative(realpathSync(directory), realpathSync(file))
-  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return false
-  const db = new Database(file, { readonly: true })
-  try { return Boolean(db.query("SELECT 1 FROM documents WHERE name = ? AND role = 'source'").get(document)) }
-  finally { db.close() }
 }
 
 function response(value: Record<string, unknown>, truncated = false) {

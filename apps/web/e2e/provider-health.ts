@@ -82,7 +82,7 @@ async function fixture(name: string, options: { accepted?: boolean; width?: numb
     if (request.method() !== "GET") { unexpected.push(`${name}: ${request.method()} ${pathname}`); return route.abort() }
     if (pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
     if (pathname === "/setup") return reply({ version: 1, ready: true, completed: state.setup === "done" ? ["models", "research", "details"] : [], skipped: [], next: state.setup })
-    if (pathname === "/matters") return reply([])
+    if (pathname === "/matters" || pathname === "/clients") return reply([])
     if (pathname === "/jurisdictions") return reply([{ code: "england-wales", name: "England and Wales" }])
     if (pathname === "/preferences") return reply({})
     if (pathname === "/updates") return reply({ current: { version: 1, name: "Fixture", notes: "" }, available: false })

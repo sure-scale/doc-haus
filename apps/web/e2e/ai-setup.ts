@@ -139,7 +139,8 @@ async function fixture(name: string, width: number, onboarding = false, cloud = 
       { id: "other-login", name: "Other sign-in", methods: [{ type: "key", label: "New API key" }], connections: [] },
       ...(cloud ? [{ id: "google-vertex", name: "Google Vertex AI", methods: [], connections: [] }] : []),
     ] })
-    if (pathname === "/matters") return reply([])
+    if (pathname === "/matters" || pathname === "/clients") return reply([])
+    if (pathname === "/templates") return reply({ dir: "/fixture/templates", templates: [] })
     if (pathname === "/jurisdictions") return reply([{ code: "england-wales", name: "England and Wales" }])
     if (pathname === "/updates") return reply({ current: { version: 1, name: "Fixture", notes: "" }, available: false })
     if (pathname === "/api/event") return route.fulfill({ status: 200, headers, contentType: "text/event-stream", body: "" })
@@ -297,6 +298,20 @@ try {
       expect(f.state.completed).toContain("models")
       await dialog.getByRole("button", { name: "Save and continue", exact: true }).click()
       await expect(dialog.getByRole("heading", { name: "Make doc.haus yours", exact: true })).toBeVisible()
+      // A reload stays on Details and shows every saved step as done and open.
+      const saved = ["Provider", "Connection", "Models", "Test", "Research"]
+      for (const stage of saved) await expect(navigation.getByRole("button", { name: new RegExp(`${stage}$`) })).toHaveAccessibleName(`Completed: ${stage}`)
+      await f.page.reload()
+      await expect(dialog.getByRole("heading", { name: "Make doc.haus yours", exact: true })).toBeVisible()
+      for (const stage of saved) {
+        await expect(navigation.getByRole("button", { name: new RegExp(`${stage}$`) })).toHaveAccessibleName(`Completed: ${stage}`)
+        await expect(navigation.getByRole("button", { name: new RegExp(`${stage}$`) })).toBeEnabled()
+      }
+      await f.page.screenshot({ path: path.join(evidence, `onboarding-details-reloaded-${width}.png`) })
+      await navigation.getByRole("button", { name: /Models$/ }).click()
+      await expect(dialog.getByLabel("Primary model", { exact: true })).toHaveValue("fixture-models/primary")
+      await f.page.screenshot({ path: path.join(evidence, `onboarding-models-reloaded-${width}.png`) })
+      await navigation.getByRole("button", { name: /Details$/ }).click()
       await dialog.getByLabel("Attorney", { exact: true }).fill("Fixture Counsel")
       await dialog.getByLabel("Firm", { exact: true }).fill("Fixture Practice")
       await noOverflow(f.page)
@@ -307,6 +322,35 @@ try {
       await expect(dialog).toHaveCount(0)
       expect(f.state.completed).toEqual(["models", "research", "details"])
       expect(f.state.preferences).toMatchObject({ attorney: "Fixture Counsel", firm: "Fixture Practice" })
+    } finally { await f.context.close() }
+  })
+
+  for (const width of [1440, 390]) await scenario(`Onboarding locks the later AI steps again when the provider changes after saving at ${width}px`, async () => {
+    const f = await fixture(`onboarding-provider-change-${width}`, width, true)
+    try {
+      const dialog = f.page.getByRole("dialog", { name: "Let's get you set up", exact: true })
+      const navigation = dialog.getByRole("navigation", { name: "Setup progress", exact: true })
+      const step = (stage: string) => navigation.getByRole("button", { name: new RegExp(`${stage}$`) })
+      await dialog.getByLabel("Provider", { exact: true }).selectOption("fixture-models")
+      await dialog.getByRole("button", { name: "Continue to connection", exact: true }).click()
+      await dialog.getByRole("button", { name: "Continue to models", exact: true }).click()
+      await dialog.getByLabel("Primary model", { exact: true }).selectOption("fixture-models/primary")
+      await dialog.getByRole("button", { name: "Continue to test", exact: true }).click()
+      await dialog.getByRole("button", { name: "Test connection", exact: true }).click()
+      await dialog.getByRole("button", { name: "Save and continue", exact: true }).click()
+      await expect(dialog.getByRole("heading", { name: "Set up legal research", exact: true })).toBeVisible()
+      for (const stage of ["Provider", "Connection", "Models"]) await expect(step(stage)).toHaveAccessibleName(`Completed: ${stage}`)
+      await dialog.getByRole("button", { name: "Back to AI setup", exact: true }).click()
+      await expect(dialog.getByRole("heading", { name: "Choose your model provider", exact: true })).toBeVisible()
+      // A new provider clears its connection and models, so their steps lock again.
+      await dialog.getByLabel("Provider", { exact: true }).selectOption("other-fixture")
+      await expect(dialog.getByLabel("Provider", { exact: true })).toHaveValue("other-fixture")
+      await f.page.screenshot({ path: path.join(evidence, `onboarding-provider-changed-${width}.png`) })
+      await expect(step("Connection")).toHaveAccessibleName("Step 2: Connection")
+      await expect(step("Models")).toHaveAccessibleName("Step 3: Models")
+      await expect(step("Models")).toBeDisabled()
+      await expect(step("Test")).toBeDisabled()
+      expect(f.state.config).toEqual({ model: "fixture-models/primary", small_model: "fixture-models/primary" })
     } finally { await f.context.close() }
   })
 

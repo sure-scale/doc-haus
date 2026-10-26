@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
-import { createDocxRevision, createDocxLocalization, applyDocxLocalization, DocxTrackedRevisionsError, othersPending, ownRevisionRefusals, pendingRevisionParagraphs, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
+import { createDocxRevision, createDocxLocalization, applyDocxLocalization, DocxTrackedRevisionsError, othersPending, ownRevisionReason, ownRevisionRefusals, pendingRevisionParagraphs, trackedRevisionsReason, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { workingDocxKey, readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { paragraphTargets, resolveParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
@@ -59,7 +59,7 @@ export function documentAmendmentRoutes(options: { directory: (id: string) => st
       console.warn("[document-amendments] preparation failed", { ...diagnosticErrorMetadata(error), ...error instanceof EngineGenerationError ? { detail: error.message } : {} })
       const reference = error && typeof error === "object" ? preparationReferences.get(error) : undefined
       return c.json({error:error instanceof EngineGenerationError ? "No changes were prepared. Try again." : error instanceof DocumentAmendmentConflictError ? error.message :
-        error instanceof DocxTrackedRevisionsError ? "This Word file contains tracked changes. Accept or reject them in Word before preparing changes." : "Preparation could not be confirmed.",
+        error instanceof DocxTrackedRevisionsError ? trackedRevisionsReason : "Preparation could not be confirmed.",
         ...(reference ? {diagnostic_ref:reference,diagnostic_hint:"Inspect the latest private preparation diagnostic in this matter before trying again."} : {})},409)
     }
   })
@@ -209,7 +209,7 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   const inside = resolved.length && pending?.size ? await ownRevisionRefusals(initial.bytes,
     await createDocxLocalization(initial.bytes,resolved.map((value) => value.amendment),{},written),resolved.map((value) => value.selection),written) : new Set<string>()
   for (const {row,amendment} of resolved) if (inside.has(amendment.id))
-    refused.push(`The change to ${JSON.stringify(row.before_quote)} was not proposed: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.`)
+    refused.push(ownRevisionReason(row.before_quote,"proposed"))
   resolved = resolved.filter(({amendment}) => !inside.has(amendment.id))
   const openItems = [...legal.open_items,...selections.flatMap((row) => typeof row.unresolved_reason === "string" ? [row.unresolved_reason] : []),...refused]
   if (!resolved.length) {

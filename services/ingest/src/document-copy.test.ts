@@ -47,15 +47,17 @@ test("exact canonical copy registers a deliverable; source proposals stay on the
     expect(db.query("SELECT id, doc_path, status FROM redlines").all()).toEqual([{ id: proposal.id, doc_path: f.original, status: "pending" }])
     db.close()
     const tracked = (await import("../../../dochaus/tool/tracked-changes")).default
-    // In the paragraph without Reviewer's pending insertion (the touch rule).
+    // The copy keeps Reviewer's pending insertion, and an edit to a deliverable
+    // would be baked untracked beside it, so the copy is refused as Request edits refuses it.
     const result = await tracked.execute({ document: "negotiation.docx", find: "courier", replace: "post", comment: "Requested separate-copy edit.", author: "Reviewer" }, {
       callID: "copy-call", sessionID: "copy-test", messageID: "copy-test", agent: "redliner", directory: f.directory, worktree: f.directory,
-      abort: new AbortController().signal, metadata() {}, async ask(request) { expect(request.patterns).toEqual([path.join(f.directory, "negotiation.docx")]) },
+      abort: new AbortController().signal, metadata() {}, async ask() { throw new Error("A refused edit asks for no approval.") },
     })
-    expect(result).toBeObject()
+    expect(result).toBe("This Word file contains tracked changes. Accept or reject them in Word before preparing changes.")
     const after = openDb(f.directory)
-    expect(Object.values(pendingRedlineCounts(after)).sort()).toEqual([1, 1])
+    expect(Object.values(pendingRedlineCounts(after))).toEqual([1])
     after.close()
+    expect(readFileSync(path.join(f.directory, "negotiation.docx"))).toEqual(Buffer.from(f.bytes))
     expect(readFileSync(f.original)).toEqual(Buffer.from(f.bytes))
   } finally { rmSync(f.directory, { recursive: true, force: true }) }
 })
@@ -128,6 +130,8 @@ test("native copy tool asks before HTTP and returns the registered new document 
     expect(existsSync(path.join(f.directory, "new.docx"))).toBe(false)
     const result = await copy.execute({ document: "original.docx", name: "new.docx" }, { ...context, async ask(request) { expect(request.permission).toBe("copy-document"); expect(request.always).toBeUndefined() } })
     expect(result).toMatchObject({ title: "Created new.docx", metadata: { name: "new.docx", document: path.join(f.directory, "new.docx") } })
+    // The copy keeps the original's tracked insertion, which the editing tools refuse.
+    expect((result as { output: string }).output).toEndWith("new.docx holds tracked changes, so it cannot be edited until they are accepted or rejected in Word. Edits answering the other side's markup go on the uploaded markup itself (Request edits).")
     expect(calls).toBe(1)
     expect(readFileSync(f.original)).toEqual(Buffer.from(f.bytes))
     expect(await copy.execute({ document: "../original.docx", name: "other.docx" }, context)).toBeString()

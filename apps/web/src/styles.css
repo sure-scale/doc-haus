@@ -770,6 +770,9 @@ li.list-row {
   position: relative;
   display: flex;
   flex-direction: column;
+  /* A button's set min-height lets it shrink to fit the list and cut off its
+     description; the list scrolls instead. */
+  flex-shrink: 0;
   gap: var(--space-1);
   text-align: left;
   padding: var(--space-3) 38px var(--space-3) 14px;
@@ -1582,7 +1585,8 @@ li.list-row {
 }
 
 /* Instant hover tooltip (components/Tooltip.tsx). Fixed + body-portaled so it
-   escapes the sidebar scroll clip; pinned to the right of the hovered item. */
+   escapes the sidebar scroll clip; beside the hovered item, or above it when
+   there is no room beside it. */
 .tip-bubble {
   position: fixed;
   transform: translateY(-50%);
@@ -3526,32 +3530,71 @@ button.linklike:hover:not(:disabled) {
   font-size: 13px;
 }
 
-/* Tracked changes: insertion as a green highlighter pass, deletion struck quiet.
-   Docxodus emits <ins>/<del> for revisions; the class forms cover prefixed output. */
-.docx-render ins,
-.docx-render .docx-insertion {
-  color: #1f5040;
-  background: linear-gradient(transparent 62%, rgba(45, 74, 62, 0.16) 62%);
-  text-decoration: underline;
-  text-decoration-color: rgba(45, 74, 62, 0.45);
+/* Tracked changes as Word marks them by author: insertions underlined and
+   deletions struck through, both in the colour of the author who made them
+   (--author-tone, which colourChanges in comment-authors.ts sets on each
+   mark), with no fill, so the colour says who and the line says what. A run's
+   own colour gives way to its author's, as in Word. These rules outrank the
+   stylesheet Docxodus writes after this one; moves keep its colours, and the
+   open clause's tint (ChangeTimeline.css) still shows. */
+.docx-render :is(ins.rev-ins, del.rev-del):not(.rev-move-from, .rev-move-to) {
+  color: var(--author-tone, var(--text));
   text-decoration-thickness: 1px;
+}
+
+.docx-render :is(ins.rev-ins, del.rev-del):not(.rev-move-from, .rev-move-to, .is-timeline-active) {
+  background-color: transparent;
+}
+
+.docx-render :is(ins.rev-ins, del.rev-del):not(.rev-move-from, .rev-move-to) span[class^="docx-"] {
+  color: inherit;
+}
+
+.docx-render ins.rev-ins:not(.rev-move-to) {
+  text-decoration-line: underline;
   text-underline-offset: 2px;
 }
 
-.docx-render del,
-.docx-render .docx-deletion {
-  color: var(--danger);
-  text-decoration: line-through;
-  text-decoration-thickness: 1px;
-  opacity: 0.85;
+.docx-render del.rev-del:not(.rev-move-from) {
+  text-decoration-line: line-through;
+}
+
+/* A whole paragraph, table row or cell an author inserted, deleted or
+   reformatted, a table or section they reformatted, a deleted paragraph mark
+   (¶) and a formatting change, in the author's colour too; the bar, fill,
+   dotted line or outline still says what changed. A reformatted section's
+   own text keeps the body's colour, as coloured text reads as inserted. The
+   blackline sets no author colours and keeps Docxodus's. */
+.document-reader:not(.blackline-reader) .docx-render :is(.rev-para-ins, .rev-para-del, .rev-para-format-change, .rev-section-format-change) {
+  border-left-color: var(--author-tone, var(--border-strong));
+}
+
+.document-reader:not(.blackline-reader) .docx-render .rev-para-del > .rev-para-mark-del {
+  color: var(--author-tone, var(--muted));
+}
+
+.document-reader:not(.blackline-reader) .docx-render .rev-section-format-change {
+  color: inherit;
+}
+
+.document-reader:not(.blackline-reader) .docx-render .rev-format-change {
+  border-bottom-color: var(--author-tone, var(--border-strong));
+}
+
+.document-reader:not(.blackline-reader) .docx-render :is(.rev-row-ins, .rev-row-del, .rev-cell-ins, .rev-cell-del) {
+  background-color: color-mix(in srgb, var(--author-tone, var(--muted)) 10%, transparent);
+}
+
+.document-reader:not(.blackline-reader) .docx-render :is(.rev-table-format-change, .rev-row-format-change, .rev-cell-format-change) {
+  outline-color: var(--author-tone, var(--border-strong));
 }
 
 /* Comments beside the page, as Word's comment cards: one card per thread in
    the margin, the author's initials in the colour the Tracked changes panel
    gives them, replies inside the card, resolved threads greyed with a label.
    Docxodus's own notes are restyled here; document-comments.ts adds the
-   initials, dates and flags, and on a narrow page moves each card under its
-   paragraph. Docxodus wraps the whole document in .comment-margin-container,
+   initials, dates and flags, sets each card level with its text, and on a
+   narrow page moves each card under its paragraph. Docxodus wraps the whole document in .comment-margin-container,
    so a greedy [class*="comment"] selector would restyle the body text: every
    rule names the comment classes exactly. The measure is relaxed for the
    margin wherever the cards sit, so moving them never changes the width.

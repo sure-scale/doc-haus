@@ -3,7 +3,7 @@ import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { applyMarkupDecisions, MarkupRefusedError, type DocumentMarkup, type MarkupComment, type MarkupDecision, type MarkupRevision } from "../src/api/ingest/markup"
 import { authorTones, initialsOf } from "../src/components/comment-authors"
-import MarkupPanel, { carryDrafts, carryReplies, decisionLabel, type Reply } from "../src/components/MarkupPanel"
+import MarkupPanel, { carryDrafts, carryReplies, decisionLabel, markupAuthors, type Reply } from "../src/components/MarkupPanel"
 
 const originalFetch = globalThis.fetch
 afterEach(() => {
@@ -159,15 +159,29 @@ test("a detached comment shows why it takes no reply, offers no draft and keeps 
 })
 
 test("each author keeps one colour and Word-style initials, told apart from the file's other authors", () => {
-  const names = ["Avery Lindqvist", "Morgan Okafor", "Sam Lee", "Dana Wu", "Chris Park", "Robin Tse"]
-  const tones = authorTones(names)
-  // Six authors take the six colours; the order they are met in does not matter.
-  expect(new Set(tones.values()).size).toBe(6)
-  expect(authorTones([...names].reverse())).toEqual(tones)
+  const names = ["Avery Lindqvist", "Morgan Okafor", "Avery Lindqvist", "Synthetic Reviewing Lawyer", "Sam Lee", "Dana Wu", "Chris Park", "Robin Tse", "Jo Park"]
+  const tone = authorTones(names, (name) => name === "Synthetic Reviewing Lawyer")
+  // As Word colours by author: in the order authors first appear, the lawyer's
+  // own in the brand colour without taking a reviewer's, then round again.
+  expect(names.map(tone)).toEqual([0, 1, 0, "self", 2, 3, 4, 5, 0])
   // A name repeated with other spacing or case is the same author.
-  expect(authorTones([" avery lindqvist", "Avery Lindqvist"]).size).toBe(1)
+  expect(authorTones(["Morgan Okafor", " avery lindqvist", "Avery Lindqvist"])("AVERY LINDQVIST")).toBe(1)
   expect(initialsOf("Avery Lindqvist", null)).toBe("AL")
   expect(initialsOf("Morgan Okafor", "mo")).toBe("MO")
   expect(initialsOf("Synthetic Reviewing Lawyer", "a long given value")).toBe("SL")
   expect(initialsOf("   ", null)).toBe("?")
+})
+
+test("authors take their colours in the order their changes and comments first appear in the document", () => {
+  const comment = (id: number, author: string, paragraph: number | null, parent: number | null = null): MarkupComment => ({
+    id, author, initials: null, date: null, text: "Noted.", parent, resolved: null, quote: "", paragraph, findings: [],
+  })
+  const file = {
+    ...markup("order", [revision("r1", { locations: [{ paragraph: 4, context: "4. Audit." }] }), revision("r2", { author: "Morgan Okafor", locations: [{ paragraph: 2, context: "2. Price." }] })]),
+    comments: [comment(0, "Lee Chan", 1), comment(1, "Sam Rivera", 1, 0), comment(2, "Jo Park", null)],
+  }
+  // The file lists its changes first, but Lee's comment on clause 1 and Sam's
+  // reply come before Morgan's change to clause 2 and Avery's to clause 4; a
+  // comment with no known place comes last.
+  expect(markupAuthors(file)).toEqual(["Lee Chan", "Sam Rivera", "Morgan Okafor", "Avery Lindqvist", "Jo Park"])
 })

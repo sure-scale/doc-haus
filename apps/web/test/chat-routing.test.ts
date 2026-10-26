@@ -579,7 +579,7 @@ describe("provider errors", () => {
   })
 
   test("Auto returns the draft route with its closed scope on the first model", async () => {
-    const scope = { documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few" } as const
+    const scope = { documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few", revises: "no" } as const
     const { client, prompts } = routerClient({ text: JSON.stringify({ route: "draft", ...scope }) })
     expect(await route(client)).toEqual({ name: "draft", scope })
     expect(prompts).toEqual(["opencode-go/small"])
@@ -593,7 +593,7 @@ describe("provider errors", () => {
   })
 
   test("Auto asks the router once more when its reply stops after the acknowledgement", async () => {
-    const scope = { documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few" } as const
+    const scope = { documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few", revises: "no" } as const
     const { client, prompts } = routerClient({}, 0, 0, [
       { text: "On it — I'll review the lease." },
       { text: `On it — I'll review the lease.\n${JSON.stringify({ route: "draft", ...scope })}` },
@@ -603,7 +603,7 @@ describe("provider errors", () => {
   })
 
   test("Auto asks the router once more when its reply misses the deadline", async () => {
-    const scope = { documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few" } as const
+    const scope = { documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few", revises: "no" } as const
     const { client, prompts, removed } = routerClient({ text: JSON.stringify({ route: "draft", ...scope }) }, 1)
     expect(await route(client, 50)).toEqual({ name: "draft", scope })
     // The late first turn is dropped and its session removed; the retry stays on the small model.

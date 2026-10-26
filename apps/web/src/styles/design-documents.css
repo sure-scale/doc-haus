@@ -122,6 +122,17 @@
   .document-reader .viewer-bar-actions > button:not(.primary, .modal-close) { flex: none; width: 44px; padding: 0; }
   .viewer-action-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 }
+/* A toolbar with the Tracked changes toggle keeps each label on one line. With
+   every action shown that row needs about 700px, so below that its plain
+   actions are their icons, as on a phone: Download's split button too, its
+   icon beside the caret (SplitButton.css). */
+.viewer-bar-actions:has(> .viewer-markup-toggle) .viewer-action-label { white-space: nowrap; }
+@media (max-width: 700px) {
+  .document-reader .viewer-bar-actions:has(> .viewer-markup-toggle) > button:not(.primary, .modal-close) { flex: none; width: 44px; padding: 0; }
+  .document-reader .viewer-bar-actions:has(> .viewer-markup-toggle) > .split-button { flex: none; }
+  .document-reader .viewer-bar-actions:has(> .viewer-markup-toggle) > .split-button > .split-button-lead { flex: none; width: 44px; padding: 0; }
+  .viewer-bar-actions:has(> .viewer-markup-toggle) .viewer-action-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+}
 @media (hover: none) {
   .drafted-download { opacity: 1; }
   .document-reader .viewer-bar-actions > button,
@@ -281,6 +292,8 @@
 /* A change card shows its change in the document when clicked. */
 .markup-card:not(.markup-thread) { cursor: pointer; }
 .markup-card-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--space-2); }
+.markup-card-lead { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.markup-card-lead .markup-kind { flex: none; }
 .markup-card-top .markup-byline { flex: 0 1 auto; }
 .markup-card-top time { font-size: 0.6875rem; }
 .markup-kind { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px 2px 7px; font-size: 0.75rem; font-weight: 700; color: var(--text); background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius-pill); }
@@ -442,9 +455,11 @@
   .markup-apply { position: static; margin: 0; padding: var(--space-4) 0 0; box-shadow: none; border-top: 1px solid var(--border); background: transparent; }
   .document-reader .viewer-body > .markup-read-status { flex: none; max-width: none; margin: 0; padding: var(--space-3) 18px; border-bottom: 1px solid var(--border); }
 }
-@media (max-width: 420px) {
+@media (max-width: 700px) {
   .document-reader .viewer-bar-actions > button.viewer-markup-toggle { position: relative; }
   .viewer-markup-badge { position: absolute; top: -6px; right: -6px; display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--radius-pill); background: var(--accent); color: var(--text-on-accent); font-size: 0.6875rem; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
+}
+@media (max-width: 420px) {
   .document-reader .markup-card { padding-right: var(--space-3); }
 }
 @media (hover: none) {

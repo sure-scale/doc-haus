@@ -130,14 +130,17 @@
   --danger-border: #e9bfba;
   --info: var(--md-sys-color-info);
   --info-soft: var(--md-sys-color-info-container);
-  /* Reviewer colours, as Word gives each author one (the Tracked changes panel's
-     initials); each carries white text at 5.5:1 or more. */
-  --author-1: #3b5ba5;
-  --author-2: #8a3f9e;
-  --author-3: #2f6f7e;
-  --author-4: #b03a5b;
-  --author-5: #7a5a12;
-  --author-6: #56618a;
+  /* Reviewer colours, as Word gives each author one, in the order authors
+     first appear: their tracked changes on the page, their initials in the
+     Tracked changes panel and on comment cards, and their dot in a clause's
+     change history. The lawyer's own are the brand colour, so none is green.
+     Each is 6:1 or more as text on the page and under white initials. */
+  --author-1: #b42318;
+  --author-2: #1f55c0;
+  --author-3: #7e3aa8;
+  --author-4: #8a5300;
+  --author-5: #a3236b;
+  --author-6: #44508a;
   --font-sans: var(--md-ref-typeface-plain);
   --font-display: var(--md-ref-typeface-brand);
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;

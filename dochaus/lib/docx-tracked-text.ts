@@ -191,7 +191,9 @@ function summary(groups: Element[][], comments: number) {
     ? `${authors.slice(0, MAX_NAMED_AUTHORS).join(", ")} and ${authors.length - MAX_NAMED_AUTHORS} others`
     : authors.join(", ")
   const count = `${groups.length} pending tracked ${groups.length === 1 ? "change" : "changes"}`
-  const note = comments ? ` It also contains ${comments} ${comments === 1 ? "comment" : "comments"}, which ${comments === 1 ? "is" : "are"} not shown.` : ""
+  // Comments are not in this text: the viewer's panel and the comments view list
+  // them, as threads, so a count here (each reply counted) would not match.
+  const note = comments ? " Its comments are listed separately." : ""
   return `[This Word file contains ${count}${named ? ` by ${named}` : ""}, marked inline below. Pending tracked changes are not accepted text.${note}]`
 }
 function commentCount(part: Uint8Array | undefined) {

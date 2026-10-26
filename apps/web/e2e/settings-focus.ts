@@ -62,7 +62,8 @@ await context.route("**/*", async route => {
   if (request.method() !== "GET") { unexpected.push(`${request.method()} ${pathname}`); return route.abort() }
   if (pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
   if (pathname === "/setup") return reply({ version: 1, ready: true, completed: ["models", "research", "details"], skipped: [], next: "done" })
-  if (pathname === "/matters") return reply([])
+  if (pathname === "/matters" || pathname === "/clients") return reply([])
+  if (pathname === "/templates") return reply({ dir: "/fixture/templates", templates: [] })
   if (pathname === "/jurisdictions") return reply([{ code: "england-wales", name: "England and Wales" }, { code: "scotland", name: "Scotland" }])
   if (pathname === "/updates") return reply({ current: { version: 1, name: "Fixture", notes: "" }, available: false })
   if (pathname === "/engine/config") return reply(config)

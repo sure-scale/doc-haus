@@ -504,6 +504,141 @@ describe("layered edits on a counterparty markup", () => {
     } finally { [a, b, c].forEach(opened => opened.session.close()) }
   })
 
+  // One requested change is one tracked change of whole words: an inserted
+  // sentence is not written as the next word deleted and inserted again.
+  test("a tracked insertion, deletion or one-word change is written as that change alone, beside theirs", async () => {
+    const author = "Jordan Example"
+    const tracked = { ...layer, revisionAuthor: author }
+    const theirs = await revisions(source)
+    for (const [before_quote, replacement, expected, text] of [
+      ["This Agreement", "Each party submits to the courts of the Province. This Agreement", [["insert", "Each party submits to the courts of the Province. "]],
+        "9. Governing law. Each party submits to the courts of the Province. This Agreement is governed by the law of the Province."],
+      // A new sentence that opens with the word the next one does is still inserted before it.
+      ["This Agreement is", "This clause binds the parties. This Agreement is", [["insert", "This clause binds the parties. "]],
+        "9. Governing law. This clause binds the parties. This Agreement is governed by the law of the Province."],
+      ["governed by the law of the Province.", "governed by the law.", [["delete", " of the Province"]],
+        "9. Governing law. This Agreement is governed by the law."],
+      ["the law of the Province", "the laws of the Province", [["delete", "law"], ["insert", "laws"]],
+        "9. Governing law. This Agreement is governed by the laws of the Province."],
+    ] as const) {
+      const packet = await createDocxLocalization(source, [{ id: "law", before_quote, replacement }], {}, layer)
+      const clause = packet.candidates.find(row => row.paragraph.text.startsWith("9."))!
+      const output = await applyDocxLocalization(source, packet, [{ amendment_id: "law", target_handle: clause.target_handle }], tracked)
+      expect(output.report.package_structure_verified).toBe(true)
+      const after = await revisions(output.bytes)
+      expect(after.filter(row => row.author !== author)).toEqual(theirs)
+      expect(after.filter(row => row.author === author).map(row => [row.type, row.text])).toEqual(expected.map(row => [...row]))
+      expect((await createDocxRevision(output.bytes, layer)).paragraphs[9]!.text).toBe(text)
+    }
+  })
+
+  // A whole-paragraph quote ends sentences with the full stop the change sits
+  // beside; the change takes the space after it, never the full stop.
+  test("an inserted or deleted sentence keeps to the sentence boundary and the formatting of the text it joins", async () => {
+    const author = "Jordan Example"
+    const tracked = { ...layer, revisionAuthor: author }
+    const CLAUSE = '<w:r><w:t xml:space="preserve">9. Governing law. This Agreement is governed by the law of the Province.</w:t></w:r>'
+    const restyled = (runs: string) => {
+      const parts = unzipSync(source)
+      const xml = strFromU8(parts["word/document.xml"]!)
+      expect(xml).toContain(CLAUSE)
+      parts["word/document.xml"] = strToU8(xml.replace(CLAUSE, runs))
+      return zipSync(parts)
+    }
+    const plain = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`
+    const bold = (text: string) => `<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${text}</w:t></w:r>`
+    const heading = restyled(bold("9. Governing law.") + plain(" This Agreement is governed by the law of the Province."))
+    const term = restyled(plain("9. Governing law. This Agreement is governed by the law of the ") + bold("Province") + plain("."))
+    const notices = restyled(plain("9. Governing law. This Agreement is governed by the law of the Province. Notices are served in the Province."))
+    const whole = "9. Governing law. This Agreement is governed by the law of the Province."
+    const sentence = "Each party submits to the courts."
+    // A sentence that ends with the words before it could also stand inside the sentence before.
+    const repeat = "Each party submits to the courts of the Province."
+    for (const [bytes, before_quote, replacement, expected] of [
+      [source, whole, `9. Governing law. ${sentence} This Agreement is governed by the law of the Province.`, ["insert", `${sentence} `]],
+      [heading, whole, `9. Governing law. ${sentence} This Agreement is governed by the law of the Province.`, ["insert", `${sentence} `]],
+      [heading, "Governing law. This Agreement", `Governing law. ${sentence} This Agreement`, ["insert", `${sentence} `]],
+      [source, "the law of the Province.", `the law of the Province. ${sentence}`, ["insert", ` ${sentence}`]],
+      [term, "the law of the Province.", `the law of the Province. ${sentence}`, ["insert", ` ${sentence}`]],
+      [source, whole, "9. Governing law.", ["delete", " This Agreement is governed by the law of the Province."]],
+      [source, whole, `${whole} ${repeat}`, ["insert", ` ${repeat}`]],
+      [source, "the Province.", `the Province. ${repeat}`, ["insert", ` ${repeat}`]],
+      [notices, "the Province. Notices", `the Province. ${repeat} Notices`, ["insert", `${repeat} `]],
+      [notices, "the law of the Province. Notices are served in the Province.", "the law of the Province.", ["delete", " Notices are served in the Province."]],
+      [source, "the law of the Province", "the law of the Province and its courts", ["insert", " and its courts"]],
+    ] as const) {
+      const packet = await createDocxLocalization(bytes, [{ id: "law", before_quote, replacement }], {}, layer)
+      const clause = packet.candidates.find(row => row.paragraph.text.startsWith("9."))!
+      const output = await applyDocxLocalization(bytes, packet, [{ amendment_id: "law", target_handle: clause.target_handle }], tracked)
+      expect((await revisions(output.bytes)).filter(row => row.author === author).map(row => [row.type, row.text])).toEqual([[...expected]])
+      // The new sentence is body text, never part of the bold heading or term beside it.
+      const xml = strFromU8(unzipSync(output.bytes)["word/document.xml"]!)
+      for (const change of xml.match(/<w:ins [^>]*>[\s\S]*?<\/w:ins>/g)?.filter(change => change.includes(sentence)) ?? [])
+        expect(change).not.toContain("<w:b")
+    }
+  })
+
+  // Word's selection often takes a heading's trailing space with it. An
+  // inserted word is typed where it stands, so it is not a defined term's.
+  test("a tracked sentence inserted before text takes that text's formatting, and other insertions the formatting before them", async () => {
+    const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    const author = "Jordan Example"
+    const CLAUSE = '<w:r><w:t xml:space="preserve">9. Governing law. This Agreement is governed by the law of the Province.</w:t></w:r>'
+    const restyled = (runs: string) => {
+      const parts = unzipSync(source)
+      const xml = strFromU8(parts["word/document.xml"]!)
+      expect(xml).toContain(CLAUSE)
+      parts["word/document.xml"] = strToU8(xml.replace(CLAUSE, runs))
+      return zipSync(parts)
+    }
+    const run = (style: string, text: string) => `<w:r>${style ? `<w:rPr>${style}</w:rPr>` : ""}<w:t xml:space="preserve">${text}</w:t></w:r>`
+    const heading = restyled(run("<w:b/>", "9. Governing law. ") + run("", "This Agreement is governed by the law of the Province."))
+    const term = restyled(run("", "9. Governing law. This Agreement is governed by the law of the ") + run("<w:b/>", "Province") + run("", "."))
+    const act = restyled(run("", "9. Governing law. This Agreement is governed by the ") + run("<w:i/>", "Sale of Goods Act") + run("", " and the law of the Province."))
+    const italic = restyled(run("<w:i/>", "9. Governing law. This Agreement is governed by the law of the Province."))
+    const whole = "9. Governing law. This Agreement is governed by the law of the Province."
+    for (const [bytes, before_quote, replacement, inserted, style] of [
+      [heading, whole, "9. Governing law. Each party submits. This Agreement is governed by the law of the Province.", "Each party submits. ", ""],
+      [heading, "This Agreement", "Each party submits. This Agreement", "Each party submits. ", ""],
+      [term, "the law of the Province", "the law of the said Province", "said ", ""],
+      [act, "governed by the Sale of Goods Act", "governed by the amended Sale of Goods Act", "amended ", ""],
+      [italic, whole, `${whole} Each party submits.`, " Each party submits.", "<w:i/>"],
+    ] as const) {
+      const packet = await createDocxLocalization(bytes, [{ id: "law", before_quote, replacement }], {}, layer)
+      const clause = packet.candidates.find(row => row.paragraph.text.startsWith("9."))!
+      const output = await applyDocxLocalization(bytes, packet, [{ amendment_id: "law", target_handle: clause.target_handle }], { ...layer, revisionAuthor: author })
+      expect((await revisions(output.bytes)).filter(row => row.author === author).map(row => [row.type, row.text])).toEqual([["insert", inserted]])
+      const ours = Array.from(new DOMParser().parseFromString(strFromU8(unzipSync(output.bytes)["word/document.xml"]!), "application/xml")
+        .getElementsByTagNameNS(W, "ins")).filter(node => node.getAttributeNS(W, "author") === author)
+      expect(ours.flatMap(node => Array.from(node.getElementsByTagNameNS(W, "r"))).map(row => {
+        const properties = row.getElementsByTagNameNS(W, "rPr")[0]
+        return properties ? Array.from(properties.childNodes).filter(node => node.nodeType === 1).map(node => `<w:${(node as Element).localName}/>`).join("") : ""
+      })).toEqual([style])
+    }
+  })
+
+  test("a later tracked insertion stands beside doc.haus's own inserted sentence, never inside it", async () => {
+    const author = "Jordan Example"
+    const own = { ...layer, ownAuthors: [author], revisionAuthor: author }
+    const write = async (bytes: Uint8Array, before_quote: string, replacement: string) => {
+      const packet = await createDocxLocalization(bytes, [{ id: "law", before_quote, replacement }], {}, own)
+      const clause = packet.candidates.find(row => row.paragraph.text.startsWith("9."))!
+      return applyDocxLocalization(bytes, packet, [{ amendment_id: "law", target_handle: clause.target_handle }], own)
+    }
+    const first = (await write(source, "This Agreement", "Each party submits to the courts. This Agreement")).bytes
+    await expect(write(first, "submits to the courts", "submits irrevocably to the courts")).rejects.toThrow("docx_own_revision:law")
+    // Written as its own w:ins just after the first, which Docxodus lists with
+    // it, whether or not the quote reaches back into the first.
+    for (const [before_quote, replacement] of [["This Agreement", "Both parties agree. This Agreement"],
+      ["the courts. This Agreement", "the courts. Both parties agree. This Agreement"]] as const) {
+      const beside = await write(first, before_quote, replacement)
+      expect((await revisions(beside.bytes)).filter(row => row.author === author).map(row => [row.type, row.text]))
+        .toEqual([["insert", "Each party submits to the courts. Both parties agree. "]])
+      expect((await createDocxRevision(beside.bytes, layer)).paragraphs[9]!.text)
+        .toBe("9. Governing law. Each party submits to the courts. Both parties agree. This Agreement is governed by the law of the Province.")
+    }
+  })
+
   test("a paragraph in a table row they inserted is pending, though Docxodus lists only the row", async () => {
     const parts = unzipSync(revisionTablesOriginalDocx())
     const xml = strFromU8(parts["word/document.xml"]!)

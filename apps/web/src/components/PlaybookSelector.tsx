@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { Link } from "react-router-dom"
+import ModalHeader from "./ModalHeader"
 import backdropClose from "./backdropClose"
 import { Exit } from "./useExit"
 
@@ -43,12 +44,7 @@ export default function PlaybookSelector({
       <Exit when={open}>{(_, closing) => (
         <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => setOpen(false))}>
           <div className="picker-panel picker-wide" onClick={(e) => e.stopPropagation()}>
-            <div className="viewer-bar">
-              <span className="viewer-title">Playbook</span>
-              <button className="modal-close" aria-label="Close" onClick={() => setOpen(false)}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
-              </button>
-            </div>
+            <ModalHeader title="Playbook" onClose={() => setOpen(false)} />
             <div className="picker-body">
               <p className="muted" style={{ margin: "0 0 4px" }}>
                 A firm playbook is your standard positions and approved clause text. The review checks this matter's
@@ -63,6 +59,7 @@ export default function PlaybookSelector({
                 <button
                   key={p.name}
                   className={`assistant-option${p.name === value ? " selected" : ""}`}
+                  aria-pressed={p.name === value}
                   onClick={() => {
                     onChange(p.name)
                     setOpen(false)
@@ -74,6 +71,7 @@ export default function PlaybookSelector({
               ))}
               <button
                 className={`assistant-option${value ? "" : " selected"}`}
+                aria-pressed={!value}
                 onClick={() => {
                   onChange(undefined)
                   setOpen(false)

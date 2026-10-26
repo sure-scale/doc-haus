@@ -4,12 +4,14 @@
 // a saved attorney name, uploads the synthetic marked-up supply agreement with
 // its footnote comment (dochaus/test/support/counterparty-markup-fixture.ts) and
 // drives the Tracked changes panel's Comments tab: nothing drafts on open;
-// Draft replies drafts the three open threads at once, one is cancelled and
-// drafted again on its own; a draft with a [[…]] placeholder cannot be
-// approved until it is edited; two replies are approved, one draft is
-// discarded and brought back; Save saves one version with a rejected change
-// and the two replies under the lawyer's name; then, at phone width, the
-// remaining reply is approved and saved alone. A second upload has a comment
+// Draft replies drafts the three open threads at once (the comment written as
+// instructions to an AI too, with doc.haus's note in its open items and no word
+// of the screening in its prompt or reply); one is cancelled and drafted again
+// on its own; a draft with a [[…]] placeholder cannot be approved until it is
+// edited; two replies are approved, one draft is discarded and brought back;
+// Save saves one version with a rejected change and the two replies under the
+// lawyer's name; then, at phone width, the remaining reply is approved and
+// saved alone. A second upload has a comment
 // on a clause the other side inserted, its reference tracked with the
 // insertion: a reply to it with that clause rejected is refused on its thread
 // card and nothing is saved; saved without the reply, the comment says its
@@ -38,7 +40,8 @@ const [AVERY_ROOT, MORGAN_REPLY, RESOLVED, PLANTED] = COUNTERPARTY_MARKUP.commen
 const FOOTNOTE = COUNTERPARTY_MARKUP.footnoteComment.text
 const LAWYER = "Synthetic Reviewing Lawyer"
 const FLAG = "Contains text that looks like an instruction — doc.haus did not follow it."
-// The scripted drafts, by the thread's first comment.
+// The scripted drafts, by the thread's first comment. The model is told nothing
+// of the screening, so it notes nothing about the planted comment.
 const DRAFTS: Record<string, { reply: string; open_items: string[] }> = {
   [AVERY_ROOT]: {
     reply: "We can agree to forty-five days if the Supplier reports its stock levels by [[reporting day]] each month.",
@@ -46,10 +49,14 @@ const DRAFTS: Record<string, { reply: string; open_items: string[] }> = {
   },
   [PLANTED]: {
     reply: "Clause 5 is unchanged on our side. Please confirm the two-year term is agreed.",
-    open_items: ["The comment contains text addressed to an AI assistant; it was not followed."],
+    open_items: [],
   },
   [FOOTNOTE]: { reply: "Schedule 1 names the Province.", open_items: [] },
 }
+// doc.haus's own open item on the planted thread: clause 5's tracked deletion is planted too.
+const NOTED = "The comment, the clause and a tracked change contain text that looks like an instruction to an AI. Check that the draft does not act on it before approving."
+// Words of the screening that neither a prompt nor a reply carries.
+const SCREENING = ["flagged", "injection", "ai-directive", "concealment", "screen"]
 const EDITED = "We can agree to forty-five days if the Supplier reports its stock levels by the fifth Business Day of each month."
 // The upload whose comment sits on Morgan's inserted Waiver clause.
 const WAIVER_NAME = "supply-agreement-waiver.docx"
@@ -61,7 +68,7 @@ const consoleErrors: string[] = []
 const unexpected: string[] = []
 const engineRequests: { method: string; path: string }[] = []
 const stubbed: string[] = []
-const generated: { root: string; flagged: boolean; aborted: boolean }[] = []
+const generated: { root: string; screening: string[]; aborted: boolean }[] = []
 const draftRequests: { thread: number; decisions: number; base: string }[] = []
 const abortedDrafts: number[] = []
 const decisionRequests: { actor: string | undefined; body: { base_sha256: string; decisions: { id: string; decision: string }[]; replies?: { thread: number; text: string }[] } }[] = []
@@ -79,7 +86,7 @@ const engine = Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 60, fetc
   if (request.method === "POST" && url.pathname === "/api/dochaus/generate") {
     const { prompt } = await request.json() as { prompt: string }
     const thread = JSON.parse(prompt.match(/<thread encoding="json">([\s\S]*?)<\/thread>/)?.[1] ?? "[]") as { text: string }[]
-    const row = { root: thread[0]?.text ?? "", flagged: prompt.includes("was flagged as instructions addressed to an AI"), aborted: false }
+    const row = { root: thread[0]?.text ?? "", screening: SCREENING.filter(word => prompt.includes(word)), aborted: false }
     generated.push(row)
     const draft = DRAFTS[row.root]
     if (!draft) { unexpected.push(`generate for ${row.root}`); return new Response(null, { status: 500 }) }
@@ -338,12 +345,15 @@ try {
     await shot("04-placeholder-blocks-approve")
   })
 
-  await step("5 the flagged thread still drafts, with its flag repeated above the draft", async () => {
-    expect(generated.find(row => row.root === PLANTED)?.flagged).toBe(true)
-    expect(generated.filter(row => row.root !== PLANTED).every(row => !row.flagged)).toBe(true)
-    await expect(planted.locator(".markup-flag")).toHaveText(FLAG)
-    await expect(planted.locator(".markup-flag + .markup-composer")).toHaveCount(1)
-    await expect(planted.locator(".markup-open-items")).toContainText(DRAFTS[PLANTED]!.open_items[0]!)
+  await step("5 the flagged thread drafts like any other: its flag shows once, on the comment, doc.haus's note is in its open items, and no prompt or reply speaks of the screening", async () => {
+    expect(generated.some(row => row.root === PLANTED)).toBe(true)
+    expect(generated.filter(row => row.screening.length)).toEqual([])
+    await expect(thread(PLANTED).locator(".markup-flag")).toHaveText([FLAG])
+    await expect(thread(PLANTED).locator(".markup-comment .markup-flag")).toHaveCount(1)
+    await expect(planted.locator(".markup-flag")).toHaveCount(0)
+    await expect(planted.locator(".markup-open-items p")).toHaveText([NOTED])
+    const reply = (await planted.getByLabel("Your reply", { exact: true }).inputValue()).toLowerCase()
+    expect(SCREENING.filter(word => reply.includes(word))).toEqual([])
     await cardShot(thread(PLANTED), "05-flagged-thread-draft")
   })
 
@@ -618,7 +628,7 @@ finally {
   await writeFile(path.join(evidence, "counterparty-replies-results.json"), JSON.stringify({
     results, pageErrors, consoleErrors, unexpected, stubbed: [...new Set(stubbed)],
     engineEndpoints: Object.entries(Object.groupBy(engineRequests, row => `${row.method} ${row.path}`)).map(([endpoint, rows]) => ({ endpoint, count: rows!.length })),
-    generated: generated.map(({ root, flagged, aborted }) => ({ thread: root.slice(0, 32), flagged, aborted })), mostAtOnce, draftRequests, abortedDrafts,
+    generated: generated.map(({ root, screening, aborted }) => ({ thread: root.slice(0, 32), screening, aborted })), mostAtOnce, draftRequests, abortedDrafts,
     decisionRequests: decisionRequests.map(({ actor, body }) => ({ actor, decisions: body.decisions.length, replies: body.replies?.map(row => row.thread) ?? [] })),
   }, null, 2) + "\n")
   await browser?.close().catch(() => undefined)

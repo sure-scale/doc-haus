@@ -65,7 +65,7 @@ async function open(state: ReturnType<typeof fixture>, width = 1440, height = 10
     if (pathname === "/preferences") return reply({ ...DEFAULT_DRAFTING, attorney: "Fixture Lawyer" })
     if (pathname === "/jurisdictions") return reply([{ code: "EW", name: "England & Wales", citationStyle: "oscola" }])
     if (pathname === "/matters") return reply(state.matters)
-    if (pathname === "/playbooks") return reply([])
+    if (pathname === "/playbooks" || pathname === "/clients") return reply([])
     if (pathname === "/updates") return reply({ current: { version: 1, name: "Fixture", notes: "" }, available: false })
     if (pathname === "/engine/config") return reply({ model: "fixture/primary", small_model: "fixture/fast" })
     if (pathname === "/api/dochaus/provider-catalog" || pathname === "/api/provider") return reply({ location: { directory: "/fixture" }, data: [provider] })

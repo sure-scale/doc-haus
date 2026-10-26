@@ -85,7 +85,7 @@ try {
     return route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ profile: "lean", mode: "queued", request_id: `r${posts.length}`, status }) })
   })
   await page.goto(server.url.href)
-  await page.getByRole("button", { name: "Answer 2", exact: true }).click()
+  // Asked questions open by themselves; the dock is not the way in.
   const card = page.getByRole("dialog")
   const choice = card.getByRole("button", { name: /^Liquidated damages at 1% a week/ })
   // Enabled once saved answers load; nothing is chosen for the lawyer.

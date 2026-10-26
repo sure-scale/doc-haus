@@ -276,6 +276,38 @@ try {
     await expect(changes).toHaveCount(10)
   })
 
+  await step("2b crossing 720px keeps focus on the same change's decision, never another change's", async () => {
+    // The panel moves above the page and remounts with its filters cleared, so
+    // the second of Morgan's changes is no longer the second card.
+    await filtersToggle.click()
+    await filters("changes").getByLabel("Reviewer", { exact: true }).selectOption(`=${MORGAN}`)
+    await filtersToggle.click()
+    await expect(changes).toHaveCount(5)
+    const second = changes.nth(1)
+    const card = await second.textContent()
+    await second.getByRole("radio", { name: "Reject", exact: true }).focus()
+    const focused = () => page.evaluate(() => {
+      const active = document.activeElement as HTMLElement
+      return { card: active.closest(".markup-list > li")?.textContent ?? null, control: active.matches("input[type=radio]") ? (active as HTMLInputElement).value : active.tagName }
+    })
+    for (const width of [640, 1440]) {
+      await page.setViewportSize({ width, height: 1000 })
+      await expect.poll(focused).toEqual({ card, control: "reject" })
+      if (width === 640) await shot("02b-focus-kept-640")
+    }
+    await expect(changes).toHaveCount(10)
+    // A control the cleared panel no longer has, the filter's chip: the panel's heading takes focus.
+    await filtersToggle.click()
+    await filters("changes").getByLabel("Reviewer", { exact: true }).selectOption(`=${MORGAN}`)
+    await filtersToggle.click()
+    await shown.getByRole("button", { name: `Remove the filter Reviewer: ${MORGAN}`, exact: true }).focus()
+    await page.setViewportSize({ width: 640, height: 1000 })
+    await expect(panel.getByRole("heading", { name: "Tracked changes", exact: true })).toBeFocused()
+    await page.setViewportSize({ width: 1440, height: 1000 })
+    await expect(panel.getByRole("heading", { name: "Tracked changes", exact: true })).toBeFocused()
+    await expect(changes).toHaveCount(10)
+  })
+
   await step("3 filter to Morgan and reject the shown changes with Reject all shown", async () => {
     await filtersToggle.click()
     const reviewer = filters("changes").getByLabel("Reviewer", { exact: true })

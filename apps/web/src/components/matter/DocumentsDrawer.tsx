@@ -43,10 +43,11 @@ export default function DocumentsDrawer({
   // The full-screen phone drawer is a modal. Wider drawers intentionally keep
   // the matter rail available, so focus remains free to move between panels.
   // It lets go as the exit starts.
-  useModalFocus(panel, Boolean(slot) && compact && !closing)
-  // Wider drawers are not modal, but closing one with focus inside (or lost to
-  // the page) still hands focus back as the exit starts: to what opened it,
-  // else to a Documents toggle.
+  useModalFocus(panel, Boolean(slot) && compact && !closing, true)
+  // Closing the drawer with focus inside (or lost to the page) hands focus back
+  // as the exit starts: to what opened it, else to a Documents toggle. A wider
+  // drawer is not modal, and a phone drawer may have turned modal on a resize
+  // with focus already inside, so neither has an opener to restore.
   const opener = useRef<Element | null>(null)
   useLayoutEffect(() => {
     const drawer = panel.current
@@ -54,7 +55,7 @@ export default function DocumentsDrawer({
       if (!drawer?.contains(document.activeElement)) opener.current = document.activeElement
       return
     }
-    if (compact || !drawer) return
+    if (!drawer) return
     const active = document.activeElement
     if (active && active !== document.body && !drawer.contains(active)) return
     const target = [opener.current, ...document.querySelectorAll('[aria-controls="documents-drawer"]')].find(

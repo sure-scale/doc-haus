@@ -6,14 +6,21 @@ import { Closing } from "./useExit"
 // A closing overlay lets go as its exit starts, so focus returns at once.
 const layers: HTMLElement[] = []
 const targets = 'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, iframe, [tabindex]:not([tabindex="-1"])'
-export default function useModalFocus(ref: RefObject<HTMLElement | null>, open = true) {
+// `sheet`: a panel that turns modal when the window narrows (the documents
+// drawer). It sits beneath the overlays already open, and leaves focus where
+// it is when that is in the sheet or in an overlay above it. When it stops
+// being modal it may still be open (the window widened), so it leaves focus
+// where it is then too; its owner returns focus when it closes.
+export default function useModalFocus(ref: RefObject<HTMLElement | null>, open = true, sheet = false) {
   const closing = useContext(Closing)
   const active = open && !closing
   useLayoutEffect(() => {
     const panel = ref.current
     if (!active || !panel) return
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    layers.push(panel)
+    const settled = sheet && (layers.length > 0 || panel.contains(opener))
+    if (sheet) layers.unshift(panel)
+    else layers.push(panel)
     const focusables = () => [...panel.querySelectorAll<HTMLElement>(targets)].filter(el => !el.closest('[inert]') && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden")
     const initial = panel.querySelector<HTMLElement>('[autofocus]') ?? focusables()[0] ?? panel
     const previousTabIndex = panel.getAttribute("tabindex")
@@ -25,7 +32,7 @@ export default function useModalFocus(ref: RefObject<HTMLElement | null>, open =
     endGuard.dataset.modalFocusGuard = ""
     endGuard.style.cssText = "position:fixed;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);opacity:0;pointer-events:none"
     panel.after(endGuard)
-    initial.focus({ preventScroll: true })
+    if (!settled) initial.focus({ preventScroll: true })
     function ownsFocus() {
       if (layers.at(-1) !== panel) return false
       // Focus identifies the native top layer even when native dialogs nest.
@@ -60,7 +67,7 @@ export default function useModalFocus(ref: RefObject<HTMLElement | null>, open =
       document.removeEventListener("focusin", focusin)
       endGuard.remove()
       if (previousTabIndex === null) panel.removeAttribute("tabindex")
-      if (opener?.isConnected) opener.focus({ preventScroll: true })
+      if (!sheet && opener?.isConnected) opener.focus({ preventScroll: true })
     }
-  }, [ref, active])
+  }, [ref, active, sheet])
 }

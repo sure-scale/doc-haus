@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite"
-import { mkdirSync } from "node:fs"
+import { existsSync, mkdirSync, realpathSync } from "node:fs"
 import path from "node:path"
 
 // How long an engine write to legal.db waits for another connection's write
@@ -31,4 +31,21 @@ export function prepared(db: Database, setup: (db: Database) => void) {
     db.close()
     throw error
   }
+}
+
+/** Whether `document`, a Word file in the matter folder, is registered in the
+ * matter's legal.db as an uploaded source (ingest's role "source"). */
+export function registeredWordSource(directory: string, document: string) {
+  if (path.basename(document) !== document || !/\.docx$/i.test(document)) return false
+  const file = path.join(directory, ".dochaus", "legal.db")
+  if (!existsSync(file)) return false
+  const relative = path.relative(realpathSync(directory), realpathSync(file))
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return false
+  const db = new Database(file, { readonly: true })
+  try {
+    // The engine creates legal.db for its own rows before any upload registers a document.
+    if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents'").get()) return false
+    return Boolean(db.query("SELECT 1 FROM documents WHERE name = ? AND role = 'source'").get(document))
+  }
+  finally { db.close() }
 }

@@ -111,7 +111,7 @@ test("author names cannot break a label, a missing author is omitted, and commen
   )
   const extracted = await text(awkward)
   expect(extracted).toContain("[Tracked insertion by Ops Team: added][Tracked deletion: removed]")
-  expect(extracted).toStartWith("[This Word file contains 2 pending tracked changes by Ops Team, marked inline below. Pending tracked changes are not accepted text. It also contains 2 comments, which are not shown.]")
+  expect(extracted).toStartWith("[This Word file contains 2 pending tracked changes by Ops Team, marked inline below. Pending tracked changes are not accepted text. Its comments are listed separately.]")
 })
 
 test("a removed break or symbol without wording stays unread beside a labelled change", async () => {

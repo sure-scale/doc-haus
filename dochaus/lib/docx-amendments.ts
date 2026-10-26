@@ -34,7 +34,15 @@ export type DocxLocalizationLimits = Limits
 // native tracked changes under that name, and pending revisions by ownAuthors
 // (every name doc.haus signs with: edits an earlier Accept kept tracked) hold no
 // paragraph: an edit beside them is written, one inside their text is refused.
-export type DocxRevisionOptions = { pendingRevisions?: "refuse" | "layer"; revisionAuthor?: string; ownAuthors?: readonly string[] }
+// amendmentAuthors gives, by amendment id, the name an edit is tracked under
+// instead of revisionAuthor.
+export type DocxRevisionOptions = { pendingRevisions?: "refuse" | "layer"; revisionAuthor?: string; ownAuthors?: readonly string[];
+  amendmentAuthors?: Readonly<Record<string, string>> }
+
+/** Two amendments whose spans overlap in one paragraph, by id; neither is written. */
+export class DocxOverlappingAmendmentsError extends Error {
+  constructor(readonly amendments: readonly [string, string]) { super("overlapping_docx_amendments") }
+}
 
 // A working-document projection is a view, not legal source authority. No native
 // UNIDs or offsets leave this module. Handles are valid only for this exact base.
@@ -156,8 +164,15 @@ function admitted(opened: Opened, binding: Binding) {
     throw new Error("unsupported_empty_paragraph_replacement")
   const change = changedDocxSpan(match, amendment.replacement, Boolean(opened.options.revisionAuthor))
   // Beside doc.haus's own pending change, never inside it: Docxodus would nest
-  // the new revision in that one.
-  if (pending && insideRevision(opened, paragraphSpan(match, change.match.span.start - match.span.start, change.match.text.length)))
+  // the new revision in that one. A pure insertion has no text of its own; it
+  // is inside a change when the text on both sides of it is. The change is
+  // judged as the tracked write makes it, whole words, also for an untracked
+  // pass over the same file (Accept's), so both refuse what Prepare does.
+  const whole = opened.paragraphs[ordinal]!.match
+  const guarded = opened.options.revisionAuthor ? change : changedDocxSpan(match, amendment.replacement, true)
+  const at = guarded.match.span.start - whole.span.start
+  if (pending && (guarded.match.text || !guarded.replacement ? insideRevision(opened.session, paragraphSpan(whole, at, guarded.match.text.length))
+    : at > 0 && insideRevision(opened.session, paragraphSpan(whole, at - 1, 1)) && insideRevision(opened.session, paragraphSpan(whole, at, 1))))
     throw new Error(`docx_own_revision:${amendment.id}`)
   const xml = parse(opened.session.raw.getXml(match.enclosingAnchor.id))
   if (!elements(xml, "fldChar").length && !elements(xml, "instrText").length) return { ...binding, change, unlinks: [] as number[] }
@@ -175,8 +190,8 @@ function admitted(opened: Opened, binding: Binding) {
 }
 
 // Whether a run of the changed span lies inside a tracked insertion, deletion or move.
-function insideRevision(opened: Opened, match: Match) {
-  const runs = new Map(elements(parse(opened.session.raw.getXml(match.enclosingAnchor.id)), "r").map(run => [run.getAttributeNS(PT, "Unid"), run]))
+function insideRevision(session: Session, match: Match) {
+  const runs = new Map(elements(parse(session.raw.getXml(match.enclosingAnchor.id)), "r").map(run => [run.getAttributeNS(PT, "Unid"), run]))
   return match.fragments.some(fragment => {
     for (let node = runs.get(fragment.unid)?.parentNode; node && node.nodeType === 1; node = node.parentNode)
       if ((node as Element).namespaceURI === W && ["ins", "del", "moveFrom", "moveTo"].includes((node as Element).localName)) return true
@@ -195,6 +210,12 @@ export async function ownRevisionRefusals(bytes: Uint8Array, packet: DocxLocaliz
       catch (error) { return error instanceof Error && error.message === `docx_own_revision:${binding.amendment.id}` ? [binding.amendment.id] : [] }
     }))
   } finally { opened.session.close() }
+}
+
+/** Why an edit inside doc.haus's own pending change was not made: Prepare's
+ * open item, and the older chat tools' refusal (pendingRevisionRefusal). */
+export function ownRevisionReason(text: string, verb: "proposed" | "applied" | "made") {
+  return `The change to ${JSON.stringify(text)} was not ${verb}: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.`
 }
 
 // The source with the REF fields the edits touch unwrapped to their text, for
@@ -230,9 +251,14 @@ function unlinkedFields(opened: Opened, edits: ReturnType<typeof admitted>[]) {
 }
 
 async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) {
-  if (edits.some((a, i) => edits.slice(i + 1).some(b => a.ordinal === b.ordinal
-    && a.match.span.start < b.match.span.start + b.match.span.length
-    && b.match.span.start < a.match.span.start + a.match.span.length))) throw new Error("overlapping_docx_amendments")
+  for (const [i, a] of edits.entries()) {
+    const b = edits.slice(i + 1).find(b => a.ordinal === b.ordinal
+      && a.match.span.start < b.match.span.start + b.match.span.length
+      && b.match.span.start < a.match.span.start + a.match.span.length)
+    if (b) throw new DocxOverlappingAmendmentsError([a.amendment.id, b.amendment.id])
+  }
+  const { revisionAuthor, amendmentAuthors } = opened.options
+  const author = (edit: ReturnType<typeof admitted>) => amendmentAuthors?.[edit.amendment.id] ?? revisionAuthor
   const expected = opened.paragraphs.map(p => p.match.text)
   const ordered = edits.toSorted((a, b) => a.ordinal - b.ordinal || b.match.span.start - a.match.span.start)
   // Edits touching a live cross-reference are written to the source with that
@@ -251,7 +277,9 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
         edit.match.span.start - opened.paragraphs[edit.ordinal]!.match.span.start, edit.match.text.length), edit.amendment.replacement,
         Boolean(opened.options.revisionAuthor))
       if (!change.match.text && !change.replacement) continue
-      const result = target.session.replaceMatch(change.match, change.replacement)
+      if (revisionAuthor) target.session.setRevisionAuthor(author(edit)!)
+      const result = revisionAuthor && change.joinsAfter ? insertBefore(target.session, change.match, change.replacement)
+        : target.session.replaceMatch(change.match, change.replacement)
       if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
     }
     const output = target.session.save()
@@ -282,7 +310,7 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
           package_structure_verified: true,
           limitation: [`changed text inherits first touched run formatting; structural edits and ${opened.options.pendingRevisions === "layer"
             ? "edits in paragraphs with pending tracked revisions" : "existing tracked revisions"} unsupported`,
-            ...opened.options.revisionAuthor ? [`changes tracked as ${opened.options.revisionAuthor}`] : [],
+            ...revisionAuthor ? [`changes tracked as ${[...new Set(edits.map(author))].join(", ")}`] : [],
             ...unlinkedFields(opened, edits)].join("; "),
         },
       }
@@ -292,15 +320,52 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
 
 export function changedDocxSpan(match: Match, replacement: string, words = false) {
   const { offset, replaced, changed } = changedRange(match.text, replacement, words)
+  // A pure insertion takes the formatting of the text before it, as typing
+  // there would; a sentence inserted before more text joins that text and
+  // takes its formatting instead.
+  const joinsAfter = !replaced && /[.!?]\s+$/.test(changed) && offset < match.text.length
+  const at = !replaced && changed && offset && !joinsAfter ? offset - 1 : offset
   const formatting = match.fragments.find((fragment, index) => match.fragments.slice(0, index + 1)
-    .reduce((length, row) => length + row.text.length, 0) > offset)?.formatting ?? match.fragments.at(-1)?.formatting
+    .reduce((length, row) => length + row.text.length, 0) > at)?.formatting ?? match.fragments.at(-1)?.formatting
   return { match: { ...match, text: replaced, span: { start: match.span.start + offset, length: replaced.length } },
-    replacement: changed, formatting }
+    replacement: changed, formatting, joinsAfter }
+}
+
+// Docxodus writes a tracked insertion in the run properties of the character
+// before it, so a sentence inserted after a bold heading's trailing space
+// would be bold. A sentence that joins the text after it is given that text's
+// run properties instead.
+function insertBefore(session: Session, match: Match, text: string) {
+  const anchor = match.enclosingAnchor.id
+  const existing = new Set(elements(parse(session.raw.getXml(anchor)), "ins").map(node => node.getAttributeNS(PT, "Unid")))
+  const result = session.replaceMatch(match, text)
+  if (!result.success) return result
+  const paragraph = parse(session.raw.getXml(anchor))
+  const runs = elements(paragraph, "r")
+  let restyled = false
+  for (const insertion of elements(paragraph, "ins").filter(node => !existing.has(node.getAttributeNS(PT, "Unid")))) {
+    const written = elements(insertion, "r")
+    const next = runs.slice(runs.indexOf(written.at(-1)!) + 1).find(run => children(run, "t").length)
+    const properties = next && children(next, "rPr")[0]
+    for (const run of written) {
+      if (canonical(children(run, "rPr")[0]) === canonical(properties)) continue
+      children(run, "rPr").forEach(node => run.removeChild(node))
+      if (properties) {
+        const copy = properties.cloneNode(true) as Element
+        for (const node of [copy, ...elements(copy, "*")]) node.removeAttributeNS(PT, "Unid")
+        children(copy, "rPrChange").forEach(node => copy.removeChild(node))
+        run.insertBefore(copy, run.firstChild)
+      }
+      restyled = true
+    }
+  }
+  return restyled ? session.raw.replaceXml(anchor, new XMLSerializer().serializeToString(paragraph.documentElement)) : result
 }
 
 /** The part of `text` a replacement by `replacement` rewrites: from `offset`
  * (UTF-16 units), `replaced` becomes `changed`. With `words`, whole words. */
 export function changedRange(text: string, replacement: string, words = false) {
+  if (words) return changedWords(text, replacement)
   // Native offsets count UTF-16 units, but trim whole code points so a shared
   // surrogate never becomes an unchanged half of a changed character.
   const before = Array.from(text)
@@ -313,26 +378,57 @@ export function changedRange(text: string, replacement: string, words = false) {
     lastBefore--
     lastAfter--
   }
-  if (words && (first < lastBefore || first < lastAfter)) {
-    // A tracked change reads as Word records overtyped words: whole words, and
-    // a pure insertion takes the adjacent word as its anchor.
-    const word = (char?: string) => char !== undefined && /[\p{L}\p{N}_]/u.test(char)
-    if (first === lastBefore) if (lastBefore < before.length) { lastBefore++; lastAfter++ } else first--
-    while (first > 0 && word(before[first - 1]) && (word(before[first]) || word(after[first]))) first--
-    while (lastBefore < before.length && word(before[lastBefore]) && (word(before[lastBefore - 1]) || word(after[lastAfter - 1]))) {
-      lastBefore++
-      lastAfter++
-    }
-  }
   const removed = before.slice(first, lastBefore).join("")
   const inserted = after.slice(first, lastAfter).join("")
-  // Native replacement needs a nonempty span. A pure insertion retains one
-  // adjacent code point inside the authenticated quote as its formatting anchor.
+  // An untracked pure insertion retains one adjacent code point inside the
+  // authenticated quote as its formatting anchor.
   const anchor = !removed && inserted ? Math.min(first, before.length - 1) : first
   const offset = before.slice(0, anchor).join("").length
   const replaced = !removed && inserted ? before[anchor]! : removed
   const changed = !removed && inserted ? first < before.length ? inserted + replaced : replaced + inserted : inserted
   return { offset, replaced, changed }
+}
+
+// A tracked change reads as Word records one: whole words, only those that
+// differ. The texts are compared word by word, so a pure insertion is written
+// alone (an empty span, which Docxodus writes as one insertion), a pure
+// deletion alone, and a replacement as the words between the first and last
+// that differ. An insertion or deletion that could stand at several places,
+// because the words around it repeat, stands at the last whose both ends are
+// sentence boundaries (the quote's start or end, or either side of the space
+// after a full stop): a whole sentence goes between sentences, never inside
+// the one whose words it repeats. Otherwise it stands at the first place that
+// follows a space or the quote's start, so an inserted word goes before the
+// word it qualifies; with no such place, at the last.
+function changedWords(text: string, replacement: string) {
+  const words = (value: string) => value.match(/[\p{L}\p{N}_]+|\s+|[^\p{L}\p{N}_\s]/gu) ?? []
+  const before = words(text)
+  const after = words(replacement)
+  let first = 0
+  let lastBefore = before.length
+  let lastAfter = after.length
+  while (first < lastBefore && first < lastAfter && before[first] === after[first]) first++
+  while (lastBefore > first && lastAfter > first && before[lastBefore - 1] === after[lastAfter - 1]) {
+    lastBefore--
+    lastAfter--
+  }
+  const inserted = first === lastBefore
+  // The text holding the inserted or deleted words, which end at `end`.
+  const [holding, end] = inserted ? [after, lastAfter] : [before, lastBefore]
+  const space = (token?: string) => token !== undefined && /^\s/.test(token)
+  const stop = (token?: string) => token !== undefined && /^[.!?]$/.test(token)
+  const boundary = (at: number) => at === 0 || at === holding.length
+    || (space(holding[at - 1]) && stop(holding[at - 2])) || (stop(holding[at - 1]) && space(holding[at]))
+  let sentence: number | undefined
+  let spaced = 0
+  if (inserted !== (first === lastAfter))
+    for (let k = 0; k <= first && (!k || holding[end - k] === before[first - k]); k++) {
+      if (sentence === undefined && boundary(first - k) && boundary(end - k)) sentence = k
+      if (k && (k === first || space(before[first - k - 1]))) spaced = k
+    }
+  const shift = sentence ?? spaced
+  return { offset: before.slice(0, first - shift).join("").length, replaced: before.slice(first - shift, lastBefore - shift).join(""),
+    changed: after.slice(first - shift, lastAfter - shift).join("") }
 }
 
 function targetHandle(source_sha256: string, ordinal: number, match: Match) {
@@ -378,6 +474,19 @@ function localize(opened: Opened, proposed: DocxAmendment[], limits: Limits) {
 export class DocxTrackedRevisionsError extends Error {
   constructor() { super("unsupported_existing_tracked_revisions") }
 }
+/** What Request edits tells the lawyer for DocxTrackedRevisionsError, and the
+ * older chat tools for the same file (hasTrackedRevisions). */
+export const trackedRevisionsReason = "This Word file contains tracked changes. Accept or reject them in Word before preparing changes."
+
+/** Whether a "refuse" reader (DocxRevisionOptions) refuses these bytes with
+ * DocxTrackedRevisionsError: a part holds a tracked insertion, deletion or move. */
+export function hasTrackedRevisions(bytes: Uint8Array) {
+  return trackedRevisions(xmlParts(unzipSync(new Uint8Array(bytes))))
+}
+const trackedRevisions = (documents: Record<string, Document>) =>
+  Object.values(documents).some(doc => ["ins", "del", "moveFrom", "moveTo"].some(name => elements(doc, name).length))
+const xmlParts = (parts: Record<string, Uint8Array>) => Object.fromEntries(Object.entries(parts).filter(([name]) => name.endsWith(".xml"))
+  .map(([name, bytes]) => [name, parse(strFromU8(bytes))]))
 
 // The touch rule. Its unit is one projection paragraph in any story, which is
 // pending when the native revision listing names it (both ends of a move
@@ -427,13 +536,24 @@ export function pendingRevisionAnchors(session: Session) {
 }
 
 /** The touch rule's refusal of an older chat-tool edit of `text` in these
- * paragraphs (anchor ids, as findAllByText names them), given their session's
- * pendingRevisionAnchors, in the words of Prepare's open item; undefined when
- * none has a pending revision. `verb` says what did not happen to the change. */
-export function pendingRevisionRefusal(pending: Map<string, string[]>, anchors: string[], text: string, verb: "proposed" | "applied" | "made") {
+ * paragraphs (anchor ids, as findAllByText names them) of `session`, given its
+ * pendingRevisionAnchors, in the words of Prepare's open items; undefined when
+ * the edit may be made. As in Prepare, pending changes by `own` (every name our
+ * side signs with; see othersPending) hold no paragraph, but the edit may not
+ * rewrite one (insideRevision). These tools rewrite all of `text` wherever it
+ * occurs in the paragraphs, or with `whole` the paragraph itself, so that is
+ * the span checked. `verb` says what did not happen to the change. */
+export function pendingRevisionRefusal(session: Session, pending: Map<string, string[]>, anchors: string[], text: string,
+  verb: "proposed" | "applied" | "made", own: readonly string[], whole = false) {
   const touched = anchors.filter(id => pending.has(id))
   if (!touched.length) return
-  const names = [...new Set(touched.flatMap(id => pending.get(id)!).map(author => normalizeUntrustedText(author).text.trim()).filter(Boolean))]
+  const others = touched.flatMap(id => othersPending(pending.get(id), own))
+  if (!others.length) {
+    const inside = whole || session.grep(literal(text), { scope: 63, whitespace: 0 })
+      .some(match => touched.includes(match.enclosingAnchor.id) && insideRevision(session, match))
+    return inside ? ownRevisionReason(text, verb) : undefined
+  }
+  const names = [...new Set(others.map(author => normalizeUntrustedText(author).text.trim()).filter(Boolean))]
   const many = names.length > 1
   // As Prepare lists them: three names, then a count.
   const shown = names.length > 3 ? [...names.slice(0, 3), `${names.length - 3} other${names.length === 4 ? "" : "s"}`] : names
@@ -462,12 +582,10 @@ function pendingAuthors(listed: Set<string> | undefined, paragraph: Element) {
 
 export async function openRevision(source: Uint8Array, options: DocxRevisionOptions = {}) {
   const parts = unzipSync(source)
-  const documents = Object.fromEntries(Object.entries(parts).filter(([name]) => name.endsWith(".xml"))
-    .map(([name, bytes]) => [name, parse(strFromU8(bytes))]))
+  const documents = xmlParts(parts)
   if (!documents["word/document.xml"]) throw new Error("invalid_docx_package")
   const layer = options.pendingRevisions === "layer"
-  if (!layer && Object.values(documents).some(doc => ["ins", "del", "moveFrom", "moveTo"].some(name => elements(doc, name).length)))
-    throw new DocxTrackedRevisionsError()
+  if (!layer && trackedRevisions(documents)) throw new DocxTrackedRevisionsError()
   const dx = await docxodus()
   // The projection is the accepted text in either mode; render_inline changes
   // only how this session's edits are written.

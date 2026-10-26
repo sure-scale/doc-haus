@@ -94,13 +94,19 @@ export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => 
   useEffect(() => { void load() }, [])
   useEffect(() => { if (!loading && step === "setup") setAIMounted(true) }, [loading, step])
   const modelsSaved = progress?.ready === true && progress.completed.includes("models")
+  // Once AI setup is open its live state counts, so a new provider clears the
+  // connection and models. Before then (a reload on a later step skips it),
+  // saved models mean a saved provider and connection too.
+  const setupDone = aiMounted
+    ? { provider: ai.provider, connection: ai.connection, models: ai.models }
+    : { provider: modelsSaved, connection: modelsSaved, models: modelsSaved }
   function unavailable(id: string) {
     if (loading) return "Wait for your saved setup to load."
     if (failed) return "Retry setup before changing steps."
     if (advancing || ai.busy) return "Wait for the current action to finish."
-    if (id === "connection" && !ai.provider) return "Choose a provider first."
-    if (id === "models" && !ai.connection) return "Prepare a provider connection first."
-    if (id === "test" && (!ai.connection || !ai.models)) return "Choose your primary and fast models first."
+    if (id === "connection" && !setupDone.provider) return "Choose a provider first."
+    if (id === "models" && !setupDone.connection) return "Prepare a provider connection first."
+    if (id === "test" && (!setupDone.connection || !setupDone.models)) return "Choose your primary and fast models first."
     if ((id === "research" || id === "details") && !modelsSaved) return "Test and save your model choices first."
     return ""
   }
@@ -110,7 +116,7 @@ export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => 
     if (id === "research" || id === "details") setStep(id)
   }
   function completed(id: string) {
-    if (id === "provider" || id === "connection" || id === "models") return ai[id]
+    if (id === "provider" || id === "connection" || id === "models") return setupDone[id]
     if (id === "test") return modelsSaved
     return (id === "research" || id === "details") && !!progress?.completed.includes(id)
   }

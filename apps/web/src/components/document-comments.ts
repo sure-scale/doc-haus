@@ -1,27 +1,28 @@
 import { STRIP_RE } from "../../../../dochaus/lib/untrusted-text"
 import type { DocumentMarkup } from "../api/ingest/markup"
 import { formatDateTime } from "../lib/format"
-import { authorTones, initialsOf, nameKey, toneClass, toneOf } from "./comment-authors"
-import { flagNotes } from "./MarkupPanel"
+import { initialsOf, pageTones, toneClass, toneColour } from "./comment-authors"
+import { flagNotes, markupAuthors } from "./MarkupPanel"
 
 // Word's comment cards for the comments Docxodus sets beside the page. Its
 // notes are restyled in styles.css; this pass adds what CSS cannot: each
 // author's initials in the colour the Tracked changes panel gives them, the
 // date as the panel writes it, screening flags, a link between a card and
-// its commented text, and plain words for the "[0]" markers. On a narrow page
-// each card moves under its paragraph and back again when the page widens.
+// its commented text, each card level with that text, and plain words for
+// the "[0]" markers. On a narrow page each card moves under its paragraph and
+// back again when the page widens.
 // While the Tracked changes panel lists the comments, as Word's Comments pane
 // does, the cards give way to a comment button beside each commented
 // paragraph, which opens its thread in the panel.
 // Everything it adds or moves is undone by the function it returns.
 
 export type CommentDecoration = {
-  // Every author the panel colours (its revisions' and comments' authors, in
-  // its order), so a name has the same colour in both. Without it, the
-  // authors named in the rendered page.
+  // Every author the panel colours, in its order, so a name has the same
+  // colour in both; the page's other authors follow, as its tracked changes
+  // are coloured.
   authors?: string[]
-  // The lawyer's own name, shown in the brand colour.
-  self?: string | null
+  // Whether a name is the lawyer's own, shown in the brand colour.
+  self?: (author: string) => boolean
   // Word's initials and screening notes by comment id, from the file's markup.
   initials?: Map<string, string | null>
   flags?: Map<string, string[]>
@@ -42,11 +43,11 @@ const visible = (text: string) => text.replace(STRIP_RE, "")
 
 // What the panel knows about the comments in the working file. An older
 // version's comments may carry other ids, so it gets none of this.
-export function commentDecoration(markup: DocumentMarkup | undefined, self: string | null | undefined): CommentDecoration {
+export function commentDecoration(markup: DocumentMarkup | undefined, self: ((author: string) => boolean) | undefined): CommentDecoration {
   if (!markup) return { self }
   const body = markup.comments.filter((comment) => !comment.scope)
   return {
-    authors: [...markup.revisions.map((revision) => revision.author), ...markup.comments.map((comment) => comment.author)],
+    authors: markupAuthors(markup),
     self,
     initials: new Map(body.map((comment) => [String(comment.id), comment.initials])),
     flags: new Map(body.flatMap((comment) => {
@@ -101,16 +102,9 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
   }
   const authorOf = (note: HTMLElement) => visible(note.dataset.author ?? "").trim()
 
-  // Colours exactly as the panel's: its list of names when given, else every
-  // author the page names (tracked changes and comments alike).
-  const names = decoration.authors ?? [...root.querySelectorAll<HTMLElement>("[data-author]")].map((node) => visible(node.dataset.author ?? ""))
-  const tones = authorTones(names)
-  const self = decoration.self?.trim()
-  const toneFor = (author: string) => toneOf(tones, author, self ? (name) => nameKey(name) === nameKey(self) : undefined)
-  const toneVariable = (author: string) => {
-    const tone = toneFor(author)
-    return tone === "self" ? "var(--accent)" : `var(--author-${tone + 1})`
-  }
+  // Colours exactly as the panel's and the page's tracked changes.
+  const toneFor = pageTones(root, decoration.authors, decoration.self)
+  const toneVariable = (author: string) => toneColour(toneFor(author))
   const rootOf = (note: Element) => (note.parentElement?.closest<HTMLElement>(".comment-margin-note") ?? note) as HTMLElement
   const byId = new Map(all.map((note) => [note.dataset.commentId ?? "", note]))
   const named = (note: HTMLElement) => {
@@ -276,6 +270,7 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
   const stack = () => {
     const placed = new Map<Element, HTMLElement>()
     for (const note of notes) {
+      note.style.removeProperty("margin-top")
       const block = blockOf(note)
       if (!block) continue
       let group = placed.get(block)
@@ -301,16 +296,45 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
     if (narrow) stack()
     else unstack()
   }
+  // Beside the page, as Word's balloons: each card level with the start of its
+  // commented text (its paragraph for a comment on no text), or just below the
+  // card above when they would overlap. Placed again whenever the text reflows.
+  let frame = 0
+  const place = () => {
+    if (pane || stacked) return
+    // Boxes are measured on screen, which the text size setting zooms (body
+    // zoom); the gap and the margins set here are page pixels.
+    const scale = Number(getComputedStyle(document.body).zoom) || 1
+    const top = column.getBoundingClientRect().top
+    const gap = parseFloat(getComputedStyle(column).rowGap) || 0
+    const wanted = notes.map((note) => {
+      const text = content.querySelector(`.comment-highlight[data-comment-id="${CSS.escape(note.dataset.commentId ?? "")}"]`) ?? blockOf(note)
+      return text ? (text.getBoundingClientRect().top - top) / scale : 0
+    })
+    const heights = notes.map((note) => note.getBoundingClientRect().height / scale)
+    let next = 0
+    notes.forEach((note, index) => {
+      const at = Math.max(wanted[index]!, next)
+      note.style.marginTop = `${at - next}px`
+      next = at + heights[index]! + gap
+    })
+  }
   const style = getComputedStyle(root)
   fit(root.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight))
+  place()
   const observer = new ResizeObserver((entries) => {
-    const entry = entries.at(-1)
-    if (entry) fit(entry.contentRect.width)
+    const page = entries.find((entry) => entry.target === root)
+    if (page) fit(page.contentRect.width)
+    // After this frame's layout: moving a card can resize the page.
+    cancelAnimationFrame(frame)
+    frame = requestAnimationFrame(place)
   })
   observer.observe(root)
+  observer.observe(content)
 
   const undo = () => {
     observer.disconnect()
+    cancelAnimationFrame(frame)
     host.removeEventListener("mouseover", over)
     host.removeEventListener("mouseout", out)
     host.removeEventListener("focusin", focusIn)
@@ -329,6 +353,7 @@ export function decorateComments(root: HTMLElement, decoration: CommentDecoratio
       node.classList.remove("is-linked")
     }
     for (const note of notes) {
+      note.style.removeProperty("margin-top")
       note.removeAttribute("tabindex")
       note.removeAttribute("role")
       note.removeAttribute("aria-label")

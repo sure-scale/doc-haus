@@ -25,20 +25,22 @@ import { formatDateTime } from "../lib/format"
 import { ModalClose } from "./ModalHeader"
 import { CompareIcon } from "./CompareDialog"
 import VersionsPanel, { saveVersionFile, unavailableReason, useDocumentVersions, versionOrigin } from "./DocumentVersions"
-import MarkupPanel, { ConsistencyNotice, markupCount } from "./MarkupPanel"
+import MarkupPanel, { ConsistencyNotice, markupAuthors, markupCount } from "./MarkupPanel"
 import ChangeTimeline from "./ChangeTimeline"
 import { citationPassage, focusCitationPassage, type CitationFocus } from "./citation-target"
 import { decorateMarkers, markerSummary, type MarkerCounts } from "./document-markers"
 import { commentDecoration, decorateComments } from "./document-comments"
+import { authorTones, colourChanges, nameKey } from "./comment-authors"
 import { removeUnsafeLinkTargets } from "./docx-links"
 import { useToast } from "./Toast"
 import useModalFocus from "./useModalFocus"
 import backdropClose from "./backdropClose"
 import { withSafeStyleValues } from "./docx-style-values"
 
-// How a Word file with tracked changes is painted: insertions green, deletions
-// struck red, moves, headers and footers, comments in the margin. Shared with
-// the blackline view so both read the same way.
+// How a Word file with tracked changes is painted: insertions underlined and
+// deletions struck through in their author's colour (styles.css), moves,
+// headers and footers, comments in the margin. The blackline view starts from
+// these and paints its changes as comparisons do.
 export const DOCX_RENDER_OPTIONS: ConversionOptions = {
   renderTrackedChanges: true,
   showDeletedContent: true,
@@ -60,18 +62,53 @@ export default function DocumentViewer(props: Parameters<typeof WordDocumentView
 
 // On a narrow screen the versions list and the Tracked changes panel sit above
 // the page, so they come first in the markup too and the tab order follows what
-// the lawyer sees.
+// the lawyer sees. Moving a panel remounts it with its filters, menus and help
+// reset, so a control's position may then belong to another change. Focus goes
+// back to the same control of the same card (a change or a comment thread),
+// found by what it is; failing that, to the panel's heading, never to another
+// card's control.
 const NARROW = "(max-width: 720px)"
+const MOVED = "#document-markup, #document-versions"
+const CARD = "[data-change-id], [data-comment-id]"
+const CONTROLS = "button, a[href], input, select, textarea, summary, [tabindex]"
+// A control's kind and name: its role, its radio or checkbox value (Accept,
+// Reject or Leave tracked) and its label.
+const what = (el: Element) => [el.tagName, el.getAttribute("role"), el.getAttribute("type"),
+  el.matches("input[type=radio], input[type=checkbox]") ? (el as HTMLInputElement).value : "",
+  el.getAttribute("aria-label") ?? el.textContent?.trim()].join("|")
+const cardOf = (card: Element | null) => {
+  if (!card) return null
+  const key = card.hasAttribute("data-change-id") ? "data-change-id" : "data-comment-id"
+  return `[${key}="${CSS.escape(card.getAttribute(key) ?? "")}"]`
+}
 function useNarrow() {
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && Boolean(window.matchMedia?.(NARROW).matches))
+  const held = useRef<{ panel: string; card: string | null; control: string } | null>(null)
   useEffect(() => {
     const query = window.matchMedia?.(NARROW)
     if (!query) return
-    const change = () => setNarrow(query.matches)
+    const change = () => {
+      const active = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      const panel = active?.closest(MOVED)
+      held.current = active && panel ? { panel: panel.id, card: cardOf(active.closest(CARD)), control: what(active) } : null
+      setNarrow(query.matches)
+    }
     change()
     query.addEventListener("change", change)
     return () => query.removeEventListener("change", change)
   }, [])
+  useLayoutEffect(() => {
+    const target = held.current
+    held.current = null
+    if (!target) return
+    const panel = document.getElementById(target.panel)
+    if (!panel || panel.contains(document.activeElement)) return
+    const card = target.card ? panel.querySelector(target.card) : null
+    const same = !target.card || card
+      ? [...panel.querySelectorAll<HTMLElement>(CONTROLS)].find((el) => el.closest(CARD) === card && what(el) === target.control && el.getClientRects().length > 0)
+      : undefined
+    ;(same ?? panel.querySelector<HTMLElement>(':is(h2, h3)[tabindex="-1"]'))?.focus()
+  }, [narrow])
   return narrow
 }
 
@@ -91,10 +128,11 @@ function useVersionsList(matterId: string, name: string, reload: number, initial
 
 // In-browser redline viewer. Fetches the matter's document with every pending
 // redline applied as native tracked changes and converts it to HTML with the WASM
-// runtime — insertions render green, deletions struck red, the redline lawyers
-// expect. The change list alongside it accepts or rejects each proposal, one block
-// at a time or the whole document at once. Bytes convert client-side, so the
-// document never leaves the browser for a third-party service.
+// runtime — insertions underlined and deletions struck through in each
+// author's colour, the redline lawyers expect. The change list alongside it
+// accepts or rejects each proposal, one block at a time or the whole document
+// at once. Bytes convert client-side, so the document never leaves the browser
+// for a third-party service.
 function WordDocumentViewer({
   matterId,
   name,
@@ -153,6 +191,10 @@ function WordDocumentViewer({
   // The name doc.haus's changes carry: the saved attorney, else the firm, else
   // doc.haus, as ingest records it; null when the settings could not be read.
   const [reviser,setReviser] = useState<string | null>()
+  // The names the lawyer's own changes and comments carry, as the Tracked
+  // changes panel counts them: the saved attorney, the firm and doc.haus;
+  // none when the settings could not be read.
+  const [ownNames,setOwnNames] = useState<string[]>([])
   // Bumped after an accept/reject resolves so the load effect re-runs — the
   // document re-renders and the change list shrinks without duplicating fetch logic.
   const [reload, setReload] = useState(0)
@@ -284,19 +326,37 @@ function WordDocumentViewer({
 
   // Read once the file's tracked changes meet doc.haus's: the request opens, or
   // proposals are listed. Read then, not on opening, so a name just saved in
-  // Settings shows; without it the lines name no one. Comments on the page
-  // need it too, to show the lawyer's own in the brand colour, and read it
-  // again after each save, which may have recorded a name.
-  const reviserNeeded = (Boolean(markup.data?.revisions.length) && (editing || redlines.length > 0)) || /class="[^"]*\bcomment-margin-note\b/.test(html ?? "")
+  // Settings shows; without it the lines name no one. Tracked changes and
+  // comments on the page need it too, to show the lawyer's own in the brand
+  // colour, and read it again after each save, which may have recorded a name.
+  const reviserNeeded = (Boolean(markup.data?.revisions.length) && (editing || redlines.length > 0)) || /class="[^"]*\b(comment-margin-note|rev-ins|rev-del)\b/.test(html ?? "")
   useEffect(() => {
     if (!reviserNeeded) return
     let cancelled = false
     getPreferences().then(
-      (prefs) => !cancelled && setReviser(prefs.attorney?.trim() || prefs.firm?.trim() || "doc.haus"),
-      () => !cancelled && setReviser(null),
+      (prefs) => {
+        if (cancelled) return
+        setReviser(prefs.attorney?.trim() || prefs.firm?.trim() || "doc.haus")
+        setOwnNames([prefs.attorney, prefs.firm, "doc.haus"].flatMap((own) => own?.trim() || []))
+      },
+      () => {
+        if (cancelled) return
+        setReviser(null)
+        setOwnNames([])
+      },
     )
     return () => { cancelled = true }
   }, [reviserNeeded, reload])
+  const self = useMemo(() => {
+    const own = new Set(ownNames.map(nameKey))
+    return (author: string) => own.has(nameKey(author))
+  }, [ownNames])
+  // Each author's colour, as Word colours changes by author: the working
+  // file's authors in the order they first appear in its markup, so the page,
+  // the panel and the change history agree; without the markup (an older
+  // version), in the order they first appear on the page.
+  const authors = useMemo(() => (!shown && markup.data ? markupAuthors(markup.data) : []), [shown, markup.data])
+  const tone = useMemo(() => authorTones(authors, self), [authors, self])
 
   // A PDF's older version is read once and shown from memory, so a copy that
   // cannot be served is reported here rather than as an error page in the frame.
@@ -475,12 +535,18 @@ function WordDocumentViewer({
   // paragraph instead, which opens its thread there.
   const commentPane = markupShown && Boolean(markup.data)
   const comments = useMemo(() => ({
-    ...commentDecoration(shown ? undefined : markup.data, reviser),
+    ...commentDecoration(shown ? undefined : markup.data, self),
     onReveal: commentPane ? (thread: number) => setRevealComment({ thread, seq: ++revealSeq.current }) : undefined,
-  }), [shown, markup.data, reviser, commentPane])
+  }), [shown, markup.data, self, commentPane])
   useEffect(() => {
     if (html && documentRef.current) return decorateComments(documentRef.current, comments)
   }, [html, comments])
+
+  // Each tracked change in its author's colour, once the lawyer's own names
+  // are read, so no author's colour moves when they arrive.
+  useEffect(() => {
+    if (html && documentRef.current && reviser !== undefined) colourChanges(documentRef.current, authors, self)
+  }, [html, authors, self, reviser])
 
   useEffect(() => {
     setPassage(undefined)
@@ -738,7 +804,7 @@ function WordDocumentViewer({
               </div>
             )}
             {documentPreview}
-            <ChangeTimeline root={documentRef} html={html} markup={!shown && !markupPending && !markup.failed ? markup.data : undefined} revisions={!revisionNotice && !redlines.some((row) => !row.stale)} />
+            <ChangeTimeline root={documentRef} html={html} markup={!shown && !markupPending && !markup.failed ? markup.data : undefined} revisions={!revisionNotice && !redlines.some((row) => !row.stale)} tone={tone} />
           </div>
           {!narrow && versionsPanel}
           {!narrow && markupPanel}
@@ -1138,7 +1204,7 @@ function VersionsToggle({ open, count, onToggle }: { open: boolean; count?: numb
 // Opens and closes the file's tracked changes and comments beside the
 // document, counted the way the panel lists them: one per change and one per
 // comment thread. The count shows as a small badge beside the label, and on a
-// phone, where the label is hidden, on the icon, so it reads as tracked
+// narrow screen, where the label is hidden, on the icon, so it reads as tracked
 // changes, not "add". The label carries it in brackets for screen readers.
 function MarkupToggle({ open, count, onToggle }: { open: boolean; count: number; onToggle: () => void }) {
   return (

@@ -150,9 +150,23 @@ test("mixed and malformed targeting never silently export or apply legacy propos
   const original=await Packer.toBuffer(new Document({sections:[{children:[new Paragraph("Original wording remains.")]}]}))
   const legacy={id:1,doc_path:"working.docx",doc_name:"working.docx",scope:"phrase" as const,find_text:"Original",old_text:"Original",new_text:"Changed",author:"Review",review_comment:"",anchor_id:null,created_at:1,status:"pending" as const}
   const bound={...legacy,id:2,target_json:"{invalid"}
-  await expect(buildRedlined(original,[legacy,bound])).rejects.toThrow("cannot share one redline export")
-  await expect(bake(original,[legacy,bound])).rejects.toThrow("separate review")
+  await expect(buildRedlined(original,[legacy,bound])).rejects.toThrow("no longer resolves")
+  await expect(bake(original,[legacy,bound])).rejects.toThrow()
   await expect(bake(original,[bound])).rejects.toThrow()
+})
+
+test("on a clean document the preview of prepared and older proposals together is what Accept writes, each review comment on its paragraph",async () => {
+  const original=await Packer.toBuffer(new Document({sections:[{children:[new Paragraph("Delivery within thirty days."),new Paragraph("Notices must be in writing.")]}]}))
+  const packet=await createDocxLocalization(original,[{id:"1",before_quote:"thirty days",replacement:"ten days"}])
+  const prepared={id:1,doc_path:"working.docx",doc_name:"working.docx",scope:"phrase" as const,find_text:"thirty days",old_text:"thirty days",new_text:"ten days",author:"Review",
+    review_comment:"Requested delivery update.",anchor_id:null,created_at:1,status:"pending" as const,
+    target_json:JSON.stringify({version:1,source_sha256:packet.revision.source_sha256,target_handle:packet.candidates[0]!.target_handle,amendment_id:"1"})}
+  const older={...prepared,id:2,find_text:"in writing",old_text:"in writing",new_text:"in writing or by email",review_comment:"Requested notice method.",target_json:null}
+  const preview=await buildRedlined(original,[prepared,older])
+  const accepted=(bytes:Uint8Array) => readDocxCommentParagraphs(bytes).map((row) => row.paragraph_text)
+  expect(accepted(preview)).toEqual(accepted(await bake(original,[prepared,older])))
+  expect(readDocxComments(preview).map((row) => [row.text,row.markers[0]!.accepted_paragraph_text])).toEqual([
+    ["Requested delivery update.","Delivery within ten days."],["Requested notice method.","Notices must be in writing or by email."]])
 })
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -483,6 +497,10 @@ test("a revision-API edit or a removed pointer stales only the proposals on thos
     expect(await matter.pending()).toEqual([[edited,true,paragraphChanged],[kept,undefined,undefined],[unpointed,true,paragraphChanged]])
     expect(await matter.accept(edited)).toBe(409)
     expect(await matter.accept(unpointed)).toBe(409)
+    // Accept all names the first stale proposal and counts the others.
+    const all = await ingest.request(`${matter.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect({status:all.status,body:await all.json()}).toEqual({status:409,body:{error:
+      `The change to "five days" can no longer be accepted. ${paragraphChanged} 1 other proposal can no longer be accepted either; the change list says why.`}})
     expect(sha256(await Bun.file(matter.file).bytes())).toBe(sha256(current))
     // Stale proposals are left out of the tracked-changes export; the valid one remains.
     const exported = await ingest.request(`${matter.route}/documents/redlined?name=working.docx`)
@@ -914,7 +932,7 @@ test("on an uploaded markup with Word paragraph ids, each Accept keeps doc.haus'
     expect(exported.status).toBe(200)
     const redline = new Uint8Array(await exported.arrayBuffer())
     await kept(redline)
-    expect(await ours(redline)).toEqual([["delete","consent"],["insert","prior written consent"],["delete","Province"],["insert","State"]])
+    expect(await ours(redline)).toEqual([["insert","prior written "],["delete","Province"],["insert","State"]])
     expect(readDocxComments(redline).map((row) => row.text)).toEqual([...COUNTERPARTY_MARKUP.comments.map((row) => row.text),"Consent must be written."])
     expect(new Set(commentIds(redline)).size).toBe(commentIds(redline).length)
     expect(await matter.accept(second)).toBe(200)
@@ -922,10 +940,10 @@ test("on an uploaded markup with Word paragraph ids, each Accept keeps doc.haus'
     expect(await body(accepted)).toEqual((await body(markup)).map((text,ordinal) => ordinal === 9 ? "9. Governing law. This Agreement is governed by the law of the State."
       : ordinal === 7 ? " without prior written consent." : text))
     await kept(accepted)
-    expect(await ours(accepted)).toEqual([["delete","consent"],["insert","prior written consent"],["delete","Province"],["insert","State"]])
+    expect(await ours(accepted)).toEqual([["insert","prior written "],["delete","Province"],["insert","State"]])
     // Each accept numbers its revisions after every mark already in the package.
     expect(new Set(revisionMarkIds(accepted)).size).toBe(revisionMarkIds(accepted).length)
-    expect(revisionMarkIds(accepted)).toHaveLength(revisionMarkIds(markup).length+4)
+    expect(revisionMarkIds(accepted)).toHaveLength(revisionMarkIds(markup).length+3)
     expect(commentIds(accepted)).toEqual(commentIds(markup))
     const listed = (await (await ingest.request(`${matter.route}/documents/markup?name=working.docx`)).json() as {revisions:Array<{author:string}>}).revisions
     expect(listed.filter((row) => row.author !== "doc.haus")).toHaveLength(10)
@@ -957,7 +975,7 @@ test("on an uploaded markup with Word paragraph ids, each Accept keeps doc.haus'
     const twice = await Bun.file(matter.file).bytes()
     expect((await body(twice))[9]).toBe("9. Governing law. This Agreement is governed by the laws of the State.")
     await kept(twice)
-    expect(await ours(twice)).toEqual([["delete","consent"],["insert","prior written consent"],["delete","law"],["insert","laws"],["delete","Province"],["insert","State"]])
+    expect(await ours(twice)).toEqual([["insert","prior written "],["delete","law"],["insert","laws"],["delete","Province"],["insert","State"]])
     expect((await listedRevisions(twice)).filter((row) => row.author === "doc.haus" && /^(Province|State)$/.test(row.text)))
       .toEqual((await listedRevisions(saved)).filter((row) => row.author === "doc.haus" && /^(Province|State)$/.test(row.text)))
     expect(new Set(revisionMarkIds(twice)).size).toBe(revisionMarkIds(twice).length)
@@ -1040,12 +1058,15 @@ test("on an uploaded markup, a proposal whose paragraph gains their formatting c
     expect((await ingest.request(`${matter.route}/documents/revisions`,{method:"POST",body:wordForm(saved)})).status).toBe(200)
     expect(await matter.pending()).toEqual([[law,true,formatted],[consent,undefined,undefined]])
     expect(await matter.acceptResult(law)).toEqual({status:409,body:{error:formatted}})
+    // The reason already names the change, so Accept all gives it as it is.
+    const all = await ingest.request(`${matter.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect({status:all.status,body:await all.json()}).toEqual({status:409,body:{error:formatted}})
     expect(sha256(await Bun.file(matter.file).bytes())).toBe(sha256(saved))
     // The export leaves it out and shows the other beside their changes.
     const exported = await ingest.request(`${matter.route}/documents/redlined?name=working.docx`)
     expect(exported.status).toBe(200)
     const ours = (await listedRevisions(new Uint8Array(await exported.arrayBuffer()))).filter((row) => row.author === "doc.haus").map((row) => [row.type,row.text])
-    expect(ours).toEqual([["delete","consent"],["insert","prior written consent"]])
+    expect(ours).toEqual([["insert","prior written "]])
     expect(await matter.accept(consent)).toBe(200)
     expect((await createDocxRevision(await Bun.file(matter.file).bytes(),{pendingRevisions:"layer"})).paragraphs[7]!.text).toBe(" without prior written consent.")
   } finally {
@@ -1086,6 +1107,136 @@ test("on an uploaded markup, doc.haus's tracked change from before an attorney w
     expect(by("Riley Chen",after)).toEqual([["delete","law"],["insert","laws"]])
     expect(by("doc.haus",after)).toEqual([["delete","Province"],["insert","State"]])
     expect(after.filter((row) => row.author !== "doc.haus" && row.author !== "Riley Chen")).toEqual(theirs)
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
+// Proposals are signed with the name saved when they were prepared, so naming
+// the attorney between two requests leaves the change list with two authors.
+test("on an uploaded markup, Accept all writes proposals prepared under different names, each tracked under its own, and names two that overlap", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-authors-"))
+  const law = {before_quote:"the Province",replacement:"the State",target_context:"governing law clause",reason:"Requested governing law update."}
+  const batches:LegalPass["amendments"][] = [[law],[law],[
+    {before_quote:"governed by",replacement:"construed under",target_context:"governing law clause",reason:"Requested wording."},
+    {before_quote:"without consent",replacement:"without prior written consent",target_context:"assignment clause",reason:"Consent must be written."},
+  ],[
+    {before_quote:"law of the Province",replacement:"laws of the Province",target_context:"governing law clause",reason:"Requested wording."},
+  ]]
+  const engine = syntheticEngine(() => ({amendments:batches.shift()!,open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  const by = (author:string,rows:Awaited<ReturnType<typeof listedRevisions>>) => rows.filter((row) => row.author === author).map((row) => [row.type,row.text])
+  const ids = async (matter:Awaited<ReturnType<typeof ingest.matter>>,instructions:string) => (await (await matter.prepare(instructions)).json() as {redline_ids:number[]}).redline_ids
+  try {
+    await ingest.start("only")
+    const all = await ingest.matter("Markup proposals by two names accepted together")
+    const overlap = await ingest.matter("Markup proposals by two names that overlap")
+    for (const matter of [all,overlap])
+      expect((await ingest.request(`${matter.route}/documents`,{method:"POST",body:wordForm(withParaIds(counterpartyMarkupDocx()))})).status).toBe(200)
+    const markup = await Bun.file(all.file).bytes()
+    const theirs = await listedRevisions(markup)
+    // Before an attorney is saved, proposals are doc.haus's.
+    const first = [...await ids(all,"Make the State's law govern."),...await ids(overlap,"Make the State's law govern.")]
+    expect((await ingest.request("/preferences",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({attorney:"Riley Chen"})})).status).toBe(200)
+    const named = await ids(all,"Say construed and require written consent to assign.")
+    expect(await all.pending()).toEqual([first[0]!,...named].map((id) => [id,undefined,undefined]))
+    // The preview shows each proposal under its own name, as Accept all writes it.
+    const preview = await ingest.request(`${all.route}/documents/redlined?name=working.docx`)
+    expect(preview.status).toBe(200)
+    const previewed = new Uint8Array(await preview.arrayBuffer())
+    const commentAuthors = [...strFromU8(unzipSync(previewed)["word/comments.xml"]!).matchAll(/<w:comment\b[^>]*?\bw:author="([^"]*)"/g)].map((match) => match[1])
+    expect(readDocxComments(previewed).map((row,index) => [commentAuthors[index],row.text])).toEqual([...COUNTERPARTY_MARKUP.comments.map((row) => [row.author,row.text]),
+      ["doc.haus","Requested governing law update."],["Riley Chen","Requested wording."],["Riley Chen","Consent must be written."]])
+
+    const response = await ingest.request(`${all.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect({status:response.status,body:await response.json()}).toEqual({status:200,body:{ok:true,accepted:3}})
+    const accepted = await Bun.file(all.file).bytes()
+    const body = (await createDocxRevision(accepted,{pendingRevisions:"layer"})).paragraphs
+    expect([body[7]!.text,body[9]!.text]).toEqual([" without prior written consent.","9. Governing law. This Agreement is construed under the law of the State."])
+    // Each edit is tracked under the name it was prepared under, beside their
+    // changes, which stay as they were.
+    const after = await listedRevisions(accepted)
+    expect(by("doc.haus",after)).toEqual([["delete","Province"],["insert","State"]])
+    expect(by("Riley Chen",after)).toEqual([["insert","prior written "],["delete","governed by"],["insert","construed under"]])
+    expect(after.filter((row) => row.author !== "doc.haus" && row.author !== "Riley Chen")).toEqual(theirs)
+    const shown = (rows:Awaited<ReturnType<typeof listedRevisions>>) => rows.map((row) => [row.author,row.type,row.text])
+    expect(shown(after)).toEqual(shown(await listedRevisions(previewed)))
+    expect(new Set(revisionMarkIds(accepted)).size).toBe(revisionMarkIds(accepted).length)
+    expect([first[0]!,...named].map(all.status)).toEqual(["accepted","accepted","accepted"])
+
+    // Two proposals on the same words cannot both be written: Accept all says
+    // which and what to do, and changes nothing.
+    const [wording] = await ids(overlap,"Make the laws govern.")
+    const before = await Bun.file(overlap.file).bytes()
+    expect(await overlap.pending()).toEqual([[first[1]!,undefined,undefined],[wording!,undefined,undefined]])
+    const refused = await ingest.request(`${overlap.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect({status:refused.status,body:await refused.json()}).toEqual({status:409,body:{error:
+      "The changes to \"the Province\" and \"law of the Province\" overlap, so Accept all cannot write both. Accept the one you want on its own, then reject the other and request that edit again."}})
+    expect(sha256(await Bun.file(overlap.file).bytes())).toBe(sha256(before))
+    expect([first[1]!,wording!].map(overlap.status)).toEqual(["pending","pending"])
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
+
+test("on an uploaded markup, the preview and Accept all write a prepared proposal and an older chat proposal together, and name an older one the other rewrites", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-older-"))
+  const law = {before_quote:"the Province",replacement:"the State",target_context:"governing law clause",reason:"Requested governing law update."}
+  const engine = syntheticEngine(() => ({amendments:[law],open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  // As the chat tools record a proposal: replayed by its text, with no Word binding.
+  const older = (matter:Awaited<ReturnType<typeof ingest.matter>>,find:string,replacement:string,comment = "") => {
+    const db = openDb(matter.dir)
+    try {
+      return Number(db.run("INSERT INTO redlines (doc_path,doc_name,scope,find_text,old_text,new_text,author,review_comment,anchor_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        [matter.file,"working.docx","phrase",find,find,replacement,"Review",comment,null,Date.now()]).lastInsertRowid)
+    } finally {db.close()}
+  }
+  try {
+    await ingest.start("only")
+    const both = await ingest.matter("Markup with prepared and older proposals")
+    const rewritten = await ingest.matter("Markup with an older proposal the prepared one rewrites")
+    for (const matter of [both,rewritten])
+      expect((await ingest.request(`${matter.route}/documents`,{method:"POST",body:wordForm(withParaIds(counterpartyMarkupDocx()))})).status).toBe(200)
+    const theirs = await listedRevisions(await Bun.file(both.file).bytes())
+    const [prepared] = (await (await both.prepare("Make the State's law govern.")).json() as {redline_ids:number[]}).redline_ids
+    const consent = older(both,"without consent","without prior written consent","Consent must be written.")
+    expect(await both.pending()).toEqual([[prepared!,undefined,undefined],[consent,undefined,undefined]])
+    // The preview shows both as Accept all writes them, each review comment on its paragraph.
+    const preview = await ingest.request(`${both.route}/documents/redlined?name=working.docx`)
+    expect(preview.status).toBe(200)
+    const previewed = new Uint8Array(await preview.arrayBuffer())
+    expect(readDocxComments(previewed).slice(COUNTERPARTY_MARKUP.comments.length).map((row) => [row.text,row.markers[0]!.accepted_paragraph_text])).toEqual([
+      ["Requested governing law update.","9. Governing law. This Agreement is governed by the law of the State."],["Consent must be written.","7. Assignment. Neither party may assign without prior written consent."]])
+
+    const response = await ingest.request(`${both.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect({status:response.status,body:await response.json()}).toEqual({status:200,body:{ok:true,accepted:2}})
+    const accepted = await Bun.file(both.file).bytes()
+    const body = (await createDocxRevision(accepted,{pendingRevisions:"layer"})).paragraphs
+    expect([body[7]!.text,body[9]!.text]).toEqual([" without prior written consent.","9. Governing law. This Agreement is governed by the law of the State."])
+    // Each is tracked under its own author, beside their changes as they were.
+    const after = await listedRevisions(accepted)
+    const by = (author:string) => after.filter((row) => row.author === author).map((row) => [row.type,row.text])
+    expect([by("doc.haus"),by("Review")]).toEqual([[["delete","Province"],["insert","State"]],[["delete","without consent"],["insert","without prior written consent"]]])
+    expect(after.filter((row) => row.author !== "doc.haus" && row.author !== "Review")).toEqual(theirs)
+    const shown = (rows:Awaited<ReturnType<typeof listedRevisions>>) => rows.map((row) => [row.author,row.type,row.text])
+    expect(shown(after)).toEqual(shown(await listedRevisions(previewed)))
+    expect(new Set(revisionMarkIds(accepted)).size).toBe(revisionMarkIds(accepted).length)
+    expect([prepared!,consent].map(both.status)).toEqual(["accepted","accepted"])
+
+    // An older proposal whose words the prepared one rewrites cannot follow
+    // it: the preview and Accept all name it and say what to do, and Accept
+    // all changes nothing.
+    const [law2] = (await (await rewritten.prepare("Make the State's law govern.")).json() as {redline_ids:number[]}).redline_ids
+    const plural = older(rewritten,"law of the Province","laws of the Province")
+    const before = await Bun.file(rewritten.file).bytes()
+    const refusal = "The change to \"law of the Province\" cannot be written with the rest: its words have changed, or another proposal in this list changes them. Reject it, accept the rest, then request that edit again."
+    const unpreviewed = await ingest.request(`${rewritten.route}/documents/redlined?name=working.docx`)
+    expect({status:unpreviewed.status,body:await unpreviewed.json()}).toEqual({status:409,body:{error:refusal}})
+    const refused = await ingest.request(`${rewritten.route}/redlines/accept-all?name=working.docx`,{method:"POST"})
+    expect({status:refused.status,body:await refused.json()}).toEqual({status:409,body:{error:refusal}})
+    expect(sha256(await Bun.file(rewritten.file).bytes())).toBe(sha256(before))
+    expect([law2!,plural].map(rewritten.status)).toEqual(["pending","pending"])
   } finally {
     await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
   }
@@ -1773,12 +1924,15 @@ test("only a body accept of a completed run touches its notes, and only while th
   try {
     await ingest.start("only")
 
-    // A proposal accepted on the run's redline is not a body change.
+    // A proposal on the run's redline is not a body change. The redline holds our
+    // tracked changes, beside which an untracked edit would not show, so Accept
+    // refuses it as change preparation does.
     const redline = await ingest.matter("Redline accept")
     await completedLeanRun(redline.dir)
     const redlineNotes = await Bun.file(path.join(redline.dir,notesName)).bytes()
     // Recorded directly: change preparation refuses a document with tracked changes.
     const redlineFile = path.join(redline.dir,"Supply note - redline.docx")
+    const redlineBytes = await Bun.file(redlineFile).bytes()
     const proposals = openDb(redline.dir)
     const onRedline = (() => {
       try {
@@ -1786,8 +1940,9 @@ test("only a body accept of a completed run touches its notes, and only while th
           [redlineFile,"Supply note - redline.docx","phrase","on delivery","on delivery","within fourteen days of delivery","Review","",null,Date.now()]).lastInsertRowid)
       } finally {proposals.close()}
     })()
-    expect(await redline.acceptResult(onRedline)).toEqual({status:200,body:{ok:true}})
-    expect(redline.status(onRedline)).toBe("accepted")
+    expect(await redline.acceptResult(onRedline)).toEqual({status:409,body:{error:"This Word file contains tracked changes. Accept or reject them in Word before changes can be applied."}})
+    expect(redline.status(onRedline)).toBe("pending")
+    expect(sha256(await Bun.file(redlineFile).bytes())).toBe(sha256(redlineBytes))
     expect(sha256(await Bun.file(path.join(redline.dir,notesName)).bytes())).toBe(sha256(redlineNotes))
 
     // A run that is no longer completed gets no addendum.

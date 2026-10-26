@@ -16,8 +16,10 @@ export type RevisionBodyView = "current_body" | "baseline_body" | "marked_up_bod
  * each numbered paragraph with the label Word shows, as ingest's text does
  * (writeListLabels); a file whose labels cannot all be read (a failure, or a
  * body Docxodus and the XML count differently) throws rather than reading
- * without its numbers. The marked-up view is read as saved. */
-export async function readDocxBodyView(bytes: Uint8Array, view: RevisionBodyView, options: { labels?: boolean } = {}) {
+ * without its numbers. The marked-up view is read as saved; `bare` reads it
+ * without the ⟦kind by "author": …⟧ marks, each change's text inline, so only
+ * the document's own words are left. */
+export async function readDocxBodyView(bytes: Uint8Array, view: RevisionBodyView, options: { labels?: boolean; bare?: boolean } = {}) {
   if (view !== "marked_up_body") {
     const dx = await docxodus()
     const projected = view === "baseline_body" ? await dx.docxDiffRejectRevisions(bytes) : await dx.docxDiffAcceptRevisions(bytes)
@@ -41,14 +43,14 @@ export async function readDocxBodyView(bytes: Uint8Array, view: RevisionBodyView
     if (name === "br" || name === "cr") return "\n"
     const content = Array.from(node.childNodes).filter((child): child is Element => child.nodeType === 1 && (child as Element).localName !== "p").map(text).join("")
     const kind = KINDS.get(name)
-    return kind ? `⟦${kind} by ${JSON.stringify(node.getAttributeNS(W, "author") || "unknown author")}: ${content}⟧` : content
+    return kind && !options.bare ? `⟦${kind} by ${JSON.stringify(node.getAttributeNS(W, "author") || "unknown author")}: ${content}⟧` : content
   }
   return Array.from(doc.getElementsByTagNameNS(W, "p")).flatMap((paragraph, xmlIndex) => {
     const children = (node: Element, name: string) => Array.from(node.childNodes).filter((child): child is Element => child.nodeType === 1 && (child as Element).namespaceURI === W && (child as Element).localName === name)
     const marks = children(paragraph, "pPr").flatMap(properties =>
       children(properties, "rPr").flatMap(run => Array.from(run.childNodes)
         .filter((child): child is Element => child.nodeType === 1 && KINDS.has((child as Element).localName))))
-    let paragraphText = text(paragraph) + marks.map(mark => `⟦${KINDS.get(mark.localName)} paragraph break by ${JSON.stringify(mark.getAttributeNS(W, "author") || "unknown author")}⟧`).join("")
+    let paragraphText = text(paragraph) + (options.bare ? [] : marks).map(mark => `⟦${KINDS.get(mark.localName)} paragraph break by ${JSON.stringify(mark.getAttributeNS(W, "author") || "unknown author")}⟧`).join("")
     // Row/cell revisions are siblings of the paragraph in trPr/tcPr. Without
     // their enclosing marks a deleted row would look like ordinary body text.
     for (let parent = paragraph.parentNode; parent; parent = parent.parentNode) {
@@ -60,7 +62,7 @@ export async function readDocxBodyView(bytes: Uint8Array, view: RevisionBodyView
         if (mark.nodeType !== 1 || (mark as Element).namespaceURI !== W) continue
         const revision = mark as Element
         const operation = KINDS.get(revision.localName) ?? ({ cellIns: "insert", cellDel: "delete", cellMerge: "merge" } as Record<string, string>)[revision.localName]
-        if (operation) paragraphText = `⟦${operation} ${container.localName === "tr" ? "row" : "cell"} by ${JSON.stringify(revision.getAttributeNS(W, "author") || "unknown author")}: ${paragraphText}⟧`
+        if (operation && !options.bare) paragraphText = `⟦${operation} ${container.localName === "tr" ? "row" : "cell"} by ${JSON.stringify(revision.getAttributeNS(W, "author") || "unknown author")}: ${paragraphText}⟧`
       }
     }
     return paragraphText ? [{ paragraph_index: xmlIndex, paragraph_text: paragraphText, pids: [] as string[] }] : []

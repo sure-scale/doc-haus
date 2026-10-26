@@ -4,8 +4,10 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { findPastListLabel } from "../lib/list-label"
-import { pendingRevisionAnchors, pendingRevisionRefusal } from "../lib/docx-amendments"
+import { hasTrackedRevisions, pendingRevisionAnchors, pendingRevisionRefusal, trackedRevisionsReason } from "../lib/docx-amendments"
+import { registeredWordSource } from "../lib/legal-db"
 import { assertDirectWorkingDocxWriteAllowed } from "../lib/working-docx"
+import { ourAuthors } from "../lib/docx-attribution"
 import { withArtifactMutationLocksAsync } from "../capabilities/artifacts/mutation-lock"
 
 // doc.haus word-integration tool. Reads and edits the matter's canonical Word
@@ -16,9 +18,17 @@ import { withArtifactMutationLocksAsync } from "../capabilities/artifacts/mutati
 // and rebuilds a saved combined file. Edits here are plain (non-tracked);
 // tracked changes are a separate tool.
 
+// This edit is untracked, so beside tracked changes it would not show. As
+// Request edits does, a Word file other than an uploaded source is refused while
+// it has them; an uploaded markup is left to Request edits, which tracks.
+const trackedRefusal = (directory: string, name: string, bytes: Uint8Array) => !hasTrackedRevisions(bytes) ? undefined
+  : registeredWordSource(directory, name)
+    ? "This uploaded markup has tracked changes, so an untracked edit would not show in it. Use Request edits, which makes tracked changes."
+    : trackedRevisionsReason
+
 export default tool({
   description:
-    'Read or edit the matter\'s canonical Word (.docx) document in place. Use action "read" to get the document text, or "replace" to change wording. Edits are plain (not tracked changes) and re-open correctly in Microsoft Word. A list number Word prints before a paragraph ("2.1") is not text; leave it out of find and replace.',
+    'Read or edit the matter\'s canonical Word (.docx) document in place. Use action "read" to get the document text, or "replace" to change wording. Edits are plain (not tracked changes) and re-open correctly in Microsoft Word, so a file with tracked changes is refused; an uploaded markup is edited with Request edits instead. A list number Word prints before a paragraph ("2.1") is not text; leave it out of find and replace.',
   args: {
     document: tool.schema.string().describe("Document file name within the matter (the docPath from a citation)"),
     action: tool.schema.enum(["read", "replace"]).describe('"read" the document text, or "replace" text in place'),
@@ -46,6 +56,9 @@ export default tool({
     // asked before the Docxodus session opens so a rejection leaks nothing.
     // "Always" approves future edits to this document only.
     if (!args.find || args.replace === undefined) return 'Replace requires both "find" and "replace".'
+    // The file alone decides this refusal, so no one approves an edit it refuses.
+    const refused = trackedRefusal(ctx.directory, name, await Bun.file(file).bytes())
+    if (refused) return refused
     await ctx.ask({
       permission: "word-integration",
       patterns: [file],
@@ -58,14 +71,17 @@ export default tool({
     const edit = await withArtifactMutationLocksAsync(ctx.directory,[file],async () => {
       assertDirectWorkingDocxWriteAllowed(ctx.directory,file)
       const original = await Bun.file(file).bytes()
+      // Again for the bytes edited: the file may have changed while the lawyer was asked.
+      const changed = trackedRefusal(ctx.directory,name,original)
+      if (changed) return changed
       const session = (await docxodus()).openDocxSession(original,{})
       try {
         const {find,replace,targets,error} = findPastListLabel(args.find!,args.replace!,(text) => session.findAllByText(text),(id) => session.getAnchorInfo(id)?.visibleText)
         if (!targets.length) return `Text not found in ${name}: ${JSON.stringify(args.find)}`
         if (error) return error
-        // The edit is untracked: in a paragraph with a pending revision it would
-        // become that revision's author's text (the touch rule).
-        const refused = pendingRevisionRefusal(pendingRevisionAnchors(session),targets.map((target) => target.id),find,"made")
+        // Pending formatting changes remain: the touch rule holds a paragraph
+        // with someone else's, and refuses rewriting doc.haus's own.
+        const refused = pendingRevisionRefusal(session,pendingRevisionAnchors(session),targets.map((target) => target.id),find,"made",ourAuthors())
         if (refused) return refused
         const results = targets.flatMap((target) => session.replaceTextRange(target.id,find,replace))
         const failed = results.find((result) => !result.success)

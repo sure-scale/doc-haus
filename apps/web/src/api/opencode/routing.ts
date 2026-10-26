@@ -155,7 +155,7 @@ function routePrompt(input: { candidates: { name: string; description: string }[
   ].join("\n")
 }
 
-// What a drafting request needs, as the router judged it from the message: five
+// What a drafting request needs, as the router judged it from the message: six
 // closed estimates, not verified facts about sources nobody has read yet.
 export type DraftScope = {
   documents: "one" | "several"
@@ -163,6 +163,7 @@ export type DraftScope = {
   outside_law: "yes" | "no"
   firm_material: "yes" | "no"
   sources: "few" | "many"
+  revises: "yes" | "no"
 }
 // ack is the router's acknowledgement line, when it passed ackLine: shown to
 // the lawyer only, never sent to any assistant or run.
@@ -174,12 +175,13 @@ const SCOPE: { [K in keyof DraftScope]: readonly DraftScope[K][] } = {
   outside_law: ["yes", "no"],
   firm_material: ["yes", "no"],
   sources: ["few", "many"],
+  revises: ["yes", "no"],
 }
 
 // The router replies with an acknowledgement line, then one JSON object on its
-// own line (dochaus/agent/router.md): the route, plus the five scope fields for
+// own line (dochaus/agent/router.md): the route, plus the six scope fields for
 // the draft mode. Validation of the JSON part is strict: an off-list or missing
-// route is no route, and the scope is kept only when it has exactly the five
+// route is no route, and the scope is kept only when it has exactly the six
 // fields with allowed values; anything else reads as no scope, which never
 // offers a quick draft. A bare exact candidate name (no JSON) is a route
 // without scope. One surrounding code fence is tolerated. The acknowledgement
@@ -260,14 +262,16 @@ function parseScope(fields: Record<string, unknown>): DraftScope | undefined {
 }
 
 // A quick draft may be offered only when every estimate allows it: one
-// document, no legal effect, no outside law, no firm template or playbook, and
-// few sources. A missing or invalid scope is ineligible.
+// document, no legal effect, no outside law, no firm template or playbook, few
+// sources, and no revision of a matter document, which a quick draft written in
+// chat cannot make. A missing or invalid scope is ineligible.
 export function quickDraftEligible(scope: DraftScope | undefined) {
   return (
     scope?.documents === "one" &&
     scope.legal_effect === "no" &&
     scope.outside_law === "no" &&
     scope.firm_material === "no" &&
-    scope.sources === "few"
+    scope.sources === "few" &&
+    scope.revises === "no"
   )
 }

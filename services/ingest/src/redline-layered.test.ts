@@ -6,14 +6,14 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { DOMParser } from "@xmldom/xmldom"
 import { strFromU8, unzipSync, zipSync } from "fflate"
-import { createDocxLocalization, openRevision, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
+import { applyDocxLocalization, createDocxLocalization, openRevision, ownRevisionRefusals, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
 import { readDocxComments } from "../../../dochaus/lib/docx-comments"
 import { assertLayeredRoundTrip } from "../../../dochaus/lib/redline-round-trip"
 import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
 import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx } from "../../../dochaus/test/support/counterparty-markup-fixture"
 import { openDb, type RedlineRow } from "./db"
 import { docxodus } from "./docxodus"
-import { bake, buildRedlined } from "./redline"
+import { bake, buildRedlined, redlineStaleReason, redlineState } from "./redline"
 
 // #200 scope 4: on an uploaded counterparty markup, doc.haus's proposals are
 // written into their file as native tracked changes beside theirs, in the
@@ -132,10 +132,10 @@ describe("layered redline on an uploaded markup", () => {
 
 // The chat tools' older proposals re-find their text and are baked untracked.
 // Inside their pending insertion that would store doc.haus's words as theirs.
+const older = (id: number, find_text: string, new_text: string, scope: RedlineRow["scope"] = "phrase"): RedlineRow => ({ id, doc_path: COUNTERPARTY_MARKUP.name, doc_name: COUNTERPARTY_MARKUP.name,
+  scope, find_text, old_text: find_text, new_text, author: AUTHOR, review_comment: "", anchor_id: null, created_at: 1, status: "pending", target_json: null })
 test("an older proposal in a paragraph with their pending change is refused at accept and left out of the preview", async () => {
   const source = counterpartyMarkupDocx()
-  const older = (id: number, find_text: string, new_text: string): RedlineRow => ({ id, doc_path: COUNTERPARTY_MARKUP.name, doc_name: COUNTERPARTY_MARKUP.name,
-    scope: "phrase", find_text, old_text: find_text, new_text, author: AUTHOR, review_comment: "", anchor_id: null, created_at: 1, status: "pending", target_json: null })
   const inside = older(1, "forty-five days of each", "sixty days of each")
   await expect(bake(source, [inside])).rejects.toThrow(
     "The change to \"forty-five days of each\" was not applied: that paragraph has a pending change by Avery Lindqvist. Accept or reject it under Tracked changes, then request edits again.")
@@ -144,6 +144,65 @@ test("an older proposal in a paragraph with their pending change is refused at a
   const baked = await bake(source, [older(2, "the Province", "the State")])
   expect(await clause9(baked)).toBe(LAW)
   expect(await revisions(baked)).toEqual(await revisions(source))
+})
+
+// #299: doc.haus's own pending change, from an earlier Accept, holds no
+// paragraph for them either, as in Request edits: one beside it is accepted
+// tracked beside it, and one that would rewrite it is refused with Prepare's reason.
+test("an older proposal beside doc.haus's own pending change is accepted, and one rewriting it refused", async () => {
+  const source = counterpartyMarkupDocx()
+  const ours = await bake(source, [await proposal(source, "the Province", "the State")], undefined, layer)
+  // Each revision as it is kept; the edited paragraph's anchor changes.
+  const kept = async (bytes: Uint8Array) => (await revisions(bytes)).map(({ anchorId, ...revision }) => revision)
+  const before = await kept(ours)
+  const accepted = await bake(ours, [older(1, "governed by", "construed under")], undefined, layer)
+  expect(await clause9(accepted)).toBe("9. Governing law. This Agreement is construed under the law of the State.")
+  const after = await kept(accepted)
+  expect(after.filter(revision => before.some(row => row.id === revision.id))).toEqual(before)
+  expect(after.filter(revision => !before.some(row => row.id === revision.id)).map(revision => [revision.author, revision.type, revision.text]))
+    .toEqual([[AUTHOR, "delete", "governed by"], [AUTHOR, "insert", "construed under"]])
+  const inside = (text: string) => `The change to ${JSON.stringify(text)} was not applied: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.`
+  await expect(bake(ours, [older(2, "the State", "the Commonwealth")], undefined, layer)).rejects.toThrow(inside("the State"))
+  const clause = "This Agreement is governed by the law of the State."
+  await expect(bake(ours, [older(3, clause, "This Agreement is construed under the law of the State.", "clause")], undefined, layer)).rejects.toThrow(inside(clause))
+})
+
+// #299: Prepare judges an edit beside doc.haus's own pending change as the
+// tracked write makes it. Accept and the preview also write the edits
+// untracked, to check the tracked file against, and decide the same way.
+test("a sentence Prepare proposes beside doc.haus's own pending sentence is accepted and previewed", async () => {
+  const source = counterpartyMarkupDocx()
+  const clause = "9. Governing law. This Agreement is governed by the law of the Province."
+  try {
+    for (const [first, quote, replacement, text] of [
+      [`Each party submits. ${clause}`, "Each party submits. 9. Governing", "Both agree. Each party submits. 9. Governing", `Both agree. Each party submits. ${clause}`],
+      [`${clause} Each party submits.`, "Each party submits.", "Each party submits. Both agree.", `${clause} Each party submits. Both agree.`],
+    ] as const) {
+      setSystemTime(new Date("2026-10-24T09:00:00Z"))
+      const ours = await bake(source, [await proposal(source, clause, first, 1, "")], undefined, layer)
+      setSystemTime(new Date("2026-10-25T09:00:00Z"))
+      const written = { ...layer, ownAuthors: [AUTHOR], revisionAuthor: AUTHOR }
+      const packet = await createDocxLocalization(ours, [{ id: "2", before_quote: quote, replacement }], {}, written)
+      expect(await ownRevisionRefusals(ours, packet, [{ amendment_id: "2", target_handle: packet.candidates[0]!.target_handle }], written)).toEqual(new Set())
+      const row = await proposal(ours, quote, replacement, 2, "")
+      expect(await clause9(await bake(ours, [row], undefined, layer))).toBe(text)
+      expect(await clause9(await buildRedlined(ours, [row], undefined, layer))).toBe(text)
+    }
+  } finally { setSystemTime() }
+})
+
+// #299: on any Word file but an uploaded source, tracked changes make an older
+// proposal stale, as they refuse Request edits there: its untracked edit beside
+// doc.haus's own pending change would not show in a redline.
+test("an older proposal on a deliverable with doc.haus's own pending change is stale, and on a source it is not", async () => {
+  const clean = (await renderMarkdownToDocx("Governing law. This Agreement is governed by the law of the Province.")).bytes
+  const packet = await createDocxLocalization(clean, [{ id: "law", before_quote: "the Province", replacement: "the State" }], {}, layer)
+  const tracked = (await applyDocxLocalization(clean, packet, [{ amendment_id: "law", target_handle: packet.candidates[0]!.target_handle }], { ...layer, revisionAuthor: AUTHOR })).bytes
+  const row = older(1, "governed by", "construed under")
+  const stale = async (options: { pendingRevisions?: "layer" }) => redlineStaleReason(row, await redlineState(tracked, [row], options), false)
+  expect(await stale({})).toBe("This Word file contains tracked changes. Accept or reject them in Word before changes can be applied.")
+  expect(await stale(layer)).toBeUndefined()
+  expect(redlineStaleReason(row, await redlineState(clean, [row], {}), false)).toBeUndefined()
 })
 
 test("over HTTP an uploaded markup exports layered, and Accept keeps their changes listed and doc.haus's tracked", async () => {

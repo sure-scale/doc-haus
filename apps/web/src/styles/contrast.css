@@ -46,6 +46,10 @@
   .document-reader .viewer-bar-actions > button:not(.primary)[aria-expanded="true"] svg { color: Highlight; }
   .document-reader .viewer-bar-actions > button:not(.primary)[aria-expanded="true"] .viewer-action-label { text-decoration: underline 2px; text-underline-offset: 4px; }
   .viewer-versions-count, .viewer-markup-badge { border: 1px solid CanvasText; }
+  /* The "More actions" control is a summary, which Chromium paints as a link. */
+  .viewer-more-actions > summary,
+  .viewer-more-actions > summary:hover,
+  .viewer-more-actions[open] > summary { color: ButtonText; }
 
   :root .dropzone.dragover { outline: 2px solid Highlight; outline-offset: -3px; border-color: Highlight; background: Canvas; color: CanvasText; }
 

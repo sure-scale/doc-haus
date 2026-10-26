@@ -17,7 +17,7 @@ import {
 import { getPreferences, savePreferences } from "../api/ingest/preferences"
 import { readBrowserJSON, readBrowserValue, removeBrowserValue, writeBrowserValue } from "../browser-storage"
 import { formatDateTime } from "../lib/format"
-import { authorTones, initialsOf, nameKey, toneClass, toneOf } from "./comment-authors"
+import { authorTones, initialsOf, nameKey, toneClass, type Tone } from "./comment-authors"
 import { useToast } from "./Toast"
 import { Tooltip } from "./Tooltip"
 
@@ -142,8 +142,6 @@ const POOL = 3
 const PLACEHOLDER = /\[\[[\s\S]*?\]\]/
 const REPLY_MAX = 4000
 const STEER_MAX = 1000
-// Author colours (design-system.css --author-1 … --author-6), as Word gives
-// each reviewer one.
 
 // Comments grouped into threads: each reply under the comment its chain starts
 // from, in the file's order. A reply whose parent is missing stands alone.
@@ -206,6 +204,14 @@ function documentOrder(markup: DocumentMarkup): Item[] {
 }
 
 const threadAuthors = (thread: Thread) => [thread.root.author, ...thread.replies.map((reply) => reply.author)]
+
+// Every author in the file, in the order their changes and comments first
+// appear in it (a paragraph's changes before its comments), which gives each
+// their colour here, on the page and in a clause's change history.
+export function markupAuthors(markup: DocumentMarkup) {
+  return documentOrder(markup).flatMap((item) => (item.type === "change" ? [item.revision.author] : threadAuthors(item.thread)))
+}
+
 const decidable = (revision: MarkupRevision) => revision.status === "supported"
 const authorName = (name: string) => name.trim() || "No author named"
 
@@ -297,7 +303,7 @@ export function flagNotes(findings: MarkupFinding[]) {
 }
 
 // An author's colour anywhere in the panel; the lawyer's own is the brand's.
-const ToneContext = createContext<(name: string) => number | "self">(() => 0)
+const ToneContext = createContext<(name: string) => Tone>(() => 0)
 // The number of the version on screen, which a run note from another version names.
 const VersionContext = createContext<number | undefined>(undefined)
 
@@ -757,9 +763,9 @@ export default function MarkupPanel({
   const canApply = !blocked && !busy && !loading && attorney !== undefined
   const proposalsFirst = proposalsPending > 0 || refusal?.code === "proposals_pending"
 
-  // Each author's colour, told apart within this file; the lawyer's is the brand's.
-  const tones = useMemo(() => authorTones([...markup.revisions.map((revision) => revision.author), ...markup.comments.map((comment) => comment.author)]), [markup])
-  const tone = (author: string) => toneOf(tones, author, (name) => Boolean(savedName && nameKey(name) === nameKey(savedName)) || isYou(name))
+  // Each author's colour, in the order they first appear in the file, as the
+  // page colours their changes and comments; the lawyer's is the brand's.
+  const tone = authorTones(markupAuthors(markup), (name) => Boolean(savedName && nameKey(name) === nameKey(savedName)) || isYou(name))
 
   // What each card shows as its state, and the filters that read it.
   const stateOf = (revision: MarkupRevision): ChangeState => (!decidable(revision) ? "word" : decisionOf(revision) ?? "undecided")
@@ -1808,17 +1814,20 @@ function ChangeCard({ revision, comments, state, own, disabled, carried, respons
   const places = placeLines(revision, comments)
   const described = [failure ? `${id}-refused` : "", state === "undecided" ? `${id}-state` : ""].filter(Boolean).join(" ") || undefined
   return (
-    <li ref={cardRef} title={placeText(places) || undefined} onClick={() => onLocate(true)} onFocus={() => onLocate(false)}
+    <li ref={cardRef} data-change-id={revision.id} title={placeText(places) || undefined} onClick={() => onLocate(true)} onFocus={() => onLocate(false)}
       className={`change-card markup-card is-${state}${own ? " is-own" : ""}${failure ? " is-refused" : ""}`}>
       <div className="markup-card-top">
-        <span className={`markup-kind is-${type}`}>
-          <Icon name={type} />
-          {TYPES.find((entry) => entry.value === type)!.label}
+        {/* The badge keeps its author beside it; on a narrow card the date goes under the name. */}
+        <span className="markup-card-lead">
+          <span className={`markup-kind is-${type}`}>
+            <Icon name={type} />
+            {TYPES.find((entry) => entry.value === type)!.label}
+          </span>
+          <Byline name={revision.author} date={revision.date} small inline />
         </span>
-        {detail && <span className="markup-kind-detail">{detail}</span>}
-        <Byline name={revision.author} date={revision.date} small inline />
-        {/* Its tags go to the next line, not the date, when the line is full. */}
+        {/* The badge's detail and the tags go to the next line, not the author, when the line is full. */}
         <span className="markup-byline-end">
+          {detail && <span className="markup-kind-detail">{detail}</span>}
           {own && <span className="markup-own">Your edit</span>}
           {carried && <span className="version-tag">Carried over</span>}
           <RunTag response={response} />
@@ -1959,8 +1968,8 @@ function marked(text: string) {
 // behind ⋯; what to check before sending under it) or approved (shown as the
 // next reply in the thread, with Edit and Remove). The box grows with its text
 // and marks the bracketed parts still to fill. The control the panel focuses
-// after an action carries data-reply-focus. A thread flagged for planted
-// instructions repeats its flag above the draft.
+// after an action carries data-reply-focus. A flag stays on its comment, not
+// above the draft; doc.haus's own note on it is under the draft.
 function ReplyArea({ thread, awaiting, reply, drafting, steer, carried, you, undo, failure, disabled, canDraft, actions }: ReplyAreaProps) {
   const id = useId()
   const [steering, setSteering] = useState(steer !== "")
@@ -1969,7 +1978,6 @@ function ReplyArea({ thread, awaiting, reply, drafting, steer, carried, you, und
   const menuButton = useRef<HTMLButtonElement>(null)
   const steerInput = useRef<HTMLInputElement>(null)
   useDismiss(menu, menuWrap, () => setMenu(false))
-  const planted = [thread.root, ...thread.replies].flatMap((comment) => comment.findings).filter((finding) => !HIDDEN.has(finding.rule))
   const hold = !reply || reply.approved ? undefined : !reply.text.trim() ? "Write the reply first." : PLACEHOLDER.test(reply.text) ? "Fill the bracketed parts first." : undefined
   const steerNow = () => {
     setMenu(false)
@@ -2027,7 +2035,6 @@ function ReplyArea({ thread, awaiting, reply, drafting, steer, carried, you, und
         </div>
       ) : (
         <>
-          {planted.length > 0 && <Flags findings={planted} />}
           {reply.changed && (
             <p className="markup-reply-changed"><Icon name="warning" /><span>The thread changed since you drafted this — check before approving.</span></p>
           )}

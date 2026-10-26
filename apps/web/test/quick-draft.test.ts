@@ -20,13 +20,13 @@ import { toTurns, type Turn } from "../src/components/chat/turn-model"
 // route form, the remembered pre-selection and what an upgrade carries.
 
 const NAMES = AUTO_CANDIDATES.map((a) => a.name)
-const ELIGIBLE: DraftScope = { documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few" }
+const ELIGIBLE: DraftScope = { documents: "one", legal_effect: "no", outside_law: "no", firm_material: "no", sources: "few", revises: "no" }
 const reply = (fields: Record<string, unknown>) => JSON.stringify({ route: "draft", ...fields })
 // The route form's one choice field.
 const choice = (form: ReturnType<typeof routeForm>) => form.fields[0] as { key: string; default?: unknown; options?: { value: string }[] }
 
 describe("router reply", () => {
-  test("a draft route with all five closed fields keeps its scope", () => {
+  test("a draft route with all six closed fields keeps its scope", () => {
     expect(parseRoute(reply(ELIGIBLE), NAMES)).toEqual({ name: "draft", scope: ELIGIBLE })
     expect(parseRoute("```json\n" + reply(ELIGIBLE) + "\n```", NAMES)).toEqual({ name: "draft", scope: ELIGIBLE })
     expect(parseRoute(JSON.stringify({ route: "qa" }), NAMES)).toEqual({ name: "qa" })
@@ -34,9 +34,9 @@ describe("router reply", () => {
   })
 
   test("a missing, unknown or extra scope field reads as no scope; the route stands", () => {
-    const { sources: _sources, ...four } = ELIGIBLE
+    const { sources: _sources, ...short } = ELIGIBLE
     for (const fields of [
-      four,
+      short,
       { ...ELIGIBLE, sources: "some" },
       { ...ELIGIBLE, legal_effect: "maybe" },
       { ...ELIGIBLE, legal_effect: false },
@@ -90,7 +90,9 @@ describe("router reply", () => {
     expect(ackLine("   ")).toBeUndefined()
   })
 
-  test("only one/no/no/no/few is eligible; each other value, and no scope, is not", () => {
+  // A quick draft is written in chat, so a revision of a matter document, even
+  // a short letter's, is never a quick draft (#299).
+  test("only one/no/no/no/few/no is eligible; each other value, and no scope, is not", () => {
     expect(quickDraftEligible(ELIGIBLE)).toBe(true)
     expect(quickDraftEligible(undefined)).toBe(false)
     const others: Partial<DraftScope>[] = [
@@ -99,6 +101,7 @@ describe("router reply", () => {
       { outside_law: "yes" },
       { firm_material: "yes" },
       { sources: "many" },
+      { revises: "yes" },
     ]
     for (const change of others) {
       expect(quickDraftEligible({ ...ELIGIBLE, ...change })).toBe(false)

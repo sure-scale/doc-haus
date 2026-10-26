@@ -42,12 +42,13 @@
 .change-timeline-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: var(--space-3) var(--space-4) var(--space-4); scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 .change-timeline-body:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-/* The timeline: a rule down the left with a dot for each author and time. */
+/* The timeline: a rule down the left with a dot for each author and time, in
+   the author's colour (--author-tone) as their changes are on the page. */
 .change-timeline .change-timeline-list { margin: 0; padding: 0; list-style: none; }
 .change-timeline .change-timeline-node { position: relative; margin: 0 0 0 5px; padding: 0 0 var(--space-4) var(--space-4); border-left: 2px solid var(--border); }
 .change-timeline .change-timeline-node:last-child,
 .change-timeline .change-timeline-node:has(+ .change-timeline-undated) { padding-bottom: var(--space-1); border-left-color: transparent; }
-.change-timeline .change-timeline-node::before { content: ""; position: absolute; top: 5px; left: -7px; box-sizing: border-box; width: 12px; height: 12px; border: 2px solid var(--accent); border-radius: 50%; background: var(--panel); }
+.change-timeline .change-timeline-node::before { content: ""; position: absolute; top: 5px; left: -7px; box-sizing: border-box; width: 12px; height: 12px; border: 2px solid var(--author-tone, var(--accent)); border-radius: 50%; background: var(--panel); }
 .change-timeline .change-timeline-undated { margin: var(--space-2) 0 var(--space-2); font-size: 0.6875rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .change-timeline .change-timeline-node + .change-timeline-undated { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); }
 .change-timeline .change-timeline-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--space-2); }

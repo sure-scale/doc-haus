@@ -1,7 +1,8 @@
-import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from "react"
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from "react"
 import type { DocumentMarkup, MarkupFinding, MarkupRevision } from "../api/ingest/markup"
 import { formatDateTime } from "../lib/format"
 import { changeLabel, flagNotes } from "./MarkupPanel"
+import { toneColour, type Tone } from "./comment-authors"
 import { clauseTimeline, CONTAINERS, mapClauses, markAt, movePlace, PARAGRAPHS, TARGETS, type Clause, type TimelineItem } from "./change-timeline"
 import "./ChangeTimeline.css"
 
@@ -101,7 +102,7 @@ function placeCard(card: HTMLElement, list: HTMLElement | null, line: DOMRect, t
   card.style.visibility = "visible"
 }
 
-export default function ChangeTimeline({ root, html, markup, revisions }: {
+export default function ChangeTimeline({ root, html, markup, revisions, tone }: {
   // The rendered page (`.docx-render`); the card is its sibling, so the
   // page's inline-size container cannot trap the card's fixed position.
   root: RefObject<HTMLElement | null>
@@ -112,6 +113,8 @@ export default function ChangeTimeline({ root, html, markup, revisions }: {
   // or source changes accepted out of view): its paragraph count cannot be
   // trusted, so only comment threads are offered.
   revisions: boolean
+  // Each author's colour, as the page and the Tracked changes panel show it.
+  tone: (author: string) => Tone
 }) {
   const [opened, setOpened] = useState<Opened>()
   const card = useRef<HTMLDivElement>(null)
@@ -464,7 +467,7 @@ export default function ChangeTimeline({ root, html, markup, revisions }: {
             {nodes.map((node, index) => (
               <Fragment key={index}>
                 {index === undated && <li className="change-timeline-undated">Date not recorded</li>}
-                <li className="change-timeline-node">
+                <li className="change-timeline-node" style={{ "--author-tone": toneColour(tone(node.author)) } as CSSProperties}>
                   <div className="change-timeline-meta">
                     <span className="change-timeline-author">{authorName(node.author)}</span>
                     {node.date && <time dateTime={node.date}>{formatDateTime(node.date)}</time>}
