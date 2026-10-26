@@ -9,17 +9,162 @@ const wordNamespaces = new Set([
 // themselves. Keep unknown attributes and every actual change/format payload.
 const sessionAttributes = new Set(["rsidR", "rsidRPr", "rsidDel", "rsidP", "rsidRDefault", "rsidTr", "rsidSect"])
 const extendedPropertiesNamespace = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+const xmlNamespace = "http://www.w3.org/XML/1998/namespace"
+const proofingAnchors = new Set(["spellStart", "spellEnd", "gramStart", "gramEnd"])
+const flowContainers = new Set(["body", "tbl", "tr", "tc", "sdt", "sdtContent", "footnote", "endnote", "comment"])
+// Only properties with ordinary character-format semantics. Other properties,
+// revision records and extensions keep the original run boundaries significant.
+const simpleFormatAttributes: Record<string, readonly string[]> = {
+  b: ["val"],
+  bCs: ["val"],
+  i: ["val"],
+  iCs: ["val"],
+  rFonts: ["ascii", "hAnsi", "eastAsia", "cs"],
+  lang: ["val", "eastAsia", "bidi"],
+  sz: ["val"],
+  szCs: ["val"],
+  color: ["val"],
+}
+
+function isWordParagraph(paragraph: Element, root: Element): boolean {
+  for (let ancestor = paragraph.parentNode; ancestor !== root; ancestor = ancestor.parentNode) {
+    if (!ancestor || ancestor.nodeType !== 1) return false
+    const element = ancestor as Element
+    if (element.namespaceURI !== root.namespaceURI || !flowContainers.has(element.localName)) return false
+  }
+  return true
+}
+
+function simpleProperties(properties: Element, namespace: string, serializer: XMLSerializer): string | undefined {
+  if (properties.namespaceURI !== namespace || properties.localName !== "rPr" || properties.attributes.length)
+    return undefined
+  const seen = new Set<string>()
+  for (const node of Array.from(properties.childNodes)) {
+    if (node.nodeType !== 1) return undefined
+    const property = node as Element
+    const allowed = Object.hasOwn(simpleFormatAttributes, property.localName)
+      ? simpleFormatAttributes[property.localName]
+      : undefined
+    if (!allowed || property.namespaceURI !== namespace || property.childNodes.length || seen.has(property.localName))
+      return undefined
+    seen.add(property.localName)
+    for (const attribute of Array.from(property.attributes)) {
+      if (attribute.namespaceURI !== namespace || !allowed.includes(attribute.localName) || !attribute.value)
+        return undefined
+      if (
+        ["b", "bCs", "i", "iCs"].includes(property.localName) &&
+        !["true", "false", "on", "off", "0", "1"].includes(attribute.value)
+      )
+        return undefined
+      if (["sz", "szCs"].includes(property.localName) && !/^\d+$/.test(attribute.value)) return undefined
+      if (property.localName === "color" && !/^(?:[\da-fA-F]{6}|auto)$/.test(attribute.value)) return undefined
+    }
+    if (!["b", "bCs", "i", "iCs"].includes(property.localName) && !property.attributes.length) return undefined
+  }
+  return serializer.serializeToString(properties)
+}
+
+type SimpleRun = { node: Element; text: Element; value: string; properties: string }
+
+function simpleRun(node: Node, namespace: string, serializer: XMLSerializer): SimpleRun | undefined {
+  if (node.nodeType !== 1) return undefined
+  const run = node as Element
+  if (run.namespaceURI !== namespace || run.localName !== "r" || run.attributes.length) return undefined
+  const children = Array.from(run.childNodes)
+  let properties = ""
+  if (children.length === 2 && children[0]?.nodeType === 1) {
+    const key = simpleProperties(children.shift() as Element, namespace, serializer)
+    if (key === undefined) return undefined
+    properties = key
+  }
+  if (children.length !== 1 || children[0]?.nodeType !== 1) return undefined
+  const text = children[0] as Element
+  if (text.namespaceURI !== namespace || text.localName !== "t") return undefined
+  if (!Array.from(text.childNodes).every((child) => child.nodeType === 3 || child.nodeType === 4)) return undefined
+  for (const attribute of Array.from(text.attributes))
+    if (
+      attribute.namespaceURI !== xmlNamespace ||
+      attribute.localName !== "space" ||
+      !["default", "preserve"].includes(attribute.value)
+    )
+      return undefined
+  const value = text.textContent ?? ""
+  // Do not interpret default/inherited boundary whitespace, tabs or line breaks.
+  // Explicit preservation is required for any spaces at a fragment boundary.
+  if (
+    !value ||
+    /[\t\r\n]/.test(value) ||
+    (/^ | $/.test(value) && text.getAttributeNS(xmlNamespace, "space") !== "preserve")
+  )
+    return undefined
+  return { node: run, text, value, properties }
+}
+
+function normalizeTextFlow(name: string, root: Element): boolean {
+  const expectedRoot =
+    name === "word/document.xml" ? "document"
+    : name === "word/comments.xml" ? "comments"
+    : name === "word/footnotes.xml" ? "footnotes"
+    : name === "word/endnotes.xml" ? "endnotes"
+    : /^word\/header\d+\.xml$/.test(name) ? "hdr"
+    : /^word\/footer\d+\.xml$/.test(name) ? "ftr"
+    : undefined
+  if (root.localName !== expectedRoot) return false
+  const namespace = root.namespaceURI!
+  const serializer = new XMLSerializer()
+  let changed = false
+  for (const paragraph of Array.from(root.getElementsByTagNameNS(namespace, "p"))) {
+    if (!isWordParagraph(paragraph, root)) continue
+    for (const node of Array.from(paragraph.childNodes)) {
+      if (node.nodeType !== 1) continue
+      const marker = node as Element
+      const attribute = marker.attributes[0]
+      if (
+        marker.namespaceURI === namespace &&
+        marker.localName === "proofErr" &&
+        !marker.childNodes.length &&
+        marker.attributes.length === 1 &&
+        attribute?.namespaceURI === namespace &&
+        attribute.localName === "type" &&
+        proofingAnchors.has(attribute.value)
+      ) {
+        paragraph.removeChild(marker)
+        changed = true
+      }
+    }
+    let previous: SimpleRun | undefined
+    for (const node of Array.from(paragraph.childNodes)) {
+      const current = simpleRun(node, namespace, serializer)
+      if (!current) {
+        previous = undefined
+        continue
+      }
+      if (previous && previous.properties === current.properties) {
+        previous.value += current.value
+        previous.text.textContent = previous.value
+        paragraph.removeChild(current.node)
+        changed = true
+      } else previous = current
+      // A preserve flag is redundant when there is no boundary whitespace.
+      // Removing it makes a split/rejoined text run match the unsplit text.
+      if (!/^ | $/.test(previous.value) && previous.text.hasAttributeNS(xmlNamespace, "space")) {
+        previous.text.removeAttributeNS(xmlNamespace, "space")
+        changed = true
+      } else if (/^ | $/.test(previous.value) && previous.text.getAttributeNS(xmlNamespace, "space") !== "preserve") {
+        previous.text.setAttributeNS(xmlNamespace, "xml:space", "preserve")
+        changed = true
+      }
+    }
+  }
+  return changed
+}
 
 function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
   const wordPart = name.startsWith("word/") && name.endsWith(".xml")
   const extendedProperties = name === "docProps/app.xml"
   if (!wordPart && !extendedProperties) return bytes
   const text = strFromU8(bytes)
-  if (
-    (wordPart && !text.includes("rsid") && (name !== "word/settings.xml" || !text.includes("proofState"))) ||
-    (extendedProperties && !text.includes("TotalTime"))
-  )
-    return bytes
+  if (extendedProperties && !text.includes("TotalTime")) return bytes
   const fail = () => {
     throw new Error("Word could not read the document for comparison. Keep the file and try saving again.")
   }
@@ -89,6 +234,7 @@ function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
       }
     }
   }
+  changed = normalizeTextFlow(name, root) || changed
   return changed ? strToU8(new XMLSerializer().serializeToString(doc)) : bytes
 }
 

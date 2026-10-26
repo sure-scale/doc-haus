@@ -215,7 +215,7 @@ test("proofing completion cache may appear or change without hiding edits or pro
   const cache = '<m:proofState m:spelling="clean" m:grammar="clean"/>'
   expect(await documentFingerprint(fixture(cache, "Changed text."))).not.toBe(baseline)
   expect(await documentFingerprint(fixture(cache, "Neutral text.", "en-US"))).not.toBe(baseline)
-  expect(await documentFingerprint(fixture(cache, "Neutral text.", "en-GB", "gramStart"))).not.toBe(baseline)
+  expect(await documentFingerprint(fixture(cache, "Neutral text.", "en-GB", "futureProofingType"))).not.toBe(baseline)
   expect(bytes).toEqual(original)
 })
 

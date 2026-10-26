@@ -37,9 +37,24 @@ properties and custom XML remain significant. Uploaded DOCX bytes remain
 unchanged. See Microsoft's [TotalTime documentation](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.extendedproperties.totaltime?view=openxml-3.0.1).
 Word can also add `proofState` after background spelling and grammar checking
 finishes. Comparison ignores only the direct standard settings leaf with known
-`spelling`/`grammar` completion flags. Unknown attributes, nested data, proofing
-annotations and language preferences remain significant. See Microsoft's
+`spelling`/`grammar` completion flags. Unknown attributes, nested data and
+language preferences remain significant. See Microsoft's
 [ProofState documentation](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.proofstate?view=openxml-3.0.1).
+Proofing can also add standard empty `proofErr` anchors and split otherwise
+identical text runs. Comparison removes only the four known spelling/grammar
+anchor types without extension data, then joins adjacent simple text runs in
+standard Word paragraphs. Runs must have no attributes and identical complete
+properties from the supported character-format subset (bold, italic, explicit
+fonts, language, size and colour). Unknown or revision properties, fields,
+comments, bookmarks, hyperlinks and other boundaries prevent joining. Text is
+kept exactly; unpreserved boundary whitespace, tabs and line breaks prevent
+joining too. Theme fonts, right-to-left properties and other unsupported run
+layouts remain significant and may still produce an extra version after Word
+fragments them. This is comparison only; the original proofing annotations,
+runs and bytes are uploaded unchanged.
+See Microsoft's [proofing-anchor documentation](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.prooferror?view=openxml-3.0.1),
+[run structure](https://learn.microsoft.com/en-us/office/open-xml/word/how-to-open-and-add-text-to-a-word-processing-document)
+and [whitespace rules](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.texttype.space?view=openxml-3.0.1).
 It also captures the initial saved file on reopen. Unsaved edits are never
 automatically exported/uploaded. This is best-effort sync: several native saves
 may become one version, and closing Word can stop a final upload. There is no
