@@ -1,7 +1,7 @@
 import type { WordDocumentLink, WordSaveResponse } from "../../../dochaus/lib/word-addin-contract"
 import { ConnectionError } from "./client"
 import { documentFingerprint } from "./fingerprint"
-import type { WordHost } from "./office"
+import { DocumentStateError, type WordHost } from "./office"
 
 export type Acknowledgement = {
   base: string
@@ -186,7 +186,42 @@ export class WordSync {
       }
       this.completed = true
       this.completedCheckedAt = this.now()
-      this.show("done", "Your document is saved to doc.haus. You can close Word.")
+      const manualClose = "Your document is saved to doc.haus. Close it in Word."
+      if (!this.host.close) {
+        this.show("done", manualClose)
+        return
+      }
+      this.show("saving", "Your document is saved to doc.haus. Closing this document…")
+      try {
+        await this.host.close()
+        this.show("done", "Your document is saved to doc.haus.")
+      } catch (error) {
+        let unchanged: boolean | undefined
+        if (error instanceof DocumentStateError) unchanged = false
+        else {
+          try {
+            unchanged = await this.matchesAcknowledgement()
+          } catch {
+            /* A close error can also make the remaining Word context unavailable. */
+          }
+        }
+        if (unchanged) {
+          this.show("done", manualClose)
+          return
+        }
+        this.completed = false
+        const message =
+          unchanged === false
+            ? "Your last save is in doc.haus. Word has new changes. Choose Save to doc.haus before closing."
+            : "Your last save is in doc.haus. Check this document for new changes in Word before closing it."
+        this.show("not-saved", message)
+        try {
+          await this.heartbeat(true)
+        } catch {
+          /* Keep the new-change watch live even when contact needs retrying. */
+        }
+        throw documentStateError(message)
+      }
     })
   }
 
@@ -284,7 +319,5 @@ export class WordSync {
 }
 
 function documentStateError(message: string): Error {
-  const error = new Error(message)
-  error.name = "DocumentStateError"
-  return error
+  return new DocumentStateError(message)
 }

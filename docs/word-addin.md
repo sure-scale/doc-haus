@@ -3,7 +3,9 @@
 Use **Open in Word** on a Word document in a matter, then open the downloaded
 copy in desktop Microsoft Word. The doc.haus pane identifies its matter and
 document. Choose **Save to doc.haus** and wait for confirmation before closing.
-**Done in Word** saves, confirms the final document and clears its open badge.
+**Done in Word** saves, confirms the final document, clears its open badge and
+closes that document. If Word cannot close it, the pane keeps the saved
+confirmation visible so you can close it manually.
 
 The pane also checks saved content in the background. This is best effort:
 rapid saves may become one version, and closing Word can interrupt an upload.
@@ -98,5 +100,6 @@ rather than promising one version for every native save. It adds a static pane,
 restricted HTTPS receiver, existing-version-writer integration and web controls.
 Focused regressions cover serialized saves, reconnect, malformed packages,
 revocation, document identity, overlap parents, source indexing, clean downloads
-and live-view refresh. macOS Office behavior has been spiked; Windows Word and
-firm deployment require native acceptance before those platforms are signed off.
+and live-view refresh. Native Mac and Windows checks use isolated installations
+and synthetic documents. Firm deployment still needs acceptance in the target
+environment.

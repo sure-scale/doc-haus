@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { ConnectionError } from "./client"
+import { DocumentStateError } from "./office"
 import { WordSync, browserCheckpoints, type Acknowledgement, type Checkpoints } from "./sync"
 import type { WordSaveResponse } from "../../../dochaus/lib/word-addin-contract"
 
@@ -26,6 +27,8 @@ describe("confirmed Word saves", () => {
   test("acknowledgement gates Saved and Done; all commands remain serialized", async () => {
     const started = deferred<void>()
     const uploaded = deferred<WordSaveResponse>()
+    const closeStarted = deferred<boolean>()
+    const closeReleased = deferred<void>()
     const events: string[] = []
     let bytes = 1
     const sync = new WordSync(
@@ -38,6 +41,11 @@ describe("confirmed Word saves", () => {
         export: async () => {
           events.push("export")
           return new Uint8Array([bytes])
+        },
+        close: async () => {
+          events.push("close")
+          closeStarted.resolve(true)
+          await closeReleased.promise
         },
       },
       {
@@ -64,6 +72,9 @@ describe("confirmed Word saves", () => {
     expect(events).toEqual(["word-save", "export", "upload"])
     uploaded.resolve(acknowledgement("v1"))
     expect(await saving).toBe(true)
+    expect(await Promise.race([closeStarted.promise, completing.then(() => false)])).toBe(true)
+    expect(await sync.tick()).toBe(false)
+    closeReleased.resolve()
     expect(await completing).toBe(true)
     expect(events).toEqual([
       "word-save",
@@ -76,6 +87,7 @@ describe("confirmed Word saves", () => {
       "export",
       "done",
       "export",
+      "close",
     ])
     expect(sync.snapshot().status).toBe("done")
     const completedEvents = [...events]
@@ -222,6 +234,7 @@ describe("confirmed Word saves", () => {
 
   test("failed Done leaves heartbeat live and does not report completion", async () => {
     let heartbeats = 0
+    let closes = 0
     let time = 0
     const sync = new WordSync(
       "base",
@@ -229,6 +242,9 @@ describe("confirmed Word saves", () => {
         saved: async () => true,
         save: immediate,
         export: async () => new Uint8Array([1]),
+        close: async () => {
+          closes++
+        },
       },
       {
         heartbeat: async () => {
@@ -248,6 +264,7 @@ describe("confirmed Word saves", () => {
     await sync.start()
     expect(await sync.done()).toBe(false)
     expect(sync.snapshot().status).toBe("not-saved")
+    expect(closes).toBe(0)
     time = 35_000
     await sync.tick()
     expect(heartbeats).toBe(3)
@@ -256,12 +273,16 @@ describe("confirmed Word saves", () => {
   test("Done cannot discard new changes made while the saved snapshot is uploading", async () => {
     let bytes = 1
     let done = 0
+    let closes = 0
     const sync = new WordSync(
       "base",
       {
         saved: async () => true,
         save: immediate,
         export: async () => new Uint8Array([bytes]),
+        close: async () => {
+          closes++
+        },
       },
       {
         heartbeat: immediate,
@@ -280,6 +301,7 @@ describe("confirmed Word saves", () => {
     )
     expect(await sync.done()).toBe(false)
     expect(done).toBe(0)
+    expect(closes).toBe(0)
     expect(sync.snapshot().status).toBe("not-saved")
   })
 
@@ -401,6 +423,7 @@ describe("confirmed Word saves", () => {
       let bytes = 1
       let saved = true
       let heartbeats = 0
+      let closes = 0
       const statuses: string[] = []
       const sync = new WordSync(
         "base",
@@ -408,6 +431,9 @@ describe("confirmed Word saves", () => {
           saved: async () => saved,
           save: immediate,
           export: async () => new Uint8Array([bytes]),
+          close: async () => {
+            closes++
+          },
         },
         {
           heartbeat: async () => {
@@ -429,9 +455,116 @@ describe("confirmed Word saves", () => {
       )
       expect(await sync.done()).toBe(false)
       expect(heartbeats).toBe(1)
+      expect(closes).toBe(0)
       expect(sync.snapshot().status).toBe("not-saved")
       expect(statuses).not.toContain("done")
       expect(statuses).not.toContain("saved")
+    }
+  })
+
+  test("Done never closes if the document upload was not acknowledged", async () => {
+    let closes = 0
+    let completions = 0
+    const sync = new WordSync(
+      "base",
+      {
+        saved: async () => true,
+        save: immediate,
+        export: async () => new Uint8Array([1]),
+        close: async () => {
+          closes++
+        },
+      },
+      {
+        heartbeat: immediate,
+        save: async () => {
+          throw new ConnectionError("Offline", true)
+        },
+        done: async () => {
+          completions++
+        },
+      },
+      checkpoints(),
+      () => {},
+      fingerprint,
+      immediate,
+    )
+    expect(await sync.done()).toBe(false)
+    expect(sync.snapshot().status).toBe("not-saved")
+    expect(closes).toBe(0)
+    expect(completions).toBe(0)
+  })
+
+  test("unsupported or rejected close keeps a confirmed save and provides a manual close fallback", async () => {
+    for (const supported of [false, true]) {
+      const sync = new WordSync(
+        "base",
+        {
+          saved: async () => true,
+          save: immediate,
+          export: async () => new Uint8Array([1]),
+          ...(supported
+            ? {
+                close: async () => {
+                  throw new Error("private host path")
+                },
+              }
+            : {}),
+        },
+        { heartbeat: immediate, save: async () => acknowledgement("v1"), done: immediate },
+        checkpoints(),
+        () => {},
+        fingerprint,
+        immediate,
+      )
+      expect(await sync.done()).toBe(true)
+      expect(sync.snapshot().status).toBe("done")
+      expect(sync.snapshot().acknowledgement?.base).toBe("v1")
+      expect(sync.snapshot().message).toContain("Close it in Word")
+      expect(sync.snapshot().message).not.toContain("private")
+      expect(sync.snapshot().busy).toBe(false)
+    }
+  })
+
+  test("close-time edits or an unverifiable context restore heartbeat without retaining Saved", async () => {
+    for (const outcome of ["unsaved", "native-saved", "declined", "unavailable"]) {
+      let bytes = 1
+      let saved = true
+      let heartbeats = 0
+      let closing = false
+      const sync = new WordSync(
+        "base",
+        {
+          saved: async () => {
+            if (closing && outcome === "unavailable") throw new Error("Word context unavailable")
+            return saved
+          },
+          save: immediate,
+          export: async () => new Uint8Array([bytes]),
+          close: async () => {
+            closing = true
+            bytes = 2
+            saved = outcome === "native-saved"
+            if (outcome === "declined") throw new DocumentStateError("New changes")
+            throw new Error("Close failed")
+          },
+        },
+        {
+          heartbeat: async () => {
+            heartbeats++
+          },
+          save: async () => acknowledgement("v1"),
+          done: immediate,
+        },
+        checkpoints(),
+        () => {},
+        fingerprint,
+        immediate,
+      )
+      expect(await sync.done()).toBe(false)
+      expect(sync.snapshot().status).toBe("not-saved")
+      expect(sync.snapshot().message).toContain("last save is in doc.haus")
+      expect(heartbeats).toBe(1)
     }
   })
 

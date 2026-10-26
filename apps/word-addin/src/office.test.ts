@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { zipSync, strToU8 } from "fflate"
 import { documentFingerprint } from "./fingerprint"
-import { exportFile, type OfficeFile } from "./office"
+import { connectOffice, DocumentStateError, exportFile, type OfficeFile } from "./office"
 
 test("DOCX fingerprint ignores ZIP timestamps, compression and entry order but detects changed content", async () => {
   const a = strToU8("<document>one</document>")
@@ -194,9 +194,7 @@ test("proofing completion cache may appear or change without hiding edits or pro
   const word = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
   const fixture = (proofState = "", text = "Neutral text.", language = "en-GB", proofError = "spellStart") =>
     zipSync({
-      "word/settings.xml": strToU8(
-        `<m:settings xmlns:m="${word}"><m:zoom m:percent="100"/>${proofState}</m:settings>`,
-      ),
+      "word/settings.xml": strToU8(`<m:settings xmlns:m="${word}"><m:zoom m:percent="100"/>${proofState}</m:settings>`),
       "word/document.xml": strToU8(
         `<m:document xmlns:m="${word}"><m:body><m:p><m:proofErr m:type="${proofError}"/><m:r><m:rPr><m:lang m:val="${language}"/></m:rPr><m:t>${text}</m:t></m:r></m:p></m:body></m:document>`,
       ),
@@ -208,7 +206,7 @@ test("proofing completion cache may appear or change without hiding edits or pro
     '<m:proofState m:spelling="clean" m:grammar="clean"/>',
     '<m:proofState m:spelling="dirty" m:grammar="dirty"/>',
     '<m:proofState m:grammar="clean"/>',
-    '<m:proofState/>',
+    "<m:proofState/>",
     '<m:proofState m:spelling="clean"> \n </m:proofState>',
   ])
     expect(await documentFingerprint(fixture(cache))).toBe(baseline)
@@ -225,11 +223,17 @@ test("proofState normalization preserves unknown attributes, nested data and opa
   const cases: [string, (value: string) => string][] = [
     ["word/settings.xml", (value) => settings(`<w:proofState w:spelling="clean" w:unknown="${value}"/>`)],
     ["word/settings.xml", (value) => settings(`<w:proofState w:spelling="clean" c:value="${value}"/>`)],
-    ["word/settings.xml", (value) => settings(`<w:proofState w:spelling="clean"><c:data>${value}</c:data></w:proofState>`)],
+    [
+      "word/settings.xml",
+      (value) => settings(`<w:proofState w:spelling="clean"><c:data>${value}</c:data></w:proofState>`),
+    ],
     ["word/settings.xml", (value) => settings(`<w:proofState w:spelling="clean">${value}</w:proofState>`)],
     ["word/settings.xml", (value) => settings(`<c:proofState w:spelling="${value}"/>`)],
     ["word/settings.xml", (value) => settings(`<w:compat><w:proofState w:spelling="${value}"/></w:compat>`)],
-    ["word/document.xml", (value) => `<w:document xmlns:w="${word}"><w:proofState w:spelling="${value}"/></w:document>`],
+    [
+      "word/document.xml",
+      (value) => `<w:document xmlns:w="${word}"><w:proofState w:spelling="${value}"/></w:document>`,
+    ],
     ["customXml/item1.xml", (value) => settings(`<w:proofState w:spelling="${value}"/>`)],
     [
       "word/settings.xml",
@@ -244,4 +248,59 @@ test("proofState normalization preserves unknown attributes, nested data and opa
   const invalid = (value: string) =>
     documentFingerprint(zipSync({ "word/settings.xml": strToU8(settings(`<w:proofState w:spelling="${value}"/>`)) }))
   expect(await invalid("future-one")).not.toBe(await invalid("future-two"))
+})
+
+test("document close feature detection preserves WordApi 1.1 and only closes saved documents with Save", async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+  try {
+    for (const supported of [false, true]) {
+      const events: string[] = []
+      const context = {
+        document: {
+          saved: true,
+          load: (property: string) => {
+            events.push(`load:${property}`)
+          },
+          save: () => {},
+          close: (behavior: string) => {
+            events.push(`close:${behavior}`)
+          },
+        },
+        sync: async () => {
+          events.push("sync")
+        },
+      }
+      Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: {
+          Office: {
+            onReady: async () => ({ host: "Word" }),
+            context: {
+              document: { settings: { get: () => null } },
+              requirements: {
+                isSetSupported: (name: string, version: string) =>
+                  name === "WordApi" && (version === "1.1" || (version === "1.5" && supported)),
+              },
+            },
+          },
+          Word: { run: async (callback: (value: typeof context) => Promise<unknown>) => callback(context) },
+        },
+      })
+      const { host } = await connectOffice()
+      if (!supported) {
+        expect(host.close).toBeUndefined()
+        expect(await host.saved()).toBe(true)
+        continue
+      }
+      await host.close!()
+      expect(events).toEqual(["load:saved", "sync", "close:Save", "sync"])
+      events.length = 0
+      context.document.saved = false
+      await expect(host.close!()).rejects.toBeInstanceOf(DocumentStateError)
+      expect(events).toEqual(["load:saved", "sync"])
+    }
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow)
+    else delete (globalThis as { window?: unknown }).window
+  }
 })

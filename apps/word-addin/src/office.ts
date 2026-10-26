@@ -9,7 +9,7 @@ export type OfficeFile = {
   closeAsync(callback: Callback<void>): void
 }
 type WordContext = {
-  document: { saved: boolean; load(properties: string): void; save(): void }
+  document: { saved: boolean; load(properties: string): void; save(): void; close(behavior: "Save"): void }
   sync(): Promise<void>
 }
 type OfficeRuntime = {
@@ -35,6 +35,14 @@ export interface WordHost {
   saved(): Promise<boolean>
   save(): Promise<void>
   export(): Promise<Uint8Array>
+  close?(): Promise<void>
+}
+
+export class DocumentStateError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "DocumentStateError"
+  }
 }
 
 function asyncResult<T>(start: (callback: Callback<T>) => void, message: string): Promise<T> {
@@ -105,6 +113,19 @@ export async function connectOffice(): Promise<{ host: WordHost; link: unknown }
         )
         return exportFile(file)
       },
+      ...(office.context.requirements.isSetSupported("WordApi", "1.5")
+        ? {
+            close: () =>
+              word.run(async (context) => {
+                context.document.load("saved")
+                await context.sync()
+                if (!context.document.saved)
+                  throw new DocumentStateError("Word has new changes. Choose Save to doc.haus before closing.")
+                context.document.close("Save")
+                await context.sync()
+              }),
+          }
+        : {}),
     },
   }
 }

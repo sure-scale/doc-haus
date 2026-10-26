@@ -17,7 +17,15 @@ ambient credentials disabled. It is never shown, logged, or added to a URL.
 
 **Save to doc.haus** saves in Word, exports the DOCX in 1 MiB slices, closes the
 Office file handle, and waits for an acknowledged version. **Done in Word** does
-the same before ending the live heartbeat. Save, export, retry, background sync,
+the same before ending the live heartbeat and closing the current document.
+Closing requires WordApi 1.5; the pane still supports WordApi 1.1 and provides a
+manual-close confirmation on older hosts or when closing fails. It always uses
+Word's `Save` close behavior. New changes detected before closing or after a
+close error restore the heartbeat and need another save. See Microsoft's
+[Document.close documentation](https://learn.microsoft.com/en-us/javascript/api/word/word.document?view=word-js-1.5#word-word-document-close-member(1)).
+The final fingerprint check and native close are not atomic. A later edit is
+preserved locally by `Save` and can be recovered by reopening the file.
+Save, export, retry, background sync,
 and Done run in a single queue. Failed uploads keep that saved snapshot in memory
 and retry the same bytes/base, at most twice per operation, before allowing the
 user to retry. No document bytes are placed in browser storage.
