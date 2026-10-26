@@ -290,6 +290,43 @@ for (const [name, content] of [
   })
 }
 
+// A paragraph with its tabs and breaks as \t and \n, as the reader of the saved file sees it.
+function laidOut(bytes: Uint8Array, start: string) {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const doc = new DOMParser().parseFromString(strFromU8(unzipSync(bytes)["word/document.xml"]!), "application/xml")
+  const shown = (paragraph: Element) => Array.from(paragraph.getElementsByTagNameNS(W, "*")).map(node => {
+    for (let at = node.parentNode; at && at !== paragraph; at = at.parentNode) if ((at as Element).localName === "del") return ""
+    return node.localName === "t" ? node.textContent : node.localName === "tab" ? "\t" : node.localName === "br" ? "\n" : ""
+  }).join("")
+  return Array.from(doc.getElementsByTagNameNS(W, "p")).map(shown).find(text => text.startsWith(start))
+}
+
+// Docxodus writes an edited run as its tabs and breaks, then all its text.
+test("a tab or break stays where it was in a run the edit rewrites, and an insertion in that run is written, tracked or not", async () => {
+  const rendered = unzipSync((await renderMarkdownToDocx("First paragraph.\n\nAddress marker.\n\nItem marker.\n")).bytes)
+  const xml = strFromU8(rendered["word/document.xml"]!)
+  const runs = { "Address marker.": "<w:r><w:t>Acme Ltd</w:t><w:br/><w:t>1 Main Street, London</w:t></w:r>",
+    "Item marker.": '<w:r><w:t>(a)</w:t><w:tab/><w:t xml:space="preserve">the Supplier shall pay the Fee;</w:t></w:r>' }
+  const source = zipSync({ ...rendered, "word/document.xml": strToU8(Object.entries(runs).reduce((text, [marker, run]) => {
+    const placed = text.replace(`<w:r><w:t xml:space="preserve">${marker}</w:t></w:r>`, run)
+    expect(placed).not.toBe(text)
+    return placed
+  }, xml)) })
+  const revision = await createDocxRevision(source)
+  for (const [start, before_quote, replacement, after] of [
+    ["Acme", "London", "Leeds", "Acme Ltd\n1 Main Street, Leeds"],
+    ["Acme", "Main Street", "Main High Street", "Acme Ltd\n1 Main High Street, London"],
+    ["(a)", "shall pay", "shall promptly pay", "(a)\tthe Supplier shall promptly pay the Fee;"],
+    ["(a)", "(a)", "(b)", "(b)\tthe Supplier shall pay the Fee;"],
+  ] as const) {
+    const paragraph_handle = revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle
+    for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
+      const output = await applyDocxParagraphEdits(source, [{ id: "edit", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options)
+      expect(laidOut(output.bytes, after.slice(0, 2))).toBe(after)
+    }
+  }
+})
+
 // A rendered deliverable's page furniture, as raw OOXML: a header with a legend
 // and a draft line, and a footer whose page number is a PAGE field.
 function furnishedDocx() {

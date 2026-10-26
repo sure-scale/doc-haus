@@ -237,25 +237,51 @@ export function ownRevisionReason(text: string, verb: "proposed" | "applied" | "
   return `The change to ${quoted(text)} was not ${verb}: it would rewrite your earlier change there, which is still a tracked change in this file. Make it in Word, or reject that change under Tracked changes and request edits again.`
 }
 
-// The source with the REF fields the edits touch unwrapped to their text, for
-// the edits to be written to; undefined when they touch none.
-function unlinkedSource(opened: Opened, edits: ReturnType<typeof admitted>[]) {
-  const touched = Map.groupBy(edits.filter(edit => edit.unlinks.length), edit => edit.ordinal)
-  if (!touched.size) return
+// The source the edits are written to; undefined when it needs no change.
+// Docxodus rewrites an edited run as its other content followed by all its
+// text, so in a run holding text, then a tab or break, then more text, any edit
+// moves the tab or break to the run's start, and an insertion fails
+// (offset_out_of_range). In each edited paragraph such a run becomes one run per
+// piece, each with the run's properties, and the REF fields the edits touch
+// are unwrapped to their text.
+function editableSource(opened: Opened, edits: ReturnType<typeof admitted>[]) {
   const documents = new Map<string, Document>()
-  for (const [ordinal, rows] of touched) {
+  let changed = false
+  for (const [ordinal, rows] of Map.groupBy(edits, edit => edit.ordinal)) {
     const { part, node } = opened.paragraphs[ordinal]!
     const doc = documents.get(part) ?? parse(strFromU8(opened.parts[part]!))
     documents.set(part, doc)
-    const fields = paragraphFields(elements(doc, "p")[elements(opened.documents[part]!, "p").indexOf(node)]!)
+    const paragraph = elements(doc, "p")[elements(opened.documents[part]!, "p").indexOf(node)]!
+    const fields = paragraphFields(paragraph)
     for (const index of new Set(rows.flatMap(row => row.unlinks))) unlink(fields[index]!)
+    changed ||= rows.some(row => row.unlinks.length)
+    for (const run of elements(paragraph, "r")) {
+      if (closest(run, "p") !== paragraph) continue
+      const pieces = Array.from(run.childNodes).filter((child): child is Element => child.nodeType === 1)
+      const properties = pieces[0]?.localName === "rPr" ? pieces.shift() : undefined
+      if (pieces.length < 2 || !pieces.some(piece => piece.localName === "t")) continue
+      let last = run
+      for (const piece of pieces.slice(1)) {
+        const copy = run.cloneNode(false) as Element
+        if (properties) copy.appendChild(properties.cloneNode(true))
+        copy.appendChild(piece)
+        run.parentNode!.insertBefore(copy, last.nextSibling)
+        last = copy
+      }
+      changed = true
+    }
   }
+  if (!changed) return
   const parts = { ...opened.parts }
   for (const [part, doc] of documents) parts[part] = strToU8(new XMLSerializer().serializeToString(doc))
   return zipSync(parts, { mtime: new Date(1980, 0, 1) })
 }
+function closest(node: Node, name: string) {
+  for (let at = node.parentNode; at && at.nodeType === 1; at = at.parentNode)
+    if ((at as Element).namespaceURI === W && (at as Element).localName === name) return at as Element
+}
 
-// The report's line for the live cross-references unlinkedSource made text:
+// The report's line for the live cross-references editableSource made text:
 // how many, and the paragraphs they are in, by list number or opening words.
 function unlinkedFields(opened: Opened, edits: ReturnType<typeof admitted>[]) {
   const counts = [...Map.groupBy(edits, edit => edit.ordinal)].map(([ordinal, rows]) => [ordinal, new Set(rows.flatMap(row => row.unlinks)).size] as const)
@@ -280,10 +306,10 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
   const author = (edit: ReturnType<typeof admitted>) => amendmentAuthors?.[edit.amendment.id] ?? revisionAuthor
   const expected = opened.paragraphs.map(p => p.match.text)
   const ordered = edits.toSorted((a, b) => a.ordinal - b.ordinal || b.match.span.start - a.match.span.start)
-  // Edits touching a live cross-reference are written to the source with that
-  // field unwrapped: the same paragraphs and text, so the same spans.
-  const unlinked = unlinkedSource(opened, edits)
-  const target = unlinked ? await openRevision(unlinked, opened.options) : opened
+  // The edits are written to the editable source: the same paragraphs and
+  // text, so the same spans.
+  const editable = editableSource(opened, edits)
+  const target = editable ? await openRevision(editable, opened.options) : opened
   try {
     // An untracked write is the tracked write with its changes then accepted,
     // so new words are typed as tracking types them.
