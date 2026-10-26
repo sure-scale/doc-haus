@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test"
 import { CFB, read, utils } from "xlsx"
-import { hashQuestion, isStale, type Grid, type GridRecheck } from "../src/api/ingest/grid"
+import { hashQuestion, isStale, type Grid, type GridCellComment, type GridRecheck } from "../src/api/ingest/grid"
 import { describeRecheck } from "../src/api/review-recheck"
 import { reviewCsv, reviewDocx, reviewExport, reviewXlsx, type ReviewExport } from "../src/components/review-export"
-import { formatDate } from "../src/lib/format"
+import { formatDate, formatDateTime } from "../src/lib/format"
 
 const at = Date.UTC(2026, 9, 11, 12)
 const recheck: GridRecheck = { outcome: "not_found", passages: 12, read: 4, candidates: 0, reread: 0, terms: ["break clause", "break"], channels: ["lexical", "phrase"] }
@@ -21,7 +21,7 @@ const grid: Grid = {
   },
 }
 const model = reviewExport("Aldgate Mills", grid, ["Unit 4 lease.docx", "Supplier letter.docx"])
-const comment = `Comment (${formatDate(at)}): Confirmed against the signed copy`
+const comment = `Comment by Unattributed (${formatDate(at)}): Confirmed against the signed copy`
 const stale = "Stale: question changed since this answer"
 
 test("an answer is stale when its question changed after it was computed, unless it is reviewed", () => {
@@ -39,7 +39,7 @@ test("one model carries questions, documents, answers, sources, reviewed and sta
       {
         document: "Unit 4 lease.docx",
         cells: [
-          { answer: "England and Wales", source: "Unit 4 lease.docx § 9.2", reviewed: true, stale: false, comments: [comment] },
+          { answer: "England and Wales", source: "Unit 4 lease.docx § 9.2", reviewed: true, stale: false, comments: grid.cells["Unit 4 lease.docx::q1"].comments! },
           { answer: "Not addressed", recheck: describeRecheck(recheck), reviewed: false, stale: false, comments: [] },
         ],
       },
@@ -75,13 +75,13 @@ test("CSV is UTF-8 with a BOM and CRLF records, one row per document and questio
   ])
 })
 
-const one = (document: string, question: string, answer: string, comments: string[] = []): ReviewExport => ({
+const one = (document: string, question: string, answer: string, comments: GridCellComment[] = []): ReviewExport => ({
   title: "T", questions: [question], rows: [{ document, cells: [{ answer, reviewed: false, stale: false, comments }] }],
 })
 
 test("CSV quotes fields holding commas, quotes or line breaks (RFC 4180)", () => {
-  const csv = reviewCsv(one('Smith, Jones "draft".docx', "Who signs?", "Line one\nLine two", ["Comment (1 Jan 2026): a", "Comment (2 Jan 2026): b"]))
-  expect(csv.slice(1).split("\r\n")[1]).toBe('"Smith, Jones ""draft"".docx",Who signs?,"Line one\nLine two",,No,No,,"Comment (1 Jan 2026): a\nComment (2 Jan 2026): b"')
+  const csv = reviewCsv(one('Smith, Jones "draft".docx', "Who signs?", "Line one\nLine two", [{ id: "1", at, text: "a" }, { id: "2", at, text: "b" }]))
+  expect(csv.slice(1).split("\r\n")[1]).toBe(`"Smith, Jones ""draft"".docx",Who signs?,"Line one\nLine two",,No,No,,"Comment by Unattributed (${formatDate(at)}): a\nComment by Unattributed (${formatDate(at)}): b"`)
 })
 
 test("CSV neutralises cells a spreadsheet would read as a formula", () => {
@@ -139,12 +139,12 @@ test("Word export drops characters XML cannot carry, so a stray form feed cannot
   const dirty: ReviewExport = {
     title: "Mills\u0007",
     questions: ["Term?\u000B"],
-    rows: [{ document: "Lease\u0000.docx", cells: [{ answer: "Five\fyears\u0001 from\ttoday\uFFFE", reviewed: false, stale: false, comments: ["Comment (1 Jan 2026): see\u001F p. 4"] }] }],
+    rows: [{ document: "Lease\u0000.docx", cells: [{ answer: "Five\fyears\u0001 from\ttoday\uFFFE", reviewed: false, stale: false, comments: [{ id: "1", at, text: "see\u001F p. 4" }] }] }],
   }
   const xml = unzip(await reviewDocx(dirty))("word/document.xml")!
   expect(xml).not.toMatch(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/)
   expect(paragraphs(xml)[0]).toBe("Tabular review — Mills")
-  expect(rows(xml)).toEqual([[["Document"], ["Term?"]], [["Lease.docx"], ["Fiveyears from\ttoday", "Comment (1 Jan 2026): see p. 4"]]])
+  expect(rows(xml)).toEqual([[["Document"], ["Term?"]], [["Lease.docx"], ["Fiveyears from\ttoday", `Comment by Unattributed (${formatDate(at)}): see p. 4`]]])
 })
 
 // --- Excel -------------------------------------------------------------------
@@ -162,4 +162,37 @@ test("Excel export keeps the grid layout: answers in cells, reviewed or stale st
   expect(sheet.C3.c.map((note: { t: string }) => note.t)).toEqual([stale])
   expect(sheet.B3?.c).toBeUndefined()
   expect(unzip(bytes)("xl/drawings/vmlDrawing1.vml")).toContain("visibility:hidden")
+})
+
+test("each comment keeps its recorded author in Excel, CSV and Word, with legacy comments unattributed and sources readable", async () => {
+  const attributed = structuredClone(grid)
+  attributed.cells["Unit 4 lease.docx::q1"].comments!.push(
+    { id: "c2", text: "Please confirm with the client.", at: at + 1000, author: "Amina Shah" },
+    { id: "c3", text: "Confirmed.\nUse the signed version.", at: at + 2000, author: "Jordan Chen" },
+  )
+  const exported = reviewExport("Aldgate Mills", attributed, ["Unit 4 lease.docx"])
+  const book = read(reviewXlsx(exported), { type: "array" })
+  expect(book.SheetNames).toEqual(["Tabular review", "Comments"])
+  expect(utils.sheet_to_json<string[]>(book.Sheets.Comments, { header: 1 })).toEqual([
+    ["Document", "Question", "Source", "Author", "Date", "Comment"],
+    ["Unit 4 lease.docx", q1, "Unit 4 lease.docx § 9.2", "Unattributed", formatDateTime(at), "Confirmed against the signed copy"],
+    ["Unit 4 lease.docx", q1, "Unit 4 lease.docx § 9.2", "Amina Shah", formatDateTime(at + 1000), "Please confirm with the client."],
+    ["Unit 4 lease.docx", q1, "Unit 4 lease.docx § 9.2", "Jordan Chen", formatDateTime(at + 2000), "Confirmed.\nUse the signed version."],
+  ])
+  const expected = [comment, `Comment by Amina Shah (${formatDate(at + 1000)}): Please confirm with the client.`, `Comment by Jordan Chen (${formatDate(at + 2000)}): Confirmed.\nUse the signed version.`]
+  expect(book.Sheets["Tabular review"].B2.c[0].t).toBe(["Reviewed", "Source: Unit 4 lease.docx § 9.2", ...expected].join("\n"))
+  expect(parseCsv(reviewCsv(exported).slice(1))[1][7]).toBe(expected.join("\n"))
+  expect(rows(unzip(await reviewDocx(exported))("word/document.xml")!)[1][1]).toEqual(["England and Wales", "Reviewed", "Source: Unit 4 lease.docx § 9.2", ...expected.flatMap((text) => text.split("\n"))])
+})
+
+test("Excel comment names and text stay literal cells, including formula-like content", () => {
+  const book = read(reviewXlsx(one("Lease.docx", "Signed?", "Yes", [{ id: "1", at, author: "=1+1", text: "@SUM(A1:A2)" }])), { type: "array" })
+  expect(book.Sheets.Comments.D2).toMatchObject({ t: "s", v: "=1+1" })
+  expect(book.Sheets.Comments.D2.f).toBeUndefined()
+  expect(book.Sheets.Comments.F2).toMatchObject({ t: "s", v: "@SUM(A1:A2)" })
+  expect(book.Sheets.Comments.F2.f).toBeUndefined()
+})
+
+test("Excel needs no discussion worksheet when the grid has no comments", () => {
+  expect(read(reviewXlsx(one("Lease.docx", "Signed?", "Yes")), { type: "array" }).SheetNames).toEqual(["Tabular review"])
 })

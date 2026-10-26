@@ -10,6 +10,8 @@ import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { read, utils } from "xlsx"
+import type { Grid } from "../src/api/ingest/grid"
 
 const { chromium } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
 const { zipSync, strToU8 } = (await import(Bun.resolveSync("fflate", path.resolve(import.meta.dir, "../../../dochaus")))) as {
@@ -25,7 +27,7 @@ const supplyTerms = zipSync(Object.fromEntries(Object.entries({
   "_rels/.rels": `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
   "word/document.xml": `<w:document xmlns:w="${W}"><w:body><w:p><w:r><w:t>1. Supply. The Supplier shall supply the Goods.</w:t></w:r></w:p><w:p><w:r><w:t xml:space="preserve">12. This agreement is governed by </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>the law of England and Wales.</w:t></w:r></w:p><w:p><w:r><w:t>13. Notices must be in writing.</w:t></w:r></w:p></w:body></w:document>`,
 }).map(([name, xml]) => [name, strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${xml}`)])))
-const grid = {
+const grid: Grid = {
   columns: [{ id: "c1", question: "What is the governing law?" }],
   cells: {
     "Supply terms.docx::c1": {
@@ -40,6 +42,7 @@ const grid = {
       citation: { documentName: "Side letter.docx", docPath: "Side letter.docx", section: "4", excerpt: "This letter is governed by the law of Scotland.", charStart: 0, charEnd: 47 },
       status: "filled",
       questionHash: "unused",
+      comments: [{ id: "legacy", text: "Check the earlier version.", at: Date.UTC(2026, 9, 11, 12) }],
     },
     // Left out of the source check's reply, as ingest leaves out a cell it could not check.
     "Old note.docx::c1": {
@@ -95,11 +98,24 @@ try {
   let holdChecks = false
   let pendingEdit = false
   let acceptedEdits = 0
+  let storedGrid = structuredClone(grid)
+  let attorney = "  Amina Shah  "
+  let preferencesFailed = false
+  let heldPreferences: import("@playwright/test").Route | undefined
+  let holdPreferences = false
   await page.route("http://grid.invalid/**", route => {
     const request = route.request()
     const url = new URL(request.url())
     const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) })
-    if (url.pathname === "/matters/matter-grid/grid") return request.method() === "GET" ? json(grid) : route.fulfill({ status: 204 })
+    if (url.pathname === "/matters/matter-grid/grid") {
+      if (request.method() === "GET") return json(storedGrid)
+      storedGrid = request.postDataJSON() as Grid
+      return route.fulfill({ status: 204 })
+    }
+    if (url.pathname === "/preferences") {
+      if (holdPreferences) { heldPreferences = route; return }
+      return preferencesFailed ? route.fulfill({ status: 503 }) : json({ attorney, firm: "Synthetic Review LLP" })
+    }
     if (url.pathname === "/matters/matter-grid/grid/sources") {
       const cells = (request.postDataJSON() as { cells: { key: string }[] }).cells
       checked.push(cells.map(cell => cell.key))
@@ -167,6 +183,61 @@ try {
     console.log(`PASS native focus containment, Tab loop, restoration and Escape after ${focus}`)
   }
 
+  // Real comment creation snapshots the configured Attorney, including when a
+  // later comment uses a new setting. Older comments never borrow that name.
+  await answer.click()
+  const compose = detail.getByRole("textbox", { name: "Add a comment", exact: true })
+  const comments = detail.locator(".review-comment")
+  holdPreferences = true
+  const adding = page.waitForRequest(request => new URL(request.url()).pathname === "/preferences")
+  await compose.fill("Confirm with the client.")
+  await detail.getByRole("button", { name: "Add comment", exact: true }).click()
+  await adding
+  assert.equal(await detail.getByRole("button", { name: "Adding comment…", exact: true }).isDisabled(), true)
+  await compose.press("Enter") // A pending submission must not create a duplicate.
+  assert.ok(heldPreferences)
+  await heldPreferences.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ attorney, firm: "Synthetic Review LLP" }) })
+  holdPreferences = false
+  await comments.getByText("Amina Shah", { exact: true }).waitFor()
+  assert.equal(await comments.count(), 1)
+  attorney = "Jordan Chen"
+  await compose.fill("<img src=x onerror=window.commentInjected=true>")
+  await detail.getByRole("button", { name: "Add comment", exact: true }).click()
+  await comments.getByText("Jordan Chen", { exact: true }).waitFor()
+  assert.equal(await comments.getByText("Amina Shah", { exact: true }).count(), 1)
+  assert.equal(await comments.locator("img").count(), 0, "comment text must render as text")
+  attorney = ""
+  await compose.fill("No name is configured.")
+  await detail.getByRole("button", { name: "Add comment", exact: true }).click()
+  await comments.filter({ hasText: "No name is configured." }).getByText("Unattributed", { exact: true }).waitFor()
+  preferencesFailed = true
+  await compose.fill("Settings are unavailable.")
+  await detail.getByRole("button", { name: "Add comment", exact: true }).click()
+  await comments.filter({ hasText: "Settings are unavailable." }).getByText("Unattributed", { exact: true }).waitFor()
+  assert.deepEqual(storedGrid.cells["Supply terms.docx::c1"]!.comments!.map(comment => comment.author), ["Amina Shah", "Jordan Chen", undefined, undefined])
+  assert.equal(storedGrid.cells["Side letter.docx::c1"]!.comments![0]!.author, undefined)
+  preferencesFailed = false
+  attorney = "Different Current Name"
+  await page.reload()
+  await answer.click()
+  await comments.getByText("Amina Shah", { exact: true }).waitFor()
+  assert.equal(await comments.getByText("Jordan Chen", { exact: true }).count(), 1)
+  assert.equal(await comments.getByText("Unattributed", { exact: true }).count(), 2)
+  assert.equal(await comments.getByText(attorney, { exact: true }).count(), 0)
+  await page.keyboard.press("Escape")
+  await detail.waitFor({ state: "detached" })
+  const downloading = page.waitForEvent("download")
+  await table.getByRole("button", { name: "Export Excel", exact: true }).click()
+  const downloaded = await (await downloading).path()
+  assert.ok(downloaded)
+  const exported = read(await Bun.file(downloaded).arrayBuffer(), { type: "array" })
+  const records = utils.sheet_to_json<string[]>(exported.Sheets.Comments, { header: 1 })
+  assert.deepEqual(records.slice(1).map(record => record[3]), ["Amina Shah", "Jordan Chen", "Unattributed", "Unattributed", "Unattributed"])
+  assert.equal(records[1]![2], "Supply terms.docx § 12")
+  assert.equal(records[2]![5], "<img src=x onerror=window.commentInjected=true>")
+  assert.match(exported.Sheets["Tabular review"].B2.c[0].t, /Source: Supply terms\.docx § 12\nComment by Amina Shah/)
+  console.log("PASS comments snapshot saved Attorney names, remain unattributed without settings, reload and export with separate sources")
+
   // The amended side letter reads degraded in the grid itself, and its detail says why.
   const sideLetterRow = page.getByRole("row", { name: /^Side letter\.docx/ })
   await sideLetterRow.getByText("Source changed", { exact: true }).waitFor()
@@ -174,6 +245,7 @@ try {
   assert.deepEqual(checked.at(-1)?.sort(), ["Old note.docx::c1", "Side letter.docx::c1", "Supply terms.docx::c1"])
   await page.getByRole("button", { name: /^The law of Scotland\./ }).click()
   const sideDetail = page.locator(".picker-panel").filter({ hasText: "The law of Scotland." })
+  await sideDetail.locator(".review-comment").getByText("Unattributed", { exact: true }).waitFor()
   await sideDetail.getByText("Not found", { exact: true }).waitFor()
   assert.match((await sideDetail.locator(".review-source-check").textContent())!, /no longer contains this excerpt\. It has changed since this answer/)
   await page.keyboard.press("Escape")

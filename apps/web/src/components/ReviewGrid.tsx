@@ -4,6 +4,7 @@ import { createPortal } from "react-dom"
 import { computeCell, describeRecheck, needsFill } from "../api/review-recheck"
 import { cellKey, checkCellSources, getGrid, hashQuestion, isStale, recheckPassages, saveGrid, type Grid, type GridCellData, type SourceCheck } from "../api/ingest/grid"
 import { humanizeError } from "../api/ingest/errors"
+import { getPreferences } from "../api/ingest/preferences"
 import type { Document } from "../api/ingest/documents"
 import { createSession, getMessages, sendPrompt } from "../api/opencode/sessions"
 import { matterClient, type Client } from "../api/opencode/client"
@@ -76,6 +77,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   // so the comment thread updates in place as comments are added or removed.
   const [detail, setDetail] = useState<{ docName: string; columnId: string; question: string }>()
   const [draft, setDraft] = useState("") // comment being composed in the overlay
+  const [commentSaving, setCommentSaving] = useState(false)
   // Each dialog closes, and returns focus, as its exit starts.
   const [detailShown, detailClosing] = useExit(detail)
   const detailKey = detailShown ? cellKey(detailShown.docName, detailShown.columnId) : undefined
@@ -197,16 +199,28 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
     commitCell(key, { ...cell, status: cell.status === "reviewed" ? "filled" : "reviewed" })
   }
 
-  function addComment() {
+  async function addComment() {
     const text = draft.trim()
-    if (!detail || !text) return
+    if (!detail || !text || commentSaving) return
     const key = cellKey(detail.docName, detail.columnId)
-    const cell = gridRef.current.cells[key]
-    commitCell(key, {
-      ...cell,
-      comments: [...(cell.comments ?? []), { id: crypto.randomUUID().slice(0, 6), text, at: Date.now() }],
-    })
-    setDraft("")
+    const submitted = draft
+    const at = Date.now()
+    setCommentSaving(true)
+    try {
+      // Read at creation, rather than labeling stored comments with a name
+      // that may have changed since they were written. No name (or unavailable
+      // settings) leaves an honest, unattributed comment.
+      const author = await getPreferences().then((prefs) => prefs.attorney?.trim() || undefined, () => undefined)
+      const cell = gridRef.current.cells[key]
+      if (!cell) return
+      commitCell(key, {
+        ...cell,
+        comments: [...(cell.comments ?? []), { id: crypto.randomUUID().slice(0, 6), text, at, ...(author ? { author } : {}) }],
+      })
+      setDraft((current) => current === submitted ? "" : current)
+    } finally {
+      setCommentSaving(false)
+    }
   }
 
   function deleteComment(id: string) {
@@ -414,7 +428,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                               <button
                                 className={`icon-btn review-note${cell.comments?.length ? " has-comments" : ""}`}
                                 aria-label={`${cell.comments?.length ?? 0} comments on ${doc.name}: ${col.question}`}
-                                title={cell.comments?.map((c) => c.text).join("\n") || "Add a comment"}
+                                title={cell.comments?.map((c) => `${c.author || "Unattributed"}: ${c.text}`).join("\n") || "Add a comment"}
                                 onClick={() => {
                                   setDraft("")
                                   setViewing(undefined)
@@ -515,7 +529,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                   {(detailCell.comments ?? []).map((c) => (
                     <div key={c.id} className="review-comment">
                       <div className="review-comment-meta">
-                        <span className="muted">{formatDateTime(c.at)}</span>
+                        <span><strong>{c.author || "Unattributed"}</strong><span className="muted"> · {formatDateTime(c.at)}</span></span>
                         <button className="icon-btn" aria-label="Delete comment" title="Delete comment" onClick={() => deleteComment(c.id)}>
                           ×
                         </button>
@@ -523,9 +537,11 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                       <div className="review-comment-text">{c.text}</div>
                     </div>
                   ))}
+                  <small className="muted">Comments use the attorney name in Settings → Drafting.</small>
                   <div className="review-comment-compose">
                     <textarea
                       value={draft}
+                      readOnly={commentSaving}
                       aria-label="Add a comment"
                       placeholder="Add a comment..."
                       onChange={(e) => setDraft(e.target.value)}
@@ -536,8 +552,8 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                         }
                       }}
                     />
-                    <button className="primary" onClick={addComment} disabled={!draft.trim()}>
-                      Add comment
+                    <button className="primary" onClick={addComment} disabled={!draft.trim() || commentSaving}>
+                      {commentSaving ? "Adding comment…" : "Add comment"}
                     </button>
                   </div>
                 </div>
