@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
-import { createDocxRevision, createDocxLocalization, applyDocxLocalization, changedRange, DocxTrackedRevisionsError, othersPending, ownRevisionReason, ownRevisionRefusals, pendingRevisionParagraphs, quoted, trackedRevisionsReason, type DocxAmendment, type DocxLocalizationPacket, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
+import { createDocxRevision, createDocxLocalization, applyDocxLocalization, changedRange, DocxTrackedRevisionsError, othersPending, ownRevisionReason, ownRevisionRefusals, pendingRevisionParagraphs, quoted, balancedBrackets, trackedRevisionsReason, type DocxAmendment, type DocxLocalizationPacket, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { workingDocxKey, readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { paragraphTargets, resolveParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
@@ -405,12 +405,12 @@ function parseLegal(text:string) {
 // found only with other white space between its words (one space where the
 // document has two, or an ordinary one for a non-breaking one) is placed in
 // the document's words, if they are there once. Its replacement is read as the
-// draft view too, so the words keep their own formatting, except that beside
-// a quote found as written its double backslashes stay, and beside one found
-// so whose own characters would read as markup, those are the document's and
-// the replacement's stay as written. A quote found none of these ways, or
-// whose replacement then changes no words, is an open item. However it was
-// found, the words its replacement keeps keep the document's spacing
+// draft view too, so the words keep their own formatting, except beside a
+// quote found as written: if that quote has an asterisk or a backslash, they
+// are the document's words and its replacement's are read as written too;
+// otherwise only its double backslashes stay. A quote found none of these
+// ways, or whose replacement then changes no words, is an open item. However
+// it was found, the words its replacement keeps keep the document's spacing
 // (withSpacesOf).
 function withoutDraftViewMarks(paragraphs:{text:string;label?:string}[],legal:ReturnType<typeof parseLegal>) {
   type Row = (typeof legal.amendments)[number] & {label?:string}
@@ -435,7 +435,7 @@ function withoutDraftViewMarks(paragraphs:{text:string;label?:string}[],legal:Re
       return quote && (replacement ? replacement.mark === quote.mark : !marks(row.replacement).length)
         ? [{...row,before_quote:withoutDraftViewMarkup(quote.text),replacement:withoutDraftViewMarkup(replacement?.text ?? row.replacement)}] : []
     })
-    const readings:Row[] = [{...row,replacement:plain !== row.before_quote ? row.replacement : withoutDraftViewMarkup(row.replacement,false)},
+    const readings:Row[] = [{...row,replacement:/[*\\]/.test(row.before_quote) ? row.replacement : withoutDraftViewMarkup(row.replacement,false)},
       {...row,before_quote:plain,replacement:withoutDraftViewMarkup(row.replacement)},...cuts]
     let reading:Row|undefined, found:Row|undefined, repeated = false
     for (reading of readings) {
@@ -494,14 +494,20 @@ function withSpacesOf(text:string,quote:string,replacement:string) {
 }
 // The markup the draft view adds to a paragraph's words (createDocxRevision),
 // undone: a backslash before each of \ ` * _ { } [ ] < > |, and one to three *
-// on each side of a bold or italic run's words as it writes them, touching
-// them and around none of those characters unescaped. Other asterisks, as in
-// "£[*]" or a footnote's "Fee* and", are words. Without `backslashes`, a
+// on each side of a bold or italic run's words, as CommonMark reads them. The
+// opening mark touches the word after it and the closing mark the word before
+// it; a mark beside punctuation there has white space, punctuation or the
+// line's end on its other side. The words between them pair their square
+// brackets (balancedBrackets). Other asterisks, as in "£[*] plus VAT, payable
+// on [*]" or a footnote's "Fee*, Costs*", are words. Without `backslashes`, a
 // double backslash stays, as in a network path.
 function withoutDraftViewMarkup(text:string,backslashes = true):string {
-  return text.replace(/\\([\\`*_{}[\]<>|])|(\*{1,3})(?=\S)((?:\\.|[^*\\`_{}[\]<>|])+?)(?<=\S)\2/g,
-    (match,escaped:string|undefined,_marks,run:string|undefined) =>
-      escaped === "\\" && !backslashes ? match : escaped ?? withoutDraftViewMarkup(run!,backslashes))
+  return text.replace(/\\([\\`*_{}[\]<>|])|(?:(?<![^\s\p{P}\p{S}])|(?=\*{1,3}[^\s\p{P}\p{S}]))(\*{1,3})(?=\S)((?:\\.|[^*\\])+?)(?<=\S)(?:(?<=[^\s\p{P}\p{S}])|(?=\2(?![^\s\p{P}\p{S}])))\2/gu,
+    (match,escaped:string|undefined,mark:string|undefined,run:string|undefined) => {
+      if (escaped) return escaped === "\\" && !backslashes ? match : escaped
+      const words = withoutDraftViewMarkup(run!,backslashes)
+      return balancedBrackets(run!) ? words : mark + words + mark
+    })
 }
 // The draft view's unescaped runs of asterisks in `text`.
 function marks(text:string) {return [...text.matchAll(/\\.|\*{1,3}/g)].filter((match) => match[0].startsWith("*"))}

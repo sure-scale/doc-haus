@@ -220,6 +220,18 @@ export async function ownRevisionRefusals(bytes: Uint8Array, packet: DocxLocaliz
 /** Words quoted to the lawyer, as they read them. */
 export function quoted(text: string) { return `“${text}”` }
 
+/** Whether each "]" in `words` closes a "[" before it, and each "[" is closed.
+ * The draft view marks only such words bold or italic, and Request edits reads
+ * only such marks as the view's, so "£[*] plus VAT, payable on [*]" is words. */
+export function balancedBrackets(words: string) {
+  let depth = 0
+  for (const character of words) {
+    depth += character === "[" ? 1 : character === "]" ? -1 : 0
+    if (depth < 0) return false
+  }
+  return depth === 0
+}
+
 /** Why an edit inside doc.haus's own pending change was not made: Prepare's
  * open item, and the older chat tools' refusal (pendingRevisionRefusal). */
 export function ownRevisionReason(text: string, verb: "proposed" | "applied" | "made") {
@@ -666,13 +678,19 @@ export async function openRevision(source: Uint8Array, options: DocxRevisionOpti
       const context = view.table ? `> Table ${view.table.table}, row ${view.table.row}, column ${view.table.column}\n\n` : ""
       const moved = view.moved_here ? `[${MOVED_HERE}]\n\n` : ""
       const escape = (text: string) => text.replace(/[\\`*_{}[\]<>|]/g, "\\$&")
-      return part + context + moved + prefix + (view.label ? `${escape(view.label)} ` : "") + view.formatting.map(fragment => {
-        // Marks touch the words they mark: a run's own spaces at either end
-        // fall outside them, so an asterisk beside a space is a word.
-        const [, before, words, after] = fragment.text.match(/^(\s*)([\s\S]*?)(\s*)$/)!
-        const mark = !words ? "" : fragment.formatting.bold && fragment.formatting.italic ? "***"
+      // A word's character: neither white space nor punctuation, as CommonMark has it.
+      const word = (character?: string) => !!character && /[^\s\p{P}\p{S}]/u.test(character)
+      return part + context + moved + prefix + (view.label ? `${escape(view.label)} ` : "") + view.formatting.map((fragment, index, fragments) => {
+        // Marks touch the words they mark, so CommonMark reads them as marks:
+        // a run's own spaces at either end fall outside them, and so does
+        // punctuation at an end that meets a word, as ", Costs" after "Fee".
+        // Words whose square brackets do not pair stay unmarked (balancedBrackets).
+        const meets = (character?: string) => (word(character) ? String.raw`[\p{P}\p{S}]*` : "")
+        const start = meets(fragments[index - 1]?.text.at(-1)) + String.raw`\s*`, end = String.raw`\s*` + meets(fragments[index + 1]?.text[0])
+        const [, before, words, after] = fragment.text.match(new RegExp(String.raw`^(${start})([\s\S]*?)(${end})$`, "u"))!
+        const mark = !words || !balancedBrackets(words) ? "" : fragment.formatting.bold && fragment.formatting.italic ? "***"
           : fragment.formatting.bold ? "**" : fragment.formatting.italic ? "*" : ""
-        return before + mark + escape(words!) + mark + after
+        return escape(before!) + mark + escape(words!) + mark + escape(after!)
       }).join("")
     }).join("\n\n")
     const revision = { schema, source_sha256, projection_sha256: digest(JSON.stringify(views)), markdown, paragraphs: views }

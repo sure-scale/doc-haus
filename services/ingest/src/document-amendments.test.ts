@@ -1918,8 +1918,12 @@ test("a replacement written with the draft view's bold marks or escapes is propo
     change("the services described in Schedule 1.","the services described in Schedule 1 (the **\"Services\"**)."),
     change("within thirty days","within \\[number\\] days"),
     change("The Purchase Price is £[*].","The Purchase Price is £[*] plus VAT, payable on [*]."),
-    change("The Fee* is payable monthly.","The Fee* and the Expenses* are payable monthly."),
+    change("The Fee* is payable monthly.","The Fee*, Costs* and Expenses* are payable monthly."),
     change("Fee * Index.","Fee * Index * 1.05."),
+    change("Fee*Index.","Fee*Index*1.05."),
+    change("The **\\[Buyer\\]** shall pay the Price.","The **[Buyer]** shall promptly pay the Price."),
+    change("The **Deposit** is £\\[\\*\\].","The **Deposit** is £[*], payable on [*]."),
+    change("The Charges, *Costs* and Expenses are payable monthly.","The Charges, *Costs* and Expenses are payable quarterly."),
     change("shall *not* subcontract","shall *not* subcontract or assign"),
     change("The Customer shall pay","The **Customer** shall pay"),
   ],open_items:[]}),firstCandidate)
@@ -1930,6 +1934,10 @@ test("a replacement written with the draft view's bold marks or escapes is propo
       new Paragraph("The Purchase Price is £[*]."),
       new Paragraph("The Fee* is payable monthly."),
       new Paragraph("The Adjusted Fee = Fee * Index."),
+      new Paragraph("The Indexed Fee = Fee*Index."),
+      new Paragraph({children:[new TextRun("The "),new TextRun({text:"[Buyer]",bold:true}),new TextRun(" shall pay the Price.")]}),
+      new Paragraph({children:[new TextRun("The "),new TextRun({text:"Deposit",bold:true}),new TextRun(" is £[*].")]}),
+      new Paragraph({children:[new TextRun("The Charges"),new TextRun({text:", Costs",italics:true}),new TextRun(" and Expenses are payable monthly.")]}),
       new Paragraph("The Supplier shall *not* subcontract."),
       new Paragraph("The Customer shall pay the Fees."),
     ]}]})))
@@ -1939,6 +1947,9 @@ test("a replacement written with the draft view's bold marks or escapes is propo
       expect(response.status).toBe(200)
       return await response.json() as {redline_ids:number[];open_items:string[]}
     })
+    // A mark touches a word on its inner side: punctuation that starts a run
+    // after a word stays outside it.
+    expect(engine.prompts[0]).toContain("The Charges, *Costs* and Expenses are payable monthly.")
     expect(body.open_items).toEqual(["The change to “The Customer shall pay” was not proposed: it changes no words. Say which words change, then request edits again."])
     const db = openDb(directory)
     const rows = (() => {try {return body.redline_ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
@@ -1946,14 +1957,20 @@ test("a replacement written with the draft view's bold marks or escapes is propo
       ["the services described in Schedule 1.","the services described in Schedule 1 (the \"Services\")."],
       ["within thirty days","within [number] days"],
       ["The Purchase Price is £[*].","The Purchase Price is £[*] plus VAT, payable on [*]."],
-      ["The Fee* is payable monthly.","The Fee* and the Expenses* are payable monthly."],
+      ["The Fee* is payable monthly.","The Fee*, Costs* and Expenses* are payable monthly."],
       ["Fee * Index.","Fee * Index * 1.05."],
+      ["Fee*Index.","Fee*Index*1.05."],
+      ["The [Buyer] shall pay the Price.","The [Buyer] shall promptly pay the Price."],
+      ["The Deposit is £[*].","The Deposit is £[*], payable on [*]."],
+      ["The Charges, Costs and Expenses are payable monthly.","The Charges, Costs and Expenses are payable quarterly."],
       ["shall *not* subcontract","shall *not* subcontract or assign"]])
     const after = await openRevision(await bake(original,rows,await redlineState(original,rows)))
     try {
       expect(after.revision.paragraphs.map((row) => row.text)).toEqual([
         "The Supplier shall provide the services described in Schedule 1 (the \"Services\").","The Buyer shall pay each invoice within [number] days.",
-        "The Purchase Price is £[*] plus VAT, payable on [*].","The Fee* and the Expenses* are payable monthly.","The Adjusted Fee = Fee * Index * 1.05.",
+        "The Purchase Price is £[*] plus VAT, payable on [*].","The Fee*, Costs* and Expenses* are payable monthly.","The Adjusted Fee = Fee * Index * 1.05.",
+        "The Indexed Fee = Fee*Index*1.05.","The [Buyer] shall promptly pay the Price.","The Deposit is £[*], payable on [*].",
+        "The Charges, Costs and Expenses are payable quarterly.",
         "The Supplier shall *not* subcontract or assign.","The Customer shall pay the Fees."])
     } finally {after.session.close()}
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
