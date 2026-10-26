@@ -379,6 +379,12 @@ async function main(args: string[]) {
       return await stop(0)
     }
 
+    // Say how to start doc.haus again, through the Start menu entry the
+    // installer adds when there is one.
+    const startMenu = path.join(process.env.APPDATA ?? "", "Microsoft", "Windows", "Start Menu", "Programs", "doc.haus.lnk")
+    console.log(`doc.haus: ready at ${webUrl}. Keep this window open while you use doc.haus; press Ctrl+C to stop it.`)
+    console.log(`doc.haus: to start it again later, ${existsSync(startMenu) ? "open doc.haus from the Start menu, or " : ""}run ${path.join(repository, "start.cmd")}.`)
+
     // wait-stack-ready has already loaded the web UI. Opt out with NO_OPEN=1.
     if (!process.env.NO_OPEN) {
       console.log(`doc.haus: opening ${webUrl}`)

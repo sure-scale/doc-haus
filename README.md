@@ -6,7 +6,22 @@ and redlines for lawyer review. Generated work requires professional review.
 
 ## Start locally
 
-Install Git, clone this repository, then run:
+One command installs Git if it is missing, downloads doc.haus to `~/doc-haus`
+(or `DOCHAUS_DIR`) and starts it. Run it again to start doc.haus later.
+
+```sh
+curl -fsSL https://doc.haus/install.sh | bash
+```
+
+On Windows, run this in PowerShell:
+
+```powershell
+irm https://doc.haus/install.ps1 | iex
+```
+
+These run [scripts/install.sh](scripts/install.sh) and
+[scripts/install.ps1](scripts/install.ps1). To install by hand, install Git,
+clone this repository, then run:
 
 ```sh
 git clone https://github.com/sure-scale/doc-haus.git
