@@ -946,6 +946,67 @@ test("Request edits makes a change it is given twice once, also when the two quo
   }
 })
 
+test("Request edits joins two sentences appended to one sentence in the order they were requested", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-appends-"))
+  const engine = syntheticEngine(() => ({amendments:[
+    appended,
+    {before_quote:governed,replacement:`${governed} Its conflict of laws rules do not apply.`,target_context:"the end of clause 9",reason:"Client instruction 3: exclude the conflict rules"},
+  ],open_items:[]}),firstCandidate)
+  try {
+    const markup = counterpartyMarkupDocx()
+    await registeredSource(temporary,markup)
+    const ids = await withPreparation(temporary,engine,async (prepare) => {
+      const response = await prepare("Append \"Each party submits to the courts of the Province.\" to clause 9, then \"Its conflict of laws rules do not apply.\"")
+      expect(response.status).toBe(200)
+      const body = await response.json() as {proposed:number;redline_ids:number[]}
+      expect(body).toMatchObject({proposed:1,open_items:[]})
+      return body.redline_ids
+    })
+    const db = openDb(temporary)
+    const rows = (() => {try {return ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect(rows.map((row) => [row.find_text,row.new_text,row.review_comment])).toEqual([[governed,
+      `${governed} Each party submits to the courts of the Province. Its conflict of laws rules do not apply.`,
+      "Client instruction 2: add the submission sentence. Client instruction 3: exclude the conflict rules."]])
+    expect((await createDocxRevision(await bake(markup,rows,undefined,{pendingRevisions:"layer"}),{pendingRevisions:"layer"})).paragraphs[9]!.text)
+      .toBe(`9. Governing law. ${governed} Each party submits to the courts of the Province. Its conflict of laws rules do not apply.`)
+  } finally {
+    engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+})
+
+test("Request edits proposes once a sentence two touching quotes insert where they meet", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-touching-"))
+  const survives = "Client instruction 1: insert the survival sentence"
+  // The heading, quoted with its trailing space, ends where the clause's
+  // sentence starts; each inserts the survival sentence there.
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:"Governing law. ",replacement:"Governing law. This clause survives the end of this Agreement. ",target_context:"the heading of clause 9",reason:survives},
+    {before_quote:governed,replacement:`This clause survives the end of this Agreement. ${governed}`,target_context:"the opening of clause 9",reason:survives},
+    approval,
+  ],open_items:[]}),firstCandidate)
+  try {
+    const markup = counterpartyMarkupDocx()
+    await registeredSource(temporary,markup)
+    const ids = await withPreparation(temporary,engine,async (prepare) => {
+      const response = await prepare("Insert \"This clause survives the end of this Agreement.\" at the start of clause 9, and say approval in clause 7.")
+      expect(response.status).toBe(200)
+      const body = await response.json() as {proposed:number;redline_ids:number[]}
+      expect(body).toMatchObject({proposed:2,open_items:[]})
+      return body.redline_ids
+    })
+    const db = openDb(temporary)
+    const rows = (() => {try {return ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect(rows.map((row) => [row.find_text,row.new_text,row.review_comment])).toEqual([
+      ["Governing law. ","Governing law. This clause survives the end of this Agreement. ","Client instruction 1: insert the survival sentence."],
+      ["without consent.","without approval.","Say approval"],
+    ])
+    expect((await createDocxRevision(await bake(markup,rows,undefined,{pendingRevisions:"layer"}),{pendingRevisions:"layer"})).paragraphs[9]!.text)
+      .toBe(`9. Governing law. This clause survives the end of this Agreement. ${governed}`)
+  } finally {
+    engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+})
+
 test("Request edits prepares on a clean uploaded source and still refuses a deliverable with pending tracked changes", async () => {
   const source = await mkdtemp(path.join(tmpdir(),"dochaus-word-clean-source-"))
   const deliverable = await mkdtemp(path.join(tmpdir(),"dochaus-word-tracked-deliverable-"))

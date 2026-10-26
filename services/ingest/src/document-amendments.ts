@@ -269,9 +269,12 @@ type Resolved = {row:{before_quote:string;replacement:string;target_context:stri
 // to the union of their quotes, each later quote found exactly once in the text
 // the earlier ones give, they are one proposal under the first one's id; a later
 // one that is not stays out of it as an open item naming its quote. A later one
-// that makes a change an earlier one makes adds only its reason.
+// that makes a change an earlier one makes, also from a quote that only touches
+// the earlier one's, adds only its reason; one that inserts where an earlier one
+// inserts goes after it, as requested.
 async function consolidated(bytes:Uint8Array,options:DocxRevisionOptions,packet:DocxLocalizationPacket,resolved:Resolved[],refused:string[]) {
-  const groups:Array<{paragraph:DocxLocalizationPacket["candidates"][number]["paragraph"];start:number;end:number;text:string;members:Resolved[];made:string[]}> = []
+  type Made = {at:number;replaced:string;changed:string}
+  const groups:Array<{paragraph:DocxLocalizationPacket["candidates"][number]["paragraph"];start:number;end:number;text:string;members:Resolved[];made:Made[]}> = []
   for (const entry of resolved) {
     const {amendment,selection} = entry
     const candidates = packet.candidates.filter((candidate) => candidate.amendment_id === amendment.id)
@@ -282,11 +285,12 @@ async function consolidated(bytes:Uint8Array,options:DocxRevisionOptions,packet:
     // The change itself, whole words as its tracked change reads: where in the
     // paragraph, which words go and which come.
     const {offset,replaced,changed} = changedRange(amendment.before_quote,amendment.replacement,true)
-    const made = JSON.stringify([start+offset,replaced,changed])
-    const overlapping = groups.filter((group) => group.paragraph.paragraph_handle === paragraph.paragraph_handle && group.start < end && start < group.end)
-    if (!overlapping.length) {groups.push({paragraph,start,end,text:amendment.replacement,members:[entry],made:[made]}); continue}
-    const same = overlapping.find((group) => group.made.includes(made))
+    const made = {at:start+offset,replaced,changed}
+    const touching = groups.filter((group) => group.paragraph.paragraph_handle === paragraph.paragraph_handle && group.start <= end && start <= group.end)
+    const same = touching.find((group) => group.made.some((row) => row.at === made.at && row.replaced === replaced && row.changed === changed))
     if (same) {same.members.push(entry); continue}
+    const overlapping = touching.filter((group) => group.start < end && start < group.end)
+    if (!overlapping.length) {groups.push({paragraph,start,end,text:amendment.replacement,members:[entry],made:[made]}); continue}
     // The union of the quotes as the earlier changes leave it.
     const from = Math.min(start,...overlapping.map((group) => group.start))
     const to = Math.max(end,...overlapping.map((group) => group.end))
@@ -298,9 +302,13 @@ async function consolidated(bytes:Uint8Array,options:DocxRevisionOptions,packet:
       refused.push(`The change to ${JSON.stringify(entry.row.before_quote)} was not proposed: it overlaps the change to ${JSON.stringify(overlapping[0]!.members[0]!.row.before_quote)} and cannot be combined with it. Accept or reject that change, then request this edit again.`)
       continue
     }
+    // Words inserted where an earlier change inserted go after its words.
+    let point = found+offset
+    if (!replaced) for (const row of overlapping.flatMap((group) => group.made))
+      if (row.at === made.at && !row.replaced && union.startsWith(row.changed,point)) point += row.changed.length
     groups.splice(groups.indexOf(overlapping[0]!),1,{paragraph,start:from,end:to,members:[...overlapping.flatMap((group) => group.members),entry],
       made:[...overlapping.flatMap((group) => group.made),made],
-      text:union.slice(0,found)+amendment.replacement+union.slice(found+amendment.before_quote.length)})
+      text:union.slice(0,point)+changed+union.slice(point+replaced.length)})
     for (const group of overlapping.slice(1)) groups.splice(groups.indexOf(group),1)
   }
   // A joined proposal is placed at the union of its quotes.
