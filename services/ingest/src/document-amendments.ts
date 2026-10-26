@@ -216,7 +216,11 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   for (const {row,amendment} of resolved) if (inside.has(amendment.id))
     refused.push(ownRevisionReason(row.before_quote,"proposed"))
   resolved = resolved.filter(({amendment}) => !inside.has(amendment.id))
-  const openItems = [...legal.open_items,...selections.flatMap((row) => typeof row.unresolved_reason === "string" ? [row.unresolved_reason] : []),...refused]
+  // The locator's own reason stays in the private diagnostic; the lawyer is
+  // told which change was not placed and what to do.
+  const unresolved = legal.amendments.flatMap((row,index) => typeof selections.find((value) => value.amendment_id === amendments[index].id)?.unresolved_reason === "string"
+    ? [`The change to ${JSON.stringify(row.before_quote)} was not proposed: it could not be placed in the document. Say where in the document it goes, then request edits again.`] : [])
+  const openItems = [...legal.open_items,...unresolved,...refused]
   if (!resolved.length) {
     await recordPrepared(directory,name,initial.role,{redline_ids:[],open_items:openItems})
     return {proposed:0,open_items:openItems,passes:[pass(first),pass(second)]}

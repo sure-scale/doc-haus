@@ -643,10 +643,12 @@ test("header and footer targets keep whole-revision binding; a body target binds
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
-test("a locator unresolved_reason becomes a visible open item without a pending proposal or byte change", async () => {
+test("a locator unresolved_reason becomes a plain open item without a pending proposal or byte change", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-unresolved-"))
   const file = path.join(directory,"working.docx")
+  // The locator's own reason stays in the private diagnostic; the lawyer reads which change was not placed.
   const ambiguous = "Two notice clauses could match; the instruction does not say which one governs."
+  const unplaced = (quote:string) => `The change to "${quote}" was not proposed: it could not be placed in the document. Say where in the document it goes, then request edits again.`
   let mixed = false
   const engine = syntheticEngine(() => ({amendments:[
     {before_quote:"five days",replacement:"seven days",target_context:"governing notice clause",reason:"Requested notice update."},
@@ -666,8 +668,9 @@ test("a locator unresolved_reason becomes a visible open item without a pending 
     await withPreparation(directory,engine,async (prepare) => {
       const refused = await prepare("Update the governing notice period and the retention period.")
       expect(refused.status).toBe(200)
-      expect(await refused.json()).toMatchObject({proposed:0,open_items:["Confirm the client's retention policy.",ambiguous,ambiguous]})
-      expect(await prepared()).toEqual({redline_ids:[],open_items:["Confirm the client's retention policy.",ambiguous,ambiguous]})
+      const items = ["Confirm the client's retention policy.",unplaced("five days"),unplaced("three months")]
+      expect(await refused.json()).toMatchObject({proposed:0,open_items:items})
+      expect(await prepared()).toEqual({redline_ids:[],open_items:items})
       expect(rows()).toEqual([])
       expect(await Bun.file(file).bytes()).toEqual(original)
       expect(readWorkingDocx(directory,file)).toBeUndefined()
@@ -677,7 +680,7 @@ test("a locator unresolved_reason becomes a visible open item without a pending 
       expect(partial.status).toBe(200)
       const body = await partial.json() as {proposed:number;redline_ids:number[];open_items:string[]}
       expect(body.proposed).toBe(1)
-      expect(body.open_items).toEqual(["Confirm the client's retention policy.",ambiguous])
+      expect(body.open_items).toEqual(["Confirm the client's retention policy.",unplaced("five days")])
       expect(await prepared()).toEqual({redline_ids:body.redline_ids,open_items:body.open_items})
       // Only the resolved amendment is recorded; the unresolved quote has no row.
       expect(rows().map((row) => [row.find_text,row.status,JSON.parse(row.target_json).amendment_id])).toEqual([["three months","pending","amendment-2"]])
