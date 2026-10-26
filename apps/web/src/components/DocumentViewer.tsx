@@ -188,7 +188,8 @@ function WordDocumentViewer({
   const [instructions,setInstructions] = useState("")
   // The last Prepare's batch and open items, stored by ingest and read with the
   // change list, so they survive closing the viewer. The count line is derived
-  // from the refetched list; the open items stay until the next Prepare.
+  // from the refetched list; the open items stay until the next Prepare, one
+  // that fails included.
   const [preparation,setPreparation] = useState<PreparedChanges | null>(null)
   // The name doc.haus's changes carry: the saved attorney, else the firm, else
   // doc.haus, as ingest records it; null when the settings could not be read.
@@ -613,6 +614,9 @@ function WordDocumentViewer({
     setConsistency(undefined)
     setBusy("prepare")
     setError(undefined)
+    // Ingest replaces the last request's open items as this one starts; a
+    // failed request reloads nothing, so they go here too.
+    setPreparation((value) => value && {...value,open_items:[]})
     try {
       await prepareDocumentChanges(matterId,name,instructions)
       onChanged?.()

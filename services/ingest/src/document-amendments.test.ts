@@ -691,6 +691,36 @@ test("a locator unresolved_reason becomes a visible open item without a pending 
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
+test("a failed Request edits replaces the earlier request's open items and keeps its proposals", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-failed-prepare-"))
+  const file = path.join(directory,"working.docx")
+  const policy = "Confirm the client's retention policy."
+  // The second request's locator answer cannot be read, so it is refused.
+  let refuse = false
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:"three months",replacement:"six months",target_context:"retention period",reason:"Requested retention update."},
+  ],open_items:[policy]}),(candidates) => refuse ? {} : firstCandidate(candidates))
+  try {
+    await writeDeliverable(directory,"working.docx",Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph("Notice must arrive within five days."),new Paragraph("Retain records for three months."),
+    ]}]})))))
+    const prepared = async () => await (await documentAmendmentRoutes({directory:() => directory}).request("http://local/matter/documents/amendments?name=working.docx")).json()
+    const pending = () => {const db=openDb(directory);try {return db.query("SELECT id,find_text,status FROM redlines").all()} finally {db.close()}}
+    await withPreparation(directory,engine,async (prepare) => {
+      const first = await prepare("Extend the retention period to six months.")
+      expect(first.status).toBe(200)
+      const {redline_ids} = await first.json() as {redline_ids:number[]}
+      expect(await prepared()).toEqual({redline_ids,open_items:[policy]})
+      refuse = true
+      const failed = await prepare("Extend the retention period to six months and keep it under review.")
+      expect(failed.status).toBe(409)
+      expect(await failed.json()).toMatchObject({error:"The requested changes could not be placed in the document. No proposals were recorded; try again, or say where each change goes."})
+      expect(await prepared()).toEqual({redline_ids,open_items:[]})
+      expect(pending()).toEqual([{id:redline_ids[0],find_text:"three months",status:"pending"}])
+    })
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
 test("a whole-paragraph quote, with no context inside its paragraph, is placed by its neighbouring paragraphs", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-whole-paragraph-"))
   const file = path.join(directory,"working.docx")
