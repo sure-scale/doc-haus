@@ -191,6 +191,9 @@ function WordDocumentViewer({
   // from the refetched list; the open items stay until the next Prepare, one
   // that fails included.
   const [preparation,setPreparation] = useState<PreparedChanges | null>(null)
+  // Counts Prepare presses: a load started before the last one answers with
+  // the open items that request replaced, so they are not put back.
+  const prepares = useRef(0)
   // The name doc.haus's changes carry: the saved attorney, else the firm, else
   // doc.haus, as ingest records it; null when the settings could not be read.
   const [reviser,setReviser] = useState<string | null>()
@@ -279,6 +282,7 @@ function WordDocumentViewer({
         cancelled = true
       }
     }
+    const pressed = prepares.current
     Promise.all([fetchRedlinedBytes(matterId, name, (notice) => { if (!cancelled) setRevisionNotice(notice) }).catch(async (cause) => {
       if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause))
       const current = await fetch(documentContentUrl(matterId,name))
@@ -290,7 +294,7 @@ function WordDocumentViewer({
         if (cancelled) return
         setHtml(out)
         setRedlines(changes)
-        setPreparation(prepared)
+        setPreparation(prepared && pressed !== prepares.current ? {...prepared,open_items:[]} : prepared)
       })
       .catch((e) => !cancelled && setError(e instanceof Error ? e.message : String(e)))
     return () => {
@@ -616,6 +620,7 @@ function WordDocumentViewer({
     setError(undefined)
     // Ingest replaces the last request's open items as this one starts; a
     // failed request reloads nothing, so they go here too.
+    prepares.current++
     setPreparation((value) => value && {...value,open_items:[]})
     try {
       await prepareDocumentChanges(matterId,name,instructions)
