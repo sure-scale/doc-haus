@@ -774,6 +774,10 @@ button:is(.change-id, .change-ref) { cursor: pointer; }
 button:is(.change-id, .change-ref):hover { text-decoration: underline; }
 .change-redline .compare-redline { font-size: 0.875rem; line-height: 1.5; }
 .change-redline .compare-more { margin: 0; }
+/* doc.haus's own proposals: the card's colours, green inserted and red
+   deleted, and the preview's single underline. */
+.proposal-redline { --redline-ins: var(--accent); --redline-del: var(--danger); }
+.proposal-redline .compare-redline ins { text-decoration-style: solid; text-underline-offset: 2px; }
 .change-meta { font-size: 0.78125rem; line-height: 1.5; color: var(--text-secondary); }
 .change-meta > span + span::before { content: "·"; margin: 0 6px; color: var(--muted); }
 .change-level.is-material { color: var(--warn); font-weight: 600; }

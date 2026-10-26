@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
-import { createDocxRevision, createDocxLocalization, applyDocxLocalization, DocxTrackedRevisionsError, othersPending, ownRevisionReason, ownRevisionRefusals, pendingRevisionParagraphs, trackedRevisionsReason, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
+import { createDocxRevision, createDocxLocalization, applyDocxLocalization, changedRange, DocxTrackedRevisionsError, othersPending, ownRevisionReason, ownRevisionRefusals, pendingRevisionParagraphs, trackedRevisionsReason, type DocxAmendment, type DocxLocalizationPacket, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { workingDocxKey, readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { paragraphTargets, resolveParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
@@ -202,6 +202,7 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
     const replacement = withoutListLabel(row.replacement,label)
     return [{row:{...row,replacement},amendment:{...amendments[index],replacement},selection}]
   })
+  resolved = await consolidated(initial.bytes,layer,packet,resolved,refused)
   // Where the source has pending revisions, Accept writes tracked changes, so
   // the batch is qualified as it will be written: beside doc.haus's own pending
   // change, never inside it (docx_own_revision).
@@ -260,6 +261,69 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
     } finally {db.close()}
   })
   return {proposed:ids.length,redline_ids:ids,base_sha256:revision.source_sha256,open_items:openItems,passes:[pass(first),pass(second)]}
+}
+
+type Resolved = {row:{before_quote:string;replacement:string;target_context:string;reason:string};amendment:DocxAmendment;selection:Record<string,unknown>}
+// Overlapping changes in one paragraph are consolidated, never skipped, before
+// the batch is qualified: the writer refuses overlapping spans. Applied in order
+// to the union of their quotes, each later quote found exactly once in the text
+// the earlier ones give, they are one proposal under the first one's id; a later
+// one that is not stays out of it as an open item naming its quote. A later one
+// that makes a change an earlier one makes adds only its reason.
+async function consolidated(bytes:Uint8Array,options:DocxRevisionOptions,packet:DocxLocalizationPacket,resolved:Resolved[],refused:string[]) {
+  const groups:Array<{paragraph:DocxLocalizationPacket["candidates"][number]["paragraph"];start:number;end:number;text:string;members:Resolved[];made:string[]}> = []
+  for (const entry of resolved) {
+    const {amendment,selection} = entry
+    const candidates = packet.candidates.filter((candidate) => candidate.amendment_id === amendment.id)
+    const chosen = candidates.find((candidate) => candidate.target_handle === selection.target_handle)!
+    const paragraph = chosen.paragraph
+    const start = occurrences(paragraph.text,amendment.before_quote)[candidates.filter((candidate) => candidate.paragraph.paragraph_handle === paragraph.paragraph_handle).indexOf(chosen)]!
+    const end = start+amendment.before_quote.length
+    // The change itself, whole words as its tracked change reads: where in the
+    // paragraph, which words go and which come.
+    const {offset,replaced,changed} = changedRange(amendment.before_quote,amendment.replacement,true)
+    const made = JSON.stringify([start+offset,replaced,changed])
+    const overlapping = groups.filter((group) => group.paragraph.paragraph_handle === paragraph.paragraph_handle && group.start < end && start < group.end)
+    if (!overlapping.length) {groups.push({paragraph,start,end,text:amendment.replacement,members:[entry],made:[made]}); continue}
+    const same = overlapping.find((group) => group.made.includes(made))
+    if (same) {same.members.push(entry); continue}
+    // The union of the quotes as the earlier changes leave it.
+    const from = Math.min(start,...overlapping.map((group) => group.start))
+    const to = Math.max(end,...overlapping.map((group) => group.end))
+    let union = "", at = from
+    for (const group of overlapping.toSorted((a,b) => a.start-b.start)) {union += paragraph.text.slice(at,group.start)+group.text; at = group.end}
+    union += paragraph.text.slice(at,to)
+    const found = union.indexOf(amendment.before_quote)
+    if (found < 0 || union.includes(amendment.before_quote,found+1)) {
+      refused.push(`The change to ${JSON.stringify(entry.row.before_quote)} was not proposed: it overlaps the change to ${JSON.stringify(overlapping[0]!.members[0]!.row.before_quote)} and cannot be combined with it. Accept or reject that change, then request this edit again.`)
+      continue
+    }
+    groups.splice(groups.indexOf(overlapping[0]!),1,{paragraph,start:from,end:to,members:[...overlapping.flatMap((group) => group.members),entry],
+      made:[...overlapping.flatMap((group) => group.made),made],
+      text:union.slice(0,found)+amendment.replacement+union.slice(found+amendment.before_quote.length)})
+    for (const group of overlapping.slice(1)) groups.splice(groups.indexOf(group),1)
+  }
+  // A joined proposal is placed at the union of its quotes.
+  const joined = groups.filter((group) => group.members.length > 1)
+  const located = joined.length ? await createDocxLocalization(bytes,joined.map((group) => ({id:group.members[0]!.amendment.id,
+    before_quote:group.paragraph.text.slice(group.start,group.end),replacement:group.text})),{},options) : undefined
+  return groups.map(({paragraph,start,end,text,members:[first,...rest]}):Resolved => {
+    if (!rest.length) return first!
+    const before_quote = paragraph.text.slice(start,end)
+    const target = located!.candidates.filter((candidate) => candidate.amendment_id === first!.amendment.id &&
+      candidate.paragraph.paragraph_handle === paragraph.paragraph_handle)[occurrences(paragraph.text,before_quote).indexOf(start)]!
+    // One review comment: each reason as a sentence, once.
+    const reason = [...new Set([first!,...rest].map(({row}) => row.reason.trim()).filter(Boolean))].map((row) => /[.!?]$/.test(row) ? row : `${row}.`).join(" ")
+    return {row:{...first!.row,before_quote,replacement:text,reason},amendment:{...first!.amendment,before_quote,replacement:text},
+      selection:{amendment_id:first!.amendment.id,target_handle:target.target_handle}}
+  })
+}
+// Where `quote` occurs in `text`, left to right without overlap, as grep offers
+// candidates and a paragraph binding counts its occurrence.
+function occurrences(text:string,quote:string) {
+  const found:number[] = []
+  for (let at = text.indexOf(quote); at >= 0; at = text.indexOf(quote,at+quote.length)) found.push(at)
+  return found
 }
 
 // A Prepare with no proposals still reports open items; keep them for the viewer.

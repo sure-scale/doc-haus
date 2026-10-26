@@ -1,6 +1,7 @@
 // Run from apps/web: PLAYWRIGHT_MODULE=<installed playwright module> bun test/document-viewer.browser.ts
 // Mounts the real DocumentViewer on the Docxodus WASM runtime served as the web build serves /wasm/; only ingest HTTP is mocked.
 // A Word package may omit its styles and settings parts (#216); each variant must render its text read-only.
+// Pending proposals each read as one passage with only their changed words marked (#299).
 // Set PLAYWRIGHT_CHROMIUM_PATH=<chromium> when Playwright's own browser is missing, DOCXODUS_WASM_DIR=<wasm dir> to try another runtime build.
 import assert from "node:assert/strict"
 import { existsSync, statSync } from "node:fs"
@@ -101,6 +102,48 @@ try {
     await page.close()
   }
   assert.deepEqual(failures, [], "Every Word package, with or without its styles and settings parts, renders its text")
+
+  // Pending doc.haus proposals: each card reads as one passage, as the file
+  // writes it. The unchanged words stay plain and appear once; only the
+  // deleted words are struck and only the inserted ones marked, deleted before
+  // inserted, and each says which it is to a screen reader. A new sentence
+  // whose words repeat the sentence beside it stands between sentences, also
+  // one on each side of the words a joined proposal keeps.
+  const law = "This Agreement is governed by the law of the Province."
+  const proposals = [
+    [law, `${law} Each party submits to the courts of the Province.`],
+    [`Governing law. ${law}`, `Governing law. This clause survives the end of this Agreement. ${law}`],
+    ["without consent.", "without approval."],
+    [law, `This clause applies to every dispute under this Agreement. ${law} Each party submits to the courts of the Province.`],
+  ].map(([old_text, new_text], index) => ({ id: index + 1, doc_name: "complete.docx", scope: "phrase", find_text: old_text, old_text, new_text,
+    author: "Jordan Example", review_comment: "Client instruction.", created_at: 0 }))
+  const expected = [
+    { once: law, marks: [["ins", "Inserted: Each party submits to the courts of the Province."]] },
+    { once: law, marks: [["ins", "Inserted: This clause survives the end of this Agreement."]] },
+    { once: "without", marks: [["del", "Deleted: consent"], ["ins", "Inserted: approval"]] },
+    { once: law, marks: [["ins", "Inserted: This clause applies to every dispute under this Agreement."], ["ins", "Inserted: Each party submits to the courts of the Province."]] },
+  ]
+  const page = await browser.newPage()
+  page.setDefaultTimeout(60_000)
+  await page.route("http://viewer.invalid/**", route => {
+    const url = new URL(route.request().url())
+    if (/^\/matters\/matter-viewer\/documents\/(redlined|content)$/.test(url.pathname))
+      return route.fulfill({ status: 200, contentType: `${CT}.document`, body: Buffer.from(files.get("complete.docx")!) })
+    if (url.pathname === "/matters/matter-viewer/redlines") return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(proposals) })
+    if (url.pathname === "/matters/matter-viewer/documents/amendments") return route.fulfill({ status: 200, contentType: "application/json", body: "null" })
+    return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: `Unexpected ${url.pathname}` }) })
+  })
+  await page.goto(`${server.url.href}#complete.docx`)
+  const cards = page.locator(".changes-panel .change-card")
+  await cards.nth(proposals.length - 1).waitFor()
+  const read = await cards.evaluateAll(nodes => nodes.map(card => ({
+    text: card.textContent!.replace(/\s+/g, " "),
+    marks: [...card.querySelectorAll("del, ins")].map(mark => [mark.localName, mark.textContent!.replace(/\s+/g, " ").trim()]),
+  })))
+  const shown = read.map((card, index) => ({ once: card.text.split(expected[index]!.once).length - 1 === 1 ? expected[index]!.once : card.text, marks: card.marks }))
+  console.log(`${JSON.stringify(shown) === JSON.stringify(expected) ? "PASS" : "FAIL"} proposal cards: ${JSON.stringify(read)}`)
+  assert.deepEqual(shown, expected, "Each proposal reads as one passage with only its changed words marked")
+  await page.close()
 } finally {
   await browser.close()
   server.stop(true)

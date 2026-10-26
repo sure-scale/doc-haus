@@ -162,20 +162,22 @@ function admitted(opened: Opened, binding: Binding) {
   if (/[\r\n\t]/.test(amendment.replacement)) throw new Error("unsupported_structural_replacement")
   if (!amendment.replacement && match.text === opened.paragraphs[ordinal].match.text)
     throw new Error("unsupported_empty_paragraph_replacement")
-  const change = changedDocxSpan(match, amendment.replacement, Boolean(opened.options.revisionAuthor))
+  const changes = changedDocxSpans(match, amendment.replacement, Boolean(opened.options.revisionAuthor))
   // Beside doc.haus's own pending change, never inside it: Docxodus would nest
   // the new revision in that one. A pure insertion has no text of its own; it
   // is inside a change when the text on both sides of it is. The change is
   // judged as the tracked write makes it, whole words, also for an untracked
   // pass over the same file (Accept's), so both refuse what Prepare does.
   const whole = opened.paragraphs[ordinal]!.match
-  const guarded = opened.options.revisionAuthor ? change : changedDocxSpan(match, amendment.replacement, true)
-  const at = guarded.match.span.start - whole.span.start
-  if (pending && (guarded.match.text || !guarded.replacement ? insideRevision(opened.session, paragraphSpan(whole, at, guarded.match.text.length))
-    : at > 0 && insideRevision(opened.session, paragraphSpan(whole, at - 1, 1)) && insideRevision(opened.session, paragraphSpan(whole, at, 1))))
+  const guarded = opened.options.revisionAuthor ? changes : changedDocxSpans(match, amendment.replacement, true)
+  if (pending && guarded.some(change => {
+    const at = change.match.span.start - whole.span.start
+    return change.match.text || !change.replacement ? insideRevision(opened.session, paragraphSpan(whole, at, change.match.text.length))
+      : at > 0 && insideRevision(opened.session, paragraphSpan(whole, at - 1, 1)) && insideRevision(opened.session, paragraphSpan(whole, at, 1))
+  }))
     throw new Error(`docx_own_revision:${amendment.id}`)
   const xml = parse(opened.session.raw.getXml(match.enclosingAnchor.id))
-  if (!elements(xml, "fldChar").length && !elements(xml, "instrText").length) return { ...binding, change, unlinks: [] as number[] }
+  if (!elements(xml, "fldChar").length && !elements(xml, "instrText").length) return { ...binding, changes, unlinks: [] as number[] }
   // A live cross-reference (a REF field) is the only field an edit may stand
   // beside. One the edit's changed text touches becomes the text it shows.
   const paragraph = opened.paragraphs[ordinal]!
@@ -184,9 +186,11 @@ function admitted(opened: Opened, binding: Binding) {
   if (runText(paragraph.node) !== paragraph.match.text || fields.some(field => !refInstruction(field))
     || [...elements(paragraph.node, "fldChar"), ...elements(paragraph.node, "instrText")].some(node => !owned.has(node)))
     throw new Error("unsupported_field_replacement")
-  const start = change.match.span.start - paragraph.match.span.start
-  const end = start + change.match.text.length
-  return { ...binding, change, unlinks: fields.flatMap((field, index) => start < field.to && field.from < end ? [index] : []) }
+  const touches = (field: (typeof fields)[number]) => changes.some(change => {
+    const start = change.match.span.start - paragraph.match.span.start
+    return start < field.to && field.from < start + change.match.text.length
+  })
+  return { ...binding, changes, unlinks: fields.flatMap((field, index) => touches(field) ? [index] : []) }
 }
 
 // Whether a run of the changed span lies inside a tracked insertion, deletion or move.
@@ -273,14 +277,16 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
       // The complete authenticated quote localizes the occurrence. Unchanged
       // context keeps its own runs; only the changed text is mutated.
       const paragraph = target.paragraphs[edit.ordinal]!.match
-      const change = target === opened ? edit.change : changedDocxSpan(paragraphSpan(paragraph,
+      const changes = target === opened ? edit.changes : changedDocxSpans(paragraphSpan(paragraph,
         edit.match.span.start - opened.paragraphs[edit.ordinal]!.match.span.start, edit.match.text.length), edit.amendment.replacement,
         Boolean(opened.options.revisionAuthor))
-      if (!change.match.text && !change.replacement) continue
-      if (revisionAuthor) target.session.setRevisionAuthor(author(edit)!)
-      const result = revisionAuthor && change.joinsAfter ? insertBefore(target.session, change.match, change.replacement)
-        : target.session.replaceMatch(change.match, change.replacement)
-      if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
+      for (const change of changes.toReversed()) {
+        if (!change.match.text && !change.replacement) continue
+        if (revisionAuthor) target.session.setRevisionAuthor(author(edit)!)
+        const result = revisionAuthor && change.joinsAfter ? insertBefore(target.session, change.match, change.replacement)
+          : target.session.replaceMatch(change.match, change.replacement)
+        if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
+      }
     }
     const output = target.session.save()
     const reopened = await openRevision(output, opened.options)
@@ -304,7 +310,7 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
             before_quote: edit.amendment.before_quote, replacement: edit.amendment.replacement,
             paragraph_before: opened.revision.paragraphs[edit.ordinal].text,
             paragraph_after: expected[edit.ordinal],
-            replacement_formatting: edit.change.formatting,
+            replacement_formatting: edit.changes[0]!.formatting,
           })),
           unchanged_paragraphs_verified: opened.paragraphs.length - changed.size,
           package_structure_verified: true,
@@ -329,6 +335,31 @@ export function changedDocxSpan(match: Match, replacement: string, words = false
     .reduce((length, row) => length + row.text.length, 0) > at)?.formatting ?? match.fragments.at(-1)?.formatting
   return { match: { ...match, text: replaced, span: { start: match.span.start + offset, length: replaced.length } },
     replacement: changed, formatting, joinsAfter }
+}
+
+// The changes one amendment writes. Where all the words its whole-word change
+// replaces stand, together and once, inside its new words (as between two
+// insertions Prepare joins into one proposal), it is the insertion on each side
+// of them, each written as changedDocxSpan writes one, never those words
+// deleted and typed again. Otherwise it is the one change changedDocxSpan gives.
+function changedDocxSpans(match: Match, replacement: string, words = false) {
+  const change = changedDocxSpan(match, replacement, true)
+  const single = [words ? change : changedDocxSpan(match, replacement)]
+  const kept = wordTokens(change.match.text)
+  const added = wordTokens(change.replacement)
+  const found = kept.length ? added.flatMap((_, index) => kept.every((token, k) => added[index + k] === token) ? [index] : []) : []
+  if (found.length !== 1) return single
+  const at = found[0]!
+  const start = change.match.span.start - match.span.start
+  const end = start + change.match.text.length
+  const [before, after] = [
+    changedDocxSpan(paragraphSpan(match, 0, end), match.text.slice(0, start) + added.slice(0, at).join("") + change.match.text, words),
+    changedDocxSpan(paragraphSpan(match, start, match.text.length - start),
+      change.match.text + added.slice(at + kept.length).join("") + match.text.slice(end), words),
+  ] as const
+  // Written right to left, the two may not overlap.
+  return before.match.span.start < after.match.span.start && before.match.span.start + before.match.span.length <= after.match.span.start
+    ? [before, after] : single
 }
 
 // Docxodus writes a tracked insertion in the run properties of the character
@@ -401,9 +432,8 @@ export function changedRange(text: string, replacement: string, words = false) {
 // follows a space or the quote's start, so an inserted word goes before the
 // word it qualifies; with no such place, at the last.
 function changedWords(text: string, replacement: string) {
-  const words = (value: string) => value.match(/[\p{L}\p{N}_]+|\s+|[^\p{L}\p{N}_\s]/gu) ?? []
-  const before = words(text)
-  const after = words(replacement)
+  const before = wordTokens(text)
+  const after = wordTokens(replacement)
   let first = 0
   let lastBefore = before.length
   let lastAfter = after.length
@@ -430,6 +460,8 @@ function changedWords(text: string, replacement: string) {
   return { offset: before.slice(0, first - shift).join("").length, replaced: before.slice(first - shift, lastBefore - shift).join(""),
     changed: after.slice(first - shift, lastAfter - shift).join("") }
 }
+// Words, runs of white space and single other characters, as changedWords compares them.
+function wordTokens(value: string) { return value.match(/[\p{L}\p{N}_]+|\s+|[^\p{L}\p{N}_\s]/gu) ?? [] }
 
 function targetHandle(source_sha256: string, ordinal: number, match: Match) {
   return `target-${digest(JSON.stringify([source_sha256, ordinal, match.span.start, match.span.length, match.text])).slice(0, 24)}`

@@ -842,6 +842,110 @@ test("Request edits on an uploaded markup never proposes a change inside their c
   }
 })
 
+// Seen live: a sentence inserted at the start of clause 9 quotes the whole
+// clause, and one appended to it quotes its last sentence, so the two overlap.
+const governingClause = "Governing law. This Agreement is governed by the law of the Province."
+const governed = "This Agreement is governed by the law of the Province."
+const appended = {before_quote:governed,replacement:`${governed} Each party submits to the courts of the Province.`,target_context:"the end of clause 9",reason:"Client instruction 2: add the submission sentence"}
+const approval = {before_quote:"without consent.",replacement:"without approval.",target_context:"the end of clause 7",reason:"Say approval"}
+
+test("Request edits joins two overlapping changes to one clause into one proposal, which Accept writes into their markup as the two tracked insertions", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-joined-"))
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:governingClause,replacement:"Governing law. This clause survives the end of this Agreement. This Agreement is governed by the law of the Province.",
+      target_context:"the opening of clause 9",reason:"Client instruction 1: insert the survival sentence"},
+    appended,approval,
+  ],open_items:[]}),firstCandidate)
+  try {
+    const markup = counterpartyMarkupDocx()
+    await registeredSource(temporary,markup)
+    const ids = await withPreparation(temporary,engine,async (prepare) => {
+      const response = await prepare("Insert \"This clause survives the end of this Agreement.\" at the start of clause 9, append \"Each party submits to the courts of the Province.\" to clause 9, and say approval in clause 7.")
+      expect(response.status).toBe(200)
+      const body = await response.json() as {proposed:number;redline_ids:number[]}
+      expect(body).toMatchObject({proposed:2,open_items:[]})
+      return body.redline_ids
+    })
+    const db = openDb(temporary)
+    const rows = (() => {try {return ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect(rows.map((row) => [row.find_text,row.new_text,row.review_comment])).toEqual([
+      [governingClause,"Governing law. This clause survives the end of this Agreement. This Agreement is governed by the law of the Province. Each party submits to the courts of the Province.",
+        "Client instruction 1: insert the survival sentence. Client instruction 2: add the submission sentence."],
+      ["without consent.","without approval.","Say approval"],
+    ])
+    // Accepted as Accept writes into their markup: each new sentence is its own
+    // tracked insertion, and the clause's words between them are left alone.
+    const accepted = await bake(markup,rows,undefined,{pendingRevisions:"layer"})
+    expect((await listedRevisions(accepted)).filter((row) => row.author === rows[0]!.author).map((row) => [row.type,row.text])).toEqual([
+      ["delete","consent"],["insert","approval"],
+      ["insert","This clause survives the end of this Agreement. "],["insert"," Each party submits to the courts of the Province."],
+    ])
+    expect((await createDocxRevision(accepted,{pendingRevisions:"layer"})).paragraphs[9]!.text)
+      .toBe("9. Governing law. This clause survives the end of this Agreement. This Agreement is governed by the law of the Province. Each party submits to the courts of the Province.")
+  } finally {
+    engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+})
+
+test("of two overlapping changes that cannot be joined, Request edits proposes the first, names the other as an open item and proposes the rest", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-overlap-"))
+  // The State replaces the words the appended sentence's quote ends with.
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:"the law of the Province",replacement:"the law of the State",target_context:"governing law clause",reason:"Requested governing law update."},
+    appended,approval,
+  ],open_items:[]}),firstCandidate)
+  try {
+    await registeredSource(temporary,counterpartyMarkupDocx())
+    const ids = await withPreparation(temporary,engine,async (prepare) => {
+      const response = await prepare("Make the State's law govern, append \"Each party submits to the courts of the Province.\" to clause 9, and say approval in clause 7.")
+      expect(response.status).toBe(200)
+      const body = await response.json() as {proposed:number;redline_ids:number[]}
+      expect(body).toMatchObject({proposed:2,open_items:[
+        `The change to ${JSON.stringify(governed)} was not proposed: it overlaps the change to "the law of the Province" and cannot be combined with it. Accept or reject that change, then request this edit again.`,
+      ]})
+      return body.redline_ids
+    })
+    const db = openDb(temporary)
+    try {
+      expect(ids.map((id) => [getRedline(db,id)!.find_text,getRedline(db,id)!.new_text])).toEqual([["the law of the Province","the law of the State"],["without consent.","without approval."]])
+    } finally {db.close()}
+  } finally {
+    engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+})
+
+test("Request edits makes a change it is given twice once, also when the two quote different text", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-repeated-"))
+  const survives = "Client instruction 1: insert the survival sentence"
+  // The same sentence inserted at the start of clause 9 twice, quoting the
+  // whole clause and its last sentence, and the same sentence appended twice.
+  const engine = syntheticEngine(() => ({amendments:[
+    {before_quote:governingClause,replacement:`Governing law. This clause survives. ${governed}`,target_context:"the opening of clause 9",reason:survives},
+    {before_quote:governed,replacement:`This clause survives. ${governed}`,target_context:"the opening of clause 9",reason:survives},
+    appended,appended,
+  ],open_items:[]}),firstCandidate)
+  try {
+    const markup = counterpartyMarkupDocx()
+    await registeredSource(temporary,markup)
+    const ids = await withPreparation(temporary,engine,async (prepare) => {
+      const response = await prepare("Insert \"This clause survives.\" at the start of clause 9 and append \"Each party submits to the courts of the Province.\" to it.")
+      expect(response.status).toBe(200)
+      const body = await response.json() as {proposed:number;redline_ids:number[]}
+      expect(body).toMatchObject({proposed:1,open_items:[]})
+      return body.redline_ids
+    })
+    const db = openDb(temporary)
+    const rows = (() => {try {return ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
+    expect(rows.map((row) => [row.find_text,row.new_text,row.review_comment])).toEqual([[governingClause,
+      `Governing law. This clause survives. ${governed} Each party submits to the courts of the Province.`,
+      "Client instruction 1: insert the survival sentence. Client instruction 2: add the submission sentence."]])
+    expect((await createDocxRevision(await bake(markup,rows,undefined,{pendingRevisions:"layer"}),{pendingRevisions:"layer"})).paragraphs[9]!.text)
+      .toBe(`9. Governing law. This clause survives. ${governed} Each party submits to the courts of the Province.`)
+  } finally {
+    engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+})
+
 test("Request edits prepares on a clean uploaded source and still refuses a deliverable with pending tracked changes", async () => {
   const source = await mkdtemp(path.join(tmpdir(),"dochaus-word-clean-source-"))
   const deliverable = await mkdtemp(path.join(tmpdir(),"dochaus-word-tracked-deliverable-"))
