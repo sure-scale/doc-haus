@@ -337,26 +337,29 @@ export function changedDocxSpan(match: Match, replacement: string, words = false
     replacement: changed, formatting, joinsAfter }
 }
 
-// The changes one amendment writes. With `words`, where all the words the
-// change replaces stand, together and once, inside its new words (as between
-// two insertions Prepare joins into one proposal), it is the insertion on each
-// side of them, each placed as changedWords places one, never those words
+// The changes one amendment writes. Where all the words its whole-word change
+// replaces stand, together and once, inside its new words (as between two
+// insertions Prepare joins into one proposal), it is the insertion on each side
+// of them, each written as changedDocxSpan writes one, never those words
 // deleted and typed again. Otherwise it is the one change changedDocxSpan gives.
 function changedDocxSpans(match: Match, replacement: string, words = false) {
-  const change = changedDocxSpan(match, replacement, words)
+  const change = changedDocxSpan(match, replacement, true)
+  const single = [words ? change : changedDocxSpan(match, replacement)]
   const kept = wordTokens(change.match.text)
   const added = wordTokens(change.replacement)
-  const found = words && kept.length ? added.flatMap((_, index) => kept.every((token, k) => added[index + k] === token) ? [index] : []) : []
-  if (found.length !== 1) return [change]
+  const found = kept.length ? added.flatMap((_, index) => kept.every((token, k) => added[index + k] === token) ? [index] : []) : []
+  if (found.length !== 1) return single
   const at = found[0]!
   const start = change.match.span.start - match.span.start
   const end = start + change.match.text.length
-  const changes = [
-    changedDocxSpan(paragraphSpan(match, 0, end), match.text.slice(0, start) + added.slice(0, at).join("") + change.match.text, true),
+  const [before, after] = [
+    changedDocxSpan(paragraphSpan(match, 0, end), match.text.slice(0, start) + added.slice(0, at).join("") + change.match.text, words),
     changedDocxSpan(paragraphSpan(match, start, match.text.length - start),
-      change.match.text + added.slice(at + kept.length).join("") + match.text.slice(end), true),
-  ]
-  return changes[0]!.match.span.start < changes[1]!.match.span.start ? changes : [change]
+      change.match.text + added.slice(at + kept.length).join("") + match.text.slice(end), words),
+  ] as const
+  // Written right to left, the two may not overlap.
+  return before.match.span.start < after.match.span.start && before.match.span.start + before.match.span.length <= after.match.span.start
+    ? [before, after] : single
 }
 
 // Docxodus writes a tracked insertion in the run properties of the character

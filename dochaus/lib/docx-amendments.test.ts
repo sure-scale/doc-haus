@@ -371,6 +371,20 @@ describe("live cross-references", () => {
     expect((await applyDocxParagraphEdits(source, [beside])).report.limitation).not.toContain("cross-reference")
   })
 
+  test("a sentence inserted on each side of a REF field, as Prepare joins two insertions, keeps it live, tracked or not", async () => {
+    const source = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes
+    const revision = await createDocxRevision(source, { pendingRevisions: "layer" })
+    const quote = "The Customer shall pay as set out in clause 2.1."
+    const joined = { id: "joined", paragraph_handle: revision.paragraphs.find(row => row.text === quote)!.paragraph_handle, occurrence: 0,
+      before_quote: quote, replacement: `Interest accrues. ${quote} Late fees apply.` }
+    for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, { pendingRevisions: "layer" }, {}] as const) {
+      const output = await applyDocxParagraphEdits(source, [joined], undefined, options)
+      expect(refs(output.bytes)).toEqual(refs(source))
+      expect(output.report.limitation).not.toContain("cross-reference")
+      expect(output.report.amendments[0]!.paragraph_after).toBe(joined.replacement)
+    }
+  })
+
   test("a changed format of an existing run is refused, also in a batch that rewrites a cross-reference number", async () => {
     // Clause 2.3 sits in clause 2: numbers after the schedule heading stay typed.
     const source = (await renderMarkdownToDocx(AGREEMENT.replace("\n\n## Schedule 1", "\n\n2.3 Nothing here limits the **Supplier**.\n\n## Schedule 1"),
