@@ -724,6 +724,38 @@ test("a failed Request edits replaces the earlier request's open items and keeps
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
+// Seen live: one quote not in the document refused the whole batch with 409.
+test("a quote not found in the document becomes a plain open item and the rest of the batch is proposed", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-unfound-"))
+  const file = path.join(directory,"working.docx")
+  const unfound = {before_quote:"within 5 days",replacement:"within 7 days",target_context:"notice clause",reason:"Requested notice update."}
+  const batches:LegalPass["amendments"][] = [[unfound,
+    {before_quote:"three months",replacement:"six months",target_context:"retention period",reason:"Requested retention update."}],[unfound]]
+  const engine = syntheticEngine(() => ({amendments:batches.shift()!,open_items:[]}),firstCandidate)
+  const notFound = `The change to "within 5 days" was not proposed: those words are not in the document. Say which words it changes, then request edits again.`
+  try {
+    await writeDeliverable(directory,"working.docx",Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph("Notice must arrive within five days."),new Paragraph("Retain records for three months."),
+    ]}]})))))
+    const original = await Bun.file(file).bytes()
+    await withPreparation(directory,engine,async (prepare) => {
+      const partial = await prepare("Update the notice and retention periods.")
+      expect(partial.status).toBe(200)
+      expect(await partial.json()).toMatchObject({proposed:1,open_items:[notFound]})
+      // The locator is offered only the quote that is in the document.
+      expect((JSON.parse(engine.prompts[1]!.match(/<candidates>([\s\S]*)<\/candidates>/)![1]!) as Candidate[]).map((row) => row.amendment_id)).toEqual(["amendment-1"])
+      const none = await prepare("Update the notice period.")
+      expect(none.status).toBe(200)
+      expect(await none.json()).toMatchObject({proposed:0,open_items:[notFound]})
+      expect(engine.prompts).toHaveLength(3)
+    })
+    const db = openDb(directory)
+    try {expect((db.query("SELECT find_text,new_text FROM redlines").all() as Array<{find_text:string;new_text:string}>).map((row) => [row.find_text,row.new_text])).toEqual([["three months","six months"]])}
+    finally {db.close()}
+    expect(await Bun.file(file).bytes()).toEqual(original)
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
 test("a whole-paragraph quote, with no context inside its paragraph, is placed by its neighbouring paragraphs", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-whole-paragraph-"))
   const file = path.join(directory,"working.docx")

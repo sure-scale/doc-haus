@@ -131,9 +131,11 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   diagnostic.record("legal_parse",{first_text:first.text,first_pass:pass(first)})
   const legal = withoutDraftViewMarks(revision.paragraphs,parseLegal(first.text))
   diagnostic.record("candidate_extraction",{frozen_legal_proposals:legal})
+  const unfound = legal.unfound.map((quote) => `The change to ${JSON.stringify(quote)} was not proposed: those words are not in the document. Say which words it changes, then request edits again.`)
   if (!legal.amendments.length) {
-    await recordPrepared(directory,name,initial.role,{redline_ids:[],open_items:legal.open_items})
-    return {proposed:0,open_items:legal.open_items,passes:[pass(first)]}
+    const openItems = [...legal.open_items,...unfound]
+    await recordPrepared(directory,name,initial.role,{redline_ids:[],open_items:openItems})
+    return {proposed:0,open_items:openItems,passes:[pass(first)]}
   }
   const amendments = legal.amendments.map((row,index) => ({id:`amendment-${index+1}`,before_quote:row.before_quote,replacement:row.replacement}))
   const packet = await createDocxLocalization(initial.bytes,amendments,{},layer)
@@ -148,8 +150,8 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   })
   const commentOnly = new Set(initial.role === "source" ? amendments.flatMap((row) =>
     packet.candidates.every((candidate) => candidate.amendment_id !== row.id || candidate.paragraph.scope === "cmt") ? [row.id] : []) : [])
-  const refused = legal.amendments.flatMap((row,index) => commentOnly.has(amendments[index].id)
-    ? [`The change to ${JSON.stringify(row.before_quote)} was not proposed: those words appear only in a comment, which doc.haus does not edit. Reply to that comment instead, or say where in the document the change goes.`] : [])
+  const refused = [...unfound,...legal.amendments.flatMap((row,index) => commentOnly.has(amendments[index].id)
+    ? [`The change to ${JSON.stringify(row.before_quote)} was not proposed: those words appear only in a comment, which doc.haus does not edit. Reply to that comment instead, or say where in the document the change goes.`] : [])]
   const placing = amendments.filter((row) => !commentOnly.has(row.id))
   if (!placing.length) {
     const openItems = [...legal.open_items,...refused]
@@ -389,7 +391,8 @@ function parseLegal(text:string) {
 // found as written, or a different number, is kept as written. One found only
 // without the * marks the draft view puts around bold and italic words (it
 // escapes the document's own) copied them, so it and its replacement are
-// placed without them; the words keep their formatting.
+// placed without them; the words keep their formatting. A quote found none of
+// these ways is `unfound`, not placed.
 function withoutDraftViewMarks(paragraphs:{text:string;label?:string}[],legal:ReturnType<typeof parseLegal>) {
   type Row = (typeof legal.amendments)[number] & {label?:string}
   const placed = (row:Row):Row|undefined => {
@@ -401,8 +404,9 @@ function withoutDraftViewMarks(paragraphs:{text:string;label?:string}[],legal:Re
     return owner ? {...row,before_quote:withoutListLabel(row.before_quote,owner.label),label:owner.label} : undefined
   }
   const unmarked = (text:string) => text.replace(/\*+/g,"")
-  return {...legal,amendments:legal.amendments.map((row):Row => placed(row)
-    ?? placed({...row,before_quote:unmarked(row.before_quote),replacement:unmarked(row.replacement)}) ?? row)}
+  const rows = legal.amendments.map((row) => ({row,found:placed(row)
+    ?? placed({...row,before_quote:unmarked(row.before_quote),replacement:unmarked(row.replacement)})}))
+  return {...legal,amendments:rows.flatMap(({found}) => found ? [found] : []),unfound:rows.flatMap(({row,found}) => found ? [] : [row.before_quote])}
 }
 // Document text, the other side's comments included, is screened by the shared
 // injection rules before a pass reads it. A match is named by part and rule
