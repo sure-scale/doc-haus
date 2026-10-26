@@ -394,6 +394,8 @@ function parseLegal(text:string) {
 // with other spaces between its words (one where the document has two) is
 // placed in the document's words, if they are there once. A quote found none
 // of these ways, or whose replacement then changes no words, is an open item.
+// However it was found, the words its replacement keeps keep the document's
+// spacing (withSpacesOf).
 function withoutDraftViewMarks(paragraphs:{text:string;label?:string}[],legal:ReturnType<typeof parseLegal>) {
   type Row = (typeof legal.amendments)[number] & {label?:string}
   const placed = (row:Row):Row|undefined => {
@@ -407,41 +409,58 @@ function withoutDraftViewMarks(paragraphs:{text:string;label?:string}[],legal:Re
   const spaced = (row:Row):Row|undefined => {
     const loose = new RegExp(row.before_quote.split(/[ \t]+/).map((word) => word.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join("[ \\t]+"),"g")
     const found = paragraphs.flatMap((paragraph) => [...paragraph.text.matchAll(loose)].map((match) => match[0]))
-    return found.length === 1 ? {...row,before_quote:found[0]!,replacement:withSpacesOf(found[0]!,row.before_quote,row.replacement)} : undefined
+    return found.length === 1 ? {...row,before_quote:found[0]!} : undefined
   }
   const unmatched:string[] = []
   const amendments = legal.amendments.flatMap((row):Row[] => {
     const found = placed(row)
-    if (found) return [found]
+    if (found) return [{...found,replacement:withSpacesOf(found.before_quote,row.before_quote,row.replacement)}]
     const plain = {...row,before_quote:withoutDraftViewMarkup(row.before_quote),replacement:withoutDraftViewMarkup(row.replacement)}
     const unmarked = placed(plain) ?? spaced(plain)
-    if (unmarked && withoutListLabel(unmarked.replacement,unmarked.label) !== unmarked.before_quote) return [unmarked]
+    const replacement = unmarked && withSpacesOf(unmarked.before_quote,plain.before_quote,plain.replacement)
+    if (unmarked && withoutListLabel(replacement!,unmarked.label) !== unmarked.before_quote) return [{...unmarked,replacement:replacement!}]
     unmatched.push(`The change to ${quoted(plain.before_quote)} was not proposed: ${unmarked ? "it changes no words. Say which words change"
       : "those words are not in the document. Say which words it changes"}, then request edits again.`)
     return []
   })
   return {...legal,amendments,unmatched}
 }
-// `replacement` of `quote` as a change of `text`, the same words with other
-// spaces between them: the words it changes (wordChanges, as Accept writes
-// them) replace theirs in `text`, so the words it keeps keep the document's
-// spacing and Accept changes no spaces it does not change.
+// `replacement` of `quote`, the model's copy of `text` (the document's words it
+// was placed in), as a change of `text`. Compared with each run of spaces as
+// one space, the words it changes (wordChanges, as Accept writes them), with
+// the replacement's own spacing, replace theirs in `text`: the words it keeps
+// keep the document's spacing, and Accept changes only the words asked. A
+// replacement that differs from its quote only in spacing is that change.
 function withSpacesOf(text:string,quote:string,replacement:string) {
-  const pieces = quote.split(/([ \t]+)/), own = text.split(/([ \t]+)/)
-  // Where an offset in `quote` falls in `text`: the same place in the same word,
-  // or the same end of the same space.
-  const at = (offset:number) => {
-    let from = 0, to = 0
-    for (const [index,piece] of pieces.entries()) {
-      const length = own[index]!.length
-      if (offset <= from + piece.length) return to + (offset === from + piece.length ? length : Math.min(offset - from,length))
-      from += piece.length
-      to += length
+  const collapsed = (value:string) => value.replace(/[ \t]+/g," ")
+  const before = collapsed(text), after = collapsed(replacement)
+  if (before === after) return replacement === quote ? text : replacement
+  // Where an offset in collapsed `value` falls in `value`: the same place in
+  // the same word, or the same end of the same space.
+  const inside = (value:string) => {
+    const pieces = value.split(/([ \t]+)/)
+    return (offset:number) => {
+      let from = 0, to = 0
+      for (const [index,piece] of pieces.entries()) {
+        const length = index % 2 ? 1 : piece.length
+        if (offset <= from + length) return to + (offset === from + length ? piece.length : offset - from)
+        from += length
+        to += piece.length
+      }
+      return to
     }
-    return to
   }
-  return wordChanges(quote,replacement).reduceRight((result,change) =>
-    result.slice(0,at(change.offset)) + change.changed + result.slice(at(change.offset + change.replaced.length)),text)
+  const inText = inside(text), inReplacement = inside(replacement)
+  // Each change's offset in `after`: the words between changes are the same.
+  let shift = 0
+  const changes = wordChanges(before,after).map((change) => {
+    const at = change.offset + shift
+    shift += change.changed.length - change.replaced.length
+    return {...change,at}
+  })
+  return changes.reduceRight((result,change) => result.slice(0,inText(change.offset))
+    + replacement.slice(inReplacement(change.at),inReplacement(change.at + change.changed.length))
+    + result.slice(inText(change.offset + change.replaced.length)),text)
 }
 // The markup the draft view adds to a paragraph's words (createDocxRevision),
 // undone: a backslash before each of \ ` * _ { } [ ] < > |, and one to three *
