@@ -1,5 +1,5 @@
 {
-  "version": 11,
-  "name": "2.0.9",
-  "notes": "Each reviewer's tracked changes now show in their own colour, matching the panel and comment bubbles. Asking for a revised draft in answer to the other side's markup starts a full drafting run, and its questions open by themselves. Requested edits read as clean tracked changes, with a new sentence shown as one insertion, and several changes to one clause can be asked for together. Various minor bug fixes and UI improvements."
+  "version": 12,
+  "name": "2.0.10",
+  "notes": "Search within an open document, step through matches and jump straight to a heading. Ask doc.haus to find comparable wording in the matter's documents, with the differences explained and the sources shown. New comments in review tables carry your saved name, including in Excel, Word and CSV exports. Various minor bug fixes."
 }
