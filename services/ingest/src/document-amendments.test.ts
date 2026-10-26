@@ -648,7 +648,7 @@ test("a locator unresolved_reason becomes a plain open item without a pending pr
   const file = path.join(directory,"working.docx")
   // The locator's own reason stays in the private diagnostic; the lawyer reads which change was not placed.
   const ambiguous = "Two notice clauses could match; the instruction does not say which one governs."
-  const unplaced = (quote:string) => `The change to "${quote}" was not proposed: it could not be placed in the document. Say where in the document it goes, then request edits again.`
+  const unplaced = (quote:string) => `The change to “${quote}” was not proposed: it could not be placed in the document. Say where in the document it goes, then request edits again.`
   let mixed = false
   const engine = syntheticEngine(() => ({amendments:[
     {before_quote:"five days",replacement:"seven days",target_context:"governing notice clause",reason:"Requested notice update."},
@@ -732,7 +732,7 @@ test("a quote not found in the document becomes a plain open item and the rest o
   const batches:LegalPass["amendments"][] = [[unfound,
     {before_quote:"three months",replacement:"six months",target_context:"retention period",reason:"Requested retention update."}],[unfound]]
   const engine = syntheticEngine(() => ({amendments:batches.shift()!,open_items:[]}),firstCandidate)
-  const notFound = `The change to "within 5 days" was not proposed: those words are not in the document. Say which words it changes, then request edits again.`
+  const notFound = `The change to “within 5 days” was not proposed: those words are not in the document. Say which words it changes, then request edits again.`
   try {
     await writeDeliverable(directory,"working.docx",Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[
       new Paragraph("Notice must arrive within five days."),new Paragraph("Retain records for three months."),
@@ -843,7 +843,7 @@ test("Request edits on an uploaded markup proposes beside their changes under th
       const response = await prepare("Make the State's law govern and fix the price for eighteen months.")
       expect(response.status).toBe(200)
       expect(await response.json()).toMatchObject({proposed:1,open_items:[
-        "The change to \"twelve months\" was not proposed: that paragraph has a pending change by Morgan Okafor. Accept or reject it under Tracked changes, then request edits again.",
+        "The change to “twelve months” was not proposed: that paragraph has a pending change by Morgan Okafor. Accept or reject it under Tracked changes, then request edits again.",
       ]})
     })
     const db = openDb(directory)
@@ -881,7 +881,7 @@ test("Request edits on an uploaded markup never proposes a change inside their c
     {before_quote:"the law of the Province",replacement:"the law of the State",target_context:"governing law clause",reason:"Requested governing law update."},
   ],[comment]]
   const engine = syntheticEngine(() => ({amendments:batches.shift()!,open_items:[]}),firstCandidate)
-  const onlyInComment = "The change to \"stock levels monthly\" was not proposed: those words appear only in a comment, which doc.haus does not edit. Reply to that comment instead, or say where in the document the change goes."
+  const onlyInComment = "The change to “stock levels monthly” was not proposed: those words appear only in a comment, which doc.haus does not edit. Reply to that comment instead, or say where in the document the change goes."
   try {
     const file = await registeredSource(temporary,counterpartyMarkupDocx())
     await withPreparation(temporary,engine,async (prepare) => {
@@ -966,7 +966,7 @@ test("of two overlapping changes that cannot be joined, Request edits proposes t
       expect(response.status).toBe(200)
       const body = await response.json() as {proposed:number;redline_ids:number[]}
       expect(body).toMatchObject({proposed:2,open_items:[
-        `The change to ${JSON.stringify(governed)} was not proposed: it overlaps the change to "the law of the Province" and cannot be combined with it. Accept or reject that change, then request this edit again.`,
+        `The change to “${governed}” was not proposed: it overlaps the change to “the law of the Province” and cannot be combined with it. Accept or reject that change, then request this edit again.`,
       ]})
       return body.redline_ids
     })
@@ -1681,7 +1681,7 @@ test("a replacement copying its clause's number is placed without it; a differen
       expect(response.status).toBe(200)
       return await response.json() as {redline_ids:number[];open_items:string[]}
     })
-    expect(body.open_items).toEqual([expect.stringContaining('its replacement begins with "2.1", but Word numbers that paragraph 3.1')])
+    expect(body.open_items).toEqual([expect.stringContaining('its replacement begins with “2.1”, but Word numbers that paragraph 3.1')])
     const db = openDb(directory)
     const rows = (() => {try {return body.redline_ids.map((id) => getRedline(db,id)!)} finally {db.close()}})()
     expect(rows.map((row) => [row.find_text,row.new_text])).toEqual([["The Supplier shall install","The Supplier must install"],["1.5 times the Fees","1.5 times the annual Fees"],["the Site","1.2 metres inside the Site"]])
@@ -1727,6 +1727,55 @@ test("a quote and replacement copying the draft view's bold and italic marks are
       expect(after.revision.paragraphs[0]!.formatting.filter((row) => row.formatting.bold || row.formatting.italic).map((row) => [row.text,row.formatting.bold,row.formatting.italic]))
         .toEqual([["indirect",true,false],["consequential",false,true]])
     } finally {after.session.close()}
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+// Only the draft view's own markup is undone: its marks in pairs around a
+// word and its backslash escapes. Asterisks the replacement adds stay.
+test("a quote copying the draft view's markup keeps the asterisks and brackets of its own words; one that changes nothing or is not there is an open item", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-markup-copies-"))
+  const bold = (text:string) => new TextRun({text,bold:true})
+  const change = (before_quote:string,replacement:string) => ({before_quote,replacement,target_context:"the clause quoted",reason:"Requested."})
+  const engine = syntheticEngine(() => ({amendments:[
+    change("The **Purchase Price** is USD 5,000,000.","The **Purchase Price** is [***]."),
+    change("The **Fee** is payable","The **Fee*** is payable"),
+    change("The **Charge** is payable","The **Charge**\\* is payable"),
+    change("**Fees*** are payable monthly.","**Fees*** are payable quarterly."),
+    change("The \\[Buyer\\] shall pay within thirty days.","The [Buyer] shall pay within forty-five days."),
+    change("liable for **indirect** loss.","liable for *indirect* loss."),
+    change("**",""),
+    change("(the \"Agreement\") is dated 1 May","(the \"Agreement\") is dated 2 May"),
+    change("The **Deposit** is refundable.","The **Deposit** is not refundable."),
+  ],open_items:[]}),firstCandidate)
+  try {
+    await writeDeliverable(directory,"working.docx",await Packer.toBuffer(new Document({sections:[{children:[
+      new Paragraph({children:[new TextRun("The "),bold("Purchase Price"),new TextRun(" is USD 5,000,000.")]}),
+      new Paragraph({children:[new TextRun("The "),bold("Fee"),new TextRun(" is payable monthly.")]}),
+      new Paragraph({children:[new TextRun("The "),bold("Charge"),new TextRun(" is payable yearly.")]}),
+      new Paragraph({children:[new TextRun("1. "),bold("Fees"),new TextRun("* are payable monthly.")]}),
+      new Paragraph("2. Fees are payable monthly. Support fees are invoiced separately."),
+      new Paragraph("The [Buyer] shall pay within thirty days."),
+      new Paragraph({children:[new TextRun("Neither party is liable for "),bold("indirect"),new TextRun(" loss.")]}),
+      new Paragraph("Charges marked * are estimates."),
+    ]}]})))
+    const body = await withPreparation(directory,engine,async (prepare) => {
+      const response = await prepare("Make the requested changes.")
+      expect(response.status).toBe(200)
+      return await response.json() as {redline_ids:number[];open_items:string[]}
+    })
+    const db = openDb(directory)
+    try {
+      expect(body.redline_ids.map((id) => getRedline(db,id)!).map((row) => [row.find_text,row.new_text])).toEqual([
+        ["The Purchase Price is USD 5,000,000.","The Purchase Price is [***]."],
+        ["The Fee is payable","The Fee* is payable"],
+        ["The Charge is payable","The Charge* is payable"],
+        ["Fees* are payable monthly.","Fees* are payable quarterly."],
+        ["The [Buyer] shall pay within thirty days.","The [Buyer] shall pay within forty-five days."]])
+    } finally {db.close()}
+    expect(body.open_items).toEqual([
+      "The change to “liable for indirect loss.” was not proposed: it changes no words. Say which words change, then request edits again.",
+      ...["**","(the \"Agreement\") is dated 1 May","The Deposit is refundable."].map((quote) =>
+        `The change to “${quote}” was not proposed: those words are not in the document. Say which words it changes, then request edits again.`)])
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 

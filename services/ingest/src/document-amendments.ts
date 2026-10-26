@@ -129,11 +129,10 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   diagnostic.record("legal_generation",{first_prompt:firstPrompt})
   const first = await generate(directory,firstPrompt)
   diagnostic.record("legal_parse",{first_text:first.text,first_pass:pass(first)})
-  const {unfound:missing,...legal} = withoutDraftViewMarks(revision.paragraphs,parseLegal(first.text))
+  const {unmatched,...legal} = withoutDraftViewMarks(revision.paragraphs,parseLegal(first.text))
   diagnostic.record("candidate_extraction",{frozen_legal_proposals:legal})
-  const unfound = missing.map((quote) => `The change to ${JSON.stringify(quote)} was not proposed: those words are not in the document. Say which words it changes, then request edits again.`)
   if (!legal.amendments.length) {
-    const openItems = [...legal.open_items,...unfound]
+    const openItems = [...legal.open_items,...unmatched]
     await recordPrepared(directory,name,initial.role,{redline_ids:[],open_items:openItems})
     return {proposed:0,open_items:openItems,passes:[pass(first)]}
   }
@@ -150,8 +149,8 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   })
   const commentOnly = new Set(initial.role === "source" ? amendments.flatMap((row) =>
     packet.candidates.every((candidate) => candidate.amendment_id !== row.id || candidate.paragraph.scope === "cmt") ? [row.id] : []) : [])
-  const refused = [...unfound,...legal.amendments.flatMap((row,index) => commentOnly.has(amendments[index].id)
-    ? [`The change to ${JSON.stringify(row.before_quote)} was not proposed: those words appear only in a comment, which doc.haus does not edit. Reply to that comment instead, or say where in the document the change goes.`] : [])]
+  const refused = [...unmatched,...legal.amendments.flatMap((row,index) => commentOnly.has(amendments[index].id)
+    ? [`The change to ${quoted(row.before_quote)} was not proposed: those words appear only in a comment, which doc.haus does not edit. Reply to that comment instead, or say where in the document the change goes.`] : [])]
   const placing = amendments.filter((row) => !commentOnly.has(row.id))
   if (!placing.length) {
     const openItems = [...legal.open_items,...refused]
@@ -193,7 +192,7 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
     if (others.length) {
       const names = others.map((name) => normalizeUntrustedText(name).text.trim()).filter(Boolean)
       const many = names.length > 1
-      refused.push(`The change to ${JSON.stringify(row.before_quote)} was not proposed: that paragraph has ${many ? "pending changes" : "a pending change"}${names.length ? ` by ${listNames(names)}` : ""}. Accept or reject ${many ? "them" : "it"} under Tracked changes, then request edits again.`)
+      refused.push(`The change to ${quoted(row.before_quote)} was not proposed: that paragraph has ${many ? "pending changes" : "a pending change"}${names.length ? ` by ${listNames(names)}` : ""}. Accept or reject ${many ? "them" : "it"} under Tracked changes, then request edits again.`)
       return []
     }
     // Word prints the number of a paragraph the quote opens just before the
@@ -202,7 +201,7 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
     const label = chosen.context_before ? undefined : chosen.paragraph.label
     const typed = retypedListLabel(row.replacement,label,chosen.paragraph.text)
     if (typed) {
-      refused.push(`The change to ${JSON.stringify(row.before_quote)} was not proposed: its replacement begins with "${typed}", but Word numbers that paragraph ${label} and prints the number itself. Try again.`)
+      refused.push(`The change to ${quoted(row.before_quote)} was not proposed: its replacement begins with ${quoted(typed)}, but Word numbers that paragraph ${label} and prints the number itself. Try again.`)
       return []
     }
     const replacement = withoutListLabel(row.replacement,label)
@@ -221,7 +220,7 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   // The locator's own reason stays in the private diagnostic; the lawyer is
   // told which change was not placed and what to do.
   const unresolved = legal.amendments.flatMap((row,index) => typeof selections.find((value) => value.amendment_id === amendments[index].id)?.unresolved_reason === "string"
-    ? [`The change to ${JSON.stringify(row.before_quote)} was not proposed: it could not be placed in the document. Say where in the document it goes, then request edits again.`] : [])
+    ? [`The change to ${quoted(row.before_quote)} was not proposed: it could not be placed in the document. Say where in the document it goes, then request edits again.`] : [])
   const openItems = [...legal.open_items,...unresolved,...refused]
   if (!resolved.length) {
     await recordPrepared(directory,name,initial.role,{redline_ids:[],open_items:openItems})
@@ -316,7 +315,7 @@ async function consolidated(bytes:Uint8Array,options:DocxRevisionOptions,packet:
     union += paragraph.text.slice(at,to)
     const found = union.indexOf(amendment.before_quote)
     if (found < 0 || union.includes(amendment.before_quote,found+1)) {
-      refused.push(`The change to ${JSON.stringify(entry.row.before_quote)} was not proposed: it overlaps the change to ${JSON.stringify(overlapping[0]!.members[0]!.row.before_quote)} and cannot be combined with it. Accept or reject that change, then request this edit again.`)
+      refused.push(`The change to ${quoted(entry.row.before_quote)} was not proposed: it overlaps the change to ${quoted(overlapping[0]!.members[0]!.row.before_quote)} and cannot be combined with it. Accept or reject that change, then request this edit again.`)
       continue
     }
     // Words inserted where an earlier change inserted go after its words.
@@ -389,10 +388,9 @@ function parseLegal(text:string) {
 // is that paragraph's text from its start; the number stays Word's, kept as
 // `label` to place the quote only in a paragraph with that number. A quote
 // found as written, or a different number, is kept as written. One found only
-// without the * marks the draft view puts around bold and italic words (it
-// escapes the document's own) copied them, so it and its replacement are
-// placed without them; the words keep their formatting. A quote found none of
-// these ways is `unfound`, not placed.
+// without the draft view's own markup copied it, so it and its replacement are
+// placed without it; the words keep their formatting. A quote found none of
+// these ways, or whose replacement then changes no words, is an open item.
 function withoutDraftViewMarks(paragraphs:{text:string;label?:string}[],legal:ReturnType<typeof parseLegal>) {
   type Row = (typeof legal.amendments)[number] & {label?:string}
   const placed = (row:Row):Row|undefined => {
@@ -403,10 +401,25 @@ function withoutDraftViewMarks(paragraphs:{text:string;label?:string}[],legal:Re
     })
     return owner ? {...row,before_quote:withoutListLabel(row.before_quote,owner.label),label:owner.label} : undefined
   }
-  const unmarked = (text:string) => text.replace(/\*+/g,"")
-  const rows = legal.amendments.map((row) => ({row,found:placed(row)
-    ?? placed({...row,before_quote:unmarked(row.before_quote),replacement:unmarked(row.replacement)})}))
-  return {...legal,amendments:rows.flatMap(({found}) => found ? [found] : []),unfound:rows.flatMap(({row,found}) => found ? [] : [row.before_quote])}
+  const unmatched:string[] = []
+  const amendments = legal.amendments.flatMap((row):Row[] => {
+    const found = placed(row)
+    if (found) return [found]
+    const plain = {...row,before_quote:withoutDraftViewMarkup(row.before_quote),replacement:withoutDraftViewMarkup(row.replacement)}
+    const unmarked = placed(plain)
+    if (unmarked && plain.replacement !== plain.before_quote) return [unmarked]
+    unmatched.push(`The change to ${quoted(plain.before_quote)} was not proposed: ${unmarked ? "it changes no words. Say which words change"
+      : "those words are not in the document. Say which words it changes"}, then request edits again.`)
+    return []
+  })
+  return {...legal,amendments,unmatched}
+}
+// The markup the draft view adds to a paragraph's words (createDocxRevision),
+// undone: a backslash before each of \ ` * _ { } [ ] < > |, and one to three *
+// on each side of a bold or italic run. Other asterisks are words.
+function withoutDraftViewMarkup(text:string):string {
+  return text.replace(/\\([\\`*_{}[\]<>|])|(\*{1,3})((?:\\.|[^*\\])+?)\2/g,(_,escaped:string|undefined,_marks,run:string|undefined) =>
+    escaped ?? withoutDraftViewMarkup(run!))
 }
 // Document text, the other side's comments included, is screened by the shared
 // injection rules before a pass reads it. A match is named by part and rule
@@ -427,6 +440,8 @@ function injectionWarning(paragraphs:{scope:string;text:string}[]) {
 }
 function parseJSON(text:string):unknown {return JSON.parse(text.trim().replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/, ""))}
 function object(value:unknown):Record<string,unknown> {return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string,unknown> : {}}
+// Words quoted to the lawyer, as they read them.
+function quoted(text:string) {return `“${text}”`}
 function data(value:unknown) {return JSON.stringify(value).replace(/</g,"\\u003c")}
 function hash(bytes:Uint8Array) {return createHash("sha256").update(bytes).digest("hex")}
 function pass(value:Awaited<ReturnType<typeof generate>>) {return {model:value.model,elapsed_ms:value.elapsed_ms,usage:value.usage}}
