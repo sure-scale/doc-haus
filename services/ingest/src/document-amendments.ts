@@ -129,9 +129,9 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   diagnostic.record("legal_generation",{first_prompt:firstPrompt})
   const first = await generate(directory,firstPrompt)
   diagnostic.record("legal_parse",{first_text:first.text,first_pass:pass(first)})
-  const legal = withoutDraftViewMarks(revision.paragraphs,parseLegal(first.text))
+  const {unfound:missing,...legal} = withoutDraftViewMarks(revision.paragraphs,parseLegal(first.text))
   diagnostic.record("candidate_extraction",{frozen_legal_proposals:legal})
-  const unfound = legal.unfound.map((quote) => `The change to ${JSON.stringify(quote)} was not proposed: those words are not in the document. Say which words it changes, then request edits again.`)
+  const unfound = missing.map((quote) => `The change to ${JSON.stringify(quote)} was not proposed: those words are not in the document. Say which words it changes, then request edits again.`)
   if (!legal.amendments.length) {
     const openItems = [...legal.open_items,...unfound]
     await recordPrepared(directory,name,initial.role,{redline_ids:[],open_items:openItems})
