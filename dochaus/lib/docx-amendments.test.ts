@@ -376,6 +376,20 @@ test("an insertion at a tab or break lands on the side of the words it joins, tr
   }
 })
 
+// LibreOffice saves each paragraph mark's run properties, an empty w:rPr too.
+test("an edit keeps a paragraph mark's empty run properties, as LibreOffice saves them, tracked or not", async () => {
+  const parts = unzipSync(await runsDocx(["<w:r><w:rPr/><w:t>Notices must be given in writing.</w:t></w:r>"]))
+  const xml = strFromU8(parts["word/document.xml"]!)
+  const marked = xml.replace('<w:p><w:bookmarkStart w:id="2"', '<w:p><w:pPr><w:rPr/></w:pPr><w:bookmarkStart w:id="2"')
+  expect(marked).not.toBe(xml)
+  const source = zipSync({ ...parts, "word/document.xml": strToU8(marked) })
+  const paragraph_handle = (await createDocxRevision(source)).paragraphs.find(row => row.text.startsWith("Notices"))!.paragraph_handle
+  for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
+    const output = await applyDocxParagraphEdits(source, [{ id: "edit", paragraph_handle, occurrence: 0, before_quote: "in writing", replacement: "in writing or by email" }], undefined, options)
+    expect(laidOut(output.bytes, "No")).toBe("Notices must be given in writing or by email.")
+  }
+})
+
 // A rendered deliverable's page furniture, as raw OOXML: a header with a legend
 // and a draft line, and a footer whose page number is a PAGE field.
 function furnishedDocx() {

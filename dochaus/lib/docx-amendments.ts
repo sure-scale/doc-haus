@@ -333,9 +333,25 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
         if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
       }
     }
-    if (!revisionAuthor) for (const revision of target.session.listRevisions({ author: UNTRACKED })) {
-      const result = target.session.acceptRevision(revision.id)
-      if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
+    if (!revisionAuthor) {
+      // Accepting drops a paragraph mark's empty run properties (an empty
+      // w:rPr, as LibreOffice saves every paragraph), so each accepted
+      // paragraph is given back the paragraph properties the write left it.
+      const marks = new Map(edits.map(edit => target.paragraphs[edit.ordinal]!.match.enclosingAnchor.id)
+        .map(anchor => [anchor, children(parse(target.session.raw.getXml(anchor)).documentElement!, "pPr")[0]]))
+      for (const revision of target.session.listRevisions({ author: UNTRACKED })) {
+        const result = target.session.acceptRevision(revision.id)
+        if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
+      }
+      for (const [anchor, properties] of marks) {
+        const paragraph = parse(target.session.raw.getXml(anchor)).documentElement!
+        const accepted = children(paragraph, "pPr")[0]
+        if (canonical(accepted) === canonical(properties)) continue
+        if (accepted) paragraph.removeChild(accepted)
+        if (properties) paragraph.insertBefore(paragraph.ownerDocument.importNode(properties, true), paragraph.firstChild)
+        const result = target.session.raw.replaceXml(anchor, new XMLSerializer().serializeToString(paragraph))
+        if (!result.success) throw new Error(`docx_mutation_failed:${result.error?.code}`)
+      }
     }
     const saved = target.session.save()
     // Accepting leaves Track Changes switched on, as any tracked write does.
