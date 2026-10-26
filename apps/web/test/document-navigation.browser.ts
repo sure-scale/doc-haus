@@ -21,10 +21,12 @@ const run = (text: string, bold = false) => `<w:r>${bold ? "<w:rPr><w:b/></w:rPr
 const paragraph = (text: string) => `<w:p>${run(text)}</w:p>`
 const heading = (text: string, level: number) => `<w:p><w:pPr><w:pStyle w:val="Heading${level}"/><w:numPr><w:ilvl w:val="${level - 1}"/><w:numId w:val="1"/></w:numPr></w:pPr>${run(text)}</w:p>`
 const citation = "The payment terms remain subject to written agreement."
-function document(older = false) {
+function document(older = false, hardBreak = false) {
   const body = older ? paragraph("Earlier text with no headings.") : [
     heading("Scope", 1),
-    `<w:p>${run("The pay", true)}${run("ment terms apply to each invoice.")}</w:p>`,
+    hardBreak
+      ? `<w:p>${run("The payment", true)}<w:r><w:br/></w:r>${run("terms apply to each invoice.")}</w:p>`
+      : `<w:p>${run("The pay", true)}${run("ment terms apply to each invoice.")}</w:p>`,
     ...Array.from({ length: 12 }, (_, index) => paragraph(`Supporting paragraph ${index + 1}. The parties shall record their instructions in writing.`)),
     heading("Charges", 2), paragraph(citation),
     paragraph("The fee [insert amount] is payable on receipt."),
@@ -43,7 +45,7 @@ function document(older = false) {
   }
   return zipSync(Object.fromEntries(Object.entries(parts).map(([name, xml]) => [name, strToU8(`<?xml version="1.0" encoding="UTF-8"?>${xml}`)])))
 }
-const bytes = document(), earlier = document(true)
+const bytes = document(), earlier = document(true), brokenLine = document(false, true)
 const kept = (number: number, current: boolean) => ({ id: `v-${number}`, number, sha256: String(number).repeat(64), ext: ".docx", bytes: bytes.length, parent: null, derived_from: null, origin: "upload", actor: "unknown", run: null, label: null, created_at: 0, current, removed: null })
 const proposal = { id: 1, doc_name: "Terms.docx", scope: "phrase", find_text: "payment terms", old_text: "payment terms", new_text: "agreed payment terms", author: "Synthetic Counsel", review_comment: "Confirm payment terms before signing.", created_at: 0 }
 const entry = path.join(directory, "harness.tsx")
@@ -72,14 +74,14 @@ const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request) {
 } })
 const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } : {}) })
 const writes: string[] = []
-async function open(width = 1440, text = false, fallback = false) {
+async function open(width = 1440, text = false, fallback = false, hardBreak = false) {
   const page = await browser.newPage({ viewport: { width, height: 900 } })
   page.setDefaultTimeout(30_000)
   if (fallback) await page.addInitScript(() => { Object.defineProperty(window, "Highlight", { value: undefined }) })
   await page.route("http://viewer.invalid/**", route => {
     const request = route.request(), url = new URL(request.url())
     if (request.method() !== "GET") { writes.push(request.method() + " " + url.pathname); return route.fulfill({ status: 405 }) }
-    if (/^\/matters\/navigation\/documents\/(redlined|content)$/.test(url.pathname)) return route.fulfill({ status: 200, body: Buffer.from(bytes), contentType: `${CT}.document` })
+    if (/^\/matters\/navigation\/documents\/(redlined|content)$/.test(url.pathname)) return route.fulfill({ status: 200, body: Buffer.from(hardBreak ? brokenLine : bytes), contentType: `${CT}.document` })
     const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) })
     if (url.pathname === "/matters/navigation/redlines") return json([proposal])
     if (url.pathname === "/matters/navigation/documents/amendments") return json(null)
@@ -165,6 +167,20 @@ try {
   await expect(count).toHaveText("No matches")
   await page.close()
   console.log("PASS numbered outline, scoped split-run Find, wrap/keyboard, preserved markup, Escape and version refresh")
+
+  // Change only the inline split-run paragraph to a real Word hard break.
+  // Its rendered break separates words, while inline runs above join them.
+  const lineBreak = await open(1440, false, false, true)
+  await expect(lineBreak.locator(".docx-render br")).toHaveCount(1)
+  await lineBreak.keyboard.press("ControlOrMeta+f")
+  const breakInput = lineBreak.getByRole("searchbox")
+  await breakInput.fill("payment terms")
+  await expect(lineBreak.locator(".document-find-count")).toHaveText("1 of 3")
+  assert.equal(await lineBreak.evaluate(() => [...CSS.highlights.entries()].filter(([name]) => name.endsWith("-find")).some(([, highlight]) => [...highlight].some(range => (range as Range).cloneContents().querySelector("br")))), true, "the match range crosses the actual rendered break")
+  await breakInput.fill("paymentterms")
+  await expect(lineBreak.locator(".document-find-count")).toHaveText("No matches")
+  await lineBreak.close()
+  console.log("PASS Word hard break separates words without changing inline split-run matching")
 
   const narrow = await open(400)
   await narrow.getByRole("button", { name: "Outline", exact: true }).click()
