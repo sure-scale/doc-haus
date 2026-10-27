@@ -181,7 +181,7 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
       const previous = control.value
       control.replaceChildren()
       for (const version of versions.versions) {
-        const option = new Option(`Version ${version.number}${version.current ? " · current in doc.haus" : ""}${version.removed ? " · removed" : ""}${version.label ? ` · ${version.label}` : ""}`, version.id)
+        const option = new Option(`Version ${version.number}${version.current ? " · latest at refresh" : ""}${version.removed ? " · removed" : ""}${version.label ? ` · ${version.label}` : ""}`, version.id)
         option.disabled = version.removed
         control.add(option)
       }

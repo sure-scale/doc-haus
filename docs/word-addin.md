@@ -146,6 +146,8 @@ chosen retained versions of the linked document. Base and compared identities
 remain visible as Previous/Next moves through both sides together. The open
 Word document is never substituted for either saved version. This view does
 not invoke native Word Compare or promise annotation-author fidelity.
+The version list is a snapshot: **latest at refresh** refers to the last list
+refresh. Choose **Refresh versions** after saving to load newer entries.
 
 ## Implementation note
 
