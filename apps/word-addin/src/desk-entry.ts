@@ -2,58 +2,92 @@ import { WORD_ADDIN_VERSION, type WordDocumentLink } from "../../../dochaus/lib/
 import { deskRequestHandler } from "./desk-client"
 import { openDeskDialog } from "./desk-host"
 import { mountDesk } from "./desk-ui"
+import type { DeskView } from "./desk-protocol"
 
+/** Read-only views stay in the pane; a separate window is an optional wider view. */
 export function setupSourceDesk(link: WordDocumentLink): void {
-  const entry = document.getElementById("desk-entry")!
-  const launch = document.getElementById("open-desk") as HTMLButtonElement
-  const usePane = document.getElementById("inline-desk") as HTMLButtonElement
-  const message = document.getElementById("desk-message")!
-  const fallback = document.getElementById("pane-desk")!
-  if (!entry || !launch || !usePane || !message || !fallback) return
+  const entry = document.getElementById("desk-entry")
+  const documents = document.getElementById("documents-tab") as HTMLButtonElement | null
+  const compare = document.getElementById("compare-tab") as HTMLButtonElement | null
+  const launch = document.getElementById("open-desk-window") as HTMLButtonElement | null
+  const panel = document.getElementById("pane-desk")
+  const message = document.getElementById("desk-message")
+  if (!entry || !documents || !compare || !launch || !panel || !message) return
+
   const request = deskRequestHandler(link)
+  const tabs = { documents, compare }
+  let view: DeskView = "documents"
+  let busy = false
+  let opening = false
+  let disposed = false
   let dialog: { close(): void } | undefined
-  let inline: ReturnType<typeof mountDesk> | undefined
-  function showInline() {
-    if (inline) return
-    dialog?.close()
-    dialog = undefined
-    launch.disabled = true
-    usePane.disabled = true
-    message.textContent = "Source Desk is open below. Saving continues above."
-    fallback.hidden = false
-    inline = mountDesk(fallback, { request }, { close() {
-      inline?.dispose()
-      inline = undefined
-      fallback.hidden = true
-      launch.disabled = false
-      usePane.disabled = false
-      message.textContent = "Source Desk closed. Saving continues in this pane."
-      usePane.focus()
-    } })
-    fallback.querySelector<HTMLButtonElement>("button")?.focus()
+  function controls() {
+    for (const [name, tab] of Object.entries(tabs)) {
+      tab.disabled = busy
+      tab.setAttribute("aria-selected", String(view === name))
+      tab.tabIndex = view === name ? 0 : -1
+    }
+    panel!.setAttribute("aria-labelledby", tabs[view].id)
+    launch!.disabled = busy || opening || Boolean(dialog)
+    launch!.setAttribute("aria-label", `Open ${view === "documents" ? "documents" : "comparison"} in a separate window`)
+    launch!.title = launch!.getAttribute("aria-label")!
   }
-  usePane.onclick = showInline
+  function error(text = "") {
+    message!.textContent = text
+    message!.hidden = !text
+  }
   entry.hidden = false
-  launch.onclick = async () => {
-    if (dialog || inline) return
-    launch.disabled = true
-    usePane.disabled = true
-    try {
-      const url = new URL("./desk.html", window.location.href)
-      url.search = new URLSearchParams({ version: WORD_ADDIN_VERSION }).toString()
-      dialog = await openDeskDialog({ url: url.href, handleRequest: request, onClose: () => {
-        dialog = undefined
-        launch.disabled = false
-        message.textContent = "Source Desk closed. Saving continues in this pane."
-        launch.focus()
-      } })
-      message.textContent = "Source Desk is open. Keep this pane open for its connection and saving."
-    } catch {
-      showInline()
-      message.textContent = "The floating desk is unavailable in this Word window. Source Desk is open below."
-    } finally {
-      usePane.disabled = Boolean(inline)
+  panel.hidden = false
+  panel.setAttribute("role", "tabpanel")
+  const reader = mountDesk(panel, { request }, {
+    embedded: true,
+    initialView: view,
+    close() {},
+    onViewChange(next) { view = next; controls() },
+    onBusyChange(value) { busy = value; controls() },
+  })
+  controls()
+
+  async function show(next: DeskView) {
+    if (disposed || busy) return
+    error()
+    await reader.setView(next)
+  }
+  for (const [name, tab] of Object.entries(tabs)) {
+    tab.onclick = () => { void show(name as DeskView) }
+    tab.onkeydown = event => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key) || busy) return
+      event.preventDefault()
+      const next = event.key === "Home" ? "documents" : event.key === "End" ? "compare" : view === "documents" ? "compare" : "documents"
+      tabs[next].focus()
+      void show(next)
     }
   }
-  window.addEventListener("pagehide", () => { dialog?.close(); inline?.dispose() }, { once: true })
+  launch.onclick = async () => {
+    if (disposed || opening || dialog || busy) return
+    opening = true
+    error()
+    controls()
+    try {
+      const url = new URL("./desk.html", window.location.href)
+      url.search = new URLSearchParams({ version: WORD_ADDIN_VERSION, view }).toString()
+      dialog = await openDeskDialog({ url: url.href, handleRequest: request, onClose() {
+        dialog = undefined
+        if (disposed) return
+        controls()
+        launch.focus()
+      } })
+      if (disposed) dialog.close()
+    } catch {
+      if (!disposed) error("The wider window is unavailable. Continue in this pane.")
+    } finally {
+      opening = false
+      if (!disposed) controls()
+    }
+  }
+  window.addEventListener("pagehide", () => {
+    disposed = true
+    dialog?.close()
+    reader.dispose()
+  }, { once: true })
 }

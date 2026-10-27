@@ -1,5 +1,11 @@
 import type { WordSelectionSnapshot } from "./selection"
 
+export type DeskView = "documents" | "compare"
+
+export function isDeskView(value: unknown): value is DeskView {
+  return value === "documents" || value === "compare"
+}
+
 export type DeskRequest =
   | { action: "selection" }
   | { action: "show"; selection: WordSelectionSnapshot }
@@ -82,7 +88,7 @@ export function isDeskRequest(value: unknown): value is DeskRequest {
 
 export function deskMessage(channel: string, value: DeskPayload): string {
   const encoded = JSON.stringify({ protocol: PROTOCOL, version: 1, channel, ...value })
-  if (encoded.length > DESK_MESSAGE_LIMIT) throw new Error("This desk response is too large. Choose a smaller source.")
+  if (encoded.length > DESK_MESSAGE_LIMIT) throw new Error("This preview is too large. Choose a smaller document.")
   return encoded
 }
 

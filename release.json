@@ -1,5 +1,5 @@
 {
-  "version": 15,
-  "name": "2.0.13",
-  "notes": "Read matter sources beside your document in the Word Source Desk. Keep sources open, find exact wording and return to your captured passage in Word. Compare two saved versions with inline changes and step through each change. Available in desktop Word on Mac and Windows, with an option to use the task pane."
+  "version": 16,
+  "name": "2.0.14",
+  "notes": "Word add-in, including a compact save status with one primary Save or Save and close action, Documents and Compare tabs, document tabs, inline Find and optional Word selection. Read saved matter documents with clearer headings and dates, compare small saved-version pairs automatically, and keep secondary actions in menus."
 }

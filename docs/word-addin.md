@@ -2,18 +2,18 @@
 
 Use **Open in Word** on a Word document in a matter, then open the downloaded
 copy in desktop Microsoft Word. The doc.haus pane identifies its matter and
-document. Choose **Save to doc.haus** and wait for confirmation before closing.
-**Done in Word** saves, confirms the final document, clears its open badge and
+document. Choose **Save** and wait for confirmation before closing.
+**Save and close** saves, confirms the final document, clears its open badge and
 closes that document. If Word cannot close it, the pane keeps the saved
 confirmation visible so you can close it manually.
 
 Opening a linked copy checks its version without changing doc.haus or taking an
-editing lock. The first **Save to doc.haus** claims editing if the copy is current.
+editing lock. The first **Save** claims editing if the copy is current.
 The pane then checks saved content in the background. This is best effort:
 rapid saves may become one version, and closing Word can interrupt an upload.
 Reopening a linked copy can recover its last saved state. Native Word Save alone
 does not confirm that doc.haus received it. When offline, keep the file and use
-Save to doc.haus after reconnecting.
+**Save** after reconnecting.
 
 ## Install on a desktop
 
@@ -82,10 +82,12 @@ The parent records the version edited in Word. A stale copy cannot overwrite a
 newer version. A clean Word revision becomes the accepted working base for subsequent
 drafting; unresolved tracked changes retain the existing review guard.
 
-The pane shows this copy's base version and the current version in doc.haus. It
-checks these before saving and after reconnecting. If Word reloads its pane, it
+The compact status shows the current version in doc.haus; different copy and
+matter versions appear only when they disagree. **Ready** describes a connected
+copy without claiming its content is saved. **Saved** requires confirmed matching
+content. The pane checks versions before saving and after reconnecting. If Word reloads its pane, it
 can recover a confirmation only when the saved content matches exactly; it never
-assumes an older or forwarded copy is the newest version. Done updates the link
+assumes an older or forwarded copy is the newest version. **Save and close** updates the link
 in this physical copy before closing. If a copy is stale, keep its local file,
 return to the matter and compare its versions before opening a fresh linked copy.
 Keep any unsent local edits separately before replacing your Word copy.
@@ -93,20 +95,20 @@ Keep any unsent local edits separately before replacing your Word copy.
 One Word editor can hold the document's editing lock. While held, doc.haus
 refuses replacement, acceptance, rejection, restore, redaction and other writes
 to that document; viewing, comparing and downloading remain available. The pane
-renews its lock while connected. Done releases it; an abandoned lock expires
+renews its lock while connected. **Save and close** releases it; an abandoned lock expires
 after two minutes. **Release Word lock** and **Take over editing** in doc.haus
 compare the displayed version and owner before acting. Taking over disconnects
 earlier linked copies, whose local files remain intact. Expired or replaced
 owners must check their version and explicitly claim editing again.
 
 The lock protects writes to doc.haus. Word still allows local editing and native
-Save; the add-in cannot promise to disable those commands. Its Save and Done
+Save; the add-in cannot promise to disable those commands. Its **Save** and **Save and close**
 actions pause when the copy is stale or another editor owns the document.
 The separate open badge is a contact hint and cannot prove a file is closed.
 
 Each linked file contains a bearer capability that can add versions only to its
-own document, report its editing status, and read confirmed matter sources and
-outputs through Source Desk. Saved-version comparison is limited to the linked
+own document, report its editing status, and read confirmed documents and outputs already saved
+in the matter through the document viewer. Saved-version comparison is limited to the linked
 document. Treat a linked copy as able to save back to that document and read
 those matter previews. Use **Disconnect Word** in doc.haus to revoke its links.
 Deleting and recreating a same-named document does not restore old access.
@@ -115,46 +117,62 @@ preserving unrelated add-ins. Tokens cannot delete documents or call the normal
 API. Desk reads use a separate bounded route set; the receiver accepts only its
 configured pane origin.
 
-## Source Desk
+## Matter documents and version comparison
 
-Choose **Open Source Desk** in the Word pane to keep a captured Word passage
-beside saved matter sources. The movable modeless window uses the pane for
-document access. Keep the pane open while using it. Hosts without secure dialog
-messaging open the same workspace inside the pane. **Use Source Desk in this pane**
-also closes a floating desk and opens a fresh workspace below the save controls.
-Opening, refreshing or
-closing the desk does not claim editing ownership or change the save queue.
+The **Documents** and **Compare** tabs sit below the save controls. Documents
+opens by default with a list of files already saved in this matter, such as
+client instructions, heads of terms or correspondence. Choose a file to read it;
+no Word selection is needed or captured automatically. The ↗ button opens the
+current view in a wider movable window. Keep the Word pane open for that window's
+connection. If a wider window is unavailable, continue inside the pane.
+Opening, refreshing or closing these views does not claim editing ownership or
+change the save queue. The ribbon's **Open doc.haus** command opens the pane.
 
-Choose **Open a source** to read it immediately. **Keep open** adds a source
-to the strip for switching between useful documents; up to eight can be kept.
-The filename and saved version stay visible, with version IDs and content hashes
-in **Source details**. Open previews stay unchanged when you select another
-Word passage and choose **Use current selection**. Sources with
-unconfirmed external changes are unavailable until doc.haus records them; a
-changed source is never silently substituted. Previews and source lists have
-visible size limits.
+Each document opens in a tab; **+ Open document** opens another, and × closes a
+tab. Up to eight exact saved snapshots can stay open. The reader shows its saved
+version, date and read-only status. Real DOCX headings are displayed where they
+can be matched safely to the extracted text; other documents use plain text.
+**Details** contains version IDs and content hashes. **Refresh document list**
+updates the choices without replacing open snapshots. Documents with unconfirmed
+external changes are unavailable until doc.haus records them; a changed file is
+never silently substituted. Previews and document lists have visible size limits.
 
-Word text is labelled as captured saved or unsaved context, separate from a
-confirmed matter version. **Show in Word** selects an exact, unique
-passage only if the document's body text still matches the capture. Repeated passages,
-multiline selections, Word find codes and selections over 255 characters cannot
-be navigated in this first slice; select a short unique passage and refresh.
-Body text changes invalidate navigation; formatting and markup are not checked. Refreshes
-never select text or move focus in Word. **Find** (Cmd/Ctrl+F inside the desk)
-highlights exact text in the selection and source; it does not assess legal
-support. Escape closes Find and returns focus to its button.
+Optionally select a passage in Word and turn on **Word selection**. The passage
+appears beside the saved document, with its capture time. ↻ captures the selection
+again; turning the toggle off returns to the full-width reader. These actions
+preserve open document tabs. Captured text is separate from confirmed matter
+versions; Word's native saved state does not prove doc.haus has received it.
 
-**Compare versions** uses the existing comparison engine on two explicitly
-chosen retained versions of the linked document. Choose an **Earlier version**
-and a **Later version**, then **Compare**. Their applied version numbers stay
-visible as Previous/Next moves through changed passages. The existing doc.haus
+**Show in Word** selects an exact, unique passage only if the document's body
+text still matches the capture. Repeated passages, multiline selections, Word
+find codes and selections over 255 characters cannot be navigated; select a
+short unique passage and refresh the selection. Body text changes invalidate
+navigation; formatting and markup are not checked. Capturing or refreshing does
+not select text or move focus in Word. **Find** (Cmd/Ctrl+F inside the reader)
+highlights exact text in the open document and, when shown, the captured Word
+text; it does not assess legal support. Use the arrows to step through matches.
+Escape closes Find and returns focus to its button.
+
+**Compare** opens two saved versions of this linked document. Choose **Earlier**
+and **Later** versions. Known pairs totalling at most 2 MiB compare automatically,
+starting with the latest saved version and its predecessor; larger or unknown-size
+pairs show a **Compare** button. One comparison runs at a time. Its applied
+version numbers stay visible as ‹ and › move through changed passages. The
 redline marks insertions blue and underlined, deletions red and struck through,
-and moves green. Separate earlier/later text and technical details are available
-in expandable sections. The open
-Word document is never substituted for either saved version. This view does
-not invoke native Word Compare or promise annotation-author fidelity.
-The version list is a snapshot: **latest at refresh** refers to the last list
-refresh. Choose **Refresh versions** after saving to load newer entries.
+and moves green. Untracked edits are labelled. **Details** includes separate
+earlier/later text and technical metadata.
+
+The open Word document is never substituted for either saved version. Comparison
+navigation stays within the saved-version redline; **Show in Word** belongs to
+the separately captured selection. This view does not invoke native Word Compare
+or promise annotation-author fidelity. **Refresh version list** loads newer
+choices without replacing the applied comparison. “Latest known” refers to that
+list's last refresh; choose the newer version to update the comparison.
+
+The ⋯ save menu contains **Check status**, **Start editing here** and **Stop
+editing here** when applicable. Checking status never saves. Starting editing
+claims the current document's editing lock without uploading content; **Save**
+confirms a version. **How saving works** contains the background-sync explanation.
 
 ## Implementation note
 

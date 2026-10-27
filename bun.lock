@@ -63,6 +63,7 @@
       },
       "devDependencies": {
         "@types/bun": "1.4.0",
+        "happy-dom": "20.11.1",
         "typescript": "5.8.2",
       },
     },

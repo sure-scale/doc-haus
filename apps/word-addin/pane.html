@@ -12,46 +12,43 @@
   </head>
   <body>
     <main>
-      <header><img src="./assets/icon.png" width="32" height="32" alt="" /><span>doc.haus</span></header>
-      <div class="document">
-        <p id="matter" class="matter">Word document</p>
-        <h1 id="document">Save your work to doc.haus</h1>
-      </div>
-      <section class="save-card" aria-label="Save status">
-        <div role="status" aria-live="polite" aria-atomic="true">
-          <p id="status" class="status" data-state="not-saved">Connecting…</p>
-          <p id="message">Checking this document's link to doc.haus…</p>
-          <p id="received" class="received"></p>
-          <p id="version-state" class="received"></p>
-          <p id="editing-state" class="received"></p>
+      <section class="save-panel" aria-label="Save status">
+        <div class="save-summary" role="status" aria-live="polite" aria-atomic="true">
+          <p id="matter" class="matter">doc.haus</p>
+          <div class="save-state"><span id="status" class="status" data-state="neutral">Connecting…</span><p id="message">Checking this document's link…</p></div>
         </div>
-        <div id="actions" class="actions">
-          <button id="save" class="primary" type="button" disabled>Save to doc.haus</button>
-          <button id="done" class="secondary" type="button" disabled>Done in Word</button>
-          <button id="refresh" class="secondary" type="button" disabled>Check status</button>
-          <button id="takeover" class="secondary" type="button" hidden>Take over saving here</button>
-          <button id="release" class="secondary" type="button" hidden>Release editing</button>
+        <p id="version-state" class="version-mismatch" hidden></p>
+        <p id="blocked-help" class="blocked-help" hidden></p>
+        <div id="actions" class="save-controls">
+          <button id="save" class="primary" type="button" disabled>Save</button>
+          <details id="save-menu" class="save-menu">
+            <summary title="More save options" aria-label="More save options">⋯</summary>
+            <div class="save-menu-items">
+              <button id="save-again" type="button" hidden disabled>Save</button>
+              <button id="done" type="button" disabled>Save and close</button>
+              <button id="start-editing" type="button" hidden disabled>Start editing here</button>
+              <button id="refresh" type="button" disabled>Check status</button>
+              <button id="release" type="button" hidden disabled>Stop editing here</button>
+              <button id="takeover" type="button" hidden disabled>Take over editing here</button>
+            </div>
+          </details>
         </div>
       </section>
-      <section id="desk-entry" class="desk-entry" hidden aria-label="Source Desk">
-        <h2>Keep your sources in view</h2>
-        <p>Pin matter sources beside your Word passage, or compare two saved versions.</p>
-        <button id="open-desk" class="secondary" type="button">Open Source Desk ↗</button>
-        <button id="inline-desk" class="secondary" type="button">Use Source Desk in this pane</button>
-        <p id="desk-message" class="hint" role="status"></p>
+      <section id="desk-entry" class="desk-entry" hidden aria-label="Matter documents and versions">
+        <nav class="pane-tabs" role="tablist" aria-label="Matter views">
+          <button id="documents-tab" type="button" role="tab" aria-selected="true" aria-controls="pane-desk">Documents</button>
+          <button id="compare-tab" type="button" role="tab" aria-selected="false" aria-controls="pane-desk" tabindex="-1">Compare</button>
+        </nav>
+        <button id="open-desk-window" class="window-action" type="button" title="Open in window" aria-label="Open in window">↗</button>
+        <p id="desk-message" class="desk-message" role="status" hidden></p>
       </section>
       <div id="pane-desk" hidden></div>
-      <p id="background" class="hint">
-        After your first Save to doc.haus, saved Word changes sync in the background while this pane is open. Some saves
-        may be combined. Choose
-        <strong>Done in Word</strong> to save and close this document. To close it yourself, choose
-        <strong>Save to doc.haus</strong> and wait for <strong>Saved</strong>. Closing Word can interrupt background
-        sync. Word still allows local editing while another editor has this document. If saving is paused, keep this
-        file using Save As. In doc.haus, use Versions to compare or Open in Word for a fresh copy.
-      </p>
-      <a id="back" hidden target="_blank" rel="noopener noreferrer"
-        >Return to doc.haus <span aria-hidden="true">↗</span></a
-      >
+      <details id="background" class="saving-help">
+        <summary>How saving works</summary>
+        <p>Save confirms a version in doc.haus. Save and close saves before closing this document.</p>
+        <p>After you save or start editing here, this pane checks saved Word changes in the background. Some saves may be combined. Closing Word can interrupt this; wait for Saved before closing.</p>
+        <a id="back" hidden target="_blank" rel="noopener noreferrer">Open matter in doc.haus <span aria-hidden="true">↗</span></a>
+      </details>
     </main>
   </body>
 </html>

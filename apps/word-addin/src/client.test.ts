@@ -70,6 +70,7 @@ test("manifest uses the shared identity and designated auto-open pane", () => {
     manifest.match(new RegExp(`pane\\.html\\?version=${WORD_ADDIN_VERSION.replaceAll(".", "\\.")}`, "g")),
   ).toHaveLength(2)
   expect(manifest.match(/xsi:type="ShowTaskpane"/g)).toHaveLength(1)
+  expect(manifest).toContain('id="Button.Label" DefaultValue="Open doc.haus"')
   expect(manifest).not.toContain('xsi:type="ExecuteFunction"')
   // A function runtime must not boot the pane's document writer as well.
   expect(manifest).not.toContain("<FunctionFile")

@@ -638,6 +638,9 @@ describe("confirmed Word saves", () => {
       expect(sync.snapshot().message).toContain("Close it in Word")
       expect(sync.snapshot().message).not.toContain("private")
       expect(sync.snapshot().busy).toBe(false)
+      await sync.checkStatus()
+      expect(sync.snapshot().status).toBe("done")
+      expect(sync.snapshot().message).toContain("Close it in Word")
     }
   })
 

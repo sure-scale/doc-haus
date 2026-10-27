@@ -38,7 +38,7 @@ export function deskRequestHandler(
         if (response.status === 426) throw new DeskRequestError(WORD_UPDATE_MESSAGE)
         const value = await response.json().catch(() => null) as { message?: unknown; error?: unknown } | null
         const detail = typeof value?.message === "string" ? value.message : typeof value?.error === "string" ? value.error : undefined
-        throw new DeskRequestError(detail ?? "Source Desk is unavailable. Check the document link and try again.")
+        throw new DeskRequestError(detail ?? "Matter documents are unavailable. Check the document link and try again.")
       }
       return await response.json()
     } catch (error) {

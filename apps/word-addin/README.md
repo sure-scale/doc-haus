@@ -15,13 +15,13 @@ The linked DOCX supplies `dochaus.link`. Its HTTPS receiver must match the pane
 origin. The bearer capability is sent only to that receiver, with redirects and
 ambient credentials disabled. It is never shown, logged, or added to a URL.
 
-Source Desk adds `desk.html`/`desk.js`/`desk.css` to the static build. The pane
+Matter documents and version comparison add `desk.html`/`desk.js`/`desk.css` to the static build. The pane
 keeps the capability and brokers only validated read/selection requests from a
 same-origin Office dialog with DialogApi 1.2 and DialogOrigin 1.1. Missing support
-falls back to an inline desk. Explicit target origins, channel identity and
+falls back to an inline document view. Explicit target origins, channel identity and
 bounded messages are required; a reloaded child establishes a fresh channel.
 Desk requests never call the save queue or editing lease. See
-[`docs/word-addin.md`](../../docs/word-addin.md#source-desk) for scope and limits.
+[`docs/word-addin.md`](../../docs/word-addin.md#matter-documents-and-version-comparison) for scope and limits.
 
 The manifest, linked handout and pane share one add-in version. Both manifest
 pane URLs include that version, and a missing or different URL version stops
