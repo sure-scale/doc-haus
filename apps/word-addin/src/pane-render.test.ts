@@ -47,7 +47,7 @@ test("unchanged poll presentation preserves the pane DOM and focus while real sa
 
 test("save menu dismisses outside the pane controls without stealing focus", () => {
   const page = new Window()
-  page.document.body.innerHTML = '<details id="menu"><summary>More options</summary><button>Save</button></details><button id="outside">Documents</button>'
+  page.document.body.innerHTML = '<details id="menu"><summary>More options</summary><button>Save</button></details><button id="outside">Documents</button><p id="title">Matter title</p>'
   const document = page.document as unknown as Document
   const menu = document.getElementById("menu") as HTMLDetailsElement
   const outside = document.getElementById("outside") as HTMLButtonElement
@@ -62,6 +62,10 @@ test("save menu dismisses outside the pane controls without stealing focus", () 
     expect(document.activeElement === outside).toBe(true)
     menu.open = true
     outside.dispatchEvent(new page.Event("pointerdown", { bubbles: true }) as unknown as Event)
+    expect(menu.open).toBe(false)
+    expect(document.activeElement === outside).toBe(true)
+    menu.open = true
+    document.getElementById("title")!.dispatchEvent(new page.MouseEvent("click", { bubbles: true }) as unknown as Event)
     expect(menu.open).toBe(false)
     expect(document.activeElement === outside).toBe(true)
     menu.open = true

@@ -60,7 +60,13 @@ codesign --force --sign - "$candidate"
 # if the final move fails, restore it without touching any runtime or user data.
 backup=
 if [ -e "$app" ]; then
-  backup="$app.previous-$(date +%Y%m%d%H%M%S)-$$"
+  recovery="$(dirname "$app")/.doc.haus-recovery"
+  if [ -L "$recovery" ] || { [ -e "$recovery" ] && [ ! -d "$recovery" ]; }; then
+    echo "doc.haus: the app recovery path is not a regular folder." >&2
+    exit 1
+  fi
+  mkdir -p -m 700 "$recovery"
+  backup="$recovery/$(basename "$app").previous-$(date +%Y%m%d%H%M%S)-$$"
   mv "$app" "$backup"
 fi
 if ! mv "$candidate" "$app"; then

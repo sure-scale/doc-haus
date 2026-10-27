@@ -194,7 +194,8 @@ test("bundle refresh uses candidate resources for an older checkout and retains 
   const result = await f.refresh()
   expect(result.status).toBe(0)
   expect(result.stdout).toContain("previous app kept")
-  expect((await readdir(path.dirname(f.app))).some(file => file.startsWith("doc.haus.app.previous-"))).toBe(true)
+  expect((await readdir(path.join(path.dirname(f.app), ".doc.haus-recovery"))).some(file => file.startsWith("doc.haus.app.previous-"))).toBe(true)
+  expect((await readdir(path.dirname(f.app))).some(file => file.startsWith("doc.haus.app.previous-"))).toBe(false)
   expect(await f.reopenCommand()).toEqual([f.checkout, "", path.join(f.checkout, "workspace"), path.join(f.checkout, ".dochaus-runtime"), "4097", "4501", "5174", ""])
   expect(await f.openCalls()).toEqual([])
 })
@@ -207,6 +208,22 @@ test("a compilation failure leaves the previous app intact", async () => {
   expect((await f.refresh()).status).not.toBe(0)
   expect(await readFile(path.join(f.resources, "installation.sh"), "utf8")).toBe(previous)
   expect((await readdir(path.dirname(f.app))).filter(file => file.startsWith(".doc.haus-build."))).toEqual([])
+  expect(await f.openCalls()).toEqual([])
+})
+
+test("a failed app move restores the previous bundle from hidden recovery", async () => {
+  const f = await fixture()
+  await f.install()
+  const previous = await readFile(path.join(f.resources, "installation.sh"), "utf8")
+  const move = path.join(f.root, "bin/mv")
+  await writeFile(move, `#!/bin/bash
+if [[ "$1" == *"/.doc.haus-build."* ]] && [ "$2" = "$HOME/Applications/doc.haus.app" ]; then exit 9; fi
+exec /bin/mv "$@"
+`)
+  await chmod(move, 0o755)
+  expect((await f.refresh()).status).not.toBe(0)
+  expect(await readFile(path.join(f.resources, "installation.sh"), "utf8")).toBe(previous)
+  expect(await readdir(path.join(path.dirname(f.app), ".doc.haus-recovery"))).toEqual([])
   expect(await f.openCalls()).toEqual([])
 })
 
@@ -233,9 +250,24 @@ test.skipIf(process.platform !== "darwin")("the actual applet selects only its o
     if (launcher's matchingTab(candidates, {2, 2}, targetOrigin)) is not {2, 2} then error "Current matter tab was not preferred"
     if (launcher's matchingTab(candidates, {2, 1}, targetOrigin)) is not {1, 1} then error "Existing matter tab was not found"
     if (launcher's matchingTab({{"http://localhost:52740/"}}, {1}, targetOrigin)) is not {0, 0} then error "Foreign tab was selected"
+    set tabAddresses to {}
+    repeat 27 times
+        set end of tabAddresses to "https://unrelated.example/"
+    end repeat
+    set end of tabAddresses to targetOrigin & "/matter/current"
+    set snapshots to {}
+    copy tabAddresses to end of snapshots
+    set item 28 of tabAddresses to "https://changed.example/"
+    if (count item 1 of snapshots) is not 28 then error "Window snapshot must retain every tab"
+    if (launcher's matchingTab(snapshots, {28}, targetOrigin)) is not {1, 28} then error "Concrete snapshot lost its active matter tab"
+    set addressReference to a reference to item 28 of item 1 of snapshots
+    if not (launcher's matchesOrigin(addressReference, targetOrigin)) then error "Referenced native text must match"
     if (launcher's browserFamily("com.google.Chrome")) is not "chromium" then error "Chrome family missing"
     if (launcher's browserFamily("com.apple.Safari")) is not "safari" then error "Safari family missing"
     if (launcher's browserFamily("org.mozilla.firefox")) is not "" then error "Unsupported browser should use normal opening"
+    if (launcher's canReuseBrowserInstanceCount(0)) then error "A stopped browser should open normally"
+    if not (launcher's canReuseBrowserInstanceCount(1)) then error "A single browser instance may reuse its tab"
+    if (launcher's canReuseBrowserInstanceCount(2)) then error "Separate browser instances must never be queried by bundle ID"
     set startedAt to current date
     if (launcher's launchGraceRemaining(missing value, startedAt)) is not 0 then error "Ready interface should exit promptly"
     if (launcher's launchGraceRemaining(startedAt, startedAt)) is not 10 then error "Cold launch needs its debounce grace"

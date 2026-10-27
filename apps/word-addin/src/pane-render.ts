@@ -49,6 +49,7 @@ export function setupSaveMenu(menu: HTMLDetailsElement) {
     if (menu.open && !menu.contains(event.target as Node | null)) close()
   }
   menu.ownerDocument.addEventListener("pointerdown", outside)
+  menu.ownerDocument.addEventListener("click", outside)
   menu.ownerDocument.addEventListener("focusin", outside)
   menu.ownerDocument.defaultView?.addEventListener("blur", () => close())
   menu.addEventListener("keydown", event => {
