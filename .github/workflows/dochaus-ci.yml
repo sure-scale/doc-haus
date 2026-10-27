@@ -137,9 +137,9 @@ jobs:
         # Committed LibreOffice-saved fixtures and a scripted engine; no model.
         # The live soffice case skips when LibreOffice is not installed.
         run: bun test src/document-amendment-libreoffice.test.ts --timeout 30000
-      - name: Test linked Word saves and restricted HTTPS receiver
+      - name: Test linked Word saves, Source Desk and restricted HTTPS receiver
         working-directory: services/ingest
-        run: bun test src/word-linked-docx.test.ts src/word-documents-http.test.ts src/word-https.test.ts --timeout 30000
+        run: bun test src/word-linked-docx.test.ts src/word-documents-http.test.ts src/word-source-desk.test.ts src/word-https.test.ts --timeout 30000
       - name: Test native discovery and selected sign-in reuse
         working-directory: services/engine
         run: bun test src/credential-reuse.test.ts test/provider-catalog.test.ts --timeout 30000
