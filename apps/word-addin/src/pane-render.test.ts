@@ -100,6 +100,8 @@ test("connection recovery launches only local doc.haus without navigating away f
       if (origin.includes("localhost")) {
         expect(launch.hidden).toBe(false)
         expect(launch.href).toBe("doc.haus://launch")
+        expect(launch.target).toBe("_blank")
+        expect(launch.relList.contains("noopener")).toBe(true)
       } else {
         expect(launch.hidden).toBe(true)
         expect(launch.hasAttribute("href")).toBe(false)

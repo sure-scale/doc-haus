@@ -10,7 +10,30 @@ const html = readFileSync(new URL("../bootstrap.html", import.meta.url), "utf8")
 function page() {
   const window = new Window()
   window.document.body.innerHTML = html.match(/<body>([\s\S]*)<\/body>/)![1]!
-  return { window, document: window.document as unknown as Document }
+  return { window, document: window.document as unknown as Document, close() {
+    window.dispatchEvent(new window.Event("pagehide"))
+    window.happyDOM.abort()
+  } }
+}
+
+function clock() {
+  const pending = new Map<number, () => void>()
+  const delays: number[] = []
+  let next = 0
+  return {
+    pending, delays,
+    schedule(callback: () => void, delayMs: number) {
+      const id = ++next
+      delays.push(delayMs)
+      pending.set(id, callback)
+      return () => { pending.delete(id) }
+    },
+    tick() {
+      const callbacks = Array.from(pending.values())
+      pending.clear()
+      for (const callback of callbacks) callback()
+    },
+  }
 }
 
 test("bootstrap accepts only one configured HTTPS origin and navigates a fixed current pane path", () => {
@@ -56,30 +79,34 @@ test("ready bootstrap probes without credentials then enters the instance pane",
     expect(requests[0]!.init?.headers).toBeUndefined()
     expect(navigations).toEqual([wordPaneUrl(origin)])
     expect(html.match(/https:\/\/[^\"]+/g)).toEqual(["https://appsforoffice.microsoft.com/lib/1/hosted/office.js"])
-  } finally { fixture.window.happyDOM.abort() }
+  } finally { fixture.close() }
 })
 
-test("stopped local instance retains explicit retry and a user-initiated native launch link", async () => {
-  const fixture = page(), navigations: string[] = []
+test("stopped local instance automatically checks again and retains a user-initiated native launch link", async () => {
+  const fixture = page(), timer = clock(), navigations: string[] = []
   try {
     expect(await showBootstrap(fixture.document, wordBootstrapUrl(origin), url => navigations.push(url), async () => {
       throw new TypeError("offline")
-    }, new Promise(() => {}))).toBe(false)
+    }, new Promise(() => {}), 5000, timer.schedule)).toBe(false)
     expect(navigations).toEqual([])
     expect(fixture.document.getElementById("actions")!.hidden).toBe(false)
     const launch = fixture.document.getElementById("open") as HTMLAnchorElement
     expect(launch.hidden).toBe(false)
     expect(launch.href).toBe("doc.haus://launch")
-    expect(fixture.document.getElementById("retry")!.tagName).toBe("BUTTON")
-    expect(fixture.document.getElementById("retry")!.hasAttribute("href")).toBe(false)
+    expect(launch.target).toBe("_blank")
+    expect(launch.relList.contains("noopener")).toBe(true)
+    expect(fixture.document.getElementById("retry")).toBeNull()
+    expect(timer.pending.size).toBe(1)
+    expect(timer.delays).toEqual([1000])
     launch.dispatchEvent(new fixture.window.MouseEvent("click", { bubbles: true }) as unknown as Event)
-    expect(fixture.document.getElementById("message")!.textContent).toContain("Once doc.haus is open")
+    expect(fixture.document.getElementById("message")!.textContent).toBe("Open doc.haus to reconnect. Your Word document stays open.")
     expect(navigations).toEqual([])
-  } finally { fixture.window.happyDOM.abort() }
+  } finally { fixture.close() }
+  expect(timer.pending.size).toBe(0)
 })
 
-test("retry stays on the holding page through startup, serializes probes and waits for Office before entering once", async () => {
-  const fixture = page(), navigations: string[] = []
+test("polling stays quiet through startup, serializes probes and waits for Office before entering exactly once", async () => {
+  const fixture = page(), timer = clock(), navigations: string[] = []
   let requests = 0
   let available = false
   let finishProbe!: (response: Response) => void
@@ -90,21 +117,23 @@ test("retry stays on the holding page through startup, serializes probes and wai
     if (!available) return new Response(null, { status: 503 })
     return new Promise<Response>(resolve => { finishProbe = resolve })
   }
-  const retry = fixture.document.getElementById("retry") as HTMLButtonElement
-  const click = () => retry.dispatchEvent(new fixture.window.MouseEvent("click", { bubbles: true }) as unknown as Event)
+  const mutations: unknown[] = []
+  const observer = new fixture.window.MutationObserver(records => mutations.push(...records))
   try {
-    expect(await showBootstrap(fixture.document, wordBootstrapUrl(origin), url => navigations.push(url), request, initialization)).toBe(false)
-    click()
+    expect(await showBootstrap(fixture.document, wordBootstrapUrl(origin), url => navigations.push(url), request, initialization, 5000, timer.schedule)).toBe(false)
+    observer.observe(fixture.window.document.getElementById("message")!, { childList: true, characterData: true, subtree: true })
+    timer.tick()
     await Bun.sleep(0)
     expect(requests).toBe(2)
+    expect(mutations).toHaveLength(0)
     expect(navigations).toEqual([])
     expect(fixture.document.getElementById("actions")!.hidden).toBe(false)
     available = true
-    click()
-    click()
+    timer.tick()
+    timer.tick()
     await Bun.sleep(0)
     expect(requests).toBe(3)
-    expect(retry.disabled).toBe(true)
+    expect(timer.pending.size).toBe(0)
     expect(fixture.document.getElementById("open")!.hidden).toBe(false)
     finishProbe(Response.json({ ready: true, version: WORD_ADDIN_VERSION }))
     await Bun.sleep(0)
@@ -112,15 +141,48 @@ test("retry stays on the holding page through startup, serializes probes and wai
     finishOffice()
     await Bun.sleep(0)
     expect(navigations).toEqual([wordPaneUrl(origin)])
-    expect(retry.disabled).toBe(false)
-    click()
+    expect(timer.pending.size).toBe(0)
+    timer.tick()
     await Bun.sleep(0)
     expect(requests).toBe(3)
     expect(navigations).toHaveLength(1)
-  } finally { fixture.window.happyDOM.abort() }
+    expect(timer.delays).toEqual([1000, 1000])
+  } finally { observer.disconnect(); fixture.close() }
 })
 
-test("healthy instance waits for the Office handshake while stalled initialization keeps a visible retry", async () => {
+test("pagehide cancels queued polling and an active probe without navigating or scheduling more work", async () => {
+  for (const active of [false, true]) {
+    const fixture = page(), timer = clock(), navigations: string[] = []
+    let requests = 0
+    let aborted = false
+    const opening = showBootstrap(fixture.document, wordBootstrapUrl(origin), url => navigations.push(url), async (_url, init) => {
+      requests++
+      if (!active) return new Response(null, { status: 503 })
+      return new Promise<Response>((_resolve, reject) => {
+        init!.signal!.addEventListener("abort", () => {
+          aborted = true
+          reject(new DOMException("closed", "AbortError"))
+        }, { once: true })
+      })
+    }, Promise.resolve(), 5000, timer.schedule)
+    try {
+      if (!active) {
+        expect(await opening).toBe(false)
+        expect(timer.pending.size).toBe(1)
+      }
+      fixture.window.dispatchEvent(new fixture.window.Event("pagehide"))
+      expect(await opening).toBe(false)
+      expect(aborted).toBe(active)
+      expect(timer.pending.size).toBe(0)
+      timer.tick()
+      await Bun.sleep(0)
+      expect(requests).toBe(1)
+      expect(navigations).toHaveLength(0)
+    } finally { fixture.close() }
+  }
+})
+
+test("healthy instance waits for the Office handshake while stalled initialization keeps the holding page visible", async () => {
   const fixture = page(), navigations: string[] = []
   let ready!: () => void
   const initialization = initializeBootstrapOffice(fixture.document, () => ({ onReady: () => new Promise<void>(resolve => { ready = resolve }) }))
@@ -136,8 +198,8 @@ test("healthy instance waits for the Office handshake while stalled initializati
     expect(await showBootstrap(fixture.document, wordBootstrapUrl(origin), url => navigations.push(url), request, new Promise(() => {}), 15)).toBe(false)
     expect(navigations).toEqual([])
     expect(fixture.document.getElementById("actions")!.hidden).toBe(false)
-    expect(fixture.document.getElementById("message")!.textContent).toContain("Word could not open")
-  } finally { fixture.window.happyDOM.abort() }
+    expect(fixture.document.getElementById("message")!.textContent).toContain("Waiting for Word")
+  } finally { fixture.close() }
 })
 
 test("remote failure never claims the local launcher can start a firm server; invalid config makes no request", async () => {
@@ -152,7 +214,7 @@ test("remote failure never claims the local launcher can start a firm server; in
     await showBootstrap(fixture.document, "https://doc.haus/word-addin/bootstrap.html#instance=invalid", () => {}, request)
     expect(fixture.document.getElementById("actions")!.hidden).toBe(true)
     expect(requests).toBe(1)
-  } finally { fixture.window.happyDOM.abort() }
+  } finally { fixture.close() }
 })
 
 test("unavailable, unconfirmed, old or timed-out health never reports ready", async () => {

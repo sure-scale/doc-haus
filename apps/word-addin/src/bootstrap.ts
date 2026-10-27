@@ -3,6 +3,12 @@ import { WORD_HEALTH_PATH, WORD_LAUNCH_URL, loopbackWordOrigin, readBootstrapOri
 
 type Request = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 type BootstrapOffice = { onReady(): Promise<unknown> }
+type Schedule = (callback: () => void, delayMs: number) => () => void
+
+const scheduleCheck: Schedule = (callback, delayMs) => {
+  const timer = setTimeout(callback, delayMs)
+  return () => clearTimeout(timer)
+}
 
 /** Office requires a readiness handshake on some hosts, even for a holding
  * page. This deliberately never obtains Office.context or document settings. */
@@ -23,17 +29,26 @@ export function initializeBootstrapOffice(document: Document, office: () => Boot
   })
 }
 
-async function initializedBeforeDeadline(initialized: Promise<boolean>, timeoutMs: number) {
+async function initializedBeforeDeadline(initialized: Promise<boolean>, timeoutMs: number, signal: AbortSignal) {
+  if (signal.aborted) return false
   let timeout: ReturnType<typeof setTimeout> | undefined
+  let abort: () => void = () => {}
   try {
-    return await Promise.race([initialized, new Promise<false>(resolve => { timeout = setTimeout(() => resolve(false), timeoutMs) })])
-  } finally { clearTimeout(timeout) }
+    return await Promise.race([initialized, new Promise<false>(resolve => {
+      abort = () => resolve(false)
+      signal.addEventListener("abort", abort, { once: true })
+      timeout = setTimeout(() => resolve(false), timeoutMs)
+    })])
+  } finally { clearTimeout(timeout); signal.removeEventListener("abort", abort) }
 }
 
 /** This probe carries no document settings, capability, cookies or credentials. */
-export async function probeWordPane(origin: string, request: Request = fetch, timeoutMs = 3000): Promise<boolean> {
+export async function probeWordPane(origin: string, request: Request = fetch, timeoutMs = 3000, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return false
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  const abort = () => { clearTimeout(timeout); controller.abort() }
+  signal?.addEventListener("abort", abort, { once: true })
   try {
     const response = await request(`${origin}${WORD_HEALTH_PATH}`, {
       credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", cache: "no-store", signal: controller.signal,
@@ -43,19 +58,19 @@ export async function probeWordPane(origin: string, request: Request = fetch, ti
     return Boolean(health && typeof health === "object" &&
       (health as { ready?: unknown }).ready === true && (health as { version?: unknown }).version === WORD_ADDIN_VERSION)
   } catch { return false }
-  finally { clearTimeout(timeout) }
+  finally { clearTimeout(timeout); signal?.removeEventListener("abort", abort) }
 }
 
 /** Importing this module never starts Office or reads the open document. */
 export async function showBootstrap(document: Document, href: string, navigate: (url: string) => void,
-  request?: Request, initialization: Promise<unknown> = Promise.resolve(), initializationTimeoutMs = 5000) {
+  request?: Request, initialization: Promise<unknown> = Promise.resolve(), initializationTimeoutMs = 5000,
+  schedule: Schedule = scheduleCheck) {
   // Observe rejection immediately; a CDN failure must not become an unhandled
   // promise while the independent instance probe is still pending.
   const initialized = initialization.then(() => true, () => false)
   const message = document.getElementById("message")!
   const actions = document.getElementById("actions")!
   const open = document.getElementById("open") as HTMLAnchorElement
-  const retry = document.getElementById("retry") as HTMLButtonElement
   const origin = readBootstrapOrigin(href)
   if (!origin) {
     message.textContent = "This Word connection needs updating. Open Settings → Add-ins in doc.haus and repair Word setup."
@@ -64,39 +79,49 @@ export async function showBootstrap(document: Document, href: string, navigate: 
   }
   const local = loopbackWordOrigin(origin)
   open.hidden = !local
-  if (local) {
-    open.href = WORD_LAUNCH_URL
-    open.addEventListener("click", () => {
-      message.textContent = "Once doc.haus is open, choose Try again. Your Word document stays open."
-    })
+  if (local) open.href = WORD_LAUNCH_URL
+  const lifetime = new AbortController()
+  let cancelNext: (() => void) | undefined
+  const stop = () => {
+    lifetime.abort()
+    cancelNext?.()
+    cancelNext = undefined
+    document.defaultView?.removeEventListener("pagehide", stop)
   }
+  document.defaultView?.addEventListener("pagehide", stop, { once: true })
+  const setMessage = (text: string) => { if (message.textContent !== text) message.textContent = text }
   let checking: Promise<boolean> | undefined
   let entered = false
   const check = (): Promise<boolean> => {
-    if (entered) return Promise.resolve(true)
+    if (entered || lifetime.signal.aborted) return Promise.resolve(entered)
     if (checking) return checking
-    retry.disabled = true
-    message.textContent = "Checking the connection to doc.haus…"
     checking = (async () => {
-      if (await probeWordPane(origin, request)) {
-        if (await initializedBeforeDeadline(initialized, initializationTimeoutMs)) {
+      const ready = await probeWordPane(origin, request, 3000, lifetime.signal)
+      if (lifetime.signal.aborted) return false
+      if (ready) {
+        if (await initializedBeforeDeadline(initialized, initializationTimeoutMs, lifetime.signal)) {
+          if (lifetime.signal.aborted) return false
           entered = true
+          stop()
           navigate(wordPaneUrl(origin))
           return true
         }
-        message.textContent = "Word could not open the connection. Choose Try again, or check your internet connection."
+        if (lifetime.signal.aborted) return false
+        setMessage("Waiting for Word to connect. Check your internet connection.")
       } else {
-        message.textContent = local
-          ? "Open doc.haus, then choose Try again. Your Word document stays open."
-          : "Your doc.haus instance is not reachable. Open it in your browser or ask your administrator to check it, then choose Try again."
+        setMessage(local
+          ? "Open doc.haus to reconnect. Your Word document stays open."
+          : "Your doc.haus instance is not reachable. Open it in your browser or ask your administrator to check it. Your Word document stays open.")
       }
       // Keep the useful holding page and launch action available throughout
-      // startup. A retry never navigates to an unreachable instance page.
+      // startup. Polling never navigates to an unreachable instance page.
       actions.hidden = false
       return false
-    })().finally(() => { retry.disabled = false; checking = undefined })
+    })().finally(() => {
+      checking = undefined
+      if (!lifetime.signal.aborted) cancelNext = schedule(() => { cancelNext = undefined; void check() }, 1000)
+    })
     return checking
   }
-  retry.addEventListener("click", () => { void check() })
   return check()
 }

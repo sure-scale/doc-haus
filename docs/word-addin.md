@@ -47,8 +47,9 @@ Launch confirmation means the operating system accepted the open command;
 The add-in's initial page is hosted at `https://doc.haus/word-addin/bootstrap`.
 It contains no document content or save capability, and checks this instance's
 limited health endpoint before loading its pane. If a local instance is stopped,
-it offers **Open doc.haus** and **Try again**. A remote instance instead asks the
-user to check the server. This recovery page requires network access; it does
+it offers **Open doc.haus** and checks automatically every second until the
+instance is ready. A remote instance instead asks the user to check the server.
+This recovery page requires network access; it does
 not promise first-load availability without an internet connection.
 
 For command-line installations, run this from the doc.haus folder, with the
