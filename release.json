@@ -1,5 +1,5 @@
 {
   "version": 17,
   "name": "2.0.15",
-  "notes": "Word add-in setup is included in onboarding and Settings → Add-ins. Check or repair the installed connection without Terminal commands or restarting doc.haus. Mac shortcuts preserve selected data paths and ports, and the browser tab uses the doc.haus icon."
+  "notes": "The doc.haus Word ribbon opens the pane. Word add-in setup is included in onboarding and Settings → Add-ins. Check or repair the installed connection without Terminal commands or restarting doc.haus. Mac shortcuts preserve selected data paths and ports, and the browser tab uses the doc.haus icon."
 }
