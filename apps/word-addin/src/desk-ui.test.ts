@@ -47,7 +47,7 @@ function pollClock() {
   }
 }
 async function choose(fixture: ReturnType<typeof install>, id: string) {
-  if (element(fixture.root, "document-list").hidden) button(fixture.root, "open-document").click()
+  if (element(fixture.root, "document-list").hidden) button(fixture.root, "back-documents").click()
   fixture.root.querySelector<HTMLButtonElement>(`[data-source="${id}"]`)!.click()
   await settle()
 }
@@ -56,7 +56,7 @@ function changeVersion(fixture: ReturnType<typeof install>, name: "base" | "curr
   control.value = id; control.dispatchEvent(new fixture.page.Event("change") as unknown as Event)
 }
 
-test("document list opens real snapshot tabs without Word access and renders supplied headings as text", async () => {
+test("document list opens one saved preview with a clear way back and no file tabs", async () => {
   const fixture = install(), calls: DeskRequest[] = []
   const desk = mountDesk(fixture.root, { async request(input) { calls.push(input); if (input.action === "sources") return sources; if (input.action === "source") return input.sourceId === preview.id ? preview : second; throw new Error("Unexpected Word access") } }, { close() {} })
   try {
@@ -66,24 +66,25 @@ test("document list opens real snapshot tabs without Word access and renders sup
     expect(element(fixture.root, "document-list").textContent).toContain("Version 1")
     expect(element(fixture.root, "status").hidden).toBe(true)
     expect(fixture.root.querySelector('[data-el="selection-toggle"]')).toBeNull()
-    expect(fixture.root.querySelector('[aria-label="Word selection"]')).toBeNull()
+    expect(fixture.root.querySelector('[data-el="open-document"]')).toBeNull()
+    expect(fixture.root.querySelector('[data-el="close-document"]')).toBeNull()
     expect(element(fixture.root, "document-bar").hidden).toBe(true)
     await choose(fixture, preview.id)
     expect(element(fixture.root, "document-bar").hidden).toBe(false)
-    expect(fixture.root.querySelectorAll('[role="tab"]')).toHaveLength(1)
+    expect(element(fixture.root, "document-name").textContent).toBe("Instructions.docx")
+    expect(button(fixture.root, "back-documents").textContent).toContain("Back to documents")
+    expect(fixture.root.querySelectorAll('[role="tab"]')).toHaveLength(0)
     expect(element(fixture.root, "right").querySelector(".desk-text h2")?.textContent).toBe("Payment terms")
     expect(element(fixture.root, "right").textContent).toContain("Read-only")
+    button(fixture.root, "back-documents").click()
+    expect(element(fixture.root, "right").hidden).toBe(true)
+    expect(element(fixture.root, "right").textContent).toBe("")
+    expect(element(fixture.root, "document-list").hidden).toBe(false)
+    expect((document.activeElement as HTMLElement)?.dataset.source).toBe(preview.id)
     await choose(fixture, second.id)
-    expect(fixture.root.querySelectorAll('[role="tab"]')).toHaveLength(2)
-    const firstTab = fixture.root.querySelector<HTMLButtonElement>('[role="tab"]')!
-    firstTab.click()
-    expect(element(fixture.root, "right").textContent).toContain("A shared instruction.")
-    firstTab.dispatchEvent(new fixture.page.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }) as unknown as Event)
+    expect(element(fixture.root, "document-name").textContent).toBe("Letter.docx")
     expect(element(fixture.root, "right").textContent).toContain(second.text)
-    expect(document.activeElement?.getAttribute("aria-selected")).toBe("true")
-    fixture.root.querySelector<HTMLButtonElement>('[aria-label="Close Letter.docx"]')!.click()
-    expect(fixture.root.querySelectorAll('[role="tab"]')).toHaveLength(1)
-    expect(element(fixture.root, "right").textContent).toContain("A shared instruction.")
+    expect(element(fixture.root, "right").textContent).not.toContain(preview.text)
     expect(calls.some((call) => call.action === "selection" || call.action === "show")).toBe(false)
   } finally { desk.dispose(); fixture.restore() }
 })
@@ -95,7 +96,7 @@ test("automatic refresh and view changes retain opened saved snapshots", async (
   const desk = mountDesk(fixture.root, { async request(input) {
     calls.push(input)
     if (input.action === "sources") return refreshed ? { ...sources, sources: [{ ...preview, hash: "d".repeat(64), version: { id: "new", number: 2, createdAt: savedAt + 60_000 } }, second] } : sources
-    if (input.action === "source") return preview
+    if (input.action === "source") return refreshed ? { ...preview, hash: "d".repeat(64), version: { id: "new", number: 2, createdAt: savedAt + 60_000 }, text: "New saved wording.", blocks: undefined } : preview
     if (input.action === "versions") return versions
     if (input.action === "compare") return comparison(input.baseVersion, input.currentVersion)
   } }, { embedded: true, close() {}, schedulePoll: clock.schedulePoll })
@@ -106,29 +107,17 @@ test("automatic refresh and view changes retain opened saved snapshots", async (
     expect(element(fixture.root, "right").textContent).toContain(preview.hash)
     await desk.setView("compare"); await desk.setView("documents")
     expect(element(fixture.root, "right").textContent).toContain(preview.hash)
-    expect(fixture.root.querySelectorAll('[role="tab"]')).toHaveLength(1)
+    expect(element(fixture.root, "document-name").textContent).toBe(preview.name)
     expect(calls.filter((call) => call.action === "source")).toHaveLength(1)
     expect(calls.some((call) => call.action === "selection" || call.action === "show")).toBe(false)
     expect(fixture.root.querySelector<HTMLElement>(".desk-head")!.hidden).toBe(true)
-  } finally { desk.dispose(); fixture.restore() }
-})
-
-test("document tabs enforce eight retained snapshots and closing one makes room", async () => {
-  const fixture = install()
-  const many = Array.from({ length: 9 }, (_, index) => ({ ...preview, id: `document-${index}`, name: `Document ${index}.docx`, hash: String(index).repeat(64) }))
-  let reads = 0
-  const desk = mountDesk(fixture.root, { async request(input) { if (input.action === "sources") return { ...sources, sources: many }; if (input.action === "source") { reads++; return many.find((source) => source.id === input.sourceId) }; throw new Error("Unexpected action") } }, { close() {} })
-  try {
-    await desk.ready
-    for (const source of many) await choose(fixture, source.id)
-    expect(reads).toBe(8)
-    expect(fixture.root.querySelectorAll('[role="tab"]')).toHaveLength(8)
-    expect(element(fixture.root, "status").textContent).toContain("maximum 8")
-    fixture.root.querySelector<HTMLButtonElement>('[data-el="close-document"]')!.click()
-    await choose(fixture, many[8].id)
-    expect(reads).toBe(9)
-    expect(fixture.root.querySelectorAll('[role="tab"]')).toHaveLength(8)
-    expect(element(fixture.root, "status").hidden).toBe(true)
+    button(fixture.root, "back-documents").click()
+    expect(element(fixture.root, "right").textContent).toBe("")
+    await choose(fixture, preview.id)
+    expect(element(fixture.root, "right").textContent).toContain("Version 2")
+    expect(element(fixture.root, "right").textContent).toContain("New saved wording.")
+    expect(calls.filter(call => call.action === "source")).toHaveLength(2)
+    expect(calls.filter(call => call.action === "source").at(-1)).toMatchObject({ expectedHash: "d".repeat(64) })
   } finally { desk.dispose(); fixture.restore() }
 })
 
@@ -146,19 +135,21 @@ test("automatic list updates preserve the reader, focus and exact snapshot witho
   try {
     await desk.ready
     expect(fixture.root.querySelector('[data-el="reload"]')).toBeNull()
-    expect(button(fixture.root, "find-toggle").hidden).toBe(true)
+    expect(fixture.root.querySelector('[data-el="find-toggle"]')).toBeNull()
     const noDocumentFind = new fixture.page.KeyboardEvent("keydown", { key: "f", metaKey: true, cancelable: true, bubbles: true })
     fixture.root.dispatchEvent(noDocumentFind as unknown as Event)
     expect(noDocumentFind.defaultPrevented).toBe(false)
     await choose(fixture, preview.id)
-    button(fixture.root, "find-toggle").click()
-    const find = element<HTMLInputElement>(fixture.root, "find")
-    find.value = "shared"; find.dispatchEvent(new fixture.page.Event("input") as unknown as Event)
-    expect(find.getAttribute("aria-label")).toBe("Find in Instructions.docx")
     const reader = element(fixture.root, "right").firstChild
     const details = element(fixture.root, "right").querySelector("details")!
     details.open = true
-    find.focus()
+    const passage = element(fixture.root, "right").querySelector<HTMLElement>(".desk-text")!
+    passage.focus(); passage.scrollTop = 35
+    for (const modifiers of [{ metaKey: true }, { ctrlKey: true }]) {
+      const nativeFind = new fixture.page.KeyboardEvent("keydown", { key: "f", ...modifiers, bubbles: true, cancelable: true })
+      passage.dispatchEvent(nativeFind as unknown as Event)
+      expect(nativeFind.defaultPrevented).toBe(false)
+    }
     const mutations: unknown[] = []
     const observer = new fixture.page.MutationObserver(records => mutations.push(...records))
     observer.observe(fixture.page.document.getElementById("desk-root")!, { subtree: true, attributes: true, childList: true, characterData: true })
@@ -170,11 +161,11 @@ test("automatic list updates preserve the reader, focus and exact snapshot witho
       await clock.tick()
       expect(element(fixture.root, "right").firstChild).toBe(reader)
       expect(details.open).toBe(true)
-      expect(document.activeElement).toBe(find)
-      expect(find.value).toBe("shared")
+      expect(document.activeElement).toBe(passage)
+      expect(passage.scrollTop).toBe(35)
       expect(element(fixture.root, "right").textContent).toContain(preview.hash)
       expect(calls.filter(input => input.action === "source")).toHaveLength(1)
-      button(fixture.root, "open-document").click()
+      button(fixture.root, "back-documents").click()
       expect(fixture.root.querySelector('[data-source="one"]')?.textContent).toContain("Updated")
       expect(fixture.root.querySelector('[data-source="new"]')?.textContent).toContain("New")
       await desk.setView("compare")
@@ -214,49 +205,6 @@ test("background polling serializes requests, pauses while hidden, retries quiet
     desk.dispose()
     expect(clock.scheduled).toBe(false)
     const count = reads; await clock.tick(); expect(reads).toBe(count)
-  } finally { desk.dispose(); fixture.restore() }
-})
-
-test("Find matches literal text without case sensitivity and preserves the document spelling", async () => {
-  const fixture = install()
-  const saved = { ...preview, text: "Letter of engagement. LETTER sent. Fees (A+B).", blocks: undefined }
-  const desk = mountDesk(fixture.root, { async request(input) { return input.action === "sources" ? sources : saved } }, { close() {} })
-  try {
-    await desk.ready; await choose(fixture, preview.id)
-    button(fixture.root, "find-toggle").click()
-    const find = element<HTMLInputElement>(fixture.root, "find")
-    find.value = "letter"; find.dispatchEvent(new fixture.page.Event("input") as unknown as Event)
-    expect(element(fixture.root, "find-count").textContent).toBe("1 of 2")
-    expect(Array.from(fixture.root.querySelectorAll("mark"), mark => mark.textContent)).toEqual(["Letter", "LETTER"])
-    expect(element(fixture.root, "right").querySelector(".desk-text")?.textContent).toBe(saved.text)
-    find.value = "fees (a+b)"; find.dispatchEvent(new fixture.page.Event("input") as unknown as Event)
-    expect(element(fixture.root, "find-count").textContent).toBe("1 of 1")
-    expect(fixture.root.querySelector("mark")?.textContent).toBe("Fees (A+B)")
-  } finally { desk.dispose(); fixture.restore() }
-})
-
-test("inline Find counts and navigates exact matches beyond its bounded highlights, with keyboard dismissal", async () => {
-  const fixture = install()
-  const repeated = { ...preview, text: Array.from({ length: 205 }, () => "shared").join(" "), blocks: undefined }
-  const desk = mountDesk(fixture.root, { async request(input) { return input.action === "sources" ? sources : repeated } }, { close() {} })
-  try {
-    await desk.ready; await choose(fixture, preview.id)
-    fixture.root.dispatchEvent(new fixture.page.KeyboardEvent("keydown", { key: "f", metaKey: true, bubbles: true, cancelable: true }) as unknown as Event)
-    const find = element<HTMLInputElement>(fixture.root, "find")
-    expect(document.activeElement).toBe(find)
-    find.value = "shared"; find.dispatchEvent(new fixture.page.Event("input") as unknown as Event)
-    expect(element(fixture.root, "find-count").textContent).toBe("1 of 205")
-    expect(fixture.root.querySelectorAll("mark")).toHaveLength(200)
-    button(fixture.root, "find-previous").click()
-    expect(element(fixture.root, "find-count").textContent).toBe("205 of 205")
-    expect(fixture.root.querySelector('[data-find-index="204"][aria-current="true"]')?.textContent).toBe("shared")
-    expect(fixture.root.querySelectorAll("mark")).toHaveLength(201)
-    find.dispatchEvent(new fixture.page.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as Event)
-    expect(element(fixture.root, "find-count").textContent).toBe("1 of 205")
-    find.dispatchEvent(new fixture.page.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event)
-    expect(element(fixture.root, "find-bar").hidden).toBe(true)
-    expect(document.activeElement).toBe(button(fixture.root, "find-toggle"))
-    expect(fixture.root.querySelectorAll("mark")).toHaveLength(0)
   } finally { desk.dispose(); fixture.restore() }
 })
 

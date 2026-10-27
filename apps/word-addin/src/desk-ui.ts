@@ -15,7 +15,7 @@ type DeskOptions = {
   schedulePoll?(run: () => void, delayMs: number): () => void
 }
 
-/** Each document tab retains the exact saved snapshot that was opened. */
+/** The reader retains one exact saved snapshot until the user returns to the list. */
 export function mountDesk(root: HTMLElement, transport: DeskTransport, options: DeskOptions) {
   root.classList.add("source-desk")
   root.classList.toggle("is-embedded", Boolean(options.embedded))
@@ -26,12 +26,9 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
       <button type="button" class="desk-icon" data-el="close" aria-label="${options.floating ? "Close window" : "Back to saving"}" title="${options.floating ? "Close window" : "Back to saving"}">×</button>
     </header>
     <section data-el="source-tools"><div class="desk-document-bar" data-el="document-bar" hidden>
-      <div class="desk-tabs" data-el="tabs" role="tablist" aria-label="Open documents"></div>
-      <button type="button" data-el="open-document">+ Open document</button>
-      <div class="desk-reader-actions"><button type="button" class="desk-icon" data-el="find-toggle" aria-label="Find in document (Cmd or Ctrl+F)" title="Find in document (Cmd or Ctrl+F)" aria-expanded="false" hidden>⌕</button></div>
+      <button type="button" class="desk-back" data-el="back-documents">‹ Back to documents</button>
+      <h3 class="desk-document-name" data-el="document-name" tabindex="-1"></h3>
       </div>
-      <div class="desk-find" data-el="find-bar" hidden><label class="desk-find-scope" data-el="find-scope" for="desk-find-input"></label><input id="desk-find-input" data-el="find" type="search" aria-label="Find in document" placeholder="Find in document" maxlength="255" />
-        <span data-el="find-count" role="status"></span><button class="desk-icon" type="button" data-el="find-previous" aria-label="Previous match" title="Previous match">‹</button><button class="desk-icon" type="button" data-el="find-next" aria-label="Next match" title="Next match">›</button><button class="desk-icon" type="button" data-el="find-close" aria-label="Close Find (Escape)" title="Close Find (Escape)">×</button></div>
       <div class="desk-document-list" data-el="document-list"></div>
       <p class="desk-meta desk-update-status" data-el="update-status" role="status" hidden></p>
     </section>
@@ -41,8 +38,6 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
   const el = <T extends HTMLElement>(name: string) => root.querySelector(`[data-el="${name}"]`) as T
   const button = (name: string) => el<HTMLButtonElement>(name)
   const select = (name: string) => el<HTMLSelectElement>(name)
-  el<HTMLInputElement>("find").id = `desk-find-${crypto.randomUUID()}`
-  el<HTMLLabelElement>("find-scope").htmlFor = el<HTMLInputElement>("find").id
   const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text = "", className?: string) => {
     const result = document.createElement(tag)
     result.textContent = text
@@ -62,7 +57,6 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     accept: "Changes accepted", conversion: "Converted", copy: "Copied", restore: "Restored",
     system: "Saved by doc.haus", unknown: "Saved in doc.haus",
   }
-  const key = (source: DeskSource) => `${source.id}:${source.hash}`
   let disposed = false
   let pending = 0
   let mode: DeskView = options.initialView === "compare" ? "compare" : "documents"
@@ -76,18 +70,13 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
   const schedulePoll = options.schedulePoll ?? ((run: () => void, delay: number) => { const timer = setTimeout(run, delay); return () => clearTimeout(timer) })
   let cancelPoll: (() => void) | undefined
   let versionsRefreshed: number | undefined
-  const documents = new Map<string, DeskSourcePreview>()
-  let activeKey = ""
-  let chooserOpen = true
-  let findOpen = false
-  let findIndex = 0
-  let findTotal = 0
+  let opened: DeskSourcePreview | undefined
   let comparison: DeskComparison | undefined
   let desiredPair = ""
   let retryPair = ""
   let change = 0
   const comparisons = new Map<string, DeskComparison>()
-  const active = () => documents.get(activeKey)
+  const active = () => opened
   const busy = () => pending > 0
   function error(message = "") {
     if (disposed) return
@@ -113,9 +102,8 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     if (disposed) return
     root.setAttribute("aria-busy", String(busy()))
     for (const control of root.querySelectorAll<HTMLButtonElement | HTMLSelectElement>("button, select")) {
-      if (!["close", "find-toggle", "find-close", "find-previous", "find-next"].includes(control.dataset.el ?? "")) control.disabled = busy()
+      if (control.dataset.el !== "close") control.disabled = busy()
     }
-    button("find-previous").disabled = button("find-next").disabled = !findTotal
     const count = comparison?.changes.length ?? 0
     const previous = root.querySelector<HTMLButtonElement>('[data-el="previous"]')
     const next = root.querySelector<HTMLButtonElement>('[data-el="next"]')
@@ -140,40 +128,10 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
       if (!disposed) { controls(); if (!pending) options.onBusyChange?.(false) }
     }
   }
-  const focusTab = (id = activeKey) => Array.from(el("tabs").querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((item) => item.dataset.document === id)?.focus()
-  function renderTabs() {
-    const tabs = el("tabs")
-    tabs.replaceChildren()
-    el("document-bar").hidden = !documents.size
-    tabs.hidden = !documents.size
-    button("open-document").hidden = !documents.size
-    button("open-document").setAttribute("aria-expanded", String(chooserOpen))
-    for (const [id, source] of documents) {
-      const group = node("div", "", "desk-tab")
-      group.setAttribute("role", "presentation")
-      const pick = action("document-tab", source.name, () => { activeKey = id; chooserOpen = false; render(); focusTab(id) })
-      pick.dataset.document = id; pick.setAttribute("role", "tab"); pick.setAttribute("aria-selected", String(activeKey === id)); pick.tabIndex = activeKey === id ? 0 : -1
-      pick.title = `${source.name} · version ${source.version?.number ?? "unavailable"}`
-      pick.onkeydown = (event) => {
-        const ids = Array.from(documents.keys()), at = ids.indexOf(id)
-        const target = event.key === "ArrowRight" ? ids[(at + 1) % ids.length] : event.key === "ArrowLeft" ? ids[(at + ids.length - 1) % ids.length] : event.key === "Home" ? ids[0] : event.key === "End" ? ids[ids.length - 1] : undefined
-        if (!target) return
-        event.preventDefault(); activeKey = target; chooserOpen = false; render(); focusTab(target)
-      }
-      const close = action("close-document", `Close ${source.name}`, () => {
-        const ids = Array.from(documents.keys()), at = ids.indexOf(id)
-        documents.delete(id)
-        if (activeKey === id) activeKey = ids[at + 1] ?? ids[at - 1] ?? ""
-        if (!documents.size) chooserOpen = true
-        render(); if (documents.size) focusTab(); else el("document-list").querySelector<HTMLButtonElement>("button")?.focus()
-      }, "×")
-      group.append(pick, close); tabs.append(group)
-    }
-  }
   function renderList() {
     const list = el("document-list")
-    list.hidden = !chooserOpen
-    if (!chooserOpen) return
+    list.hidden = Boolean(opened)
+    if (opened) return
     if (!sources) { if (sourcesJob && !list.firstChild) list.append(node("p", "Loading documents…", "desk-empty")); return }
     for (const note of list.querySelectorAll(".desk-empty, .desk-warning")) note.remove()
     const rows = new Map(Array.from(list.querySelectorAll<HTMLButtonElement>("[data-source]"), row => [row.dataset.source!, row]))
@@ -213,37 +171,11 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     button("sources-mode").setAttribute("aria-pressed", String(mode === "documents"))
     button("compare-mode").setAttribute("aria-pressed", String(mode === "compare"))
     const source = active()
-    if (!source) findOpen = false
-    button("find-toggle").hidden = !source
-    el("find-bar").hidden = !findOpen || !source
-    el("find-scope").textContent = source ? `Find in ${source.name}` : ""
-    el<HTMLInputElement>("find").setAttribute("aria-label", source ? `Find in ${source.name}` : "Find in document")
-    button("find-toggle").setAttribute("aria-expanded", String(findOpen))
-    renderTabs(); renderList()
+    el("document-bar").hidden = !source
+    el("document-name").textContent = source?.name ?? ""
+    renderList()
     const right = el("right")
     right.replaceChildren()
-    findTotal = 0
-    const query = mode === "documents" && findOpen ? el<HTMLInputElement>("find").value : ""
-    const highlighted = (area: HTMLElement, text: string) => {
-      if (!query) { area.textContent = text; return }
-      let from = 0
-      // Literal matching follows Word's default case-insensitive Find; keep the
-      // original spelling and match offsets, including Unicode characters.
-      const pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu")
-      for (const match of text.matchAll(pattern)) {
-        const at = match.index
-        const index = findTotal++
-        // Count all exact matches; bound DOM marks while keeping the active match navigable.
-        if (index < 200 || index === findIndex) {
-          area.append(document.createTextNode(text.slice(from, at)))
-          const mark = node("mark", match[0])
-          mark.dataset.findIndex = String(index)
-          if (index === findIndex) { mark.className = "is-current"; mark.setAttribute("aria-current", "true") }
-          area.append(mark); from = at + match[0].length
-        }
-      }
-      area.append(document.createTextNode(text.slice(from)))
-    }
     const textBlock = (text: string) => {
       const block = node("div", "", "desk-text")
       block.tabIndex = 0
@@ -261,15 +193,13 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
         const blocks = source.blocks?.length ? source.blocks : source.text.split(/\n+/).map((text) => ({ kind: "paragraph" as const, text }))
         for (const block of blocks) {
           const tag = block.kind === "heading" ? `h${Math.min(6, Math.max(2, (block.level ?? 1) + 1))}` as "h2" : "p"
-          const p = node(tag); highlighted(p, block.text); body.append(p)
+          const p = node(tag, block.text); body.append(p)
         }
         if (!source.text) body.append(node("p", "No previewable text."))
         paper.append(body)
         details(paper, [`Saved version ID · ${source.version?.id ?? "unavailable"}`, `SHA-256 · ${source.hash}`, "This opened snapshot stays unchanged when the document list is refreshed.", ...(sourcesRefreshed ? [`Document list refreshed ${date(sourcesRefreshed)}`] : [])])
         right.append(paper)
       }
-      if (findIndex >= findTotal && findIndex) { findIndex = 0; render(); return }
-      el("find-count").textContent = query ? findTotal ? `${findIndex + 1} of ${findTotal}` : "0 matches" : ""
     } else {
       right.hidden = false
       const paper = node("article", "", "desk-paper")
@@ -337,14 +267,6 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     }
     context(); controls()
   }
-  function scrollMatch() {
-    root.querySelector<HTMLElement>(`[data-find-index="${findIndex}"]`)?.scrollIntoView?.({ block: "center" })
-  }
-  function moveMatch(direction: -1 | 1) {
-    if (!findTotal) return
-    findIndex = (findIndex + direction + findTotal) % findTotal
-    render(); scrollMatch()
-  }
   function moveChange(direction: -1 | 1) {
     if (busy() || !comparison) return
     change = Math.max(0, Math.min(comparison.changes.length - 1, change + direction)); render()
@@ -353,15 +275,12 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
   }
   async function openDocument(source: DeskSource) {
     if (busy()) return
-    const id = key(source)
-    if (documents.has(id)) { updates.delete(source.id); activeKey = id; chooserOpen = false; render(); focusTab(); return }
-    if (documents.size >= 8) { error("Close a document tab before opening another (maximum 8)."); return }
     await work(async () => {
       const preview = await transport.request({ action: "source", sourceId: source.id, expectedHash: source.hash }) as DeskSourcePreview
       if (disposed) return
-      updates.delete(source.id); documents.set(id, preview); activeKey = id; chooserOpen = false; render()
+      updates.delete(source.id); opened = preview; render()
     })
-    if (!disposed) focusTab()
+    if (!disposed && opened) el("document-name").focus()
   }
   function pollingAllowed() { return !disposed && mode === "documents" && document.visibilityState !== "hidden" }
   function scheduleNextPoll() {
@@ -448,26 +367,15 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     try { await comparisonJob } finally { comparisonJob = undefined }
     if (!disposed && desiredPair && desiredPair !== requested && chosenPair()?.key === desiredPair) await compareSelected()
   }
-  function toggleFind(open: boolean) {
-    if (open && !active()) return
-    findOpen = open; render()
-    if (open) { el<HTMLInputElement>("find").focus(); scrollMatch() } else button("find-toggle").focus()
-  }
-  const onKey = (event: KeyboardEvent) => {
-    if (mode !== "documents") return
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f" && active()) { event.preventDefault(); toggleFind(true) }
-    if (event.key === "Escape" && findOpen) { event.preventDefault(); toggleFind(false) }
-    if (event.key === "Enter" && event.target === el("find")) { event.preventDefault(); moveMatch(event.shiftKey ? -1 : 1) }
-  }
-  root.addEventListener("keydown", onKey)
   button("close").onclick = options.close
-  button("open-document").onclick = () => { chooserOpen = !chooserOpen; render(); if (chooserOpen) el("document-list").querySelector<HTMLButtonElement>("button")?.focus() }
+  button("back-documents").onclick = () => {
+    if (busy()) return
+    const previous = opened?.id
+    opened = undefined; render()
+    const rows = Array.from(el("document-list").querySelectorAll<HTMLButtonElement>("[data-source]"))
+    ;(rows.find(row => row.dataset.source === previous) ?? rows[0])?.focus()
+  }
   button("reload-versions").onclick = () => { if (!busy()) void loadVersions(false) }
-  button("find-toggle").onclick = () => toggleFind(!findOpen)
-  button("find-close").onclick = () => toggleFind(false)
-  button("find-previous").onclick = () => moveMatch(-1)
-  button("find-next").onclick = () => moveMatch(1)
-  el<HTMLInputElement>("find").oninput = () => { findIndex = 0; render(); scrollMatch() }
   select("base").onchange = select("current").onchange = () => { void compareSelected() }
   button("compare").onclick = () => { if (!busy()) void compareSelected(true) }
   button("sources-mode").onclick = () => { void setView("documents") }
@@ -489,8 +397,8 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
   return { ready, setView, dispose() {
     if (disposed) return
     disposed = true; cancelPoll?.(); document.removeEventListener("visibilitychange", visibilityChanged)
-    desiredPair = ""; documents.clear(); comparisons.clear()
+    desiredPair = ""; opened = undefined; comparisons.clear()
     if (pending) options.onBusyChange?.(false)
-    root.removeEventListener("keydown", onKey); root.replaceChildren(); root.removeAttribute("aria-busy"); root.classList.remove("source-desk", "is-embedded")
+    root.replaceChildren(); root.removeAttribute("aria-busy"); root.classList.remove("source-desk", "is-embedded")
   } }
 }

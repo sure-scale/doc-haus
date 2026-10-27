@@ -45,16 +45,8 @@
 .source-desk .desk-modes [aria-pressed="true"] { color: var(--desk-accent); background: var(--desk-soft); font-weight: 650; }
 .desk-head > .desk-icon { border-color: transparent; color: var(--desk-muted); }
 .desk-document-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--desk-line); }
-.desk-tabs { display: flex; flex: 1 1 100%; gap: 4px; min-width: 0; overflow: auto; padding: 2px; scrollbar-width: thin; }
-.desk-tab { display: flex; flex: 0 0 auto; min-width: 0; max-width: min(360px, 100%); }
-.source-desk .desk-tab [role="tab"] { min-width: 0; border-right: 0; border-radius: 8px 0 0 8px; text-align: left; }
-.source-desk .desk-tab [aria-selected="true"] { background: var(--desk-soft); color: var(--desk-accent); font-weight: 650; }
-.source-desk .desk-tab .desk-icon { border-radius: 0 8px 8px 0; font-size: 18px; }
-.desk-reader-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-left: auto; }
-.source-desk .desk-reader-actions button { border-color: transparent; }
-.desk-find { display: flex; align-items: center; gap: 4px; padding: 8px 16px; border-bottom: 1px solid var(--desk-line); }
-.source-desk .desk-find input { flex: 1 1 180px; width: 180px; font-weight: 400; }
-.desk-find > span { flex: none; min-width: 48px; color: var(--desk-muted); font-size: 12px; text-align: center; }
+.source-desk .desk-back { padding-inline: 0; border-color: transparent; color: var(--desk-accent); background: transparent; font-size: 12px; }
+.source-desk .desk-document-name { flex: 1 1 100%; min-width: 0; font-size: 15px; line-height: 1.4; font-weight: 650; }
 .desk-document-list { display: grid; gap: 4px; padding: 12px 16px; border-bottom: 1px solid var(--desk-line); }
 .source-desk .desk-document-choice { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 20px; width: 100%; padding: 12px; border-color: transparent; border-bottom-color: var(--desk-line); border-radius: 0; text-align: left; }
 .desk-document-choice > span:first-child { font-size: 14px; overflow-wrap: anywhere; }
@@ -62,8 +54,6 @@
 .desk-document-choice.has-update { animation: desk-document-updated 1.6s ease-out; }
 @keyframes desk-document-updated { from { background: #dceee2; } to { background: var(--desk-paper); } }
 .source-desk .desk-update-status { margin: 0; padding: 8px 16px; }
-.desk-find-scope { flex: 1 1 100%; color: var(--desk-muted); font-size: 11px; overflow-wrap: anywhere; }
-.desk-find { flex-wrap: wrap; }
 .source-desk .desk-meta { color: var(--desk-muted); font-size: 12px; line-height: 1.5; font-weight: 400; overflow-wrap: anywhere; }
 .desk-compare-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--desk-line); }
 .desk-compare-controls label { display: grid; flex: 1 1 160px; min-width: 0; gap: 3px; color: var(--desk-muted); font-size: 12px; }
@@ -81,8 +71,6 @@
 .source-desk .desk-text h3 { font-size: 1.18em; }
 .source-desk .desk-text h4, .source-desk .desk-text h5, .source-desk .desk-text h6 { font-size: 1.05em; }
 .source-desk .desk-text > :first-child { margin-top: 0; }
-.desk-text mark { padding: 0; color: inherit; background: #edf0c9; }
-.desk-text mark.is-current { background: #e1cc74; outline: 1px solid #8f7629; }
 .desk-details { margin-top: 20px; padding-top: 4px; border-top: 1px solid var(--desk-line); color: var(--desk-muted); font-size: 12px; overflow-wrap: anywhere; }
 .desk-details summary { min-height: 44px; padding-block: 10px; cursor: pointer; }
 .desk-details p + p { margin-top: 5px; }
@@ -124,13 +112,9 @@
   .desk-head { gap: 4px 8px; padding-inline: 12px; }
   .desk-identity { flex-basis: calc(100% - 48px); }
   .desk-modes { order: 2; flex-basis: 100%; }
-  .desk-document-bar, .desk-find, .desk-compare-controls { padding-inline: 12px; }
-  .desk-reader-actions { flex: 1 1 100%; margin-left: 0; }
+  .desk-document-bar, .desk-compare-controls { padding-inline: 12px; }
   .desk-reader { padding: 18px 16px; }
   .desk-document-list { padding: 8px 12px; }
-  .desk-find { flex-wrap: wrap; }
-  .source-desk .desk-find input { flex-basis: 100%; width: 100%; }
-  .desk-find > span { flex: 1 1 auto; text-align: left; }
   .desk-compare-controls label { flex-basis: calc(100% - 56px); }
   .desk-compare-controls > span { display: none; }
   .desk-change-head > div:first-child { flex-basis: 100%; }
