@@ -91,6 +91,17 @@
 .desk-details p + p { margin-top: 5px; }
 .source-desk .desk-details h4 { margin-top: 16px; font-size: 12px; }
 .source-desk .desk-details .desk-text { margin-top: 6px; font-size: 15px; }
+.desk-version-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 20px; margin: 6px 0 18px; }
+.source-desk .desk-version-section { min-width: 0; }
+.source-desk .desk-version-section h4 { margin: 0 0 4px; color: var(--desk-ink); font-size: 13px; font-weight: 650; }
+.source-desk .desk-version-section .desk-meta { font-size: 11px; line-height: 1.6; }
+.source-desk .desk-version-section .desk-text { margin-top: 10px; padding: 12px 14px; border-radius: 6px; background: var(--desk-bg); font-size: 16px; line-height: 1.55; }
+.desk-technical { padding-top: 4px; border-top: 1px solid var(--desk-line); }
+.desk-technical summary { color: var(--desk-muted); font-size: 11px; }
+.source-desk .desk-technical h5 { margin: 14px 0 6px; color: var(--desk-ink); font-size: 11px; font-weight: 650; }
+.desk-technical dl { display: grid; grid-template-columns: 65px minmax(0, 1fr); gap: 6px 10px; margin: 0 0 14px; font-size: 11px; }
+.desk-technical dt, .desk-technical dd { margin: 0; min-width: 0; }
+.desk-technical code { font: 10px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; user-select: text; }
 .source-desk .desk-warning, .source-desk .desk-error { margin: 10px 16px; padding: 8px 10px; color: #805311; background: #fff5e3; border-radius: 8px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .source-desk .desk-context .desk-warning, .source-desk .desk-paper .desk-warning { margin-inline: 0; }
 .source-desk .desk-empty { padding: 12px 0; color: var(--desk-muted); font-size: 13px; }

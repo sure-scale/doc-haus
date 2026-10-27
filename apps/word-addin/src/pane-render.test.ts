@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs"
 import { Window } from "happy-dom"
 import { WORD_ADDIN_VERSION } from "../../../dochaus/lib/word-addin-contract"
 import type { PaneState } from "./sync"
-import { configureConnectionRecovery, createPaneRenderer, setupSaveMenu } from "./pane-render"
+import { configureConnectionRecovery, createPaneRenderer } from "./pane-render"
 
 test("unchanged poll presentation preserves the pane DOM and focus while real saving updates controls", async () => {
   const page = new Window({ url: `https://localhost:4612/word-addin/pane.html?version=${WORD_ADDIN_VERSION}` })
@@ -19,6 +19,10 @@ test("unchanged poll presentation preserves the pane DOM and focus while real sa
     }
     render(state)
     const button = document.getElementById("save") as HTMLButtonElement
+    expect(button.textContent).toBe("Save")
+    expect(document.getElementById("save-menu")).toBeNull()
+    expect(document.getElementById("takeover")!.hidden).toBe(true)
+    expect(document.getElementById("release")!.hidden).toBe(true)
     button.focus()
     const text = document.getElementById("status")!.firstChild
     const mutations: unknown[] = []
@@ -49,37 +53,31 @@ test("unchanged poll presentation preserves the pane DOM and focus while real sa
   }
 })
 
-test("save menu dismisses outside the pane controls without stealing focus", () => {
+test("blocked saving offers only the recovery action supported by the displayed connection", () => {
   const page = new Window()
-  page.document.body.innerHTML = '<details id="menu"><summary>More options</summary><button>Save</button></details><button id="outside">Documents</button><p id="title">Matter title</p>'
+  page.document.body.innerHTML = readFileSync(new URL("../pane.html", import.meta.url), "utf8").match(/<body>([\s\S]*)<\/body>/)![1]!
   const document = page.document as unknown as Document
-  const menu = document.getElementById("menu") as HTMLDetailsElement
-  const outside = document.getElementById("outside") as HTMLButtonElement
-  const summary = menu.querySelector("summary")!
-  setupSaveMenu(menu)
+  const render = createPaneRenderer(document)
+  const state: PaneState = { status: "not-saved", busy: false, canSave: false, content: "changed", message: "Paused",
+    connection: { version: { base: { id: "v1", number: 1 }, current: { id: "v1", number: 1 }, state: "current" }, lease: { state: "other", generation: "other-owner", expiresAt: 90_000 } } }
+  const takeover = document.getElementById("takeover") as HTMLButtonElement
+  const release = document.getElementById("release") as HTMLButtonElement
   try {
-    menu.open = true
-    menu.querySelector("button")!.dispatchEvent(new page.Event("pointerdown", { bubbles: true }) as unknown as Event)
-    expect(menu.open).toBe(true)
-    outside.focus()
-    expect(menu.open).toBe(false)
-    expect(document.activeElement === outside).toBe(true)
-    menu.open = true
-    outside.dispatchEvent(new page.Event("pointerdown", { bubbles: true }) as unknown as Event)
-    expect(menu.open).toBe(false)
-    expect(document.activeElement === outside).toBe(true)
-    menu.open = true
-    document.getElementById("title")!.dispatchEvent(new page.MouseEvent("click", { bubbles: true }) as unknown as Event)
-    expect(menu.open).toBe(false)
-    expect(document.activeElement === outside).toBe(true)
-    menu.open = true
-    page.dispatchEvent(new page.Event("blur"))
-    expect(menu.open).toBe(false)
-    expect(document.activeElement === outside).toBe(true)
-    menu.open = true
-    menu.dispatchEvent(new page.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }) as unknown as Event)
-    expect(menu.open).toBe(false)
-    expect(document.activeElement === summary).toBe(true)
+    render(state)
+    expect(takeover.hidden).toBe(false)
+    expect(takeover.disabled).toBe(false)
+    expect(release.hidden).toBe(true)
+    render({ ...state, busy: true })
+    expect(takeover.disabled).toBe(true)
+    render({ ...state, connection: { ...state.connection!, lease: { state: "available", expiresAt: null } } })
+    expect(takeover.hidden).toBe(true)
+    render({ ...state, problem: true, connection: { ...state.connection!, lease: { state: "owned", generation: "own", expiresAt: 90_000 } } })
+    expect(release.hidden).toBe(false)
+    expect(takeover.hidden).toBe(true)
+    render({ ...state, connection: { ...state.connection!, version: { ...state.connection!.version, state: "stale", current: { id: "v2", number: 2 } } } })
+    expect(document.getElementById("save")!.hidden).toBe(true)
+    expect(document.getElementById("load-latest")!.hidden).toBe(false)
+    expect(takeover.hidden).toBe(true)
   } finally { page.happyDOM.abort() }
 })
 
@@ -96,7 +94,8 @@ test("connection recovery launches only local doc.haus without navigating away f
       expect(recovery.hidden).toBe(false)
       expect(recovery.querySelectorAll('a[href^="https:"]')).toHaveLength(0)
       expect(recovery.textContent).toContain("Keep this pane open")
-      expect(recovery.textContent).toContain("Save or Check status")
+      expect(recovery.textContent).toContain("reconnects automatically")
+      expect(recovery.textContent).not.toContain("Check status")
       if (origin.includes("localhost")) {
         expect(launch.hidden).toBe(false)
         expect(launch.href).toBe("doc.haus://launch")

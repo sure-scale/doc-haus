@@ -170,7 +170,21 @@ test("comparison loads independently, automatically applies valid pairs and reta
     expect(element(fixture.root, "right").textContent).toContain("Untracked edit")
     expect(element(fixture.root, "right").textContent).toContain("1 untracked edit")
     expect(element(fixture.root, "right").textContent).not.toContain("0 proposal")
-    expect(element(fixture.root, "right").querySelectorAll("details")).toHaveLength(1)
+    const detail = element(fixture.root, "right").querySelector("details")!
+    const technical = detail.querySelector("details")!
+    expect(detail.open).toBe(false)
+    expect(technical.open).toBe(false)
+    expect(technical.querySelector("summary")?.textContent).toBe("Technical details")
+    expect(technical.textContent).toContain(comparison().base.hash)
+    const earlier = detail.querySelector('[aria-label="Earlier · Version 1"]')!
+    const later = detail.querySelector('[aria-label="Later · Version 2"]')!
+    expect(earlier.textContent).toContain("Payment within 14 days.")
+    expect(later.textContent).toContain("Payment within 30 days.")
+    expect(earlier.textContent).toContain("Saved from Word")
+    expect(earlier.textContent).not.toContain("0 tracked")
+    expect(later.textContent).toContain("1 tracked change in this version")
+    expect(earlier.textContent).not.toContain(comparison().base.hash)
+    expect(later.querySelector("time")?.dateTime).toBe(new Date(comparison().current.createdAt).toISOString())
     expect(element(fixture.root, "right").querySelector("h3")?.textContent).toBe("Payment terms")
     button(fixture.root, "next").click()
     expect(element(fixture.root, "right").textContent).toContain("2 of 2")

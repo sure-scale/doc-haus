@@ -22,16 +22,8 @@
         <div id="actions" class="save-controls">
           <button id="save" class="primary" type="button" disabled>Save</button>
           <a id="load-latest" class="primary latest-action" target="_blank" rel="noopener noreferrer" aria-disabled="true" hidden>Load latest version</a>
-          <details id="save-menu" class="save-menu">
-            <summary title="More save options" aria-label="More save options">⋯</summary>
-            <div class="save-menu-items">
-              <button id="save-again" type="button" hidden disabled>Save</button>
-              <button id="done" type="button" disabled>Save and close</button>
-              <button id="refresh" type="button" disabled>Check status</button>
-              <button id="release" type="button" hidden disabled>Stop editing here</button>
-              <button id="takeover" type="button" hidden disabled>Take over editing here</button>
-            </div>
-          </details>
+          <button id="release" class="recovery-action" type="button" hidden disabled>Stop editing here</button>
+          <button id="takeover" class="recovery-action" type="button" hidden disabled>Take over editing here</button>
         </div>
         <p id="latest-message" class="blocked-help" role="status" hidden></p>
       </section>

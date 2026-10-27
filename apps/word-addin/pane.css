@@ -16,7 +16,7 @@ main { min-width: 0; width: 100%; padding: 12px; margin: 0; }
 .status[data-state="changed"], .status[data-state="blocked"] { color: #805311; background: #fff0d1; }
 #message { flex: 1 1 160px; min-width: 0; margin: 0; font-size: 12px; overflow-wrap: anywhere; }
 .version-mismatch, .blocked-help { margin: 7px 0 0; color: #805311; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
-.save-controls { display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: start; gap: 8px; margin-top: 10px; }
+.save-controls { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 4px; margin-top: 10px; }
 button { min-width: 0; max-width: 100%; min-height: 44px; padding: 9px 12px; border: 1px solid transparent; border-radius: 8px; font: inherit; font-weight: 550; line-height: 1.45; cursor: pointer; overflow-wrap: anywhere; }
 .primary { width: 100%; color: #fff; background: #17634f; }
 .latest-action { display: block; min-height: 44px; padding: 9px 12px; border: 1px solid transparent; border-radius: 8px; text-align: center; text-decoration: none; font-weight: 550; }
@@ -24,13 +24,8 @@ button { min-width: 0; max-width: 100%; min-height: 44px; padding: 9px 12px; bor
 .primary:hover:not(:disabled) { background: #104f3e; }
 button:disabled { opacity: .55; cursor: default; }
 button:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid #17634f; outline-offset: 3px; }
-.save-menu { position: relative; }
-.save-menu > summary { display: grid; place-items: center; width: 44px; min-height: 44px; border: 1px solid #dce4dc; border-radius: 8px; background: #fff; color: #526057; font-size: 22px; line-height: 1; list-style: none; cursor: pointer; }
-.save-menu > summary::-webkit-details-marker { display: none; }
-.save-menu > summary:hover { color: #17634f; background: #edf4ee; }
-.save-menu-items { position: absolute; z-index: 20; top: calc(100% + 6px); right: 0; width: min(280px, calc(100vw - 24px)); max-height: calc(100vh - 110px); max-height: calc(100dvh - 110px); padding: 5px; overflow: auto; border: 1px solid #dce4dc; border-radius: 10px; background: #fff; box-shadow: 0 6px 20px #20312d1f; }
-.save-menu-items button { display: block; width: 100%; text-align: left; color: #242c28; background: transparent; font-size: 13px; font-weight: 450; }
-.save-menu-items button:hover:not(:disabled) { color: #17634f; background: #edf4ee; }
+.recovery-action { justify-self: start; color: #17634f; background: transparent; padding-inline: 0; font-size: 12px; }
+.recovery-action:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 3px; }
 .desk-entry { display: flex; flex-wrap: wrap; align-items: center; gap: 0 8px; min-width: 0; border-top: 1px solid #dce4dc; border-bottom: 1px solid #dce4dc; }
 .pane-tabs { display: flex; flex: 1 1 auto; min-width: 0; gap: 18px; }
 .pane-tabs button { min-height: 44px; padding: 10px 0; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: #526057; background: transparent; font-size: 13px; }

@@ -55,6 +55,12 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     return result
   }
   const date = (value?: number | string) => value === undefined ? "" : new Date(value).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+  const originLabel: Record<string, string> = {
+    word: "Saved from Word", upload: "Uploaded", replace: "Replaced", generated: "Created in doc.haus",
+    revision: "Revised in doc.haus", "agent-edit": "Edited in doc.haus", redaction: "Redacted",
+    accept: "Changes accepted", conversion: "Converted", copy: "Copied", restore: "Restored",
+    system: "Saved by doc.haus", unknown: "Saved in doc.haus",
+  }
   const key = (source: DeskSource) => `${source.id}:${source.hash}`
   let disposed = false
   let pending = 0
@@ -264,7 +270,8 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
         const hunk = comparison.changes[change]
         const head = node("div", "", "desk-change-head")
         const heading = node("div")
-        heading.append(node("h3", hunk?.location.heading ?? (hunk ? "Text change" : "No text changes")), node("p", `Version ${comparison.base.number} → Version ${comparison.current.number} · Saved versions · Read-only`, "desk-meta"))
+        const scopeLabel = hunk && ({ body: "Text", header: "Header", footer: "Footer", footnote: "Footnote", endnote: "Endnote" }[hunk.location.scope])
+        heading.append(node("h3", hunk?.location.heading ?? (hunk ? `${scopeLabel} change` : "No text changes")), node("p", `Version ${comparison.base.number} → Version ${comparison.current.number} · Saved versions · Read-only`, "desk-meta"))
         if (hunk?.untracked) heading.append(node("span", "Untracked edit", "desk-tag"))
         const nav = node("div", "", "desk-change-nav")
         nav.append(action("previous", "Previous change", () => moveChange(-1), "‹"), node("span", comparison.changes.length ? `${change + 1} of ${comparison.changes.length}` : "0 changes"), action("next", "Next change", () => moveChange(1), "›"))
@@ -285,12 +292,39 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
           const legend = node("div", "", "desk-legend")
           legend.append(node("span", "Inserted", "legend-inserted"), node("span", "Deleted", "legend-deleted"), node("span", "Moved", "legend-moved")); paper.append(legend)
         }
-        const detail = details(paper, [
-          ...(hunk ? [`${hunk.kind} · ${hunk.location.scope} paragraph ${hunk.location.paragraph} in the ${hunk.location.side === "left" ? "earlier" : "later"} version`] : []),
-          ...[comparison.base, comparison.current].flatMap((side) => [`Version ${side.number} · ${date(side.createdAt)} · ${side.origin}`, `Version ID · ${side.id}`, `SHA-256 · ${side.hash}`, `${side.trackedChanges.count} input tracked ${side.trackedChanges.count === 1 ? "change" : "changes"}`]),
-          ...(versionsRefreshed ? [`Version list refreshed ${date(versionsRefreshed)}. Latest known refers to that list; this comparison retains its applied saved versions.`] : []),
-        ])
-        if (hunk) detail.append(node("h4", `Earlier · version ${comparison.base.number}`), textBlock(hunk.before || "No text."), node("h4", `Later · version ${comparison.current.number}`), textBlock(hunk.after || "No text."))
+        const detail = details(paper, [])
+        detail.classList.add("desk-comparison-details")
+        const pair = node("div", "", "desk-version-pair")
+        for (const [index, side] of [comparison.base, comparison.current].entries()) {
+          const section = node("section", "", "desk-version-section")
+          const title = `${index === 0 ? "Earlier" : "Later"} · Version ${side.number}`
+          section.setAttribute("aria-label", title)
+          section.append(node("h4", title))
+          const meta = node("p", "", "desk-meta")
+          const time = node("time", date(side.createdAt))
+          time.dateTime = new Date(side.createdAt).toISOString()
+          meta.append(time, document.createTextNode(` · ${originLabel[side.origin] ?? "Saved in doc.haus"}`))
+          section.append(meta)
+          if (side.trackedChanges.count) section.append(node("p", `${side.trackedChanges.count} tracked ${side.trackedChanges.count === 1 ? "change" : "changes"} in this version`, "desk-meta"))
+          if (hunk) section.append(textBlock((index === 0 ? hunk.before : hunk.after) || "No text."))
+          pair.append(section)
+        }
+        detail.append(pair)
+        const technical = node("details", "", "desk-technical")
+        technical.append(node("summary", "Technical details"))
+        if (hunk) technical.append(node("p", `${hunk.kind} · ${hunk.location.scope} paragraph ${hunk.location.paragraph} in the ${hunk.location.side === "left" ? "earlier" : "later"} version`, "desk-meta"))
+        for (const side of [comparison.base, comparison.current]) {
+          technical.append(node("h5", `Version ${side.number}`))
+          const fields = node("dl")
+          for (const [label, value] of [["Version ID", side.id], ["SHA-256", side.hash]]) {
+            const valueElement = node("dd")
+            valueElement.append(node("code", value))
+            fields.append(node("dt", label), valueElement)
+          }
+          technical.append(fields)
+        }
+        if (versionsRefreshed) technical.append(node("p", `Version list checked ${date(versionsRefreshed)}. Comparing the selected saved versions.`, "desk-meta"))
+        detail.append(technical)
       } else if (versions && versions.versions.filter((version) => !version.removed).length < 2) paper.append(node("p", "Two saved versions are needed to compare.", "desk-empty"))
       right.append(paper)
     }
