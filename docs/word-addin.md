@@ -17,8 +17,19 @@ does not confirm that doc.haus received it. When offline, keep the file and use
 
 ## Install on a desktop
 
-The doc.haus installer offers setup when Word is installed. Existing users can
-run this from their doc.haus folder, with the same data-root settings as startup:
+Onboarding's final Details step selects **Set up Microsoft Word** when desktop
+Word is installed. **Save and finish** installs it and asks you to approve the
+local connection. Clear that choice to set it up later.
+
+Existing users can open **Settings → Add-ins → Microsoft Word**. Choose
+**Set up Word** or **Repair Word connection**. The status checks this
+installation's active connection, certificate trust and installed manifest.
+Setup takes effect without restarting doc.haus; restart Word if instructed.
+Keep doc.haus running while using the add-in. An ordinary Word document is not
+linked automatically: add it to a matter, then use **Open in Word**.
+
+For command-line installations, run this from the doc.haus folder, with the
+same data-root settings as startup:
 
 ```sh
 bun scripts/setup-word-addin.ts
@@ -36,8 +47,9 @@ certificate and private key under the private runtime directory. It asks the
 operating system to trust that certificate in the current user's account.
 The certificate is a TLS server leaf, not a certificate authority, and is valid
 only for localhost/loopback. Setup never disables certificate verification.
-The private key stays with the installation. Re-run setup to renew an expired
-certificate, then restart doc.haus and Word. Do not copy runtime keys into Git.
+The private key stays with the installation. Use **Repair Word connection**
+to renew a certificate or select this installation's add-in again. The CLI
+route requires a doc.haus restart. Do not copy runtime keys into Git.
 
 The default pane address is `https://localhost:4511`. Set `DOCHAUS_WORD_ORIGIN`
 before setup to choose another localhost port. Multiple installations need

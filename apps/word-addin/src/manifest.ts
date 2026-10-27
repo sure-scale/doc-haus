@@ -40,7 +40,7 @@ export function renderManifest(origin: string): string {
     <Resources>
       <bt:Images><bt:Image id="Icon" DefaultValue="${base}/assets/icon.png"/></bt:Images>
       <bt:Urls><bt:Url id="Pane.Url" DefaultValue="${base}/pane.html?version=${WORD_ADDIN_VERSION}"/></bt:Urls>
-      <bt:ShortStrings><bt:String id="Group.Label" DefaultValue="doc.haus"/><bt:String id="Button.Label" DefaultValue="Open doc.haus"/></bt:ShortStrings>
+      <bt:ShortStrings><bt:String id="Group.Label" DefaultValue="doc.haus"/><bt:String id="Button.Label" DefaultValue="doc.haus"/></bt:ShortStrings>
       <bt:LongStrings><bt:String id="Button.Description" DefaultValue="Open the doc.haus pane to save, read matter documents and compare saved versions."/></bt:LongStrings>
     </Resources>
   </VersionOverrides>

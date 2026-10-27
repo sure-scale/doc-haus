@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { fetchWordConfig, fetchWordDocuments, linkedWordDocument, recoverWordEditing, revokeWordDocument, type WordConfig, type WordOpenDocument } from "../api/ingest/word"
 import { humanizeError } from "../api/ingest/errors"
 import { useToast } from "./Toast"
+import { useOpenSettings } from "./settings/navigation"
 
 type WordState = {
   config?: WordConfig
@@ -33,6 +34,12 @@ export function WordDocumentsProvider({ matterId, onChanged, children }: { matte
   const changed = useRef(onChanged)
   changed.current = onChanged
   const refresh = useRef<() => void>(() => {})
+
+  useEffect(() => {
+    const changed = () => setSetupAttempt(value => value + 1)
+    window.addEventListener("dochaus:word-setup", changed)
+    return () => window.removeEventListener("dochaus:word-setup", changed)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -145,31 +152,24 @@ export function WordBadge({ name }: { name: string }) {
 export function wordSetupReason(config?: WordConfig, error?: string) {
   if (error) return error
   if (!config) return "Checking Word setup…"
-  if (!config.available) return config.reason || "Word needs a trusted HTTPS connection to this doc.haus instance. Complete Word setup on the server, then try again."
-}
-
-function WordInstallInstructions() {
-  return <>
-    <p>If doc.haus runs on this Mac or Windows computer, open Terminal on Mac or PowerShell on Windows. In your doc.haus folder, run <code>bun scripts/setup-word-addin.ts</code>, then restart doc.haus and Word. Setup installs the add-in and asks your computer to trust the local Word connection.</p>
-    <p>If your firm runs doc.haus on another computer, ask your administrator to set up the trusted Word connection and install its add-in on this computer.</p>
-  </>
+  if (!config.available) return "Word is not ready. Set it up in Settings → Add-ins."
 }
 
 // Kept nearby instead of repeated on every row. It remains discoverable when
 // Word cannot be used, with the actual reason and a way to check after setup.
 export function WordSetup() {
   const { config, setupError, retrySetup } = useContext(WordDocuments)
+  const openSettings = useOpenSettings()
   const reason = wordSetupReason(config, setupError)
   if (reason) return <div className="word-setup" role="status">
     <span>{reason}</span>
-    {config && !config.available && <details><summary>Set up Word</summary><WordInstallInstructions /></details>}
+    {config && !config.available && <button type="button" className="linklike" onClick={() => openSettings("addins")}>Set up Word</button>}
     {(config || setupError) && <button type="button" className="linklike" onClick={retrySetup}>Check again</button>}
   </div>
   return <details className="word-setup">
     <summary>Using Word for the first time?</summary>
-    <p>Install the doc.haus Word add-in on this computer once, then open the downloaded document in Word. Use <strong>Save to doc.haus</strong> in its pane and wait for confirmation before closing. Background updates may combine saves or stop when the document closes.</p>
-    <WordInstallInstructions />
-    {config?.manifestUrl && <a href={config.manifestUrl} download="doc-haus-word.xml">Download the Word add-in manifest</a>}
+    <p>Choose Open in Word and open the downloaded copy. Keep doc.haus running, then choose <strong>Save</strong> in Word and wait for <strong>Saved</strong> before closing.</p>
+    <button type="button" className="linklike" onClick={() => openSettings("addins")}>Word add-in settings</button>
   </details>
 }
 

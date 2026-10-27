@@ -1,4 +1,6 @@
 import path from "node:path"
+import { createHash } from "node:crypto"
+import { existsSync, readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { renderManifest } from "../../../apps/word-addin/src/manifest"
 import { wordHttpsConfiguration, type WordHttpsConfiguration } from "./word-configuration"
@@ -8,6 +10,34 @@ const assets = fileURLToPath(new URL("../../../apps/word-addin/dist/", import.me
 const tokenRoutes = new Set(["/word/lease", "/word/saves", "/word/heartbeat", "/word/done",
   "/word/desk/sources", "/word/desk/source", "/word/desk/versions", "/word/desk/compare"])
 let startupFailure: string | undefined
+let activeServer: ReturnType<typeof Bun.serve> | undefined
+let activeIdentity: string | undefined
+let activeAssets = assets
+const paneFiles = ["pane.html", "pane.js", "pane.css", "desk.html", "desk.js", "desk.css", "assets/icon.png"]
+
+export function wordPaneBuilt(directory = assets) {
+  return paneFiles.every(file => existsSync(path.join(directory, file)))
+}
+
+function configurationIdentity(configuration: WordHttpsConfiguration) {
+  return JSON.stringify([configuration.origin, configuration.host, configuration.port,
+    configuration.external ? "external" : createHash("sha256").update(readFileSync(configuration.certificate!)).update(readFileSync(configuration.key!)).digest("hex")])
+}
+
+export function wordHttpsRunning(configuration: WordHttpsConfiguration) {
+  try { return Boolean(activeServer && activeIdentity === configurationIdentity(configuration)) }
+  catch { return false }
+}
+
+export function wordHttpsAvailable(configuration: WordHttpsConfiguration) {
+  return configuration.external || (wordHttpsRunning(configuration) && wordPaneBuilt(activeAssets))
+}
+
+export function stopWordHttps() {
+  activeServer?.stop(true)
+  activeServer = undefined
+  activeIdentity = undefined
+}
 
 /** A recoverable bridge failure must never make the ordinary product unavailable. */
 export function wordHttpsFailure() { return startupFailure }
@@ -38,24 +68,30 @@ export function wordHttpsHandler(fetch: Fetch, configuration: WordHttpsConfigura
   }
 }
 
-export function startWordHttps(fetch: Fetch) {
+export function startWordHttps(fetch: Fetch, environment: Record<string, string | undefined> = process.env, directory = assets) {
   startupFailure = undefined
   try {
-    const configuration = wordHttpsConfiguration()
-    if (!configuration || configuration.external) return
+    const configuration = wordHttpsConfiguration(environment)
+    if (!configuration || configuration.external) { stopWordHttps(); return }
+    const identity = configurationIdentity(configuration)
+    if (activeServer && activeIdentity === identity && activeAssets === directory) return activeServer
+    stopWordHttps()
     const server = Bun.serve({
       hostname: configuration.host,
       port: configuration.port,
       tls: { cert: Bun.file(configuration.certificate!), key: Bun.file(configuration.key!) },
       maxRequestBodySize: 128 * 1024 * 1024,
-      fetch: wordHttpsHandler(fetch, configuration),
+      fetch: wordHttpsHandler(fetch, configuration, directory),
     })
+    activeServer = server
+    activeIdentity = identity
+    activeAssets = directory
     console.log(`doc.haus Word add-in listening on ${configuration.origin}`)
     return server
   } catch {
     // Native TLS errors can contain the private key/certificate paths. Keep the
     // log and API reason useful without retaining those diagnostics.
-    startupFailure = "The Word HTTPS connection could not start. Check Word setup and that its configured port is free, then restart doc.haus."
+    startupFailure = "The Word HTTPS connection could not start. Check Word setup and that its configured port is free, then choose Repair in Settings → Add-ins."
     console.warn(`doc.haus: ${startupFailure}`)
   }
 }

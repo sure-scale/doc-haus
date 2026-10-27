@@ -4,12 +4,40 @@ import { ingestError } from "./errors"
 
 export type { WordOpenDocument }
 export type WordConfig = { available: boolean; origin: string | null; manifestUrl: string | null; reason?: string }
+export type WordSetupStatus = WordConfig & {
+  platform: "macos" | "windows" | "unsupported"
+  wordInstalled: boolean
+  canSetup: boolean
+  configured: boolean
+  registered: boolean
+  trusted: boolean
+  running: boolean
+  status: "ready" | "not_configured" | "needs_repair" | "unsupported" | "word_missing" | "external"
+  activatedWithoutRestart?: boolean
+  restartWord?: boolean
+}
 
 const wordUrl = (matterId: string, name?: string) => `${INGEST_URL}/matters/${encodeURIComponent(matterId)}/documents/word${name === undefined ? "" : `?name=${encodeURIComponent(name)}`}`
 
 export async function fetchWordConfig(): Promise<WordConfig> {
   const response = await fetch(`${INGEST_URL}/word/config`)
   if (!response.ok) throw new Error(await ingestError(response, "Could not check Word setup"))
+  return response.json()
+}
+
+export async function fetchWordSetup(): Promise<WordSetupStatus> {
+  const response = await fetch(`${INGEST_URL}/word/setup`)
+  if (!response.ok) throw new Error(await ingestError(response, "Could not check Word setup"))
+  return response.json()
+}
+
+export async function setupWordAddin(): Promise<WordSetupStatus> {
+  // OS approval can take longer than an ordinary API call. A failed response
+  // is checked with GET rather than automatically repeating native setup.
+  const response = await fetch(`${INGEST_URL}/word/setup`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  })
+  if (!response.ok) throw new Error(await ingestError(response, "Could not set up Word"))
   return response.json()
 }
 

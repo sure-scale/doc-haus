@@ -10,6 +10,7 @@ import DraftingDetailsStep from "./DraftingDetailsStep"
 import ResearchTab from "../settings/ResearchTab"
 import AISetup, { type AISetupProgress, type SetupPhase } from "../ai-setup/AISetup"
 import "./onboarding.css"
+import { useWordAddin, WordAddinStatus } from "../settings/WordAddin"
 
 const stages = [
   { id: "provider", label: "Provider", title: "Choose your model provider", description: "Connect the service you want to use for drafting and working with your matters." },
@@ -46,6 +47,9 @@ export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => 
   const [sampleExists, setSampleExists] = useState(false)
   const [sampleState, setSampleState] = useState<"idle" | "adding" | "failed">("idle")
   const [sampleError, setSampleError] = useState("")
+  const word = useWordAddin()
+  const [includeWord, setIncludeWord] = useState<boolean | null>(null)
+  const setUpWord = includeWord ?? (!!word.status?.canSetup && !word.status.available)
   // Where setup goes once the sample is in, so a failed seed can still move on.
   const [sampleNext, setSampleNext] = useState<SetupProgress["next"]>("done")
   const toast = useToast()
@@ -147,6 +151,14 @@ export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => 
     if (advancing) return
     setAdvancing(true); setSaveNotice("")
     try {
+      if (setUpWord && !word.status?.available) {
+        const configured = await word.prepare()
+        if (!configured) {
+          setSaveNotice("Word setup did not finish. Try again, or clear Set up Microsoft Word to finish and set it up later in Settings → Add-ins. Your drafting details are saved.")
+          return
+        }
+        toast("success", configured.restartWord ? "Word is set up. Restart Word to load the add-in." : "Word is ready.")
+      }
       const next = await saveSetup("details", "completed")
       setProgress(next)
       if (addSample && !sampleExists) await seedSample(next.next)
@@ -170,6 +182,18 @@ export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => 
       <p>{sampleError} Your setup is saved.</p>
       <div className="onboarding-sample-actions"><button disabled={advancing} onClick={() => void retrySample()}>Retry</button><button disabled={advancing} onClick={() => { setSampleState("idle"); leave(sampleNext) }}>Continue without it</button></div>
     </div>}
+  </section>
+  const addinsChoice = <section className="settings-section">
+    <h3>Microsoft Word</h3>
+    {word.status?.canSetup && !word.status.available && <>
+      <label className="page-layout-check" htmlFor="onboarding-word">
+        <input id="onboarding-word" type="checkbox" checked={setUpWord} disabled={advancing} onChange={event => setIncludeWord(event.target.checked)} aria-describedby="onboarding-word-hint" />
+        <span>Set up Microsoft Word</span>
+      </label>
+      <p id="onboarding-word-hint" className="settings-hint muted">Save and finish installs the add-in and asks your computer to trust its local connection. Restart Word after setup. You can change this in Settings → Add-ins.</p>
+    </>}
+    <WordAddinStatus state={word} />
+    {word.error && <button type="button" disabled={word.checking || advancing} onClick={() => void word.refresh()}>Check Word again</button>}
   </section>
   async function advance(which: "details" | "research", status: "completed" | "skipped") {
     if (advancing) return
@@ -213,7 +237,7 @@ export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => 
           {(aiMounted || step === "setup") && <div className="onboarding-stage-content" hidden={step !== "setup"} inert={step !== "setup"}>
             <AISetup mode="onboarding" phase={phase} onPhaseChange={setPhase} onProgress={setAI} onSaved={modelsComplete} />
           </div>}
-          {currentStage === "details" && <DraftingDetailsStep drafting={drafting} setDrafting={setDrafting} jurisdictions={jurisdictions} selectedJx={selectedJx} setSelectedJx={setSelectedJx} dateFormatChoice={dateFormatChoice} setDateFormatChoice={setDateFormatChoice} setStep={setStep} onClose={finishDetails} extra={sampleChoice} busyLabel={sampleState === "adding" ? "Adding sample matter…" : undefined} />}
+          {currentStage === "details" && <DraftingDetailsStep drafting={drafting} setDrafting={setDrafting} jurisdictions={jurisdictions} selectedJx={selectedJx} setSelectedJx={setSelectedJx} dateFormatChoice={dateFormatChoice} setDateFormatChoice={setDateFormatChoice} setStep={setStep} onClose={finishDetails} extra={<>{addinsChoice}{sampleChoice}</>} disabled={word.checking} busyLabel={word.busy ? "Setting up Word…" : sampleState === "adding" ? "Adding sample matter…" : undefined} />}
           {(researchMounted || currentStage === "research") && <div className="onboarding-stage-content onboarding-research" hidden={currentStage !== "research"} inert={currentStage !== "research"}>
             <ResearchTab heading="Sources and connections" actionLabel="Save and continue" secondaryActions={busy => <button disabled={busy || advancing} onClick={() => { setPhase("provider"); setStep("setup") }}>Back to AI setup</button>} onComplete={() => { void advance("research", "completed").catch(error => setSaveNotice(error instanceof Error ? error.message : "Could not save setup progress. Retry.")) }} />
           </div>}

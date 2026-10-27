@@ -58,7 +58,7 @@ async function main(): Promise<void> {
     const link = readLink(office.link, window.location.origin)
     if (!link) {
       badge.textContent = "Not linked"
-      message.textContent = "Open a document using Open in Word in doc.haus to link it here."
+      message.textContent = "Add this file to a matter in doc.haus, then choose Open in Word and open that copy. Keep doc.haus running while you use the add-in."
       element("actions").hidden = true
       element("background").hidden = true
       return

@@ -16,6 +16,7 @@ import { readDocumentTarget, registeredDocumentName } from "./registered-documen
 import { answerDraftRoutes } from "./answer-drafts"
 import { readEngineSettings, patchEngineConfig, engineConfigFile } from "./engine-config"
 import { setupRoutes } from "./setup"
+import { wordSetupRoutes } from "./word-setup"
 import { authReuseRoutes } from "./auth-reuse"
 import { providerSetupRoutes } from "./provider-setup"
 import { Hono, type Context } from "hono"
@@ -210,6 +211,7 @@ app.route("/", authReuseRoutes())
 app.route("/", providerSetupRoutes())
 
 app.route("/", setupRoutes({ directory: path.dirname(engineConfigFile()) }))
+app.route("/", wordSetupRoutes({ fetch: app.fetch }))
 
 app.get("/engine/config", c => c.json(readEngineSettings()))
 app.patch("/engine/config", async c => {

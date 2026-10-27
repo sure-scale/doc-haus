@@ -50,7 +50,16 @@ dir="$(cd "$dir" && pwd)"
 if [ "$(uname -s)" = Darwin ]; then
   app="$HOME/Applications/doc.haus.app"
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-  printf '#!/bin/bash\nexec %q\n' "$dir/start.sh" > "$app/Contents/Resources/doc.haus.command"
+  {
+    printf '#!/bin/bash\n'
+    # Finder does not inherit the install terminal's environment. Keep only the
+    # selected data locations and ports, so reopening uses the same installation.
+    # Never copy provider credentials or the caller's general environment here.
+    for variable in DOCHAUS_DATA_ROOT WORKSPACE_ROOT DOCHAUS_RUNTIME_DIR DOC_HAUS_ENGINE_PORT DOC_HAUS_INGEST_PORT DOC_HAUS_WEB_PORT; do
+      if [ -n "${!variable:-}" ]; then printf 'export %s=%q\n' "$variable" "${!variable}"; fi
+    done
+    printf 'exec %q\n' "$dir/start.sh"
+  } > "$app/Contents/Resources/doc.haus.command"
   # shellcheck disable=SC2016 # $0 belongs to the app's own script
   printf '#!/bin/bash\nexec open -a Terminal "$(dirname "$0")/../Resources/doc.haus.command"\n' > "$app/Contents/MacOS/doc.haus"
   chmod +x "$app/Contents/Resources/doc.haus.command" "$app/Contents/MacOS/doc.haus"
