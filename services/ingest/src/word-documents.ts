@@ -13,7 +13,7 @@ import { attachmentDocumentDisposition } from "./content-disposition"
 import { DeliverableConflictError } from "./deliverable"
 import { SourceDocumentConflictError } from "./ingest"
 import { wordHttpsConfiguration } from "./word-configuration"
-import { wordHttpsFailure } from "./word-https"
+import { wordHttpsAvailable, wordHttpsFailure } from "./word-https"
 import { installWordSourceDesk } from "./word-source-desk"
 
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -24,12 +24,13 @@ export function wordConfiguration() {
   if (failure) return { available: false, origin: null, manifestUrl: null, reason: failure }
   let config: ReturnType<typeof wordHttpsConfiguration>
   try { config = wordHttpsConfiguration() } catch {
-    return { available: false, origin: null, manifestUrl: null, reason: "The Word add-in settings are invalid. Run Word setup again." }
+    return { available: false, origin: null, manifestUrl: null, reason: "Word setup needs repair. Open Settings → Add-ins." }
   }
-  const origin = config?.origin ?? null
+  const available = Boolean(config && wordHttpsAvailable(config))
+  const origin = available ? config!.origin : null
   return {
-    available: Boolean(config), origin, manifestUrl: origin ? `${origin}/word-addin/manifest.xml` : null,
-    ...(!config ? { reason: "Configure this instance's trusted HTTPS Word origin and certificate before opening a document in Word." } : {}),
+    available, origin, manifestUrl: origin ? `${origin}/word-addin/manifest.xml` : null,
+    ...(!available ? { reason: "Set up or repair Microsoft Word in Settings → Add-ins." } : {}),
   }
 }
 

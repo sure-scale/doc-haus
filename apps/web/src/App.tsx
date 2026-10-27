@@ -22,10 +22,13 @@ import { getSetup, type SetupProgress } from "./api/ingest/setup"
 import { OPENCODE_URL } from "./config"
 import { applyAppearance } from "./prefs"
 import { useUpdates, UpdateButton, UpdateModal } from "./components/Updates"
+import { SettingsNavigation } from "./components/settings/navigation"
+import type { Tab } from "./components/settings/types"
 
 export default function App() {
   const [acknowledged, setAcknowledged] = useState(hasAcceptedLaunchNotice)
   const [settings, setSettings] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<Tab>("ai")
   const [settingsShown, settingsClosing] = useExit(settings)
   const [reconnectProvider, setReconnectProvider] = useState<string | undefined>()
   // Text size lands as a data attribute on <html> the stylesheet keys off.
@@ -84,9 +87,10 @@ export default function App() {
     )
   return (
     <ToastProvider>
+      <SettingsNavigation.Provider value={tab => { setSettingsTab(tab); setReconnectProvider(undefined); setSettings(true) }}>
       <div className={`shell${location.pathname.startsWith("/matter/") ? " shell-matter" : ""}`}>
         <a className="skip-link" href="#main-content">Skip to workspace</a>
-        <Sidebar onOpenSettings={() => { setReconnectProvider(undefined); setSettings(true) }} sessionsVersion={sessionsVersion} updateButton={<UpdateButton updates={updates} />} />
+        <Sidebar onOpenSettings={() => { setSettingsTab("ai"); setReconnectProvider(undefined); setSettings(true) }} sessionsVersion={sessionsVersion} updateButton={<UpdateButton updates={updates} />} />
         {/* The open matter's documents drawer portals here, between the rail and the canvas. */}
         <div id="matter-drawer-slot" className="matter-drawer-slot" />
         <main id="main-content" className="content" tabIndex={-1}>
@@ -121,7 +125,7 @@ export default function App() {
         {settingsShown && (
           <Settings
             closing={settingsClosing}
-            initialTab={reconnectProvider !== undefined ? "ai" : undefined}
+            initialTab={reconnectProvider !== undefined ? "ai" : settingsTab}
             reconnectProvider={reconnectProvider}
             onSampleAdded={() => setMattersVersion((v) => v + 1)}
             onClose={() => {
@@ -133,6 +137,7 @@ export default function App() {
           />
         )}
       </div>
+      </SettingsNavigation.Provider>
     </ToastProvider>
   )
 }

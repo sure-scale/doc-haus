@@ -1,5 +1,5 @@
 {
-  "version": 16,
-  "name": "2.0.14",
-  "notes": "Word add-in, including a compact save status with one primary Save or Save and close action, Documents and Compare tabs, document tabs, inline Find and optional Word selection. Read saved matter documents with clearer headings and dates, compare small saved-version pairs automatically, and keep secondary actions in menus."
+  "version": 17,
+  "name": "2.0.15",
+  "notes": "Word add-in setup is included in onboarding and Settings → Add-ins. Check or repair the installed connection without Terminal commands or restarting doc.haus. Mac shortcuts preserve selected data paths and ports, and the browser tab uses the doc.haus icon."
 }

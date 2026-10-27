@@ -9,6 +9,7 @@ import StatisticsTab from "./StatisticsTab"
 import MatterDefaultsTab from "./MatterDefaultsTab"
 import ApprovalsTab from "./ApprovalsTab"
 import AppearanceTab from "./AppearanceTab"
+import WordAddin from "./WordAddin"
 import backdropClose from "../backdropClose"
 
 // AI setup shares its provider, connection, model and test flow with onboarding.
@@ -18,6 +19,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "research", label: "Research" },
   { id: "data", label: "Statistics" },
   { id: "matters", label: "Matter defaults" },
+  { id: "addins", label: "Add-ins" },
   { id: "approvals", label: "Approvals" },
   { id: "appearance", label: "Appearance" },
 ]
@@ -48,7 +50,9 @@ export default function Settings({ onClose, closing = false, firstRun = false, i
     return () => query.removeEventListener("change", update)
   }, [])
   const toast = useToast()
-  const [busy, setBusy] = useState(false)
+  const [aiSaving, setAISaving] = useState(false)
+  const [wordBusy, setWordBusy] = useState(false)
+  const busy = aiSaving || wordBusy
   function switchTab(next: Tab) {
     if (busy) return
     setTab(next)
@@ -97,12 +101,13 @@ export default function Settings({ onClose, closing = false, firstRun = false, i
             ))}
           </div>
           <div className="settings-content" id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-${tab}`} tabIndex={0}>
-            <div hidden={tab !== "ai"} inert={tab !== "ai"}><AISetup reconnectProvider={reconnectProvider} onProgress={progress => setBusy(progress.saving === true)} onSaved={() => { toast("success", "AI setup saved."); if (firstRun) onClose() }} /></div>
+            <div hidden={tab !== "ai"} inert={tab !== "ai"}><AISetup reconnectProvider={reconnectProvider} onProgress={progress => setAISaving(progress.saving === true)} onSaved={() => { toast("success", "AI setup saved."); if (firstRun) onClose() }} /></div>
 
             {tab === "drafting" && <DraftingTab onSaved={(m) => toast("success", m)} />}
             {tab === "research" && <ResearchTab onSaved={(m) => toast("success", m)} />}
             {tab === "data" && <StatisticsTab onSaved={(m) => toast("success", m)} onError={(m) => toast("error", m)} />}
             {tab === "matters" && <MatterDefaultsTab onSampleAdded={() => { toast("success", "Sample matter added to your matters."); onSampleAdded?.() }} onError={(m) => toast("error", m)} />}
+            {tab === "addins" && <WordAddin onBusy={setWordBusy} />}
             {tab === "approvals" && <ApprovalsTab />}
             {tab === "appearance" && <AppearanceTab />}
           </div>

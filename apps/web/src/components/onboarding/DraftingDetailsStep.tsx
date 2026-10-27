@@ -33,6 +33,7 @@ export default function DraftingDetailsStep({
   onClose,
   extra,
   busyLabel,
+  disabled = false,
 }: {
   drafting: DraftingPreferences | null
   setDrafting: Dispatch<SetStateAction<DraftingPreferences | null>>
@@ -47,6 +48,7 @@ export default function DraftingDetailsStep({
   extra?: ReactNode
   /** Replaces "Saving…" while finishing does more than save. */
   busyLabel?: string
+  disabled?: boolean
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
@@ -142,7 +144,7 @@ export default function DraftingDetailsStep({
         <button disabled={busy} onClick={() => setStep("research")}>Back to research</button>
         <button
           className="primary btn-lg"
-          disabled={busy || !drafting}
+          disabled={busy || !drafting || disabled}
           onClick={async () => {
             if (!drafting || busy) return
             setBusy(true); setError("")

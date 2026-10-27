@@ -25,6 +25,12 @@ First-run setup assumes this is your first installation:
 3. Confirm a primary and fast model from that provider; the same model is allowed.
    Research and firm details are optional and can be skipped.
 
+On the final Details step, **Set up Microsoft Word** is selected when desktop
+Word is installed and needs setup. **Save and finish** prepares the add-in and
+asks you to approve its local connection. Clear the choice to finish without
+Word. **Settings → Add-ins** can check or repair it later, without restarting
+doc.haus. Restart Word when instructed so it loads the current add-in.
+
 The last setup step offers a sample matter to explore: a fictional engagement
 letter, ready for cited questions and a legal review. It is pre-selected only
 when the workspace has no matters and is added when you finish setup. Add it

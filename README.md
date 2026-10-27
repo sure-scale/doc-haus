@@ -29,6 +29,11 @@ cd doc-haus
 ./start.sh
 ```
 
+On macOS, the installer adds **doc.haus** to Applications. It reopens the same
+installation in Terminal and keeps any data-directory and engine, ingest or web
+port overrides selected during installation. Separate copies have separate
+settings and matters; the app does not import another copy's setup.
+
 The launcher checks for Bun 1.4.0 or newer and the document tools (Deno 2,
 Python 3.10+, markitdown, Poppler, Tesseract, LibreOffice Writer and the Carlito
 font). It lists anything missing or out of date and offers to install it; press
