@@ -10,7 +10,7 @@ import { wordOpenPath, wordOpenResultPath } from "./word-open-tickets"
 
 type Fetch = (request: Request) => Response | Promise<Response>
 const assets = fileURLToPath(new URL("../../../apps/word-addin/dist/", import.meta.url))
-const tokenRoutes = new Set(["/word/lease", "/word/saves", "/word/heartbeat", "/word/done",
+const tokenRoutes = new Set(["/word/lease", "/word/saves", "/word/heartbeat", "/word/done", "/word/latest",
   "/word/desk/sources", "/word/desk/source", "/word/desk/versions", "/word/desk/compare"])
 let startupFailure: string | undefined
 let activeServer: ReturnType<typeof Bun.serve> | undefined

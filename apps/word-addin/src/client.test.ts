@@ -21,6 +21,24 @@ const connection = (id = "v1"): WordConnectionState => ({
   lease: { state: "owned", generation: "generation", expiresAt: 90_000 },
 })
 
+test("latest-copy handoff stays scoped to the original HTTPS receiver and never changes the old base", async () => {
+  let request: RequestInit | undefined
+  const uri = `doc.haus://word/open?source=${encodeURIComponent(`${link.apiOrigin}/word/open/${"a".repeat(43)}`)}`
+  const client = new WordClient(link, "session", async (url, init) => {
+    expect(String(url)).toBe(`${link.apiOrigin}/word/latest`)
+    request = init
+    return Response.json({ uri, id: "ticket" })
+  })
+  expect(await client.latest("old-base")).toBe(uri)
+  expect(JSON.parse(request!.body as string)).toEqual({ origin: link.origin })
+  expect(new Headers(request!.headers).get("x-dochaus-word-base-version")).toBe("old-base")
+  expect(link.baseVersion).toBe("original")
+  for (const bad of ["https://attacker.example", uri.replace(encodeURIComponent(link.apiOrigin), encodeURIComponent("https://attacker.example")), `${uri}&extra=1`]) {
+    const invalid = new WordClient(link, "session", async () => Response.json({ uri: bad }))
+    await expect(invalid.latest("old-base")).rejects.toThrow("could not be opened")
+  }
+})
+
 test("only same-origin HTTPS receivers receive a document capability", () => {
   expect(readLink(link, link.apiOrigin)).toEqual(link)
   expect(readLink(JSON.stringify(link), link.apiOrigin)).toEqual(link)

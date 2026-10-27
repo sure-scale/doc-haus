@@ -38,6 +38,9 @@ export function createPaneRenderer(document: Document) {
     update(done, "hidden", view.primary === "close")
     update(done, "disabled", state.busy || !state.canSave || state.status === "done")
     const connection = state.connection
+    const stale = connection?.version.state === "stale"
+    update(save, "hidden", stale)
+    update(element("load-latest"), "hidden", !stale)
     update(element("version-state"), "textContent", view.mismatch ?? "")
     update(element("version-state"), "hidden", !view.mismatch)
     update(element("blocked-help"), "textContent", view.help ?? "")

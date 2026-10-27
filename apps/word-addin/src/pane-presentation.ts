@@ -22,7 +22,7 @@ export function savePresentation(state: PaneState): SavePresentation {
   if (state.status === "saving") return { ...result, badge: "Saving…", tone: "saving", message: state.message }
   if (version && version.state !== "current") {
     const copy = {
-      stale: ["A newer version is saved in doc.haus.", "Keep this Word file with Save As. Compare versions or reopen the current copy from doc.haus."],
+      stale: ["A newer version is saved in doc.haus.", "Load the latest version in a separate Word file. Keep any edits in this older copy with Save As."],
       removed: ["Saving is unavailable for this copy.", "This copy predates a redaction or removal. Keep your local file and reopen the current document from doc.haus."],
       "unrecorded-change": ["The matter file changed outside its saved history.", "Keep your Word file and resolve that change in doc.haus before saving."],
     }[version.state]

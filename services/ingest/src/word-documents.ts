@@ -19,7 +19,7 @@ import { WordOpenTickets, wordOpenPath, wordOpenResultPath } from "./word-open-t
 import { readWordHandout, writeWordHandout, type WordHandoutIdentity } from "./word-handouts"
 
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-export const wordTokenPath = (pathname: string) => /^\/word\/(saves|heartbeat|done|lease|desk\/(sources|source|versions|compare))$/.test(pathname)
+export const wordTokenPath = (pathname: string) => /^\/word\/(saves|heartbeat|done|lease|latest|desk\/(sources|source|versions|compare))$/.test(pathname)
 
 export function wordConfiguration() {
   const failure = wordHttpsFailure()
@@ -70,7 +70,7 @@ export async function wordCors(c: Context, next: () => Promise<void>) {
 
 export function wordDocumentRoutes(deps: Dependencies) {
   const app = new Hono()
-  const tickets = new WordOpenTickets<{ identity: WordHandoutIdentity; tokenHash: string; name: string }>()
+  const tickets = new WordOpenTickets<{ identity: WordHandoutIdentity; tokenHash: string; name: string; previousOwner?: WordLeaseOwner }>()
   app.use("/word/open/*", async (c, next) => {
     c.header("Cache-Control", "no-store")
     c.header("Referrer-Policy", "no-referrer")
@@ -93,6 +93,36 @@ export function wordDocumentRoutes(deps: Dependencies) {
     return failure(c, 503, "word_save_failed", "The Word connection could not complete this request. Try again after reconnecting.")
   })
   app.get("/word/config", c => c.json(wordConfiguration()))
+
+  function sendHandout(c: Context, native: boolean, matter: Matter, target: { name: string },
+    current: NonNullable<ReturnType<typeof readCurrentVersion>>, plain: Buffer, browserOrigin: string, apiOrigin: string, previousOwner?: WordLeaseOwner) {
+    const identity: WordHandoutIdentity = { origin: browserOrigin, apiOrigin,
+      matter: matter.id, document: current.document.id, baseVersion: current.current.id }
+    const db = openDb(matter.dir)
+    let linked: Uint8Array, tokenHash: string
+    try {
+      const cached = readWordHandout(matter.dir, identity, hash => Boolean(db.query(`SELECT token_hash FROM word_grants
+        WHERE token_hash = ? AND document_id = ? AND origin = ? AND issued_version = ? AND revoked_at IS NULL`)
+        .get(hash, identity.document, identity.apiOrigin, identity.baseVersion)))
+      if (cached && cached.link.documentName === target.name) {
+        linked = cached.bytes
+        tokenHash = digest(cached.link.token)
+      } else {
+        const token = randomBytes(32).toString("base64url")
+        linked = linkedWordDocx(plain, { version: 1, ...identity, matterName: matter.title, documentName: target.name, token })
+        tokenHash = digest(token)
+        db.run("INSERT INTO word_grants (token_hash, document_id, origin, issued_version, created_at) VALUES (?, ?, ?, ?, ?)",
+          [tokenHash, current.document.id, apiOrigin, current.current.id, Date.now()])
+        writeWordHandout(matter.dir, identity, linked)
+      }
+    } finally { db.close() }
+    if (native) {
+      const { nonce, id } = tickets.issue({ identity, tokenHash, name: target.name, ...(previousOwner ? { previousOwner } : {}) })
+      c.header("Cache-Control", "no-store")
+      return c.json({ uri: `doc.haus://word/open?source=${encodeURIComponent(`${apiOrigin}/word/open/${nonce}`)}`, id })
+    }
+    return new Response(new Uint8Array(linked), { headers: { "Content-Type": DOCX, "Content-Disposition": attachmentDocumentDisposition(target.name), "Cache-Control": "no-store" } })
+  }
 
   const handout = (native: boolean) => async (c: Context) => {
     const config = wordConfiguration()
@@ -124,34 +154,38 @@ export function wordDocumentRoutes(deps: Dependencies) {
         current = readCurrentVersion(matter.dir, target.name)
       }
       if (!current) return failure(c, 409, "word_version_missing", "The document's current version could not be captured.")
-      const identity: WordHandoutIdentity = { origin: browserOrigin as string, apiOrigin: config.origin!,
-        matter: matter.id, document: current.document.id, baseVersion: current.current.id }
-      const db = openDb(matter.dir)
-      let linked: Uint8Array, tokenHash: string
-      try {
-        const cached = readWordHandout(matter.dir, identity, hash => Boolean(db.query(`SELECT token_hash FROM word_grants
-          WHERE token_hash = ? AND document_id = ? AND origin = ? AND issued_version = ? AND revoked_at IS NULL`)
-          .get(hash, identity.document, identity.apiOrigin, identity.baseVersion)))
-        if (cached && cached.link.documentName === target.name) {
-          linked = cached.bytes
-          tokenHash = digest(cached.link.token)
-        } else {
-          const token = randomBytes(32).toString("base64url")
-          linked = linkedWordDocx(plain, { version: 1, ...identity, matterName: matter.title, documentName: target.name, token })
-          tokenHash = digest(token)
-          db.run("INSERT INTO word_grants (token_hash, document_id, origin, issued_version, created_at) VALUES (?, ?, ?, ?, ?)",
-            [tokenHash, current.document.id, config.origin!, current.current.id, Date.now()])
-          writeWordHandout(matter.dir, identity, linked)
-        }
-      } finally { db.close() }
-      if (native) {
-        const { nonce, id } = tickets.issue({ identity, tokenHash, name: target.name })
-        c.header("Cache-Control", "no-store")
-        return c.json({ uri: `doc.haus://word/open?source=${encodeURIComponent(`${config.origin}/word/open/${nonce}`)}`, id })
-      }
-      return new Response(new Uint8Array(linked), { headers: { "Content-Type": DOCX, "Content-Disposition": attachmentDocumentDisposition(target.name), "Cache-Control": "no-store" } })
+      return sendHandout(c, native, matter, target, current, plain, browserOrigin as string, config.origin!)
     })
   }
+  // A pane capability may open only its own document's recorded current copy.
+  // Prefetching never rebases, saves, closes or releases the older Word session.
+  app.post("/word/latest", async c => {
+    const auth = authenticate(c)
+    if (!auth) return failure(c, 401, "word_link_revoked", "This Word connection is no longer valid. Reopen the document from doc.haus.")
+    const input = await c.req.json().catch(() => null) as { origin?: unknown } | null
+    const browserOrigin = input?.origin
+    try {
+      const url = new URL(typeof browserOrigin === "string" ? browserOrigin : "")
+      if (!/^https?:$/.test(url.protocol) || url.origin !== browserOrigin || url.username || url.password) throw new Error()
+    } catch { return failure(c, 400, "invalid_word_origin", "Provide a valid doc.haus browser origin.") }
+    return withArtifactMutationLocksAsync(auth.matter.dir, deps.locks(auth.matter.dir, auth.target.docPath), async () => {
+      const live = authenticate(c)
+      if (!live || live.grant.document_id !== auth.grant.document_id) return failure(c, 401, "word_link_revoked", "This Word connection is no longer valid.")
+      const session = sessionId(c)
+      const state = connection(live, c.req.header("x-dochaus-word-base-version") ?? live.grant.issued_version, session)
+      if (!state.version.base) return c.json({ error: "This copy's version does not belong to this document.", code: "word_base_invalid", ...state }, 409)
+      if (state.version.state === "removed" || state.version.state === "unrecorded-change") return requireCurrent(c, state)!
+      const config = wordConfiguration()
+      if (!config.available || !config.origin) return failure(c, 503, "word_unavailable", config.reason ?? "Word is not configured.")
+      const current = readCurrentVersion(live.matter.dir, live.target.name)
+      if (!current || current.document.id !== live.grant.document_id) return failure(c, 404, "word_document_missing", "That document is no longer in this matter.")
+      // The explicit native read may hand over only this stale pane's own
+      // lease. Another editor's lease is never changed, including after a race.
+      const previousOwner = session && state.version.state === "stale" && state.lease.state === "owned" && state.lease.generation
+        ? { ...identity(live, session), generation: state.lease.generation } : undefined
+      return sendHandout(c, true, live.matter, live.target, current, Buffer.from(stripWordLink(readFileSync(live.target.docPath))), browserOrigin as string, config.origin, previousOwner)
+    })
+  })
   app.post("/matters/:id/documents/word", handout(false))
   app.post("/matters/:id/documents/word/open", handout(true))
   app.get("/matters/:id/documents/word/open/status", c => {
@@ -215,6 +249,14 @@ export function wordDocumentRoutes(deps: Dependencies) {
         if (!cached || cached.link.documentName !== target.name) {
           tickets.result(c.req.param("nonce"), "failed")
           return failure(c, 410, "word_open_expired", "This document or its Word link changed. Choose Open in Word again.")
+        }
+        const previous = ticket.previousOwner
+        if (previous) {
+          const lease = readWordEditLease(db, previous.document)
+          if (lease?.token_hash === previous.tokenHash && lease.session === previous.session && lease.generation === previous.generation) {
+            releaseWordEditLease(db, previous)
+            db.run("UPDATE word_sessions SET done = 1 WHERE token_hash = ? AND session = ?", [previous.tokenHash, previous.session])
+          }
         }
         return new Response(new Uint8Array(cached.bytes), { headers: { "Content-Type": DOCX, "Content-Disposition": attachmentDocumentDisposition(target.name),
           "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } })

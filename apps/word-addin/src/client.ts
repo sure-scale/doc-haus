@@ -112,7 +112,7 @@ export class WordClient {
   }
 
   private async post(
-    path: "saves" | "heartbeat" | "done" | "lease",
+    path: "saves" | "heartbeat" | "done" | "lease" | "latest",
     options: {
       bytes?: Uint8Array
       base: string
@@ -242,6 +242,17 @@ export class WordClient {
 
   async heartbeat(base: string, generation: string): Promise<WordConnectionState> {
     return this.connection(await this.post("heartbeat", { base, generation }))
+  }
+  async latest(base: string): Promise<string> {
+    const value = await this.post("latest", { base, input: { origin: this.link.origin } }) as { uri?: unknown }
+    try {
+      const uri = new URL(typeof value?.uri === "string" ? value.uri : "")
+      const source = new URL(uri.searchParams.get("source") ?? "")
+      if (uri.protocol !== "doc.haus:" || uri.host !== "word" || uri.pathname !== "/open" || uri.username || uri.password || uri.hash || [...uri.searchParams].length !== 1 || source.origin !== this.receiver || source.username || source.password || source.search || source.hash || !/^\/word\/open\/[A-Za-z0-9_-]{43}$/.test(source.pathname)) throw new Error()
+      return uri.href
+    } catch {
+      throw new ConnectionError("The latest copy could not be opened. Open this matter in doc.haus and choose Open in Word.")
+    }
   }
   async done(base: string, generation: string): Promise<WordConnectionState> {
     return this.connection(await this.post("done", { base, generation }))

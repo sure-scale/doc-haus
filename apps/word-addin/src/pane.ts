@@ -3,6 +3,7 @@ import { connectOffice } from "./office"
 import { browserCheckpoints, WordSync, type PaneState } from "./sync"
 import { setupSourceDesk } from "./desk-entry"
 import { configureConnectionRecovery, createPaneRenderer, setupSaveMenu } from "./pane-render"
+import { setupLatestVersion } from "./latest-version"
 
 const element = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
 const badge = element("status")
@@ -16,7 +17,8 @@ const release = element<HTMLButtonElement>("release")
 let primaryAction: "save" | "close" = "save"
 
 const renderPane = createPaneRenderer(document)
-function render(state: PaneState): void { primaryAction = renderPane(state) }
+let renderLatest: ((state: PaneState) => void) | undefined
+function render(state: PaneState): void { primaryAction = renderPane(state); renderLatest?.(state) }
 
 async function main(): Promise<void> {
   // An old cached manifest may still launch this page as a separate function
@@ -52,6 +54,7 @@ async function main(): Promise<void> {
     }
     const checkpoints = await browserCheckpoints(link, storage)
     const client = new WordClient(link, crypto.randomUUID())
+    renderLatest = setupLatestVersion(document, base => client.latest(base))
     const sync = new WordSync(link.baseVersion, office.host, client, checkpoints, render)
     save.addEventListener("click", () => {
       if (primaryAction === "close") void sync.done()

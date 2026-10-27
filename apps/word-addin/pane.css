@@ -19,6 +19,8 @@ main { min-width: 0; width: 100%; padding: 12px; margin: 0; }
 .save-controls { display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: start; gap: 8px; margin-top: 10px; }
 button { min-width: 0; max-width: 100%; min-height: 44px; padding: 9px 12px; border: 1px solid transparent; border-radius: 8px; font: inherit; font-weight: 550; line-height: 1.45; cursor: pointer; overflow-wrap: anywhere; }
 .primary { width: 100%; color: #fff; background: #17634f; }
+.latest-action { display: block; min-height: 44px; padding: 9px 12px; border: 1px solid transparent; border-radius: 8px; text-align: center; text-decoration: none; font-weight: 550; }
+.latest-action[aria-disabled="true"] { opacity: .55; cursor: default; }
 .primary:hover:not(:disabled) { background: #104f3e; }
 button:disabled { opacity: .55; cursor: default; }
 button:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid #17634f; outline-offset: 3px; }

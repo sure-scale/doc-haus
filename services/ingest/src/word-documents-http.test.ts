@@ -205,6 +205,87 @@ test("native handoff is one-use, preserves linkage and reuses its protected live
   expect((await readdir(cache)).length).toBe(1)
 })
 
+const latestCopy = (link: WordDocumentLink, extra: Record<string, string> = {}, input: object = { origin: browserOrigin }) => request("/word/latest", {
+  method: "POST", headers: tokenHeaders(link, { "Content-Type": "application/json", "x-dochaus-word-base-version": link.baseVersion,
+    "x-dochaus-word-session": owners.get(link.token)?.session ?? "session-test-0001", ...extra }), body: JSON.stringify(input),
+})
+const latestSource = async (response: Response) => {
+  expect(response.status).toBe(200)
+  expect(response.headers.get("Cache-Control")).toBe("no-store")
+  const value = await response.json() as { uri: string; id: string }
+  expect(value.id).toMatch(/^[a-f0-9-]{36}$/)
+  return new URL(new URL(value.uri).searchParams.get("source")!)
+}
+
+test("latest copy opens a separate current handout and hands over only its own stale lease on native read", async () => {
+  await create("Latest.docx")
+  const old = await handout("Latest.docx")
+  const owner = await claim(old.link)
+  const saved = await save(old.link, await plain("The newer saved wording."))
+  expect(saved.status).toBe(200)
+  const current = (await saved.json() as WordSaveResponse).version
+  const before = new Uint8Array(await readFile(path.join(matter.dir, "Latest.docx")))
+  const source = await latestSource(await latestCopy(old.link, {}, { origin: browserOrigin, name: "Other.docx", matter: "not-this-matter" }))
+  expect(source.origin).toBe(paneOrigin)
+  expect(await (await lease(old.link, "inspect")).json()).toMatchObject({ version: { state: "stale" }, lease: { state: "owned", generation: owner.lease.generation } })
+  expect((await history("Latest.docx")).versions).toHaveLength(2)
+  const response = await request(source.pathname)
+  expect(response.status).toBe(200)
+  const freshBytes = new Uint8Array(await response.arrayBuffer()), fresh = readLink(freshBytes)
+  expect(fresh).toMatchObject({ origin: browserOrigin, document: old.link.document, documentName: "Latest.docx", baseVersion: current.id })
+  expect(fresh.token === old.link.token).toBe(false)
+  expect(strFromU8(unzipSync(freshBytes)["word/document.xml"]!)).toContain("The newer saved wording.")
+  expect(old.link.baseVersion === current.id).toBe(false)
+  expect(await readFile(path.join(matter.dir, "Latest.docx"))).toEqual(Buffer.from(before))
+  expect(await (await lease(old.link, "inspect")).json()).toMatchObject({ version: { state: "stale" }, lease: { state: "available" } })
+  expect((await save(old.link, await plain("Old local work must never replace latest."))).status).toBe(423)
+  expect((await request(source.pathname)).status).toBe(410)
+  const freshOwner = await claim(fresh, "session-latest-0001")
+  const currentSource = await latestSource(await latestCopy(fresh))
+  expect((await request(currentSource.pathname)).status).toBe(200)
+  expect(await (await lease(fresh, "inspect", "session-latest-0001")).json()).toMatchObject({ version: { state: "current" }, lease: { state: "owned", generation: freshOwner.lease.generation } })
+  expect((await ping(fresh, "session-latest-0001", true)).status).toBe(200)
+  expect((await history("Latest.docx")).versions).toHaveLength(2)
+})
+
+test("latest copy ticket cannot release a replacement editor or serve a later changed document", async () => {
+  await create("Latest race.docx")
+  const old = await handout("Latest race.docx")
+  const initial = await claim(old.link)
+  const saved = await save(old.link, await plain("Current wording before handoff."))
+  const current = (await saved.json() as WordSaveResponse).version
+  const source = await latestSource(await latestCopy(old.link))
+  const fresh = await handout("Latest race.docx")
+  const takeover = await lease(fresh.link, "takeover", "session-replacement-0001", current.id,
+    { expectedCurrent: current.id, expectedGeneration: initial.lease.generation! })
+  expect(takeover.status).toBe(200)
+  const replacement = await takeover.json() as WordConnectionState
+  owners.set(fresh.link.token, { session: "session-replacement-0001", generation: replacement.lease.generation! })
+  expect((await request(source.pathname)).status).toBe(200)
+  expect(await (await lease(fresh.link, "inspect", "session-replacement-0001")).json()).toMatchObject({ lease: { state: "owned", generation: replacement.lease.generation } })
+  const changed = await latestSource(await latestCopy(old.link))
+  expect((await save(fresh.link, await plain("A later version after preparing the link."))).status).toBe(200)
+  expect((await request(changed.pathname)).status).toBe(410)
+})
+
+test("latest copy refuses unrecorded changes and invalid or revoked document capabilities", async () => {
+  await create("Latest guard.docx")
+  const { link } = await handout("Latest guard.docx")
+  expect((await latestCopy(link, { Origin: "https://unrelated.invalid" })).status).toBe(403)
+  expect((await latestCopy(link, { Authorization: "Bearer invalid" })).status).toBe(401)
+  expect((await latestCopy(link, {}, { origin: "file:///tmp" })).status).toBe(400)
+  expect((await latestCopy(link, { "x-dochaus-word-base-version": "foreign-version" })).status).toBe(409)
+  const outside = await plain("Outside edit must be resolved in doc.haus.")
+  await writeFile(path.join(matter.dir, "Latest guard.docx"), outside)
+  const refused = await latestCopy(link)
+  expect(refused.status).toBe(409)
+  expect(await refused.json()).toMatchObject({ code: "word_document_changed", version: { state: "unrecorded-change" } })
+  expect((await history("Latest guard.docx")).versions).toHaveLength(1)
+  expect(new Uint8Array(await readFile(path.join(matter.dir, "Latest guard.docx")))).toEqual(new Uint8Array(outside))
+  expect((await route(`/documents/word?${query("Latest guard.docx")}`, { method: "DELETE" })).status).toBe(200)
+  expect((await latestCopy(link)).status).toBe(401)
+})
+
 test("token endpoints require the exact configured pane origin on success, errors and preflight", async () => {
   const { link } = await handout("Other.docx")
   for (const origin of [undefined, "http://localhost:4612", "https://localhost:47613", "https://unrelated.invalid"]) {
@@ -291,11 +372,13 @@ test("deleting and recreating the filename does not revive a token; stale copies
   const current = await handout("Lifecycle.docx")
   expect(current.link.document).not.toBe(old.link.document)
   expect((await save(old.link, await plain("Attempt from a deleted document."))).status).toBe(401)
+  expect((await latestCopy(old.link)).status).toBe(401)
   const redacted = await plain("[REDACTED]")
   const redaction = await route("/documents/revisions", { method: "POST", headers: { "x-dochaus-origin": "redaction" }, body: file(redacted, "Lifecycle.docx") })
   expect(redaction.status).toBe(200)
   const stale = await save(current.link, await plain("New document identity."))
   expect(stale.status).toBe(401)
+  expect((await latestCopy(current.link)).status).toBe(401)
   const fresh = await handout("Lifecycle.docx")
   await claim(fresh.link)
   expect((await save(fresh.link, await plain("Preserves [REDACTED], with a neutral addition."))).status).toBe(200)
