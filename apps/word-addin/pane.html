@@ -26,7 +26,6 @@
             <div class="save-menu-items">
               <button id="save-again" type="button" hidden disabled>Save</button>
               <button id="done" type="button" disabled>Save and close</button>
-              <button id="start-editing" type="button" hidden disabled>Start editing here</button>
               <button id="refresh" type="button" disabled>Check status</button>
               <button id="release" type="button" hidden disabled>Stop editing here</button>
               <button id="takeover" type="button" hidden disabled>Take over editing here</button>
@@ -43,12 +42,9 @@
         <p id="desk-message" class="desk-message" role="status" hidden></p>
       </section>
       <div id="pane-desk" hidden></div>
-      <details id="background" class="saving-help">
-        <summary>How saving works</summary>
-        <p>Save confirms a version in doc.haus. Save and close saves before closing this document.</p>
-        <p>After you save or start editing here, this pane checks saved Word changes in the background. Some saves may be combined. Closing Word can interrupt this; wait for Saved before closing.</p>
+      <footer id="background" class="saving-help">
         <a id="back" hidden target="_blank" rel="noopener noreferrer">Open matter in doc.haus <span aria-hidden="true">↗</span></a>
-      </details>
+      </footer>
     </main>
   </body>
 </html>

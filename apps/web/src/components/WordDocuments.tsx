@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react"
-import { fetchWordConfig, fetchWordDocuments, linkedWordDocument, recoverWordEditing, revokeWordDocument, type WordConfig, type WordOpenDocument } from "../api/ingest/word"
+import { fetchWordConfig, fetchWordDocuments, linkedWordDocument, recoverWordEditing, type WordConfig, type WordOpenDocument } from "../api/ingest/word"
 import { humanizeError } from "../api/ingest/errors"
 import { useToast } from "./Toast"
 import { useOpenSettings } from "./settings/navigation"
@@ -166,20 +166,15 @@ export function WordSetup() {
     {config && !config.available && <button type="button" className="linklike" onClick={() => openSettings("addins")}>Set up Word</button>}
     {(config || setupError) && <button type="button" className="linklike" onClick={retrySetup}>Check again</button>}
   </div>
-  return <details className="word-setup">
-    <summary>Using Word for the first time?</summary>
-    <p>Choose Open in Word and open the downloaded copy. Keep doc.haus running, then choose <strong>Save</strong> in Word and wait for <strong>Saved</strong> before closing.</p>
-    <button type="button" className="linklike" onClick={() => openSettings("addins")}>Word add-in settings</button>
-  </details>
+  return null
 }
 
 export function WordOpenControl({ matterId, name, disabled = false, compact = false }: { matterId: string; name: string; disabled?: boolean; compact?: boolean }) {
   const { config, setupError, documents, refresh } = useContext(WordDocuments)
-  const [busy, setBusy] = useState<"open" | "revoke" | "release" | "takeover">()
+  const [busy, setBusy] = useState<"open" | "release" | "takeover">()
   const [recovery, setRecovery] = useState<{ action: "release" | "takeover"; document: WordOpenDocument }>()
   const toast = useToast()
   if (!/\.docx$/i.test(name)) return null
-  const linked = documents.some((entry) => entry.name === name)
   const status = documents.find((entry) => entry.name === name)
   const locked = status?.lease?.state === "other"
   const available = config?.available && !setupError
@@ -197,16 +192,6 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
       toast("success", `Open the downloaded ${name} in Word. Use Save to doc.haus in its pane and wait for confirmation before closing.`)
     } catch (error) {
       toast("error", humanizeError(error, `Could not open ${name} in Word.`))
-    } finally { setBusy(undefined) }
-  }
-  async function revoke() {
-    setBusy("revoke")
-    try {
-      await revokeWordDocument(matterId, name)
-      refresh()
-      toast("success", `Disconnected the Word copies of ${name}. Their local files are kept; they can no longer save to doc.haus.`)
-    } catch (error) {
-      toast("error", humanizeError(error, `Could not disconnect ${name} from Word.`))
     } finally { setBusy(undefined) }
   }
   async function recover() {
@@ -229,9 +214,6 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
     {available ? <button type="button" className={compact ? "linklike word-open" : "word-open"} onClick={open} disabled={disabled || busy !== undefined} aria-label={`Open ${name} in Word`} title="Download a linked copy to open in Word">
       {busy === "open" ? "Preparing Word copy…" : "Open in Word"}
     </button> : <span className="word-unavailable" title={wordSetupReason(config, setupError)}>{config || setupError ? "Word setup needed" : "Checking Word…"}</span>}
-    {linked && <button type="button" className="linklike word-revoke" onClick={revoke} disabled={busy !== undefined} aria-label={`Disconnect ${name} from Word`} title="Stop all existing Word copies of this document from saving to doc.haus">
-      {busy === "revoke" ? "Disconnecting…" : "Disconnect Word"}
-    </button>}
     {locked && <>
       <button type="button" className="linklike" disabled={busy !== undefined || disabled} onClick={() => setRecovery(status ? { action: "takeover", document: status } : undefined)}>Take over editing</button>
       <button type="button" className="linklike" disabled={busy !== undefined || disabled} onClick={() => setRecovery(status ? { action: "release", document: status } : undefined)}>Release Word lock</button>

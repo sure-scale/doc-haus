@@ -641,7 +641,7 @@ test("the document timeline orders files newest first and preserves origins and 
     expect(grouped).toContain(`download="${name}"`)
     expect(grouped).toContain(`aria-label="Download ${name}"`)
   }
-  expect(grouped).toContain('aria-label="Remove supply-terms.docx"')
+  expect(grouped).toContain('aria-label="Delete supply-terms.docx"')
   expect(grouped).not.toContain('download="supply-terms.docx"')
   expect(grouped.match(/<span class="matter-files-count">\d+<\/span>/g)).toEqual(['<span class="matter-files-count">4</span>'])
   expect(grouped.match(/class="matter-files-collection"/g)).toHaveLength(1)
@@ -651,7 +651,7 @@ test("the document timeline orders files newest first and preserves origins and 
   expect(sourcesOnly.match(/class="document-origin">Uploaded/g)).toHaveLength(4)
   expect(sourcesOnly).not.toContain("Created by Doc.Haus")
   expect(sourcesOnly).not.toContain('class="drafted-group"')
-  for (const name of names) expect(sourcesOnly).toContain(`aria-label="Remove ${name}"`)
+  for (const name of names) expect(sourcesOnly).toContain(`aria-label="Delete ${name}"`)
 })
 
 test("a delivered run with questions left counts them in the header and docks them above the composer", () => {

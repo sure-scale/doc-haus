@@ -27,7 +27,12 @@
 .matter-files-collection .doc-row-main .linklike:hover { color: var(--accent); }
 .matter-files-collection .doc-row-meta { margin-left: 28px; gap: var(--space-2); flex-wrap: wrap; justify-content: flex-start; }
 .matter-files-collection .doc-row-meta time { font-size: 0.6875rem; }
-.matter-files-collection .doc-remove { margin-left: auto; }
+.doc-more-actions { margin-left: auto; }
+.matter-files-collection .doc-more-actions > summary { width: 32px; height: 32px; min-height: 32px; }
+.doc-more-actions[inert] { opacity: .5; }
+.doc-more-actions .viewer-more-menu { min-width: 200px; overflow-y: auto; }
+.doc-more-actions[data-above="true"] .viewer-more-menu { top: auto; bottom: calc(100% + 6px); }
+.doc-more-actions .doc-delete-action { color: var(--danger); }
 .matter-files-collection .docs-add { margin-top: var(--space-4); }
 .matter-files-collection .dropzone.is-compact { border: 0; border-top: 1px solid var(--border-soft); border-radius: 0; justify-content: flex-start; padding: 14px 0; background: transparent; }
 .matter-files-collection .dropzone.is-compact:hover { color: var(--accent); background: transparent; }
@@ -591,7 +596,7 @@
 .docs-drawer .rail-empty > svg { display: none; }
 
 @media (pointer: coarse) {
-  .docs-drawer .matter-files-collection :is(.doc-remove, .doc-compare, .drafted-download, .drafted-compare) { width: max(44px, calc(44px / var(--ui-scale))); height: max(44px, calc(44px / var(--ui-scale))); min-height: max(44px, calc(44px / var(--ui-scale))); }
+  .docs-drawer .matter-files-collection :is(.doc-more-actions > summary, .drafted-download, .drafted-compare) { width: max(44px, calc(44px / var(--ui-scale))); height: max(44px, calc(44px / var(--ui-scale))); min-height: max(44px, calc(44px / var(--ui-scale))); }
   .docs-drawer-close { min-width: max(44px, calc(44px / var(--ui-scale))); min-height: max(44px, calc(44px / var(--ui-scale))); }
   .docs-drawer .document-label-badge,
   .docs-drawer .document-label-badge select { height: max(44px, calc(44px / var(--ui-scale))); line-height: max(44px, calc(44px / var(--ui-scale))); }

@@ -79,6 +79,7 @@ export async function browserCheckpoints(link: WordDocumentLink, storage: Storag
 export class WordSync {
   private queue: Promise<unknown> = Promise.resolve()
   private queued = 0
+  private foreground = 0
   private completed = false
   private completedCheckedAt = -Infinity
   private checkpointChecked = false
@@ -118,7 +119,7 @@ export class WordSync {
     this.state = {
       status,
       message,
-      busy: this.queued > 0,
+      busy: this.foreground > 0 || status === "saving",
       acknowledgement: this.acknowledgement,
       connection: this.connection,
       canSave: this.canSave(),
@@ -128,9 +129,13 @@ export class WordSync {
     this.render(this.snapshot())
   }
 
-  private enqueue(task: () => Promise<void>): Promise<boolean> {
+  private enqueue(task: () => Promise<void>, quiet = false): Promise<boolean> {
     this.queued++
-    this.render({ ...this.state, busy: true })
+    if (!quiet) {
+      this.foreground++
+      this.state = { ...this.state, busy: true }
+      this.render(this.snapshot())
+    }
     const result = this.queue.then(async () => {
       try {
         await task()
@@ -152,7 +157,8 @@ export class WordSync {
         return false
       } finally {
         this.queued--
-        this.state = { ...this.state, busy: this.queued > 0 }
+        if (!quiet) this.foreground--
+        this.state = { ...this.state, busy: this.foreground > 0 }
         this.render(this.snapshot())
       }
     })
@@ -285,7 +291,10 @@ export class WordSync {
     })
   }
 
-  /** Poll saved state and content: lastSaveTime is minute-rounded on some hosts. */
+  /** Poll saved state and content without flashing the controls for read-only
+   * checks. The same queue still serializes exports and explicit commands;
+   * flush() visibly enters Saving whenever there are actual bytes to upload.
+   * lastSaveTime is minute-rounded on some hosts, so content checks remain. */
   tick(): Promise<boolean> {
     if (this.queued > 0) return Promise.resolve(false)
     return this.enqueue(async () => {
@@ -312,7 +321,7 @@ export class WordSync {
       await this.heartbeat()
       if (this.now() < this.nextRetry) return
       await this.capture()
-    })
+    }, true)
   }
 
   save(): Promise<boolean> {

@@ -755,3 +755,67 @@ test("browser checkpoint key separates original hand-outs and stores no capabili
   expect(JSON.stringify([...values])).not.toContain(link.token)
   expect((await browserCheckpoints({ ...link, baseVersion: "other" }, storage)).read()).toBeNull()
 })
+
+test("unchanged background polling stays quiet while a queued explicit save stays busy and serialized", async () => {
+  const pollStarted = deferred<void>(), pollReleased = deferred<void>()
+  const uploadStarted = deferred<void>(), uploaded = deferred<WordSaveResponse>()
+  const states: PaneState[] = []
+  let saves = 0
+  const sync = new WordSync("base", {
+    saved: async () => true,
+    save: async () => { saves++ },
+    export: async () => new Uint8Array([1]),
+  }, {
+    heartbeat: async () => { pollStarted.resolve(); await pollReleased.promise },
+    save: async () => {
+      if (saves === 1) return acknowledgement("v1")
+      uploadStarted.resolve()
+      return uploaded.promise
+    },
+    done: immediate,
+  }, checkpoints(), state => states.push(state), fingerprint, immediate)
+  await sync.save()
+  states.length = 0
+  const polling = sync.tick()
+  try {
+    await pollStarted.promise
+    expect(states.every(state => !state.busy)).toBe(true)
+    expect(sync.snapshot().busy).toBe(false)
+    expect(await sync.tick()).toBe(false)
+    const saving = sync.save()
+    const queued = states.length - 1
+    expect(sync.snapshot().busy).toBe(true)
+    expect(saves).toBe(1)
+    pollReleased.resolve()
+    await uploadStarted.promise
+    expect(await polling).toBe(true)
+    expect(states.slice(queued).every(state => state.busy)).toBe(true)
+    expect(sync.snapshot().status).toBe("saving")
+    uploaded.resolve(acknowledgement("v2"))
+    expect(await saving).toBe(true)
+    expect(sync.snapshot()).toMatchObject({ busy: false, status: "saved", content: "confirmed", acknowledgement: { base: "v2" } })
+  } finally { pollReleased.resolve(); uploaded.resolve(acknowledgement("v2")); await polling }
+})
+
+test("a real background upload still shows Saving and remains busy until confirmation", async () => {
+  const uploadStarted = deferred<void>(), uploaded = deferred<WordSaveResponse>()
+  let bytes = 1
+  const sync = new WordSync("base", {
+    saved: async () => true, save: immediate, export: async () => new Uint8Array([bytes]),
+  }, {
+    heartbeat: immediate,
+    save: async () => { if (bytes === 1) return acknowledgement("v1"); uploadStarted.resolve(); return uploaded.promise },
+    done: immediate,
+  }, checkpoints(), () => {}, fingerprint, immediate)
+  await sync.save()
+  bytes = 2
+  const polling = sync.tick()
+  try {
+    await uploadStarted.promise
+    expect(sync.snapshot()).toMatchObject({ busy: true, status: "saving" })
+    expect(await sync.tick()).toBe(false)
+    uploaded.resolve(acknowledgement("v2"))
+    expect(await polling).toBe(true)
+    expect(sync.snapshot()).toMatchObject({ busy: false, status: "saved", content: "confirmed", acknowledgement: { base: "v2" } })
+  } finally { uploaded.resolve(acknowledgement("v2")); await polling }
+})

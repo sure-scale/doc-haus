@@ -274,3 +274,59 @@ test("numeric metadata comparison preserves duplicate leaves, extensions, unknow
     }
   }
 })
+
+const word2010 = "http://schemas.microsoft.com/office/word/2010/wordml"
+const notePart = (kind: "footnote" | "endnote", paragraphId: string, extra = "", textId = "77777777") =>
+  `<w:${kind}s xmlns:w="${word}" xmlns:w14="${word2010}"><w:${kind} w:type="separator" w:id="-1"><w:p w14:paraId="${paragraphId}" w14:textId="${textId}"><w:r><w:separator/></w:r>${extra}</w:p></w:${kind}><w:${kind} w:type="continuationSeparator" w:id="0"><w:p w14:paraId="${paragraphId}" w14:textId="${textId}"><w:r><w:continuationSeparator/></w:r></w:p></w:${kind}></w:${kind}s>`
+
+test("Word may regenerate paragraph IDs on boilerplate note separators without changing the document", async () => {
+  const fixture = (id: string, content = run("Neutral text.")) => zipSync({
+    "word/document.xml": strToU8(document(content)),
+    "word/footnotes.xml": strToU8(notePart("footnote", id)),
+    "word/endnotes.xml": strToU8(notePart("endnote", id)),
+  })
+  const original = fixture("00000001")
+  const copy = original.slice()
+  const baseline = await documentFingerprint(original)
+  expect(await documentFingerprint(fixture("00000002"))).toBe(baseline)
+  for (const content of [
+    run("Changed text."),
+    run("Neutral text.", "<w:rPr><w:b/></w:rPr>"),
+    '<w:ins w:id="1" w:author="Synthetic reviewer">' + run("Neutral text.") + "</w:ins>",
+    '<w:commentRangeStart w:id="1"/>' + run("Neutral text.") + '<w:commentRangeEnd w:id="1"/>',
+    run("Neutral text.") + '<w:r><w:footnoteReference w:id="1"/></w:r>',
+    run("Neutral text.") + '<w:r><w:endnoteReference w:id="1"/></w:r>',
+  ]) expect(await documentFingerprint(fixture("00000002", content))).not.toBe(baseline)
+  for (const kind of ["footnote", "endnote"] as const) {
+    const reference = (id: number) => run("Neutral text.") + `<w:r><w:${kind}Reference w:id="${id}"/></w:r>`
+    expect(await documentFingerprint(fixture("00000002", reference(2)))).not.toBe(
+      await documentFingerprint(fixture("00000001", reference(1))),
+    )
+  }
+  expect(original).toEqual(copy)
+})
+
+test("note separator normalization preserves real paragraph and comment identity and all other data", async () => {
+  const hash = (part: string, xml: string) => documentFingerprint(zipSync({ [part]: strToU8(xml) }))
+  for (const kind of ["footnote", "endnote"] as const) {
+    const part = `word/${kind}s.xml`
+    const first = notePart(kind, "00000001")
+    const second = notePart(kind, "00000002")
+    expect(await hash(part, first)).not.toBe(await hash(part, notePart(kind, "00000002", "", "88888888")))
+    // A real note, a comment anchor or custom separator content makes paragraph identity significant.
+    for (const transform of [
+      (xml: string) => xml.replace(' w:type="separator"', '').replace(' w:type="continuationSeparator"', '').replace('w:id="-1"', 'w:id="1"').replace('w:id="0"', 'w:id="2"'),
+      (xml: string) => xml.replace("<w:r>", '<w:commentRangeStart w:id="1"/><w:r>'),
+      (xml: string) => xml.replace("<w:separator/>", "<w:separator/><w:t>Custom separator</w:t>"),
+      (xml: string) => xml.replace('w14:textId="77777777"', 'w14:textId="77777777" w:unknown="preserved"'),
+    ]) expect(await hash(part, transform(first))).not.toBe(await hash(part, transform(second)))
+    expect(await hash("customXml/item1.xml", first)).not.toBe(await hash("customXml/item1.xml", second))
+    expect(await hash(part, first)).not.toBe(await hash(part, second.replace("<w:separator/>", "<w:separator/><w:t>Changed separator</w:t>")))
+  }
+  for (const part of ["word/document.xml", "word/comments.xml"]) {
+    const root = part === "word/document.xml" ? "document" : "comments"
+    const wrapper = root === "document" ? ["<w:body>", "</w:body>"] : ['<w:comment w:id="1" w:author="Synthetic reviewer">', "</w:comment>"]
+    const xml = (id: string) => `<w:${root} xmlns:w="${word}" xmlns:w14="${word2010}">${wrapper[0]}<w:p w14:paraId="${id}">${run("Neutral text.")}</w:p>${wrapper[1]}</w:${root}>`
+    expect(await hash(part, xml("00000001"))).not.toBe(await hash(part, xml("00000002")))
+  }
+})
