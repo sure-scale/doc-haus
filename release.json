@@ -1,5 +1,5 @@
 {
   "version": 16,
   "name": "2.0.14",
-  "notes": "Word add-in, including simpler matter-document reading and direct saved-version comparison. Open matter documents to read client instructions, heads of terms or correspondence beside your draft. Show selected Word text only when helpful, keep useful documents open, and find exact wording. Compare versions opens directly from the Word pane."
+  "notes": "Word add-in, including a compact save status, Save and close, Documents and Compare tabs, document tabs, inline Find and optional Word selection. Read saved matter documents with clearer headings and dates, compare small saved-version pairs automatically, and keep secondary actions in menus."
 }

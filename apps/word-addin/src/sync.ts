@@ -37,6 +37,9 @@ export type PaneState = {
   acknowledgement?: Acknowledgement
   connection?: WordConnectionState
   canSave: boolean
+  /** Presentation only: version equality does not verify the current Word text. */
+  content: "unverified" | "changed" | "confirmed"
+  problem?: boolean
 }
 type Pending = { bytes: Uint8Array; fingerprint: string; base: string; generation: string }
 
@@ -85,11 +88,13 @@ export class WordSync {
   private acknowledgement?: Acknowledgement
   private nextRetry = 0
   private heartbeatAt = -Infinity
+  private content: PaneState["content"] = "unverified"
   private state: PaneState = {
     status: "not-saved",
     busy: false,
     canSave: false,
     message: "Checking the saved Word document…",
+    content: "unverified",
   }
 
   constructor(
@@ -109,7 +114,7 @@ export class WordSync {
     return { ...this.state }
   }
 
-  private show(status: PaneState["status"], message: string): void {
+  private show(status: PaneState["status"], message: string, problem = false): void {
     this.state = {
       status,
       message,
@@ -117,6 +122,8 @@ export class WordSync {
       acknowledgement: this.acknowledgement,
       connection: this.connection,
       canSave: this.canSave(),
+      content: this.content,
+      problem,
     }
     this.render(this.snapshot())
   }
@@ -136,10 +143,11 @@ export class WordSync {
             ? error.message
             : error instanceof Error && error.name === "DocumentStateError"
               ? error.message
-              : "Word could not finish the save. Keep this document open and try Save to doc.haus again."
+              : "Word could not finish the save. Keep this document open and try Save again."
         this.show(
           "not-saved",
           error instanceof ConnectionError && this.connection && !this.canWrite() ? this.blockedMessage() : message,
+          true,
         )
         return false
       } finally {
@@ -183,7 +191,7 @@ export class WordSync {
       return "A newer version is in doc.haus. Keep this Word file using Save As. In doc.haus, use Versions to compare or Open in Word for a fresh copy. This pane will not overwrite it."
     if (state.lease.state === "other")
       return "Another editing session owns saving. Keep your Word edits here. Check status, or deliberately take over this session."
-    return "Ready to save. Choose Save to doc.haus or Done in Word to start editing here. Your Word edits stay local until you save."
+    return "Ready to save. Choose Save or Save and close to start editing here. Your Word edits stay local until you save."
   }
 
   private async inspect(claim: boolean): Promise<void> {
@@ -207,6 +215,28 @@ export class WordSync {
     })
   }
 
+  /** Inspect only; this menu action never claims, exports or retries a save. */
+  checkStatus(): Promise<boolean> {
+    return this.enqueue(async () => {
+      await this.inspect(false)
+      const confirmed = this.canSave() && (this.state.status === "saved" || this.state.status === "done")
+      this.show(
+        confirmed ? this.state.status : "not-saved",
+        confirmed ? this.state.message : this.canSave() ? "Editing status checked." : this.blockedMessage(),
+      )
+    })
+  }
+
+  /** Deliberate ownership claim only; current text still needs confirmation. */
+  startEditing(): Promise<boolean> {
+    return this.enqueue(async () => {
+      this.completed = false
+      await this.inspect(true)
+      this.discardFencedPending()
+      this.show("not-saved", this.canWrite() ? "Editing started. Choose Save to confirm this copy in doc.haus." : this.blockedMessage())
+    })
+  }
+
   takeover(): Promise<boolean> {
     const observed = this.connection
     return this.enqueue(async () => {
@@ -227,7 +257,7 @@ export class WordSync {
       this.show(
         "not-saved",
         this.canWrite()
-          ? "You now own saving. Your local edits have not been sent; choose Save to doc.haus."
+          ? "You now own saving. Your local edits have not been sent; choose Save."
           : this.blockedMessage(),
       )
     })
@@ -250,7 +280,7 @@ export class WordSync {
       await this.inspect(false)
       this.show(
         "not-saved",
-        this.canWrite() ? "Ready to save. Choose Save to doc.haus to send this document." : this.blockedMessage(),
+        this.canWrite() ? "Ready to save. Choose Save to send this document." : this.blockedMessage(),
       )
     })
   }
@@ -269,7 +299,8 @@ export class WordSync {
           return
         }
         this.completed = false
-        this.show("not-saved", "You have new changes in Word. Choose Save to doc.haus before closing.")
+        this.content = "changed"
+        this.show("not-saved", "You have new changes in Word. Choose Save before closing.")
         await this.heartbeat(true)
       }
       if (this.pending && this.now() >= this.nextRetry) await this.flush()
@@ -297,7 +328,8 @@ export class WordSync {
         // keep Word open; release never grants a later automatic claim.
         this.connection = await this.transport.done(this.base, this.connection!.lease.generation!)
         if (!(await this.matchesAcknowledgement())) {
-          throw documentStateError("Word has new changes. Choose Done in Word again before closing.")
+          this.content = "changed"
+          throw documentStateError("Word has new changes. Choose Save and close again before closing.")
         }
       } catch (error) {
         // A lost response may still have released editing. A heartbeat can
@@ -336,9 +368,10 @@ export class WordSync {
           return
         }
         this.completed = false
+        if (unchanged === false) this.content = "changed"
         const message =
           unchanged === false
-            ? "Your last save is in doc.haus. Word has new changes. Choose Save to doc.haus before closing."
+            ? "Your last save is in doc.haus. Word has new changes. Choose Save before closing."
             : "Your last save is in doc.haus. Check this document for new changes in Word before closing it."
         this.show("not-saved", message)
         try {
@@ -379,7 +412,7 @@ export class WordSync {
     if (!this.canWrite()) throw documentStateError(this.blockedMessage())
     await this.host.save()
     if (!(await this.capture(true)))
-      throw documentStateError("Word has new changes. Try Save to doc.haus again before closing.")
+      throw documentStateError("Word has new changes. Try Save again before closing.")
   }
 
   private discardFencedPending(): boolean {
@@ -406,17 +439,20 @@ export class WordSync {
     }
     await this.restoreCheckpoint()
     if (!(await this.host.saved())) {
-      this.show("not-saved", "You have changes in Word. Choose Save to doc.haus before closing.")
+      this.content = "changed"
+      this.show("not-saved", "You have changes in Word. Choose Save before closing.")
       return false
     }
     const bytes = await this.host.export()
     if (!(await this.host.saved())) {
-      this.show("not-saved", "You have new changes in Word. Choose Save to doc.haus before closing.")
+      this.content = "changed"
+      this.show("not-saved", "You have new changes in Word. Choose Save before closing.")
       return false
     }
     const fingerprint = await this.fingerprint(bytes)
     if (!(await this.host.saved())) {
-      this.show("not-saved", "You have new changes in Word. Choose Save to doc.haus before closing.")
+      this.content = "changed"
+      this.show("not-saved", "You have new changes in Word. Choose Save before closing.")
       return false
     }
     if (!requireAcknowledgement && fingerprint === this.acknowledgement?.fingerprint) {
@@ -434,7 +470,8 @@ export class WordSync {
       return false
     }
     if (!(await this.matchesAcknowledgement())) {
-      this.show("not-saved", "You have new changes in Word. Choose Save to doc.haus before closing.")
+      this.content = "changed"
+      this.show("not-saved", "You have new changes in Word. Choose Save before closing.")
       return false
     }
     this.showSaved()
@@ -477,7 +514,7 @@ export class WordSync {
         await this.wait(650)
       }
     }
-    if (!response) throw new ConnectionError("doc.haus did not confirm the save. Try Save to doc.haus again.")
+    if (!response) throw new ConnectionError("doc.haus did not confirm the save. Try Save again.")
     this.base = response.version.id
     this.connection = response.connection
     this.acknowledgement = {
@@ -493,6 +530,7 @@ export class WordSync {
   }
 
   private showSaved(): void {
+    this.content = "confirmed"
     this.show(
       "saved",
       this.acknowledgement?.overlap

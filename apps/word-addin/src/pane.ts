@@ -2,52 +2,45 @@ import { WORD_UPDATE_MESSAGE, WordClient, isCurrentPaneVersion, readLink } from 
 import { connectOffice } from "./office"
 import { browserCheckpoints, WordSync, type PaneState } from "./sync"
 import { setupSourceDesk } from "./desk-entry"
+import { savePresentation } from "./pane-presentation"
 
 const element = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
 const badge = element("status")
 const message = element("message")
-const received = element("received")
 const save = element<HTMLButtonElement>("save")
+const saveAgain = element<HTMLButtonElement>("save-again")
 const done = element<HTMLButtonElement>("done")
+const startEditing = element<HTMLButtonElement>("start-editing")
 const refresh = element<HTMLButtonElement>("refresh")
 const takeover = element<HTMLButtonElement>("takeover")
 const release = element<HTMLButtonElement>("release")
+let primaryAction: "save" | "close" = "save"
 
 function render(state: PaneState): void {
-  badge.textContent = { "not-saved": "Not saved", saving: "Saving…", saved: "Saved", done: "Saved" }[state.status]
-  badge.dataset.state = state.status
-  message.textContent = state.message
-  save.disabled = state.busy || !state.canSave
+  const view = savePresentation(state)
+  badge.textContent = view.badge
+  badge.dataset.state = view.tone
+  message.textContent = view.message
+  primaryAction = view.primary
+  save.textContent = view.primary === "close" ? "Save and close" : "Save"
+  save.disabled = state.busy || !state.canSave || state.status === "done"
+  saveAgain.hidden = view.primary !== "close"
+  saveAgain.disabled = state.busy || !state.canSave
+  done.hidden = view.primary === "close"
   done.disabled = state.busy || !state.canSave || state.status === "done"
   const connection = state.connection
-  const current = connection?.version.current?.number
-  const base = connection?.version.base?.number
-  element("version-state").textContent = connection
-    ? `This copy: ${base ? `version ${base}` : "unavailable version"}. In doc.haus: ${current ? `version ${current}` : "unavailable"}.`
-    : "Checking version and editing status…"
-  element("editing-state").textContent = !connection
-    ? "Checking editing status…"
-    : connection.lease.state === "owned"
-      ? "You are editing this document."
-      : connection.lease.state === "other"
-        ? "Another editor has this document."
-        : connection.version.state === "current"
-          ? "Editing is available. Save to doc.haus to start."
-          : "Saving is paused for this copy."
+  element("version-state").textContent = view.mismatch ?? ""
+  element("version-state").hidden = !view.mismatch
+  element("blocked-help").textContent = view.help ?? ""
+  element("blocked-help").hidden = !view.help
   refresh.disabled = state.busy
-  refresh.textContent =
-    connection?.version.state === "current" && connection.lease.state === "available"
-      ? "Start saving here"
-      : "Check status"
+  startEditing.hidden = connection?.version.state !== "current" || connection.lease.state !== "available"
+  startEditing.disabled = state.busy
   takeover.hidden =
     connection?.version.state !== "current" || connection.lease.state !== "other" || !connection.lease.generation
   takeover.disabled = state.busy
   release.hidden = connection?.lease.state !== "owned"
   release.disabled = state.busy
-  if (state.acknowledgement) {
-    const time = new Date(state.acknowledgement.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-    received.textContent = `doc.haus received version ${state.acknowledgement.number} at ${time}.`
-  }
 }
 
 async function main(): Promise<void> {
@@ -71,7 +64,7 @@ async function main(): Promise<void> {
       return
     }
     element("matter").textContent = link.matterName
-    element("document").textContent = link.documentName
+    element("matter").title = `${link.matterName} · ${link.documentName}`
     const back = element<HTMLAnchorElement>("back")
     back.href = `${link.origin}/matter/${encodeURIComponent(link.matter)}`
     back.hidden = false
@@ -85,20 +78,19 @@ async function main(): Promise<void> {
     const client = new WordClient(link, crypto.randomUUID())
     const sync = new WordSync(link.baseVersion, office.host, client, checkpoints, render)
     save.addEventListener("click", () => {
-      void sync.save()
+      if (primaryAction === "close") void sync.done()
+      else void sync.save()
     })
-    done.addEventListener("click", () => {
-      void sync.done()
-    })
-    refresh.addEventListener("click", () => {
-      void sync.refresh()
-    })
-    takeover.addEventListener("click", () => {
-      void sync.takeover()
-    })
-    release.addEventListener("click", () => {
-      void sync.release()
-    })
+    const menu = element<HTMLDetailsElement>("save-menu")
+    const closeMenu = () => { menu.open = false; menu.querySelector("summary")?.focus() }
+    const menuAction = (control: HTMLButtonElement, action: () => Promise<boolean>) => control.addEventListener("click", () => { void action(); closeMenu() })
+    menuAction(saveAgain, () => sync.save())
+    menuAction(done, () => sync.done())
+    menuAction(startEditing, () => sync.startEditing())
+    menuAction(refresh, () => sync.checkStatus())
+    menuAction(takeover, () => sync.takeover())
+    menuAction(release, () => sync.release())
+    menu.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); closeMenu() } })
     // The read-only desk has its own lifecycle; opening/closing it never owns
     // or stops the existing saving queue.
     setupSourceDesk(link)

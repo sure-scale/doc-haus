@@ -170,6 +170,63 @@ test("two initial panes only inspect; an explicit owner saves and syncs while th
   expect(api.writes).toHaveLength(2)
 })
 
+test("Check status and Start editing here only inspect or claim without treating a current version as confirmed content", async () => {
+  const api = server()
+  const view = pane(api.transport("reader"))
+  await view.sync.start()
+  api.events.length = 0
+  await view.sync.checkStatus()
+  expect(api.events).toEqual(["reader:inspect:v1"])
+  expect(view.hostEvents).toEqual([])
+  expect(view.sync.snapshot().content).toBe("unverified")
+  expect(view.sync.snapshot().acknowledgement).toBeUndefined()
+  api.events.length = 0
+  await view.sync.startEditing()
+  expect(api.events).toEqual(["reader:inspect:v1", "reader:claim:v1"])
+  expect(api.writes).toEqual([])
+  expect(view.hostEvents).toEqual([])
+  expect(view.sync.snapshot().status).toBe("not-saved")
+  expect(view.sync.snapshot().content).toBe("unverified")
+  expect(view.sync.snapshot().acknowledgement).toBeUndefined()
+  api.events.length = 0
+  await view.sync.checkStatus()
+  expect(api.events).toEqual(["reader:inspect:v1"])
+  expect(view.hostEvents).toEqual([])
+  view.edit(2, false)
+  await view.sync.tick()
+  expect(view.sync.snapshot().content).toBe("changed")
+  expect(view.sync.snapshot().status).toBe("not-saved")
+  expect(api.writes).toEqual([])
+  await view.sync.save()
+  expect(view.sync.snapshot().content).toBe("confirmed")
+  expect(view.sync.snapshot().status).toBe("saved")
+})
+
+test("Start editing here cannot claim a stale copy or promote a restored checkpoint into a fresh confirmation", async () => {
+  const api = server()
+  api.advance()
+  const stale = pane(api.transport("stale"))
+  await stale.sync.start()
+  api.events.length = 0
+  await stale.sync.startEditing()
+  expect(api.events).toEqual(["stale:inspect:v1"])
+  expect(stale.sync.snapshot().canSave).toBe(false)
+  expect(stale.hostEvents).toEqual([])
+  const checkpoint: Acknowledgement = { base: "v2", number: 2, fingerprint: "1", at: 1, overlap: false }
+  const restored = pane(api.transport("restored"), { checkpoint })
+  restored.edit(1, false)
+  await restored.sync.start()
+  expect(restored.sync.snapshot().acknowledgement).toEqual(checkpoint)
+  expect(restored.sync.snapshot().content).toBe("unverified")
+  restored.hostEvents.length = 0
+  await restored.sync.checkStatus()
+  await restored.sync.startEditing()
+  expect(restored.hostEvents).toEqual([])
+  expect(restored.sync.snapshot().status).toBe("not-saved")
+  expect(restored.sync.snapshot().content).toBe("unverified")
+  expect(api.writes).toEqual([])
+})
+
 test("matching checkpoints recover their acknowledged parent; a different forwarded copy keeps the embedded base", async () => {
   const api = server()
   api.advance()

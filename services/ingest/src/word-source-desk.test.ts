@@ -59,9 +59,10 @@ test("scoped source previews pin exact saved bytes; changed sources fail without
   expect(sources).toMatchObject({ matterName: "Synthetic Desk matter", documentName: "Draft.docx", truncated: false })
   const selected = sources.sources.find(row => row.name === "Source.docx")!
   expect(selected).toMatchObject({ role: "source", version: { number: 1 } })
+  expect(selected.version?.createdAt).toBe(readCurrentVersion(directory, "Source.docx")!.current.created_at)
   const preview = await request("source", { sourceId: selected.id, expectedHash: selected.hash })
   expect(preview.status).toBe(200)
-  expect(await preview.json() as DeskSourcePreview).toMatchObject({ ...selected, text: expect.stringContaining("Neutral source confirms Monday delivery."), provenance: "saved-version", truncated: false })
+  expect(await preview.json() as DeskSourcePreview).toMatchObject({ ...selected, text: expect.stringContaining("Neutral source confirms Monday delivery."), blocks: [{ kind: "paragraph", text: "Neutral source confirms Monday delivery." }], provenance: "saved-version", truncated: false })
   expect((await request("source", { sourceId: "../../other", expectedHash: selected.hash })).status).toBe(400)
   expect((await request("source", { sourceId: "9999999999", expectedHash: selected.hash })).status).toBe(404)
   writeFileSync(path.join(directory, "Source.docx"), await bytes("The neutral source now confirms Tuesday."))
@@ -85,6 +86,8 @@ test("retained-version comparison stays within the linked document and refuses r
   await writeDeliverableRevision(directory, "Draft.docx", await bytes("The delivery date is Tuesday."))
   const current = readCurrentVersion(directory, "Draft.docx")!
   const history = await (await request("versions")).json() as DeskVersions
+  expect(history.matterName).toBe("Synthetic Desk matter")
+  expect(history.versions.find(row => row.id === current.current.id)?.bytes).toBe(current.current.bytes)
   expect(history.document).toEqual({ id: base.document.id, name: "Draft.docx" })
   expect(history.versions.map(row => row.id)).toEqual([current.current.id, base.current.id])
   const response = await request("compare", { baseVersion: base.current.id, currentVersion: current.current.id })

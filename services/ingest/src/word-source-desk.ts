@@ -6,6 +6,7 @@ import type { DeskComparison, DeskSource, DeskSourcePreview, DeskSources, DeskVe
 import { compareVersions } from "../../../dochaus/lib/version-compare"
 import { readCurrentVersion, readDocumentVersions, readVersion, readVersionBytes, sha256Hex, type VersionRow } from "./document-versions"
 import { extractDocumentText } from "./ingest"
+import { documentPreviewBlocks } from "./document-preview"
 import { readDocumentTarget } from "./registered-document"
 import { documentRegistryIdentity } from "./document-identity"
 import type { WordGrant } from "./word-grants"
@@ -31,12 +32,12 @@ function source(auth: Auth, row: Registered): DeskSource | undefined {
   // An external unsaved/unregistered replacement is not the confirmed version.
   if (sha256Hex(readFileSync(target.docPath)) !== kept.current.sha256) return
   return { id: String(row.id), name: target.name, role: row.role, hash: kept.current.sha256,
-    version: { id: kept.current.id, number: kept.current.number } }
+    version: { id: kept.current.id, number: kept.current.number, createdAt: kept.current.created_at } }
 }
 
 function view(version: VersionRow, current: string | null): DeskVersion {
   return { id: version.id, number: version.number, hash: version.sha256, parent: version.parent,
-    createdAt: version.created_at, origin: version.origin, label: version.label,
+    createdAt: version.created_at, bytes: version.bytes, origin: version.origin, label: version.label,
     current: version.id === current, removed: Boolean(version.removed) }
 }
 
@@ -83,6 +84,7 @@ export function installWordSourceDesk(app: Hono, authenticate: (c: Context) => A
     let text: string
     try { text = await extractDocumentText(selected.name, bytes) }
     catch { return refuse(c, 422, "desk_preview_failed", "This source cannot be previewed. Open it in doc.haus.") }
+    const blocks = await documentPreviewBlocks(selected.name, bytes, text, text.length > LIMIT)
     // Extraction is asynchronous. Revalidate revocation/redaction and identity
     // before releasing the exact snapshot; never return newly removed bytes.
     const live = authenticate(c)
@@ -91,7 +93,7 @@ export function installWordSourceDesk(app: Hono, authenticate: (c: Context) => A
     const after = liveRow ? source(live, liveRow) : undefined
     if (after?.hash !== selected.hash || after?.version?.id !== selected.version.id)
       return refuse(c, 409, "desk_source_changed", "This source changed while loading. Refresh the source list and choose it again.")
-    const preview: DeskSourcePreview = { ...selected, text: text.slice(0, LIMIT), characters: text.length,
+    const preview: DeskSourcePreview = { ...selected, text: text.slice(0, LIMIT), ...(blocks ? { blocks } : {}), characters: text.length,
       truncated: text.length > LIMIT, provenance: "saved-version" }
     return c.json(preview)
   })
@@ -103,7 +105,7 @@ export function installWordSourceDesk(app: Hono, authenticate: (c: Context) => A
     const history = readDocumentVersions(auth.matter.dir, auth.target.name)
     if (!history.document || history.document.id !== auth.grant.document_id)
       return refuse(c, 404, "desk_document_missing", "This document's saved versions are unavailable.")
-    const body: DeskVersions = { document: { id: history.document.id, name: history.document.name },
+    const body: DeskVersions = { matterName: auth.matter.title, document: { id: history.document.id, name: history.document.name },
       versions: history.versions.map(version => view({ ...version, document_id: history.document!.id }, history.document!.current_version)) }
     return c.json(body)
   })

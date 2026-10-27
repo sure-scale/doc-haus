@@ -1,309 +1,431 @@
-import type { DeskComparison, DeskSourcePreview, DeskSources, DeskVersions } from "../../../dochaus/lib/word-source-desk-contract"
+import type { DeskComparison, DeskSource, DeskSourcePreview, DeskSources, DeskVersions } from "../../../dochaus/lib/word-source-desk-contract"
 import { wordDiff, type Piece } from "../../../dochaus/lib/redline"
 import type { DeskRequest, DeskView } from "./desk-protocol"
 import type { WordSelectionSnapshot } from "./selection"
 
 export type DeskTransport = { request(input: DeskRequest): Promise<unknown> }
+export type DeskContext = { view: DeskView; documentName?: string; matterName?: string }
+type DeskOptions = {
+  close(): void
+  floating?: boolean
+  embedded?: boolean
+  initialView?: DeskView
+  onViewChange?(view: DeskView): void
+  onContextChange?(context: DeskContext): void
+  onBusyChange?(busy: boolean): void
+}
 
-/** Open previews and kept sources retain their exact received saved snapshot. */
-export function mountDesk(root: HTMLElement, transport: DeskTransport, options: { close(): void; floating?: boolean; initialView?: DeskView }) {
+/** Each document tab retains the exact saved snapshot that was opened. */
+export function mountDesk(root: HTMLElement, transport: DeskTransport, options: DeskOptions) {
   root.classList.add("source-desk")
+  root.classList.toggle("is-embedded", Boolean(options.embedded))
   root.innerHTML = `
-    <header class="desk-head"><div class="desk-brand"><img src="./assets/icon.png" width="32" height="32" alt="" />
-      <div><h2 data-el="title">Matter documents</h2><p class="desk-subtitle" data-el="identity">Connecting to this matter…</p></div></div>
-      <button type="button" data-el="close">${options.floating ? "Close window" : "Back to saving"}</button></header>
-    <nav class="desk-modes" aria-label="Document views"><button class="desk-mode" data-el="sources-mode" aria-pressed="true" type="button">Matter documents</button>
-      <button class="desk-mode" data-el="compare-mode" aria-pressed="false" type="button">Compare versions</button></nav>
-    <div data-el="source-tools"><div class="desk-toolbar">
-      <label>Choose a document<select data-el="source-choice" aria-label="Choose a document"><option value="">Loading documents…</option></select></label>
-      <button type="button" data-el="pin" hidden disabled>Keep open</button>
-      <button type="button" data-el="find-toggle" aria-expanded="false">Find</button>
-      <button type="button" data-el="selection-toggle" aria-expanded="false">Show selected Word text here</button>
-      <details class="desk-options" data-el="more"><summary>More options</summary><button type="button" data-el="reload">Refresh documents</button></details></div>
-      <p class="desk-help">Read documents already saved in this matter. You do not need to select text in Word.</p>
-      <div class="desk-find" data-el="find-bar" hidden><label>Find exact text<input data-el="find" type="search" placeholder="Find in the open document" maxlength="255" /></label>
-        <span data-el="find-count" role="status"></span><button type="button" data-el="find-close">Close find</button></div>
-      <div class="desk-pins" data-el="pins" role="group" aria-label="Documents kept open"></div></div>
-    <div data-el="compare-tools" hidden><div class="desk-toolbar">
-      <label>Earlier version<select data-el="base" aria-label="Earlier version"></select></label><label>Later version<select data-el="current" aria-label="Later version"></select></label>
-      <button type="button" data-el="compare" class="desk-primary" disabled>Compare</button>
-      <details class="desk-options" data-el="version-options"><summary>More options</summary><button type="button" data-el="reload-versions">Refresh versions</button></details></div><p class="desk-warning" data-el="compare-warning" hidden></p></div>
-    <div class="desk-columns" data-el="columns"><section class="desk-column desk-context" aria-label="Your selected Word text" data-el="left" hidden></section>
-      <section class="desk-column desk-reader" aria-label="Reference document or comparison" data-el="right"></section></div>
-    <footer class="desk-footer"><p role="status" aria-live="polite" data-el="status">Opening matter documents…</p><p class="desk-note" data-el="scope">Read-only · saved document previews</p></footer>`
+    <header class="desk-head" ${options.embedded ? "hidden" : ""}>
+      <p class="desk-identity" data-el="identity"></p>
+      <nav class="desk-modes" aria-label="Document views"><button data-el="sources-mode" type="button" aria-pressed="true">Documents</button><button data-el="compare-mode" type="button" aria-pressed="false">Compare</button></nav>
+      <button type="button" class="desk-icon" data-el="close" aria-label="${options.floating ? "Close window" : "Back to saving"}" title="${options.floating ? "Close window" : "Back to saving"}">×</button>
+    </header>
+    <section data-el="source-tools"><div class="desk-document-bar">
+      <div class="desk-tabs" data-el="tabs" role="tablist" aria-label="Open documents"></div>
+      <button type="button" data-el="open-document">+ Open document</button>
+      <div class="desk-reader-actions"><button type="button" class="desk-icon" data-el="find-toggle" aria-label="Find exact wording (Cmd or Ctrl+F)" title="Find exact wording (Cmd or Ctrl+F)" aria-expanded="false">⌕</button>
+        <button type="button" data-el="selection-toggle" aria-label="Show selected Word text" title="Show selected Word text" aria-pressed="false">Word selection</button>
+        <button type="button" class="desk-icon" data-el="reload" aria-label="Refresh document list" title="Refresh document list">↻</button></div>
+      </div>
+      <div class="desk-find" data-el="find-bar" hidden><input data-el="find" type="search" aria-label="Exact wording" placeholder="Exact wording" maxlength="255" />
+        <span data-el="find-count" role="status"></span><button class="desk-icon" type="button" data-el="find-previous" aria-label="Previous match" title="Previous match">‹</button><button class="desk-icon" type="button" data-el="find-next" aria-label="Next match" title="Next match">›</button><button class="desk-icon" type="button" data-el="find-close" aria-label="Close Find (Escape)" title="Close Find (Escape)">×</button></div>
+      <div class="desk-document-list" data-el="document-list"></div>
+    </section>
+    <section data-el="compare-tools" hidden><div class="desk-compare-controls"><label>Earlier<select data-el="base" aria-label="Earlier version"></select></label><span aria-hidden="true">→</span><label>Later<select data-el="current" aria-label="Later version"></select></label><button type="button" data-el="compare" hidden>Compare</button><button type="button" class="desk-icon" data-el="reload-versions" aria-label="Refresh version list" title="Refresh version list">↻</button></div><p class="desk-warning" data-el="compare-warning" hidden></p></section>
+    <div class="desk-columns" data-el="columns"><section class="desk-context" aria-label="Word selection" data-el="left" hidden></section><section class="desk-reader" aria-label="Saved document" data-el="right"></section></div>
+    <p class="desk-error" role="alert" data-el="status" hidden></p>`
   const el = <T extends HTMLElement>(name: string) => root.querySelector(`[data-el="${name}"]`) as T
   const button = (name: string) => el<HTMLButtonElement>(name)
   const select = (name: string) => el<HTMLSelectElement>(name)
-  let disposed = false
-  let busy = false
-  let mode: "sources" | "compare" = options.initialView === "compare" ? "compare" : "sources"
-  let findOpen = false
-  let selectionVisible = false
-  let selection: WordSelectionSnapshot | undefined
-  let sources: DeskSources | undefined
-  let versions: DeskVersions | undefined
-  const pins = new Map<string, DeskSourcePreview>()
-  let active: DeskSourcePreview | undefined
-  let comparison: DeskComparison | undefined
-  let change = 0
-  const key = (source: DeskSourcePreview) => `${source.id}:${source.hash}`
-  const say = (text: string) => { if (!disposed) el("status").textContent = text }
-  const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text: string, className?: string) => {
+  const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text = "", className?: string) => {
     const result = document.createElement(tag)
     result.textContent = text
     if (className) result.className = className
     return result
   }
-  const action = (name: string, label: string, run: () => void) => {
-    const result = node("button", label)
+  const action = (name: string, label: string, run: () => void, icon?: string) => {
+    const result = node("button", icon ?? label, icon ? "desk-icon" : undefined)
     result.type = "button"; result.dataset.el = name; result.onclick = run
+    if (icon) { result.setAttribute("aria-label", label); result.title = label }
     return result
   }
-  const textBlock = (text: string, query = "") => {
-    const result = node("div", "", "desk-text")
-    result.tabIndex = 0
-    if (!query) { result.textContent = text; return result }
-    let from = 0
-    let count = 0
-    while (count++ < 200) {
-      const at = text.indexOf(query, from)
-      if (at < 0) break
-      result.append(document.createTextNode(text.slice(from, at)), node("mark", query))
-      from = at + query.length
-    }
-    result.append(document.createTextNode(text.slice(from)))
-    return result
+  const date = (value?: number | string) => value === undefined ? "" : new Date(value).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+  const key = (source: DeskSource) => `${source.id}:${source.hash}`
+  let disposed = false
+  let pending = 0
+  let mode: DeskView = options.initialView === "compare" ? "compare" : "documents"
+  let sources: DeskSources | undefined
+  let versions: DeskVersions | undefined
+  let sourcesJob: Promise<void> | undefined
+  let versionsJob: Promise<void> | undefined
+  let comparisonJob: Promise<void> | undefined
+  let sourcesRefreshed: number | undefined
+  let versionsRefreshed: number | undefined
+  const documents = new Map<string, DeskSourcePreview>()
+  let activeKey = ""
+  let chooserOpen = true
+  let selectionVisible = false
+  let selection: WordSelectionSnapshot | undefined
+  let findOpen = false
+  let findIndex = 0
+  let findTotal = 0
+  let comparison: DeskComparison | undefined
+  let desiredPair = ""
+  let retryPair = ""
+  let change = 0
+  const comparisons = new Map<string, DeskComparison>()
+  const active = () => documents.get(activeKey)
+  const busy = () => pending > 0
+  function error(message = "") {
+    if (disposed) return
+    el("status").textContent = message
+    el("status").hidden = !message
   }
-  const column = (name: string, label: string, title: string) => {
-    const area = el(name)
-    area.replaceChildren(node("p", label, "desk-eyebrow"), node("h3", title))
-    return area
+  function context() {
+    if (disposed) return
+    const documentName = sources?.documentName ?? versions?.document.name
+    const matterName = sources?.matterName ?? versions?.matterName
+    el("identity").textContent = [documentName, matterName].filter(Boolean).join(" · ")
+    options.onContextChange?.({ view: mode, documentName, matterName })
   }
-  const metadata = (area: HTMLElement, label: string, lines: string[], hash?: string) => {
-    const block = node("details", "", "desk-provenance")
-    block.append(node("summary", label))
-    for (const line of lines) block.append(node("p", line))
-    if (hash) block.append(node("code", `SHA-256 · ${hash}`))
-    area.append(block)
+  function chosenPair() {
+    const earlier = versions?.versions.find((version) => version.id === select("base").value && !version.removed)
+    const later = versions?.versions.find((version) => version.id === select("current").value && !version.removed)
+    return earlier && later && earlier.number < later.number ? { earlier, later, key: `${earlier.id}:${later.id}` } : undefined
+  }
+  function automaticPair(pair: NonNullable<ReturnType<typeof chosenPair>>) {
+    return typeof pair.earlier.bytes === "number" && typeof pair.later.bytes === "number" && pair.earlier.bytes >= 0 && pair.later.bytes >= 0 && pair.earlier.bytes + pair.later.bytes <= 2 * 1024 * 1024
   }
   function controls() {
+    if (disposed) return
+    root.setAttribute("aria-busy", String(busy()))
     for (const control of root.querySelectorAll<HTMLButtonElement | HTMLSelectElement>("button, select")) {
-      if (!["close", "find-toggle", "find-close"].includes(control.dataset.el ?? "")) control.disabled = busy
+      if (!["close", "find-toggle", "find-close", "find-previous", "find-next"].includes(control.dataset.el ?? "")) control.disabled = busy()
     }
-    button("pin").hidden = !active
-    button("pin").disabled = busy || !active || pins.has(key(active)) || pins.size >= 8
-    button("pin").textContent = active && pins.has(key(active)) ? "Kept open" : "Keep open"
-    const earlier = versions?.versions.find((version) => version.id === select("base").value)
-    const later = versions?.versions.find((version) => version.id === select("current").value)
-    const reversed = !!earlier && !!later && earlier.number >= later.number
-    button("compare").disabled = busy || !earlier || !later || reversed
-    el("compare-warning").hidden = !reversed
-    el("compare-warning").textContent = reversed ? "Choose a later version with a higher version number." : ""
+    button("find-previous").disabled = button("find-next").disabled = !findTotal
     const show = root.querySelector<HTMLButtonElement>('[data-el="show"]')
-    if (show) show.disabled = busy || !selection?.navigable
+    if (show) show.disabled = busy() || !selection?.navigable
     const count = comparison?.changes.length ?? 0
     const previous = root.querySelector<HTMLButtonElement>('[data-el="previous"]')
     const next = root.querySelector<HTMLButtonElement>('[data-el="next"]')
-    if (previous) previous.disabled = busy || !count || change <= 0
-    if (next) next.disabled = busy || !count || change >= count - 1
+    if (previous) previous.disabled = busy() || change <= 0 || !count
+    if (next) next.disabled = busy() || change >= count - 1 || !count
+    const earlier = versions?.versions.find((version) => version.id === select("base").value)
+    const later = versions?.versions.find((version) => version.id === select("current").value)
+    const invalid = !!earlier && !!later && earlier.number >= later.number
+    const pair = chosenPair()
+    button("compare").hidden = !pair || (automaticPair(pair) && retryPair !== pair.key)
+    button("compare").disabled = busy() || !pair
+    el("compare-warning").hidden = !invalid
+    el("compare-warning").textContent = invalid ? "Choose a later version with a higher version number." : ""
   }
-  function renderPins() {
-    el("pins").replaceChildren()
-    el("pins").hidden = !pins.size
-    for (const [id, source] of pins) {
-      const group = node("div", "", "desk-pin")
-      const pick = node("button", `${source.name} · v${source.version?.number ?? "?"}`)
-      pick.type = "button"; pick.dataset.pin = id
-      pick.setAttribute("aria-pressed", String(active && key(active) === id))
-      pick.onclick = () => {
-        active = source; select("source-choice").value = source.id; renderPins(); render(); say("Kept document opened at its saved version.")
-        Array.from(el("pins").querySelectorAll<HTMLButtonElement>("button")).find((item) => item.dataset.pin === id)?.focus()
-      }
-      const remove = node("button", "×", "desk-unpin")
-      remove.type = "button"; remove.setAttribute("aria-label", `Stop keeping ${source.name} open`)
-      remove.onclick = () => { pins.delete(id); renderPins(); render(); button("pin").focus(); say("Document removed from kept documents. Its preview is still open.") }
-      group.append(pick, remove); el("pins").append(group)
+  async function work(run: () => Promise<void>) {
+    if (disposed) return
+    if (pending++ === 0) options.onBusyChange?.(true)
+    error(); controls()
+    try { await run() } catch (cause) { error(cause instanceof Error ? cause.message : "This action could not be completed.") }
+    finally {
+      pending--
+      if (!disposed) { controls(); if (!pending) options.onBusyChange?.(false) }
     }
-    controls()
+  }
+  const focusTab = (id = activeKey) => Array.from(el("tabs").querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((item) => item.dataset.document === id)?.focus()
+  function renderTabs() {
+    const tabs = el("tabs")
+    tabs.replaceChildren()
+    tabs.hidden = !documents.size
+    button("open-document").hidden = !documents.size
+    button("open-document").setAttribute("aria-expanded", String(chooserOpen))
+    for (const [id, source] of documents) {
+      const group = node("div", "", "desk-tab")
+      group.setAttribute("role", "presentation")
+      const pick = action("document-tab", source.name, () => { activeKey = id; chooserOpen = false; render(); focusTab(id) })
+      pick.dataset.document = id; pick.setAttribute("role", "tab"); pick.setAttribute("aria-selected", String(activeKey === id)); pick.tabIndex = activeKey === id ? 0 : -1
+      pick.title = `${source.name} · version ${source.version?.number ?? "unavailable"}`
+      pick.onkeydown = (event) => {
+        const ids = Array.from(documents.keys()), at = ids.indexOf(id)
+        const target = event.key === "ArrowRight" ? ids[(at + 1) % ids.length] : event.key === "ArrowLeft" ? ids[(at + ids.length - 1) % ids.length] : event.key === "Home" ? ids[0] : event.key === "End" ? ids[ids.length - 1] : undefined
+        if (!target) return
+        event.preventDefault(); activeKey = target; chooserOpen = false; render(); focusTab(target)
+      }
+      const close = action("close-document", `Close ${source.name}`, () => {
+        const ids = Array.from(documents.keys()), at = ids.indexOf(id)
+        documents.delete(id)
+        if (activeKey === id) activeKey = ids[at + 1] ?? ids[at - 1] ?? ""
+        if (!documents.size) chooserOpen = true
+        render(); if (documents.size) focusTab(); else el("document-list").querySelector<HTMLButtonElement>("button")?.focus()
+      }, "×")
+      group.append(pick, close); tabs.append(group)
+    }
+  }
+  function renderList() {
+    const list = el("document-list")
+    list.hidden = !chooserOpen
+    list.replaceChildren()
+    if (!chooserOpen) return
+    if (!sources) { if (sourcesJob) list.append(node("p", "Loading documents…", "desk-empty")); return }
+    if (!sources.sources.length) list.append(node("p", "No saved documents are available.", "desk-empty"))
+    for (const source of sources.sources) {
+      const row = action("choose-document", "", () => { void openDocument(source) })
+      row.dataset.source = source.id
+      row.className = "desk-document-choice"
+      row.append(node("span", source.name), node("span", [`Version ${source.version?.number ?? "unavailable"}`, date(source.version?.createdAt)].filter(Boolean).join(" · "), "desk-meta"))
+      list.append(row)
+    }
+    if (sources.truncated) list.append(node("p", "Some documents have no saved preview or exceed the list limit.", "desk-warning"))
+  }
+  function details(area: HTMLElement, lines: string[]) {
+    const detail = node("details", "", "desk-details")
+    detail.append(node("summary", "Details"))
+    for (const line of lines) detail.append(node("p", line))
+    area.append(detail)
+    return detail
   }
   function render() {
     if (disposed) return
-    el("source-tools").hidden = mode !== "sources"
+    el("source-tools").hidden = mode !== "documents"
     el("compare-tools").hidden = mode !== "compare"
-    el("title").textContent = mode === "compare" ? "Compare versions" : "Matter documents"
-    el("left").hidden = mode !== "sources" || !selectionVisible
-    el("columns").classList.toggle("has-selection", mode === "sources" && selectionVisible)
-    el("columns").classList.toggle("is-compare", mode === "compare")
-    button("sources-mode").setAttribute("aria-pressed", String(mode === "sources"))
+    el("left").hidden = mode !== "documents" || !selectionVisible
+    el("columns").classList.toggle("has-selection", mode === "documents" && selectionVisible)
+    button("sources-mode").setAttribute("aria-pressed", String(mode === "documents"))
     button("compare-mode").setAttribute("aria-pressed", String(mode === "compare"))
+    button("selection-toggle").setAttribute("aria-pressed", String(selectionVisible))
+    button("selection-toggle").title = selectionVisible ? "Hide selected Word text" : "Show selected Word text"
     el("find-bar").hidden = !findOpen
     button("find-toggle").setAttribute("aria-expanded", String(findOpen))
-    button("selection-toggle").setAttribute("aria-expanded", String(selectionVisible))
-    button("selection-toggle").textContent = selectionVisible ? "Hide selected Word text" : "Show selected Word text here"
-    el("left").replaceChildren()
-    if (mode === "sources") {
-      const query = findOpen ? el<HTMLInputElement>("find").value : ""
-      if (selectionVisible && selection) {
-        const left = column("left", "Captured from Word", "Your selected Word text")
-        left.append(node("p", selection.saved ? "Saved in Word" : "Unsaved in Word", !selection.saved ? "badge is-unsaved" : "badge"))
-        const actions = node("div", "", "desk-actions")
-        actions.append(action("capture", "Update selected text", () => { void perform(captureSelection).then(() => { root.querySelector<HTMLButtonElement>('[data-el="capture"]')?.focus() }) }), action("show", "Show in Word", () => { void perform(async () => {
-          if (!selection?.navigable) return
-          await transport.request({ action: "show", selection })
-          say("The captured passage is selected in Word.")
-        }) }))
-        left.append(actions)
-        left.append(textBlock(selection.text || "No text is selected.", query))
-        left.append(node("p", `Captured at ${new Date(selection.capturedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · update selected text to capture again`, "desk-note"))
-        if (selection.reason) left.append(node("p", selection.reason, "desk-warning"))
-        metadata(left, "Selection details", ["Live Word context, separate from saved matter versions.", "Show in Word requires one exact, unchanged body passage. Formatting and markup are not checked."], selection.documentHash)
+    renderTabs(); renderList()
+    const left = el("left"), right = el("right")
+    left.replaceChildren(); right.replaceChildren()
+    findTotal = 0
+    const query = mode === "documents" && findOpen ? el<HTMLInputElement>("find").value : ""
+    const highlighted = (area: HTMLElement, text: string) => {
+      if (!query) { area.textContent = text; return }
+      let from = 0, at = text.indexOf(query)
+      while (at >= 0) {
+        const index = findTotal++
+        // Count all exact matches; bound DOM marks while keeping the active match navigable.
+        if (index < 200 || index === findIndex) {
+          area.append(document.createTextNode(text.slice(from, at)))
+          const mark = node("mark", query)
+          mark.dataset.findIndex = String(index)
+          if (index === findIndex) { mark.className = "is-current"; mark.setAttribute("aria-current", "true") }
+          area.append(mark); from = at + query.length
+        }
+        at = text.indexOf(query, at + query.length)
       }
-      const right = column("right", selectionVisible ? "Reference document" : "Saved in this matter", active?.name ?? "Choose a document to start reading")
-      if (active) {
-        right.append(node("p", `Version ${active.version?.number ?? "unavailable"}${pins.has(key(active)) ? " · kept open" : ""}`, "desk-version"))
-        if (active.truncated) right.append(node("p", `Partial preview · showing ${active.text.length.toLocaleString()} of ${active.characters.toLocaleString()} characters.`, "desk-warning"))
-        right.append(textBlock(active.text || "This saved document has no previewable text.", query))
-        metadata(right, "Document details", [`${active.role === "deliverable" ? "Matter output" : "Matter document"} · saved version ${active.version?.number ?? "unavailable"}`, `Version ID · ${active.version?.id ?? "unavailable"}`, `${active.characters.toLocaleString()} characters`, "This snapshot stays unchanged when your Word selection or the document list changes."], active.hash)
-      } else right.append(node("p", "Choose a document above to read its saved text. For example, check an agreement, letter or earlier matter output while you draft in Word.", "desk-empty"))
-      const matches = root.querySelectorAll("mark").length
-      el("find-count").textContent = query ? `${matches >= 200 ? "At least " : ""}${matches} exact ${matches === 1 ? "match" : "matches"}` : selectionVisible ? "In the selected Word text and document" : "In the open document"
-      el<HTMLInputElement>("find").placeholder = selectionVisible ? "Find in these passages" : "Find in the open document"
-      el("scope").textContent = "Read-only · saved document previews"
+      area.append(document.createTextNode(text.slice(from)))
+    }
+    const textBlock = (text: string, className = "desk-text") => {
+      const block = node("div", "", className)
+      block.tabIndex = 0
+      for (const paragraph of text.split(/\n+/)) { const p = node("p"); highlighted(p, paragraph); block.append(p) }
+      return block
+    }
+    if (mode === "documents") {
+      if (selectionVisible) {
+        const head = node("div", "", "desk-selection-head")
+        head.append(node("h3", "Word selection"))
+        if (selection) head.append(node("time", date(selection.capturedAt), "desk-meta"))
+        head.append(action("capture", "Refresh Word selection", () => { void captureSelection().then(() => root.querySelector<HTMLButtonElement>('[data-el="capture"]')?.focus()) }, "↻"), action("show", "Show in Word", () => { if (selection?.navigable && !busy()) void work(async () => { await transport.request({ action: "show", selection: selection! }) }) }))
+        left.append(head)
+        if (selection?.text) left.append(textBlock(selection.text))
+        if (selection?.reason) left.append(node("p", selection.reason, "desk-warning"))
+        if (selection) details(left, ["Captured Word text; separate from saved matter versions.", "Show in Word requires one exact, unique passage in unchanged body text. Formatting and markup are not checked.", `Body text SHA-256 · ${selection.documentHash}`])
+      }
+      const source = active()
+      right.hidden = !source
+      if (source) {
+        const paper = node("article", "", "desk-paper")
+        paper.append(node("h3", source.name), node("p", [`Version ${source.version?.number ?? "unavailable"}`, date(source.version?.createdAt), "Read-only"].filter(Boolean).join(" · "), "desk-meta"))
+        if (source.truncated) paper.append(node("p", `Partial preview · ${source.text.length.toLocaleString()} of ${source.characters.toLocaleString()} characters.`, "desk-warning"))
+        const body = node("div", "", "desk-text")
+        body.tabIndex = 0
+        const blocks = source.blocks?.length ? source.blocks : source.text.split(/\n+/).map((text) => ({ kind: "paragraph" as const, text }))
+        for (const block of blocks) {
+          const tag = block.kind === "heading" ? `h${Math.min(6, Math.max(2, (block.level ?? 1) + 1))}` as "h2" : "p"
+          const p = node(tag); highlighted(p, block.text); body.append(p)
+        }
+        if (!source.text) body.append(node("p", "No previewable text."))
+        paper.append(body)
+        details(paper, [`Saved version ID · ${source.version?.id ?? "unavailable"}`, `SHA-256 · ${source.hash}`, "This opened snapshot stays unchanged when the document list is refreshed.", ...(sourcesRefreshed ? [`Document list refreshed ${date(sourcesRefreshed)}`] : [])])
+        right.append(paper)
+      }
+      if (findIndex >= findTotal && findIndex) { findIndex = 0; render(); return }
+      el("find-count").textContent = query ? findTotal ? `${findIndex + 1} of ${findTotal}` : "0 matches" : ""
     } else {
-      const hunk = comparison?.changes[change]
-      const right = column("right", "Saved version comparison", comparison ? comparison.current.name : "Compare saved versions")
+      right.hidden = false
+      const paper = node("article", "", "desk-paper")
       if (comparison) {
-        right.append(node("p", `Version ${comparison.base.number} → Version ${comparison.current.number}`, "desk-compare-heading"))
+        const hunk = comparison.changes[change]
+        const head = node("div", "", "desk-change-head")
+        const heading = node("div")
+        heading.append(node("h3", hunk?.location.heading ?? (hunk ? "Text change" : "No text changes")), node("p", `Version ${comparison.base.number} → Version ${comparison.current.number} · Saved versions · Read-only`, "desk-meta"))
+        if (hunk?.untracked) heading.append(node("span", "Untracked edit", "desk-tag"))
         const nav = node("div", "", "desk-change-nav")
-        nav.append(action("previous", "← Previous", () => moveChange(-1)), node("span", comparison.changes.length ? `Change ${change + 1} of ${comparison.changes.length}` : "No text changes"), action("next", "Next →", () => moveChange(1)))
-        right.append(nav)
-        if (comparison.truncated) right.append(node("p", "Partial comparison · open Versions in doc.haus for the full review.", "desk-warning"))
+        nav.append(action("previous", "Previous change", () => moveChange(-1), "‹"), node("span", comparison.changes.length ? `${change + 1} of ${comparison.changes.length}` : "0 changes"), action("next", "Next change", () => moveChange(1), "›"))
+        head.append(heading, nav); paper.append(head)
+        const counts = [comparison.untracked.length ? `${comparison.untracked.length} untracked ${comparison.untracked.length === 1 ? "edit" : "edits"}` : "", comparison.proposals.length ? `${comparison.proposals.length} proposal ${comparison.proposals.length === 1 ? "outcome" : "outcomes"}` : ""].filter(Boolean)
+        if (counts.length) paper.append(node("p", counts.join(" · "), "desk-meta"))
+        if (comparison.truncated) paper.append(node("p", "Partial comparison · open Versions in doc.haus for the full review.", "desk-warning"))
         if (hunk) {
-          const legend = node("div", "", "desk-legend")
-          legend.append(node("ins", "Inserted"), node("del", "Deleted"), node("ins", "Moved", "is-move"))
-          right.append(legend, node("p", `${hunk.kind[0].toUpperCase() + hunk.kind.slice(1)} · ${hunk.location.heading ? `${hunk.location.heading} · ` : ""}${hunk.location.scope} paragraph ${hunk.location.paragraph} in ${hunk.location.side === "left" ? "earlier" : "later"} version${hunk.untracked ? " · edit made without tracking" : ""}`, "desk-change-label"))
-          const pieces: Piece[] = hunk.kind === "moved" && hunk.before === hunk.after ? [{ kind: "move", text: hunk.after ?? "" }] : wordDiff(hunk.before ?? "", hunk.after ?? "")
           const redline = node("div", "", "desk-text compare-redline")
           redline.tabIndex = 0
+          const pieces: Piece[] = hunk.kind === "moved" && hunk.before === hunk.after ? [{ kind: "move", text: hunk.after ?? "" }] : wordDiff(hunk.before ?? "", hunk.after ?? "")
           for (const piece of pieces) {
             if (piece.kind === "same") { redline.append(document.createTextNode(piece.text)); continue }
             const mark = node(piece.kind === "del" ? "del" : "ins", "", piece.kind === "move" ? "is-move" : undefined)
-            mark.append(node("span", `${piece.kind === "del" ? "Deleted" : piece.kind === "move" ? "Moved" : "Inserted"}: `, "sr-only"), document.createTextNode(piece.text))
-            redline.append(mark)
+            mark.append(node("span", `${piece.kind === "del" ? "Deleted" : piece.kind === "move" ? "Moved" : "Inserted"}: `, "sr-only"), document.createTextNode(piece.text)); redline.append(mark)
           }
-          right.append(redline)
-          const plain = node("details", "", "desk-before-after")
-          plain.append(node("summary", "Read earlier and later text separately"), node("h4", `Earlier · version ${comparison.base.number}`), textBlock(hunk.before || "No text in the earlier version."), node("h4", `Later · version ${comparison.current.number}`), textBlock(hunk.after || "No text in the later version."))
-          right.append(plain)
-        } else right.append(node("p", "No textual changes were reported between these saved versions.", "desk-empty"))
-        for (const side of [comparison.base, comparison.current]) metadata(right, `Version ${side.number} details`, [`Saved ${new Date(side.createdAt).toLocaleString()} · ${side.origin}`, `Version ID · ${side.id}`, `${side.trackedChanges.count} input tracked changes`], side.hash)
-        el("scope").textContent = `Saved versions only · ${comparison.untracked.length} edits without tracking · ${comparison.proposals.length} earlier proposal outcomes`
-      } else {
-        right.append(node("p", "Choose two versions, then Compare to see their changed words. Unsaved Word edits are separate.", "desk-empty"))
-        el("scope").textContent = "Read-only · saved versions only"
-      }
+          paper.append(redline)
+          const legend = node("div", "", "desk-legend")
+          legend.append(node("span", "Inserted", "legend-inserted"), node("span", "Deleted", "legend-deleted"), node("span", "Moved", "legend-moved")); paper.append(legend)
+        }
+        const detail = details(paper, [
+          ...(hunk ? [`${hunk.kind} · ${hunk.location.scope} paragraph ${hunk.location.paragraph} in the ${hunk.location.side === "left" ? "earlier" : "later"} version`] : []),
+          ...[comparison.base, comparison.current].flatMap((side) => [`Version ${side.number} · ${date(side.createdAt)} · ${side.origin}`, `Version ID · ${side.id}`, `SHA-256 · ${side.hash}`, `${side.trackedChanges.count} input tracked ${side.trackedChanges.count === 1 ? "change" : "changes"}`]),
+          ...(versionsRefreshed ? [`Version list refreshed ${date(versionsRefreshed)}. Latest known refers to that list; this comparison retains its applied saved versions.`] : []),
+        ])
+        if (hunk) detail.append(node("h4", `Earlier · version ${comparison.base.number}`), textBlock(hunk.before || "No text."), node("h4", `Later · version ${comparison.current.number}`), textBlock(hunk.after || "No text."))
+      } else if (versions && versions.versions.filter((version) => !version.removed).length < 2) paper.append(node("p", "Two saved versions are needed to compare.", "desk-empty"))
+      right.append(paper)
     }
-    controls()
+    context(); controls()
+  }
+  function scrollMatch() {
+    root.querySelector<HTMLElement>(`[data-find-index="${findIndex}"]`)?.scrollIntoView?.({ block: "center" })
+  }
+  function moveMatch(direction: -1 | 1) {
+    if (!findTotal) return
+    findIndex = (findIndex + direction + findTotal) % findTotal
+    render(); scrollMatch()
   }
   function moveChange(direction: -1 | 1) {
-    change += direction; render()
+    if (busy() || !comparison) return
+    change = Math.max(0, Math.min(comparison.changes.length - 1, change + direction)); render()
     const preferred = button(direction === 1 ? "next" : "previous")
-    const focusTarget = preferred.disabled ? button(direction === 1 ? "previous" : "next") : preferred
-    focusTarget.focus()
+    ;(preferred.disabled ? button(direction === 1 ? "previous" : "next") : preferred).focus()
   }
-  async function perform(work: () => Promise<void>) {
-    if (busy || disposed) return
-    busy = true; controls()
-    try { await work() } catch (error) { say(error instanceof Error ? error.message : "This action could not be completed. Try again.") }
-    finally { busy = false; if (!disposed) controls() }
+  async function openDocument(source: DeskSource) {
+    if (busy()) return
+    const id = key(source)
+    if (documents.has(id)) { activeKey = id; chooserOpen = false; render(); focusTab(); return }
+    if (documents.size >= 8) { error("Close a document tab before opening another (maximum 8)."); return }
+    await work(async () => {
+      const preview = await transport.request({ action: "source", sourceId: source.id, expectedHash: source.hash }) as DeskSourcePreview
+      if (disposed) return
+      documents.set(id, preview); activeKey = id; chooserOpen = false; render()
+    })
+    if (!disposed) focusTab()
   }
   async function captureSelection() {
-    const value = await transport.request({ action: "selection" }) as WordSelectionSnapshot
-    if (disposed) return
-    selection = value; selectionVisible = true; render(); say(value.reason ?? "Selected Word text updated. Your documents stay open.")
+    if (busy()) return
+    await work(async () => {
+      const snapshot = await transport.request({ action: "selection" }) as WordSelectionSnapshot
+      if (disposed) return
+      selection = snapshot; selectionVisible = true; render()
+    })
   }
   async function loadSources() {
-    const value = await transport.request({ action: "sources" }) as DeskSources
-    if (disposed) return
-    sources = value
-    el("identity").textContent = `${sources.documentName} · ${sources.matterName}`
-    const choice = select("source-choice"), previous = choice.value
-    choice.replaceChildren(new Option("Choose a document…", ""))
-    for (const source of sources.sources) choice.add(new Option(`${source.name} · v${source.version?.number ?? "?"}`, source.id))
-    if (sources.sources.some((source) => source.id === previous)) choice.value = previous
-    say(sources.truncated ? "Some documents have no saved preview or exceed the list limit. Open previews are unchanged." : `${sources.sources.length} saved documents available.`)
+    if (sourcesJob) return sourcesJob
+    sourcesJob = work(async () => {
+      const value = await transport.request({ action: "sources" }) as DeskSources
+      if (disposed) return
+      sources = value; sourcesRefreshed = Date.now(); render()
+    })
+    renderList()
+    try { await sourcesJob } finally { sourcesJob = undefined; if (!disposed) renderList() }
   }
-  async function loadVersions() {
-    const value = await transport.request({ action: "versions" }) as DeskVersions
-    if (disposed) return
-    versions = value
-    if (!sources) el("identity").textContent = versions.document.name
-    for (const name of ["base", "current"]) {
-      const control = select(name), previous = control.value
-      control.replaceChildren()
-      for (const version of versions.versions) {
-        const date = new Date(version.createdAt).toLocaleDateString([], { day: "numeric", month: "short" })
-        const option = new Option(`Version ${version.number} · ${date}${version.current ? " · latest at refresh" : ""}${version.removed ? " · removed" : ""}${version.label ? ` · ${version.label}` : ""}`, version.id)
-        option.disabled = version.removed; control.add(option)
-      }
+  async function loadVersions(autoCompare: boolean) {
+    if (versionsJob) return versionsJob
+    versionsJob = work(async () => {
+      const value = await transport.request({ action: "versions" }) as DeskVersions
+      if (disposed) return
+      versions = value; versionsRefreshed = Date.now()
       const available = versions.versions.filter((version) => !version.removed).sort((a, b) => b.number - a.number)
-      control.value = available.some((version) => version.id === previous) ? previous : available[name === "base" ? 1 : 0]?.id ?? ""
-    }
-    say("Version list updated. Choose Compare to update the comparison.")
+      for (const name of ["base", "current"]) {
+        const control = select(name), previous = control.value
+        control.replaceChildren()
+        for (const version of versions.versions) {
+          const option = new Option(`v${version.number} · ${date(version.createdAt)}${version.current ? " · latest known" : ""}${version.removed ? " · removed" : ""}${version.label ? ` · ${version.label}` : ""}`, version.id)
+          option.disabled = version.removed; control.add(option)
+        }
+        control.value = available.some((version) => version.id === previous) ? previous : available[name === "base" ? 1 : 0]?.id ?? ""
+      }
+      render()
+    })
+    try { await versionsJob } finally { versionsJob = undefined }
+    if (!disposed && autoCompare && !comparison) await compareSelected()
+  }
+  async function compareSelected(manual = false): Promise<void> {
+    if (disposed) return
+    const pair = chosenPair()
+    desiredPair = pair?.key ?? ""
+    if (!pair) { controls(); return }
+    const cached = comparisons.get(pair.key)
+    if (cached) { comparison = cached; change = 0; retryPair = ""; render(); return }
+    if (!manual && !automaticPair(pair)) { controls(); return }
+    if (comparisonJob) return comparisonJob
+    const requested = pair.key
+    comparisonJob = work(async () => {
+      let value: DeskComparison
+      try { value = await transport.request({ action: "compare", baseVersion: pair.earlier.id, currentVersion: pair.later.id }) as DeskComparison }
+      catch (cause) { if (desiredPair !== requested) return; retryPair = requested; throw cause }
+      if (disposed) return
+      comparisons.set(requested, value)
+      if (comparisons.size > 8) comparisons.delete(comparisons.keys().next().value!)
+      if (desiredPair !== requested || chosenPair()?.key !== requested) return
+      comparison = value; change = 0; retryPair = ""; render()
+    })
+    try { await comparisonJob } finally { comparisonJob = undefined }
+    if (!disposed && desiredPair && desiredPair !== requested && chosenPair()?.key === desiredPair) await compareSelected()
   }
   function toggleFind(open: boolean) {
     findOpen = open; render()
-    if (open) el<HTMLInputElement>("find").focus()
-    else button("find-toggle").focus()
+    if (open) { el<HTMLInputElement>("find").focus(); scrollMatch() } else button("find-toggle").focus()
   }
   const onKey = (event: KeyboardEvent) => {
-    if (mode !== "sources") return
+    if (mode !== "documents") return
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") { event.preventDefault(); toggleFind(true) }
     if (event.key === "Escape" && findOpen) { event.preventDefault(); toggleFind(false) }
+    if (event.key === "Enter" && event.target === el("find")) { event.preventDefault(); moveMatch(event.shiftKey ? -1 : 1) }
   }
   root.addEventListener("keydown", onKey)
   button("close").onclick = options.close
-  button("reload").onclick = () => { void perform(async () => {
-    await loadSources()
-    el<HTMLDetailsElement>("more").open = false
-    el("more").querySelector("summary")?.focus()
-  }) }
-  button("reload-versions").onclick = () => { void perform(async () => {
-    await loadVersions()
-    el<HTMLDetailsElement>("version-options").open = false
-    el("version-options").querySelector("summary")?.focus()
-  }) }
-  select("source-choice").onchange = () => { void perform(async () => {
-    const source = sources?.sources.find((item) => item.id === select("source-choice").value)
-    if (!source) return
-    const retained = pins.get(`${source.id}:${source.hash}`)
-    let preview: DeskSourcePreview
-    try { preview = retained ?? await transport.request({ action: "source", sourceId: source.id, expectedHash: source.hash }) as DeskSourcePreview }
-    catch (error) { if (!disposed) select("source-choice").value = ""; throw error }
-    if (disposed) return
-    active = preview; renderPins(); render(); say(`${preview.name} opened at version ${preview.version?.number ?? "unavailable"}.`)
-  }) }
-  select("base").onchange = select("current").onchange = () => { controls(); say("Choose Compare to show the selected versions.") }
-  el<HTMLInputElement>("find").oninput = render
+  button("open-document").onclick = () => { chooserOpen = !chooserOpen; render(); if (chooserOpen) el("document-list").querySelector<HTMLButtonElement>("button")?.focus() }
+  button("reload").onclick = () => { if (!busy()) void loadSources() }
+  button("reload-versions").onclick = () => { if (!busy()) void loadVersions(false) }
+  button("selection-toggle").onclick = () => {
+    if (busy()) return
+    if (selectionVisible || selection) { selectionVisible = !selectionVisible; render() } else void captureSelection()
+  }
   button("find-toggle").onclick = () => toggleFind(!findOpen)
   button("find-close").onclick = () => toggleFind(false)
-  button("selection-toggle").onclick = () => {
-    if (busy) return
-    if (selectionVisible) { selectionVisible = false; render(); say("Selected Word text hidden. Your documents stay open."); return }
-    void perform(captureSelection)
-  }
-  button("pin").onclick = () => {
-    if (!active || pins.size >= 8 || busy) return
-    pins.set(key(active), active); renderPins(); render(); say("Document kept open at this saved version.")
-  }
-  button("sources-mode").onclick = () => { mode = "sources"; render(); if (!sources) void perform(loadSources); else say("Read documents already saved in this matter.") }
-  button("compare-mode").onclick = () => { mode = "compare"; render(); if (!versions) void perform(loadVersions) }
-  button("compare").onclick = () => { void perform(async () => {
-    const value = await transport.request({ action: "compare", baseVersion: select("base").value, currentVersion: select("current").value }) as DeskComparison
+  button("find-previous").onclick = () => moveMatch(-1)
+  button("find-next").onclick = () => moveMatch(1)
+  el<HTMLInputElement>("find").oninput = () => { findIndex = 0; render(); scrollMatch() }
+  select("base").onchange = select("current").onchange = () => { void compareSelected() }
+  button("compare").onclick = () => { if (!busy()) void compareSelected(true) }
+  button("sources-mode").onclick = () => { void setView("documents") }
+  button("compare-mode").onclick = () => { void setView("compare") }
+  async function setView(view: DeskView) {
     if (disposed) return
-    comparison = value; change = 0; render(); say("Comparison ready. Insertions are underlined; deletions are struck through.")
-  }) }
-  render(); renderPins()
-  const ready = perform(mode === "compare" ? loadVersions : loadSources)
-  return { ready, dispose() { disposed = true; pins.clear(); root.removeEventListener("keydown", onKey); root.replaceChildren(); root.classList.remove("source-desk") } }
+    const next = view === "compare" ? "compare" : "documents"
+    if (mode !== next) { mode = next; error(); options.onViewChange?.(mode) }
+    render()
+    if (mode === "documents" && !sources) await loadSources()
+    if (mode === "compare" && !versions) await loadVersions(true)
+  }
+  render()
+  const ready = mode === "compare" ? loadVersions(true) : loadSources()
+  return { ready, setView, dispose() {
+    if (disposed) return
+    disposed = true; desiredPair = ""; documents.clear(); comparisons.clear()
+    if (pending) options.onBusyChange?.(false)
+    root.removeEventListener("keydown", onKey); root.replaceChildren(); root.removeAttribute("aria-busy"); root.classList.remove("source-desk", "is-embedded")
+  } }
 }
