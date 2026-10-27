@@ -41,6 +41,7 @@ docs
 !docs/storage.md
 !docs/updates.md
 !docs/setup.md
+!docs/word-addin.md
 .playwright-mcp
 
 # Never send native/host sign-in exports in the build context.

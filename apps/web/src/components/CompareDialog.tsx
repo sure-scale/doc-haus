@@ -6,6 +6,7 @@ import { humanizeError } from "../api/ingest/errors"
 import { fetchDocumentVersions, type DocumentVersions } from "../api/ingest/versions"
 import { previousVersion, versionOption, versionSideLabel, versionUnavailable } from "./DocumentVersions"
 import ModalHeader from "./ModalHeader"
+import { WordWarning } from "./WordDocuments"
 import { useToast } from "./Toast"
 import backdropClose from "./backdropClose"
 
@@ -264,6 +265,7 @@ export default function CompareDialog({
             onCompare(choiceParams({ name, other: otherName, thisVersion: thisVersion || undefined, otherVersion, thisSide, thisLabel, otherLabel, options }))
           }}
         >
+          <WordWarning />
           <CompareSide id="compare-left" role="Earlier version" {...left} />
           <button
             type="button"

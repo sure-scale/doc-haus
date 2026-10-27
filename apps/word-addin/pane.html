@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>doc.haus in Word</title>
+    <link rel="stylesheet" href="./pane.css" />
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+    <script type="module" src="./pane.js"></script>
+  </head>
+  <body>
+    <main>
+      <header><img src="./assets/icon.png" width="32" height="32" alt="" /><span>doc.haus</span></header>
+      <div class="document">
+        <p id="matter" class="matter">Word document</p>
+        <h1 id="document">Save your work to doc.haus</h1>
+      </div>
+      <section class="save-card" aria-label="Save status">
+        <div role="status" aria-live="polite" aria-atomic="true">
+          <p id="status" class="status" data-state="not-saved">Connecting…</p>
+          <p id="message">Checking this document's link to doc.haus…</p>
+          <p id="received" class="received"></p>
+          <p id="version-state" class="received"></p>
+          <p id="editing-state" class="received"></p>
+        </div>
+        <div id="actions" class="actions">
+          <button id="save" class="primary" type="button" disabled>Save to doc.haus</button>
+          <button id="done" class="secondary" type="button" disabled>Done in Word</button>
+          <button id="refresh" class="secondary" type="button" disabled>Check status</button>
+          <button id="takeover" class="secondary" type="button" hidden>Take over saving here</button>
+          <button id="release" class="secondary" type="button" hidden>Release editing</button>
+        </div>
+      </section>
+      <p id="background" class="hint">
+        After your first Save to doc.haus, saved Word changes sync in the background while this pane is open. Some saves
+        may be combined. Choose
+        <strong>Done in Word</strong> to save and close this document. To close it yourself, choose
+        <strong>Save to doc.haus</strong> and wait for <strong>Saved</strong>. Closing Word can interrupt background
+        sync. Word still allows local editing while another editor has this document. If saving is paused, keep this
+        file using Save As. In doc.haus, use Versions to compare or Open in Word for a fresh copy.
+      </p>
+      <a id="back" hidden target="_blank" rel="noopener noreferrer"
+        >Return to doc.haus <span aria-hidden="true">↗</span></a
+      >
+    </main>
+  </body>
+</html>

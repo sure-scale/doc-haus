@@ -27,6 +27,7 @@ import DraftedList from "./drafting/DraftedList"
 import { deliverableGroups, type DraftedOutput } from "./drafting/model"
 import Dropzone from "./Dropzone"
 import { useToast } from "./Toast"
+import { WordBadge, WordOpenControl, WordSetup, WordWarning } from "./WordDocuments"
 
 // One row per file the lawyer added in this session, so a slow or failed upload
 // is visible next to its name instead of hiding behind a single spinner.
@@ -208,6 +209,7 @@ export default function DocumentUpload({
       node.attachment?.flagged && "Suspicious name",
     ].filter(Boolean)
     const actions = <>
+      <WordOpenControl matterId={matterId} name={d.name} compact disabled={removing === d.name} />
       {onCompare && /\.docx$/i.test(d.name) && (
         <button className="doc-compare" onClick={() => onCompare(d.name)} title="Compare with another version" aria-label={`Compare ${d.name} with another version`}>
           <CompareIcon />
@@ -256,6 +258,7 @@ export default function DocumentUpload({
                 {d.pending}
               </span>
             ) : null}
+            <WordBadge name={d.name} />
             {child && <span className="doc-row-actions">{actions}</span>}
           </div>
           <QualityNote quality={d.quality} />
@@ -417,6 +420,8 @@ export default function DocumentUpload({
         const added = Array.from(event.dataTransfer.files)
         if (added.length) onFiles(added)
       }}>
+        {documents.some((document) => /\.docx$/i.test(document.name)) && <WordSetup />}
+        <WordWarning />
         {files}
       </div>
       <footer className="docs-drawer-footer">

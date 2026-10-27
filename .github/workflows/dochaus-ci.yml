@@ -94,6 +94,13 @@ jobs:
       - name: Build web app
         run: bun run --cwd apps/web build
 
+      - name: Build and test Word add-in
+        run: |
+          bun run --cwd apps/word-addin build
+          bun run --cwd apps/word-addin typecheck
+          (cd apps/word-addin && bun test src)
+          (cd scripts && bun test test/word-addin-setup.test.ts)
+
       - name: Install updater route dependencies
         run: bun install --cwd services/ingest --frozen-lockfile
 
@@ -130,6 +137,9 @@ jobs:
         # Committed LibreOffice-saved fixtures and a scripted engine; no model.
         # The live soffice case skips when LibreOffice is not installed.
         run: bun test src/document-amendment-libreoffice.test.ts --timeout 30000
+      - name: Test linked Word saves and restricted HTTPS receiver
+        working-directory: services/ingest
+        run: bun test src/word-linked-docx.test.ts src/word-documents-http.test.ts src/word-https.test.ts --timeout 30000
       - name: Test native discovery and selected sign-in reuse
         working-directory: services/engine
         run: bun test src/credential-reuse.test.ts test/provider-catalog.test.ts --timeout 30000
@@ -189,6 +199,9 @@ jobs:
       - name: Test Windows launcher, host tools, safe names and paths
         run: |
           (cd scripts && bun test windows)
+          (cd scripts && bun test test/word-addin-setup.test.ts)
+          bun run --cwd apps/word-addin typecheck
+          (cd apps/word-addin && bun test src)
           (cd dochaus && bun test lib/safe-file-name.test.ts)
           (cd services/engine && bun test test/provider-catalog.test.ts)
           (cd apps/web && bun test test/step-labels.test.ts)

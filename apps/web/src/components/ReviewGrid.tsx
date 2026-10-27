@@ -16,6 +16,7 @@ import { QualityNote } from "./DocumentUpload"
 import useExit, { Closing, Exit } from "./useExit"
 import DocumentViewer from "./DocumentViewer"
 import { citationDocument } from "./citation-target"
+import { WordWarning } from "./WordDocuments"
 
 // Tabular review: rows are the matter's documents, columns are natural-language
 // questions, each cell is an extracted answer with a source citation. The grid is
@@ -325,6 +326,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
     >
       <ModalHeader title={`Review table — ${title}`} onClose={() => detail ? setDetail(undefined) : onClose()} />
       <div className="card review">
+        <WordWarning />
         <div className="row review-toolbar">
           <div>
             <span className="review-summary">

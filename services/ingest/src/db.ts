@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs"
 import path from "node:path"
 import { documentRegistryIdentity } from "./document-identity"
 import { createVersionTables } from "./document-versions"
+import { createWordGrantTables } from "./word-grants"
 import { readExtractionQuality } from "./extraction-quality"
 
 // Per-matter document registry and retrieval index. Lives inside the matter
@@ -369,6 +370,7 @@ export function openDb(matterDir: string, options: { startup?: boolean; commit?:
     db.run("ALTER TABLE redlines ADD COLUMN target_json TEXT")
   // Document versions (#268): see document-versions.ts.
   createVersionTables(db)
+  createWordGrantTables(db)
   return db
 }
 

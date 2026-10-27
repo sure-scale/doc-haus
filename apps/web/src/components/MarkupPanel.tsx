@@ -20,6 +20,7 @@ import { formatDateTime } from "../lib/format"
 import { authorTones, initialsOf, nameKey, toneClass, type Tone } from "./comment-authors"
 import { useToast } from "./Toast"
 import { Tooltip } from "./Tooltip"
+import { useWordEditingLocked } from "./WordDocuments"
 
 // The tracked changes and comments in an uploaded Word source (#200), beside
 // the document, in two tabs: Changes, where the lawyer marks each change
@@ -544,6 +545,7 @@ export default function MarkupPanel({
   reveal?: { thread: number; seq: number }
   onRevealed?: () => void
 }) {
+  const wordLocked = useWordEditingLocked(name)
   const sha256 = markup.version.sha256
   const key = draftKey(matterId, name)
   const repliesKey = replyKey(matterId, name)
@@ -757,7 +759,7 @@ export default function MarkupPanel({
   const approved = open.filter((thread) => replies[thread.root.id]?.approved)
   const unapproved = open.filter((thread) => replies[thread.root.id] && !replies[thread.root.id]!.approved).length
   const decided = accepted > 0 || rejected > 0
-  const blocked = proposalsPending > 0
+  const blocked = wordLocked ? "This document is being edited in Word. Finish there or take over editing before saving these decisions." : proposalsPending > 0
     ? `Accept or reject doc.haus's ${plural(proposalsPending, "proposed change")} on this document first.`
     : !decided && !approved.length ? (listed.length ? "Accept or reject a change, or approve a reply, to save." : "Approve a reply to save a new version.") : undefined
   const canApply = !blocked && !busy && !loading && attorney !== undefined
@@ -1465,7 +1467,7 @@ export default function MarkupPanel({
               <p id={`${ids}-confirm`}>{confirmText}</p>
               <p className="markup-actor">Saved as: <strong>{actor}</strong></p>
               <span className="upload-actions">
-                <button type="button" className="primary btn-sm" autoFocus aria-describedby={`${ids}-confirm`} disabled={busy || loading} onClick={apply}>
+                <button type="button" className="primary btn-sm" autoFocus aria-describedby={`${ids}-confirm`} disabled={wordLocked || busy || loading} onClick={apply}>
                   {busy ? "Saving…" : "Save new version"}
                 </button>
                 <button type="button" className="icon-btn" disabled={busy} onClick={cancel}>

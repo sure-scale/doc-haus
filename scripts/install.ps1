@@ -49,6 +49,10 @@ function Install-DocHaus {
   if (Test-Path $icon) { $shortcut.IconLocation = "$icon,0" }
   $shortcut.Save()
 
-  & (Join-Path $dir 'start.cmd')
+  $previousWordSetup = $env:DOCHAUS_SETUP_WORD_ADDIN
+  try {
+    $env:DOCHAUS_SETUP_WORD_ADDIN = '1'
+    & (Join-Path $dir 'start.cmd')
+  } finally { $env:DOCHAUS_SETUP_WORD_ADDIN = $previousWordSetup }
 }
 Install-DocHaus

@@ -22,6 +22,7 @@ import MatterRail from "../components/matter/MatterRail"
 import useDraftingStatus from "../components/drafting/useDraftingStatus"
 import useNeedsYouTitle from "../components/drafting/useNeedsYouTitle"
 import { useToast } from "../components/Toast"
+import { WordDocumentsProvider } from "../components/WordDocuments"
 import useExit, { Exit } from "../components/useExit"
 import NotFound from "./NotFound"
 
@@ -197,9 +198,10 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
     }
     // Re-run when the deep-linked agent param changes (e.g. using a template
     // pins draft mode while already in the matter) so the pin is honoured even
-    // though `matter` is unchanged.
+    // though the directory is unchanged. A background document refresh must
+    // not reset the assistant the lawyer selected in a new conversation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [matter, params.get("agent")])
+  }, [matter?.dir, params.get("agent")])
 
   if (loadError === "missing")
     return <NotFound title="Matter not found" detail="This matter may have been deleted, or the link may be wrong." />
@@ -270,7 +272,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   }
 
   return (
-    <>
+    <WordDocumentsProvider matterId={matter.id} onChanged={refresh}>
       <MatterHeader
         matter={matter}
         jurisdictions={jurisdictions}
@@ -470,6 +472,6 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
         setFocusRedline(undefined)
         setViewing(returnTo)
       }} />}</Exit>
-    </>
+    </WordDocumentsProvider>
   )
 }

@@ -43,6 +43,7 @@
       "services/engine",
       "dochaus",
       "apps/web",
+      "apps/word-addin",
       "packages/console/*",
       "packages/stats/*"
     ],
@@ -119,6 +120,7 @@
     }
   },
   "devDependencies": {
+    "selfsigned": "5.5.0",
     "@actions/artifact": "5.0.1",
     "@ast-grep/cli": "0.44.0",
     "@opencode/client": "workspace:*",

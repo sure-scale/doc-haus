@@ -30,7 +30,7 @@ import { canonicalArtifactIdentity } from "../../../dochaus/capabilities/artifac
 
 export const VERSION_ORIGINS = [
   "upload", "replace", "generated", "revision", "agent-edit", "redaction",
-  "accept", "conversion", "copy", "restore", "system", "unknown",
+  "accept", "conversion", "copy", "restore", "system", "unknown", "word",
 ] as const
 export type VersionOrigin = (typeof VERSION_ORIGINS)[number]
 
@@ -43,7 +43,7 @@ export type VersionEventInput = { kind: VersionEventKind; actor?: string; detail
 /** A writer's version capture: its provenance, the matter document the new
  * version was derived from (a conversion's PDF, a copy's original) and the
  * event the write records (an accept, a restore). */
-export type VersionWrite = VersionProvenance & { derivedFrom?: string; event?: VersionEventInput }
+export type VersionWrite = VersionProvenance & { derivedFrom?: string; event?: VersionEventInput; parent?: string }
 
 export type VersionRow = {
   id: string
@@ -299,6 +299,11 @@ export function captureVersion(
   const document = documentOf(db, matterDir, input.name, now, stage?.document_id)
   const sha256 = sha256Hex(input.bytes)
   const redaction = input.version.origin === "redaction"
+  // A Word branch names the exact version it was edited from, rather than
+  // silently rewriting its ancestry when another writer saved meanwhile.
+  const requestedParent = input.version.parent ? versionById(db, input.version.parent) : null
+  if (input.version.parent && (!requestedParent || requestedParent.document_id !== document.id || requestedParent.removed))
+    throw new Error("The supplied version parent is unavailable for this document.")
   let current = versionById(db, document.current_version)
   if (input.prior && !redaction) {
     const prior = sha256Hex(input.prior)
@@ -310,7 +315,7 @@ export function captureVersion(
   const derivedFrom = input.version.derivedFrom ? currentOrFoundVersion(db, matterDir, input.version.derivedFrom, now)?.id ?? null : null
   const created = current?.sha256 !== sha256
   const version = created
-    ? insertVersion(db, matterDir, document, input.bytes, sha256, input.version, current?.id ?? null, derivedFrom, now, stage)
+    ? insertVersion(db, matterDir, document, input.bytes, sha256, input.version, requestedParent?.id ?? current?.id ?? null, derivedFrom, now, stage)
     : current!
   if (!created && !staged(stage, document.id, sha256)) storeVersionBytes(matterDir, document.id, sha256, version.ext, input.bytes)
   // A removed version keeps its row, but not its label: free text that may name what was removed.

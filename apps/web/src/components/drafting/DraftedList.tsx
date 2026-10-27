@@ -1,6 +1,7 @@
 import type { ReactNode } from "react"
 import { documentContentUrl } from "../../api/ingest/documents"
 import { CompareIcon } from "../CompareDialog"
+import { WordBadge, WordOpenControl } from "../WordDocuments"
 import { OUTPUT_ROLE, type DraftedGroup, type DraftedOutput } from "./model"
 
 // The Word files a drafting run produced: each draft with its redline (and, for
@@ -68,6 +69,8 @@ function CombinedRow({ matterId, name }: { matterId: string; name: string }) {
         <div className="drafted-file-meta">
           <span className="document-origin is-created">Created by Doc.Haus</span>
           <span className="drafted-tag is-combined">Memo and draft</span>
+          <WordBadge name={name} />
+          <WordOpenControl matterId={matterId} name={name} compact />
         </div>
       </div>
       <a
@@ -116,6 +119,8 @@ function OutputRow({
         <div className="drafted-file-meta">
           <span className="document-origin is-created">Created by Doc.Haus{output.role === "earlier_combined" ? " in an earlier run" : ""}</span>
           {label ?? <span className={`drafted-tag is-${output.role}`}>{OUTPUT_ROLE[output.role]}</span>}
+          <WordBadge name={output.name} />
+          <WordOpenControl matterId={matterId} name={output.name} compact />
         </div>
       </div>
       {pending ? (

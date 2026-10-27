@@ -1,0 +1,168 @@
+:root {
+  color-scheme: light dark;
+  font:
+    15px/1.5 -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: #20312d;
+  background: #f6f8f5;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+main {
+  padding: 24px 20px;
+  max-width: 480px;
+  margin: auto;
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 21px;
+  font-weight: 650;
+  letter-spacing: -0.6px;
+}
+header img {
+  border-radius: 7px;
+}
+.document {
+  margin: 30px 0 22px;
+  overflow-wrap: anywhere;
+}
+.matter {
+  color: #52655e;
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+h1 {
+  font-size: 23px;
+  line-height: 1.25;
+  font-weight: 650;
+  margin: 0;
+  letter-spacing: -0.4px;
+}
+.save-card {
+  background: #fff;
+  border: 1px solid #dbe3dc;
+  border-radius: 16px;
+  padding: 18px;
+}
+.status {
+  display: inline-block;
+  background: #fff0d1;
+  color: #7c5010;
+  font-size: 13px;
+  line-height: 1.3;
+  padding: 6px 10px;
+  border-radius: 20px;
+  font-weight: 650;
+  margin: 0;
+}
+.status[data-state="saved"],
+.status[data-state="done"] {
+  background: #dcefe3;
+  color: #24533b;
+}
+.status[data-state="saving"] {
+  background: #e3eaf5;
+  color: #29486a;
+}
+#message {
+  margin: 14px 0 0;
+}
+.received {
+  color: #52655e;
+  font-size: 12px;
+  margin: 10px 0 0;
+}
+.received:empty {
+  display: none;
+}
+.actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 22px;
+}
+button {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid transparent;
+  border-radius: 24px;
+  padding: 10px 16px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.primary {
+  background: #315e49;
+  color: #fff;
+}
+.secondary {
+  background: transparent;
+  color: #315e49;
+  border-color: #b2c8ba;
+}
+button:hover:not(:disabled) {
+  filter: brightness(0.92);
+}
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid #c78324;
+  outline-offset: 3px;
+}
+.hint {
+  font-size: 12px;
+  color: #52655e;
+  margin: 18px 0 22px;
+}
+a {
+  color: #315e49;
+  text-underline-offset: 3px;
+  font-size: 13px;
+}
+[hidden] {
+  display: none !important;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #e3eae4;
+    background: #17221e;
+  }
+  .save-card {
+    background: #202e27;
+    border-color: #3c5043;
+  }
+  .matter,
+  .received,
+  .hint {
+    color: #b4c4b7;
+  }
+  .primary {
+    color: #17221e;
+    background: #a3d4b1;
+  }
+  .secondary,
+  a {
+    color: #b9ddc3;
+  }
+}
+@media (max-width: 280px) {
+  main {
+    padding: 18px 12px;
+  }
+  .save-card {
+    padding: 14px;
+  }
+  h1 {
+    font-size: 21px;
+  }
+}

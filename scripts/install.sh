@@ -75,6 +75,7 @@ else
 fi
 
 cd "$dir"
+export DOCHAUS_SETUP_WORD_ADDIN=1
 # Under curl | bash, standard input is the script, so give the launcher the
 # terminal for its install questions.
 if { : </dev/tty; } 2>/dev/null; then exec ./start.sh "$@" </dev/tty; fi

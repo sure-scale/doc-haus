@@ -3,6 +3,11 @@ import { clientRoutes } from "./clients"
 import { updateRoutes, managedUpdateOwner } from "./updater"
 import { RepoUpdater } from "../../../scripts/updater"
 import { documentCopyRoutes } from "./document-copy"
+import { wordCors, wordDocumentRoutes, wordTokenPath } from "./word-documents"
+import { startWordHttps, wordHttpsHandler } from "./word-https"
+import { wordHttpsConfiguration } from "./word-configuration"
+import { stripWordLink } from "../../../dochaus/lib/word-linked-docx"
+import { assertMatterWordEditsAllowed, assertWordEditAllowed, EditingLeaseError, type WordLeaseWriteOptions } from "../../../dochaus/lib/word-edit-lease"
 import { templateDraftRoutes } from "./template-drafts"
 import { registeredCombinedParts } from "./combined-output"
 import { documentLabelRoutes } from "./document-labels"
@@ -116,6 +121,7 @@ const app = new Hono()
 // A model that cannot load fails only the request that needed it, with a
 // message the web can show; every other error keeps Hono's default handling.
 app.onError((error, c) => {
+  if (error instanceof EditingLeaseError) return c.json({ error: error.message, code: error.code, expiresAt: error.expiresAt }, 423)
   if (error instanceof PreferencesValidationError) return c.json({ error: error.message }, 400)
   if (error instanceof PreferencesUnavailableError) return c.json({ error: error.message }, 503)
   if (error instanceof MatterValidationError) return c.json({ error: error.message }, 400)
@@ -149,10 +155,39 @@ process.on("unhandledRejection", (reason) => {
 // on localhost; a wildcard would let any site in a user's browser hit this
 // service. Non-browser callers (curl, the opencode server) send no Origin and are
 // unaffected.
-app.use(
-  "*",
-  cors({ origin: (origin) => (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null), exposeHeaders: ["X-DocHaus-Revision-Notice"] }),
-)
+const localCors = cors({ origin: (origin) => (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null), exposeHeaders: ["X-DocHaus-Revision-Notice"] })
+app.use("*", async (c, next) => {
+  if (wordTokenPath(c.req.path)) return wordCors(c, next)
+  if (/^Bearer /i.test(c.req.header("Authorization") ?? ""))
+    return c.json({ error: "A Word save token cannot access the normal doc.haus API.", code: "word_scope_refused" }, 403)
+  return localCors(c, next)
+})
+app.on(["GET", "HEAD"], "/word-addin/*", (c) => {
+  try {
+    const configuration = wordHttpsConfiguration()
+    if (configuration?.external) return wordHttpsHandler(app.fetch, configuration)(c.req.raw)
+  } catch { /* The config route explains how to recover invalid setup. */ }
+  return c.notFound()
+})
+// Ordinary downloads are safe to share. Only the explicit linked hand-out
+// carries the write capability; stored Word saves are stripped before writing.
+app.use("*", async (c, next) => {
+  await next()
+  if (!c.res.ok || !c.res.headers.get("content-type")?.includes("wordprocessingml.document") ||
+    (c.req.method === "POST" && /^\/matters\/[^/]+\/documents\/word$/.test(c.req.path))) return
+  // Older generic content routes also use this MIME for spreadsheets/archives.
+  // Only Word attachments carry this add-in; keep other formats byte-identical.
+  const disposition = c.res.headers.get("content-disposition")
+  if (disposition && !/\.docx(?:[";]|$)/i.test(disposition)) return
+  try {
+    const bytes = new Uint8Array(await c.res.arrayBuffer())
+    const headers = new Headers(c.res.headers)
+    headers.delete("content-length")
+    c.res = new Response(new Uint8Array(stripWordLink(bytes)), { status: c.res.status, headers })
+  } catch {
+    c.res = c.json({ error: "This Word file could not be prepared for download.", code: "invalid_docx" }, 409)
+  }
+})
 
 const updateRoot = path.resolve(import.meta.dir, "../../..")
 const updateRuntime = process.env.DOCHAUS_RUNTIME_DIR ?? path.join(updateRoot, ".dochaus-runtime")
@@ -454,9 +489,13 @@ app.post("/matters/:id/conflicts", async (c) => {
   }
 })
 
-app.delete("/matters/:id", (c) => {
-  deleteMatter(c.req.param("id"))
-  return c.json({ ok: true })
+app.delete("/matters/:id", async (c) => {
+  const directory = matterDir(c.req.param("id"))
+  return withArtifactMutationLocksAsync(directory, [".dochaus/source-corpus"], async () => {
+    assertMatterWordEditsAllowed(directory)
+    deleteMatter(c.req.param("id"))
+    return c.json({ ok: true })
+  })
 })
 
 app.get("/matters/:id", async (c) => {
@@ -682,6 +721,16 @@ app.post("/matters/:id/deliverables", async (c) => {
 
 app.route("/", documentCopyRoutes(matterDir))
 app.route("/", templateDraftRoutes(matterDir))
+app.route("/", wordDocumentRoutes({
+  matter: getMatter, matters: listMatters,
+  locks: (directory, file) => [path.basename(file), ...runCombinedLock(directory, file), ".dochaus/source-corpus"],
+  write: async (directory, name, bytes, prior, version, wordLeaseOwner) => {
+    const combined = await prepareCombinedFile(directory, path.join(directory, name))
+    const written = await writeDocumentRevision(directory, name, bytes, [], prior, false, { version, exact: true, keepTracked: true, wordLeaseOwner })
+    await rebuildCombinedFile(combined)
+    return written
+  },
+}))
 
 // Persist an edit to an already registered document while preserving its role.
 // Editing a generated deliverable must never promote it into source retrieval.
@@ -722,6 +771,11 @@ app.post("/matters/:id/documents/revisions", async (c) => {
     // of a part of the run's saved combined file rebuilds that file as an accept
     // does, under the same extra locks (runCombinedLock).
     return await withArtifactMutationLocksAsync(dir, [target.name, ...runCombinedLock(dir, target.docPath), ".dochaus/source-corpus"], async () => {
+      assertWordEditAllowed(dir, target.docPath)
+      if (origin === "redaction") {
+        const related = registeredCombined(dir, target.docPath)
+        if (related) assertWordEditAllowed(dir, related.file)
+      }
       if (readWorkingDocx(dir,target.docPath) && !/^[a-f0-9]{64}$/.test(priorSha256 ?? ""))
         return c.json({error:"Provide the exact current Word hash in x-document-prior-sha256 before replacing an accepted revision."},409)
       // A deliverable's prior hash is checked by its writer; a source's here.
@@ -1251,6 +1305,7 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
   initialDb.close()
   if (!row || row.status !== "pending") return c.json({ error: "Redline not found or already resolved" }, 404)
   return withArtifactMutationLocksAsync(dir, [row.doc_name, ...runRedlineLock(dir, row.doc_path), ...runNotesLock(dir), ...runCombinedLock(dir, row.doc_path), ".dochaus/source-corpus"], async () => {
+    assertWordEditAllowed(dir, row.doc_path)
     const db = openDb(dir)
     const current = getRedline(db, row.id)
     db.close()
@@ -1285,6 +1340,7 @@ app.post("/matters/:id/redlines/:rid/reject", async (c) => {
   initialDb.close()
   if (!row || row.status !== "pending") return c.json({ error: "Redline not found or already resolved" }, 404)
   return withArtifactMutationLocksAsync(dir, [row.doc_name, ...rejectCombinedLock(dir, row.doc_path)], async () => {
+    assertWordEditAllowed(dir, row.doc_path)
     const db = openDb(dir)
     let current: RedlineRow | null
     try {
@@ -1318,6 +1374,7 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
   if (!name) return c.json({ error: "The document filename or extension is not supported." }, 400)
   const file = path.join(dir, name)
   return withArtifactMutationLocksAsync(dir, [name, ...runRedlineLock(dir, file), ...runNotesLock(dir), ...runCombinedLock(dir, file), ".dochaus/source-corpus"], async () => {
+    assertWordEditAllowed(dir, file)
     if (!existsSync(file) || !existsSync(path.join(dir, ".dochaus", "legal.db")))
       return c.json({ ok: true, accepted: 0 })
     const db = openDb(dir)
@@ -1355,6 +1412,7 @@ app.post("/matters/:id/redlines/reject-all", async (c) => {
   if (!name) return c.json({ error: "The document filename or extension is not supported." }, 400)
   const file = path.join(dir, name)
   return withArtifactMutationLocksAsync(dir, [name, ...rejectCombinedLock(dir, file)], async () => {
+    assertWordEditAllowed(dir, file)
     if (!existsSync(path.join(dir, ".dochaus", "legal.db"))) return c.json({ ok: true, rejected: 0 })
     const db = openDb(dir)
     let rows: RedlineRow[]
@@ -1392,12 +1450,13 @@ async function writeDocumentRevision(
   acceptedRedlineIDs: readonly number[] = [],
   priorSha256: string | undefined,
   boundAcceptance: boolean,
-  options: { version: VersionWrite; exact?: boolean; keepTracked?: boolean },
+  options: { version: VersionWrite; exact?: boolean; keepTracked?: boolean } & WordLeaseWriteOptions,
 ) {
+  assertWordEditAllowed(directory, name, options.wordLeaseOwner)
   const { role, bytes } = documentRevisionBytes(directory, name, input, options.exact)
   const existing = readWorkingDocx(directory,name)
   let working: Awaited<ReturnType<typeof acceptedWorkingDocxUpdate>> | undefined
-  if (role === "deliverable" && (boundAcceptance || existing) && name.toLowerCase().endsWith(".docx")) {
+  if (role === "deliverable" && (boundAcceptance || existing || options.version.origin === "word") && name.toLowerCase().endsWith(".docx")) {
     try {
       working = await acceptedWorkingDocxUpdate(directory,name,bytes)
     } catch (error) {
@@ -1410,11 +1469,11 @@ async function writeDocumentRevision(
   const written = role === "deliverable"
     ? await (async () => {
       const written = await writeDeliverableRevision(directory, name, bytes, {
-        updateRegistry, priorSha256, updateWorkingRevision: working, keepWorkingRecord: Boolean(existing) && !working, version: options.version,
+        updateRegistry, priorSha256, updateWorkingRevision: working, keepWorkingRecord: Boolean(existing) && !working, version: options.version, wordLeaseOwner: options.wordLeaseOwner,
       })
       return { ...written, ...versionNotice(written.name, bytes, written.version) }
     })()
-    : await ingestDocument(directory, name, bytes, { existing: "replace", requireExistingSource: true, updateRegistry, version: options.version })
+    : await ingestDocument(directory, name, bytes, { existing: "replace", requireExistingSource: true, updateRegistry, version: options.version, wordLeaseOwner: options.wordLeaseOwner })
   return { ...written, ...(options.version.origin === "redaction" ? purgeRedactedVersions(directory, written.version.document_id, path.basename(name)) : {}) }
 }
 
@@ -1463,7 +1522,7 @@ function proposalRevisionOptions(directory: string, docPath: string): DocxRevisi
 // returned for the accept response, and the run status still discloses the
 // change (changed_after_check). Returns nothing when no addendum applies: the
 // accepted file is not a deliverable body of a completed run.
-type NotesSkipReason = "notes_not_delivered" | "notes_missing" | "notes_not_deliverable" | "pending_notes_proposals" | "write_failed"
+type NotesSkipReason = "notes_not_delivered" | "notes_missing" | "notes_not_deliverable" | "pending_notes_proposals" | "editing_locked" | "write_failed"
 type NotesAddendum = { notes_updated: true } | { notes_updated: false; notes_skip_reason: NotesSkipReason }
 async function recordAcceptedChangesInRunNotes(directory: string, body: string, rows: readonly RedlineRow[]): Promise<NotesAddendum | undefined> {
   if (!rows.length) return
@@ -1506,7 +1565,7 @@ async function recordAcceptedChangesInRunNotes(directory: string, body: string, 
       return { notes_updated: true }
     })
   } catch (error) {
-    return skipped("write_failed", error)
+    return skipped(error instanceof EditingLeaseError ? "editing_locked" : "write_failed", error)
   }
 }
 
@@ -1570,7 +1629,7 @@ function deliveredRedlineName(delivered: NonNullable<ReturnType<typeof delivered
 // stands, and the accept response says whether the redline was rebuilt or why
 // not (logged too). Nothing is returned when the accepted file is no delivered
 // body of a completed run, which has no redline to rebuild.
-type RedlineSkipReason = "redline_not_delivered" | "redline_missing" | "redline_not_deliverable" | "pending_redline_proposals" | "rebuild_failed" | "write_failed"
+type RedlineSkipReason = "redline_not_delivered" | "redline_missing" | "redline_not_deliverable" | "pending_redline_proposals" | "editing_locked" | "rebuild_failed" | "write_failed"
 type RedlineRebuild = { redline_updated: true } | { redline_updated: false; redline_skip_reason: RedlineSkipReason }
 type PreparedRedline = { directory: string; body: string; run: string; name: string; prior: string; bytes: Uint8Array } | RedlineRebuild | undefined
 function redlineSkipped(directory: string, run: string | undefined, reason: RedlineSkipReason, error?: unknown): RedlineRebuild {
@@ -1620,7 +1679,7 @@ async function writeDeliveredRedline(prepared: PreparedRedline): Promise<Redline
       return { redline_updated: true }
     })
   } catch (error) {
-    return redlineSkipped(directory, run, "write_failed", error)
+    return redlineSkipped(directory, run, error instanceof EditingLeaseError ? "editing_locked" : "write_failed", error)
   }
 }
 
@@ -1680,7 +1739,7 @@ function runRedlineLock(directory: string, body: string): string[] {
 // the redline: the accepted body stands, and the response says whether the
 // combined file was rebuilt or why not (logged too). Nothing is returned when no
 // completed run registered a combined file or the change touched neither part.
-type CombinedSkipReason = "combined_missing" | "combined_not_deliverable" | "pending_combined_proposals" | "combined_changed" | "build_refused" | "rebuild_failed" | "write_failed"
+type CombinedSkipReason = "editing_locked" | "combined_missing" | "combined_not_deliverable" | "pending_combined_proposals" | "combined_changed" | "build_refused" | "rebuild_failed" | "write_failed"
 type CombinedRebuild = { combined_updated: true; purge_failed?: string } | { combined_updated: false; combined_skip_reason: CombinedSkipReason }
 type PreparedCombined = { directory: string; accepted: string; file: string; body: string; notes: string; rejected: boolean; redaction: boolean; parts?: string; error?: unknown }
 
@@ -1806,7 +1865,7 @@ async function rebuildCombinedFile(prepared: PreparedCombined | undefined): Prom
       return { combined_updated: true, ...(prepared.redaction ? purgeRedactedVersions(directory, written.version.document_id, file) : {}) }
     })
   } catch (error) {
-    return combinedSkipped(directory, "write_failed", diagnosticErrorMetadata(error))
+    return combinedSkipped(directory, error instanceof EditingLeaseError ? "editing_locked" : "write_failed", diagnosticErrorMetadata(error))
   }
 }
 
@@ -1973,4 +2032,5 @@ if (Number.isFinite(TELEMETRY_RETENTION_DAYS) && TELEMETRY_RETENTION_DAYS > 0) {
 const port = Number(process.env.INGEST_PORT ?? 4500)
 const hostname = process.env.INGEST_HOST ?? "127.0.0.1"
 console.log(`doc.haus ingest service listening on http://${hostname}:${port}`)
+startWordHttps(app.fetch)
 export default { port, hostname, fetch: app.fetch }

@@ -35,7 +35,8 @@ COPY . .
 # Both dependency graphs use committed locks and patches.
 RUN bun install --frozen-lockfile \
   && bun install --cwd services/ingest --frozen-lockfile \
-  && bun run --cwd apps/web build
+  && bun run --cwd apps/web build \
+  && bun run --cwd apps/word-addin build
 
 # Engine and ingest remain loopback-only; the web process proxies both.
 EXPOSE 5173
