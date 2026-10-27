@@ -100,24 +100,43 @@ test("only the exact single current manifest URL version can start a pane", () =
 })
 
 test("save deadline covers a success body that stalls after headers", async () => {
-  const server = Bun.serve({
-    port: 0,
-    fetch: () =>
-      new Response(
-        new ReadableStream({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode('{"version":'))
-          },
-        }),
-        { headers: { "Content-Type": "application/json" } },
-      ),
-  })
-  try {
-    const client = new WordClient(link, "session", (_url, init) => fetch(server.url, init), 25)
-    await expect(client.save(new Uint8Array([1]), "original", "generation")).rejects.toThrow("did not confirm")
-  } finally {
-    server.stop(true)
+  const acknowledgement = {
+    version: { id: "v1", number: 1, parent: "original", created: true },
+    overlap: false,
+    connection: connection(),
   }
+  const fast = new WordClient(link, "session", async () => Response.json(acknowledgement), 25)
+  expect(await fast.save(new Uint8Array([1]), "original", "generation")).toEqual(acknowledgement)
+
+  const events: string[] = []
+  const client = new WordClient(link, "session", async (_url, init) => {
+    const signal = init!.signal!
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"version":'))
+        signal.addEventListener("abort", () => {
+          events.push("abort")
+          controller.error(signal.reason)
+        }, { once: true })
+      },
+    }), { headers: { "Content-Type": "application/json" } })
+    const json = response.json.bind(response)
+    response.json = () => {
+      events.push("body")
+      return json()
+    }
+    events.push("headers")
+    return response
+  }, 25)
+  try {
+    await client.save(new Uint8Array([1]), "original", "generation")
+    throw new Error("Expected the body deadline to expire")
+  } catch (error) {
+    expect(error).toBeInstanceOf(ConnectionError)
+    expect((error as ConnectionError).message).toContain("did not confirm")
+    expect((error as ConnectionError).retryable).toBe(true)
+  }
+  expect(events).toEqual(["headers", "body", "abort"])
 })
 
 test("heartbeat and Done read authoritative state and carry the current base and fence", async () => {
