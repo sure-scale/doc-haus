@@ -60,7 +60,8 @@ DOCHAUS_WORD_EXTERNAL_HTTPS=1
 ```
 
 Terminate TLS at your existing reverse proxy. Forward `/word-addin/*` and only
-POST/OPTIONS `/word/lease`, `/word/saves`, `/word/heartbeat`, `/word/done` to ingest. Do not
+POST/OPTIONS `/word/lease`, `/word/saves`, `/word/heartbeat`, `/word/done` and
+`/word/desk/sources`, `/word/desk/source`, `/word/desk/versions`, `/word/desk/compare` to ingest. Do not
 expose the rest of the ingest API through this Word receiver. In Docker, build
 the pane with `bun run --cwd apps/word-addin build` and include its `dist` assets
 with the server. The normal start scripts build these assets automatically.
@@ -104,12 +105,45 @@ actions pause when the copy is stale or another editor owns the document.
 The separate open badge is a contact hint and cannot prove a file is closed.
 
 Each linked file contains a bearer capability that can add versions only to its
-own document and report its editing status. Treat a linked copy as able to save
-back to that document. Use **Disconnect Word** in doc.haus to revoke its links.
+own document, report its editing status, and read confirmed matter sources and
+outputs through Source Desk. Saved-version comparison is limited to the linked
+document. Treat a linked copy as able to save back to that document and read
+those matter previews. Use **Disconnect Word** in doc.haus to revoke its links.
 Deleting and recreating a same-named document does not restore old access.
 Ordinary **Download** copies have the doc.haus link and token removed, while
-preserving unrelated add-ins. Tokens cannot read or delete documents or call
-the normal API. The receiver accepts only its configured pane origin.
+preserving unrelated add-ins. Tokens cannot delete documents or call the normal
+API. Desk reads use a separate bounded route set; the receiver accepts only its
+configured pane origin.
+
+## Source Desk
+
+Choose **Open Source Desk** in the Word pane to keep a captured Word passage
+beside pinned matter sources. The movable modeless window uses the pane for
+document access. Keep the pane open while using it. Hosts without secure dialog
+messaging open the same workspace inside the pane. Opening, refreshing or
+closing the desk does not claim editing ownership or change the save queue.
+
+Choose a source and **Pin source**, then switch between pins. Each preview
+identifies its exact retained version and content hash. It stays pinned when
+you select another Word passage and choose **Refresh selection**. Sources with
+unconfirmed external changes are unavailable until doc.haus records them; a
+changed source is never silently substituted. Up to eight previews can be
+pinned. Previews and source lists have visible size limits.
+
+Word text is labelled as captured saved or unsaved context, separate from a
+confirmed matter version. **Show passage in Word** selects an exact, unique
+passage only if the document still matches the capture. Repeated passages,
+multiline selections, Word find codes and selections over 255 characters cannot
+be navigated in this first slice; select a short unique passage and refresh.
+Text and Word markup changes invalidate navigation conservatively. Refreshes
+never select text or move focus in Word. The exact-text search highlights the
+same phrase in both previews; it does not assess legal support.
+
+**Compare versions** uses the existing comparison engine on two explicitly
+chosen retained versions of the linked document. Base and compared identities
+remain visible as Previous/Next moves through both sides together. The open
+Word document is never substituted for either saved version. This view does
+not invoke native Word Compare or promise annotation-author fidelity.
 
 ## Implementation note
 

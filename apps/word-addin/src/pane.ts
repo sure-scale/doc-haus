@@ -1,6 +1,7 @@
 import { WORD_UPDATE_MESSAGE, WordClient, isCurrentPaneVersion, readLink } from "./client"
 import { connectOffice } from "./office"
 import { browserCheckpoints, WordSync, type PaneState } from "./sync"
+import { setupSourceDesk } from "./desk-entry"
 
 const element = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
 const badge = element("status")
@@ -98,6 +99,9 @@ async function main(): Promise<void> {
     release.addEventListener("click", () => {
       void sync.release()
     })
+    // The read-only desk has its own lifecycle; opening/closing it never owns
+    // or stops the existing saving queue.
+    setupSourceDesk(link)
     await sync.start()
     setInterval(() => {
       void sync.tick()
