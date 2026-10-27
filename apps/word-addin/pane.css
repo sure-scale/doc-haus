@@ -127,6 +127,7 @@ a:focus-visible {
 .desk-entry { margin-top: 24px; border-top: 1px solid #b2c8ba; padding-top: 20px; }
 .desk-entry h2 { margin: 0; font-size: 17px; }
 .desk-entry p { font-size: 13px; }
+.desk-entry button + button { margin-top: 10px; }
 .desk-entry .hint:empty { display: none; }
 a {
   color: #315e49;

@@ -120,7 +120,9 @@ configured pane origin.
 Choose **Open Source Desk** in the Word pane to keep a captured Word passage
 beside pinned matter sources. The movable modeless window uses the pane for
 document access. Keep the pane open while using it. Hosts without secure dialog
-messaging open the same workspace inside the pane. Opening, refreshing or
+messaging open the same workspace inside the pane. **Use Source Desk in this pane**
+also closes a floating desk and opens a fresh workspace below the save controls.
+Opening, refreshing or
 closing the desk does not claim editing ownership or change the save queue.
 
 Choose a source and **Pin source**, then switch between pins. Each preview
