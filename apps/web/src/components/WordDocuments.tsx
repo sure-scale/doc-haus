@@ -166,11 +166,7 @@ export function WordSetup() {
     {config && !config.available && <button type="button" className="linklike" onClick={() => openSettings("addins")}>Set up Word</button>}
     {(config || setupError) && <button type="button" className="linklike" onClick={retrySetup}>Check again</button>}
   </div>
-  return <details className="word-setup">
-    <summary>Using Word for the first time?</summary>
-    <p>Choose Open in Word and open the downloaded copy. Keep doc.haus running, then choose <strong>Save</strong> in Word and wait for <strong>Saved</strong> before closing.</p>
-    <button type="button" className="linklike" onClick={() => openSettings("addins")}>Word add-in settings</button>
-  </details>
+  return null
 }
 
 export function WordOpenControl({ matterId, name, disabled = false, compact = false }: { matterId: string; name: string; disabled?: boolean; compact?: boolean }) {

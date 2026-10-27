@@ -13,6 +13,7 @@ const corePropertiesNamespace = "http://schemas.openxmlformats.org/package/2006/
 const dublinCoreTermsNamespace = "http://purl.org/dc/terms/"
 const schemaInstanceNamespace = "http://www.w3.org/2001/XMLSchema-instance"
 const xmlNamespace = "http://www.w3.org/XML/1998/namespace"
+const word2010Namespace = "http://schemas.microsoft.com/office/word/2010/wordml"
 const cachedCountProperties = ["Words", "Characters", "Paragraphs", "CharactersWithSpaces"] as const
 const proofingAnchors = new Set(["spellStart", "spellEnd", "gramStart", "gramEnd"])
 const flowContainers = new Set(["body", "tbl", "tr", "tc", "sdt", "sdtContent", "footnote", "endnote", "comment"])
@@ -223,6 +224,47 @@ function normalizeTextFlow(name: string, root: Element): boolean {
   return changed
 }
 
+function normalizeSeparatorParagraphIds(name: string, root: Element): boolean {
+  const noteName = name === "word/footnotes.xml" ? "footnote" : name === "word/endnotes.xml" ? "endnote" : undefined
+  if (!noteName || root.localName !== `${noteName}s`) return false
+  const namespace = root.namespaceURI!
+  const children = (element: Element) =>
+    Array.from(element.childNodes).filter((node) => node.nodeType !== 3 || node.nodeValue?.trim())
+  let changed = false
+  for (const node of Array.from(root.childNodes)) {
+    const note = node as Element
+    if (node.nodeType !== 1 || note.namespaceURI !== namespace || note.localName !== noteName) continue
+    const type = note.getAttributeNS(namespace, "type")
+    if (type !== "separator" && type !== "continuationSeparator") continue
+    for (const child of Array.from(note.childNodes)) {
+      const paragraph = child as Element
+      if (child.nodeType !== 1 || paragraph.namespaceURI !== namespace || paragraph.localName !== "p") continue
+      if (!/^[\da-f]{8}$/i.test(paragraph.getAttributeNS(word2010Namespace, "paraId") ?? "")) continue
+      if (
+        !Array.from(paragraph.attributes).every(
+          (attribute) => attribute.namespaceURI === word2010Namespace && ["paraId", "textId"].includes(attribute.localName),
+        )
+      ) continue
+      const runs = children(paragraph)
+      const run = runs[0] as Element | undefined
+      if (
+        runs.length !== 1 || run?.nodeType !== 1 || run.namespaceURI !== namespace || run.localName !== "r" || run.attributes.length
+      ) continue
+      const markers = children(run)
+      const marker = markers[0] as Element | undefined
+      if (
+        markers.length !== 1 || marker?.nodeType !== 1 || marker.namespaceURI !== namespace || marker.localName !== type ||
+        marker.attributes.length || marker.childNodes.length
+      ) continue
+      // Word regenerates these IDs on otherwise empty separator paragraphs.
+      // Keep identities on real notes, comment anchors and custom separators.
+      paragraph.removeAttributeNS(word2010Namespace, "paraId")
+      changed = true
+    }
+  }
+  return changed
+}
+
 function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
   const wordPart = name.startsWith("word/") && name.endsWith(".xml")
   const extendedProperties = name === "docProps/app.xml"
@@ -330,6 +372,7 @@ function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
       }
     }
   }
+  changed = normalizeSeparatorParagraphIds(name, root) || changed
   changed = normalizeTextFlow(name, root) || changed
   return changed ? strToU8(new XMLSerializer().serializeToString(doc)) : bytes
 }
