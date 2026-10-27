@@ -18,13 +18,12 @@ function host(text = "First clause. A neutral passage. Last clause.", selected =
               throw new Error("Selection must be searched afresh")
             },
           }),
-          body: {
+          body: Object.assign({
             get text() {
               return state.text
             },
             load: () => {},
-            getOoxml: () => ({ value: state.xml }),
-            search: (query, options) => {
+            search: (query: string, options: unknown) => {
               expect(options).toEqual({
                 matchCase: true,
                 matchWholeWord: false,
@@ -45,7 +44,7 @@ function host(text = "First clause. A neutral passage. Last clause.", selected =
                 load: () => {},
               }
             },
-          },
+          }, { getOoxml: () => ({ value: state.xml }) }),
         },
         sync: async () => {},
       }),
@@ -67,16 +66,26 @@ test("capture only reads unsaved context; explicit Show selects one exact unchan
   expect(state.saved).toBe(false)
 })
 
-test("text or OOXML changes refuse the previously valid navigation instead of guessing", async () => {
-  for (const change of ["text", "xml"] as const) {
-    const { state, word } = host()
-    const snapshot = await captureSelection(word)
-    await showSelection(snapshot, word)
-    expect(state.navigations).toBe(1)
-    state[change] += " Changed."
-    await expect(showSelection(snapshot, word)).rejects.toThrow("has changed")
-    expect(state.navigations).toBe(1)
-  }
+test("changed body text refuses a previously valid exact navigation", async () => {
+  const { state, word } = host()
+  const snapshot = await captureSelection(word)
+  await showSelection(snapshot, word)
+  expect(state.navigations).toBe(1)
+  state.text += " Changed."
+  await expect(showSelection(snapshot, word)).rejects.toThrow("Word text has changed")
+  expect(state.navigations).toBe(1)
+})
+
+test("Office markup serialization churn does not block navigation to unchanged unique text", async () => {
+  const { state, word } = host()
+  const snapshot = await captureSelection(word)
+  await showSelection(snapshot, word)
+  state.xml = "<body>Different transient Office serialization</body>"
+  state.saved = true
+  await showSelection(snapshot, word)
+  expect(state.navigations).toBe(2)
+  expect(state.text).toBe("First clause. A neutral passage. Last clause.")
+  expect(state.saved).toBe(true)
 })
 
 test("ambiguous repeated passages, no selection and nonbody context are disclosed without navigation", async () => {

@@ -123,7 +123,7 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
       left.append(node("p", selection ? `${selection.saved ? "Saved in Word" : "Unsaved Word context"} · not a confirmed matter version` : "Select a passage in Word to connect it to your sources.", "desk-note"), capture)
       if (selection) {
         left.append(textBlock(selection.text || "No text is selected in Word.", query))
-        metadata(left, [`Captured ${new Date(selection.capturedAt).toLocaleTimeString()}. Refresh to use a different selection.`, selection.reason ?? "Navigation checks that the document still matches this capture."])
+        metadata(left, [`Captured ${new Date(selection.capturedAt).toLocaleTimeString()}. Refresh to use a different selection.`, selection.reason ?? "Navigation checks exact body text. Formatting and markup are not checked."])
       }
       const source = active ? pins.get(active) : undefined
       const right = column("right", "Pinned matter source · saved bytes", source?.name ?? "Keep your evidence beside you")

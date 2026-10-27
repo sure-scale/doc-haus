@@ -132,10 +132,10 @@ pinned. Previews and source lists have visible size limits.
 
 Word text is labelled as captured saved or unsaved context, separate from a
 confirmed matter version. **Show passage in Word** selects an exact, unique
-passage only if the document still matches the capture. Repeated passages,
+passage only if the document's body text still matches the capture. Repeated passages,
 multiline selections, Word find codes and selections over 255 characters cannot
 be navigated in this first slice; select a short unique passage and refresh.
-Text and Word markup changes invalidate navigation conservatively. Refreshes
+Body text changes invalidate navigation; formatting and markup are not checked. Refreshes
 never select text or move focus in Word. The exact-text search highlights the
 same phrase in both previews; it does not assess legal support.
 

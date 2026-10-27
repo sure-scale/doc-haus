@@ -17,7 +17,6 @@ type SelectionContext = {
     body: {
       text: string
       load(properties: string): void
-      getOoxml(): { value: string }
       search(
         text: string,
         options: {
@@ -51,10 +50,12 @@ function wordRuntime(): SelectionWord {
   return word
 }
 
-async function hash(text: string, ooxml: string): Promise<string> {
-  if (text.length + ooxml.length > BODY_LIMIT)
+async function hash(text: string): Promise<string> {
+  if (text.length > BODY_LIMIT)
     throw new SelectionError("This document is too large to navigate safely. Select the passage directly in Word.")
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([text, ooxml])))
+  // Office can serialize different OOXML for the same unchanged body. Passage
+  // navigation identifies exact text; saved-source provenance still hashes bytes.
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))
   return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")
 }
 
@@ -82,7 +83,6 @@ export async function captureSelection(word = wordRuntime()): Promise<WordSelect
       selected.load("text")
       document.load("saved")
       document.body.load("text")
-      const xml = document.body.getOoxml()
       await context.sync()
       const text = selected.text.slice(0, LIMIT)
       let reason =
@@ -99,7 +99,7 @@ export async function captureSelection(word = wordRuntime()): Promise<WordSelect
       }
       return {
         text,
-        documentHash: await hash(document.body.text, xml.value),
+        documentHash: await hash(document.body.text),
         saved: document.saved,
         capturedAt: new Date().toISOString(),
         navigable: !reason,
@@ -119,7 +119,6 @@ export async function showSelection(snapshot: WordSelectionSnapshot, word = word
     await word.run(async (context) => {
       const body = context.document.body
       body.load("text")
-      const xml = body.getOoxml()
       const matches = body.search(snapshot.text, {
         matchCase: true,
         matchWildcards: false,
@@ -129,8 +128,8 @@ export async function showSelection(snapshot: WordSelectionSnapshot, word = word
       })
       matches.load("items/text")
       await context.sync()
-      if ((await hash(body.text, xml.value)) !== snapshot.documentHash)
-        throw new SelectionError("The Word document has changed. Refresh the selection before navigating.")
+      if ((await hash(body.text)) !== snapshot.documentHash)
+        throw new SelectionError("The Word text has changed. Refresh the selection before navigating.")
       if (
         occurrences(body.text, snapshot.text) !== 1 ||
         matches.items.length !== 1 ||
