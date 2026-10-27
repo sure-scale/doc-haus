@@ -1,4 +1,4 @@
-import { WordClient, readLink } from "./client"
+import { WORD_UPDATE_MESSAGE, WordClient, isCurrentPaneVersion, readLink } from "./client"
 import { connectOffice } from "./office"
 import { browserCheckpoints, WordSync, type PaneState } from "./sync"
 
@@ -22,6 +22,15 @@ function render(state: PaneState): void {
 }
 
 async function main(): Promise<void> {
+  // An old cached manifest may still launch this page as a separate function
+  // runtime. It must not become a writer merely because its JS was refreshed.
+  if (!isCurrentPaneVersion(window.location.href)) {
+    badge.textContent = "Update needed"
+    message.textContent = WORD_UPDATE_MESSAGE
+    element("actions").hidden = true
+    element("background").hidden = true
+    return
+  }
   try {
     const office = await connectOffice()
     const link = readLink(office.link, window.location.origin)

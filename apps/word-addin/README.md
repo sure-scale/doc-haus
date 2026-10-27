@@ -15,6 +15,15 @@ The linked DOCX supplies `dochaus.link`. Its HTTPS receiver must match the pane
 origin. The bearer capability is sent only to that receiver, with redirects and
 ambient credentials disabled. It is never shown, logged, or added to a URL.
 
+The manifest, linked handout and pane share one add-in version. Both manifest
+pane URLs include that version, and a missing or different URL version stops
+startup before Office access. Token requests also carry the version; ingest
+rejects old clients with HTTP 426 before recording contact or accepting bytes.
+After updating this version, run Word setup again, restart Word and open a fresh
+handout. File equality alone does not prove Office adopted its cached manifest.
+This gate does not elect a writer among multiple current-version panes or adopt
+another copy's latest parent. It changes no document comparison or save rules.
+
 **Save to doc.haus** saves in Word, exports the DOCX in 1 MiB slices, closes the
 Office file handle, and waits for an acknowledged version. **Done in Word** does
 the same before ending the live heartbeat and closing the current document.

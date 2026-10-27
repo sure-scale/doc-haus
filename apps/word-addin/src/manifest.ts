@@ -21,7 +21,7 @@ export function renderManifest(origin: string): string {
   <AppDomains><AppDomain>${xml(httpsOrigin(origin))}</AppDomain></AppDomains>
   <Hosts><Host Name="Document"/></Hosts>
   <Requirements><Sets DefaultMinVersion="1.1"><Set Name="WordApi"/></Sets></Requirements>
-  <DefaultSettings><SourceLocation DefaultValue="${base}/pane.html"/></DefaultSettings>
+  <DefaultSettings><SourceLocation DefaultValue="${base}/pane.html?version=${WORD_ADDIN_VERSION}"/></DefaultSettings>
   <Permissions>ReadWriteDocument</Permissions>
   <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
     <Requirements><bt:Sets DefaultMinVersion="1.1"><bt:Set Name="WordApi"/></bt:Sets></Requirements>
@@ -39,7 +39,7 @@ export function renderManifest(origin: string): string {
     </DesktopFormFactor></Host></Hosts>
     <Resources>
       <bt:Images><bt:Image id="Icon" DefaultValue="${base}/assets/icon.png"/></bt:Images>
-      <bt:Urls><bt:Url id="Pane.Url" DefaultValue="${base}/pane.html"/></bt:Urls>
+      <bt:Urls><bt:Url id="Pane.Url" DefaultValue="${base}/pane.html?version=${WORD_ADDIN_VERSION}"/></bt:Urls>
       <bt:ShortStrings><bt:String id="Group.Label" DefaultValue="doc.haus"/><bt:String id="Button.Label" DefaultValue="Save to doc.haus"/></bt:ShortStrings>
       <bt:LongStrings><bt:String id="Button.Description" DefaultValue="Open the doc.haus pane to save this document back to its matter."/></bt:LongStrings>
     </Resources>

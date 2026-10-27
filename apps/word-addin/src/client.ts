@@ -1,4 +1,20 @@
-import type { WordDocumentLink, WordSaveResponse } from "../../../dochaus/lib/word-addin-contract"
+import {
+  WORD_ADDIN_VERSION,
+  type WordDocumentLink,
+  type WordSaveResponse,
+} from "../../../dochaus/lib/word-addin-contract"
+
+export const WORD_UPDATE_MESSAGE =
+  "This Word add-in is out of date. Update Word setup in doc.haus, restart Word, then open a fresh copy."
+
+export function isCurrentPaneVersion(value: string): boolean {
+  try {
+    const versions = new URL(value).searchParams.getAll("version")
+    return versions.length === 1 && versions[0] === WORD_ADDIN_VERSION
+  } catch {
+    return false
+  }
+}
 
 export class ConnectionError extends Error {
   constructor(
@@ -74,6 +90,7 @@ export class WordClient {
         headers: {
           Authorization: `Bearer ${this.link.token}`,
           "x-dochaus-word-session": this.session,
+          "x-dochaus-word-version": WORD_ADDIN_VERSION,
           ...(bytes
             ? {
                 "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -89,6 +106,7 @@ export class WordClient {
       })
       if (!response.ok) {
         void response.body?.cancel().catch(() => {})
+        if (response.status === 426) throw new ConnectionError(WORD_UPDATE_MESSAGE)
         if ([401, 403, 404, 410].includes(response.status)) {
           throw new ConnectionError("This document's link is no longer available. Open a new copy from doc.haus.")
         }

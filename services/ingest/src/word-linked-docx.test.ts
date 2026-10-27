@@ -3,7 +3,7 @@ import { Document, Packer, Paragraph } from "docx"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { DOMParser } from "@xmldom/xmldom"
 import { linkedWordDocx, stripWordLink, wordLastModifiedBy, WordPackageError } from "../../../dochaus/lib/word-linked-docx"
-import { WORD_LINK_SETTING, type WordDocumentLink } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_ADDIN_VERSION, WORD_LINK_SETTING, type WordDocumentLink } from "../../../dochaus/lib/word-addin-contract"
 
 const link: WordDocumentLink = { version: 1, origin: "http://localhost:5190", apiOrigin: "https://localhost:4612", matter: "synthetic-matter", matterName: "Synthetic matter",
   document: "synthetic-id", documentName: "Advice.docx", baseVersion: "synthetic-base", token: "synthetic-capability" }
@@ -32,6 +32,9 @@ test("linking changes only extension/package parts; stripping removes the capabi
   const linked = linkedWordDocx(zipSync(original), link)
   expect(readWordLink(linked)).toEqual(link)
   const linkedParts = unzipSync(linked)
+  const reference = new DOMParser().parseFromString(strFromU8(linkedParts["word/webextensions/dochaus.xml"]), "application/xml")
+    .getElementsByTagNameNS("http://schemas.microsoft.com/office/webextensions/webextension/2010/11", "reference")[0]
+  expect(reference?.getAttribute("version")).toBe(WORD_ADDIN_VERSION)
   for (const [name, bytes] of Object.entries(original)) if (!name.endsWith("/") && !["_rels/.rels", "[Content_Types].xml", "word/webextensions/taskpanes.xml", "word/webextensions/_rels/taskpanes.xml.rels"].includes(name)) expect(linkedParts[name]).toEqual(bytes)
   const clean = stripWordLink(linked)
   expect(xmls(clean)).not.toContain(link.token)

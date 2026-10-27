@@ -8,7 +8,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { openDb } from "./db"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { linkedWordDocx } from "../../../dochaus/lib/word-linked-docx"
-import { WORD_LINK_SETTING, type WordDocumentLink, type WordSaveResponse } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_ADDIN_VERSION, WORD_LINK_SETTING, type WordDocumentLink, type WordSaveResponse } from "../../../dochaus/lib/word-addin-contract"
 
 const paneOrigin = "https://localhost:47612"
 const browserOrigin = "http://localhost:5190"
@@ -43,7 +43,7 @@ async function handout(name: string) {
   const bytes = new Uint8Array(await response.arrayBuffer())
   return { bytes, link: readLink(bytes) }
 }
-const tokenHeaders = (link: WordDocumentLink, extra: Record<string, string> = {}) => ({ Origin: paneOrigin, Authorization: `Bearer ${link.token}`, ...extra })
+const tokenHeaders = (link: WordDocumentLink, extra: Record<string, string> = {}) => ({ Origin: paneOrigin, Authorization: `Bearer ${link.token}`, "x-dochaus-word-version": WORD_ADDIN_VERSION, ...extra })
 const save = (link: WordDocumentLink, bytes: Uint8Array, baseVersion = link.baseVersion, extra: Record<string, string> = {}) => request("/word/saves", {
   method: "POST", headers: tokenHeaders(link, { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "x-dochaus-word-base-version": baseVersion, ...extra }), body: new Uint8Array(bytes),
 })
@@ -127,7 +127,7 @@ test("token endpoints require the exact configured pane origin on success, error
   const preflight = await request("/word/saves", { method: "OPTIONS", headers: { Origin: paneOrigin, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization,x-dochaus-word-base-version" } })
   expect(preflight.status).toBe(204)
   expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe(paneOrigin)
-  const invalid = await request("/word/saves", { method: "POST", headers: { Origin: paneOrigin, Authorization: "Bearer invalid" } })
+  const invalid = await request("/word/saves", { method: "POST", headers: { Origin: paneOrigin, Authorization: "Bearer invalid", "x-dochaus-word-version": WORD_ADDIN_VERSION } })
   expect(invalid.status).toBe(401)
   expect(invalid.headers.get("Access-Control-Allow-Origin")).toBe(paneOrigin)
   const malformed = await save(link, new Uint8Array([1, 2, 3]))

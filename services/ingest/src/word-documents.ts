@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono"
 import { createHash, randomBytes } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import { linkedWordDocx, MAX_WORD_UPLOAD_BYTES, stripWordLink, wordLastModifiedBy, WordPackageError } from "../../../dochaus/lib/word-linked-docx"
-import type { WordOpenDocument, WordSaveResponse } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_ADDIN_VERSION, type WordOpenDocument, type WordSaveResponse } from "../../../dochaus/lib/word-addin-contract"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { getDocumentRole, openDb } from "./db"
 import { readDocumentTarget } from "./registered-document"
@@ -39,7 +39,7 @@ type Dependencies = {
   write: (directory: string, name: string, bytes: Buffer, prior: string, version: VersionWrite) => Promise<{ version: CapturedVersion }>
 }
 const digest = (token: string) => createHash("sha256").update(token).digest("hex")
-const failure = (c: Context, status: 400 | 401 | 403 | 404 | 409 | 410 | 413 | 503, code: string, error: string) => c.json({ error, code }, status)
+const failure = (c: Context, status: 400 | 401 | 403 | 404 | 409 | 410 | 413 | 426 | 503, code: string, error: string) => c.json({ error, code }, status)
 const sessionId = (c: Context) => {
   const id = c.req.header("x-dochaus-word-session")
   return id && /^[a-zA-Z0-9-]{8,128}$/.test(id) ? id : null
@@ -54,10 +54,12 @@ export async function wordCors(c: Context, next: () => Promise<void>) {
   c.header("Vary", "Origin")
   if (c.req.method === "OPTIONS") {
     c.header("Access-Control-Allow-Methods", "POST, OPTIONS")
-    c.header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-DocHaus-Word-Base-Version, X-DocHaus-Word-Session")
+    c.header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-DocHaus-Word-Base-Version, X-DocHaus-Word-Session, X-DocHaus-Word-Version")
     return c.body(null, 204)
   }
   if (c.req.method !== "POST") return failure(c, 403, "word_method_refused", "The Word connection can only save and report its own editing status.")
+  if (c.req.header("x-dochaus-word-version") !== WORD_ADDIN_VERSION)
+    return failure(c, 426, "word_addin_update_required", "This Word add-in is out of date. Update Word setup in doc.haus, restart Word, then open a fresh copy.")
   await next()
 }
 

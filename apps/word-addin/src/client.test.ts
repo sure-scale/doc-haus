@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { WordClient, httpsOrigin, readLink } from "./client"
+import { WordClient, httpsOrigin, isCurrentPaneVersion, readLink } from "./client"
 import { renderManifest } from "./manifest"
 import { WORD_ADDIN_ID, WORD_ADDIN_VERSION } from "../../../dochaus/lib/word-addin-contract"
 
@@ -45,6 +45,7 @@ test("save uses bearer-only POST, disallows redirects, and requires a version ac
   expect(init?.credentials).toBe("omit")
   expect(init?.referrerPolicy).toBe("no-referrer")
   expect(new Headers(init?.headers).get("x-dochaus-word-base-version")).toBe("original")
+  expect(new Headers(init?.headers).get("x-dochaus-word-version")).toBe(WORD_ADDIN_VERSION)
   const unconfirmed = new WordClient(link, "session", async () => Response.json({ ok: true }))
   await expect(unconfirmed.save(new Uint8Array([1]), "original")).rejects.toThrow("did not confirm")
 })
@@ -55,11 +56,37 @@ test("manifest uses the shared identity and designated auto-open pane", () => {
   expect(manifest).toContain(`<Version>${WORD_ADDIN_VERSION}</Version>`)
   expect(manifest).toContain("<TaskpaneId>Office.AutoShowTaskpaneWithDocument</TaskpaneId>")
   expect(manifest).toContain("https://localhost:4612/word-addin/pane.html")
+  expect(
+    manifest.match(new RegExp(`pane\\.html\\?version=${WORD_ADDIN_VERSION.replaceAll(".", "\\.")}`, "g")),
+  ).toHaveLength(2)
   expect(manifest.match(/xsi:type="ShowTaskpane"/g)).toHaveLength(1)
   expect(manifest).not.toContain('xsi:type="ExecuteFunction"')
   // A function runtime must not boot the pane's document writer as well.
   expect(manifest).not.toContain("<FunctionFile")
   expect(() => renderManifest("http://localhost:4612")).toThrow()
+})
+
+test("an outdated client receives clear update guidance without retrying", async () => {
+  let requests = 0
+  const client = new WordClient(link, "session", async () => {
+    requests++
+    return new Response(null, { status: 426 })
+  })
+  await expect(client.save(new Uint8Array([1]), "original")).rejects.toThrow("out of date")
+  expect(requests).toBe(1)
+})
+
+test("only the exact single current manifest URL version can start a pane", () => {
+  const url = `${link.apiOrigin}/word-addin/pane.html`
+  expect(isCurrentPaneVersion(`${url}?version=${WORD_ADDIN_VERSION}`)).toBe(true)
+  for (const value of [
+    url,
+    `${url}?version=1.0.0.0`,
+    `${url}?version=`,
+    `${url}?version=${WORD_ADDIN_VERSION}&version=${WORD_ADDIN_VERSION}`,
+    "invalid URL",
+  ])
+    expect(isCurrentPaneVersion(value)).toBe(false)
 })
 
 test("save deadline covers a success body that stalls after headers", async () => {
