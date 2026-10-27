@@ -241,7 +241,7 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
       right.hidden = !source
       if (source) {
         const paper = node("article", "", "desk-paper")
-        paper.append(node("h3", source.name), node("p", [`Version ${source.version?.number ?? "unavailable"}`, date(source.version?.createdAt), "Read-only"].filter(Boolean).join(" · "), "desk-meta"))
+        paper.append(node("p", [`Version ${source.version?.number ?? "unavailable"}`, date(source.version?.createdAt), "Read-only"].filter(Boolean).join(" · "), "desk-meta"))
         if (source.truncated) paper.append(node("p", `Partial preview · ${source.text.length.toLocaleString()} of ${source.characters.toLocaleString()} characters.`, "desk-warning"))
         const body = node("div", "", "desk-text")
         body.tabIndex = 0
