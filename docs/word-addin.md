@@ -118,32 +118,39 @@ configured pane origin.
 ## Source Desk
 
 Choose **Open Source Desk** in the Word pane to keep a captured Word passage
-beside pinned matter sources. The movable modeless window uses the pane for
+beside saved matter sources. The movable modeless window uses the pane for
 document access. Keep the pane open while using it. Hosts without secure dialog
 messaging open the same workspace inside the pane. **Use Source Desk in this pane**
 also closes a floating desk and opens a fresh workspace below the save controls.
 Opening, refreshing or
 closing the desk does not claim editing ownership or change the save queue.
 
-Choose a source and **Pin source**, then switch between pins. Each preview
-identifies its exact retained version and content hash. It stays pinned when
-you select another Word passage and choose **Refresh selection**. Sources with
+Choose **Open a source** to read it immediately. **Keep open** adds a source
+to the strip for switching between useful documents; up to eight can be kept.
+The filename and saved version stay visible, with version IDs and content hashes
+in **Source details**. Open previews stay unchanged when you select another
+Word passage and choose **Use current selection**. Sources with
 unconfirmed external changes are unavailable until doc.haus records them; a
-changed source is never silently substituted. Up to eight previews can be
-pinned. Previews and source lists have visible size limits.
+changed source is never silently substituted. Previews and source lists have
+visible size limits.
 
 Word text is labelled as captured saved or unsaved context, separate from a
-confirmed matter version. **Show passage in Word** selects an exact, unique
+confirmed matter version. **Show in Word** selects an exact, unique
 passage only if the document's body text still matches the capture. Repeated passages,
 multiline selections, Word find codes and selections over 255 characters cannot
 be navigated in this first slice; select a short unique passage and refresh.
 Body text changes invalidate navigation; formatting and markup are not checked. Refreshes
-never select text or move focus in Word. The exact-text search highlights the
-same phrase in both previews; it does not assess legal support.
+never select text or move focus in Word. **Find** (Cmd/Ctrl+F inside the desk)
+highlights exact text in the selection and source; it does not assess legal
+support. Escape closes Find and returns focus to its button.
 
 **Compare versions** uses the existing comparison engine on two explicitly
-chosen retained versions of the linked document. Base and compared identities
-remain visible as Previous/Next moves through both sides together. The open
+chosen retained versions of the linked document. Choose an **Earlier version**
+and a **Later version**, then **Compare**. Their applied version numbers stay
+visible as Previous/Next moves through changed passages. The existing doc.haus
+redline marks insertions blue and underlined, deletions red and struck through,
+and moves green. Separate earlier/later text and technical details are available
+in expandable sections. The open
 Word document is never substituted for either saved version. This view does
 not invoke native Word Compare or promise annotation-author fidelity.
 The version list is a snapshot: **latest at refresh** refers to the last list
