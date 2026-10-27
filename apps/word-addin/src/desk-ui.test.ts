@@ -23,6 +23,7 @@ function comparison(base = "v1", current = "v2"): DeskComparison {
 function install(html = '<main id="desk-root"></main>') {
   const page = new Window({ url: `https://localhost:4612/word-addin/pane.html?version=${WORD_ADDIN_VERSION}` })
   page.document.write(html)
+  Object.defineProperty(page, "IntersectionObserver", { configurable: true, value: undefined })
   const names = ["window", "document", "Option", "HTMLButtonElement", "HTMLSelectElement", "HTMLInputElement"] as const
   const previous = names.map((name) => Object.getOwnPropertyDescriptor(globalThis, name))
   function Option(text: string, value: string) { const option = page.document.createElement("option"); option.text = text; option.value = value; return option }
@@ -46,169 +47,179 @@ function pollClock() {
     get scheduled() { return Boolean(run) },
   }
 }
-async function choose(fixture: ReturnType<typeof install>, id: string) {
-  if (element(fixture.root, "document-list").hidden) button(fixture.root, "back-documents").click()
-  fixture.root.querySelector<HTMLButtonElement>(`[data-source="${id}"]`)!.click()
-  await settle()
+const row = (root: HTMLElement, id: string) => root.querySelector<HTMLAnchorElement>(`[data-source="${id}"]`)!
+let handoffNumber = 0
+function handoff() {
+  const nonce = String(++handoffNumber).padStart(43, "a")
+  return { uri: `doc.haus://word/open?source=${encodeURIComponent(`https://localhost:4612/word/open/${nonce}`)}`, id: "00000000-0000-0000-0000-000000000001" }
 }
 function changeVersion(fixture: ReturnType<typeof install>, name: "base" | "current", id: string) {
   const control = element<HTMLSelectElement>(fixture.root, name)
   control.value = id; control.dispatchEvent(new fixture.page.Event("change") as unknown as Event)
 }
 
-test("document list opens one saved preview with a clear way back and no file tabs", async () => {
+test("document names are real user-activated Word links without an embedded preview", async () => {
   const fixture = install(), calls: DeskRequest[] = []
-  const desk = mountDesk(fixture.root, { async request(input) { calls.push(input); if (input.action === "sources") return sources; if (input.action === "source") return input.sourceId === preview.id ? preview : second; throw new Error("Unexpected Word access") } }, { close() {} })
+  const desk = mountDesk(fixture.root, { async request(input) { calls.push(input); if (input.action === "sources") return sources; if (input.action === "open") return handoff(); throw new Error("Unexpected document read") } }, { close() {} })
   try {
-    await desk.ready
-    expect(calls.map((call) => call.action)).toEqual(["sources"])
-    expect(element(fixture.root, "document-list").textContent).toContain("Instructions.docx")
-    expect(element(fixture.root, "document-list").textContent).toContain("Version 1")
-    expect(element(fixture.root, "status").hidden).toBe(true)
-    expect(fixture.root.querySelector('[data-el="selection-toggle"]')).toBeNull()
-    expect(fixture.root.querySelector('[data-el="open-document"]')).toBeNull()
-    expect(fixture.root.querySelector('[data-el="close-document"]')).toBeNull()
-    expect(element(fixture.root, "document-bar").hidden).toBe(true)
-    await choose(fixture, preview.id)
-    expect(element(fixture.root, "document-bar").hidden).toBe(false)
-    expect(element(fixture.root, "document-name").textContent).toBe("Instructions.docx")
-    expect(button(fixture.root, "back-documents").textContent).toContain("Back to documents")
-    expect(fixture.root.querySelectorAll('[role="tab"]')).toHaveLength(0)
-    expect(element(fixture.root, "right").querySelector(".desk-text h2")?.textContent).toBe("Payment terms")
-    expect(element(fixture.root, "right").textContent).toContain("Read-only")
-    button(fixture.root, "back-documents").click()
-    expect(element(fixture.root, "right").hidden).toBe(true)
-    expect(element(fixture.root, "right").textContent).toBe("")
-    expect(element(fixture.root, "document-list").hidden).toBe(false)
-    expect((document.activeElement as HTMLElement)?.dataset.source).toBe(preview.id)
-    await choose(fixture, second.id)
-    expect(element(fixture.root, "document-name").textContent).toBe("Letter.docx")
-    expect(element(fixture.root, "right").textContent).toContain(second.text)
-    expect(element(fixture.root, "right").textContent).not.toContain(preview.text)
-    expect(calls.some((call) => call.action === "selection" || call.action === "show")).toBe(false)
-  } finally { desk.dispose(); fixture.restore() }
-})
-
-test("automatic refresh and view changes retain opened saved snapshots", async () => {
-  const fixture = install(), calls: DeskRequest[] = []
-  const clock = pollClock()
-  let refreshed = false
-  const desk = mountDesk(fixture.root, { async request(input) {
-    calls.push(input)
-    if (input.action === "sources") return refreshed ? { ...sources, sources: [{ ...preview, hash: "d".repeat(64), version: { id: "new", number: 2, createdAt: savedAt + 60_000 } }, second] } : sources
-    if (input.action === "source") return refreshed ? { ...preview, hash: "d".repeat(64), version: { id: "new", number: 2, createdAt: savedAt + 60_000 }, text: "New saved wording.", blocks: undefined } : preview
-    if (input.action === "versions") return versions
-    if (input.action === "compare") return comparison(input.baseVersion, input.currentVersion)
-  } }, { embedded: true, close() {}, schedulePoll: clock.schedulePoll })
-  try {
-    await desk.ready; await choose(fixture, preview.id)
-    refreshed = true; await clock.tick()
-    expect(element(fixture.root, "right").textContent).toContain("Version 1")
-    expect(element(fixture.root, "right").textContent).toContain(preview.hash)
-    await desk.setView("compare"); await desk.setView("documents")
-    expect(element(fixture.root, "right").textContent).toContain(preview.hash)
-    expect(element(fixture.root, "document-name").textContent).toBe(preview.name)
-    expect(calls.filter((call) => call.action === "source")).toHaveLength(1)
-    expect(calls.some((call) => call.action === "selection" || call.action === "show")).toBe(false)
-    expect(fixture.root.querySelector<HTMLElement>(".desk-head")!.hidden).toBe(true)
-    button(fixture.root, "back-documents").click()
-    expect(element(fixture.root, "right").textContent).toBe("")
-    await choose(fixture, preview.id)
-    expect(element(fixture.root, "right").textContent).toContain("Version 2")
-    expect(element(fixture.root, "right").textContent).toContain("New saved wording.")
-    expect(calls.filter(call => call.action === "source")).toHaveLength(2)
-    expect(calls.filter(call => call.action === "source").at(-1)).toMatchObject({ expectedHash: "d".repeat(64) })
-  } finally { desk.dispose(); fixture.restore() }
-})
-
-test("automatic list updates preserve the reader, focus and exact snapshot without repainting unchanged polls", async () => {
-  const fixture = install(), clock = pollClock(), calls: DeskRequest[] = []
-  let current = sources
-  const desk = mountDesk(fixture.root, { async request(input) {
-    calls.push(input)
-    if (input.action === "sources") return current
-    if (input.action === "source") return preview
-    if (input.action === "versions") return versions
-    if (input.action === "compare") return comparison(input.baseVersion, input.currentVersion)
-    throw new Error("Unexpected action")
-  } }, { close() {}, schedulePoll: clock.schedulePoll })
-  try {
-    await desk.ready
-    expect(fixture.root.querySelector('[data-el="reload"]')).toBeNull()
+    await desk.ready; await settle()
+    const document = row(fixture.root, preview.id)
+    expect(document.tagName).toBe("A")
+    expect(document.href).toStartWith("doc.haus://word/open?")
+    expect(document.target).toBe("_blank")
+    expect(document.relList.contains("noopener")).toBe(true)
+    expect(document.textContent).toContain("Open in Word")
+    expect(fixture.root.querySelector('[data-el="back-documents"]')).toBeNull()
     expect(fixture.root.querySelector('[data-el="find-toggle"]')).toBeNull()
-    const noDocumentFind = new fixture.page.KeyboardEvent("keydown", { key: "f", metaKey: true, cancelable: true, bubbles: true })
-    fixture.root.dispatchEvent(noDocumentFind as unknown as Event)
-    expect(noDocumentFind.defaultPrevented).toBe(false)
-    await choose(fixture, preview.id)
-    const reader = element(fixture.root, "right").firstChild
-    const details = element(fixture.root, "right").querySelector("details")!
-    details.open = true
-    const passage = element(fixture.root, "right").querySelector<HTMLElement>(".desk-text")!
-    passage.focus(); passage.scrollTop = 35
-    for (const modifiers of [{ metaKey: true }, { ctrlKey: true }]) {
-      const nativeFind = new fixture.page.KeyboardEvent("keydown", { key: "f", ...modifiers, bubbles: true, cancelable: true })
-      passage.dispatchEvent(nativeFind as unknown as Event)
-      expect(nativeFind.defaultPrevented).toBe(false)
-    }
+    expect(fixture.root.querySelector('[data-el="selection-toggle"]')).toBeNull()
+    expect(element(fixture.root, "right").hidden).toBe(true)
+    expect(calls.some(input => input.action === "source" || input.action === "selection" || input.action === "show")).toBe(false)
+    const original = document.href
+    const click = new fixture.page.MouseEvent("click", { bubbles: true, cancelable: true })
+    document.dispatchEvent(click as unknown as Event)
+    expect(click.defaultPrevented).toBe(false)
+    expect(document.href).toBe(original)
+    await settle()
+    expect(document.href).not.toBe(original)
+    expect(document.textContent).toContain("Opening in Word")
+    expect(calls.filter(input => input.action === "open")).toHaveLength(3)
+  } finally { desk.dispose(); fixture.restore() }
+})
+
+test("only a bounded visible group is prepared and ticket refresh preserves list focus", async () => {
+  const fixture = install(), clock = pollClock(), calls: DeskRequest[] = []
+  let time = 100_000
+  const many = { ...sources, sources: Array.from({ length: 30 }, (_, index) => ({ ...preview, id: String(index + 1), name: `Document ${index + 1}.docx` })) }
+  const desk = mountDesk(fixture.root, { async request(input) { calls.push(input); if (input.action === "sources") return many; if (input.action === "versions") return versions; if (input.action === "compare") return comparison(input.baseVersion, input.currentVersion); return handoff() } }, { close() {}, schedulePoll: clock.schedulePoll, now: () => time })
+  try {
+    await desk.ready; await settle()
+    expect(calls.filter(input => input.action === "open")).toHaveLength(12)
+    const focused = row(fixture.root, "1")
+    focused.focus()
     const mutations: unknown[] = []
     const observer = new fixture.page.MutationObserver(records => mutations.push(...records))
     observer.observe(fixture.page.document.getElementById("desk-root")!, { subtree: true, attributes: true, childList: true, characterData: true })
     try {
       await clock.tick()
       expect(mutations).toHaveLength(0)
-      const added = { ...second, id: "new", name: "New document.docx" }
-      current = { ...sources, sources: [{ ...preview, hash: "f".repeat(64), version: { id: "latest", number: 2, createdAt: savedAt + 60_000 } }, second, added] }
-      await clock.tick()
-      expect(element(fixture.root, "right").firstChild).toBe(reader)
-      expect(details.open).toBe(true)
-      expect(document.activeElement).toBe(passage)
-      expect(passage.scrollTop).toBe(35)
-      expect(element(fixture.root, "right").textContent).toContain(preview.hash)
-      expect(calls.filter(input => input.action === "source")).toHaveLength(1)
-      button(fixture.root, "back-documents").click()
-      expect(fixture.root.querySelector('[data-source="one"]')?.textContent).toContain("Updated")
-      expect(fixture.root.querySelector('[data-source="new"]')?.textContent).toContain("New")
+      time += 31_000; await clock.tick(); await settle()
+      expect(calls.filter(input => input.action === "open")).toHaveLength(24)
+      expect(document.activeElement).toBe(focused)
+      for (const modifiers of [{ metaKey: true }, { ctrlKey: true }]) {
+        const nativeFind = new fixture.page.KeyboardEvent("keydown", { key: "f", ...modifiers, bubbles: true, cancelable: true })
+        focused.dispatchEvent(nativeFind as unknown as Event)
+        expect(nativeFind.defaultPrevented).toBe(false)
+      }
       await desk.setView("compare")
       expect(clock.scheduled).toBe(false)
-      const count = calls.length; await clock.tick(); expect(calls).toHaveLength(count)
     } finally { observer.disconnect() }
   } finally { desk.dispose(); fixture.restore() }
 })
 
-test("a revised file with a new registry ID updates the same focused row and opens the latest identity", async () => {
+test("a revised registry identity preserves the focused link and prepares its latest ID and hash", async () => {
   const fixture = install(), clock = pollClock(), calls: DeskRequest[] = []
-  const revised = { ...preview, id: "registered-replacement", hash: "f".repeat(64), version: { id: "latest", number: 2, createdAt: savedAt + 60_000 }, text: "Updated saved wording.", blocks: undefined }
+  const revised = { ...preview, id: "replacement", hash: "f".repeat(64), version: { id: "latest", number: 2, createdAt: savedAt + 60_000 } }
   let catalog = sources
-  const desk = mountDesk(fixture.root, { async request(input) {
-    calls.push(input)
-    if (input.action === "sources") return catalog
-    if (input.action === "source") return revised
-    throw new Error("Unexpected action")
-  } }, { close() {}, schedulePoll: clock.schedulePoll })
+  const desk = mountDesk(fixture.root, { async request(input) { calls.push(input); return input.action === "sources" ? catalog : handoff() } }, { close() {}, schedulePoll: clock.schedulePoll })
   try {
-    await desk.ready
-    const row = fixture.root.querySelector<HTMLButtonElement>('[data-source="one"]')!
-    row.focus()
-    catalog = { ...sources, sources: [revised, second] }
-    await clock.tick()
-    expect(fixture.root.querySelector('[data-source="registered-replacement"]')).toBe(row)
-    expect(document.activeElement).toBe(row)
-    expect(row.querySelector(".desk-update-badge")?.textContent).toBe("Updated")
-    expect(row.textContent).toContain("Version 2")
-    expect(fixture.root.querySelector('[data-source="one"]')).toBeNull()
-    row.click(); await settle()
-    expect(calls.filter(input => input.action === "source")).toEqual([{ action: "source", sourceId: revised.id, expectedHash: revised.hash }])
-    expect(element(fixture.root, "right").textContent).toContain(revised.text)
-    button(fixture.root, "back-documents").click()
-    expect(document.activeElement).toBe(row)
-    expect(row.querySelector(".desk-update-badge")).toBeNull()
+    await desk.ready; await settle()
+    const original = row(fixture.root, preview.id), oldHref = original.href
+    original.focus()
+    catalog = { ...sources, sources: [revised, second, { ...second, id: "new", name: "New file.docx" }] }
+    await clock.tick(); await settle()
+    expect(row(fixture.root, revised.id)).toBe(original)
+    expect(document.activeElement).toBe(original)
+    expect(original.querySelector(".desk-update-badge")?.textContent).toBe("Updated")
+    expect(row(fixture.root, "new").querySelector(".desk-update-badge")?.textContent).toBe("New")
+    expect(original.href).not.toBe(oldHref)
+    expect(calls.filter(input => input.action === "open")).toContainEqual({ action: "open", sourceId: revised.id, expectedHash: revised.hash })
+  } finally { desk.dispose(); fixture.restore() }
+})
+
+test("intersection visibility prepares only visible documents with one request at a time", async () => {
+  const fixture = install(), first = deferred<ReturnType<typeof handoff>>()
+  let notify!: (entries: { target: Element; isIntersecting: boolean }[]) => void
+  let opens = 0, active = 0, maximum = 0, disconnected = false
+  class VisibleObserver {
+    constructor(run: typeof notify) { notify = run }
+    observe() {}
+    unobserve() {}
+    disconnect() { disconnected = true }
+  }
+  Object.defineProperty(fixture.page, "IntersectionObserver", { configurable: true, value: VisibleObserver })
+  const desk = mountDesk(fixture.root, { async request(input) {
+    if (input.action === "sources") return sources
+    opens++; active++; maximum = Math.max(maximum, active)
+    const value = opens === 1 ? await first.promise : handoff()
+    active--; return value
+  } }, { close() {} })
+  try {
+    await desk.ready; await settle()
+    expect(opens).toBe(0)
+    notify([{ target: row(fixture.root, preview.id), isIntersecting: true }, { target: row(fixture.root, second.id), isIntersecting: true }])
+    await settle(); expect(opens).toBe(1)
+    first.resolve(handoff()); await settle()
+    expect(opens).toBe(2)
+    expect(maximum).toBe(1)
+    desk.dispose(); expect(disconnected).toBe(true)
+  } finally { first.resolve(handoff()); desk.dispose(); fixture.restore() }
+})
+
+test("late preparation cannot restore an outdated link or resurrect a disposed pane", async () => {
+  for (const dispose of [false, true]) {
+    const fixture = install(), clock = pollClock(), pending = deferred<ReturnType<typeof handoff>>()
+    let catalog = { ...sources, sources: [preview] }, opens = 0
+    const old = handoff()
+    const desk = mountDesk(fixture.root, { async request(input) { if (input.action === "sources") return catalog; return ++opens === 1 ? pending.promise : handoff() } }, { close() {}, schedulePoll: clock.schedulePoll })
+    try {
+      await desk.ready
+      if (dispose) desk.dispose()
+      else { catalog = { ...sources, sources: [{ ...preview, id: "latest", hash: "f".repeat(64) }] }; await clock.tick() }
+      pending.resolve(old); await settle()
+      if (dispose) expect(fixture.root.querySelectorAll("a")).toHaveLength(0)
+      else {
+        expect(row(fixture.root, "latest").getAttribute("href")).not.toBe(old.uri)
+        await clock.tick(); await settle()
+        expect(row(fixture.root, "latest").href).toStartWith("doc.haus://word/open?")
+      }
+    } finally { desk.dispose(); fixture.restore() }
+  }
+})
+
+test("preparation failures stay visible on the document and retry without a popup or busy pane", async () => {
+  const fixture = install(), clock = pollClock()
+  let time = 100_000, failed = true, opens = 0
+  const desk = mountDesk(fixture.root, { async request(input) { if (input.action === "sources") return { ...sources, sources: [preview] }; opens++; if (failed) throw new Error("Offline"); return handoff() } }, { close() {}, schedulePoll: clock.schedulePoll, now: () => time })
+  try {
+    await desk.ready; await settle()
+    const document = row(fixture.root, preview.id)
+    expect(document.hasAttribute("href")).toBe(false)
+    expect(document.textContent).toContain("Could not prepare Word")
+    expect(fixture.root.getAttribute("aria-busy")).toBe("false")
+    expect(element(fixture.root, "status").hidden).toBe(true)
+    await clock.tick(); expect(opens).toBe(1)
+    failed = false; time += 5_001; await clock.tick(); await settle()
+    expect(document.href).toStartWith("doc.haus://word/open?")
+  } finally { desk.dispose(); fixture.restore() }
+})
+
+test("other file formats remain discoverable with an explicit doc.haus link", async () => {
+  const fixture = install(), calls: DeskRequest[] = []
+  const matterUrl = "http://localhost:5274/matter/synthetic-matter?view=documents"
+  const desk = mountDesk(fixture.root, { async request(input) { calls.push(input); return { ...sources, matterUrl, sources: [{ ...preview, name: "Instructions.pdf" }] } } }, { close() {} })
+  try {
+    await desk.ready; await settle()
+    expect(row(fixture.root, preview.id).href).toBe(matterUrl)
+    expect(row(fixture.root, preview.id).textContent).toContain("Open in doc.haus")
+    expect(calls.map(input => input.action)).toEqual(["sources"])
   } finally { desk.dispose(); fixture.restore() }
 })
 
 test("background polling serializes requests, pauses while hidden, retries quietly and disposes pending work", async () => {
   const fixture = install(), clock = pollClock(), pending = deferred<DeskSources>()
   let reads = 0, failing = false
-  const desk = mountDesk(fixture.root, { async request() {
+  const desk = mountDesk(fixture.root, { async request(input) {
+    if (input.action === "open") return handoff()
     reads++
     if (reads === 2) return pending.promise
     if (failing) throw new Error("Disconnected")
@@ -328,21 +339,6 @@ test("setView preserves intent during a pending document request and disposal pr
   } finally { reader.dispose(); next.restore() }
 })
 
-test("a failed document read can retry the same list item and success stays quiet", async () => {
-  const fixture = install()
-  let fail = true
-  const desk = mountDesk(fixture.root, { async request(input) { if (input.action === "sources") return sources; if (fail) throw new Error("This saved document is unavailable."); return { ...preview, text: "<script>not markup</script>", blocks: undefined } } }, { close() {} })
-  try {
-    await desk.ready; await choose(fixture, preview.id)
-    expect(element(fixture.root, "status").textContent).toContain("unavailable")
-    expect(element(fixture.root, "document-list").hidden).toBe(false)
-    fail = false; await choose(fixture, preview.id)
-    expect(element(fixture.root, "right").textContent).toContain("<script>not markup</script>")
-    expect(element(fixture.root, "right").querySelector("script")).toBe(null)
-    expect(element(fixture.root, "status").hidden).toBe(true)
-  } finally { desk.dispose(); fixture.restore() }
-})
-
 test("unknown and larger saved pairs require one explicit Compare action", async () => {
   for (const bytes of [undefined, 2 * 1024 * 1024]) {
     const fixture = install(), calls: DeskRequest[] = []
@@ -392,6 +388,7 @@ test("real pane and floating child preserve read-only views and stay terminal af
   globalThis.fetch = (async (input, init) => {
     const url = String(input); calls.push(url)
     if (url.endsWith("/sources")) return ++documentReads === 1 ? initial.promise : pending.promise
+    if (url.endsWith("/open")) return Response.json(handoff())
     if (url.endsWith("/versions")) return Response.json(versions)
     if (url.endsWith("/compare")) { const body = JSON.parse(String(init?.body)); return Response.json(comparison(body.baseVersion, body.currentVersion)) }
     throw new Error("Unexpected Word request")
@@ -403,10 +400,10 @@ test("real pane and floating child preserve read-only views and stay terminal af
     initial.resolve(Response.json(sources)); await settle()
     expect(fixture.root.hidden).toBe(false)
     expect(fixture.root.querySelector<HTMLElement>(".desk-head")!.hidden).toBe(true)
-    expect(calls).toEqual([`${ORIGIN}/word/desk/sources`])
+    expect(calls.filter(url => !url.endsWith("/open"))).toEqual([`${ORIGIN}/word/desk/sources`])
     document.getElementById("compare-tab")!.click(); await settle()
     expect(document.getElementById("compare-tab")!.getAttribute("aria-selected")).toBe("true")
-    expect(calls.slice(1)).toEqual([`${ORIGIN}/word/desk/versions`, `${ORIGIN}/word/desk/compare`])
+    expect(calls.filter(url => !url.endsWith("/open")).slice(1)).toEqual([`${ORIGIN}/word/desk/versions`, `${ORIGIN}/word/desk/compare`])
     expect(element(fixture.root, "right").textContent).toContain("Version 2 → Version 3")
     document.getElementById("open-desk-window")!.click(); await settle()
     const url = new URL(bridge.openedUrl)
@@ -437,17 +434,18 @@ test("real pane and floating child preserve read-only views and stay terminal af
   } finally { pending.resolve(Response.json(sources)); fixture.restore(); globalThis.fetch = previousFetch }
 })
 
-test("unsupported wider windows preserve the pane reader and its open snapshot", async () => {
+test("unsupported wider windows preserve prepared native document links", async () => {
   const fixture = install(await Bun.file(new URL("../pane.html", import.meta.url)).text()), previousFetch = globalThis.fetch
   officeBridge(fixture.page, false)
-  globalThis.fetch = (async (input) => String(input).endsWith("/sources") ? Response.json(sources) : Response.json(preview)) as typeof fetch
+  globalThis.fetch = (async input => String(input).endsWith("/sources") ? Response.json(sources) : Response.json(handoff())) as typeof fetch
   try {
-    setupSourceDesk(link); await settle(); await choose(fixture, preview.id)
-    const hash = element(fixture.root, "right").textContent
-    document.getElementById("open-desk-window")!.click(); await settle()
-    expect(document.getElementById("desk-message")!.textContent).toContain("Continue in this pane")
-    expect(element(fixture.root, "right").textContent).toBe(hash)
+    setupSourceDesk(link); await settle()
+    const document = row(fixture.root, preview.id), href = document.href
+    document.focus()
+    globalThis.document.getElementById("open-desk-window")!.click(); await settle()
+    expect(globalThis.document.getElementById("desk-message")!.textContent).toContain("Continue in this pane")
+    expect(row(fixture.root, preview.id)).toBe(document)
+    expect(document.href).toBe(href)
     expect(fixture.root.hidden).toBe(false)
-    expect((document.getElementById("open-desk-window") as HTMLButtonElement).disabled).toBe(false)
   } finally { fixture.restore(); globalThis.fetch = previousFetch }
 })

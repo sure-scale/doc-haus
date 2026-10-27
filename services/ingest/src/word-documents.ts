@@ -14,12 +14,12 @@ import { DeliverableConflictError } from "./deliverable"
 import { SourceDocumentConflictError } from "./ingest"
 import { wordHttpsConfiguration } from "./word-configuration"
 import { wordHttpsAvailable, wordHttpsFailure } from "./word-https"
-import { installWordSourceDesk } from "./word-source-desk"
+import { installWordSourceDesk, readDeskSource } from "./word-source-desk"
 import { WordOpenTickets, wordOpenPath, wordOpenResultPath } from "./word-open-tickets"
 import { readWordHandout, writeWordHandout, type WordHandoutIdentity } from "./word-handouts"
 
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-export const wordTokenPath = (pathname: string) => /^\/word\/(saves|heartbeat|done|lease|latest|desk\/(sources|source|versions|compare))$/.test(pathname)
+export const wordTokenPath = (pathname: string) => /^\/word\/(saves|heartbeat|done|lease|latest|desk\/(sources|source|versions|compare|open))$/.test(pathname)
 
 export function wordConfiguration() {
   const failure = wordHttpsFailure()
@@ -70,7 +70,7 @@ export async function wordCors(c: Context, next: () => Promise<void>) {
 
 export function wordDocumentRoutes(deps: Dependencies) {
   const app = new Hono()
-  const tickets = new WordOpenTickets<{ identity: WordHandoutIdentity; tokenHash: string; name: string; previousOwner?: WordLeaseOwner }>()
+  const tickets = new WordOpenTickets<{ identity: WordHandoutIdentity; tokenHash: string; name: string; previousOwner?: WordLeaseOwner; requestedBy?: { tokenHash: string; sourceId: string } }>()
   app.use("/word/open/*", async (c, next) => {
     c.header("Cache-Control", "no-store")
     c.header("Referrer-Policy", "no-referrer")
@@ -95,7 +95,7 @@ export function wordDocumentRoutes(deps: Dependencies) {
   app.get("/word/config", c => c.json(wordConfiguration()))
 
   function sendHandout(c: Context, native: boolean, matter: Matter, target: { name: string },
-    current: NonNullable<ReturnType<typeof readCurrentVersion>>, plain: Buffer, browserOrigin: string, apiOrigin: string, previousOwner?: WordLeaseOwner) {
+    current: NonNullable<ReturnType<typeof readCurrentVersion>>, plain: Buffer, browserOrigin: string, apiOrigin: string, previousOwner?: WordLeaseOwner, requestedBy?: { tokenHash: string; sourceId: string }) {
     const identity: WordHandoutIdentity = { origin: browserOrigin, apiOrigin,
       matter: matter.id, document: current.document.id, baseVersion: current.current.id }
     const db = openDb(matter.dir)
@@ -117,7 +117,7 @@ export function wordDocumentRoutes(deps: Dependencies) {
       }
     } finally { db.close() }
     if (native) {
-      const { nonce, id } = tickets.issue({ identity, tokenHash, name: target.name, ...(previousOwner ? { previousOwner } : {}) })
+      const { nonce, id } = tickets.issue({ identity, tokenHash, name: target.name, ...(previousOwner ? { previousOwner } : {}), ...(requestedBy ? { requestedBy } : {}) })
       c.header("Cache-Control", "no-store")
       return c.json({ uri: `doc.haus://word/open?source=${encodeURIComponent(`${apiOrigin}/word/open/${nonce}`)}`, id })
     }
@@ -186,6 +186,44 @@ export function wordDocumentRoutes(deps: Dependencies) {
       return sendHandout(c, true, live.matter, live.target, current, Buffer.from(stripWordLink(readFileSync(live.target.docPath))), browserOrigin as string, config.origin, previousOwner)
     })
   })
+  app.post("/word/desk/open", async c => {
+    const auth = authenticate(c)
+    if (!auth) return failure(c, 401, "word_link_revoked", "This Word connection is no longer valid. Reopen the document from doc.haus.")
+    c.header("Cache-Control", "no-store")
+    const text = await c.req.text()
+    let input: Record<string, unknown> | undefined
+    try {
+      const value: unknown = text.length <= 2048 ? JSON.parse(text) : undefined
+      if (value && typeof value === "object" && !Array.isArray(value)) input = value as Record<string, unknown>
+    } catch { /* Reject malformed identifiers without selecting a document. */ }
+    if (!input || Object.keys(input).length !== 3 || Object.keys(input).some(key => !["sourceId", "expectedHash", "origin"].includes(key)) ||
+      typeof input.sourceId !== "string" || !/^[1-9]\d{0,14}$/.test(input.sourceId) ||
+      typeof input.expectedHash !== "string" || !/^[a-f0-9]{64}$/.test(input.expectedHash))
+      return failure(c, 400, "invalid_desk_open", "Choose an identified matter document from the list.")
+    const { sourceId, expectedHash, origin } = input
+    try {
+      const url = new URL(typeof origin === "string" ? origin : "")
+      if (!/^https?:$/.test(url.protocol) || url.origin !== origin || url.username || url.password) throw new Error()
+    } catch { return failure(c, 400, "invalid_word_origin", "Provide a valid doc.haus browser origin.") }
+    const selected = readDeskSource(auth, sourceId)
+    if (!selected || selected.hash !== expectedHash) return failure(c, 409, "desk_source_changed", "This document changed or is unavailable. Refresh the document list and choose it again.")
+    if (!selected.name.toLowerCase().endsWith(".docx")) return failure(c, 400, "word_requires_docx", "Choose a Word document from this matter.")
+    const target = readDocumentTarget(auth.matter.dir, selected.name)
+    if (!target) return failure(c, 409, "desk_source_changed", "This document is no longer available.")
+    return withArtifactMutationLocksAsync(auth.matter.dir, deps.locks(auth.matter.dir, target.docPath), async () => {
+      const live = authenticate(c)
+      if (!live || live.matter.id !== auth.matter.id || live.grant.token_hash !== auth.grant.token_hash) return failure(c, 401, "word_link_revoked", "This Word connection is no longer valid.")
+      const after = readDeskSource(live, sourceId)
+      const current = readCurrentVersion(live.matter.dir, target.name)
+      if (!after || after.name !== target.name || after.hash !== expectedHash || !current || after.version?.id !== current.current.id)
+        return failure(c, 409, "desk_source_changed", "This document changed while opening. Refresh the document list and choose it again.")
+      const config = wordConfiguration()
+      if (!config.available || !config.origin) return failure(c, 503, "word_unavailable", config.reason ?? "Word is not configured.")
+      // Opening a matter document creates only a native handout. Existing Word
+      // content, editing leases and save sessions remain untouched.
+      return sendHandout(c, true, live.matter, target, current, Buffer.from(stripWordLink(readFileSync(target.docPath))), origin as string, config.origin, undefined, { tokenHash: live.grant.token_hash, sourceId })
+    })
+  })
   app.post("/matters/:id/documents/word", handout(false))
   app.post("/matters/:id/documents/word/open", handout(true))
   app.get("/matters/:id/documents/word/open/status", c => {
@@ -241,7 +279,10 @@ export function wordDocumentRoutes(deps: Dependencies) {
       const current = readCurrentVersion(matter.dir, target.name)
       const db = openDb(matter.dir)
       try {
-        const valid = current?.document.id === ticket.identity.document && current.current.id === ticket.identity.baseVersion &&
+        const requester = ticket.requestedBy ? authenticateToken(ticket.requestedBy.tokenHash, ticket.identity.apiOrigin) : undefined
+        const selected = requester && ticket.requestedBy ? readDeskSource(requester, ticket.requestedBy.sourceId) : undefined
+        const allowed = !ticket.requestedBy || (requester?.matter.id === ticket.identity.matter && selected?.name === target.name && selected.version?.id === ticket.identity.baseVersion)
+        const valid = allowed && current?.document.id === ticket.identity.document && current.current.id === ticket.identity.baseVersion &&
           current.current.sha256 === sha256Hex(readFileSync(target.docPath)) && Boolean(getDocumentRole(db, target.docPath))
         const cached = valid ? readWordHandout(matter.dir, ticket.identity, hash => hash === ticket.tokenHash && Boolean(db.query(`SELECT token_hash FROM word_grants
           WHERE token_hash = ? AND document_id = ? AND origin = ? AND issued_version = ? AND revoked_at IS NULL`)
@@ -302,12 +343,14 @@ export function wordDocumentRoutes(deps: Dependencies) {
   function authenticate(c: Context) {
     const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(c.req.header("Authorization") ?? "")
     if (!match) return
-    const hash = digest(match[1])
+    return authenticateToken(digest(match[1]), c.req.header("Origin"))
+  }
+  function authenticateToken(hash: string, origin: string | undefined) {
     for (const matter of deps.matters()) {
       const db = openDb(matter.dir)
       try {
         const grant = db.query("SELECT * FROM word_grants WHERE token_hash = ?").get(hash) as WordGrant | null
-        if (grant && !grant.revoked_at && grant.origin === c.req.header("Origin")) {
+        if (grant && !grant.revoked_at && grant.origin === origin) {
           const issued = readVersion(matter.dir, grant.issued_version)
           if (!issued || issued.version.removed || issued.document.removed_at != null || issued.document.id !== grant.document_id) return
           const target = readDocumentTarget(matter.dir, issued.document.name)
