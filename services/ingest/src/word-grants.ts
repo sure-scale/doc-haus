@@ -3,7 +3,8 @@ import { createWordEditLeaseTable } from "../../../dochaus/lib/word-edit-lease"
 
 /** Linked-document capabilities share the existing per-matter registry, never
  * a second document/version store. They allow the document's guarded writes
- * and the Source Desk's scoped matter reads. Only a SHA-256 digest persists. */
+ * and the Source Desk's scoped matter reads. Only a SHA-256 digest persists in
+ * this registry; protected transport DOCX copies retain their embedded link. */
 export function createWordGrantTables(db: Database) {
   createWordEditLeaseTable(db)
   db.run(`CREATE TABLE IF NOT EXISTS word_grants (

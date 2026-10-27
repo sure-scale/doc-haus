@@ -520,6 +520,7 @@ describe("confirmed Word saves", () => {
       immediate,
     )
     expect(await sync.save()).toBe(false)
+    expect(sync.snapshot().connectionFailed).toBe(true)
     statuses.length = 0
     bytes = 2
     available = true
@@ -531,6 +532,7 @@ describe("confirmed Word saves", () => {
     expect(await retried).toBe(true)
     expect(sync.snapshot().acknowledgement?.fingerprint).toBe("2")
     expect(sync.snapshot().status).toBe("saved")
+    expect(sync.snapshot().connectionFailed).toBeUndefined()
   })
 
   test("Done does not close or reclaim its released lease if edits arrive during the request", async () => {

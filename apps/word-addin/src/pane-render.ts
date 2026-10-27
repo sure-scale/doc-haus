@@ -1,8 +1,20 @@
 import type { PaneState } from "./sync"
 import { savePresentation } from "./pane-presentation"
+import { WORD_LAUNCH_URL, loopbackWordOrigin } from "./bootstrap-contract"
 
 function update<T, K extends keyof T>(target: T, key: K, value: T[K]): void {
   if (target[key] !== value) target[key] = value
+}
+
+/** Recovery launches the app without unloading the pane's pending save queue. */
+export function configureConnectionRecovery(document: Document, origin: string) {
+  const open = document.getElementById("open-dochaus") as HTMLAnchorElement
+  const local = loopbackWordOrigin(origin)
+  open.hidden = !local
+  if (local) open.href = WORD_LAUNCH_URL
+  document.getElementById("connection-help")!.textContent = local
+    ? " Keep this pane open. Once doc.haus is running, choose Save or Check status."
+    : "Check that your doc.haus server is running, then choose Save or Check status here. Keep this pane open."
 }
 
 /** Update only changed DOM values; importing this module never starts Office. */
@@ -35,6 +47,7 @@ export function createPaneRenderer(document: Document) {
     update(takeover, "disabled", state.busy)
     update(release, "hidden", connection?.lease.state !== "owned")
     update(release, "disabled", state.busy)
+    update(element("connection-recovery"), "hidden", !state.connectionFailed || state.busy)
     return view.primary
   }
 }

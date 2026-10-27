@@ -3,7 +3,10 @@ import { createHash } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { renderManifest } from "../../../apps/word-addin/src/manifest"
+import { WORD_ADDIN_VERSION } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_BOOTSTRAP_ORIGIN, WORD_HEALTH_PATH } from "../../../apps/word-addin/src/bootstrap-contract"
 import { wordHttpsConfiguration, type WordHttpsConfiguration } from "./word-configuration"
+import { wordOpenPath, wordOpenResultPath } from "./word-open-tickets"
 
 type Fetch = (request: Request) => Response | Promise<Response>
 const assets = fileURLToPath(new URL("../../../apps/word-addin/dist/", import.meta.url))
@@ -47,6 +50,30 @@ export function wordHttpsFailure() { return startupFailure }
 export function wordHttpsHandler(fetch: Fetch, configuration: WordHttpsConfiguration, directory = assets): Fetch {
   return async request => {
     const url = new URL(request.url)
+    if (wordOpenPath(url.pathname) || wordOpenResultPath(url.pathname)) {
+      if (request.headers.has("Origin")) return new Response("Origin refused", { status: 403 })
+      if (request.method !== (wordOpenResultPath(url.pathname) ? "POST" : "GET")) return new Response("Method not allowed", { status: 405 })
+      return fetch(request)
+    }
+    if (url.pathname === WORD_HEALTH_PATH) {
+      // Only the public holding page may read this across origins. This does
+      // not widen the bearer-only Word commands or expose the ordinary API.
+      const origin = request.headers.get("Origin")
+      if (origin && origin !== WORD_BOOTSTRAP_ORIGIN && origin !== configuration.origin)
+        return new Response("Origin refused", { status: 403 })
+      const headers = new Headers({ "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "Vary": "Origin" })
+      if (origin) headers.set("Access-Control-Allow-Origin", origin)
+      if (!["GET", "HEAD", "OPTIONS"].includes(request.method))
+        return new Response("Method not allowed", { status: 405, headers })
+      if (request.method === "OPTIONS") {
+        headers.set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+        return new Response(null, { status: 204, headers })
+      }
+      const ready = wordPaneBuilt(directory)
+      headers.set("Content-Type", "application/json; charset=utf-8")
+      return new Response(request.method === "HEAD" ? null : JSON.stringify({ ready, version: WORD_ADDIN_VERSION }),
+        { status: ready ? 200 : 503, headers })
+    }
     if (tokenRoutes.has(url.pathname)) {
       if (request.method !== "POST" && request.method !== "OPTIONS") return new Response("Method not allowed", { status: 405 })
       return fetch(request)

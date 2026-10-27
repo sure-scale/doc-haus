@@ -150,6 +150,9 @@ fi
 
 # The pane is served by this installation; rebuild it after dependency/update changes.
 "$BUN_BIN" run --cwd apps/word-addin build
+# Existing installations receive updated protocol handlers without another
+# installer run. A desktop integration problem must not stop the product.
+"$BUN_BIN" run scripts/desktop-launcher.ts --startup || true
 if [ "${DOCHAUS_SETUP_WORD_ADDIN:-}" = 1 ]; then
   "$BUN_BIN" run scripts/setup-word-addin.ts --offer || echo "doc.haus: Word setup can be retried with bun scripts/setup-word-addin.ts" >&2
   unset DOCHAUS_SETUP_WORD_ADDIN

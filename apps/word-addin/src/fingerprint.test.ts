@@ -276,6 +276,7 @@ test("numeric metadata comparison preserves duplicate leaves, extensions, unknow
 })
 
 const word2010 = "http://schemas.microsoft.com/office/word/2010/wordml"
+const separatorSpacing = '<w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>'
 const notePart = (kind: "footnote" | "endnote", paragraphId: string, extra = "", textId = "77777777") =>
   `<w:${kind}s xmlns:w="${word}" xmlns:w14="${word2010}"><w:${kind} w:type="separator" w:id="-1"><w:p w14:paraId="${paragraphId}" w14:textId="${textId}"><w:r><w:separator/></w:r>${extra}</w:p></w:${kind}><w:${kind} w:type="continuationSeparator" w:id="0"><w:p w14:paraId="${paragraphId}" w14:textId="${textId}"><w:r><w:continuationSeparator/></w:r></w:p></w:${kind}></w:${kind}s>`
 
@@ -302,6 +303,49 @@ test("Word may regenerate paragraph IDs on boilerplate note separators without c
     expect(await documentFingerprint(fixture("00000002", reference(2)))).not.toBe(
       await documentFingerprint(fixture("00000001", reference(1))),
     )
+  }
+  expect(original).toEqual(copy)
+})
+
+test("formatted note separators retain spacing while Word regenerates their paragraph IDs", async () => {
+  const formatted = (kind: "footnote" | "endnote", id: string, properties = separatorSpacing) =>
+    notePart(kind, id).replaceAll("<w:r>", `${properties}<w:r>`)
+  const fixture = (id: string, properties = separatorSpacing, content = run("Neutral text.")) => zipSync({
+    "word/document.xml": strToU8(document(content)),
+    "word/footnotes.xml": strToU8(formatted("footnote", id, properties)),
+    "word/endnotes.xml": strToU8(formatted("endnote", id, properties)),
+  })
+  const original = fixture("00000001")
+  const copy = original.slice()
+  const baseline = await documentFingerprint(original)
+  expect(await documentFingerprint(fixture("00000002"))).toBe(baseline)
+  for (const properties of [
+    separatorSpacing.replace('w:after="0"', 'w:after="120"'),
+    separatorSpacing.replace('w:line="240"', 'w:line="360"'),
+    separatorSpacing.replace('w:lineRule="auto"', 'w:lineRule="exact"'),
+  ]) expect(await documentFingerprint(fixture("00000002", properties))).not.toBe(baseline)
+  for (const content of [
+    run("Changed text."),
+    run("Neutral text.", "<w:rPr><w:b/></w:rPr>"),
+    '<w:ins w:id="1" w:author="Synthetic reviewer">' + run("Neutral text.") + "</w:ins>",
+    '<w:commentRangeStart w:id="1"/>' + run("Neutral text.") + '<w:commentRangeEnd w:id="1"/>',
+    run("Neutral text.") + '<w:r><w:footnoteReference w:id="1"/></w:r>',
+    run("Neutral text.") + '<w:r><w:endnoteReference w:id="1"/></w:r>',
+  ]) expect(await documentFingerprint(fixture("00000002", separatorSpacing, content))).not.toBe(baseline)
+  for (const kind of ["footnote", "endnote"] as const) {
+    const hash = (xml: string) => documentFingerprint(zipSync({ [`word/${kind}s.xml`]: strToU8(xml) }))
+    const first = formatted(kind, "00000001")
+    const second = formatted(kind, "00000002")
+    expect(await hash(first)).not.toBe(await hash(second.replace('w:id="-1"', 'w:id="-2"')))
+    for (const transform of [
+      (xml: string) => xml.replaceAll(' w:type="separator"', '').replaceAll(' w:type="continuationSeparator"', ''),
+      (xml: string) => xml.replace("<w:r>", '<w:commentRangeStart w:id="1"/><w:r>'),
+      (xml: string) => xml.replace("<w:separator/>", "<w:separator/><w:t>Custom separator</w:t>"),
+      (xml: string) => xml.replace("<w:pPr>", '<w:pPr w:unknown="preserved">'),
+      (xml: string) => xml.replace("</w:pPr>", '<w:unknown w:val="preserved"/></w:pPr>'),
+      (xml: string) => xml.replace("</w:pPr>", '<w:pPrChange w:id="1"><w:pPr/></w:pPrChange></w:pPr>'),
+      (xml: string) => xml.replace('w:after="0"', 'w:after="0" w:unknown="preserved"'),
+    ]) expect(await hash(transform(first))).not.toBe(await hash(transform(second)))
   }
   expect(original).toEqual(copy)
 })

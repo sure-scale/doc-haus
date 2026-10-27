@@ -149,6 +149,25 @@ export function stripWordLink(bytes: Uint8Array) {
   return strip(parts) ? pack(parts) : bytes
 }
 
+/** Reads only this add-in's embedded link using the same bounded package/XML
+ * validation as saves. Callers still validate the returned link and receiver. */
+export function readWordLink(bytes: Uint8Array): unknown {
+  const owned: Document[] = []
+  for (const [name, part] of Object.entries(readPackage(bytes))) {
+    if (!name.endsWith(".xml")) continue
+    const doc = xml(part)
+    if (doc.documentElement.namespaceURI !== WE || doc.documentElement.localName !== "webextension") continue
+    if (elements(doc, WE, "reference").some(node => node.getAttribute("id")?.replace(/[{}]/g, "").toLowerCase() === WORD_ADDIN_ID) ||
+      elements(doc, WE, "property").some(node => node.getAttribute("name") === WORD_LINK_SETTING)) owned.push(doc)
+  }
+  if (!owned.length) return null
+  if (owned.length !== 1) throw new WordPackageError("The Word file contains ambiguous doc.haus links.")
+  const properties = elements(owned[0]!, WE, "property").filter(node => node.getAttribute("name") === WORD_LINK_SETTING)
+  if (properties.length !== 1) throw new WordPackageError("The Word file must contain one doc.haus link.")
+  try { return JSON.parse(properties[0]!.getAttribute("value") ?? "") }
+  catch { throw new WordPackageError("The Word file contains an invalid doc.haus link.") }
+}
+
 export function linkedWordDocx(bytes: Uint8Array, link: WordDocumentLink) {
   const parts = readPackage(bytes)
   strip(parts)

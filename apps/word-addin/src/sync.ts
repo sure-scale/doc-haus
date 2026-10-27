@@ -40,6 +40,7 @@ export type PaneState = {
   /** Presentation only: version equality does not verify the current Word text. */
   content: "unverified" | "changed" | "confirmed"
   problem?: boolean
+  connectionFailed?: boolean
 }
 type Pending = { bytes: Uint8Array; fingerprint: string; base: string; generation: string }
 
@@ -115,7 +116,7 @@ export class WordSync {
     return { ...this.state }
   }
 
-  private show(status: PaneState["status"], message: string, problem = false): void {
+  private show(status: PaneState["status"], message: string, problem = false, connectionFailed = false): void {
     this.state = {
       status,
       message,
@@ -125,6 +126,7 @@ export class WordSync {
       canSave: this.canSave(),
       content: this.content,
       problem,
+      ...(connectionFailed ? { connectionFailed: true } : {}),
     }
     this.render(this.snapshot())
   }
@@ -153,6 +155,7 @@ export class WordSync {
           "not-saved",
           error instanceof ConnectionError && this.connection && !this.canWrite() ? this.blockedMessage() : message,
           true,
+          error instanceof ConnectionError && error.retryable,
         )
         return false
       } finally {

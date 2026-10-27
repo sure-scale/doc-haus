@@ -83,7 +83,7 @@ export default function WordAddin({ onBusy }: { onBusy?: (busy: boolean) => void
     </div>
     {status?.status === "external" && status.manifestUrl && <p><a href={status.manifestUrl} download="doc-haus-word.xml">Download Word add-in</a></p>}
     <details><summary>Opening a document in Word</summary>
-      <p>In a matter, choose Open in Word and open the downloaded copy. For an ordinary Word file, add it to the matter first. Keep doc.haus running while using the add-in.</p>
+      <p>In a matter, choose Open in Word. Allow your browser to open doc.haus if asked; it opens the linked document in desktop Word. For an ordinary Word file, add it to the matter first. Keep doc.haus running while using the add-in.</p>
       {status?.origin && <p className="settings-hint muted">Connection: {status.origin}</p>}
     </details>
   </section>

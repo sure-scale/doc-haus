@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react"
-import { fetchWordConfig, fetchWordDocuments, linkedWordDocument, recoverWordEditing, type WordConfig, type WordOpenDocument } from "../api/ingest/word"
+import { fetchWordConfig, fetchWordDocuments, fetchWordOpenState, linkedWordDocument, prepareWordOpen, recoverWordEditing, type WordConfig, type WordOpenDocument } from "../api/ingest/word"
 import { humanizeError } from "../api/ingest/errors"
 import { useToast } from "./Toast"
 import { useOpenSettings } from "./settings/navigation"
@@ -171,15 +171,51 @@ export function WordSetup() {
 
 export function WordOpenControl({ matterId, name, disabled = false, compact = false }: { matterId: string; name: string; disabled?: boolean; compact?: boolean }) {
   const { config, setupError, documents, refresh } = useContext(WordDocuments)
-  const [busy, setBusy] = useState<"open" | "release" | "takeover">()
+  const [busy, setBusy] = useState<"open" | "download" | "release" | "takeover">()
+  const [fallback, setFallback] = useState(false)
+  const opening = useRef<AbortController | undefined>(undefined)
   const [recovery, setRecovery] = useState<{ action: "release" | "takeover"; document: WordOpenDocument }>()
+  useEffect(() => {
+    setBusy(undefined); setFallback(false); setRecovery(undefined)
+    return () => opening.current?.abort()
+  }, [matterId, name])
   const toast = useToast()
   if (!/\.docx$/i.test(name)) return null
   const status = documents.find((entry) => entry.name === name)
   const locked = status?.lease?.state === "other"
   const available = config?.available && !setupError
   async function open() {
+    if (!config?.origin) return
+    opening.current?.abort()
+    const controller = new AbortController()
+    opening.current = controller
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20000)])
     setBusy("open")
+    setFallback(false)
+    try {
+      const handoff = await prepareWordOpen(matterId, name, window.location.origin, config.origin, signal)
+      const a = document.createElement("a")
+      a.href = handoff.uri
+      try { a.click() } catch { throw new Error("Your browser could not open doc.haus. Try again or download a Word copy below.") }
+      for (;;) {
+        signal.throwIfAborted()
+        const state = await fetchWordOpenState(matterId, handoff.id, signal)
+        if (state === "completed") {
+          refresh()
+          toast("success", "Sent to Word. Keep doc.haus running while you work.")
+          return
+        }
+        if (state === "failed" || state === "expired") throw new Error("Word could not be opened automatically. Try again or download a Word copy below.")
+        await new Promise(resolve => window.setTimeout(resolve, 500))
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return
+      setFallback(true)
+      toast("warning", signal.aborted ? "If Word did not open, allow your browser to open doc.haus, try again, or download a Word copy below." : humanizeError(error, `Could not open ${name} in Word.`))
+    } finally { if (!controller.signal.aborted) setBusy(undefined) }
+  }
+  async function download() {
+    setBusy("download")
     try {
       const bytes = await linkedWordDocument(matterId, name, window.location.origin)
       const url = URL.createObjectURL(bytes)
@@ -189,7 +225,7 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
       a.click()
       window.setTimeout(() => URL.revokeObjectURL(url), 1000)
       refresh()
-      toast("success", `Open the downloaded ${name} in Word. Use Save to doc.haus in its pane and wait for confirmation before closing.`)
+      toast("success", `Open the downloaded ${name} in Word. Choose Save in the doc.haus pane before closing.`)
     } catch (error) {
       toast("error", humanizeError(error, `Could not open ${name} in Word.`))
     } finally { setBusy(undefined) }
@@ -211,9 +247,10 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
     } finally { setBusy(undefined) }
   }
   return <span className={`word-controls${compact ? " is-compact" : ""}`}>
-    {available ? <button type="button" className={compact ? "linklike word-open" : "word-open"} onClick={open} disabled={disabled || busy !== undefined} aria-label={`Open ${name} in Word`} title="Download a linked copy to open in Word">
-      {busy === "open" ? "Preparing Word copy…" : "Open in Word"}
+    {available ? <button type="button" className={compact ? "linklike word-open" : "word-open"} onClick={open} disabled={disabled || busy !== undefined} aria-label={`Open ${name} in Word`} title="Open an editable linked copy in desktop Word">
+      {busy === "open" ? "Opening Word…" : "Open in Word"}
     </button> : <span className="word-unavailable" title={wordSetupReason(config, setupError)}>{config || setupError ? "Word setup needed" : "Checking Word…"}</span>}
+    {available && fallback && <button type="button" className="linklike" onClick={download} disabled={disabled || busy !== undefined}>{busy === "download" ? "Downloading…" : "Download Word copy"}</button>}
     {locked && <>
       <button type="button" className="linklike" disabled={busy !== undefined || disabled} onClick={() => setRecovery(status ? { action: "takeover", document: status } : undefined)}>Take over editing</button>
       <button type="button" className="linklike" disabled={busy !== undefined || disabled} onClick={() => setRecovery(status ? { action: "release", document: status } : undefined)}>Release Word lock</button>

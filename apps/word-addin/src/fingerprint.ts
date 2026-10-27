@@ -246,6 +246,25 @@ function normalizeSeparatorParagraphIds(name: string, root: Element): boolean {
         )
       ) continue
       const runs = children(paragraph)
+      const properties = runs[0] as Element | undefined
+      if (properties?.nodeType === 1 && properties.namespaceURI === namespace && properties.localName === "pPr") {
+        const values = children(properties)
+        const spacing = values[0] as Element | undefined
+        if (
+          properties.attributes.length || values.length !== 1 || spacing?.nodeType !== 1 ||
+          spacing.namespaceURI !== namespace || spacing.localName !== "spacing" || spacing.childNodes.length ||
+          !Array.from(spacing.attributes).every(
+            (attribute) => attribute.namespaceURI === namespace && (
+              attribute.localName === "lineRule"
+                ? ["auto", "exact", "atLeast"].includes(attribute.value)
+                : ["after", "line"].includes(attribute.localName) && /^\d+$/.test(attribute.value)
+            ),
+          )
+        ) continue
+        // Keep these conventional spacing properties in the comparison; only
+        // the regenerated paragraph ID is unrelated to separator formatting.
+        runs.shift()
+      }
       const run = runs[0] as Element | undefined
       if (
         runs.length !== 1 || run?.nodeType !== 1 || run.namespaceURI !== namespace || run.localName !== "r" || run.attributes.length

@@ -4,6 +4,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, rea
 import path from "node:path"
 import { strFromU8, unzipSync } from "fflate"
 import { canonicalArtifactIdentity } from "../../../dochaus/capabilities/artifacts/mutation-lock"
+import { purgeWordHandouts } from "./word-handouts"
 
 // Document versions (#268, phase 1). A document is the logical file ("the
 // services agreement") with a stable id; a version is the exact bytes a doc.haus
@@ -358,9 +359,16 @@ export function detachVersionedDocument(db: Database, matterDir: string, name: s
  * redaction removed (and any a failed write left). After the write that marked
  * them commits, under the document's artifact lock, or at startup. Returns how
  * many entries it deleted; throws when one cannot be deleted. */
-export function purgeVersionBytes(matterDir: string, documentId: string) {
+export function purgeVersionBytes(matterDir: string, documentId: string, preserveCurrentHandout = false) {
+  // A startup sweep revisits old redaction rows forever. Preserve a later
+  // current transport identity, deriving its base only from the live registry.
+  const currentBase = preserveCurrentHandout ? readStore(matterDir, db => (db.query(
+    `SELECT v.id FROM versioned_documents d JOIN document_versions v ON v.id = d.current_version
+     WHERE d.id = ? AND d.removed_at IS NULL AND v.removed IS NULL`,
+  ).get(documentId) as { id: string } | null)?.id, undefined) : undefined
+  const handouts = purgeWordHandouts(matterDir, documentId, currentBase)
   const directory = path.join(matterDir, ".dochaus", "revisions", documentId)
-  if (!existsSync(directory)) return 0
+  if (!existsSync(directory)) return handouts
   const kept = new Set(readStore(matterDir, (db) => (db.query(
     `SELECT v.sha256 || v.ext AS file FROM document_versions v JOIN versioned_documents d ON d.id = v.document_id
      WHERE v.document_id = ? AND v.removed IS NULL AND d.removed_at IS NULL`,
@@ -369,11 +377,11 @@ export function purgeVersionBytes(matterDir: string, documentId: string) {
   if (!kept.size) {
     rmSync(directory, { recursive: true, force: true })
     syncDirectory(path.dirname(directory))
-    return entries.length + 1
+    return handouts + entries.length + 1
   }
   for (const entry of entries) rmSync(path.join(directory, entry), { recursive: true, force: true })
   if (entries.length) syncDirectory(directory)
-  return entries.length
+  return handouts + entries.length
 }
 
 /** At startup, before any write: deletes what a purge left (one that failed,
@@ -385,7 +393,7 @@ export function sweepRemovedVersionBytes(matterDir: string) {
     `SELECT id FROM versioned_documents WHERE removed_at IS NOT NULL
      UNION SELECT document_id AS id FROM document_versions WHERE removed IS NOT NULL`,
   ).all() as { id: string }[]).map((row) => row.id), [] as string[])
-  return ids.reduce((deleted, id) => deleted + purgeVersionBytes(matterDir, id), 0)
+  return ids.reduce((deleted, id) => deleted + purgeVersionBytes(matterDir, id, true), 0)
 }
 
 // Reads open legal.db read-only, so a read never creates or migrates it.
