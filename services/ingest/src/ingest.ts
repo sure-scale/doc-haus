@@ -22,6 +22,7 @@ import { parseMsg } from "../../../dochaus/lib/msg"
 import { safeFileName } from "../../../dochaus/lib/safe-file-name"
 import { zipToText } from "../../../dochaus/lib/zip"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
+import { assertWordEditAllowed, type WordLeaseOwner } from "../../../dochaus/lib/word-edit-lease"
 import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./document-identity"
 import { captureVersion, stageVersionBytes, trackedChanges, trackedChangesNotice, type CapturedVersion, type VersionOrigin, type VersionWrite } from "./document-versions"
 import {
@@ -87,6 +88,7 @@ export async function ingestDocument(
     // file the lawyer brought in (an upload, an email and its attachments, a
     // zip's files), and a replace choice over an existing file makes it a replace.
     version?: IngestVersion
+    wordLeaseOwner?: WordLeaseOwner
   } = {},
 ) {
   const { existing = "refuse" } = options
@@ -141,6 +143,7 @@ async function ingestDocumentLocked(
     extracted?: ExtractedSourceText
     links?: DocumentLinks
     version?: IngestVersion
+    wordLeaseOwner?: WordLeaseOwner
   },
 ) {
   const recovery = await recoverDocumentMutations(matterDir)
@@ -148,6 +151,7 @@ async function ingestDocumentLocked(
   const target = sourceDocumentTarget(matterDir, requestedName)
   const fileName = target.name
   const docPath = target.docPath
+  assertWordEditAllowed(matterDir, docPath, options.wordLeaseOwner)
   const registry = openDb(matterDir)
   const role = getDocumentRole(registry, docPath)
   registry.close()

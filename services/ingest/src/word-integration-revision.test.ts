@@ -15,6 +15,10 @@ import { scriptedLeanModel } from "../../../dochaus/workflows/lean/test-support"
 import { getDocumentRole, listSourceDocuments, openDb } from "./db"
 import { leanDraftingStatus } from "./lean-drafting"
 import { registerLeanDeliverable } from "./lean-deliverables"
+import { readCurrentVersion } from "./document-versions"
+import { createWordGrantTables } from "./word-grants"
+import { claimWordEditLease, releaseWordEditLease } from "../../../dochaus/lib/word-edit-lease"
+import { recordRedlineProposal } from "../../../dochaus/lib/redlines"
 
 // The word-integration tool's replace saves through ingest's revision route, so
 // an edited source is re-indexed, a deliverable keeps its role and pointers, a
@@ -101,6 +105,71 @@ const replace = (directory: string, document: string, find: string, replacement:
   wordIntegration.execute({ document, action: "replace", find, replace: replacement }, context(directory))
 
 const documentXml = (bytes: Uint8Array) => strFromU8(unzipSync(bytes)["word/document.xml"]!)
+
+test("Word ownership protects HTTP bytes, history and proposal decisions while reads remain available", async () => {
+  const matter = await newMatter("Word editing ownership")
+  const name = "Owned.docx"
+  const file = path.join(matter.dir, name)
+  await register(matter.route, "documents", name, await docx("Original wording stays available."))
+  const originalVersion = readCurrentVersion(matter.dir, name)!.current.id
+  const revision = async (text: string) => {
+    const form = new FormData()
+    form.append("file", new File([await docx(text)], name))
+    return request(`${matter.route}/documents/revisions`, { method: "POST", body: form })
+  }
+  expect((await revision("Current wording stays available.")).status).toBe(200)
+  const before = readFileSync(file)
+  const proposal = recordRedlineProposal(matter.dir, { docPath: file, docName: name, scope: "phrase",
+    findText: "Current wording", oldText: "Current wording", newText: "Reviewed wording", author: "Synthetic reviewer",
+    reviewComment: "Review the proposed wording.", anchorId: "owned-paragraph" }).id
+  const current = readCurrentVersion(matter.dir, name)!
+  const db = openDb(matter.dir)
+  const indexBefore = db.query("SELECT text FROM chunks ORDER BY chunk_index").all()
+  const eventsBefore = db.query("SELECT * FROM document_version_events ORDER BY id").all()
+  let owner: ReturnType<typeof claimWordEditLease>
+  try {
+    createWordGrantTables(db)
+    db.run("INSERT INTO word_grants (token_hash,document_id,origin,issued_version,created_at) VALUES (?,?,?,?,?)",
+      ["synthetic-token-digest", current.document.id, "https://localhost:4511", current.current.id, Date.now()])
+    owner = claimWordEditLease(db, { document: current.document.id, tokenHash: "synthetic-token-digest", session: "synthetic-word-pane" })
+  } finally { db.close() }
+  for (const route of ["content", "text", "versions"])
+    expect((await request(`${matter.route}/documents/${route}?name=${name}`)).status).toBe(200)
+  expect((await revision("Refused replacement.")).status).toBe(423)
+  const forged = new FormData()
+  forged.append("file", new File([await docx("Forged owner replacement.")], name))
+  expect((await request(`${matter.route}/documents/revisions`, { method: "POST", body: forged,
+    headers: { "x-dochaus-word-lease": owner!.generation, "x-dochaus-word-session": owner!.session } })).status).toBe(423)
+  const tool = await replace(matter.dir, name, "Current wording", "Unsent tool wording")
+  expect(tool).toBeString()
+  expect(tool as string).toContain("423")
+  const mutations = [
+    [`${matter.route}/documents?name=${name}`, "DELETE"],
+    [`${matter.route}/redlines/${proposal}/accept`, "POST"],
+    [`${matter.route}/redlines/${proposal}/reject`, "POST"],
+    [`${matter.route}/redlines/accept-all?name=${name}`, "POST"],
+    [`${matter.route}/redlines/reject-all?name=${name}`, "POST"],
+    [`${matter.route}/documents/versions/${originalVersion}/restore`, "POST"],
+    [matter.route, "DELETE"],
+  ] as const
+  for (const [route, method] of mutations) {
+    const response = await request(route, { method })
+    expect(response.status).toBe(423)
+    expect(await response.json()).toMatchObject({ code: "word_document_locked" })
+  }
+  expect(readFileSync(file)).toEqual(before)
+  const unchanged = openDb(matter.dir)
+  try {
+    expect(unchanged.query("SELECT status FROM redlines WHERE id=?").get(proposal)).toEqual({ status: "pending" })
+    expect(unchanged.query("SELECT COUNT(*) AS n FROM document_versions").get()).toEqual({ n: 2 })
+    expect(unchanged.query("SELECT text FROM chunks ORDER BY chunk_index").all()).toEqual(indexBefore)
+    expect(unchanged.query("SELECT * FROM document_version_events ORDER BY id").all()).toEqual(eventsBefore)
+    releaseWordEditLease(unchanged, owner!)
+  } finally { unchanged.close() }
+  expect((await revision("Replacement after releasing Word ownership.")).status).toBe(200)
+  expect((await request(`${matter.route}/redlines/${proposal}/reject`, { method: "POST" })).status).toBe(200)
+  expect((await request(matter.route, { method: "DELETE" })).status).toBe(200)
+}, 120_000)
 
 test("an edited source is re-indexed, so matter search returns the new wording and not the old", async () => {
   const matter = await newMatter("Word edit source")

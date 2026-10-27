@@ -8,7 +8,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { openDb } from "./db"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { linkedWordDocx } from "../../../dochaus/lib/word-linked-docx"
-import { WORD_ADDIN_VERSION, WORD_LINK_SETTING, type WordDocumentLink, type WordSaveResponse } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_ADDIN_VERSION, WORD_LINK_SETTING, type WordDocumentLink, type WordSaveResponse, type WordConnectionState, type WordLeaseAction } from "../../../dochaus/lib/word-addin-contract"
 
 const paneOrigin = "https://localhost:47612"
 const browserOrigin = "http://localhost:5190"
@@ -44,11 +44,28 @@ async function handout(name: string) {
   return { bytes, link: readLink(bytes) }
 }
 const tokenHeaders = (link: WordDocumentLink, extra: Record<string, string> = {}) => ({ Origin: paneOrigin, Authorization: `Bearer ${link.token}`, "x-dochaus-word-version": WORD_ADDIN_VERSION, ...extra })
+const owners = new Map<string, { session: string; generation: string }>()
+async function lease(link: WordDocumentLink, action: WordLeaseAction, session = "session-test-0001", baseVersion = link.baseVersion,
+  expected: { expectedCurrent?: string; expectedGeneration?: string } = {}) {
+  const response = await request("/word/lease", { method: "POST", headers: tokenHeaders(link, { "content-type": "application/json",
+    "x-dochaus-word-session": session, ...(owners.has(link.token) ? { "x-dochaus-word-lease": owners.get(link.token)!.generation } : {}) }),
+    body: JSON.stringify({ action, baseVersion, ...expected }) })
+  return response
+}
+async function claim(link: WordDocumentLink, session = "session-test-0001", baseVersion = link.baseVersion) {
+  const response = await lease(link, "claim", session, baseVersion)
+  expect(response.status).toBe(200)
+  const state = await response.json() as WordConnectionState
+  expect(state.lease.state).toBe("owned")
+  owners.set(link.token, { session, generation: state.lease.generation! })
+  return state
+}
 const save = (link: WordDocumentLink, bytes: Uint8Array, baseVersion = link.baseVersion, extra: Record<string, string> = {}) => request("/word/saves", {
-  method: "POST", headers: tokenHeaders(link, { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "x-dochaus-word-base-version": baseVersion, ...extra }), body: new Uint8Array(bytes),
+  method: "POST", headers: tokenHeaders(link, { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "x-dochaus-word-base-version": baseVersion,
+    "x-dochaus-word-session": owners.get(link.token)?.session ?? "session-test-0001", "x-dochaus-word-lease": owners.get(link.token)?.generation ?? "", ...extra }), body: new Uint8Array(bytes),
 })
-const ping = (link: WordDocumentLink, session: string, done = false) => request(done ? "/word/done" : "/word/heartbeat", {
-  method: "POST", headers: tokenHeaders(link, { "x-dochaus-word-session": session }),
+const ping = (link: WordDocumentLink, session: string, done = false, baseVersion = link.baseVersion, generation = owners.get(link.token)?.generation ?? "") => request(done ? "/word/done" : "/word/heartbeat", {
+  method: "POST", headers: tokenHeaders(link, { "x-dochaus-word-session": session, "x-dochaus-word-lease": generation, "x-dochaus-word-base-version": baseVersion }),
 })
 const status = async () => (await (await route("/documents/word")).json() as { documents: { name: string; open: boolean; currentVersion: string; overlap: boolean }[] }).documents
 const history = async (name: string) => await (await route(`/documents/versions?${query(name)}`)).json() as {
@@ -105,6 +122,7 @@ test("handout links the current exact document; hash-only grants survive restart
   expect((await request(`/matters/${matter.id}/documents/content?${query("Identity.docx")}`, { headers: tokenHeaders(link) })).status).toBe(403)
   expect((await route(`/documents?${query("Identity.docx")}`, { method: "DELETE", headers: tokenHeaders(link) })).status).toBe(403)
   const other = await handout("Other.docx")
+  await claim(link, "session-one-0001")
   const invalidParent = await save(link, await plain("Wrong parent attempt."), other.link.baseVersion)
   expect([invalidParent.status, (await invalidParent.json() as { code: string }).code]).toEqual([409, "word_base_invalid"])
   expect((await ping(link, "session-one-0001")).status).toBe(200)
@@ -135,37 +153,64 @@ test("token endpoints require the exact configured pane origin on success, error
   expect(malformed.headers.get("Access-Control-Allow-Origin")).toBe(paneOrigin)
 })
 
-test("Word branches keep both versions, caller parents, actor and heartbeat overlap; retries do not revert later work", async () => {
+test("one owner saves current ancestry; stale writes, lost-ACK retries and takeovers cannot revert work", async () => {
   await create("Branches.docx")
   const { link } = await handout("Branches.docx")
-  await ping(link, "session-first-0001")
-  await ping(link, "session-second-0002")
-  expect((await status()).find(document => document.name === "Branches.docx")).toMatchObject({ open: true, overlap: true })
-  await ping(link, "session-second-0002", true)
+  const initial = await claim(link, "session-first-0001")
+  const other = await lease(link, "claim", "session-second-0002")
+  expect(other.status).toBe(423)
+  expect(await other.json()).toMatchObject({ version: { state: "current" }, lease: { state: "other", generation: initial.lease.generation } })
+  expect((await status()).find(document => document.name === "Branches.docx")).toMatchObject({ open: true, overlap: false })
   const firstBytes = linkedWordDocx(await plain("First Word edit.", "Synthetic lawyer one"), link)
   const first = await save(link, firstBytes)
   expect(first.status).toBe(200)
   const firstSave = await first.json() as WordSaveResponse
-  expect(firstSave).toMatchObject({ version: { number: 2, parent: link.baseVersion, created: true }, overlap: false })
-  expect(await (await save(link, firstBytes)).json()).toMatchObject({ version: { id: firstSave.version.id, created: false }, overlap: false })
+  expect(firstSave).toMatchObject({ version: { number: 2, parent: link.baseVersion, created: true }, overlap: false,
+    connection: { version: { base: { id: expect.any(String) }, state: "current" }, lease: { state: "owned" } } })
+  // An exact current export confirms a lost ACK with its original caller base.
+  expect(await (await save(link, firstBytes)).json()).toMatchObject({ version: { id: firstSave.version.id, created: false } })
   expect(readWorkingDocx(matter.dir, "Branches.docx")).toBeDefined()
-  const second = await save(link, await plain("Parallel Word edit.", "Synthetic lawyer two"))
+  const stale = await save(link, await plain("Stale edit must stay local."))
+  expect(stale.status).toBe(409)
+  expect(await stale.json()).toMatchObject({ code: "word_base_stale", version: { state: "stale", current: { id: firstSave.version.id } } })
+  const staleDone = await ping(link, "session-first-0001", true)
+  expect(staleDone.status).toBe(409)
+  expect(await staleDone.json()).toMatchObject({ version: { state: "stale" }, lease: { state: "owned", generation: initial.lease.generation } })
+  const second = await save(link, await plain("Current next edit.", "Synthetic lawyer two"), firstSave.version.id)
   expect(second.status).toBe(200)
   const secondSave = await second.json() as WordSaveResponse
-  expect(secondSave).toMatchObject({ version: { number: 3, parent: link.baseVersion, created: true }, overlap: true })
-  const retried = await save(link, firstBytes)
-  expect(await retried.json()).toMatchObject({ version: { id: firstSave.version.id, created: false }, overlap: true })
-  const versions = await history("Branches.docx")
-  expect(versions.versions.map(row => [row.number, row.origin, row.actor, row.parent])).toEqual([
-    [3, "word", "Synthetic lawyer two", link.baseVersion], [2, "word", "Synthetic lawyer one", link.baseVersion], [1, "generated", "unknown", null],
+  expect(secondSave).toMatchObject({ version: { number: 3, parent: firstSave.version.id, created: true }, overlap: false })
+  expect((await save(link, firstBytes)).status).toBe(409)
+  expect((await history("Branches.docx")).versions.map(row => [row.number, row.origin, row.actor, row.parent])).toEqual([
+    [3, "word", "Synthetic lawyer two", firstSave.version.id], [2, "word", "Synthetic lawyer one", link.baseVersion], [1, "generated", "unknown", null],
   ])
+  const staleTakeover = await lease(link, "takeover", "session-second-0002", link.baseVersion, {
+    expectedCurrent: secondSave.version.id, expectedGeneration: initial.lease.generation })
+  expect(staleTakeover.status).toBe(409)
+  const wrongCAS = await lease(link, "takeover", "session-second-0002", secondSave.version.id, {
+    expectedCurrent: secondSave.version.id, expectedGeneration: "wrong-generation" })
+  expect(wrongCAS.status).toBe(409)
+  const taken = await lease(link, "takeover", "session-second-0002", secondSave.version.id, {
+    expectedCurrent: secondSave.version.id, expectedGeneration: initial.lease.generation })
+  expect(taken.status).toBe(200)
+  const state = await taken.json() as WordConnectionState
+  expect(state.lease.generation).not.toBe(initial.lease.generation)
+  for (const done of [false, true]) {
+    const fenced = await ping(link, "session-first-0001", done, secondSave.version.id)
+    expect(fenced.status).toBe(423)
+    expect(await fenced.json()).toMatchObject({ version: { state: "current" }, lease: { state: "other", generation: state.lease.generation } })
+  }
+  const fencedSave = await save(link, await plain("Fenced write."), secondSave.version.id)
+  expect(fencedSave.status).toBe(423)
+  expect(await fencedSave.json()).toMatchObject({ version: { state: "current" }, lease: { state: "other", generation: state.lease.generation } })
+  owners.set(link.token, { session: "session-second-0002", generation: state.lease.generation! })
+  expect((await ping(link, "session-second-0002", true, secondSave.version.id)).status).toBe(200)
+  // Done is repeatable only until a replacement generation exists.
+  expect((await ping(link, "session-second-0002", true, secondSave.version.id)).status).toBe(200)
   const current = new Uint8Array(await (await route(`/documents/content?${query("Branches.docx")}`)).arrayBuffer())
-  expect(strFromU8(unzipSync(current)["word/document.xml"])).toContain("Parallel Word edit.")
+  expect(strFromU8(unzipSync(current)["word/document.xml"])).toContain("Current next edit.")
   expect(Object.values(unzipSync(current)).map(bytes => strFromU8(bytes)).join("\n")).not.toContain(link.token)
-  const row = (await status()).find(document => document.name === "Branches.docx")
-  expect(row).toMatchObject({ currentVersion: secondSave.version.id, overlap: true })
-  await ping(link, "session-first-0001", true)
-  expect((await status()).find(document => document.name === "Branches.docx")?.open).toBe(false)
+  expect((await status()).find(document => document.name === "Branches.docx")).toMatchObject({ currentVersion: secondSave.version.id, open: false, overlap: false })
 })
 
 test("deleting and recreating the filename does not revive a token; stale copies cannot restore redacted text", async () => {
@@ -182,32 +227,43 @@ test("deleting and recreating the filename does not revive a token; stale copies
   const stale = await save(current.link, await plain("New document identity."))
   expect(stale.status).toBe(401)
   const fresh = await handout("Lifecycle.docx")
+  await claim(fresh.link)
   expect((await save(fresh.link, await plain("Preserves [REDACTED], with a neutral addition."))).status).toBe(200)
   expect((await history("Lifecycle.docx")).versions.some(row => row.removed === "redaction")).toBe(true)
 })
 
-test("unchanged uploads retain and persist overlap from simultaneous sessions and a stale base", async () => {
-  await create("Unchanged.docx")
-  const { link } = await handout("Unchanged.docx")
-  await ping(link, "unchanged-session-first")
-  await ping(link, "unchanged-session-second")
-  const bytes = new Uint8Array(await readFile(path.join(matter.dir, "Unchanged.docx")))
-  const noChange = await save(link, bytes)
-  expect(await noChange.json()).toMatchObject({ version: { id: link.baseVersion, created: false }, overlap: true })
-  await ping(link, "unchanged-session-first", true)
-  await ping(link, "unchanged-session-second", true)
-  expect((await status()).find(document => document.name === "Unchanged.docx")).toMatchObject({ open: false, overlap: true })
-  const revision = await route("/documents/revisions", { method: "POST", body: file(await plain("An ordinary newer revision."), "Unchanged.docx") })
-  expect(revision.status).toBe(200)
-  const id = (await revision.json() as { version: { id: string } }).version.id
-  const stale = await save(link, new Uint8Array(await readFile(path.join(matter.dir, "Unchanged.docx"))))
-  expect(await stale.json()).toMatchObject({ version: { id, created: false }, overlap: true })
-  expect((await history("Unchanged.docx")).versions).toHaveLength(2)
+test("expiry fences old saves and browser recovery requires displayed current and generation", async () => {
+  await create("Recovery.docx")
+  const { link } = await handout("Recovery.docx")
+  const acquired = await claim(link)
+  const bytes = new Uint8Array(await readFile(path.join(matter.dir, "Recovery.docx")))
+  expect(await (await save(link, bytes)).json()).toMatchObject({ version: { id: link.baseVersion, created: false }, overlap: false })
+  const db = openDb(matter.dir)
+  try { db.run("UPDATE word_edit_leases SET expires_at = 1 WHERE document_id = ?", [link.document]) } finally { db.close() }
+  const expiredHeartbeat = await ping(link, "session-test-0001")
+  expect(expiredHeartbeat.status).toBe(423)
+  expect(await expiredHeartbeat.json()).toMatchObject({ version: { state: "current" }, lease: { state: "available", generation: acquired.lease.generation } })
+  const expiredSave = await save(link, await plain("Expired write."))
+  expect(expiredSave.status).toBe(423)
+  expect(await expiredSave.json()).toMatchObject({ version: { state: "current" }, lease: { state: "available", generation: acquired.lease.generation } })
+  const inspected = await lease(link, "inspect")
+  expect(await inspected.json()).toMatchObject({ version: { state: "current" }, lease: { state: "available", generation: acquired.lease.generation } })
+  const recover = (expectedCurrent: string, expectedGeneration: string | null, action = "release") => route(`/documents/word/recover?${query("Recovery.docx")}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, expectedCurrent, expectedGeneration }) })
+  expect((await recover("stale-version", acquired.lease.generation!)).status).toBe(409)
+  expect((await recover(link.baseVersion, "wrong-generation")).status).toBe(409)
+  expect((await recover(link.baseVersion, acquired.lease.generation!, "takeover")).status).toBe(200)
+  expect((await lease(link, "claim")).status).toBe(401)
+  const fresh = await handout("Recovery.docx")
+  await claim(fresh.link)
+  expect((await save(fresh.link, await plain("Recovered current edit."))).status).toBe(200)
+  expect((await history("Recovery.docx")).versions).toHaveLength(2)
 })
 
 test("a source save reindexes canonical text and ordinary current/history/redlined downloads strip linkage", async () => {
   await create("Source.docx", "The synthetic source begins here.", true)
   const { link } = await handout("Source.docx")
+  await claim(link)
   const saved = await save(link, linkedWordDocx(await plain("The revised synthetic source is now searchable."), link))
   expect(saved.status).toBe(200)
   const body = await saved.json() as WordSaveResponse
@@ -230,6 +286,7 @@ test("a source save reindexes canonical text and ordinary current/history/redlin
 test("tracked Word saves are kept while preserving the existing guard for later document mutation", async () => {
   await create("Tracked.docx")
   const { link } = await handout("Tracked.docx")
+  await claim(link)
   const clean = await save(link, await plain("Clean accepted Word state."))
   expect(clean.status).toBe(200)
   const baseVersion = (await clean.json() as WordSaveResponse).version.id
@@ -237,6 +294,8 @@ test("tracked Word saves are kept while preserving the existing guard for later 
   const tracked = await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph({ children: [new InsertedTextRun({ text: "Pending tracked insertion.", id: 1, author: "Synthetic reviewer", date: "2026-10-26T10:00:00Z" })] })] }] }))
   const response = await save(link, tracked, baseVersion)
   expect(response.status).toBe(200)
+  const trackedAck = await response.json() as WordSaveResponse
+  await ping(link, "session-test-0001", true, trackedAck.version.id)
   expect(readWorkingDocx(matter.dir, "Tracked.docx")).toEqual(accepted)
   const guarded = await route("/documents/revisions", { method: "POST", body: file(await plain("Unbound replacement."), "Tracked.docx") })
   expect(guarded.status).toBe(409)

@@ -7,6 +7,7 @@ import { wordCors, wordDocumentRoutes, wordTokenPath } from "./word-documents"
 import { startWordHttps, wordHttpsHandler } from "./word-https"
 import { wordHttpsConfiguration } from "./word-configuration"
 import { stripWordLink } from "../../../dochaus/lib/word-linked-docx"
+import { assertMatterWordEditsAllowed, assertWordEditAllowed, EditingLeaseError, type WordLeaseWriteOptions } from "../../../dochaus/lib/word-edit-lease"
 import { templateDraftRoutes } from "./template-drafts"
 import { registeredCombinedParts } from "./combined-output"
 import { documentLabelRoutes } from "./document-labels"
@@ -120,6 +121,7 @@ const app = new Hono()
 // A model that cannot load fails only the request that needed it, with a
 // message the web can show; every other error keeps Hono's default handling.
 app.onError((error, c) => {
+  if (error instanceof EditingLeaseError) return c.json({ error: error.message, code: error.code, expiresAt: error.expiresAt }, 423)
   if (error instanceof PreferencesValidationError) return c.json({ error: error.message }, 400)
   if (error instanceof PreferencesUnavailableError) return c.json({ error: error.message }, 503)
   if (error instanceof MatterValidationError) return c.json({ error: error.message }, 400)
@@ -487,9 +489,13 @@ app.post("/matters/:id/conflicts", async (c) => {
   }
 })
 
-app.delete("/matters/:id", (c) => {
-  deleteMatter(c.req.param("id"))
-  return c.json({ ok: true })
+app.delete("/matters/:id", async (c) => {
+  const directory = matterDir(c.req.param("id"))
+  return withArtifactMutationLocksAsync(directory, [".dochaus/source-corpus"], async () => {
+    assertMatterWordEditsAllowed(directory)
+    deleteMatter(c.req.param("id"))
+    return c.json({ ok: true })
+  })
 })
 
 app.get("/matters/:id", async (c) => {
@@ -718,9 +724,9 @@ app.route("/", templateDraftRoutes(matterDir))
 app.route("/", wordDocumentRoutes({
   matter: getMatter, matters: listMatters,
   locks: (directory, file) => [path.basename(file), ...runCombinedLock(directory, file), ".dochaus/source-corpus"],
-  write: async (directory, name, bytes, prior, version) => {
+  write: async (directory, name, bytes, prior, version, wordLeaseOwner) => {
     const combined = await prepareCombinedFile(directory, path.join(directory, name))
-    const written = await writeDocumentRevision(directory, name, bytes, [], prior, false, { version, exact: true, keepTracked: true })
+    const written = await writeDocumentRevision(directory, name, bytes, [], prior, false, { version, exact: true, keepTracked: true, wordLeaseOwner })
     await rebuildCombinedFile(combined)
     return written
   },
@@ -765,6 +771,11 @@ app.post("/matters/:id/documents/revisions", async (c) => {
     // of a part of the run's saved combined file rebuilds that file as an accept
     // does, under the same extra locks (runCombinedLock).
     return await withArtifactMutationLocksAsync(dir, [target.name, ...runCombinedLock(dir, target.docPath), ".dochaus/source-corpus"], async () => {
+      assertWordEditAllowed(dir, target.docPath)
+      if (origin === "redaction") {
+        const related = registeredCombined(dir, target.docPath)
+        if (related) assertWordEditAllowed(dir, related.file)
+      }
       if (readWorkingDocx(dir,target.docPath) && !/^[a-f0-9]{64}$/.test(priorSha256 ?? ""))
         return c.json({error:"Provide the exact current Word hash in x-document-prior-sha256 before replacing an accepted revision."},409)
       // A deliverable's prior hash is checked by its writer; a source's here.
@@ -1294,6 +1305,7 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
   initialDb.close()
   if (!row || row.status !== "pending") return c.json({ error: "Redline not found or already resolved" }, 404)
   return withArtifactMutationLocksAsync(dir, [row.doc_name, ...runRedlineLock(dir, row.doc_path), ...runNotesLock(dir), ...runCombinedLock(dir, row.doc_path), ".dochaus/source-corpus"], async () => {
+    assertWordEditAllowed(dir, row.doc_path)
     const db = openDb(dir)
     const current = getRedline(db, row.id)
     db.close()
@@ -1328,6 +1340,7 @@ app.post("/matters/:id/redlines/:rid/reject", async (c) => {
   initialDb.close()
   if (!row || row.status !== "pending") return c.json({ error: "Redline not found or already resolved" }, 404)
   return withArtifactMutationLocksAsync(dir, [row.doc_name, ...rejectCombinedLock(dir, row.doc_path)], async () => {
+    assertWordEditAllowed(dir, row.doc_path)
     const db = openDb(dir)
     let current: RedlineRow | null
     try {
@@ -1361,6 +1374,7 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
   if (!name) return c.json({ error: "The document filename or extension is not supported." }, 400)
   const file = path.join(dir, name)
   return withArtifactMutationLocksAsync(dir, [name, ...runRedlineLock(dir, file), ...runNotesLock(dir), ...runCombinedLock(dir, file), ".dochaus/source-corpus"], async () => {
+    assertWordEditAllowed(dir, file)
     if (!existsSync(file) || !existsSync(path.join(dir, ".dochaus", "legal.db")))
       return c.json({ ok: true, accepted: 0 })
     const db = openDb(dir)
@@ -1398,6 +1412,7 @@ app.post("/matters/:id/redlines/reject-all", async (c) => {
   if (!name) return c.json({ error: "The document filename or extension is not supported." }, 400)
   const file = path.join(dir, name)
   return withArtifactMutationLocksAsync(dir, [name, ...rejectCombinedLock(dir, file)], async () => {
+    assertWordEditAllowed(dir, file)
     if (!existsSync(path.join(dir, ".dochaus", "legal.db"))) return c.json({ ok: true, rejected: 0 })
     const db = openDb(dir)
     let rows: RedlineRow[]
@@ -1435,8 +1450,9 @@ async function writeDocumentRevision(
   acceptedRedlineIDs: readonly number[] = [],
   priorSha256: string | undefined,
   boundAcceptance: boolean,
-  options: { version: VersionWrite; exact?: boolean; keepTracked?: boolean },
+  options: { version: VersionWrite; exact?: boolean; keepTracked?: boolean } & WordLeaseWriteOptions,
 ) {
+  assertWordEditAllowed(directory, name, options.wordLeaseOwner)
   const { role, bytes } = documentRevisionBytes(directory, name, input, options.exact)
   const existing = readWorkingDocx(directory,name)
   let working: Awaited<ReturnType<typeof acceptedWorkingDocxUpdate>> | undefined
@@ -1453,11 +1469,11 @@ async function writeDocumentRevision(
   const written = role === "deliverable"
     ? await (async () => {
       const written = await writeDeliverableRevision(directory, name, bytes, {
-        updateRegistry, priorSha256, updateWorkingRevision: working, keepWorkingRecord: Boolean(existing) && !working, version: options.version,
+        updateRegistry, priorSha256, updateWorkingRevision: working, keepWorkingRecord: Boolean(existing) && !working, version: options.version, wordLeaseOwner: options.wordLeaseOwner,
       })
       return { ...written, ...versionNotice(written.name, bytes, written.version) }
     })()
-    : await ingestDocument(directory, name, bytes, { existing: "replace", requireExistingSource: true, updateRegistry, version: options.version })
+    : await ingestDocument(directory, name, bytes, { existing: "replace", requireExistingSource: true, updateRegistry, version: options.version, wordLeaseOwner: options.wordLeaseOwner })
   return { ...written, ...(options.version.origin === "redaction" ? purgeRedactedVersions(directory, written.version.document_id, path.basename(name)) : {}) }
 }
 
@@ -1506,7 +1522,7 @@ function proposalRevisionOptions(directory: string, docPath: string): DocxRevisi
 // returned for the accept response, and the run status still discloses the
 // change (changed_after_check). Returns nothing when no addendum applies: the
 // accepted file is not a deliverable body of a completed run.
-type NotesSkipReason = "notes_not_delivered" | "notes_missing" | "notes_not_deliverable" | "pending_notes_proposals" | "write_failed"
+type NotesSkipReason = "notes_not_delivered" | "notes_missing" | "notes_not_deliverable" | "pending_notes_proposals" | "editing_locked" | "write_failed"
 type NotesAddendum = { notes_updated: true } | { notes_updated: false; notes_skip_reason: NotesSkipReason }
 async function recordAcceptedChangesInRunNotes(directory: string, body: string, rows: readonly RedlineRow[]): Promise<NotesAddendum | undefined> {
   if (!rows.length) return
@@ -1549,7 +1565,7 @@ async function recordAcceptedChangesInRunNotes(directory: string, body: string, 
       return { notes_updated: true }
     })
   } catch (error) {
-    return skipped("write_failed", error)
+    return skipped(error instanceof EditingLeaseError ? "editing_locked" : "write_failed", error)
   }
 }
 
@@ -1613,7 +1629,7 @@ function deliveredRedlineName(delivered: NonNullable<ReturnType<typeof delivered
 // stands, and the accept response says whether the redline was rebuilt or why
 // not (logged too). Nothing is returned when the accepted file is no delivered
 // body of a completed run, which has no redline to rebuild.
-type RedlineSkipReason = "redline_not_delivered" | "redline_missing" | "redline_not_deliverable" | "pending_redline_proposals" | "rebuild_failed" | "write_failed"
+type RedlineSkipReason = "redline_not_delivered" | "redline_missing" | "redline_not_deliverable" | "pending_redline_proposals" | "editing_locked" | "rebuild_failed" | "write_failed"
 type RedlineRebuild = { redline_updated: true } | { redline_updated: false; redline_skip_reason: RedlineSkipReason }
 type PreparedRedline = { directory: string; body: string; run: string; name: string; prior: string; bytes: Uint8Array } | RedlineRebuild | undefined
 function redlineSkipped(directory: string, run: string | undefined, reason: RedlineSkipReason, error?: unknown): RedlineRebuild {
@@ -1663,7 +1679,7 @@ async function writeDeliveredRedline(prepared: PreparedRedline): Promise<Redline
       return { redline_updated: true }
     })
   } catch (error) {
-    return redlineSkipped(directory, run, "write_failed", error)
+    return redlineSkipped(directory, run, error instanceof EditingLeaseError ? "editing_locked" : "write_failed", error)
   }
 }
 
@@ -1723,7 +1739,7 @@ function runRedlineLock(directory: string, body: string): string[] {
 // the redline: the accepted body stands, and the response says whether the
 // combined file was rebuilt or why not (logged too). Nothing is returned when no
 // completed run registered a combined file or the change touched neither part.
-type CombinedSkipReason = "combined_missing" | "combined_not_deliverable" | "pending_combined_proposals" | "combined_changed" | "build_refused" | "rebuild_failed" | "write_failed"
+type CombinedSkipReason = "editing_locked" | "combined_missing" | "combined_not_deliverable" | "pending_combined_proposals" | "combined_changed" | "build_refused" | "rebuild_failed" | "write_failed"
 type CombinedRebuild = { combined_updated: true; purge_failed?: string } | { combined_updated: false; combined_skip_reason: CombinedSkipReason }
 type PreparedCombined = { directory: string; accepted: string; file: string; body: string; notes: string; rejected: boolean; redaction: boolean; parts?: string; error?: unknown }
 
@@ -1849,7 +1865,7 @@ async function rebuildCombinedFile(prepared: PreparedCombined | undefined): Prom
       return { combined_updated: true, ...(prepared.redaction ? purgeRedactedVersions(directory, written.version.document_id, file) : {}) }
     })
   } catch (error) {
-    return combinedSkipped(directory, "write_failed", diagnosticErrorMetadata(error))
+    return combinedSkipped(directory, error instanceof EditingLeaseError ? "editing_locked" : "write_failed", diagnosticErrorMetadata(error))
   }
 }
 

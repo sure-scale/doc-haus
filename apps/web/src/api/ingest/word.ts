@@ -33,3 +33,11 @@ export async function revokeWordDocument(matterId: string, name: string): Promis
   const response = await fetch(wordUrl(matterId, name), { method: "DELETE" })
   if (!response.ok) throw new Error(await ingestError(response, `Could not disconnect ${name} from Word`))
 }
+
+export async function recoverWordEditing(matterId: string, document: WordOpenDocument, action: "release" | "takeover"): Promise<void> {
+  const response = await fetch(`${wordUrl(matterId)}/recover?name=${encodeURIComponent(document.name)}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, expectedCurrent: document.currentVersion, expectedGeneration: document.lease?.generation ?? null }),
+  })
+  if (!response.ok) throw new Error(await ingestError(response, "Could not change Word editing ownership"))
+}

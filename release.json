@@ -1,5 +1,5 @@
 {
-  "version": 13,
-  "name": "2.0.11",
-  "notes": "Search within an open document, step through matches and jump straight to a heading. Ask doc.haus to find comparable wording in the matter's documents, with the differences explained and the sources shown. New comments in review tables carry your saved name, including in Excel, Word and CSV exports. Various minor bug fixes."
+  "version": 14,
+  "name": "2.0.12",
+  "notes": "Open a matter document in desktop Word and use Save to doc.haus to keep a confirmed version. Done in Word saves and closes the document. The pane checks its version and holds a recoverable editing lock while you work; doc.haus blocks competing changes, with explicit release and takeover. Background Word sync is best effort."
 }

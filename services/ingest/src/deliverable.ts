@@ -17,6 +17,7 @@ import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { forgetSystemDocx, recordSystemDocx, replaceableDeliverable } from "../../../dochaus/lib/system-docx"
 import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import { captureVersion, stageVersionBytes, type VersionWrite } from "./document-versions"
+import { assertWordEditAllowed, type WordLeaseOwner } from "../../../dochaus/lib/word-edit-lease"
 import {
   beginDocumentMutation,
   completeDocumentMutation,
@@ -55,6 +56,7 @@ export async function writeDeliverable(
       | { kind: "replace"; prior_sha256: string; owned?: boolean }
     system?: boolean
     version?: VersionWrite
+    wordLeaseOwner?: WordLeaseOwner
   } = {},
 ) {
   const name = deliverableDocumentName(fileName)
@@ -62,6 +64,7 @@ export async function writeDeliverable(
   return withArtifactMutationLocksAsync(matterDir, [name, ".dochaus/source-corpus"], async () => {
     await recoverDocumentMutations(matterDir)
     const target = deliverableTarget(matterDir, name)
+    assertWordEditAllowed(matterDir, target.docPath, options.wordLeaseOwner)
     const db = openDb(matterDir, { commit: true })
     try {
       if (getDocumentRole(db, target.docPath) === "source")
@@ -173,6 +176,7 @@ export async function writeDeliverableRevision(
     system?: boolean
     // The writer's provenance; a caller that states none records "unknown".
     version?: VersionWrite
+    wordLeaseOwner?: WordLeaseOwner
   } = {},
 ) {
   const name = deliverableDocumentName(fileName)
@@ -180,6 +184,7 @@ export async function writeDeliverableRevision(
   return withArtifactMutationLocksAsync(matterDir, [name, ".dochaus/source-corpus"], async () => {
     await recoverDocumentMutations(matterDir)
     const target = deliverableTarget(matterDir, name)
+    assertWordEditAllowed(matterDir, target.docPath, options.wordLeaseOwner)
     const db = openDb(matterDir, { commit: true })
     try {
       if (getDocumentRole(db, target.docPath) !== "deliverable")

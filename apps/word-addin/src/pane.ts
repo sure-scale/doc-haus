@@ -8,13 +8,41 @@ const message = element("message")
 const received = element("received")
 const save = element<HTMLButtonElement>("save")
 const done = element<HTMLButtonElement>("done")
+const refresh = element<HTMLButtonElement>("refresh")
+const takeover = element<HTMLButtonElement>("takeover")
+const release = element<HTMLButtonElement>("release")
 
 function render(state: PaneState): void {
   badge.textContent = { "not-saved": "Not saved", saving: "Saving…", saved: "Saved", done: "Saved" }[state.status]
   badge.dataset.state = state.status
   message.textContent = state.message
-  save.disabled = state.busy
-  done.disabled = state.busy || state.status === "done"
+  save.disabled = state.busy || !state.canSave
+  done.disabled = state.busy || !state.canSave || state.status === "done"
+  const connection = state.connection
+  const current = connection?.version.current?.number
+  const base = connection?.version.base?.number
+  element("version-state").textContent = connection
+    ? `This copy: ${base ? `version ${base}` : "unavailable version"}. In doc.haus: ${current ? `version ${current}` : "unavailable"}.`
+    : "Checking version and editing status…"
+  element("editing-state").textContent = !connection
+    ? "Checking editing status…"
+    : connection.lease.state === "owned"
+      ? "You are editing this document."
+      : connection.lease.state === "other"
+        ? "Another editor has this document."
+        : connection.version.state === "current"
+          ? "Editing is available. Save to doc.haus to start."
+          : "Saving is paused for this copy."
+  refresh.disabled = state.busy
+  refresh.textContent =
+    connection?.version.state === "current" && connection.lease.state === "available"
+      ? "Start saving here"
+      : "Check status"
+  takeover.hidden =
+    connection?.version.state !== "current" || connection.lease.state !== "other" || !connection.lease.generation
+  takeover.disabled = state.busy
+  release.hidden = connection?.lease.state !== "owned"
+  release.disabled = state.busy
   if (state.acknowledgement) {
     const time = new Date(state.acknowledgement.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     received.textContent = `doc.haus received version ${state.acknowledgement.number} at ${time}.`
@@ -44,7 +72,7 @@ async function main(): Promise<void> {
     element("matter").textContent = link.matterName
     element("document").textContent = link.documentName
     const back = element<HTMLAnchorElement>("back")
-    back.href = link.origin
+    back.href = `${link.origin}/matter/${encodeURIComponent(link.matter)}`
     back.hidden = false
     let storage: Storage | undefined
     try {
@@ -60,6 +88,15 @@ async function main(): Promise<void> {
     })
     done.addEventListener("click", () => {
       void sync.done()
+    })
+    refresh.addEventListener("click", () => {
+      void sync.refresh()
+    })
+    takeover.addEventListener("click", () => {
+      void sync.takeover()
+    })
+    release.addEventListener("click", () => {
+      void sync.release()
     })
     await sync.start()
     setInterval(() => {

@@ -2,7 +2,8 @@ import { Hono, type Context } from "hono"
 import { createHash, randomBytes } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import { linkedWordDocx, MAX_WORD_UPLOAD_BYTES, stripWordLink, wordLastModifiedBy, WordPackageError } from "../../../dochaus/lib/word-linked-docx"
-import { WORD_ADDIN_VERSION, type WordOpenDocument, type WordSaveResponse } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_ADDIN_VERSION, type WordOpenDocument, type WordSaveResponse, type WordConnectionState } from "../../../dochaus/lib/word-addin-contract"
+import { claimWordEditLease, clearWordEditLease, EditingLeaseError, readWordEditLease, releaseWordEditLease, renewWordEditLease, requireWordEditLease, wordLeaseState, WORD_EDIT_LEASE_TTL, type WordLeaseIdentity, type WordLeaseOwner } from "../../../dochaus/lib/word-edit-lease"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { getDocumentRole, openDb } from "./db"
 import { readDocumentTarget } from "./registered-document"
@@ -15,7 +16,7 @@ import { wordHttpsConfiguration } from "./word-configuration"
 import { wordHttpsFailure } from "./word-https"
 
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-export const wordTokenPath = (pathname: string) => /^\/word\/(saves|heartbeat|done)$/.test(pathname)
+export const wordTokenPath = (pathname: string) => /^\/word\/(saves|heartbeat|done|lease)$/.test(pathname)
 
 export function wordConfiguration() {
   const failure = wordHttpsFailure()
@@ -36,10 +37,10 @@ type Dependencies = {
   matter: (id: string) => Matter
   matters: () => Matter[]
   locks: (directory: string, file: string) => string[]
-  write: (directory: string, name: string, bytes: Buffer, prior: string, version: VersionWrite) => Promise<{ version: CapturedVersion }>
+  write: (directory: string, name: string, bytes: Buffer, prior: string, version: VersionWrite, owner?: WordLeaseOwner) => Promise<{ version: CapturedVersion }>
 }
 const digest = (token: string) => createHash("sha256").update(token).digest("hex")
-const failure = (c: Context, status: 400 | 401 | 403 | 404 | 409 | 410 | 413 | 426 | 503, code: string, error: string) => c.json({ error, code }, status)
+const failure = (c: Context, status: 400 | 401 | 403 | 404 | 409 | 410 | 413 | 423 | 426 | 503, code: string, error: string) => c.json({ error, code }, status)
 const sessionId = (c: Context) => {
   const id = c.req.header("x-dochaus-word-session")
   return id && /^[a-zA-Z0-9-]{8,128}$/.test(id) ? id : null
@@ -54,7 +55,7 @@ export async function wordCors(c: Context, next: () => Promise<void>) {
   c.header("Vary", "Origin")
   if (c.req.method === "OPTIONS") {
     c.header("Access-Control-Allow-Methods", "POST, OPTIONS")
-    c.header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-DocHaus-Word-Base-Version, X-DocHaus-Word-Session, X-DocHaus-Word-Version")
+    c.header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-DocHaus-Word-Base-Version, X-DocHaus-Word-Session, X-DocHaus-Word-Version, X-DocHaus-Word-Lease")
     return c.body(null, 204)
   }
   if (c.req.method !== "POST") return failure(c, 403, "word_method_refused", "The Word connection can only save and report its own editing status.")
@@ -66,9 +67,17 @@ export async function wordCors(c: Context, next: () => Promise<void>) {
 export function wordDocumentRoutes(deps: Dependencies) {
   const app = new Hono()
   app.onError((error, c) => {
+    if (error instanceof EditingLeaseError) {
+      const auth = authenticate(c)
+      return c.json({ error: error.message, code: error.code, expiresAt: error.expiresAt,
+        ...(auth ? connection(auth, c.req.header("x-dochaus-word-base-version") ?? auth.grant.issued_version, sessionId(c)) : {}) }, 423)
+    }
     if (error instanceof WordPackageError) return failure(c, error.status, error.code, error.message)
-    if (error instanceof DeliverableConflictError || error instanceof SourceDocumentConflictError)
-      return failure(c, 409, "word_document_changed", error.message)
+    if (error instanceof DeliverableConflictError || error instanceof SourceDocumentConflictError) {
+      const auth = authenticate(c)
+      return c.json({ error: error.message, code: "word_document_changed",
+        ...(auth ? connection(auth, c.req.header("x-dochaus-word-base-version") ?? auth.grant.issued_version, sessionId(c)) : {}) }, 409)
+    }
     console.error("[word] request failed", { name: error.name })
     return failure(c, 503, "word_save_failed", "The Word connection could not complete this request. Try again after reconnecting.")
   })
@@ -118,12 +127,14 @@ export function wordDocumentRoutes(deps: Dependencies) {
     const matter = deps.matter(c.req.param("id"))
     const db = openDb(matter.dir)
     try {
-      const rows = db.query(`SELECT d.id, d.name, d.current_version, MAX(g.overlap) AS overlap FROM versioned_documents d
-        JOIN word_grants g ON g.document_id = d.id WHERE d.removed_at IS NULL AND g.revoked_at IS NULL GROUP BY d.id`).all() as
-        { id: string; name: string; current_version: string | null; overlap: number }[]
+      const rows = db.query(`SELECT d.id, d.name, d.current_version, v.number, MAX(g.overlap) AS overlap FROM versioned_documents d
+        JOIN word_grants g ON g.document_id = d.id LEFT JOIN document_versions v ON v.id = d.current_version
+        WHERE d.removed_at IS NULL AND g.revoked_at IS NULL GROUP BY d.id`).all() as
+        { id: string; name: string; current_version: string | null; number: number | null; overlap: number }[]
       const documents: WordOpenDocument[] = rows.map(row => {
         const sessions = activeWordSessions(db, row.id)
-        return { name: row.name, open: sessions > 0, currentVersion: row.current_version, overlap: Boolean(row.overlap) || sessions > 1 }
+        return { name: row.name, open: sessions > 0, currentVersion: row.current_version, ...(row.number ? { currentNumber: row.number } : {}),
+          lease: wordLeaseState(db, row.id), overlap: Boolean(row.overlap) || sessions > 1 }
       })
       return c.json({ documents })
     } finally { db.close() }
@@ -138,7 +149,10 @@ export function wordDocumentRoutes(deps: Dependencies) {
     return withArtifactMutationLocksAsync(matter.dir, [target.name], async () => {
       const current = readCurrentVersion(matter.dir, target.name)
       const db = openDb(matter.dir)
-      try { if (current) db.run("UPDATE word_grants SET revoked_at = ? WHERE document_id = ? AND revoked_at IS NULL", [Date.now(), current.document.id]) }
+      try { if (current) db.transaction(() => {
+        db.run("UPDATE word_grants SET revoked_at = ? WHERE document_id = ? AND revoked_at IS NULL", [Date.now(), current.document.id])
+        clearWordEditLease(db, current.document.id)
+      }).immediate() }
       finally { db.close() }
       return c.json({ ok: true })
     })
@@ -162,6 +176,107 @@ export function wordDocumentRoutes(deps: Dependencies) {
       } finally { db.close() }
     }
   }
+  type Authenticated = NonNullable<ReturnType<typeof authenticate>>
+  function identity(auth: Authenticated, session: string): WordLeaseIdentity {
+    return { document: auth.grant.document_id, tokenHash: auth.grant.token_hash, session }
+  }
+  function owner(auth: Authenticated, session: string, c: Context): WordLeaseOwner {
+    const generation = c.req.header("x-dochaus-word-lease") ?? ""
+    if (!generation) throw new EditingLeaseError("Check editing status and acquire this document's Word editing session before saving.")
+    return { ...identity(auth, session), generation }
+  }
+  function connection(auth: Authenticated, base: string, session: string | null): WordConnectionState {
+    const parent = readVersion(auth.matter.dir, base)
+    const belongs = parent?.document.id === auth.grant.document_id
+    const current = readCurrentVersion(auth.matter.dir, auth.target.name)
+    const currentMatches = current?.document.id === auth.grant.document_id
+    const removed = Boolean(belongs && (parent.version.removed || parent.document.removed_at != null))
+    const unrecorded = !currentMatches || !existsSync(auth.target.docPath) || current.current.sha256 !== sha256Hex(readFileSync(auth.target.docPath))
+    const db = openDb(auth.matter.dir)
+    try { return {
+      version: {
+        base: belongs ? { id: parent.version.id, number: parent.version.number } : null,
+        current: currentMatches ? { id: current.current.id, number: current.current.number } : null,
+        state: removed ? "removed" : unrecorded ? "unrecorded-change" : base === current.current.id ? "current" : "stale",
+      }, lease: wordLeaseState(db, auth.grant.document_id, session ? identity(auth, session) : undefined),
+    } } finally { db.close() }
+  }
+  function requireCurrent(c: Context, state: WordConnectionState) {
+    if (state.version.state === "removed")
+      return c.json({ error: "This Word copy predates a redaction. Keep your local file and reopen the redacted document from doc.haus.", code: "removed_by_redaction", ...state }, 410)
+    if (state.version.state === "unrecorded-change")
+      return c.json({ error: "The matter's file changed outside its recorded version. Keep your local Word file and refresh the document in doc.haus before continuing.", code: "word_document_changed", ...state }, 409)
+    if (state.version.state !== "current")
+      return c.json({ error: "This Word copy is behind the current doc.haus version. Keep your local file and compare or reopen the current copy before saving.", code: "word_base_stale", ...state }, 409)
+  }
+  app.post("/word/lease", async c => {
+    const auth = authenticate(c)
+    if (!auth) return failure(c, 401, "word_link_revoked", "This Word connection is no longer valid. Reopen the document from doc.haus.")
+    const session = sessionId(c)
+    if (!session) return failure(c, 400, "word_session_required", "A Word pane session identifier is required.")
+    const input = await c.req.json().catch(() => null) as { action?: unknown; baseVersion?: unknown; expectedCurrent?: unknown; expectedGeneration?: unknown } | null
+    if (!input || typeof input.baseVersion !== "string" || !["inspect", "claim", "takeover", "release"].includes(String(input.action)))
+      return failure(c, 400, "invalid_word_lease", "Provide an editing action and this copy's base version.")
+    return withArtifactMutationLocksAsync(auth.matter.dir, deps.locks(auth.matter.dir, auth.target.docPath), async () => {
+      const live = authenticate(c)
+      if (!live || live.grant.document_id !== auth.grant.document_id) return failure(c, 401, "word_link_revoked", "This Word connection is no longer valid.")
+      const base = input.baseVersion as string
+      const state = connection(live, base, session)
+      if (input.action === "inspect") return c.json(state)
+      if (!state.version.base) return c.json({ error: "This save's base version does not belong to this document.", code: "word_base_invalid", ...state }, 409)
+      const db = openDb(live.matter.dir)
+      try {
+        if (input.action === "release") {
+          releaseWordEditLease(db, owner(live, session, c))
+          touch(live.matter, live.grant, session, true)
+        } else {
+          const refused = requireCurrent(c, state)
+          if (refused) return refused
+          if (input.action === "takeover") {
+            if (input.expectedCurrent !== state.version.current?.id || typeof input.expectedGeneration !== "string" || input.expectedGeneration !== readWordEditLease(db, live.grant.document_id)?.generation)
+              return c.json({ error: "Editing status changed after it was displayed. Check it again before taking over.", code: "word_recovery_changed", ...state }, 409)
+            clearWordEditLease(db, live.grant.document_id)
+            retireSessions(db, live.grant.document_id)
+          }
+          claimWordEditLease(db, identity(live, session))
+          touch(live.matter, live.grant, session)
+        }
+      } catch (error) {
+        if (error instanceof EditingLeaseError) return c.json({ error: error.message, code: error.code, expiresAt: error.expiresAt, ...connection(live, base, session) }, 423)
+        throw error
+      } finally { db.close() }
+      return c.json(connection(live, base, session))
+    })
+  })
+
+  app.post("/matters/:id/documents/word/recover", async c => {
+    const matter = deps.matter(c.req.param("id"))
+    const name = c.req.query("name") ?? ""
+    if (!name || /[\\/\0]/.test(name)) return failure(c, 400, "word_requires_docx", "Choose a Word document in this matter, without a path.")
+    const target = readDocumentTarget(matter.dir, name)
+    if (!target) return failure(c, 404, "word_document_missing", "That document is not in this matter.")
+    const input = await c.req.json().catch(() => null) as { action?: unknown; expectedCurrent?: unknown; expectedGeneration?: unknown } | null
+    if (!input || !["release", "takeover"].includes(String(input.action)) || typeof input.expectedCurrent !== "string" ||
+      !(typeof input.expectedGeneration === "string" || input.expectedGeneration === null))
+      return failure(c, 400, "invalid_word_recovery", "Provide the displayed current version, lease generation and recovery action.")
+    return withArtifactMutationLocksAsync(matter.dir, deps.locks(matter.dir, target.docPath), async () => {
+      const current = readCurrentVersion(matter.dir, target.name)
+      if (!current) return failure(c, 404, "word_document_missing", "That document is no longer in this matter.")
+      const db = openDb(matter.dir)
+      try {
+        const observed = readWordEditLease(db, current.document.id)
+        if (input.expectedCurrent !== current.current.id || input.expectedGeneration !== (observed?.generation ?? null))
+          return c.json({ error: "Editing status changed after it was displayed. Refresh it before recovering this document.", code: "word_recovery_changed", currentVersion: current.current.id, lease: wordLeaseState(db, current.document.id) }, 409)
+        db.transaction(() => {
+          if (input.action === "takeover") db.run("UPDATE word_grants SET revoked_at = ? WHERE document_id = ? AND revoked_at IS NULL", [Date.now(), current.document.id])
+          clearWordEditLease(db, current.document.id)
+          retireSessions(db, current.document.id)
+        }).immediate()
+        return c.json({ ok: true, currentVersion: current.current.id, lease: wordLeaseState(db, current.document.id) })
+      } finally { db.close() }
+    })
+  })
+
   function touch(matter: Matter, grant: WordGrant, session: string, done = false) {
     const db = openDb(matter.dir)
     try {
@@ -171,12 +286,17 @@ export function wordDocumentRoutes(deps: Dependencies) {
       return activeWordSessions(db, grant.document_id) > 1
     } finally { db.close() }
   }
+  function retireSessions(db: ReturnType<typeof openDb>, documentId: string) {
+    db.run("UPDATE word_sessions SET done = 1 WHERE token_hash IN (SELECT token_hash FROM word_grants WHERE document_id = ?)", [documentId])
+  }
 
   app.post("/word/saves", async c => {
     const auth = authenticate(c)
     if (!auth) return failure(c, 401, "word_link_revoked", "This Word connection is no longer valid. Reopen the document from doc.haus.")
     const base = c.req.header("x-dochaus-word-base-version") ?? ""
     if (!base) return failure(c, 400, "word_base_required", "The Word save must identify the version it was edited from.")
+    const session = sessionId(c)
+    if (!session) return failure(c, 400, "word_session_required", "A Word pane session identifier is required.")
     const size = Number(c.req.header("content-length"))
     if (size > MAX_WORD_UPLOAD_BYTES) return failure(c, 413, "word_too_large", "The Word file exceeds the 128 MB upload limit.")
     // Bound the stream as well: chunked requests cannot bypass content-length.
@@ -204,46 +324,46 @@ export function wordDocumentRoutes(deps: Dependencies) {
         return failure(c, 401, "word_link_revoked", "This Word connection is no longer valid. Reopen the document from doc.haus.")
       const parent = readVersion(live.matter.dir, base)
       if (!parent || parent.document.id !== live.grant.document_id || parent.document.removed_at != null)
-        return failure(c, 409, "word_base_invalid", "This save's base version does not belong to this document.")
-      if (parent.version.removed) return failure(c, 410, "removed_by_redaction", "This Word copy predates a redaction. Reopen the redacted document from doc.haus.")
+        return c.json({ error: "This save's base version does not belong to this document.", code: "word_base_invalid", ...connection(live, base, session) }, 409)
+      if (parent.version.removed) return c.json({ error: "This Word copy predates a redaction. Reopen the redacted document from doc.haus.", code: "removed_by_redaction", ...connection(live, base, session) }, 410)
       const current = readCurrentVersion(live.matter.dir, live.target.name)
-      const session = sessionId(c)
-      let overlap = current?.current.id !== base
-      if (session) overlap = touch(live.matter, live.grant, session) || overlap
+      const leaseOwner = owner(live, session, c)
       const working = readFileSync(live.target.docPath)
       const workingHash = sha256Hex(working)
-      if (current && current.current.sha256 !== workingHash) overlap = true
       // A retried exact export acknowledges the existing version and does not
       // reindex, rebuild, or revert a later writer to an older branch.
       const hash = sha256Hex(bytes)
       const db = openDb(live.matter.dir)
-      let sessionOverlap = false
       const priorSave = (() => { try {
-        sessionOverlap = activeWordSessions(db, live.grant.document_id) > 1
-        overlap = sessionOverlap || overlap
+        requireWordEditLease(db, leaseOwner)
         return db.query("SELECT id, number, parent FROM document_versions WHERE document_id = ? AND sha256 = ? AND origin = 'word' AND removed IS NULL AND (parent = ? OR id = ?) ORDER BY number DESC LIMIT 1")
           .get(live.grant.document_id, hash, base, base) as { id: string; number: number; parent: string | null } | null
       } finally { db.close() } })()
-      const recordOverlap = () => {
-        if (!overlap) return
+      const renew = () => {
         const registry = openDb(live.matter.dir)
-        try { registry.run("UPDATE word_grants SET overlap = 1 WHERE document_id = ?", [live.grant.document_id]) } finally { registry.close() }
+        try { renewWordEditLease(registry, leaseOwner) } finally { registry.close() }
+        touch(live.matter, live.grant, session)
       }
-      if (priorSave) {
-        // A lost-ack retry against the version it just wrote is not itself an
-        // overlapping edit. Preserve a real earlier overlap or active panes.
-        if (current?.current.id === priorSave.id && current.current.sha256 === hash && workingHash === hash)
-          overlap = sessionOverlap || Boolean(live.grant.overlap)
-        recordOverlap()
-        return c.json({ version: { ...priorSave, created: false }, overlap } satisfies WordSaveResponse)
+      const overlap = Boolean(live.grant.overlap)
+      if (priorSave && current?.current.id === priorSave.id && current.current.sha256 === hash && workingHash === hash) {
+        renew()
+        return c.json({ version: { ...priorSave, created: false }, overlap, connection: connection(live, priorSave.id, session) } satisfies WordSaveResponse)
       }
+      const refused = requireCurrent(c, connection(live, base, session))
+      if (refused) return refused
       if (current?.current.sha256 === hash && workingHash === hash) {
-        recordOverlap()
-        return c.json({ version: { id: current.current.id, number: current.current.number, parent: current.current.parent, created: false }, overlap } satisfies WordSaveResponse)
+        renew()
+        return c.json({ version: { id: current.current.id, number: current.current.number, parent: current.current.parent, created: false }, overlap,
+          connection: connection(live, current.current.id, session) } satisfies WordSaveResponse)
       }
-      const written = await deps.write(live.matter.dir, live.target.name, bytes, workingHash, { origin: "word", actor, parent: base })
-      recordOverlap()
-      return c.json({ version: { id: written.version.id, number: written.version.number, parent: written.version.parent, created: written.version.created }, overlap } satisfies WordSaveResponse)
+      renew()
+      const written = await deps.write(live.matter.dir, live.target.name, bytes, workingHash, { origin: "word", actor, parent: base }, leaseOwner)
+      // The document lock prevented another owner taking over while a source
+      // save was being indexed. Give its successful acknowledgement a full TTL.
+      const registry = openDb(live.matter.dir)
+      try { registry.run("UPDATE word_edit_leases SET expires_at = ? WHERE document_id = ? AND generation = ?", [Date.now() + WORD_EDIT_LEASE_TTL, leaseOwner.document, leaseOwner.generation]) } finally { registry.close() }
+      return c.json({ version: { id: written.version.id, number: written.version.number, parent: written.version.parent, created: written.version.created }, overlap,
+        connection: connection(live, written.version.id, session) } satisfies WordSaveResponse)
     })
   })
 
@@ -252,9 +372,24 @@ export function wordDocumentRoutes(deps: Dependencies) {
     if (!auth) return failure(c, 401, "word_link_revoked", "This Word connection is no longer valid. Reopen the document from doc.haus.")
     const session = sessionId(c)
     if (!session) return failure(c, 400, "word_session_required", "A Word pane session identifier is required.")
-    const overlap = touch(auth.matter, auth.grant, session, route === "done")
-    const current = readCurrentVersion(auth.matter.dir, auth.target.name)
-    return c.json({ ok: true, currentVersion: current?.current.id ?? null, overlap: overlap || Boolean(auth.grant.overlap) })
+    const base = c.req.header("x-dochaus-word-base-version") ?? ""
+    if (!base) return failure(c, 400, "word_base_required", "Report the Word copy's acknowledged base version.")
+    return withArtifactMutationLocksAsync(auth.matter.dir, deps.locks(auth.matter.dir, auth.target.docPath), async () => {
+      const live = authenticate(c)
+      if (!live || live.grant.document_id !== auth.grant.document_id) return failure(c, 401, "word_link_revoked", "This Word connection is no longer valid.")
+      const leaseOwner = owner(live, session, c)
+      const state = connection(live, base, session)
+      const db = openDb(live.matter.dir)
+      try {
+        if (route === "done") {
+          const refused = requireCurrent(c, state)
+          if (refused) return refused
+          releaseWordEditLease(db, leaseOwner)
+        } else renewWordEditLease(db, leaseOwner)
+      } finally { db.close() }
+      const overlap = touch(live.matter, live.grant, session, route === "done")
+      return c.json({ ok: true, currentVersion: state.version.current?.id ?? null, overlap: overlap || Boolean(live.grant.overlap), ...connection(live, base, session) })
+    })
   })
   return app
 }

@@ -5,7 +5,7 @@ import { wordHttpsConfiguration, type WordHttpsConfiguration } from "./word-conf
 
 type Fetch = (request: Request) => Response | Promise<Response>
 const assets = fileURLToPath(new URL("../../../apps/word-addin/dist/", import.meta.url))
-const writeRoutes = new Set(["/word/saves", "/word/heartbeat", "/word/done"])
+const writeRoutes = new Set(["/word/lease", "/word/saves", "/word/heartbeat", "/word/done"])
 let startupFailure: string | undefined
 
 /** A recoverable bridge failure must never make the ordinary product unavailable. */

@@ -33,7 +33,7 @@ test("a cached unversioned pane stops before Office access or sync startup", asy
   } finally {
     globals.forEach((key, index) => {
       if (previous[index]) Object.defineProperty(globalThis, key, previous[index]!)
-      else Reflect.deleteProperty(globalThis, key)
+      else delete (globalThis as unknown as Record<string, unknown>)[key]
     })
   }
 })

@@ -1,5 +1,7 @@
 import {
   WORD_ADDIN_VERSION,
+  type WordConnectionState,
+  type WordLeaseAction,
   type WordDocumentLink,
   type WordSaveResponse,
 } from "../../../dochaus/lib/word-addin-contract"
@@ -20,6 +22,7 @@ export class ConnectionError extends Error {
   constructor(
     message: string,
     readonly retryable = false,
+    readonly connection?: WordConnectionState,
   ) {
     super(message)
   }
@@ -69,6 +72,33 @@ export function readLink(value: unknown, paneOrigin: string): WordDocumentLink |
   }
 }
 
+export function readConnection(value: unknown): WordConnectionState | undefined {
+  if (!value || typeof value !== "object") return
+  const state = value as WordConnectionState
+  const ref = (value: unknown) =>
+    value === null ||
+    (typeof value === "object" &&
+      value !== null &&
+      typeof (value as { id?: unknown }).id === "string" &&
+      Boolean((value as { id?: unknown }).id) &&
+      Number.isSafeInteger((value as { number?: unknown }).number) &&
+      Number((value as { number?: unknown }).number) > 0)
+  if (
+    !state.version ||
+    !state.lease ||
+    !["current", "stale", "removed", "unrecorded-change"].includes(state.version.state) ||
+    !ref(state.version.base) ||
+    !ref(state.version.current) ||
+    !["available", "owned", "other"].includes(state.lease.state) ||
+    !(state.lease.expiresAt === null || Number.isFinite(state.lease.expiresAt)) ||
+    (state.lease.state !== "available" && (typeof state.lease.generation !== "string" || !state.lease.generation))
+  )
+    return
+  if (state.version.state === "current" && (!state.version.base || state.version.base.id !== state.version.current?.id))
+    return
+  return state
+}
+
 export class WordClient {
   private readonly receiver: string
   constructor(
@@ -81,7 +111,15 @@ export class WordClient {
     this.receiver = httpsOrigin(link.apiOrigin)
   }
 
-  private async post(path: "saves" | "heartbeat" | "done", bytes?: Uint8Array, base?: string): Promise<unknown> {
+  private async post(
+    path: "saves" | "heartbeat" | "done" | "lease",
+    options: {
+      bytes?: Uint8Array
+      base: string
+      generation?: string
+      input?: object
+    },
+  ): Promise<unknown> {
     const abort = new AbortController()
     const timeout = setTimeout(() => abort.abort(), this.timeoutMs)
     try {
@@ -91,55 +129,91 @@ export class WordClient {
           Authorization: `Bearer ${this.link.token}`,
           "x-dochaus-word-session": this.session,
           "x-dochaus-word-version": WORD_ADDIN_VERSION,
-          ...(bytes
-            ? {
-                "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "x-dochaus-word-base-version": base!,
-              }
-            : {}),
+          "x-dochaus-word-base-version": options.base,
+          ...(options.generation ? { "x-dochaus-word-lease": options.generation } : {}),
+          ...(options.bytes
+            ? { "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }
+            : options.input
+              ? { "Content-Type": "application/json" }
+              : {}),
         },
-        body: bytes ? new Blob([bytes as Uint8Array<ArrayBuffer>]) : undefined,
+        body: options.bytes
+          ? new Blob([options.bytes as Uint8Array<ArrayBuffer>])
+          : options.input
+            ? JSON.stringify(options.input)
+            : undefined,
         credentials: "omit",
         redirect: "error",
         referrerPolicy: "no-referrer",
         signal: abort.signal,
       })
       if (!response.ok) {
+        if ([409, 410, 423].includes(response.status)) {
+          const value = await response.json().catch(() => undefined)
+          const connection = readConnection(value)
+          if (connection)
+            throw new ConnectionError(
+              "Saving is paused. Keep your Word file and check the version and editing status in this pane.",
+              false,
+              connection,
+            )
+        }
         void response.body?.cancel().catch(() => {})
         if (response.status === 426) throw new ConnectionError(WORD_UPDATE_MESSAGE)
-        if ([401, 403, 404, 410].includes(response.status)) {
-          throw new ConnectionError("This document's link is no longer available. Open a new copy from doc.haus.")
-        }
+        if ([401, 403, 404, 410].includes(response.status))
+          throw new ConnectionError(
+            "This document's link is no longer available. Keep your Word file and open a new copy from doc.haus.",
+          )
         if (response.status === 413)
           throw new ConnectionError("This document is too large to save. Keep the Word file and return to doc.haus.")
         throw new ConnectionError(
-          "doc.haus could not accept the document. Try Save to doc.haus again.",
+          "doc.haus could not accept the request. Check editing status, then try again.",
           response.status >= 500 || response.status === 429,
         )
       }
-      if (path === "saves") {
-        try {
-          // Keep the deadline alive through the body, not only response headers.
-          return await response.json()
-        } catch {
-          throw new ConnectionError("doc.haus did not confirm the save. Try Save to doc.haus again.", true)
-        }
+      try {
+        // Every command returns authoritative connection state. Keep its entire
+        // JSON body inside the deadline, including headers-only stalled replies.
+        return await response.json()
+      } catch {
+        throw new ConnectionError("doc.haus did not confirm the request. Check the connection and try again.", true)
       }
-      // Heartbeat/Done acknowledge through the status; release their unused body.
-      void response.body?.cancel().catch(() => {})
     } catch (error) {
       if (error instanceof ConnectionError) throw error
-      throw new ConnectionError(
-        "Cannot reach doc.haus. Check that it is running, then try Save to doc.haus again.",
-        true,
-      )
+      throw new ConnectionError("Cannot reach doc.haus. Check that it is running, then try again.", true)
     } finally {
       clearTimeout(timeout)
     }
   }
 
-  async save(bytes: Uint8Array, base: string): Promise<WordSaveResponse> {
-    const value = (await this.post("saves", bytes, base)) as WordSaveResponse
+  private connection(value: unknown): WordConnectionState {
+    const state = readConnection(value)
+    if (!state)
+      throw new ConnectionError("doc.haus did not confirm editing status. Check the connection and try again.", true)
+    return state
+  }
+
+  async lease(
+    action: WordLeaseAction,
+    base: string,
+    generation?: string,
+    expected?: { current: string; generation: string },
+  ): Promise<WordConnectionState> {
+    return this.connection(
+      await this.post("lease", {
+        base,
+        generation,
+        input: {
+          action,
+          baseVersion: base,
+          ...(expected ? { expectedCurrent: expected.current, expectedGeneration: expected.generation } : {}),
+        },
+      }),
+    )
+  }
+
+  async save(bytes: Uint8Array, base: string, generation: string): Promise<WordSaveResponse> {
+    const value = (await this.post("saves", { bytes, base, generation })) as WordSaveResponse
     if (
       !value?.version ||
       typeof value.version.id !== "string" ||
@@ -149,16 +223,27 @@ export class WordClient {
       !(value.version.parent === null || typeof value.version.parent === "string") ||
       typeof value.version.created !== "boolean" ||
       typeof value.overlap !== "boolean"
-    ) {
+    )
       throw new ConnectionError("doc.haus did not confirm the save. Try Save to doc.haus again.", true)
-    }
+    const connection = this.connection(value.connection)
+    if (
+      connection.version.state !== "current" ||
+      connection.version.base?.id !== value.version.id ||
+      connection.version.current?.id !== value.version.id ||
+      connection.lease.state !== "owned" ||
+      connection.lease.generation !== generation
+    )
+      throw new ConnectionError(
+        "doc.haus did not confirm this save's editing session. Check the connection and try again.",
+        true,
+      )
     return value
   }
 
-  async heartbeat(): Promise<void> {
-    await this.post("heartbeat")
+  async heartbeat(base: string, generation: string): Promise<WordConnectionState> {
+    return this.connection(await this.post("heartbeat", { base, generation }))
   }
-  async done(): Promise<void> {
-    await this.post("done")
+  async done(base: string, generation: string): Promise<WordConnectionState> {
+    return this.connection(await this.post("done", { base, generation }))
   }
 }

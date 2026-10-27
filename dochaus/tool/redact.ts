@@ -1,10 +1,14 @@
 import { tool, type LegalToolContext } from "./legacy-definition"
 import { existsSync, lstatSync, realpathSync } from "node:fs"
 import path from "node:path"
+import { createHash } from "node:crypto"
 import { docxodus } from "../lib/docxodus"
-import { assertDirectWorkingDocxWriteAllowed } from "../lib/working-docx"
 import { listRedactions, recordRedaction, scrubDocxPackage, docxPackageResidue, type RedactionRow } from "../lib/redactions"
-import { supersedeMatchingRedlines, withRedlineDocumentLock } from "../lib/redlines"
+import { supersedeMatchingRedlines } from "../lib/redlines"
+import { assertWordEditAllowed } from "../lib/word-edit-lease"
+import { canonicalArtifactIdentity, withArtifactMutationLocksAsync } from "../capabilities/artifacts/mutation-lock"
+import { combinedParts, readLeanDocuments } from "../workflows/lean/deliverables"
+import { readLeanState } from "../workflows/lean/state"
 
 // doc.haus redact tool. TRUE redaction: removes the sensitive text from the
 // .docx itself — every body/header/footer/footnote/endnote/comment occurrence
@@ -21,9 +25,8 @@ import { supersedeMatchingRedlines, withRedlineDocumentLock } from "../lib/redli
 // Docxodus projection or a copy inside a binary part) aborts the whole
 // operation before the file is touched, and the user approves via permission
 // "redact" before anything is removed. Every redaction is recorded in the
-// matter's redaction log; once the file is written, a log write that fails is
-// reported in the result, not thrown, so the re-index that drops the removed
-// text from search still runs.
+// matter's redaction log after the existing revision writer confirms the save
+// and re-index. A later log failure is reported without hiding that save.
 
 const ingestUrl = process.env.INGEST_URL ?? "http://127.0.0.1:4500"
 
@@ -110,7 +113,14 @@ export default tool({
       },
     })
 
-    const redaction = await withRedlineDocumentLock(ctx.directory, file, async () => {
+    const combined = redactionCombined(ctx.directory, file)
+    const locked = [file, ...(combined ? [combined.file, combined.body, combined.notes] : []), ".dochaus/source-corpus"]
+    const redaction = await withArtifactMutationLocksAsync(ctx.directory, locked, async () => {
+      assertWordEditAllowed(ctx.directory, file)
+      const currentCombined = redactionCombined(ctx.directory, file)
+      if (currentCombined && currentCombined.file !== combined?.file)
+        throw new Error("The combined document changed before redaction. Check the current documents and try again.")
+      if (currentCombined) assertWordEditAllowed(ctx.directory, currentCombined.file)
       if (!existsSync(file)) return { error: `Document not found in this matter: ${args.document}` }
       const currentBytes = await Bun.file(file).bytes()
       const currentMeta = await dx.getDocumentMetadata(currentBytes)
@@ -153,34 +163,27 @@ export default tool({
           error: `Redaction aborted, document unchanged: the text still appears after removal where this tool cannot safely remove it: ${residue.hits.map((hit) => `${hit.part} (${hit.where})`).join("; ")}. The document needs manual review.`,
         }
 
-      assertDirectWorkingDocxWriteAllowed(ctx.directory, file)
-      await Bun.write(file, scrub.bytes)
-      const stale = attempt(() =>
-        supersedeMatchingRedlines(
-          ctx.directory,
-          file,
-          (row) => row.find_text.includes(args.text) || row.new_text.includes(args.text),
-        ),
-      )
-      const id = attempt(() =>
-        recordRedaction(ctx.directory, {
-          docPath: file,
-          docName: path.basename(file),
-          redactedText: args.text,
-          label,
-          reason: args.reason,
-          author,
-          occurrences: currentMatches.length,
-          metadataHits: Object.values(scrub.hits).reduce((a, b) => a + b, 0),
-        }),
-      )
-      return { scrub, residue, stale, id, occurrences: currentMatches.length }
+      return { scrub, residue, occurrences: currentMatches.length, priorSha256: sha256(currentBytes) }
     })
     if ("error" in redaction) return redaction.error
 
-    const saved = await saveRedaction(file, redaction.scrub.bytes, ctx)
-
-    const { id, stale } = redaction
+    // Publication owns its locks and checks this exact prepared base again.
+    // Do not hold a tool-process lock while calling the revision service.
+    const saved = await saveRedaction(file, redaction.scrub.bytes, redaction.priorSha256, ctx)
+    if (!saved.confirmed) return {
+      title: `Redaction not confirmed: ${path.basename(file)}`,
+      output: `The redaction save was not confirmed. ${saved.error} No redaction log entry was recorded and no pending redlines were retired. Reload the current document in doc.haus before trying again; an interrupted response may have followed a successful save.`,
+      metadata: { document: file, redaction: null, reingested: false, supersededRedlines: null },
+    }
+    const { id, stale } = await withArtifactMutationLocksAsync(ctx.directory, [file], async () => ({
+      stale: attempt(() => supersedeMatchingRedlines(ctx.directory, file,
+        (row) => row.find_text.includes(args.text) || row.new_text.includes(args.text))),
+      id: attempt(() => recordRedaction(ctx.directory, {
+        docPath: file, docName: path.basename(file), redactedText: args.text, label,
+        reason: args.reason, author, occurrences: redaction.occurrences,
+        metadataHits: Object.values(redaction.scrub.hits).reduce((a, b) => a + b, 0),
+      })),
+    }))
     const warnings = [
       id instanceof Error &&
         `WARNING: the redaction log entry was not recorded (${id.message}). The matter's redaction log has no entry for this removal; record it manually.`,
@@ -206,7 +209,7 @@ export default tool({
         redaction: id instanceof Error ? null : id,
         reason: args.reason,
         author,
-        reingested: Boolean(saved),
+        reingested: saved.confirmed,
         supersededRedlines: stale instanceof Error ? null : stale.map((row) => row.id),
       },
     }
@@ -234,29 +237,46 @@ function matterDocument(directory: string, file: string) {
   }
 }
 
-// The redaction's save through the role-preserving revision route, sent again
-// once when it fails. Uploaded sources are re-indexed so removed text cannot be
-// returned; generated deliverables stay outside source retrieval; doc.haus's
-// earlier versions of the document, which hold the removed text, are deleted
-// (the response says when that failed). Undefined when both sends failed.
-async function saveRedaction(file: string, bytes: Uint8Array<ArrayBuffer>, ctx: LegalToolContext) {
+function redactionCombined(directory: string, document: string) {
+  const summary = readLeanDocuments(directory)
+  if (readLeanState(directory)?.status !== "completed" || summary?.status !== "completed") return
+  const combined = combinedParts(directory, summary.documents)
+  if (!combined) return
+  const target = canonicalArtifactIdentity(directory, document)
+  return [combined.body, combined.notes].some(name => canonicalArtifactIdentity(directory, name) === target) ? combined : undefined
+}
+
+// Only the existing role-preserving revision writer may publish a candidate.
+// Both bounded sends carry the same prior hash: a lost acknowledgement cannot
+// authorize overwriting a later version or produce an unconfirmed log entry.
+function sha256(bytes: Uint8Array) { return createHash("sha256").update(bytes).digest("hex") }
+type RedactionSave = { confirmed: true; purge_failed?: unknown } | { confirmed: false; error: string }
+async function saveRedaction(file: string, bytes: Uint8Array<ArrayBuffer>, priorSha256: string, ctx: LegalToolContext): Promise<RedactionSave> {
+  let error = "doc.haus could not be reached."
   for (let send = 0; send < 2; send++) {
     const response = await fetch(`${ingestUrl}/matters/${path.basename(ctx.directory)}/documents/revisions`, {
       method: "POST",
-      headers: { "x-dochaus-origin": "redaction", "x-dochaus-actor": `agent:${ctx.agent}`, "x-dochaus-run": ctx.sessionID },
+      headers: { "x-dochaus-origin": "redaction", "x-dochaus-actor": `agent:${ctx.agent}`, "x-dochaus-run": ctx.sessionID,
+        "x-document-prior-sha256": priorSha256 },
       body: (() => {
         const form = new FormData()
         form.append("file", new File([bytes], path.basename(file)))
         return form
       })(),
     }).catch(() => null)
-    if (response?.ok) return await response.json().catch(() => ({})) as { purge_failed?: unknown }
+    if (response?.ok) return { ...(await response.json().catch(() => ({})) as { purge_failed?: unknown }), confirmed: true }
+    if (response) {
+      error = response.status === 423 ? "The document or its combined document is being edited in Word."
+        : response.status === 409 ? "The document changed after the redaction was prepared."
+        : `doc.haus refused the save (HTTP ${response.status}).`
+      if (response.status < 500) break
+    }
   }
+  return { confirmed: false, error }
 }
 
-function saveWarnings(saved: Awaited<ReturnType<typeof saveRedaction>>) {
-  if (!saved)
-    return ["WARNING: re-indexing failed, also when sent again — the matter's search index may still contain the removed text, and doc.haus's earlier versions of the document may still hold it. Run this redaction again to finish: it saves the redacted document to doc.haus again."]
+function saveWarnings(saved: RedactionSave) {
+  if (!saved.confirmed) return ["WARNING: the redacted document's save was not confirmed. Reload its current copy before trying again; an interrupted response may have followed a successful save."]
   return typeof saved.purge_failed === "string" ? [`WARNING: ${saved.purge_failed}`] : []
 }
 
@@ -270,13 +290,14 @@ async function saveAgain(file: string, text: string, logged: RedactionRow, ctx: 
     always: [file],
     metadata: { document: path.basename(file), text, occurrences: 0, resave: true, metadataParts: [], reason: logged.reason, label: logged.label, author: logged.author },
   })
-  const saved = await saveRedaction(file, await Bun.file(file).bytes(), ctx)
+  const bytes = await Bun.file(file).bytes()
+  const saved = await saveRedaction(file, bytes, sha256(bytes), ctx)
   return {
     title: `Redacted ${path.basename(file)}`,
     output: [
-      `${JSON.stringify(text)} was already removed from ${path.basename(file)} (redaction log entry #${logged.id}).${saved ? ` Saved the redacted document to doc.haus again${typeof saved.purge_failed === "string" ? "" : ", so its earlier versions, which held the text, are deleted"}.` : ""}`,
+      `${JSON.stringify(text)} was already removed from ${path.basename(file)} (redaction log entry #${logged.id}).${saved.confirmed ? ` Saved the redacted document to doc.haus again${saved.confirmed && typeof saved.purge_failed === "string" ? "" : ", so its earlier versions, which held the text, are deleted"}.` : ""}`,
       ...saveWarnings(saved),
     ].join("\n"),
-    metadata: { document: file, occurrences: 0, redaction: logged.id, reason: logged.reason, author: logged.author, reingested: Boolean(saved) },
+    metadata: { document: file, occurrences: 0, redaction: logged.id, reason: logged.reason, author: logged.author, reingested: saved.confirmed },
   }
 }

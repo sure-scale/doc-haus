@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react"
-import { fetchWordConfig, fetchWordDocuments, linkedWordDocument, revokeWordDocument, type WordConfig, type WordOpenDocument } from "../api/ingest/word"
+import { fetchWordConfig, fetchWordDocuments, linkedWordDocument, recoverWordEditing, revokeWordDocument, type WordConfig, type WordOpenDocument } from "../api/ingest/word"
 import { humanizeError } from "../api/ingest/errors"
 import { useToast } from "./Toast"
 
@@ -47,24 +47,27 @@ export function WordDocumentsProvider({ matterId, onChanged, children }: { matte
   useEffect(() => {
     let cancelled = false
     let running = false
+    let pending = false
+    let epoch = 0
     let focused = false
     let previous: WordOpenDocument[] | undefined
     setDocuments([])
     setStatusError(undefined)
     async function read(fromFocus = false) {
       focused ||= fromFocus
-      if (running) return
+      if (running) { pending = true; return }
       running = true
+      const requested = epoch
       let received = false
       try {
         const next = await fetchWordDocuments(matterId)
-        if (cancelled) return
+        if (cancelled || requested !== epoch) return
         received = previous !== undefined && wordVersionsChanged(previous, next)
         previous = next
         setDocuments(next)
         setStatusError(undefined)
       } catch {
-        if (!cancelled) setStatusError("Word status could not be refreshed. The last known status is shown.")
+        if (!cancelled && requested === epoch) setStatusError("Word status could not be refreshed. The last known status is shown.")
       } finally {
         running = false
         if (!cancelled && (received || focused)) {
@@ -72,10 +75,14 @@ export function WordDocumentsProvider({ matterId, onChanged, children }: { matte
           setRefreshKey((value) => value + 1)
           changed.current()
         }
+        if (!cancelled && pending) {
+          pending = false
+          void read()
+        }
       }
     }
     const focus = () => { void read(true) }
-    refresh.current = () => { void read() }
+    refresh.current = () => { epoch++; void read() }
     void read()
     const timer = window.setInterval(() => { void read() }, 5000)
     window.addEventListener("focus", focus)
@@ -106,11 +113,17 @@ export function useWordRefresh(onRefresh: () => void, defer = false) {
 }
 
 export function wordWarning(documents: WordOpenDocument[], name?: string) {
+  const locked = documents.filter((entry) => entry.lease?.state === "other" && (!name || entry.name === name))
+  if (locked.length) return `${locked.map((entry) => entry.name).join(", ")} ${locked.length === 1 ? "is" : "are"} being edited in Word. Changes here are locked until the Word editor finishes or you take over editing. Local Word files are kept when ownership changes.`
   const open = documents.filter((entry) => entry.open)
   if (!open.length) return
   const local = name && open.some((entry) => entry.name === name)
   const names = local ? name : open.map((entry) => entry.name).join(", ")
-  return `${names} ${open.length === 1 || local ? "is" : "are"} open in Word. Use Save to doc.haus in Word and close the document before changing it here. Changes made in both places are kept as separate versions.`
+  return `${names} ${open.length === 1 || local ? "is" : "are"} open in Word. Use Save to doc.haus in Word and close the document before changing it here. A Word copy that falls behind must be compared with the current version before saving.`
+}
+
+export function useWordEditingLocked(name: string) {
+  return useContext(WordDocuments).documents.some((entry) => entry.name === name && entry.lease?.state === "other")
 }
 
 export function WordWarning({ name }: { name?: string }) {
@@ -122,9 +135,10 @@ export function WordWarning({ name }: { name?: string }) {
 
 export function WordBadge({ name }: { name: string }) {
   const status = useContext(WordDocuments).documents.find((entry) => entry.name === name)
-  if (!status?.open && !status?.overlap) return null
+  const locked = status?.lease?.state === "other"
+  if (!status?.open && !status?.overlap && !locked) return null
   return <span className={`word-badge${status.overlap ? " has-overlap" : ""}`} title={status.overlap ? "Word and doc.haus changed this document. Compare its versions before continuing." : "The Word add-in is in contact with doc.haus; this does not confirm every local save was received."}>
-    {status.overlap ? "Overlapping changes" : "Open in Word"}
+    {status.overlap ? "Overlapping changes" : locked ? "Editing in Word" : "Open in Word"}{status.currentNumber !== undefined && ` · Version ${status.currentNumber}`}
   </span>
 }
 
@@ -161,10 +175,13 @@ export function WordSetup() {
 
 export function WordOpenControl({ matterId, name, disabled = false, compact = false }: { matterId: string; name: string; disabled?: boolean; compact?: boolean }) {
   const { config, setupError, documents, refresh } = useContext(WordDocuments)
-  const [busy, setBusy] = useState<"open" | "revoke">()
+  const [busy, setBusy] = useState<"open" | "revoke" | "release" | "takeover">()
+  const [recovery, setRecovery] = useState<{ action: "release" | "takeover"; document: WordOpenDocument }>()
   const toast = useToast()
   if (!/\.docx$/i.test(name)) return null
   const linked = documents.some((entry) => entry.name === name)
+  const status = documents.find((entry) => entry.name === name)
+  const locked = status?.lease?.state === "other"
   const available = config?.available && !setupError
   async function open() {
     setBusy("open")
@@ -192,6 +209,22 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
       toast("error", humanizeError(error, `Could not disconnect ${name} from Word.`))
     } finally { setBusy(undefined) }
   }
+  async function recover() {
+    if (!recovery) return
+    const { action, document } = recovery
+    setBusy(action)
+    try {
+      await recoverWordEditing(matterId, document, action)
+      setRecovery(undefined)
+      refresh()
+      toast("success", action === "takeover"
+        ? "Editing is available here. Earlier Word copies are disconnected; their local files are kept. Open a fresh Word copy to continue there."
+        : "Word editing lock released. A Word copy must check its version and claim editing again before saving.")
+    } catch (error) {
+      refresh()
+      toast("error", humanizeError(error, "Could not change Word editing ownership."))
+    } finally { setBusy(undefined) }
+  }
   return <span className={`word-controls${compact ? " is-compact" : ""}`}>
     {available ? <button type="button" className={compact ? "linklike word-open" : "word-open"} onClick={open} disabled={disabled || busy !== undefined} aria-label={`Open ${name} in Word`} title="Download a linked copy to open in Word">
       {busy === "open" ? "Preparing Word copy…" : "Open in Word"}
@@ -199,5 +232,14 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
     {linked && <button type="button" className="linklike word-revoke" onClick={revoke} disabled={busy !== undefined} aria-label={`Disconnect ${name} from Word`} title="Stop all existing Word copies of this document from saving to doc.haus">
       {busy === "revoke" ? "Disconnecting…" : "Disconnect Word"}
     </button>}
+    {locked && <>
+      <button type="button" className="linklike" disabled={busy !== undefined || disabled} onClick={() => setRecovery(status ? { action: "takeover", document: status } : undefined)}>Take over editing</button>
+      <button type="button" className="linklike" disabled={busy !== undefined || disabled} onClick={() => setRecovery(status ? { action: "release", document: status } : undefined)}>Release Word lock</button>
+    </>}
+    {recovery && <span className="word-recovery" role="group" aria-label="Confirm editing ownership change">
+      <span>{recovery.action === "takeover" ? "Disconnect earlier Word copies and continue editing here? Their unsent edits remain in their local files." : "Release this editing lock? The Word editor will need to check its version and claim editing again."}</span>
+      <button type="button" onClick={recover} disabled={busy !== undefined}>{busy === recovery.action ? "Updating…" : "Confirm"}</button>
+      <button type="button" className="linklike" onClick={() => setRecovery(undefined)} disabled={busy !== undefined}>Cancel</button>
+    </span>}
   </span>
 }

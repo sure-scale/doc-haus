@@ -9,6 +9,7 @@ import { workingDocxKey } from "../../../dochaus/lib/working-docx"
 import { forgetSystemDocx } from "../../../dochaus/lib/system-docx"
 import { detachVersionedDocument, purgeVersionBytes } from "./document-versions"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
+import { assertWordEditAllowed } from "../../../dochaus/lib/word-edit-lease"
 import {
   beginDocumentMutation,
   completeDocumentMutation,
@@ -29,6 +30,7 @@ export async function deleteMatterDocument(matterDir: string, requestedName: str
     const recovery = await recoverDocumentMutations(matterDir)
     if (recovery.sourceRolledBack) await writeSourceArtifacts(matterDir)
     const target = documentTarget(matterDir, name)
+    assertWordEditAllowed(matterDir, target.docPath)
     const db = openDb(matterDir, { commit: true })
     const role = getDocumentRole(db, target.docPath)
     if (!role) {

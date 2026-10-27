@@ -1,5 +1,7 @@
 .word-controls { display: inline-flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
 .word-controls button { white-space: nowrap; }
+.word-recovery { display: flex; flex-basis: 100%; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--warn-border); border-radius: var(--radius-md); background: var(--warn-soft); font-size: 0.8125rem; }
+.word-recovery > span { flex: 1 1 240px; }
 .word-controls.is-compact { gap: 6px var(--space-2); font-size: 0.6875rem; }
 .word-controls.is-compact .linklike { font-size: inherit; font-weight: 500; }
 .word-controls.is-compact button { min-height: 28px; }

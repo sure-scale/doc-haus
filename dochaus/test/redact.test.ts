@@ -1,20 +1,29 @@
 // True-redaction guarantees, exercised through the real redact tool against
-// authored synthetic documents rendered by the product helper — no mocks beyond the
-// tool ctx. Run from dochaus/: bun test test/redact.test.ts
+// authored synthetic documents rendered by the product helper. The HTTP fixture
+// models the authoritative writer and rejects a changed prior hash. Run from dochaus/: bun test test/redact.test.ts
 //
 // Lives in test/, not tool/: the engine's ToolRegistry imports every .ts under
 // {tool,tools}/ as a custom tool, and importing a bun:test file outside the
 // test runner throws ("Cannot use describe outside of the test runner").
-import { describe, expect, spyOn, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { createHash } from "node:crypto"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { docxodus } from "../lib/docxodus"
 import { renderMarkdownToDocx } from "../lib/render"
 import { scrubDocxPackage, docxPackageResidue, listRedactions } from "../lib/redactions"
 import { recordRedline, pendingRedlinesForDoc } from "../lib/redlines"
+import { claimWordEditLease, EditingLeaseError } from "../lib/word-edit-lease"
+import { memoNotesFile, readLeanDocuments, recordLeanDocuments } from "../workflows/lean/deliverables"
+import { writeLeanPlan } from "../workflows/lean/plan"
+import { initLeanState, readLeanState, writeLeanBytes, writeLeanState, writeLeanText } from "../workflows/lean/state"
+import { scriptedLeanModel } from "../workflows/lean/test-support"
+import { openDb } from "../../services/ingest/src/db"
+import { readCurrentVersion } from "../../services/ingest/src/document-versions"
+import { registerLeanDeliverable } from "../../services/ingest/src/lean-deliverables"
 
 // The tool reads INGEST_URL at import time; point it at a dead port so a live
 // dev ingest server never receives test uploads.
@@ -68,8 +77,24 @@ function residueParts(bytes: Uint8Array, needle: string) {
   return [...new Set(docxPackageResidue(bytes, needle).hits.map((hit) => hit.part))]
 }
 
+const testMatters = new Map<string, string>()
+const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
+async function publish(input: string | URL | Request, init?: RequestInit) {
+  const directory = testMatters.get(new URL(String(input)).pathname.split("/")[2])!
+  const upload = (init?.body as FormData).get("file") as File
+  const file = path.join(directory, upload.name)
+  if (new Headers(init?.headers).get("x-document-prior-sha256") !== hash(await Bun.file(file).bytes()))
+    return Response.json({ error: "Document changed" }, { status: 409 })
+  await Bun.write(file, await upload.arrayBuffer())
+  return Response.json({ ok: true })
+}
+let transport: ReturnType<typeof spyOn>
+beforeEach(() => { transport = spyOn(globalThis, "fetch").mockImplementation(publish as typeof fetch) })
+afterEach(() => transport.mockRestore())
+
 async function matterWith(bytes: Uint8Array) {
   const dir = mkdtempSync(path.join(tmpdir(), "redact-matter-"))
+  testMatters.set(path.basename(dir), dir)
   const file = path.join(dir, "personnel.docx")
   await Bun.write(file, bytes)
   return { dir, file }
@@ -87,6 +112,33 @@ describe("metadata scrub", () => {
 })
 
 describe("redact tool", () => {
+  test("an existing lease on the combined file preserves its source part and redaction log", async () => {
+    const { dir } = await matterWith(buildFixture())
+    const documents = [{ title: "Synthetic record", purpose: "Invented inventory", parts: [{ heading: "Inventory", scope: "Invented details" }], file: "record.docx", deliverable: "combined" as const }]
+    initLeanState(dir, { request: "Prepare an invented record.", ownerSessionID: "test", model: null })
+    writeLeanPlan(dir, documents, undefined, undefined, { name: "cover memo", file: memoNotesFile(documents, "cover memo") })
+    writeLeanBytes(dir, "d1/body-applied.docx", buildFixture())
+    writeLeanBytes(dir, "d1/redline.docx", buildFixture())
+    writeLeanBytes(dir, "drafting-notes.docx", fixtureBytes)
+    writeLeanText(dir, "drafting-notes.md", "# Cover memo\n\nInvented record.")
+    await recordLeanDocuments(dir, { sessions: scriptedLeanModel().port, registerDeliverable: registerLeanDeliverable }, true)
+    writeLeanState(dir, { ...readLeanState(dir)!, status: "completed" })
+    const part = readLeanDocuments(dir)!.documents.find(row => row.kind === "body")!.deliverable!
+    const file = path.join(dir, part)
+    const before = await Bun.file(file).bytes()
+    const combined = readCurrentVersion(dir, "record.docx")!
+    const db = openDb(dir)
+    try {
+      db.run("INSERT INTO word_grants (token_hash,document_id,origin,issued_version,created_at) VALUES (?,?,?,?,?)",
+        ["c".repeat(64), combined.document.id, "https://localhost:3444", combined.current.id, Date.now()])
+      claimWordEditLease(db, { document: combined.document.id, tokenHash: "c".repeat(64), session: "combined-pane" })
+    } finally { db.close() }
+    await expect(redact.execute({ document: part, text: SSN, reason: "PII", author: undefined, label: undefined }, ctxFor(dir))).rejects.toBeInstanceOf(EditingLeaseError)
+    expect(await Bun.file(file).bytes()).toEqual(before)
+    expect(listRedactions(dir)).toEqual([])
+    expect(transport).not.toHaveBeenCalled()
+  })
+
   test("removes every occurrence from content and metadata, logs it, and retires stale redlines", async () => {
     const { dir, file } = await matterWith(buildFixture())
     recordRedline(dir, {
@@ -108,8 +160,8 @@ describe("redact tool", () => {
     expect(result).toBeObject()
     if (!result || typeof result === "string") throw new Error(String(result))
     expect(result.output).toContain("3 text occurrence(s)")
-    expect(result.output).toContain("re-indexing failed")
-    expect(result.metadata?.reingested).toBe(false)
+    expect(result.output).not.toContain("not confirmed")
+    expect(result.metadata?.reingested).toBe(true)
 
     // The file itself is clean: raw package residue zero, Docxodus flat-text zero.
     const redacted = await Bun.file(file).bytes()
@@ -233,9 +285,9 @@ describe("redact tool", () => {
       { stdout: "pipe" },
     )
     const requests: string[] = []
-    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (input: string | URL | Request) => {
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (input: string | URL | Request, init?: RequestInit) => {
       requests.push(String(input))
-      return new Response("{}")
+      return publish(input, init)
     }) as typeof fetch)
     let result: Awaited<ReturnType<typeof redact.execute>> | Error
     try {
@@ -272,7 +324,7 @@ describe("redact tool", () => {
   test("a save that could not delete the document's earlier versions is a warning", async () => {
     const { dir } = await matterWith(buildFixture())
     const failed = "The earlier versions of this document could not be deleted from doc.haus's kept versions; they may still hold the removed text."
-    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async () => Response.json({ ok: true, purge_failed: failed })) as typeof fetch)
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (input: string | URL | Request, init?: RequestInit) => { await publish(input, init); return Response.json({ ok: true, purge_failed: failed }) }) as typeof fetch)
     let result: Awaited<ReturnType<typeof redact.execute>>
     try {
       result = await redact.execute({ document: "personnel.docx", text: SSN, reason: "SSN — PII", author: "A. Lawyer", label: undefined }, ctxFor(dir))
@@ -287,9 +339,9 @@ describe("redact tool", () => {
   test("a save that fails is sent again once before any warning", async () => {
     const { dir } = await matterWith(buildFixture())
     const origins: (string | null)[] = []
-    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (_input: string | URL | Request, init?: RequestInit) => {
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (input: string | URL | Request, init?: RequestInit) => {
       origins.push(new Headers(init?.headers).get("x-dochaus-origin"))
-      return origins.length === 1 ? new Response("unavailable", { status: 503 }) : Response.json({ ok: true })
+      return origins.length === 1 ? new Response("unavailable", { status: 503 }) : publish(input, init)
     }) as typeof fetch)
     let result: Awaited<ReturnType<typeof redact.execute>>
     try {
@@ -303,44 +355,62 @@ describe("redact tool", () => {
     expect(result.metadata?.reingested).toBe(true)
   })
 
-  test("a save that fails twice says so, and running the redaction again saves it", async () => {
+  test("a refused publication keeps the file, log and redlines unchanged", async () => {
     const { dir, file } = await matterWith(buildFixture())
-    const asked: Record<string, unknown>[] = []
-    const run = () => redact.execute({ document: "personnel.docx", text: SSN, reason: "SSN — PII", author: "A. Lawyer", label: undefined }, ctxFor(dir, async request => { asked.push(request.metadata) }))
+    const before = await Bun.file(file).bytes()
+    recordRedline(dir, { docPath: file, docName: "personnel.docx", scope: "phrase", findText: SSN, oldText: SSN,
+      newText: "on file", author: "test", reviewComment: "", anchorId: "x" })
     const down = spyOn(globalThis, "fetch").mockImplementation((async () => new Response("unavailable", { status: 503 })) as typeof fetch)
-    let failed: Awaited<ReturnType<typeof redact.execute>>
     try {
-      failed = await run()
-    } finally {
-      down.mockRestore()
-    }
-    if (!failed || typeof failed === "string") throw new Error(String(failed))
-    expect(failed.output).toContain("doc.haus's earlier versions of the document may still hold it. Run this redaction again")
-    // The text is gone from the file and logged: running it again sends the
-    // redaction save of the file as it is now.
-    const redacted = await Bun.file(file).bytes()
-    const sent: { origin: string | null; bytes: Uint8Array }[] = []
-    const up = spyOn(globalThis, "fetch").mockImplementation((async (_input: string | URL | Request, init?: RequestInit) => {
-      const upload = (init?.body as FormData).get("file") as File
-      sent.push({ origin: new Headers(init?.headers).get("x-dochaus-origin"), bytes: new Uint8Array(await upload.arrayBuffer()) })
-      return Response.json({ ok: true })
+      const failed = await redact.execute({ document: "personnel.docx", text: SSN, reason: "PII", author: undefined, label: undefined }, ctxFor(dir))
+      if (!failed || typeof failed === "string") throw new Error(String(failed))
+      expect(failed.title).toContain("not confirmed")
+      expect(failed.output).not.toContain("Permanently removed")
+      expect(failed.metadata?.reingested).toBe(false)
+      expect(await Bun.file(file).bytes()).toEqual(before)
+      expect(listRedactions(dir)).toEqual([])
+      expect(pendingRedlinesForDoc(dir, file)).toHaveLength(1)
+    } finally { down.mockRestore() }
+  })
+
+  test("a changed current hash refuses the prepared candidate without logging a removal", async () => {
+    const { dir, file } = await matterWith(buildFixture())
+    const concurrent = buildFixture()
+    const parts = unzipSync(concurrent)
+    parts["docProps/custom.xml"] = strToU8("<changed>Concurrent edit</changed>")
+    const newer = zipSync(parts)
+    const changed = spyOn(globalThis, "fetch").mockImplementation((async (input: string | URL | Request, init?: RequestInit) => {
+      await Bun.write(file, newer)
+      return publish(input, init)
     }) as typeof fetch)
-    let again: Awaited<ReturnType<typeof redact.execute>>
     try {
-      again = await run()
-    } finally {
-      up.mockRestore()
-    }
-    expect(sent).toEqual([{ origin: "redaction", bytes: redacted }])
-    // The approval card is told this run saves again rather than removes text.
-    expect(asked.map(metadata => metadata.resave ?? false)).toEqual([false, true])
-    if (!again || typeof again === "string") throw new Error(String(again))
-    expect(again.output).toContain("already removed")
-    expect(again.output).not.toContain("WARNING")
-    expect(listRedactions(dir)).toHaveLength(1)
-    // Text never redacted from this document is still not found.
-    expect(await redact.execute({ document: "personnel.docx", text: "not in this document", reason: "test", author: undefined, label: undefined }, ctxFor(dir)))
-      .toContain("Text not found")
+      const failed = await redact.execute({ document: "personnel.docx", text: SSN, reason: "PII", author: undefined, label: undefined }, ctxFor(dir))
+      if (!failed || typeof failed === "string") throw new Error(String(failed))
+      expect(failed.output).toContain("changed after")
+      expect(await Bun.file(file).bytes()).toEqual(newer)
+      expect(listRedactions(dir)).toEqual([])
+      expect(changed).toHaveBeenCalledTimes(1)
+    } finally { changed.mockRestore() }
+  })
+
+  test("a lost publication acknowledgement never claims or logs unconfirmed success", async () => {
+    const { dir, file } = await matterWith(buildFixture())
+    let sends = 0
+    const lost = spyOn(globalThis, "fetch").mockImplementation((async (input: string | URL | Request, init?: RequestInit) => {
+      const response = await publish(input, init)
+      if (++sends === 1) throw new Error("Acknowledgement lost")
+      return response
+    }) as typeof fetch)
+    try {
+      const failed = await redact.execute({ document: "personnel.docx", text: SSN, reason: "PII", author: undefined, label: undefined }, ctxFor(dir))
+      if (!failed || typeof failed === "string") throw new Error(String(failed))
+      expect(failed.output).toContain("not confirmed")
+      expect(failed.output).toContain("interrupted response may have followed a successful save")
+      expect(failed.output).not.toContain("Permanently removed")
+      expect(docxPackageResidue(await Bun.file(file).bytes(), SSN).hits).toEqual([])
+      expect(listRedactions(dir)).toEqual([])
+      expect(sends).toBe(2)
+    } finally { lost.mockRestore() }
   })
 
   test("doc.haus's own records are not a document it redacts", async () => {

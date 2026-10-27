@@ -1,4 +1,9 @@
-import type { WordDocumentLink, WordSaveResponse } from "../../../dochaus/lib/word-addin-contract"
+import type {
+  WordConnectionState,
+  WordLeaseAction,
+  WordDocumentLink,
+  WordSaveResponse,
+} from "../../../dochaus/lib/word-addin-contract"
 import { ConnectionError } from "./client"
 import { documentFingerprint } from "./fingerprint"
 import { DocumentStateError, type WordHost } from "./office"
@@ -14,18 +19,26 @@ export interface Checkpoints {
   read(): Acknowledgement | null
   write(value: Acknowledgement): void
 }
-type Transport = {
-  save(bytes: Uint8Array, base: string): Promise<WordSaveResponse>
-  heartbeat(): Promise<void>
-  done(): Promise<void>
+export type Transport = {
+  lease(
+    action: WordLeaseAction,
+    base: string,
+    generation?: string,
+    expected?: { current: string; generation: string },
+  ): Promise<WordConnectionState>
+  save(bytes: Uint8Array, base: string, generation: string): Promise<WordSaveResponse>
+  heartbeat(base: string, generation: string): Promise<WordConnectionState>
+  done(base: string, generation: string): Promise<WordConnectionState>
 }
 export type PaneState = {
   status: "not-saved" | "saving" | "saved" | "done"
   busy: boolean
   message: string
   acknowledgement?: Acknowledgement
+  connection?: WordConnectionState
+  canSave: boolean
 }
-type Pending = { bytes: Uint8Array; fingerprint: string; base: string }
+type Pending = { bytes: Uint8Array; fingerprint: string; base: string; generation: string }
 
 /** Store no document bytes or bearer token. Failure to store is non-fatal. */
 export async function browserCheckpoints(link: WordDocumentLink, storage: Storage | undefined): Promise<Checkpoints> {
@@ -67,11 +80,17 @@ export class WordSync {
   private completedCheckedAt = -Infinity
   private checkpointChecked = false
   private base: string
+  private connection?: WordConnectionState
   private pending?: Pending
   private acknowledgement?: Acknowledgement
   private nextRetry = 0
   private heartbeatAt = -Infinity
-  private state: PaneState = { status: "not-saved", busy: false, message: "Checking the saved Word document…" }
+  private state: PaneState = {
+    status: "not-saved",
+    busy: false,
+    canSave: false,
+    message: "Checking the saved Word document…",
+  }
 
   constructor(
     base: string,
@@ -91,7 +110,14 @@ export class WordSync {
   }
 
   private show(status: PaneState["status"], message: string): void {
-    this.state = { status, message, busy: this.queued > 0, acknowledgement: this.acknowledgement }
+    this.state = {
+      status,
+      message,
+      busy: this.queued > 0,
+      acknowledgement: this.acknowledgement,
+      connection: this.connection,
+      canSave: this.canSave(),
+    }
     this.render(this.snapshot())
   }
 
@@ -103,6 +129,7 @@ export class WordSync {
         await task()
         return true
       } catch (error) {
+        if (error instanceof ConnectionError) this.connection = error.connection
         this.nextRetry = this.now() + 30_000
         const message =
           error instanceof ConnectionError
@@ -110,7 +137,10 @@ export class WordSync {
             : error instanceof Error && error.name === "DocumentStateError"
               ? error.message
               : "Word could not finish the save. Keep this document open and try Save to doc.haus again."
-        this.show("not-saved", message)
+        this.show(
+          "not-saved",
+          error instanceof ConnectionError && this.connection && !this.canWrite() ? this.blockedMessage() : message,
+        )
         return false
       } finally {
         this.queued--
@@ -123,16 +153,105 @@ export class WordSync {
   }
 
   private async heartbeat(force = false): Promise<void> {
-    if (!force && this.now() - this.heartbeatAt < 20_000) return
+    if (!this.canWrite() || (!force && this.now() - this.heartbeatAt < 20_000)) return
     this.heartbeatAt = this.now()
-    await this.transport.heartbeat()
+    this.connection = await this.transport.heartbeat(this.base, this.connection!.lease.generation!)
+  }
+
+  private canSave(): boolean {
+    return (
+      this.connection?.version.state === "current" && (this.connection.lease.state === "available" || this.canWrite())
+    )
+  }
+
+  private canWrite(): boolean {
+    return (
+      this.connection?.version.state === "current" &&
+      this.connection.lease.state === "owned" &&
+      Boolean(this.connection.lease.generation)
+    )
+  }
+
+  private blockedMessage(): string {
+    const state = this.connection
+    if (!state) return "Check the connection before saving. Your Word changes stay in this file."
+    if (state.version.state === "removed")
+      return "This copy predates a redaction or removal. Keep your local file and reopen the current document from doc.haus."
+    if (state.version.state === "unrecorded-change")
+      return "The file in doc.haus changed outside its version history. Keep your Word file and resolve that change in doc.haus before saving."
+    if (state.version.state === "stale")
+      return "A newer version is in doc.haus. Keep this Word file using Save As. In doc.haus, use Versions to compare or Open in Word for a fresh copy. This pane will not overwrite it."
+    if (state.lease.state === "other")
+      return "Another editing session owns saving. Keep your Word edits here. Check status, or deliberately take over this session."
+    return "Ready to save. Choose Save to doc.haus or Done in Word to start editing here. Your Word edits stay local until you save."
+  }
+
+  private async inspect(claim: boolean): Promise<void> {
+    this.connection = await this.transport.lease("inspect", this.base)
+    if (claim && this.connection.version.state === "current" && this.connection.lease.state === "available")
+      this.connection = await this.transport.lease("claim", this.base)
+  }
+
+  refresh(): Promise<boolean> {
+    const claim = this.connection?.version.state === "current" && this.connection.lease.state === "available"
+    return this.enqueue(async () => {
+      this.completed = false
+      await this.restoreCheckpoint()
+      if (this.pending) await this.flush()
+      await this.inspect(claim)
+      if (!this.canWrite()) {
+        this.show("not-saved", this.blockedMessage())
+        return
+      }
+      await this.capture()
+    })
+  }
+
+  takeover(): Promise<boolean> {
+    const observed = this.connection
+    return this.enqueue(async () => {
+      this.completed = false
+      if (
+        !observed ||
+        observed.version.state !== "current" ||
+        observed.lease.state !== "other" ||
+        !observed.version.current ||
+        !observed.lease.generation
+      )
+        throw documentStateError("Check editing status before taking over.")
+      this.connection = await this.transport.lease("takeover", this.base, undefined, {
+        current: observed.version.current.id,
+        generation: observed.lease.generation,
+      })
+      this.discardFencedPending()
+      this.show(
+        "not-saved",
+        this.canWrite()
+          ? "You now own saving. Your local edits have not been sent; choose Save to doc.haus."
+          : this.blockedMessage(),
+      )
+    })
+  }
+
+  release(): Promise<boolean> {
+    return this.enqueue(async () => {
+      if (this.connection?.lease.state !== "owned" || !this.connection.lease.generation)
+        throw documentStateError("This pane does not own the editing session.")
+      this.connection = await this.transport.lease("release", this.base, this.connection.lease.generation)
+      this.show("not-saved", "Saving released. Your local Word edits remain in this file.")
+    })
   }
 
   start(): Promise<boolean> {
     return this.enqueue(async () => {
       await this.restoreCheckpoint()
-      await this.heartbeat()
-      await this.capture()
+      // Opening/reconstructing a pane is read-only. It must not create a
+      // version or compete for ownership before an explicit saving action.
+      await this.inspect(false)
+      this.show(
+        "not-saved",
+        this.canWrite() ? "Ready to save. Choose Save to doc.haus to send this document." : this.blockedMessage(),
+      )
     })
   }
 
@@ -153,9 +272,14 @@ export class WordSync {
         this.show("not-saved", "You have new changes in Word. Choose Save to doc.haus before closing.")
         await this.heartbeat(true)
       }
+      if (this.pending && this.now() >= this.nextRetry) await this.flush()
+      await this.inspect(false)
+      if (!this.canWrite()) {
+        this.show("not-saved", this.blockedMessage())
+        return
+      }
       await this.heartbeat()
       if (this.now() < this.nextRetry) return
-      await this.flush()
       await this.capture()
     })
   }
@@ -169,14 +293,15 @@ export class WordSync {
       await this.explicitSave()
       this.show("saving", "Finishing in Word…")
       try {
-        // Clearing the remote marker can take time. Changes during that request
-        // must restore the marker before allowing any completion message.
-        await this.transport.done()
+        // Releasing editing can take time. Changes during that request must
+        // keep Word open; release never grants a later automatic claim.
+        this.connection = await this.transport.done(this.base, this.connection!.lease.generation!)
         if (!(await this.matchesAcknowledgement())) {
           throw documentStateError("Word has new changes. Choose Done in Word again before closing.")
         }
       } catch (error) {
-        // A lost response may still have cleared the remote marker.
+        // A lost response may still have released editing. A heartbeat can
+        // renew only a lease that this session still owns.
         this.completed = false
         try {
           await this.heartbeat(true)
@@ -230,13 +355,55 @@ export class WordSync {
     this.completed = false
     this.show("saving", "Saving in Word…")
     await this.restoreCheckpoint()
+    // Retry already-sent bytes with their original fence before inspecting a
+    // possibly advanced server base; only the server may confirm a lost ACK.
+    try {
+      await this.flush()
+    } catch (error) {
+      const state = error instanceof ConnectionError && !error.retryable ? error.connection : undefined
+      if (
+        !this.pending ||
+        state?.version.state !== "current" ||
+        state.lease.state !== "available" ||
+        state.version.current?.id !== this.pending.base ||
+        this.base !== this.pending.base
+      )
+        throw error
+      // The refused generation cannot be reused. Only explicit saving may
+      // reclaim an unchanged base; retain pending bytes until that claim wins.
+      this.connection = state
+      await this.inspect(true)
+      if (!this.discardFencedPending()) throw documentStateError(this.blockedMessage())
+    }
+    await this.inspect(true)
+    if (!this.canWrite()) throw documentStateError(this.blockedMessage())
     await this.host.save()
-    await this.flush()
     if (!(await this.capture(true)))
       throw documentStateError("Word has new changes. Try Save to doc.haus again before closing.")
   }
 
+  private discardFencedPending(): boolean {
+    const pending = this.pending
+    if (
+      !pending ||
+      !this.canWrite() ||
+      this.base !== pending.base ||
+      this.connection!.version.current?.id !== pending.base ||
+      this.connection!.lease.generation === pending.generation
+    )
+      return false
+    // No version advanced, and a deliberate claim/takeover has a new fence.
+    // The local Word document is untouched; export it anew rather than replay
+    // an unacknowledged snapshot under a different generation.
+    this.pending = undefined
+    return true
+  }
+
   private async capture(requireAcknowledgement = false): Promise<boolean> {
+    if (!this.canWrite()) {
+      this.show("not-saved", this.blockedMessage())
+      return false
+    }
     await this.restoreCheckpoint()
     if (!(await this.host.saved())) {
       this.show("not-saved", "You have changes in Word. Choose Save to doc.haus before closing.")
@@ -256,8 +423,16 @@ export class WordSync {
       this.showSaved()
       return true
     }
-    this.pending = { bytes, fingerprint, base: this.base }
+    if (!this.canWrite()) {
+      this.show("not-saved", this.blockedMessage())
+      return false
+    }
+    this.pending = { bytes, fingerprint, base: this.base, generation: this.connection!.lease.generation! }
     await this.flush()
+    if (!this.canWrite()) {
+      this.show("not-saved", this.blockedMessage())
+      return false
+    }
     if (!(await this.matchesAcknowledgement())) {
       this.show("not-saved", "You have new changes in Word. Choose Save to doc.haus before closing.")
       return false
@@ -295,7 +470,7 @@ export class WordSync {
     let response: WordSaveResponse | undefined
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        response = await this.transport.save(pending.bytes, pending.base)
+        response = await this.transport.save(pending.bytes, pending.base, pending.generation)
         break
       } catch (error) {
         if (!(error instanceof ConnectionError) || !error.retryable || attempt === 1) throw error
@@ -304,6 +479,7 @@ export class WordSync {
     }
     if (!response) throw new ConnectionError("doc.haus did not confirm the save. Try Save to doc.haus again.")
     this.base = response.version.id
+    this.connection = response.connection
     this.acknowledgement = {
       base: this.base,
       fingerprint: pending.fingerprint,

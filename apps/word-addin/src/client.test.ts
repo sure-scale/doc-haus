@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
-import { WordClient, httpsOrigin, isCurrentPaneVersion, readLink } from "./client"
+import { ConnectionError, WordClient, httpsOrigin, isCurrentPaneVersion, readLink } from "./client"
 import { renderManifest } from "./manifest"
-import { WORD_ADDIN_ID, WORD_ADDIN_VERSION } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_ADDIN_ID, WORD_ADDIN_VERSION, type WordConnectionState } from "../../../dochaus/lib/word-addin-contract"
 
 const link = {
   version: 1 as const,
@@ -14,6 +14,11 @@ const link = {
   token: "synthetic-test-capability",
   baseVersion: "original",
 }
+
+const connection = (id = "v1"): WordConnectionState => ({
+  version: { base: { id, number: 1 }, current: { id, number: 1 }, state: "current" },
+  lease: { state: "owned", generation: "generation", expiresAt: 90_000 },
+})
 
 test("only same-origin HTTPS receivers receive a document capability", () => {
   expect(readLink(link, link.apiOrigin)).toEqual(link)
@@ -35,9 +40,13 @@ test("save uses bearer-only POST, disallows redirects, and requires a version ac
   const client = new WordClient(link, "session", async (input, options) => {
     url = String(input)
     init = options
-    return Response.json({ version: { id: "v1", number: 1, parent: "original", created: true }, overlap: false })
+    return Response.json({
+      version: { id: "v1", number: 1, parent: "original", created: true },
+      overlap: false,
+      connection: connection(),
+    })
   })
-  const value = await client.save(new Uint8Array([1]), "original")
+  const value = await client.save(new Uint8Array([1]), "original", "generation")
   expect(value.version.id).toBe("v1")
   expect(url).toBe("https://localhost:4612/word/saves")
   expect(url).not.toContain(link.token)
@@ -46,8 +55,9 @@ test("save uses bearer-only POST, disallows redirects, and requires a version ac
   expect(init?.referrerPolicy).toBe("no-referrer")
   expect(new Headers(init?.headers).get("x-dochaus-word-base-version")).toBe("original")
   expect(new Headers(init?.headers).get("x-dochaus-word-version")).toBe(WORD_ADDIN_VERSION)
+  expect(new Headers(init?.headers).get("x-dochaus-word-lease")).toBe("generation")
   const unconfirmed = new WordClient(link, "session", async () => Response.json({ ok: true }))
-  await expect(unconfirmed.save(new Uint8Array([1]), "original")).rejects.toThrow("did not confirm")
+  await expect(unconfirmed.save(new Uint8Array([1]), "original", "generation")).rejects.toThrow("did not confirm")
 })
 
 test("manifest uses the shared identity and designated auto-open pane", () => {
@@ -72,7 +82,7 @@ test("an outdated client receives clear update guidance without retrying", async
     requests++
     return new Response(null, { status: 426 })
   })
-  await expect(client.save(new Uint8Array([1]), "original")).rejects.toThrow("out of date")
+  await expect(client.save(new Uint8Array([1]), "original", "generation")).rejects.toThrow("out of date")
   expect(requests).toBe(1)
 })
 
@@ -104,29 +114,25 @@ test("save deadline covers a success body that stalls after headers", async () =
   })
   try {
     const client = new WordClient(link, "session", (_url, init) => fetch(server.url, init), 25)
-    await expect(client.save(new Uint8Array([1]), "original")).rejects.toThrow("did not confirm")
+    await expect(client.save(new Uint8Array([1]), "original", "generation")).rejects.toThrow("did not confirm")
   } finally {
     server.stop(true)
   }
 })
 
-test("heartbeat and Done release unused success bodies", async () => {
-  let cancelled = 0
-  const client = new WordClient(
-    link,
-    "session",
-    async () =>
-      new Response(
-        new ReadableStream({
-          cancel() {
-            cancelled++
-          },
-        }),
-      ),
-  )
-  await client.heartbeat()
-  await client.done()
-  expect(cancelled).toBe(2)
+test("heartbeat and Done read authoritative state and carry the current base and fence", async () => {
+  const requests: RequestInit[] = []
+  const client = new WordClient(link, "session", async (_url, init) => {
+    requests.push(init!)
+    return Response.json(connection())
+  })
+  expect(await client.heartbeat("v1", "generation")).toEqual(connection())
+  expect(await client.done("v1", "generation")).toEqual(connection())
+  for (const request of requests) {
+    expect(new Headers(request.headers).get("x-dochaus-word-base-version")).toBe("v1")
+    expect(new Headers(request.headers).get("x-dochaus-word-lease")).toBe("generation")
+    expect(new Headers(request.headers).get("x-dochaus-word-session")).toBe("session")
+  }
 })
 
 test("default transport invokes native fetch with the global receiver", async () => {
@@ -139,14 +145,70 @@ test("default transport invokes native fetch with the global receiver", async ()
       Response.json({
         version: { id: "v1", number: 1, parent: "original", created: true },
         overlap: false,
+        connection: connection(),
       }),
     )
   } as unknown as typeof fetch
   try {
     const client = new WordClient(link, "session")
-    expect((await client.save(new Uint8Array([1]), "original")).version.id).toBe("v1")
+    expect((await client.save(new Uint8Array([1]), "original", "generation")).version.id).toBe("v1")
     expect(called).toBe(true)
   } finally {
     globalThis.fetch = previous
+  }
+})
+
+test("lease commands send conditional takeover observations and the release fence", async () => {
+  const requests: RequestInit[] = []
+  const client = new WordClient(link, "session", async (_url, init) => {
+    requests.push(init!)
+    return Response.json(connection("original"))
+  })
+  await client.lease("inspect", "original")
+  await client.lease("claim", "original")
+  await client.lease("takeover", "original", undefined, { current: "observed", generation: "observed-fence" })
+  await client.lease("release", "original", "generation")
+  expect(requests.map((request) => JSON.parse(String(request.body)))).toEqual([
+    { action: "inspect", baseVersion: "original" },
+    { action: "claim", baseVersion: "original" },
+    { action: "takeover", baseVersion: "original", expectedCurrent: "observed", expectedGeneration: "observed-fence" },
+    { action: "release", baseVersion: "original" },
+  ])
+  expect(new Headers(requests[3]!.headers).get("x-dochaus-word-lease")).toBe("generation")
+})
+
+test("conflict responses preserve authoritative version and ownership without retry permission", async () => {
+  for (const status of [409, 410, 423]) {
+    const state = connection("original")
+    state.version.state = "stale"
+    state.version.current = { id: "newer", number: 2 }
+    state.lease.state = "other"
+    const client = new WordClient(link, "session", async () => Response.json(state, { status }))
+    try {
+      await client.save(new Uint8Array([1]), "original", "generation")
+      throw new Error("Expected refusal")
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConnectionError)
+      expect((error as ConnectionError).retryable).toBe(false)
+      expect((error as ConnectionError).connection).toEqual(state)
+    }
+  }
+})
+
+test("malformed or inconsistent save ownership cannot become an acknowledgement", async () => {
+  for (const state of [
+    undefined,
+    { version: {}, lease: {} },
+    connection("different"),
+    { ...connection(), lease: { state: "owned", generation: "different", expiresAt: 90_000 } },
+  ]) {
+    const client = new WordClient(link, "session", async () =>
+      Response.json({
+        version: { id: "v1", number: 1, parent: "original", created: true },
+        overlap: false,
+        connection: state,
+      }),
+    )
+    await expect(client.save(new Uint8Array([1]), "original", "generation")).rejects.toThrow("did not confirm")
   }
 })

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { fetchWordConfig, fetchWordDocuments, linkedWordDocument, revokeWordDocument, type WordOpenDocument } from "../src/api/ingest/word"
+import { fetchWordConfig, fetchWordDocuments, linkedWordDocument, recoverWordEditing, revokeWordDocument, type WordOpenDocument } from "../src/api/ingest/word"
 import { wordSetupReason, wordVersionsChanged, wordWarning } from "../src/components/WordDocuments"
 import { versionOrigin } from "../src/components/DocumentVersions"
 
@@ -9,6 +9,17 @@ afterEach(() => { globalThis.fetch = originalFetch })
 const entry = (patch: Partial<WordOpenDocument> = {}): WordOpenDocument => ({ name: "Agreement.docx", open: true, currentVersion: "v-1", overlap: false, ...patch })
 
 describe("Word connection", () => {
+  test("editing recovery compares the displayed version and lease before changing ownership", async () => {
+    let sent: { url: string; init?: RequestInit } | undefined
+    globalThis.fetch = (async (input, init) => {
+      sent = { url: String(input), init }
+      return Response.json({ ok: true })
+    }) as typeof fetch
+    await recoverWordEditing("m", entry({ lease: { state: "other", generation: "lease-a", expiresAt: Date.now() + 1000 } }), "takeover")
+    expect(sent).toMatchObject({ url: expect.stringContaining("/matters/m/documents/word/recover?name=Agreement.docx"), init: {
+      method: "POST", body: JSON.stringify({ action: "takeover", expectedCurrent: "v-1", expectedGeneration: "lease-a" }),
+    } })
+  })
   test("a linked copy sends the browser origin through normal ingest and returns the DOCX without reading its grant", async () => {
     let sent: { url: string; init?: RequestInit } | undefined
     const bytes = new Uint8Array([80, 75, 3, 4])
@@ -50,6 +61,11 @@ describe("Word connection", () => {
 })
 
 describe("Word status semantics", () => {
+  test("an active editing lease explains blocked changes even after heartbeat contact stops", () => {
+    const locked = entry({ open: false, lease: { state: "other", generation: "lease-a", expiresAt: Date.now() + 1000 } })
+    expect(wordWarning([locked], "Agreement.docx")).toContain("Changes here are locked")
+    expect(wordWarning([locked], "Schedule.docx")).toBeUndefined()
+  })
   test("only received version identities trigger a document refresh; heartbeat and overlap changes alone do not", () => {
     expect(wordVersionsChanged([entry()], [entry({ open: false, overlap: true })])).toBe(false)
     expect(wordVersionsChanged([entry()], [entry({ currentVersion: "v-2" })])).toBe(true)
@@ -63,7 +79,7 @@ describe("Word status semantics", () => {
     const warning = wordWarning([entry(), entry({ name: "Schedule.docx" })], "Another.docx")
     expect(warning).toStartWith("Agreement.docx, Schedule.docx are open in Word.")
     expect(warning).toContain("Use Save to doc.haus in Word and close the document before changing it here")
-    expect(warning).toContain("separate versions")
+    expect(warning).toContain("compared with the current version")
     expect(wordWarning([entry(), entry({ name: "Schedule.docx" })], "Schedule.docx")).toStartWith("Schedule.docx is open in Word.")
   })
 

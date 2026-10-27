@@ -1,12 +1,70 @@
 import { describe, expect, test } from "bun:test"
 import { ConnectionError } from "./client"
-import { DocumentStateError } from "./office"
-import { WordSync, browserCheckpoints, type Acknowledgement, type Checkpoints } from "./sync"
-import type { WordSaveResponse } from "../../../dochaus/lib/word-addin-contract"
+import { DocumentStateError, type WordHost } from "./office"
+import {
+  WordSync as CheckedWordSync,
+  browserCheckpoints,
+  type Acknowledgement,
+  type Checkpoints,
+  type PaneState,
+} from "./sync"
+import type { WordConnectionState, WordSaveResponse } from "../../../dochaus/lib/word-addin-contract"
 
+// These existing save/close regressions use a small protocol fixture.
+// Ownership races and startup are exercised separately with a stateful server.
+const connection = (id: string): WordConnectionState => ({
+  version: { base: { id, number: 1 }, current: { id, number: 1 }, state: "current" },
+  lease: { state: "owned", generation: "test-generation", expiresAt: 90_000 },
+})
+class WordSync extends CheckedWordSync {
+  constructor(
+    base: string,
+    host: WordHost,
+    transport: {
+      save(bytes: Uint8Array, base: string): Promise<WordSaveResponse>
+      heartbeat(): Promise<void>
+      done(): Promise<void>
+    },
+    checkpoints: Checkpoints,
+    render: (state: PaneState) => void,
+    fingerprint?: (bytes: Uint8Array) => Promise<string>,
+    wait?: (ms: number) => Promise<void>,
+    now?: () => number,
+  ) {
+    let owned = true
+    const state = (base: string): WordConnectionState =>
+      owned ? connection(base) : { ...connection(base), lease: { state: "available", expiresAt: null } }
+    super(
+      base,
+      host,
+      {
+        lease: async (action, base) => {
+          if (action === "claim") owned = true
+          return state(base)
+        },
+        save: transport.save,
+        heartbeat: async (base) => {
+          await transport.heartbeat()
+          return connection(base)
+        },
+        done: async (base) => {
+          await transport.done()
+          owned = false
+          return state(base)
+        },
+      },
+      checkpoints,
+      render,
+      fingerprint,
+      wait,
+      now,
+    )
+  }
+}
 const acknowledgement = (id: string, number = 1): WordSaveResponse => ({
   version: { id, number, parent: null, created: true },
   overlap: false,
+  connection: connection(id),
 })
 const checkpoints = (initial: Acknowledgement | null = null): Checkpoints => ({
   read: () => initial,
@@ -165,13 +223,13 @@ describe("confirmed Word saves", () => {
     await sync.start()
     expect(exports).toBe(0)
     saved = true
-    await sync.tick()
+    await sync.refresh()
     expect(exports).toBe(1)
     expect(uploads).toBe(0)
     expect(sync.snapshot().status).toBe("not-saved")
   })
 
-  test("initial saved state is captured and changed same-minute content is detected without timestamps", async () => {
+  test("explicitly enabled sync captures changed same-minute saved content without timestamps", async () => {
     let bytes = 1
     const bases: string[] = []
     const sync = new WordSync(
@@ -195,6 +253,8 @@ describe("confirmed Word saves", () => {
       immediate,
     )
     await sync.start()
+    expect(bases).toEqual([])
+    await sync.refresh()
     await sync.tick()
     expect(bases).toEqual(["base"])
     bytes = 2
@@ -227,8 +287,10 @@ describe("confirmed Word saves", () => {
         immediate,
       )
       await sync.start()
-      expect(requests).toEqual(bytes === 1 ? [] : ["original"])
-      expect(sync.snapshot().acknowledgement?.base).toBe(bytes === 1 ? "ack" : "new")
+      expect(requests).toEqual([])
+      expect(sync.snapshot().acknowledgement?.base).toBe(bytes === 1 ? "ack" : undefined)
+      await sync.save()
+      expect(requests).toEqual([bytes === 1 ? "ack" : "original"])
     }
   })
 
@@ -270,7 +332,7 @@ describe("confirmed Word saves", () => {
         immediate,
       )
       await sync.start()
-      expect(events.slice(0, 2)).toEqual(["export", "heartbeat"])
+      expect(events).toEqual(["export"])
       expect(bases).toEqual([])
       expect(statuses).not.toContain("saved")
       expect(sync.snapshot().status).toBe("not-saved")
@@ -320,7 +382,7 @@ describe("confirmed Word saves", () => {
     expect(closes).toBe(0)
     time = 35_000
     await sync.tick()
-    expect(heartbeats).toBe(3)
+    expect(heartbeats).toBe(2)
   })
 
   test("Done cannot discard new changes made while the saved snapshot is uploading", async () => {
@@ -380,7 +442,7 @@ describe("confirmed Word saves", () => {
       fingerprint,
       immediate,
     )
-    expect(await sync.start()).toBe(true)
+    expect(await sync.save()).toBe(true)
     expect(sync.snapshot().status).toBe("saved")
     available = false
     expect(await sync.save()).toBe(false)
@@ -414,7 +476,7 @@ describe("confirmed Word saves", () => {
         immediate,
       )
       if (explicit) expect(await sync.save()).toBe(false)
-      else await sync.start()
+      else await sync.refresh()
       expect(sync.snapshot().acknowledgement?.fingerprint).toBe("1")
       expect(sync.snapshot().status).toBe("not-saved")
       expect(published).not.toContain("saved")
@@ -471,7 +533,7 @@ describe("confirmed Word saves", () => {
     expect(sync.snapshot().status).toBe("saved")
   })
 
-  test("Done restores heartbeat if edits arrive during the done request, including native-saved edits", async () => {
+  test("Done does not close or reclaim its released lease if edits arrive during the request", async () => {
     for (const nativeSaved of [false, true]) {
       let bytes = 1
       let saved = true
@@ -507,7 +569,7 @@ describe("confirmed Word saves", () => {
         immediate,
       )
       expect(await sync.done()).toBe(false)
-      expect(heartbeats).toBe(1)
+      expect(heartbeats).toBe(0)
       expect(closes).toBe(0)
       expect(sync.snapshot().status).toBe("not-saved")
       expect(statuses).not.toContain("done")
@@ -579,7 +641,7 @@ describe("confirmed Word saves", () => {
     }
   })
 
-  test("close-time edits or an unverifiable context restore heartbeat without retaining Saved", async () => {
+  test("close-time edits or an unverifiable context do not retain Saved or reclaim a released lease", async () => {
     for (const outcome of ["unsaved", "native-saved", "declined", "unavailable"]) {
       let bytes = 1
       let saved = true
@@ -617,11 +679,11 @@ describe("confirmed Word saves", () => {
       expect(await sync.done()).toBe(false)
       expect(sync.snapshot().status).toBe("not-saved")
       expect(sync.snapshot().message).toContain("last save is in doc.haus")
-      expect(heartbeats).toBe(1)
+      expect(heartbeats).toBe(0)
     }
   })
 
-  test("editing after Done resumes the heartbeat and saving controls for unsaved and native-saved changes", async () => {
+  test("editing after Done requires an explicit claim before new changes can save", async () => {
     for (const nativeSaved of [false, true]) {
       let bytes = 1
       let saved = true
@@ -655,8 +717,8 @@ describe("confirmed Word saves", () => {
       saved = nativeSaved
       time = nativeSaved ? 20_000 : 5_000
       await sync.tick()
-      expect(heartbeats).toBe(1)
-      expect(sync.snapshot().status).toBe(nativeSaved ? "saved" : "not-saved")
+      expect(heartbeats).toBe(0)
+      expect(sync.snapshot().status).toBe("not-saved")
       expect(sync.snapshot().busy).toBe(false)
       expect(await sync.save()).toBe(true)
       expect(sync.snapshot().acknowledgement?.fingerprint).toBe("2")

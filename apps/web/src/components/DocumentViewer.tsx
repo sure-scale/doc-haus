@@ -38,7 +38,7 @@ import backdropClose from "./backdropClose"
 import { withSafeStyleValues } from "./docx-style-values"
 import { ProposalRedline } from "./redline"
 import { useDocumentNavigation } from "./DocumentNavigation"
-import { WordBadge, WordOpenControl, WordSetup, WordWarning, useWordRefresh } from "./WordDocuments"
+import { WordBadge, WordOpenControl, WordSetup, WordWarning, useWordRefresh, useWordEditingLocked } from "./WordDocuments"
 
 // How a Word file with tracked changes is painted: insertions underlined and
 // deletions struck through in their author's colour (styles.css), moves,
@@ -178,6 +178,7 @@ function WordDocumentViewer({
   // PDFs render natively in an <iframe>; the docxodus WASM path and the redline
   // pipeline are DOCX-only. A PDF carries no redlines until it is converted.
   const isPdf = name.toLowerCase().endsWith(".pdf")
+  const wordLocked = useWordEditingLocked(name)
   const [converting, setConverting] = useState(false)
   const { isReady, error: wasmError, convertToHtml } = useDocxodus("/wasm/")
   const [html, setHtml] = useState<string>()
@@ -840,14 +841,14 @@ function WordDocumentViewer({
                 <div className="changes-actions">
                   <button
                     className="btn-accept"
-                    disabled={busy !== undefined || redlines.some((row) => row.stale)}
+                    disabled={wordLocked || busy !== undefined || redlines.some((row) => row.stale)}
                     onClick={() => resolve(() => acceptAllRedlines(matterId, name), "all")}
                   >
                     Accept all
                   </button>
                   <button
                     className="btn-reject"
-                    disabled={busy !== undefined}
+                    disabled={wordLocked || busy !== undefined}
                     onClick={() => resolve(() => rejectAllRedlines(matterId, name), "all")}
                   >
                     Reject all
@@ -868,14 +869,14 @@ function WordDocumentViewer({
                   <div className="change-buttons">
                     <button
                       className="btn-accept"
-                      disabled={busy !== undefined || r.stale}
+                      disabled={wordLocked || busy !== undefined || r.stale}
                       onClick={() => resolve(() => acceptRedline(matterId, r.id), r.id)}
                     >
                       {busy === r.id ? "..." : "Accept"}
                     </button>
                     <button
                       className="btn-reject"
-                      disabled={busy !== undefined}
+                      disabled={wordLocked || busy !== undefined}
                       onClick={() => resolve(() => rejectRedline(matterId, r.id), r.id)}
                     >
                       Reject
@@ -1169,6 +1170,7 @@ export function preparedNotice(batch: number[], redlines: Redline[]) {
 // An accept into a drafting run's body also records the change in the run's
 // drafting notes. When that could not happen the accept still stands; say so.
 const notesSkipReasons: Record<string, string> = {
+  editing_locked: "it is being edited in Word; finish there and refresh before updating it",
   notes_not_delivered: "the run has no delivered drafting notes",
   notes_missing: "the notes file is no longer in the matter",
   notes_not_deliverable: "the notes file is no longer a delivered document",
@@ -1185,6 +1187,7 @@ export function notesNotUpdatedNotice(result: AcceptResult | void, all = false) 
 // from the accepted body. When that could not happen the accept still stands and
 // the redline shows the body as it was; say so.
 const redlineSkipReasons: Record<string, string> = {
+  editing_locked: "it is being edited in Word; finish there and refresh before updating it",
   redline_not_delivered: "the run has no delivered redline",
   redline_missing: "the redline file is no longer in the matter",
   redline_not_deliverable: "the redline file is no longer a delivered document",
@@ -1202,6 +1205,7 @@ export function redlineNotUpdatedNotice(result: AcceptResult | void) {
 // rebuilds that file. When that could not happen the accept still stands and the
 // combined file holds the parts as they were; say so.
 const combinedSkipReasons: Record<string, string> = {
+  editing_locked: "it is being edited in Word; finish there and refresh before updating it",
   combined_missing: "the combined file is no longer in the matter",
   combined_not_deliverable: "the combined file is no longer a delivered document",
   pending_combined_proposals: "the combined file has pending proposed changes",

@@ -60,7 +60,9 @@ install it when missing, and then starts the stack like `start.sh`. In Git Bash,
 ## Edit in Word
 
 Use **Open in Word** on a document, then **Save to doc.haus** in the Word pane
-and wait for confirmation before closing. Background sync is best effort and
+and wait for confirmation before closing. The pane checks versions and claims
+editing on the first save; doc.haus blocks competing writes until you finish or
+release the lock. Background sync is best effort and
 can combine saves. The installers offer add-in setup; existing users and firms
 can follow [Word add-in setup](docs/word-addin.md).
 

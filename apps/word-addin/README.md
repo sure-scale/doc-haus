@@ -21,26 +21,61 @@ startup before Office access. Token requests also carry the version; ingest
 rejects old clients with HTTP 426 before recording contact or accepting bytes.
 After updating this version, run Word setup again, restart Word and open a fresh
 handout. File equality alone does not prove Office adopted its cached manifest.
-This gate does not elect a writer among multiple current-version panes or adopt
-another copy's latest parent. It changes no document comparison or save rules.
+This compatibility gate does not elect a writer or adopt another copy's latest
+parent. The server checks versions and a recoverable editing lease separately.
+
+Opening or reconstructing the pane only checks the current version and editing
+status. It does not claim editing ownership, send a heartbeat or upload a file.
+Choose **Save to doc.haus** or **Done in Word** to claim a current, available
+document before saving. **Start saving here** can also claim it explicitly.
+Save and Done are disabled for stale versions or another editor's lease. A new
+pane cannot inherit another pane's lease from a copied link.
+Background polling checks status without claiming. **Check status** also does
+not claim merely because another editor became unavailable during its request.
+
+**Take over saving here** is a deliberate operation for a current copy held by
+another session. It sends the displayed current version and lease generation;
+a concurrent change refuses the takeover. **Release editing** leaves Word and
+its local changes open. Heartbeats renew only the existing owner. Expiry, a
+takeover or release pauses saving until an explicit eligible claim. Word still
+allows native local editing; this is an enforced doc.haus writing lease, not a
+native Word edit lock.
+
+Stale, removed or externally changed versions cannot save or finish. Keep the
+local file with Save As, return to the matter in doc.haus, compare **Versions**
+or use **Open in Word** for a fresh copy. The pane never silently replaces its
+base with the server's latest ID. Matching local acknowledgement fingerprints
+can recover an earlier confirmed parent, but a different forwarded copy keeps
+its embedded base and must resolve the conflict.
 
 **Save to doc.haus** saves in Word, exports the DOCX in 1 MiB slices, closes the
 Office file handle, and waits for an acknowledged version. **Done in Word** does
-the same before ending the live heartbeat and closing the current document.
+the same before releasing editing ownership and closing the current document.
 Closing requires WordApi 1.5; the pane still supports WordApi 1.1 and provides a
 manual-close confirmation on older hosts or when closing fails. It always uses
 Word's `Save` close behavior. New changes detected before closing or after a
-close error restore the heartbeat and need another save. See Microsoft's
-[Document.close documentation](https://learn.microsoft.com/en-us/javascript/api/word/word.document?view=word-js-1.5#word-word-document-close-member(1)).
+close error keep the document open and need another save. After release,
+explicitly start saving again before sending new changes. See Microsoft's
+[Document.close documentation](<https://learn.microsoft.com/en-us/javascript/api/word/word.document?view=word-js-1.5#word-word-document-close-member(1)>).
 The final fingerprint check, settings persistence and native close are not
 atomic. A later edit is preserved locally by `Save` and can be recovered by
 reopening the file.
 Save, export, retry, background sync,
 and Done run in a single queue. Failed uploads keep that saved snapshot in memory
-and retry the same bytes/base, at most twice per operation, before allowing the
-user to retry. No document bytes are placed in browser storage.
+and retry the same bytes/base/lease generation, at most twice per operation,
+before allowing the
+user to retry. Only a server acknowledgement advances the parent; a lost
+response is retried under its original generation before checking a potentially
+advanced server version. A fenced or expired retry is refused. If the server
+proves that original base is still current and available, an explicit Save can
+claim a new generation, then save/export the current Word document anew. A
+successful deliberate takeover can replace an old pending generation only when
+the same base remains current. Neither path replays old bytes under a new fence
+or adopts a newer parent. No document
+bytes are placed in browser storage.
 
-While the pane stays open, a five-second poll checks `document.saved` and hashes
+Once editing is deliberately claimed, a five-second poll checks
+`document.saved` and hashes
 sorted uncompressed DOCX parts to ignore ZIP timestamp/order/compression churn.
 Some desktop Word exports also rotate revision-session identifiers without an
 edit. For comparison only, the fingerprint parses XML and removes the known
@@ -106,22 +141,24 @@ change before close. The original link identity and
 other fields are preserved. Other physical copies are not modified. On reopen,
 stored metadata is used only if
 the current exported fingerprint matches. An edited/forwarded copy otherwise
-starts from its embedded base; the server can disclose overlapping changes
-instead of silently treating it as the latest copy. Storage may be unavailable
+starts from its embedded base; the server blocks stale saves instead of silently
+treating it as the latest copy. Storage may be unavailable
 or cleared; the saved file is still recoverable on reopen.
 A changed comparison algorithm can invalidate an older stored fingerprint. One
 new acknowledged save establishes the current checkpoint; an unmatched old
-checkpoint still uses the embedded base and preserves overlap reporting.
+checkpoint still uses the embedded base and preserves stale-copy protection.
 Office can reconstruct the pane before Done. A new client whose initial content
 differs from its cached acknowledgement retains the embedded base. This can
-conservatively branch two saves from that base and flag overlap within one
-physical copy; Done-only persistence does not cover earlier pane reconstructions.
+conservatively block saving within one physical copy; Done-only persistence
+does not cover earlier pane reconstructions. Preserve the file and compare or
+reopen the current version rather than bypassing this check.
 Never replace this check with token-wide latest-version adoption, which could
 hide a real forwarded-copy fork.
 
 A save is confirmed only after a fresh saved-file fingerprint matches the
-acknowledged upload. Done checks again after its server response and restores
-the heartbeat if editing continued. The pane keeps a light saved-state watch
-after Done, with periodic content checks, so later edits resume the connection;
-Save also remains available. Network deadlines cover the complete save response,
+acknowledged upload. Done checks again after its server response and keeps the
+document open if
+editing continued. The pane keeps a light saved-state watch after Done, with
+periodic content checks; later edits require an explicit editing claim before
+saving again. Network deadlines cover the complete save response,
 including its JSON body.

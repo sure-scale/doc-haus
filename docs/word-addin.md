@@ -7,7 +7,9 @@ document. Choose **Save to doc.haus** and wait for confirmation before closing.
 closes that document. If Word cannot close it, the pane keeps the saved
 confirmation visible so you can close it manually.
 
-The pane also checks saved content in the background. This is best effort:
+Opening a linked copy checks its version without changing doc.haus or taking an
+editing lock. The first **Save to doc.haus** claims editing if the copy is current.
+The pane then checks saved content in the background. This is best effort:
 rapid saves may become one version, and closing Word can interrupt an upload.
 Reopening a linked copy can recover its last saved state. Native Word Save alone
 does not confirm that doc.haus received it. When offline, keep the file and use
@@ -58,7 +60,7 @@ DOCHAUS_WORD_EXTERNAL_HTTPS=1
 ```
 
 Terminate TLS at your existing reverse proxy. Forward `/word-addin/*` and only
-POST/OPTIONS `/word/saves`, `/word/heartbeat`, `/word/done` to ingest. Do not
+POST/OPTIONS `/word/lease`, `/word/saves`, `/word/heartbeat`, `/word/done` to ingest. Do not
 expose the rest of the ingest API through this Word receiver. In Docker, build
 the pane with `bun run --cwd apps/word-addin build` and include its `dist` assets
 with the server. The normal start scripts build these assets automatically.
@@ -75,21 +77,31 @@ cross-machine Office acceptance still needs validation in the target deployment.
 Word uploads use the existing document revision writer. They retain tracked
 changes and comments, attribute the author from Word's last-modified property
 (or `unknown`), refresh source search content and appear as **Word** versions.
-The parent records the version edited in Word. If doc.haus or another Word copy
-changed the document meanwhile, both versions remain and the UI warns about the
-overlap. A clean Word revision becomes the accepted working base for subsequent
+The parent records the version edited in Word. A stale copy cannot overwrite a
+newer version. A clean Word revision becomes the accepted working base for subsequent
 drafting; unresolved tracked changes retain the existing review guard.
 
-Word can reload its pane while a file is open. If its saved content no longer
-matches the previous confirmation exactly, the pane keeps the last version link
-stored in that file. This can create an extra version and an overlap warning even
-when you are editing alone, especially on Windows. Your edits are retained;
-compare the versions in doc.haus. Done updates the link in this physical copy
-before closing, but cannot prevent every earlier pane reload.
+The pane shows this copy's base version and the current version in doc.haus. It
+checks these before saving and after reconnecting. If Word reloads its pane, it
+can recover a confirmation only when the saved content matches exactly; it never
+assumes an older or forwarded copy is the newest version. Done updates the link
+in this physical copy before closing. If a copy is stale, keep its local file,
+return to the matter and compare its versions before opening a fresh linked copy.
+Keep any unsent local edits separately before replacing your Word copy.
 
-An active pane sends heartbeats. The matter warns before edits, acceptance or a
-drafting run while Word has a document open. The badge expires if the pane stops
-responding; it cannot prove a file is closed. Done in Word clears it promptly.
+One Word editor can hold the document's editing lock. While held, doc.haus
+refuses replacement, acceptance, rejection, restore, redaction and other writes
+to that document; viewing, comparing and downloading remain available. The pane
+renews its lock while connected. Done releases it; an abandoned lock expires
+after two minutes. **Release Word lock** and **Take over editing** in doc.haus
+compare the displayed version and owner before acting. Taking over disconnects
+earlier linked copies, whose local files remain intact. Expired or replaced
+owners must check their version and explicitly claim editing again.
+
+The lock protects writes to doc.haus. Word still allows local editing and native
+Save; the add-in cannot promise to disable those commands. Its Save and Done
+actions pause when the copy is stale or another editor owns the document.
+The separate open badge is a contact hint and cannot prove a file is closed.
 
 Each linked file contains a bearer capability that can add versions only to its
 own document and report its editing status. Treat a linked copy as able to save
@@ -106,7 +118,7 @@ feature therefore confirms explicit uploads and supplements them with polling,
 rather than promising one version for every native save. It adds a static pane,
 restricted HTTPS receiver, existing-version-writer integration and web controls.
 Focused regressions cover serialized saves, reconnect, malformed packages,
-revocation, document identity, overlap parents, source indexing, clean downloads
+revocation, document identity, stale versions, ownership recovery, source indexing, clean downloads
 and live-view refresh. Native Mac and Windows checks use isolated installations
 and synthetic documents. Firm deployment still needs acceptance in the target
 environment.

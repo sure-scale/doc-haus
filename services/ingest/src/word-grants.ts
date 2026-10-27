@@ -1,8 +1,10 @@
 import type { Database } from "bun:sqlite"
+import { createWordEditLeaseTable } from "../../../dochaus/lib/word-edit-lease"
 
 /** Write-only capabilities share the existing per-matter registry, never a
  * second document/version store. Only a SHA-256 digest is persisted. */
 export function createWordGrantTables(db: Database) {
+  createWordEditLeaseTable(db)
   db.run(`CREATE TABLE IF NOT EXISTS word_grants (
     token_hash TEXT PRIMARY KEY,
     document_id TEXT NOT NULL,
