@@ -1,7 +1,6 @@
 import type { DeskComparison, DeskSource, DeskSourcePreview, DeskSources, DeskVersions } from "../../../dochaus/lib/word-source-desk-contract"
 import { wordDiff, type Piece } from "../../../dochaus/lib/redline"
 import type { DeskRequest, DeskView } from "./desk-protocol"
-import type { WordSelectionSnapshot } from "./selection"
 
 export type DeskTransport = { request(input: DeskRequest): Promise<unknown> }
 export type DeskContext = { view: DeskView; documentName?: string; matterName?: string }
@@ -26,11 +25,10 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
       <nav class="desk-modes" aria-label="Document views"><button data-el="sources-mode" type="button" aria-pressed="true">Documents</button><button data-el="compare-mode" type="button" aria-pressed="false">Compare</button></nav>
       <button type="button" class="desk-icon" data-el="close" aria-label="${options.floating ? "Close window" : "Back to saving"}" title="${options.floating ? "Close window" : "Back to saving"}">×</button>
     </header>
-    <section data-el="source-tools"><div class="desk-document-bar">
+    <section data-el="source-tools"><div class="desk-document-bar" data-el="document-bar" hidden>
       <div class="desk-tabs" data-el="tabs" role="tablist" aria-label="Open documents"></div>
       <button type="button" data-el="open-document">+ Open document</button>
-      <div class="desk-reader-actions"><button type="button" class="desk-icon" data-el="find-toggle" aria-label="Find in document (Cmd or Ctrl+F)" title="Find in document (Cmd or Ctrl+F)" aria-expanded="false" hidden>⌕</button>
-        <button type="button" data-el="selection-toggle" title="Read the text highlighted in your Word draft">Read selected text</button></div>
+      <div class="desk-reader-actions"><button type="button" class="desk-icon" data-el="find-toggle" aria-label="Find in document (Cmd or Ctrl+F)" title="Find in document (Cmd or Ctrl+F)" aria-expanded="false" hidden>⌕</button></div>
       </div>
       <div class="desk-find" data-el="find-bar" hidden><label class="desk-find-scope" data-el="find-scope" for="desk-find-input"></label><input id="desk-find-input" data-el="find" type="search" aria-label="Find in document" placeholder="Find in document" maxlength="255" />
         <span data-el="find-count" role="status"></span><button class="desk-icon" type="button" data-el="find-previous" aria-label="Previous match" title="Previous match">‹</button><button class="desk-icon" type="button" data-el="find-next" aria-label="Next match" title="Next match">›</button><button class="desk-icon" type="button" data-el="find-close" aria-label="Close Find (Escape)" title="Close Find (Escape)">×</button></div>
@@ -38,7 +36,7 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
       <p class="desk-meta desk-update-status" data-el="update-status" role="status" hidden></p>
     </section>
     <section data-el="compare-tools" hidden><div class="desk-compare-controls"><label>Earlier<select data-el="base" aria-label="Earlier version"></select></label><span aria-hidden="true">→</span><label>Later<select data-el="current" aria-label="Later version"></select></label><button type="button" data-el="compare" hidden>Compare</button><button type="button" class="desk-icon" data-el="reload-versions" aria-label="Refresh version list" title="Refresh version list">↻</button></div><p class="desk-warning" data-el="compare-warning" hidden></p></section>
-    <div class="desk-columns" data-el="columns"><section class="desk-context" aria-label="Word selection" data-el="left" hidden></section><section class="desk-reader" aria-label="Saved document" data-el="right"></section></div>
+    <div class="desk-columns"><section class="desk-reader" aria-label="Saved document" data-el="right"></section></div>
     <p class="desk-error" role="alert" data-el="status" hidden></p>`
   const el = <T extends HTMLElement>(name: string) => root.querySelector(`[data-el="${name}"]`) as T
   const button = (name: string) => el<HTMLButtonElement>(name)
@@ -81,10 +79,6 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
   const documents = new Map<string, DeskSourcePreview>()
   let activeKey = ""
   let chooserOpen = true
-  let selectionVisible = false
-  let selection: WordSelectionSnapshot | undefined
-  let selectionLoading = false
-  let selectionError = ""
   let findOpen = false
   let findIndex = 0
   let findTotal = 0
@@ -122,8 +116,6 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
       if (!["close", "find-toggle", "find-close", "find-previous", "find-next"].includes(control.dataset.el ?? "")) control.disabled = busy()
     }
     button("find-previous").disabled = button("find-next").disabled = !findTotal
-    const show = root.querySelector<HTMLButtonElement>('[data-el="show"]')
-    if (show) show.disabled = busy() || !selection?.navigable
     const count = comparison?.changes.length ?? 0
     const previous = root.querySelector<HTMLButtonElement>('[data-el="previous"]')
     const next = root.querySelector<HTMLButtonElement>('[data-el="next"]')
@@ -152,8 +144,9 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
   function renderTabs() {
     const tabs = el("tabs")
     tabs.replaceChildren()
+    el("document-bar").hidden = !documents.size
     tabs.hidden = !documents.size
-    button("open-document").hidden = !documents.size && chooserOpen
+    button("open-document").hidden = !documents.size
     button("open-document").setAttribute("aria-expanded", String(chooserOpen))
     for (const [id, source] of documents) {
       const group = node("div", "", "desk-tab")
@@ -217,8 +210,6 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     if (disposed) return
     el("source-tools").hidden = mode !== "documents"
     el("compare-tools").hidden = mode !== "compare"
-    el("left").hidden = mode !== "documents" || !selectionVisible
-    el("columns").classList.toggle("has-selection", mode === "documents" && selectionVisible)
     button("sources-mode").setAttribute("aria-pressed", String(mode === "documents"))
     button("compare-mode").setAttribute("aria-pressed", String(mode === "compare"))
     const source = active()
@@ -229,8 +220,8 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     el<HTMLInputElement>("find").setAttribute("aria-label", source ? `Find in ${source.name}` : "Find in document")
     button("find-toggle").setAttribute("aria-expanded", String(findOpen))
     renderTabs(); renderList()
-    const left = el("left"), right = el("right")
-    left.replaceChildren(); right.replaceChildren()
+    const right = el("right")
+    right.replaceChildren()
     findTotal = 0
     const query = mode === "documents" && findOpen ? el<HTMLInputElement>("find").value : ""
     const highlighted = (area: HTMLElement, text: string) => {
@@ -253,32 +244,13 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
       }
       area.append(document.createTextNode(text.slice(from)))
     }
-    const textBlock = (text: string, className = "desk-text", searchable = true) => {
-      const block = node("div", "", className)
+    const textBlock = (text: string) => {
+      const block = node("div", "", "desk-text")
       block.tabIndex = 0
-      for (const paragraph of text.split(/\n+/)) { const p = node("p"); if (searchable) highlighted(p, paragraph); else p.textContent = paragraph; block.append(p) }
+      for (const paragraph of text.split(/\n+/)) { const p = node("p"); p.textContent = paragraph; block.append(p) }
       return block
     }
     if (mode === "documents") {
-      if (selectionVisible) {
-        left.setAttribute("aria-busy", String(selectionLoading))
-        const head = node("div", "", "desk-selection-head")
-        head.append(node("h3", "Selected text from Word"))
-        if (selection) head.append(node("time", date(selection.capturedAt), "desk-meta"))
-        if (selection?.navigable) head.append(action("show", "Show in Word", () => { if (!busy()) void work(async () => { await transport.request({ action: "show", selection: selection! }) }) }))
-        head.append(action("selection-close", "Close selected text", () => { selectionVisible = false; if (!documents.size) chooserOpen = true; render(); button("selection-toggle").focus() }, "×"))
-        left.append(head)
-        if (selectionLoading) {
-          const loading = node("p", "Reading selected text from Word…", "desk-empty")
-          loading.setAttribute("role", "status"); left.append(loading)
-        } else if (selectionError) {
-          const failed = node("p", selectionError, "desk-warning")
-          failed.setAttribute("role", "alert"); left.append(failed)
-        } else if (selection?.text) left.append(textBlock(selection.text, "desk-text", false))
-        else left.append(node("p", "Select text in your Word draft, then choose Read selected text.", "desk-empty"))
-        if (selection?.text && selection.reason) left.append(node("p", selection.reason, "desk-warning"))
-        if (selection?.text) details(left, ["Captured Word text; separate from saved matter versions.", "Show in Word requires one exact, unique passage in unchanged body text. Formatting and markup are not checked.", `Body text SHA-256 · ${selection.documentHash}`])
-      }
       right.hidden = !source
       if (source) {
         const paper = node("article", "", "desk-paper")
@@ -391,22 +363,6 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     })
     if (!disposed) focusTab()
   }
-  async function captureSelection() {
-    if (busy()) return
-    chooserOpen = false; selection = undefined; selectionVisible = true; selectionLoading = true; selectionError = ""
-    render()
-    el("left").scrollIntoView?.({ block: "nearest" })
-    await work(async () => {
-      try {
-        const snapshot = await transport.request({ action: "selection" }) as WordSelectionSnapshot
-        if (!disposed) selection = snapshot
-      } catch {
-        if (!disposed) selectionError = "Word could not read the selected text. Select a passage in your Word draft, then choose Read selected text again."
-      } finally {
-        if (!disposed) { selectionLoading = false; render(); el("left").scrollIntoView?.({ block: "nearest" }) }
-      }
-    })
-  }
   function pollingAllowed() { return !disposed && mode === "documents" && document.visibilityState !== "hidden" }
   function scheduleNextPoll() {
     cancelPoll?.(); cancelPoll = undefined
@@ -507,10 +463,6 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
   button("close").onclick = options.close
   button("open-document").onclick = () => { chooserOpen = !chooserOpen; render(); if (chooserOpen) el("document-list").querySelector<HTMLButtonElement>("button")?.focus() }
   button("reload-versions").onclick = () => { if (!busy()) void loadVersions(false) }
-  button("selection-toggle").onclick = () => {
-    if (busy()) return
-    void captureSelection()
-  }
   button("find-toggle").onclick = () => toggleFind(!findOpen)
   button("find-close").onclick = () => toggleFind(false)
   button("find-previous").onclick = () => moveMatch(-1)

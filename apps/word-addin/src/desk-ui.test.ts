@@ -65,7 +65,11 @@ test("document list opens real snapshot tabs without Word access and renders sup
     expect(element(fixture.root, "document-list").textContent).toContain("Instructions.docx")
     expect(element(fixture.root, "document-list").textContent).toContain("Version 1")
     expect(element(fixture.root, "status").hidden).toBe(true)
+    expect(fixture.root.querySelector('[data-el="selection-toggle"]')).toBeNull()
+    expect(fixture.root.querySelector('[aria-label="Word selection"]')).toBeNull()
+    expect(element(fixture.root, "document-bar").hidden).toBe(true)
     await choose(fixture, preview.id)
+    expect(element(fixture.root, "document-bar").hidden).toBe(false)
     expect(fixture.root.querySelectorAll('[role="tab"]')).toHaveLength(1)
     expect(element(fixture.root, "right").querySelector(".desk-text h2")?.textContent).toBe("Payment terms")
     expect(element(fixture.root, "right").textContent).toContain("Read-only")
@@ -84,7 +88,7 @@ test("document list opens real snapshot tabs without Word access and renders sup
   } finally { desk.dispose(); fixture.restore() }
 })
 
-test("refresh, optional selection and view changes retain opened saved snapshots", async () => {
+test("automatic refresh and view changes retain opened saved snapshots", async () => {
   const fixture = install(), calls: DeskRequest[] = []
   const clock = pollClock()
   let refreshed = false
@@ -92,22 +96,11 @@ test("refresh, optional selection and view changes retain opened saved snapshots
     calls.push(input)
     if (input.action === "sources") return refreshed ? { ...sources, sources: [{ ...preview, hash: "d".repeat(64), version: { id: "new", number: 2, createdAt: savedAt + 60_000 } }, second] } : sources
     if (input.action === "source") return preview
-    if (input.action === "selection") return { text: "The selected Word text.", documentHash: "e".repeat(64), saved: false, capturedAt: new Date(savedAt).toISOString(), navigable: true }
     if (input.action === "versions") return versions
     if (input.action === "compare") return comparison(input.baseVersion, input.currentVersion)
-    if (input.action === "show") return null
   } }, { embedded: true, close() {}, schedulePoll: clock.schedulePoll })
   try {
     await desk.ready; await choose(fixture, preview.id)
-    button(fixture.root, "selection-toggle").click(); await settle()
-    expect(button(fixture.root, "selection-toggle").textContent).toBe("Read selected text")
-    expect(button(fixture.root, "selection-toggle").hasAttribute("aria-pressed")).toBe(false)
-    expect(element(fixture.root, "left").textContent).not.toContain("Unsaved in Word")
-    button(fixture.root, "show").click(); await settle()
-    button(fixture.root, "selection-close").click()
-    expect(element(fixture.root, "left").hidden).toBe(true)
-    button(fixture.root, "selection-toggle").click(); await settle()
-    expect(calls.filter((call) => call.action === "selection")).toHaveLength(2)
     refreshed = true; await clock.tick()
     expect(element(fixture.root, "right").textContent).toContain("Version 1")
     expect(element(fixture.root, "right").textContent).toContain(preview.hash)
@@ -115,7 +108,7 @@ test("refresh, optional selection and view changes retain opened saved snapshots
     expect(element(fixture.root, "right").textContent).toContain(preview.hash)
     expect(fixture.root.querySelectorAll('[role="tab"]')).toHaveLength(1)
     expect(calls.filter((call) => call.action === "source")).toHaveLength(1)
-    expect(calls.filter((call) => call.action === "show")).toHaveLength(1)
+    expect(calls.some((call) => call.action === "selection" || call.action === "show")).toBe(false)
     expect(fixture.root.querySelector<HTMLElement>(".desk-head")!.hidden).toBe(true)
   } finally { desk.dispose(); fixture.restore() }
 })
@@ -224,32 +217,6 @@ test("background polling serializes requests, pauses while hidden, retries quiet
   } finally { desk.dispose(); fixture.restore() }
 })
 
-test("Read selected text captures again and Find searches only the open saved document", async () => {
-  const fixture = install()
-  let captures = 0
-  const desk = mountDesk(fixture.root, { async request(input) {
-    if (input.action === "sources") return sources
-    if (input.action === "source") return preview
-    if (input.action === "selection") { captures++; return { text: captures === 1 ? "" : "shared shared", documentHash: "e".repeat(64), saved: false, capturedAt: new Date(savedAt).toISOString(), navigable: captures > 1 } }
-    throw new Error("Unexpected action")
-  } }, { close() {} })
-  try {
-    await desk.ready
-    button(fixture.root, "selection-toggle").click(); await settle()
-    expect(element(fixture.root, "left").textContent).toContain("Select text in your Word draft")
-    expect(fixture.root.querySelector('[data-el="show"]')).toBeNull()
-    button(fixture.root, "selection-toggle").click(); await settle()
-    expect(captures).toBe(2)
-    expect(element(fixture.root, "left").textContent).toContain("Selected text from Word")
-    await choose(fixture, preview.id)
-    button(fixture.root, "find-toggle").click()
-    const find = element<HTMLInputElement>(fixture.root, "find")
-    find.value = "shared"; find.dispatchEvent(new fixture.page.Event("input") as unknown as Event)
-    expect(element(fixture.root, "find-count").textContent).toBe("1 of 2")
-    expect(element(fixture.root, "left").querySelectorAll("mark")).toHaveLength(0)
-  } finally { desk.dispose(); fixture.restore() }
-})
-
 test("Find matches literal text without case sensitivity and preserves the document spelling", async () => {
   const fixture = install()
   const saved = { ...preview, text: "Letter of engagement. LETTER sent. Fees (A+B).", blocks: undefined }
@@ -265,30 +232,6 @@ test("Find matches literal text without case sensitivity and preserves the docum
     find.value = "fees (a+b)"; find.dispatchEvent(new fixture.page.Event("input") as unknown as Event)
     expect(element(fixture.root, "find-count").textContent).toBe("1 of 1")
     expect(fixture.root.querySelector("mark")?.textContent).toBe("Fees (A+B)")
-  } finally { desk.dispose(); fixture.restore() }
-})
-
-test("Read selected text opens a visible pending panel above a closed chooser and reports capture failure there", async () => {
-  const fixture = install()
-  let reject!: (cause: Error) => void
-  const captured = new Promise<unknown>((_resolve, failed) => { reject = failed })
-  const desk = mountDesk(fixture.root, { async request(input) { if (input.action === "sources") return sources; if (input.action === "selection") return captured; throw new Error("Unexpected action") } }, { close() {} })
-  try {
-    await desk.ready
-    expect(element(fixture.root, "document-list").hidden).toBe(false)
-    button(fixture.root, "selection-toggle").click()
-    const panel = element(fixture.root, "left")
-    expect(element(fixture.root, "document-list").hidden).toBe(true)
-    expect(button(fixture.root, "open-document").hidden).toBe(false)
-    expect(panel.hidden).toBe(false)
-    expect(panel.getAttribute("aria-busy")).toBe("true")
-    expect(panel.querySelector('[role="status"]')?.textContent).toBe("Reading selected text from Word…")
-    reject(new Error("Office unavailable")); await settle()
-    expect(panel.getAttribute("aria-busy")).toBe("false")
-    expect(panel.querySelector('[role="alert"]')?.textContent).toContain("Word could not read the selected text")
-    expect(element(fixture.root, "status").hidden).toBe(true)
-    button(fixture.root, "selection-close").click()
-    expect(element(fixture.root, "document-list").hidden).toBe(false)
   } finally { desk.dispose(); fixture.restore() }
 })
 
