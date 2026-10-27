@@ -33,7 +33,8 @@ On macOS, the installer adds **doc.haus** to Applications. Clicking it opens
 the running installation or starts it in Terminal when needed, then the launcher
 exits. Chrome-family browsers and Safari can reuse an existing doc.haus tab
 without leaving the matter you have open; macOS asks for Automation permission
-first. Other browsers, or denied access, use normal URL opening. Terminal keeps
+first. Other browsers, denied access, or multiple browser instances use normal
+URL opening. Terminal keeps
 the local services running; if you stop them, click doc.haus to start again.
 The app keeps data-directory and engine, ingest or web port overrides selected
 during installation. Separate copies have separate settings and matters; the app

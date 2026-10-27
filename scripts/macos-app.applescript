@@ -65,7 +65,7 @@ on openBrowser(targetOrigin)
             set family to my browserFamily(browserID)
             if family is not "" and browserID is not in deniedBrowsers then
                 -- Bundle-ID Apple Events cannot choose between separate browser
-                -- instances. Leave isolated/other-agent instances untouched.
+                -- instances. Leave isolated/background instances untouched.
                 set instances to current application's NSRunningApplication's runningApplicationsWithBundleIdentifier:browserID
                 if my canReuseBrowserInstanceCount(instances's |count|() as integer) then
                     try
