@@ -1,49 +1,57 @@
 import type { DeskComparison, DeskSourcePreview, DeskSources, DeskVersions } from "../../../dochaus/lib/word-source-desk-contract"
+import { wordDiff, type Piece } from "../../../dochaus/lib/redline"
 import type { DeskRequest } from "./desk-protocol"
 import type { WordSelectionSnapshot } from "./selection"
 
 export type DeskTransport = { request(input: DeskRequest): Promise<unknown> }
 
-/** Each pin is the exact received snapshot, never an implicit latest-file read. */
+/** Open previews and kept sources retain their exact received saved snapshot. */
 export function mountDesk(root: HTMLElement, transport: DeskTransport, options: { close(): void; floating?: boolean }) {
   root.classList.add("source-desk")
   root.innerHTML = `
-    <header class="desk-head"><div class="desk-brand"><img src="./assets/icon.png" width="38" height="38" alt="" />
-      <div><p class="desk-eyebrow">doc.haus · Word</p><h2>Source Desk</h2><p class="desk-subtitle" data-el="identity">Connecting to this matter…</p></div></div>
+    <header class="desk-head"><div class="desk-brand"><img src="./assets/icon.png" width="32" height="32" alt="" />
+      <div><h2>Source Desk</h2><p class="desk-subtitle" data-el="identity">Connecting to this matter…</p></div></div>
       <button type="button" data-el="close">${options.floating ? "Close desk" : "Back to saving"}</button></header>
     <nav class="desk-modes" aria-label="Desk views"><button class="desk-mode" data-el="sources-mode" aria-pressed="true" type="button">Sources</button>
       <button class="desk-mode" data-el="compare-mode" aria-pressed="false" type="button">Compare versions</button></nav>
     <div data-el="source-tools"><div class="desk-toolbar">
-      <label>Matter source<select data-el="source-choice" aria-label="Matter source"><option value="">Loading sources…</option></select></label>
-      <button type="button" data-el="pin" disabled>Pin source</button><button type="button" data-el="reload">Refresh list</button>
-      <label>Find exact text in both passages<input data-el="find" type="search" placeholder="A phrase to connect" maxlength="255" /></label></div>
-      <div class="desk-pins" data-el="pins" role="group" aria-label="Pinned sources"></div></div>
+      <label>Open a source<select data-el="source-choice" aria-label="Open a source"><option value="">Loading sources…</option></select></label>
+      <button type="button" data-el="pin" disabled>Keep open</button><button type="button" data-el="reload">Refresh list</button>
+      <button type="button" data-el="find-toggle" aria-expanded="false">Find</button></div>
+      <div class="desk-find" data-el="find-bar" hidden><label>Find exact text<input data-el="find" type="search" placeholder="Find in these passages" maxlength="255" /></label>
+        <span data-el="find-count" role="status"></span><button type="button" data-el="find-close">Close find</button></div>
+      <div class="desk-pins" data-el="pins" role="group" aria-label="Kept sources"></div></div>
     <div data-el="compare-tools" hidden><div class="desk-toolbar">
-      <label>Base · saved version<select data-el="base" aria-label="Base saved version"></select></label><label>Compared · saved version<select data-el="current" aria-label="Compared saved version"></select></label>
-      <button type="button" data-el="compare" class="desk-primary" disabled>Compare</button><button type="button" data-el="reload-versions">Refresh versions</button></div>
-      <div class="desk-change-nav"><button type="button" data-el="previous">← Previous</button><span data-el="change-count"></span><button type="button" data-el="next">Next →</button></div></div>
-    <div class="desk-columns"><section class="desk-column" aria-label="Word context or base version" data-el="left"></section>
-      <section class="desk-column" aria-label="Pinned source or compared version" data-el="right"></section></div>
-    <footer class="desk-footer"><div><p role="status" aria-live="polite" data-el="status">Opening Source Desk…</p><p class="desk-note" data-el="scope">Read-only workspace · captures refresh when you ask</p></div>
-      <button type="button" class="desk-primary" data-el="show" disabled>Show passage in Word</button></footer>`
+      <label>Earlier version<select data-el="base" aria-label="Earlier version"></select></label><label>Later version<select data-el="current" aria-label="Later version"></select></label>
+      <button type="button" data-el="compare" class="desk-primary" disabled>Compare</button><button type="button" data-el="reload-versions">Refresh versions</button></div><p class="desk-warning" data-el="compare-warning" hidden></p></div>
+    <div class="desk-columns" data-el="columns"><section class="desk-column desk-context" aria-label="Word selection" data-el="left"></section>
+      <section class="desk-column desk-reader" aria-label="Source or comparison" data-el="right"></section></div>
+    <footer class="desk-footer"><p role="status" aria-live="polite" data-el="status">Opening Source Desk…</p><p class="desk-note" data-el="scope">Read-only · saved source previews</p></footer>`
   const el = <T extends HTMLElement>(name: string) => root.querySelector(`[data-el="${name}"]`) as T
   const button = (name: string) => el<HTMLButtonElement>(name)
   const select = (name: string) => el<HTMLSelectElement>(name)
   let disposed = false
   let busy = false
   let mode: "sources" | "compare" = "sources"
+  let findOpen = false
   let selection: WordSelectionSnapshot | undefined
   let sources: DeskSources | undefined
   let versions: DeskVersions | undefined
   const pins = new Map<string, DeskSourcePreview>()
-  let active: string | undefined
+  let active: DeskSourcePreview | undefined
   let comparison: DeskComparison | undefined
   let change = 0
+  const key = (source: DeskSourcePreview) => `${source.id}:${source.hash}`
   const say = (text: string) => { if (!disposed) el("status").textContent = text }
   const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text: string, className?: string) => {
     const result = document.createElement(tag)
     result.textContent = text
     if (className) result.className = className
+    return result
+  }
+  const action = (name: string, label: string, run: () => void) => {
+    const result = node("button", label)
+    result.type = "button"; result.dataset.el = name; result.onclick = run
     return result
   }
   const textBlock = (text: string, query = "") => {
@@ -66,43 +74,49 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     area.replaceChildren(node("p", label, "desk-eyebrow"), node("h3", title))
     return area
   }
-  const metadata = (area: HTMLElement, lines: string[], hash?: string) => {
-    const block = node("div", "", "desk-provenance")
+  const metadata = (area: HTMLElement, label: string, lines: string[], hash?: string) => {
+    const block = node("details", "", "desk-provenance")
+    block.append(node("summary", label))
     for (const line of lines) block.append(node("p", line))
     if (hash) block.append(node("code", `SHA-256 · ${hash}`))
     area.append(block)
   }
   function controls() {
-    for (const name of ["pin", "reload", "reload-versions", "compare", "show", "capture", "previous", "next"]) {
-      const control = root.querySelector(`[data-el="${name}"]`) as HTMLButtonElement | null
-      if (control) control.disabled = busy
+    for (const control of root.querySelectorAll<HTMLButtonElement | HTMLSelectElement>("button, select")) {
+      if (!["close", "sources-mode", "compare-mode", "find-toggle", "find-close"].includes(control.dataset.el ?? "")) control.disabled = busy
     }
-    button("pin").disabled = busy || !select("source-choice").value || pins.size >= 8
-    button("compare").disabled = busy || !select("base").value || !select("current").value || select("base").value === select("current").value
-    button("show").disabled = busy || mode !== "sources" || !selection?.navigable
+    button("pin").disabled = busy || !active || pins.has(key(active)) || pins.size >= 8
+    button("pin").textContent = active && pins.has(key(active)) ? "Kept open" : "Keep open"
+    const earlier = versions?.versions.find((version) => version.id === select("base").value)
+    const later = versions?.versions.find((version) => version.id === select("current").value)
+    const reversed = !!earlier && !!later && earlier.number >= later.number
+    button("compare").disabled = busy || !earlier || !later || reversed
+    el("compare-warning").hidden = !reversed
+    el("compare-warning").textContent = reversed ? "Choose a later version with a higher version number." : ""
+    const show = root.querySelector<HTMLButtonElement>('[data-el="show"]')
+    if (show) show.disabled = busy || !selection?.navigable
     const count = comparison?.changes.length ?? 0
-    button("previous").disabled = busy || !count || change <= 0
-    button("next").disabled = busy || !count || change >= count - 1
+    const previous = root.querySelector<HTMLButtonElement>('[data-el="previous"]')
+    const next = root.querySelector<HTMLButtonElement>('[data-el="next"]')
+    if (previous) previous.disabled = busy || !count || change <= 0
+    if (next) next.disabled = busy || !count || change >= count - 1
   }
   function renderPins() {
     el("pins").replaceChildren()
-    for (const [key, source] of pins) {
+    el("pins").hidden = !pins.size
+    for (const [id, source] of pins) {
       const group = node("div", "", "desk-pin")
       const pick = node("button", `${source.name} · v${source.version?.number ?? "?"}`)
-      pick.type = "button"
-      pick.setAttribute("aria-pressed", String(active === key))
-      pick.dataset.pin = key
+      pick.type = "button"; pick.dataset.pin = id
+      pick.setAttribute("aria-pressed", String(active && key(active) === id))
       pick.onclick = () => {
-        active = key; renderPins(); render(); say("Pinned source selected.")
-        const replacement = Array.from(el("pins").querySelectorAll<HTMLButtonElement>("button")).find((item) => item.dataset.pin === key)
-        replacement?.focus()
+        active = source; select("source-choice").value = source.id; renderPins(); render(); say("Kept source opened at its saved version.")
+        Array.from(el("pins").querySelectorAll<HTMLButtonElement>("button")).find((item) => item.dataset.pin === id)?.focus()
       }
       const remove = node("button", "×", "desk-unpin")
-      remove.type = "button"
-      remove.setAttribute("aria-label", `Unpin ${source.name}`)
-      remove.onclick = () => { pins.delete(key); if (active === key) active = pins.keys().next().value; renderPins(); render(); button("pin").focus(); say("Source unpinned.") }
-      group.append(pick, remove)
-      el("pins").append(group)
+      remove.type = "button"; remove.setAttribute("aria-label", `Stop keeping ${source.name} open`)
+      remove.onclick = () => { pins.delete(id); renderPins(); render(); button("pin").focus(); say("Source removed from kept sources. Its preview is still open.") }
+      group.append(pick, remove); el("pins").append(group)
     }
     controls()
   }
@@ -110,42 +124,80 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     if (disposed) return
     el("source-tools").hidden = mode !== "sources"
     el("compare-tools").hidden = mode !== "compare"
+    el("left").hidden = mode !== "sources"
+    el("columns").classList.toggle("is-compare", mode === "compare")
     button("sources-mode").setAttribute("aria-pressed", String(mode === "sources"))
     button("compare-mode").setAttribute("aria-pressed", String(mode === "compare"))
-    button("show").hidden = mode !== "sources"
+    el("find-bar").hidden = !findOpen
+    button("find-toggle").setAttribute("aria-expanded", String(findOpen))
     if (mode === "sources") {
-      const query = el<HTMLInputElement>("find").value
-      const left = column("left", "In Word · captured selection", "Your current passage")
-      const capture = node("button", "Refresh selection")
-      capture.type = "button"
-      capture.dataset.el = "capture"
-      capture.onclick = () => { void perform(captureSelection) }
-      left.append(node("p", selection ? `${selection.saved ? "Saved in Word" : "Unsaved Word context"} · not a confirmed matter version` : "Select a passage in Word to connect it to your sources.", "desk-note"), capture)
+      const query = findOpen ? el<HTMLInputElement>("find").value : ""
+      const left = column("left", "In Word", "Selected passage")
+      left.append(node("p", selection ? (selection.saved ? "Saved in Word" : "Unsaved in Word") : "Select text in your Word document.", selection && !selection.saved ? "badge is-unsaved" : "badge"))
+      const actions = node("div", "", "desk-actions")
+      actions.append(action("capture", "Use current selection", () => { void perform(captureSelection).then(() => { root.querySelector<HTMLButtonElement>('[data-el="capture"]')?.focus() }) }), action("show", "Show in Word", () => { void perform(async () => {
+        if (!selection?.navigable) return
+        await transport.request({ action: "show", selection })
+        say("The captured passage is selected in Word.")
+      }) }))
+      left.append(actions)
       if (selection) {
-        left.append(textBlock(selection.text || "No text is selected in Word.", query))
-        metadata(left, [`Captured ${new Date(selection.capturedAt).toLocaleTimeString()}. Refresh to use a different selection.`, selection.reason ?? "Navigation checks exact body text. Formatting and markup are not checked."])
+        left.append(textBlock(selection.text || "No text is selected.", query))
+        left.append(node("p", `Captured at ${new Date(selection.capturedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · use current selection to update`, "desk-note"))
+        if (selection.reason) left.append(node("p", selection.reason, "desk-warning"))
+        metadata(left, "Selection details", ["Live Word context, separate from saved matter versions.", "Show in Word requires one exact, unchanged body passage. Formatting and markup are not checked."], selection.documentHash)
       }
-      const source = active ? pins.get(active) : undefined
-      const right = column("right", "Pinned matter source · saved bytes", source?.name ?? "Keep your evidence beside you")
-      if (source) {
-        right.append(textBlock(source.text || "This saved source has no previewable text.", query))
-        metadata(right, [`${source.role === "deliverable" ? "Matter output" : "Matter source"} · saved version ${source.version?.number ?? "unavailable"}`, `Version ID · ${source.version?.id ?? "unavailable"}`, source.truncated ? `Preview shows the first ${source.text.length.toLocaleString()} of ${source.characters.toLocaleString()} characters.` : `${source.characters.toLocaleString()} characters · complete text preview`, "Pinned snapshot stays unchanged when your Word selection changes."], source.hash)
-        if (query) right.append(node("p", source.text.includes(query) ? "Underlined highlights show the exact phrase in this preview." : "The exact phrase is absent from this preview. This does not assess legal support.", "desk-note"))
-      } else right.append(node("p", "Choose a matter source and pin it here. Switch between your pins while keeping your Word passage in view.", "desk-empty"))
+      const right = column("right", active ? "Saved matter source" : "Matter sources", active?.name ?? "Open a source to start reading")
+      if (active) {
+        right.append(node("p", `Version ${active.version?.number ?? "unavailable"}${pins.has(key(active)) ? " · kept open" : ""}`, "desk-version"))
+        if (active.truncated) right.append(node("p", `Partial preview · showing ${active.text.length.toLocaleString()} of ${active.characters.toLocaleString()} characters.`, "desk-warning"))
+        right.append(textBlock(active.text || "This saved source has no previewable text.", query))
+        metadata(right, "Source details", [`${active.role === "deliverable" ? "Matter output" : "Matter source"} · saved version ${active.version?.number ?? "unavailable"}`, `Version ID · ${active.version?.id ?? "unavailable"}`, `${active.characters.toLocaleString()} characters`, "This snapshot stays unchanged when your Word selection or the source list changes."], active.hash)
+      } else right.append(node("p", "Choose a document above. Keep useful sources open to switch between them while you work in Word.", "desk-empty"))
+      const matches = root.querySelectorAll("mark").length
+      el("find-count").textContent = query ? `${matches >= 200 ? "At least " : ""}${matches} exact ${matches === 1 ? "match" : "matches"}` : "In the selection and source"
+      el("scope").textContent = "Read-only · saved source previews"
     } else {
       const hunk = comparison?.changes[change]
-      for (const [name, side, text] of [["left", comparison?.base, hunk?.before], ["right", comparison?.current, hunk?.after]] as const) {
-        const area = column(name, name === "left" ? "Base · confirmed saved version" : "Compared · confirmed saved version", side ? `${side.name} · version ${side.number}` : "Choose two saved versions")
-        if (side) {
-          area.append(textBlock(text ?? (hunk ? "No text on this side of the change." : "No textual changes reported.")))
-          metadata(area, [`Version ID · ${side.id}`, `Saved ${new Date(side.createdAt).toLocaleString()} · ${side.origin}`, `${side.trackedChanges.count} input tracked changes`, hunk ? `${hunk.kind} · location in ${hunk.location.side === "left" ? "base" : "compared"} version: ${hunk.location.scope} paragraph ${hunk.location.paragraph}${hunk.location.heading ? ` · ${hunk.location.heading}` : ""}` : "Saved-byte comparison; your open Word context is separate."], side.hash)
-        } else area.append(node("p", "Compare retained versions of the linked document. The open Word selection is never substituted for saved bytes.", "desk-empty"))
+      const right = column("right", "Saved version comparison", comparison ? comparison.current.name : "Compare saved versions")
+      if (comparison) {
+        right.append(node("p", `Version ${comparison.base.number} → Version ${comparison.current.number}`, "desk-compare-heading"))
+        const nav = node("div", "", "desk-change-nav")
+        nav.append(action("previous", "← Previous", () => moveChange(-1)), node("span", comparison.changes.length ? `Change ${change + 1} of ${comparison.changes.length}` : "No text changes"), action("next", "Next →", () => moveChange(1)))
+        right.append(nav)
+        if (comparison.truncated) right.append(node("p", "Partial comparison · open Versions in doc.haus for the full review.", "desk-warning"))
+        if (hunk) {
+          const legend = node("div", "", "desk-legend")
+          legend.append(node("ins", "Inserted"), node("del", "Deleted"), node("ins", "Moved", "is-move"))
+          right.append(legend, node("p", `${hunk.kind[0].toUpperCase() + hunk.kind.slice(1)} · ${hunk.location.heading ? `${hunk.location.heading} · ` : ""}${hunk.location.scope} paragraph ${hunk.location.paragraph} in ${hunk.location.side === "left" ? "earlier" : "later"} version${hunk.untracked ? " · edit made without tracking" : ""}`, "desk-change-label"))
+          const pieces: Piece[] = hunk.kind === "moved" && hunk.before === hunk.after ? [{ kind: "move", text: hunk.after ?? "" }] : wordDiff(hunk.before ?? "", hunk.after ?? "")
+          const redline = node("div", "", "desk-text compare-redline")
+          redline.tabIndex = 0
+          for (const piece of pieces) {
+            if (piece.kind === "same") { redline.append(document.createTextNode(piece.text)); continue }
+            const mark = node(piece.kind === "del" ? "del" : "ins", "", piece.kind === "move" ? "is-move" : undefined)
+            mark.append(node("span", `${piece.kind === "del" ? "Deleted" : piece.kind === "move" ? "Moved" : "Inserted"}: `, "sr-only"), document.createTextNode(piece.text))
+            redline.append(mark)
+          }
+          right.append(redline)
+          const plain = node("details", "", "desk-before-after")
+          plain.append(node("summary", "Read earlier and later text separately"), node("h4", `Earlier · version ${comparison.base.number}`), textBlock(hunk.before || "No text in the earlier version."), node("h4", `Later · version ${comparison.current.number}`), textBlock(hunk.after || "No text in the later version."))
+          right.append(plain)
+        } else right.append(node("p", "No textual changes were reported between these saved versions.", "desk-empty"))
+        for (const side of [comparison.base, comparison.current]) metadata(right, `Version ${side.number} details`, [`Saved ${new Date(side.createdAt).toLocaleString()} · ${side.origin}`, `Version ID · ${side.id}`, `${side.trackedChanges.count} input tracked changes`], side.hash)
+        el("scope").textContent = `Saved versions only · ${comparison.untracked.length} edits without tracking · ${comparison.proposals.length} earlier proposal outcomes`
+      } else {
+        right.append(node("p", "Choose two versions, then Compare to see their changed words. Unsaved Word edits are separate.", "desk-empty"))
+        el("scope").textContent = "Read-only · saved versions only"
       }
-      el("change-count").textContent = comparison ? `${comparison.changes.length ? `Change ${change + 1} of ${comparison.changes.length}` : "No textual changes"}${hunk?.untracked ? " · includes an edit made without tracking" : ""}${comparison.truncated ? " · partial result" : ""}` : "Saved versions only"
-      el("scope").textContent = comparison ? `${comparison.untracked.length} edits without tracking · ${comparison.proposals.length} earlier proposal outcomes${comparison.truncated ? " · result truncated; use Versions in doc.haus for full review" : ""}` : "Read-only workspace · saved versions only"
     }
-    if (mode === "sources") el("scope").textContent = "Read-only workspace · captures refresh when you ask"
     controls()
+  }
+  function moveChange(direction: -1 | 1) {
+    change += direction; render()
+    const preferred = button(direction === 1 ? "next" : "previous")
+    const focusTarget = preferred.disabled ? button(direction === 1 ? "previous" : "next") : preferred
+    focusTarget.focus()
   }
   async function perform(work: () => Promise<void>) {
     if (busy || disposed) return
@@ -156,74 +208,79 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
   async function captureSelection() {
     const value = await transport.request({ action: "selection" }) as WordSelectionSnapshot
     if (disposed) return
-    selection = value
-    render()
-    say(value.reason ?? "Selection captured. Pinned sources are unchanged.")
+    selection = value; render(); say(value.reason ?? "Word selection updated. Your sources stay open.")
   }
   async function loadSources() {
     const value = await transport.request({ action: "sources" }) as DeskSources
     if (disposed) return
     sources = value
-    el("identity").textContent = `${sources.matterName} · ${sources.documentName}`
-    const choice = select("source-choice")
-    const previous = choice.value
-    choice.replaceChildren(new Option("Choose a saved matter source…", ""))
+    el("identity").textContent = `${sources.documentName} · ${sources.matterName}`
+    const choice = select("source-choice"), previous = choice.value
+    choice.replaceChildren(new Option("Choose a saved source…", ""))
     for (const source of sources.sources) choice.add(new Option(`${source.name} · v${source.version?.number ?? "?"}`, source.id))
     if (sources.sources.some((source) => source.id === previous)) choice.value = previous
-    say(sources.truncated ? "Some material has no confirmed saved preview or exceeds the list limit. Existing pins are unchanged." : `${sources.sources.length} saved sources available. Existing pins are unchanged.`)
+    say(sources.truncated ? "Some sources have no saved preview or exceed the list limit. Open previews are unchanged." : `${sources.sources.length} sources available.`)
   }
   async function loadVersions() {
     const value = await transport.request({ action: "versions" }) as DeskVersions
     if (disposed) return
     versions = value
     for (const name of ["base", "current"]) {
-      const control = select(name)
-      const previous = control.value
+      const control = select(name), previous = control.value
       control.replaceChildren()
       for (const version of versions.versions) {
-        const option = new Option(`Version ${version.number}${version.current ? " · latest at refresh" : ""}${version.removed ? " · removed" : ""}${version.label ? ` · ${version.label}` : ""}`, version.id)
-        option.disabled = version.removed
-        control.add(option)
+        const date = new Date(version.createdAt).toLocaleDateString([], { day: "numeric", month: "short" })
+        const option = new Option(`Version ${version.number} · ${date}${version.current ? " · latest at refresh" : ""}${version.removed ? " · removed" : ""}${version.label ? ` · ${version.label}` : ""}`, version.id)
+        option.disabled = version.removed; control.add(option)
       }
       const available = versions.versions.filter((version) => !version.removed).sort((a, b) => b.number - a.number)
       control.value = available.some((version) => version.id === previous) ? previous : available[name === "base" ? 1 : 0]?.id ?? ""
     }
-    say("Saved version list refreshed. Existing comparison remains the same until you choose Compare.")
+    say("Version list updated. Choose Compare to update the comparison.")
   }
+  function toggleFind(open: boolean) {
+    findOpen = open; render()
+    if (open) el<HTMLInputElement>("find").focus()
+    else button("find-toggle").focus()
+  }
+  const onKey = (event: KeyboardEvent) => {
+    if (mode !== "sources") return
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") { event.preventDefault(); toggleFind(true) }
+    if (event.key === "Escape" && findOpen) { event.preventDefault(); toggleFind(false) }
+  }
+  root.addEventListener("keydown", onKey)
   button("close").onclick = options.close
   button("reload").onclick = () => { void perform(loadSources) }
   button("reload-versions").onclick = () => { void perform(loadVersions) }
-  select("source-choice").onchange = controls
-  select("base").onchange = controls
-  select("current").onchange = controls
-  el<HTMLInputElement>("find").oninput = render
-  button("pin").onclick = () => { void perform(async () => {
+  select("source-choice").onchange = () => { void perform(async () => {
     const source = sources?.sources.find((item) => item.id === select("source-choice").value)
-    if (!source || pins.size >= 8) return
-    const preview = await transport.request({ action: "source", sourceId: source.id, expectedHash: source.hash }) as DeskSourcePreview
+    if (!source) return
+    const retained = pins.get(`${source.id}:${source.hash}`)
+    let preview: DeskSourcePreview
+    try { preview = retained ?? await transport.request({ action: "source", sourceId: source.id, expectedHash: source.hash }) as DeskSourcePreview }
+    catch (error) { if (!disposed) select("source-choice").value = ""; throw error }
     if (disposed) return
-    active = `${preview.id}:${preview.hash}`
-    pins.set(active, preview)
-    renderPins(); render(); say("Source pinned at its displayed saved version.")
+    active = preview; renderPins(); render(); say(`${preview.name} opened at version ${preview.version?.number ?? "unavailable"}.`)
   }) }
-  button("show").onclick = () => { void perform(async () => {
-    if (!selection?.navigable) return
-    await transport.request({ action: "show", selection })
-    say("The exact captured passage is selected in Word.")
-  }) }
-  button("sources-mode").onclick = () => { mode = "sources"; render(); say("Pinned source snapshots and captured Word passage. Refresh the selection to use a different passage.") }
-  button("compare-mode").onclick = () => { mode = "compare"; render(); say("Compare confirmed saved versions. Your open Word context is separate."); if (!versions) void perform(loadVersions) }
+  select("base").onchange = select("current").onchange = () => { controls(); say("Choose Compare to show the selected versions.") }
+  el<HTMLInputElement>("find").oninput = render
+  button("find-toggle").onclick = () => toggleFind(!findOpen)
+  button("find-close").onclick = () => toggleFind(false)
+  button("pin").onclick = () => {
+    if (!active || pins.size >= 8 || busy) return
+    pins.set(key(active), active); renderPins(); render(); say("Source kept open at this saved version.")
+  }
+  button("sources-mode").onclick = () => { mode = "sources"; render(); say("Sources and your captured Word selection.") }
+  button("compare-mode").onclick = () => { mode = "compare"; render(); if (!versions) void perform(loadVersions) }
   button("compare").onclick = () => { void perform(async () => {
     const value = await transport.request({ action: "compare", baseVersion: select("base").value, currentVersion: select("current").value }) as DeskComparison
     if (disposed) return
-    comparison = value; change = 0; render(); say("Saved versions compared. Use Previous and Next to inspect both sides together.")
+    comparison = value; change = 0; render(); say("Comparison ready. Insertions are underlined; deletions are struck through.")
   }) }
-  button("previous").onclick = () => { change--; render() }
-  button("next").onclick = () => { change++; render() }
-  render()
+  render(); renderPins()
   const ready = perform(async () => {
     await loadSources()
-    try { await captureSelection() } catch { say("Sources are ready. Select a passage in Word, then choose Refresh selection.") }
+    try { await captureSelection() } catch { say("Sources are ready. Select text in Word, then choose Use current selection.") }
   })
-  return { ready, dispose() { disposed = true; pins.clear(); root.replaceChildren(); root.classList.remove("source-desk") } }
+  return { ready, dispose() { disposed = true; pins.clear(); root.removeEventListener("keydown", onKey); root.replaceChildren(); root.classList.remove("source-desk") } }
 }
