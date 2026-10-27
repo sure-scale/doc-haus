@@ -44,9 +44,13 @@ plutil -replace CFBundleIdentifier -string haus.doc.start "$plist"
 plutil -replace CFBundleName -string doc.haus "$plist"
 plutil -replace CFBundleDisplayName -string doc.haus "$plist"
 plutil -replace CFBundleIconFile -string AppIcon "$plist"
+# Hide the temporary launcher from the Dock; the branded Applications shortcut
+# remains available while the browser and Terminal own the running interface.
+plutil -replace LSUIElement -bool true "$plist"
+plutil -replace NSAppleEventsUsageDescription -string 'Find and focus your existing doc.haus tab in your default browser. Only tab addresses are checked; page contents are not read or saved.' "$plist"
 # osacompile supplies a generic icon name and unrelated permission descriptions.
-# This wrapper uses its ICNS file and never scripts another application.
-for key in CFBundleIconName NSAppleEventsUsageDescription NSAppleMusicUsageDescription NSCalendarsUsageDescription NSCameraUsageDescription NSContactsUsageDescription NSHomeKitUsageDescription NSMicrophoneUsageDescription NSPhotoLibraryUsageDescription NSRemindersUsageDescription NSSiriUsageDescription NSSystemAdministrationUsageDescription; do
+# This wrapper uses its ICNS file and only automates the selected browser.
+for key in CFBundleIconName NSAppleMusicUsageDescription NSCalendarsUsageDescription NSCameraUsageDescription NSContactsUsageDescription NSHomeKitUsageDescription NSMicrophoneUsageDescription NSPhotoLibraryUsageDescription NSRemindersUsageDescription NSSiriUsageDescription NSSystemAdministrationUsageDescription; do
   if plutil -extract "$key" raw -o /dev/null "$plist" >/dev/null 2>&1; then plutil -remove "$key" "$plist"; fi
 done
 # Seal the locally generated app after setting its identity and resources.

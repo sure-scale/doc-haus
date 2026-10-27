@@ -126,13 +126,14 @@ test("the Mac app keeps repository defaults when no installation overrides are s
   expect(initial).toEqual([f.checkout, "", path.join(f.checkout, "workspace"), path.join(f.checkout, ".dochaus-runtime"), "4097", "4501", "5174", ""])
 })
 
-test("clicking an app with its own running stack opens only the browser", async () => {
+test("a running stack returns only its verified URL for the applet's browser selection", async () => {
   const f = await fixture()
   const owner = await f.launchOwner()
   await f.install({ DOC_HAUS_WEB_PORT: String(owner.port) })
-  expect((await f.dispatch()).status).toBe(0)
-  expect((await f.dispatch("waiting")).status).toBe(0)
-  expect(await f.openCalls()).toEqual([`http://localhost:${owner.port}`, `http://localhost:${owner.port}`])
+  const ready = `ready http://localhost:${owner.port}`
+  expect((await f.dispatch()).stdout.trim()).toBe(ready)
+  expect((await f.dispatch("waiting")).stdout.trim()).toBe(ready)
+  expect(await f.openCalls()).toEqual([])
   expect(owner.child.exitCode).toBeNull()
 })
 
@@ -207,4 +208,46 @@ test("a compilation failure leaves the previous app intact", async () => {
   expect(await readFile(path.join(f.resources, "installation.sh"), "utf8")).toBe(previous)
   expect((await readdir(path.dirname(f.app))).filter(file => file.startsWith(".doc.haus-build."))).toEqual([])
   expect(await f.openCalls()).toEqual([])
+})
+
+test.skipIf(process.platform !== "darwin")("the actual applet selects only its origin and exits after a bounded cold-start grace", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dochaus-browser-selection-"))
+  roots.push(root)
+  const compiled = path.join(root, "launcher.scpt"), driver = path.join(root, "selection.applescript")
+  // Loading a compiled script does not run its launch/browser handlers. Every
+  // value below is synthetic; this test sends no browser or permission events.
+  const compile = Bun.spawn(["/usr/bin/osacompile", "-o", compiled, path.join(repository, "scripts/macos-app.applescript")], { stdout: "pipe", stderr: "pipe" })
+  const [compileStatus, compileError] = await Promise.all([compile.exited, new Response(compile.stderr).text()])
+  expect(compileError).toBe("")
+  expect(compileStatus).toBe(0)
+  await writeFile(driver, `on run argv
+    set launcher to load script POSIX file (item 1 of argv)
+    set targetOrigin to "http://localhost:5274"
+    repeat with candidateURL in {targetOrigin, targetOrigin & "/", targetOrigin & "/matter/synthetic", targetOrigin & "?setup", targetOrigin & "#matter"}
+        if not launcher's matchesOrigin(contents of candidateURL, targetOrigin) then error "Expected configured origin to match"
+    end repeat
+    repeat with candidateURL in {"http://localhost:52740/", "http://localhost:5274.example/", "http://localhost:5274@unrelated.example/", "https://localhost:5274/", "http://127.0.0.1:5274/", "http://localhost:5275/", "unrelated"}
+        if launcher's matchesOrigin(contents of candidateURL, targetOrigin) then error "Refused origin matched"
+    end repeat
+    set candidates to {{targetOrigin & "/matter/first", "https://unrelated.example/"}, {"https://other.example/", targetOrigin & "/matter/current"}}
+    if (launcher's matchingTab(candidates, {2, 2}, targetOrigin)) is not {2, 2} then error "Current matter tab was not preferred"
+    if (launcher's matchingTab(candidates, {2, 1}, targetOrigin)) is not {1, 1} then error "Existing matter tab was not found"
+    if (launcher's matchingTab({{"http://localhost:52740/"}}, {1}, targetOrigin)) is not {0, 0} then error "Foreign tab was selected"
+    if (launcher's browserFamily("com.google.Chrome")) is not "chromium" then error "Chrome family missing"
+    if (launcher's browserFamily("com.apple.Safari")) is not "safari" then error "Safari family missing"
+    if (launcher's browserFamily("org.mozilla.firefox")) is not "" then error "Unsupported browser should use normal opening"
+    set startedAt to current date
+    if (launcher's launchGraceRemaining(missing value, startedAt)) is not 0 then error "Ready interface should exit promptly"
+    if (launcher's launchGraceRemaining(startedAt, startedAt)) is not 10 then error "Cold launch needs its debounce grace"
+    if (launcher's launchGraceRemaining(startedAt, startedAt + 3)) is not 7 then error "Duplicate opens must not extend the grace"
+    if (launcher's launchGraceRemaining(startedAt, startedAt + 10)) is not 0 then error "Cold launch grace should end"
+    if (launcher's launchGraceRemaining(startedAt, startedAt + 20)) is not 0 then error "Expired launcher should exit"
+    return "passed"
+end run
+`)
+  const child = Bun.spawn(["/usr/bin/osascript", driver, compiled], { stdout: "pipe", stderr: "pipe" })
+  const [status, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+  expect(stderr).toBe("")
+  expect(status).toBe(0)
+  expect(stdout.trim()).toBe("passed")
 })

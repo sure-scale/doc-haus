@@ -33,7 +33,8 @@ if runtime_launcher "$owner"; then
   url="http://localhost:$port"
   # The launcher opens the browser itself once startup is ready. A click during
   # warmup must leave it alone instead of opening an unavailable page.
-  if curl --fail --silent --max-time 1 --output /dev/null "$url"; then open "$url"; fi
+  # The applet, rather than a child shell, owns any browser Automation request.
+  if curl --fail --silent --max-time 1 --output /dev/null "$url"; then printf 'ready %s\n' "$url"; fi
   exit 0
 fi
 if runtime_pid_running "$owner"; then

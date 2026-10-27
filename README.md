@@ -29,15 +29,16 @@ cd doc-haus
 ./start.sh
 ```
 
-On macOS, the installer adds **doc.haus** to Applications and keeps its icon in
-the Dock while open. Clicking it opens the running installation in your browser
-or starts it in Terminal when needed. Quitting the app leaves Terminal and the
-services running. If you stop them in Terminal, click doc.haus to start again.
-The app keeps data-directory and engine, ingest or web
-port overrides selected during installation. Separate copies have separate
-settings and matters; the app does not import another copy's setup.
-After updating an existing installation, run the installer again to refresh an
-older Mac shortcut with this Dock and reopen behavior.
+On macOS, the installer adds **doc.haus** to Applications. Clicking it opens
+the running installation or starts it in Terminal when needed, then the launcher
+exits. Chrome-family browsers and Safari can reuse an existing doc.haus tab
+without leaving the matter you have open; macOS asks for Automation permission
+first. Other browsers, or denied access, use normal URL opening. Terminal keeps
+the local services running; if you stop them, click doc.haus to start again.
+The app keeps data-directory and engine, ingest or web port overrides selected
+during installation. Separate copies have separate settings and matters; the app
+does not import another copy's setup. After updating an existing installation,
+run the installer again to refresh an older Mac shortcut.
 
 The launcher checks for Bun 1.4.0 or newer and the document tools (Deno 2,
 Python 3.10+, markitdown, Poppler, Tesseract, LibreOffice Writer and the Carlito

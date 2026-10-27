@@ -110,6 +110,23 @@ export default function DocumentUpload({
     return () => window.removeEventListener("click", dismiss)
   }, [confirmId])
 
+  useEffect(() => {
+    const menus = () => body.current?.querySelectorAll<HTMLDetailsElement>(".doc-more-actions[open]") ?? []
+    const dismiss = (event: PointerEvent) => {
+      for (const menu of menus()) {
+        if (!menu.contains(event.target as Node)) menu.open = false
+      }
+    }
+    const close = () => { for (const menu of menus()) menu.open = false }
+    const scrollArea = body.current
+    document.addEventListener("pointerdown", dismiss)
+    scrollArea?.addEventListener("scroll", close)
+    return () => {
+      document.removeEventListener("pointerdown", dismiss)
+      scrollArea?.removeEventListener("scroll", close)
+    }
+  }, [])
+
   function update(key: number, patch: Partial<Upload>) {
     setUploads((prev) => prev.map((u) => (u.key === key ? { ...u, ...patch } : u)))
   }
@@ -210,34 +227,68 @@ export default function DocumentUpload({
     ].filter(Boolean)
     const actions = <>
       <WordOpenControl matterId={matterId} name={d.name} compact disabled={removing === d.name} />
-      {onCompare && /\.docx$/i.test(d.name) && (
-        <button className="doc-compare" onClick={() => onCompare(d.name)} title="Compare with another version" aria-label={`Compare ${d.name} with another version`}>
-          <CompareIcon />
-        </button>
-      )}
-      {confirmId === d.id && d.removal ? null : confirmId === d.id ? (
+      <details className="viewer-more-actions doc-more-actions" inert={removing === d.name} onToggle={(event) => {
+        const menu = event.currentTarget
+        const popup = menu.querySelector<HTMLElement>(".viewer-more-menu")
+        if (!menu.open || !popup || !body.current) return
+        // Keep the popup inside the drawer's scroll region, including its last row.
+        popup.style.maxHeight = ""
+        const bounds = body.current.getBoundingClientRect()
+        const anchor = menu.getBoundingClientRect()
+        const above = anchor.top - Math.max(0, bounds.top)
+        const below = Math.min(window.innerHeight, bounds.bottom) - anchor.bottom
+        const zoom = parseFloat(window.getComputedStyle(document.body).zoom) || 1
+        menu.dataset.above = String(below < popup.getBoundingClientRect().height + 6 * zoom && above > below)
+        popup.style.maxHeight = `${Math.max(0, Math.max(above, below) / zoom - 6)}px`
+      }} onKeyDown={(event) => {
+        if (event.key !== "Escape" || !event.currentTarget.open) return
+        event.preventDefault()
+        event.stopPropagation()
+        event.currentTarget.open = false
+        event.currentTarget.querySelector("summary")?.focus()
+      }} onBlur={(event) => {
+        const next = event.relatedTarget as Node | null
+        if (next && !event.currentTarget.contains(next)) event.currentTarget.open = false
+      }}>
+        <summary aria-label={`More actions for ${d.name}`} title="More actions">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <circle cx="5" cy="12" r="1.8" />
+            <circle cx="12" cy="12" r="1.8" />
+            <circle cx="19" cy="12" r="1.8" />
+          </svg>
+        </summary>
+        <div className="viewer-more-menu">
+          {onCompare && /\.docx$/i.test(d.name) && (
+            <button type="button" onClick={(event) => {
+              closeDocumentActions(event.currentTarget)
+              onCompare(d.name)
+            }} title="Compare with another version" aria-label={`Compare ${d.name} with another version`}>
+              <CompareIcon />
+              <span>Compare with…</span>
+            </button>
+          )}
+          <button type="button" className="doc-delete-action" onClick={(event) => {
+            event.stopPropagation()
+            closeDocumentActions(event.currentTarget)
+            setConfirmId(d.id)
+          }} aria-label={`Delete ${d.name}`}>
+            <IconTrash />
+            <span>Delete</span>
+          </button>
+        </div>
+      </details>
+      {confirmId === d.id && !d.removal && (
         <button
           className="icon-btn danger"
           title={`Remove ${d.name} — indexed text is deleted and answers can no longer cite it`}
+          aria-label={`Confirm deletion of ${d.name}`}
+          autoFocus
           onClick={(e) => {
             e.stopPropagation()
             onRemove(d.name)
           }}
         >
-          Confirm
-        </button>
-      ) : (
-        <button
-          className="doc-remove"
-          onClick={(e) => {
-            e.stopPropagation()
-            setConfirmId(d.id)
-          }}
-          title={`Remove ${d.name}`}
-          aria-label={`Remove ${d.name}`}
-          disabled={removing === d.name}
-        >
-          <IconTrash />
+          Confirm delete
         </button>
       )}
     </>
@@ -436,6 +487,13 @@ export default function DocumentUpload({
       </footer>
     </section>
   )
+}
+
+function closeDocumentActions(button: HTMLButtonElement) {
+  const menu = button.closest("details")
+  if (!menu) return
+  menu.open = false
+  menu.querySelector("summary")?.focus()
 }
 
 // The toast after an upload. A file with no readable text is added but not

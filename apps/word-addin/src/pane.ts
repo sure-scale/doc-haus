@@ -2,7 +2,7 @@ import { WORD_UPDATE_MESSAGE, WordClient, isCurrentPaneVersion, readLink } from 
 import { connectOffice } from "./office"
 import { browserCheckpoints, WordSync, type PaneState } from "./sync"
 import { setupSourceDesk } from "./desk-entry"
-import { savePresentation } from "./pane-presentation"
+import { createPaneRenderer, setupSaveMenu } from "./pane-render"
 
 const element = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
 const badge = element("status")
@@ -10,38 +10,13 @@ const message = element("message")
 const save = element<HTMLButtonElement>("save")
 const saveAgain = element<HTMLButtonElement>("save-again")
 const done = element<HTMLButtonElement>("done")
-const startEditing = element<HTMLButtonElement>("start-editing")
 const refresh = element<HTMLButtonElement>("refresh")
 const takeover = element<HTMLButtonElement>("takeover")
 const release = element<HTMLButtonElement>("release")
 let primaryAction: "save" | "close" = "save"
 
-function render(state: PaneState): void {
-  const view = savePresentation(state)
-  badge.textContent = view.badge
-  badge.dataset.state = view.tone
-  message.textContent = view.message
-  primaryAction = view.primary
-  save.textContent = view.primary === "close" ? "Save and close" : "Save"
-  save.disabled = state.busy || !state.canSave || state.status === "done"
-  saveAgain.hidden = view.primary !== "close"
-  saveAgain.disabled = state.busy || !state.canSave
-  done.hidden = view.primary === "close"
-  done.disabled = state.busy || !state.canSave || state.status === "done"
-  const connection = state.connection
-  element("version-state").textContent = view.mismatch ?? ""
-  element("version-state").hidden = !view.mismatch
-  element("blocked-help").textContent = view.help ?? ""
-  element("blocked-help").hidden = !view.help
-  refresh.disabled = state.busy
-  startEditing.hidden = connection?.version.state !== "current" || connection.lease.state !== "available"
-  startEditing.disabled = state.busy
-  takeover.hidden =
-    connection?.version.state !== "current" || connection.lease.state !== "other" || !connection.lease.generation
-  takeover.disabled = state.busy
-  release.hidden = connection?.lease.state !== "owned"
-  release.disabled = state.busy
-}
+const renderPane = createPaneRenderer(document)
+function render(state: PaneState): void { primaryAction = renderPane(state) }
 
 async function main(): Promise<void> {
   // An old cached manifest may still launch this page as a separate function
@@ -82,15 +57,13 @@ async function main(): Promise<void> {
       else void sync.save()
     })
     const menu = element<HTMLDetailsElement>("save-menu")
-    const closeMenu = () => { menu.open = false; menu.querySelector("summary")?.focus() }
+    const closeMenu = setupSaveMenu(menu)
     const menuAction = (control: HTMLButtonElement, action: () => Promise<boolean>) => control.addEventListener("click", () => { void action(); closeMenu() })
     menuAction(saveAgain, () => sync.save())
     menuAction(done, () => sync.done())
-    menuAction(startEditing, () => sync.startEditing())
     menuAction(refresh, () => sync.checkStatus())
     menuAction(takeover, () => sync.takeover())
     menuAction(release, () => sync.release())
-    menu.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); closeMenu() } })
     // The read-only desk has its own lifecycle; opening/closing it never owns
     // or stops the existing saving queue.
     setupSourceDesk(link)
