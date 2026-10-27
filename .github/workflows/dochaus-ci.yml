@@ -59,6 +59,10 @@ jobs:
         working-directory: scripts
         run: bun test test/requirements.test.ts --timeout 30000
 
+      - name: Test Mac app installation and reopen behaviour
+        working-directory: scripts
+        run: bun test test/install-launcher.test.ts --timeout 30000
+
       - name: Test dependency installation cache
         working-directory: scripts
         run: bun test test/install-dependencies.test.ts --timeout 30000

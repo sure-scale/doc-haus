@@ -48,35 +48,13 @@ dir="$(cd "$dir" && pwd)"
 # Launchpad find, and an applications-menu entry on Linux. Both show the logo
 # from scripts/icons, which copies made before it was added do not have.
 if [ "$(uname -s)" = Darwin ]; then
-  app="$HOME/Applications/doc.haus.app"
-  mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-  {
-    printf '#!/bin/bash\n'
-    # Finder does not inherit the install terminal's environment. Keep only the
-    # selected data locations and ports, so reopening uses the same installation.
-    # Never copy provider credentials or the caller's general environment here.
-    for variable in DOCHAUS_DATA_ROOT WORKSPACE_ROOT DOCHAUS_RUNTIME_DIR DOC_HAUS_ENGINE_PORT DOC_HAUS_INGEST_PORT DOC_HAUS_WEB_PORT; do
-      if [ -n "${!variable:-}" ]; then printf 'export %s=%q\n' "$variable" "${!variable}"; fi
-    done
-    printf 'exec %q\n' "$dir/start.sh"
-  } > "$app/Contents/Resources/doc.haus.command"
-  # shellcheck disable=SC2016 # $0 belongs to the app's own script
-  printf '#!/bin/bash\nexec open -a Terminal "$(dirname "$0")/../Resources/doc.haus.command"\n' > "$app/Contents/MacOS/doc.haus"
-  chmod +x "$app/Contents/Resources/doc.haus.command" "$app/Contents/MacOS/doc.haus"
-  if [ -f "$dir/scripts/icons/doc-haus.icns" ]; then cp "$dir/scripts/icons/doc-haus.icns" "$app/Contents/Resources/AppIcon.icns"; fi
-  cat > "$app/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>CFBundleExecutable</key><string>doc.haus</string>
-  <key>CFBundleIconFile</key><string>AppIcon</string>
-  <key>CFBundleIdentifier</key><string>haus.doc.start</string>
-  <key>CFBundleName</key><string>doc.haus</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-</dict></plist>
-PLIST
-  # Finder shows a changed icon once the app itself has changed.
-  touch "$app"
+  if [ -f "$dir/scripts/macos-app.sh" ]; then
+    bash "$dir/scripts/macos-app.sh" "$dir"
+  else
+    # An existing checkout may predate the menu app helper. Starting it remains
+    # safe; its normal updater can supply the helper for the next installer run.
+    echo "doc.haus: update this installation, then run the installer again to refresh its Mac app." >&2
+  fi
 else
   applications="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
   mkdir -p "$applications"
