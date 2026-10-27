@@ -59,6 +59,12 @@
 .desk-document-list { display: grid; gap: 4px; padding: 12px 16px; border-bottom: 1px solid var(--desk-line); }
 .source-desk .desk-document-choice { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 20px; width: 100%; padding: 12px; border-color: transparent; border-bottom-color: var(--desk-line); border-radius: 0; text-align: left; }
 .desk-document-choice > span:first-child { font-size: 14px; overflow-wrap: anywhere; }
+.desk-update-badge { padding: 2px 6px; border-radius: 4px; color: var(--desk-accent); background: var(--desk-soft); font-size: 11px; font-weight: 600; }
+.desk-document-choice.has-update { animation: desk-document-updated 1.6s ease-out; }
+@keyframes desk-document-updated { from { background: #dceee2; } to { background: var(--desk-paper); } }
+.source-desk .desk-update-status { margin: 0; padding: 8px 16px; }
+.desk-find-scope { flex: 1 1 100%; color: var(--desk-muted); font-size: 11px; overflow-wrap: anywhere; }
+.desk-find { flex-wrap: wrap; }
 .source-desk .desk-meta { color: var(--desk-muted); font-size: 12px; line-height: 1.5; font-weight: 400; overflow-wrap: anywhere; }
 .desk-compare-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--desk-line); }
 .desk-compare-controls label { display: grid; flex: 1 1 160px; min-width: 0; gap: 3px; color: var(--desk-muted); font-size: 12px; }
@@ -122,7 +128,7 @@
 .desk-legend > .legend-moved::before { background: var(--redline-move); }
 .source-desk .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .source-desk [hidden] { display: none !important; }
-@media (prefers-reduced-motion: reduce) { .source-desk *, .source-desk *::before, .source-desk *::after { scroll-behavior: auto !important; } }
+@media (prefers-reduced-motion: reduce) { .source-desk *, .source-desk *::before, .source-desk *::after { scroll-behavior: auto !important; animation: none !important; } }
 @media (max-width: 760px) {
   .desk-columns.has-selection { grid-template-columns: minmax(0, 1fr); }
   .desk-context { border-right: 0; border-bottom: 1px solid var(--desk-line); }
