@@ -175,6 +175,36 @@ test("automatic list updates preserve the reader, focus and exact snapshot witho
   } finally { desk.dispose(); fixture.restore() }
 })
 
+test("a revised file with a new registry ID updates the same focused row and opens the latest identity", async () => {
+  const fixture = install(), clock = pollClock(), calls: DeskRequest[] = []
+  const revised = { ...preview, id: "registered-replacement", hash: "f".repeat(64), version: { id: "latest", number: 2, createdAt: savedAt + 60_000 }, text: "Updated saved wording.", blocks: undefined }
+  let catalog = sources
+  const desk = mountDesk(fixture.root, { async request(input) {
+    calls.push(input)
+    if (input.action === "sources") return catalog
+    if (input.action === "source") return revised
+    throw new Error("Unexpected action")
+  } }, { close() {}, schedulePoll: clock.schedulePoll })
+  try {
+    await desk.ready
+    const row = fixture.root.querySelector<HTMLButtonElement>('[data-source="one"]')!
+    row.focus()
+    catalog = { ...sources, sources: [revised, second] }
+    await clock.tick()
+    expect(fixture.root.querySelector('[data-source="registered-replacement"]')).toBe(row)
+    expect(document.activeElement).toBe(row)
+    expect(row.querySelector(".desk-update-badge")?.textContent).toBe("Updated")
+    expect(row.textContent).toContain("Version 2")
+    expect(fixture.root.querySelector('[data-source="one"]')).toBeNull()
+    row.click(); await settle()
+    expect(calls.filter(input => input.action === "source")).toEqual([{ action: "source", sourceId: revised.id, expectedHash: revised.hash }])
+    expect(element(fixture.root, "right").textContent).toContain(revised.text)
+    button(fixture.root, "back-documents").click()
+    expect(document.activeElement).toBe(row)
+    expect(row.querySelector(".desk-update-badge")).toBeNull()
+  } finally { desk.dispose(); fixture.restore() }
+})
+
 test("background polling serializes requests, pauses while hidden, retries quietly and disposes pending work", async () => {
   const fixture = install(), clock = pollClock(), pending = deferred<DeskSources>()
   let reads = 0, failing = false

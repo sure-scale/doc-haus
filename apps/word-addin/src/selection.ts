@@ -46,7 +46,7 @@ const BODY_LIMIT = 16 * 1024 * 1024
 
 function wordRuntime(): SelectionWord {
   const word = (window as unknown as { Word?: SelectionWord }).Word
-  if (!word) throw new SelectionError("Open doc.haus from this document in Word to read selected text.")
+  if (!word) throw new SelectionError("Open the Source Desk from this document in Word.")
   return word
 }
 
@@ -60,7 +60,7 @@ async function hash(text: string): Promise<string> {
 }
 
 function unsupported(text: string): string | undefined {
-  if (!text.trim()) return "Select a passage in Word, then choose Read selected text."
+  if (!text.trim()) return "Select a passage in Word, then refresh the selection."
   if (text.length > 255 || /[\u0000-\u001f\u007f^]/.test(text))
     return "For exact navigation, select a single-line passage of up to 255 characters without Word find codes."
 }
@@ -108,13 +108,13 @@ export async function captureSelection(word = wordRuntime()): Promise<WordSelect
     })
   } catch (error) {
     if (error instanceof SelectionError) throw error
-    throw new SelectionError("Word could not read the selection. Select a passage in Word, then choose Read selected text.")
+    throw new SelectionError("Word could not read the selection. Select the passage and refresh it in the desk.")
   }
 }
 
 export async function showSelection(snapshot: WordSelectionSnapshot, word = wordRuntime()): Promise<void> {
   if (!snapshot.navigable || unsupported(snapshot.text) || !/^[a-f0-9]{64}$/.test(snapshot.documentHash))
-    throw new SelectionError(snapshot.reason || "Select a unique passage in Word, then choose Read selected text.")
+    throw new SelectionError(snapshot.reason || "Refresh a unique passage in Word before navigating to it.")
   try {
     await word.run(async (context) => {
       const body = context.document.body
@@ -129,14 +129,14 @@ export async function showSelection(snapshot: WordSelectionSnapshot, word = word
       matches.load("items/text")
       await context.sync()
       if ((await hash(body.text)) !== snapshot.documentHash)
-        throw new SelectionError("The Word text has changed. Choose Read selected text to capture it again.")
+        throw new SelectionError("The Word text has changed. Refresh the selection before navigating.")
       if (
         occurrences(body.text, snapshot.text) !== 1 ||
         matches.items.length !== 1 ||
         matches.items[0]?.text !== snapshot.text
       )
         throw new SelectionError(
-          "Word could not identify one exact passage. Select it in Word, then choose Read selected text.",
+          "Word could not identify one exact passage. Select it in Word and refresh the selection.",
         )
       // Only this explicit action selects text. Capturing/refreshing never changes
       // selection, formatting, settings, saved bytes or doc.haus editing ownership.
@@ -145,6 +145,6 @@ export async function showSelection(snapshot: WordSelectionSnapshot, word = word
     })
   } catch (error) {
     if (error instanceof SelectionError) throw error
-    throw new SelectionError("Word could not show this passage. Select it in Word, then choose Read selected text.")
+    throw new SelectionError("Word could not show this passage. Select it directly in Word and refresh the selection.")
   }
 }

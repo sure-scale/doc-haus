@@ -134,19 +134,22 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     if (opened) return
     if (!sources) { if (sourcesJob && !list.firstChild) list.append(node("p", "Loading documents…", "desk-empty")); return }
     for (const note of list.querySelectorAll(".desk-empty, .desk-warning")) note.remove()
-    const rows = new Map(Array.from(list.querySelectorAll<HTMLButtonElement>("[data-source]"), row => [row.dataset.source!, row]))
-    const retained = new Set(sources.sources.map(source => source.id))
-    for (const [id, row] of rows) if (!retained.has(id)) row.remove()
+    // Replacing a matter file may change its registry ID. Its unique filename
+    // keeps the row stable; the request still uses the latest ID and hash.
+    const rows = new Map(Array.from(list.querySelectorAll<HTMLButtonElement>("[data-source-name]"), row => [row.dataset.sourceName!, row]))
+    const retained = new Set(sources.sources.map(source => source.name))
+    for (const [name, row] of rows) if (!retained.has(name)) row.remove()
     if (!sources.sources.length) list.append(node("p", "No saved documents are available.", "desk-empty"))
     for (const [index, source] of sources.sources.entries()) {
-      const row = rows.get(source.id) ?? action("choose-document", "", () => {})
+      const row = rows.get(source.name) ?? action("choose-document", "", () => {})
       row.onclick = () => { void openDocument(source) }
-      if (!row.dataset.source) { row.dataset.source = source.id; row.className = "desk-document-choice"; row.append(node("span"), node("span", "", "desk-meta")) }
+      if (!row.dataset.sourceName) { row.dataset.sourceName = source.name; row.className = "desk-document-choice"; row.append(node("span"), node("span", "", "desk-meta")) }
+      if (row.dataset.source !== source.id) row.dataset.source = source.id
       const name = row.children[0]!, meta = row.children[1]!
       if (name.textContent !== source.name) name.textContent = source.name
       const label = [`Version ${source.version?.number ?? "unavailable"}`, date(source.version?.createdAt)].filter(Boolean).join(" · ")
       if (meta.textContent !== label) meta.textContent = label
-      const update = updates.get(source.id)
+      const update = updates.get(source.name)
       let badge = row.querySelector(".desk-update-badge")
       if (update && !badge) { badge = node("span", update, "desk-update-badge"); row.append(badge) }
       else if (!update && badge) badge.remove()
@@ -278,7 +281,7 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     await work(async () => {
       const preview = await transport.request({ action: "source", sourceId: source.id, expectedHash: source.hash }) as DeskSourcePreview
       if (disposed) return
-      updates.delete(source.id); opened = preview; render()
+      updates.delete(source.name); opened = preview; render()
     })
     if (!disposed && opened) el("document-name").focus()
   }
@@ -302,9 +305,9 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
       const identityChanged = value.documentName !== sources?.documentName || value.matterName !== sources?.matterName
       const initial = !sources
       if (sources && changed) for (const source of value.sources) {
-        const previous = sources.sources.find(item => item.id === source.id)
-        if (!previous) updates.set(source.id, "New")
-        else if (JSON.stringify(previous) !== JSON.stringify(source)) updates.set(source.id, "Updated")
+        const previous = sources.sources.find(item => item.name === source.name)
+        if (!previous) updates.set(source.name, "New")
+        else if (JSON.stringify(previous) !== JSON.stringify(source)) updates.set(source.name, "Updated")
       }
       sources = value; sourcesRefreshed = Date.now()
       if (background && initial) error()
@@ -370,10 +373,10 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
   button("close").onclick = options.close
   button("back-documents").onclick = () => {
     if (busy()) return
-    const previous = opened?.id
+    const previous = opened?.name
     opened = undefined; render()
     const rows = Array.from(el("document-list").querySelectorAll<HTMLButtonElement>("[data-source]"))
-    ;(rows.find(row => row.dataset.source === previous) ?? rows[0])?.focus()
+    ;(rows.find(row => row.dataset.sourceName === previous) ?? rows[0])?.focus()
   }
   button("reload-versions").onclick = () => { if (!busy()) void loadVersions(false) }
   select("base").onchange = select("current").onchange = () => { void compareSelected() }
