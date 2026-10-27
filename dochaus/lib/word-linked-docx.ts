@@ -154,6 +154,11 @@ export function linkedWordDocx(bytes: Uint8Array, link: WordDocumentLink) {
   strip(parts)
   // Existing taskpanes are retained. Refuse a nonstandard root location rather than overwrite it.
   const root = relationships(parts["_rels/.rels"])
+  // A Word export can retain this empty internal relationship after omitting
+  // its taskpane parts. It names no add-in; leave every live or external target alone.
+  for (const node of elements(root, REL, "Relationship"))
+    if (node.getAttribute("Type") === TP_REL && node.getAttribute("Target") === "NULL" && !parts["NULL"] &&
+      (!node.hasAttribute("TargetMode") || node.getAttribute("TargetMode") === "Internal")) remove(node)
   const rootPane = elements(root, REL, "Relationship").find(node => node.getAttribute("Type") === TP_REL)
   if (rootPane && targetPart("", rootPane.getAttribute("Target") ?? "") !== taskpanePart)
     throw new WordPackageError("This Word file uses an unsupported taskpane location.")
