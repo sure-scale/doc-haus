@@ -9,7 +9,7 @@ export type DeskSource = {
   version: { id: string; number: number; createdAt?: number } | null
 }
 
-export type DeskSources = { sources: DeskSource[]; truncated: boolean; matterName: string; documentName: string }
+export type DeskSources = { sources: DeskSource[]; truncated: boolean; matterName: string; documentName: string; matterUrl?: string }
 export type DeskSourcePreview = DeskSource & {
   text: string
   /** Optional DOCX structure whose full text matches the canonical extraction. */

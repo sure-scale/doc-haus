@@ -104,14 +104,14 @@ test("retained-version comparison stays within the linked document and refuses r
   expect((await request("versions", {}, { "x-dochaus-word-version": "0.0.0.0" })).status).toBe(426)
   const revoked = openDb(directory)
   try { revoked.run("UPDATE word_grants SET revoked_at=? WHERE token_hash=?", [Date.now(), digest]) } finally { revoked.close() }
-  for (const action of ["sources", "source", "versions", "compare"]) expect((await request(action)).status).toBe(401)
+  for (const action of ["sources", "source", "versions", "compare", "open"]) expect((await request(action)).status).toBe(401)
 }, 30_000)
 
 test("HTTPS bridge only forwards the exact scoped desk command paths", async () => {
   const forwarded: string[] = []
   const handler = wordHttpsHandler(request => { forwarded.push(new URL(request.url).pathname); return new Response("scoped") },
     { origin, external: true, host: "127.0.0.1", port: 47612 })
-  for (const action of ["sources", "source", "versions", "compare"]) {
+  for (const action of ["sources", "source", "versions", "compare", "open"]) {
     const route = `/word/desk/${action}`
     expect(wordTokenPath(route)).toBe(true)
     expect((await handler(new Request(origin + route, { method: "POST", body: "{}" }))).status).toBe(200)
@@ -121,5 +121,5 @@ test("HTTPS bridge only forwards the exact scoped desk command paths", async () 
     expect(wordTokenPath(route)).toBe(false)
     expect((await handler(new Request(origin + route, { method: "POST" }))).status).toBe(404)
   }
-  expect(forwarded).toHaveLength(4)
+  expect(forwarded).toHaveLength(5)
 })

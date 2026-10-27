@@ -6,6 +6,7 @@ import { Document, InsertedTextRun, Packer, Paragraph } from "docx"
 import { DOMParser } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { openDb } from "./db"
+import type { DeskSources } from "../../../dochaus/lib/word-source-desk-contract"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { linkedWordDocx } from "../../../dochaus/lib/word-linked-docx"
 import { WORD_ADDIN_VERSION, WORD_LINK_SETTING, type WordDocumentLink, type WordSaveResponse, type WordConnectionState, type WordLeaseAction } from "../../../dochaus/lib/word-addin-contract"
@@ -284,6 +285,96 @@ test("latest copy refuses unrecorded changes and invalid or revoked document cap
   expect(new Uint8Array(await readFile(path.join(matter.dir, "Latest guard.docx")))).toEqual(new Uint8Array(outside))
   expect((await route(`/documents/word?${query("Latest guard.docx")}`, { method: "DELETE" })).status).toBe(200)
   expect((await latestCopy(link)).status).toBe(401)
+})
+
+const deskSources = async (link: WordDocumentLink) => (await (await request("/word/desk/sources", { method: "POST", headers: tokenHeaders(link) })).json() as DeskSources).sources
+const deskOpen = (link: WordDocumentLink, input: object) => request("/word/desk/open", { method: "POST", headers: tokenHeaders(link, { "Content-Type": "application/json" }), body: JSON.stringify(input) })
+
+test("desk native opening preserves both Word sessions and opens only the selected saved matter document", async () => {
+  await create("Desk caller.docx")
+  await create("Desk target.docx", "A separate matter document for desktop Word.")
+  const caller = await handout("Desk caller.docx"), target = await handout("Desk target.docx")
+  await claim(caller.link, "session-desk-caller")
+  await claim(target.link, "session-desk-target")
+  const selected = (await deskSources(caller.link)).find(row => row.name === "Desk target.docx")!
+  const snapshot = () => {
+    const db = openDb(matter.dir)
+    try { return { leases: db.query("SELECT * FROM word_edit_leases ORDER BY document_id").all(), sessions: db.query("SELECT * FROM word_sessions ORDER BY token_hash, session").all(), versions: db.query("SELECT id, sha256 FROM document_versions ORDER BY id").all() } }
+    finally { db.close() }
+  }
+  const before = snapshot(), callerBytes = await readFile(path.join(matter.dir, "Desk caller.docx")), targetBytes = await readFile(path.join(matter.dir, "Desk target.docx"))
+  const input = { sourceId: selected.id, expectedHash: selected.hash, origin: browserOrigin }
+  const first = await latestSource(await deskOpen(caller.link, input))
+  expect(snapshot()).toEqual(before)
+  const native = await request(first.pathname)
+  expect(native.status).toBe(200)
+  const opened = new Uint8Array(await native.arrayBuffer()), linked = readLink(opened)
+  expect(linked).toMatchObject({ document: target.link.document, documentName: "Desk target.docx", baseVersion: target.link.baseVersion, origin: browserOrigin, apiOrigin: paneOrigin })
+  expect(linked.token).toBe(target.link.token)
+  expect(strFromU8(unzipSync(opened)["word/document.xml"]!)).toContain("A separate matter document for desktop Word.")
+  expect((await request(first.pathname)).status).toBe(410)
+  const repeated = await latestSource(await deskOpen(caller.link, input))
+  expect(new Uint8Array(await (await request(repeated.pathname)).arrayBuffer())).toEqual(opened)
+  expect(snapshot()).toEqual(before)
+  expect(await readFile(path.join(matter.dir, "Desk caller.docx"))).toEqual(callerBytes)
+  expect(await readFile(path.join(matter.dir, "Desk target.docx"))).toEqual(targetBytes)
+  // Selecting this pane's current document also leaves its lease untouched.
+  const own = (await deskSources(caller.link)).find(row => row.name === "Desk caller.docx")!
+  const ownSource = await latestSource(await deskOpen(caller.link, { sourceId: own.id, expectedHash: own.hash, origin: browserOrigin }))
+  expect((await request(ownSource.pathname)).status).toBe(200)
+  expect(snapshot()).toEqual(before)
+})
+
+test("desk native opening refuses other matters, changed files and revoked originating grants", async () => {
+  await create("Desk guarded caller.docx")
+  await create("Desk guarded target.docx", "Confirmed target wording.")
+  const caller = await handout("Desk guarded caller.docx")
+  let selected = (await deskSources(caller.link)).find(row => row.name === "Desk guarded target.docx")!
+  const input = () => ({ sourceId: selected.id, expectedHash: selected.hash, origin: browserOrigin })
+  expect((await deskOpen(caller.link, { ...input(), sourceId: "../../outside.docx" })).status).toBe(400)
+  expect((await deskOpen(caller.link, { ...input(), name: "Desk target.docx" })).status).toBe(400)
+  expect((await deskOpen(caller.link, { ...input(), origin: "file:///tmp" })).status).toBe(400)
+  const otherMatter = await (await request("/matters", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "Synthetic foreign desk matter" }) })).json() as { id: string; dir: string }
+  expect((await request(`/matters/${otherMatter.id}/deliverables`, { method: "POST", body: file(await plain("Foreign matter content must not be exposed."), "Foreign.docx") })).status).toBe(200)
+  const db = openDb(otherMatter.dir)
+  let foreign: { id: number }
+  try { foreign = db.query("SELECT id FROM documents WHERE name='Foreign.docx'").get() as { id: number } } finally { db.close() }
+  const { sha256Hex } = await import("./document-versions")
+  const foreignHash = sha256Hex(await readFile(path.join(otherMatter.dir, "Foreign.docx")))
+  expect((await deskOpen(caller.link, { sourceId: String(foreign.id), expectedHash: foreignHash, origin: browserOrigin })).status).toBe(409)
+  expect((await deskOpen(caller.link, { ...input(), matter: otherMatter.id })).status).toBe(400)
+  const prepared = await latestSource(await deskOpen(caller.link, input()))
+  expect((await route("/documents/revisions", { method: "POST", body: file(await plain("A later recorded target version."), "Desk guarded target.docx") })).status).toBe(200)
+  expect((await request(prepared.pathname)).status).toBe(410)
+  expect((await deskOpen(caller.link, input())).status).toBe(409)
+  selected = (await deskSources(caller.link)).find(row => row.name === "Desk guarded target.docx")!
+  const revoked = await latestSource(await deskOpen(caller.link, input()))
+  expect((await route(`/documents/word?${query("Desk guarded caller.docx")}`, { method: "DELETE" })).status).toBe(200)
+  expect((await deskOpen(caller.link, input())).status).toBe(401)
+  // The target's fresh grant stays valid; revoking the requester still retires
+  // this handoff, so the ticket cannot outlive its original authority.
+  expect((await request(revoked.pathname)).status).toBe(410)
+  const fresh = await handout("Desk guarded caller.docx")
+  const before = await history("Desk guarded target.docx")
+  await writeFile(path.join(matter.dir, "Desk guarded target.docx"), await plain("An unrecorded external replacement."))
+  expect((await deskOpen(fresh.link, input())).status).toBe(409)
+  expect((await history("Desk guarded target.docx")).versions).toEqual(before.versions)
+  // Restoring the recorded bytes makes the same selection available again;
+  // ambiguous registry aliases and later redaction must still retire tickets.
+  const recorded = await route(`/documents/versions/${before.versions[0]!.id}/content`)
+  await writeFile(path.join(matter.dir, "Desk guarded target.docx"), new Uint8Array(await recorded.arrayBuffer()))
+  const aliasTicket = await latestSource(await deskOpen(fresh.link, input()))
+  const aliases = openDb(matter.dir)
+  try { aliases.run("INSERT INTO documents(doc_path, name, created_at, role) VALUES (?, ?, ?, 'deliverable')", [`${matter.dir}/./Desk guarded target.docx`, "Desk guarded target.docx", Date.now()]) }
+  finally { aliases.close() }
+  expect((await deskOpen(fresh.link, input())).status).toBe(409)
+  expect((await request(aliasTicket.pathname)).status).toBe(410)
+  const restore = openDb(matter.dir)
+  try { restore.run("DELETE FROM documents WHERE doc_path=?", [`${matter.dir}/./Desk guarded target.docx`]) } finally { restore.close() }
+  const redacted = await latestSource(await deskOpen(fresh.link, input()))
+  expect((await route("/documents/revisions", { method: "POST", headers: { "x-dochaus-origin": "redaction" }, body: file(await plain("[REDACTED]"), "Desk guarded target.docx") })).status).toBe(200)
+  expect((await request(redacted.pathname)).status).toBe(410)
+  expect((await deskOpen(fresh.link, input())).status).toBe(409)
 })
 
 test("token endpoints require the exact configured pane origin on success, errors and preflight", async () => {

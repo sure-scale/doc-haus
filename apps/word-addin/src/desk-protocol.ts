@@ -11,6 +11,7 @@ export type DeskRequest =
   | { action: "show"; selection: WordSelectionSnapshot }
   | { action: "sources" }
   | { action: "source"; sourceId: string; expectedHash: string }
+  | { action: "open"; sourceId: string; expectedHash: string }
   | { action: "versions" }
   | { action: "compare"; baseVersion: string; currentVersion: string }
 
@@ -68,6 +69,7 @@ export function isDeskRequest(value: unknown): value is DeskRequest {
     case "show":
       return keys(value, ["action", "selection"]) && snapshot(value.selection)
     case "source":
+    case "open":
       return (
         keys(value, ["action", "sourceId", "expectedHash"]) &&
         reference(value.sourceId) &&

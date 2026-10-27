@@ -12,23 +12,21 @@ test("matching server versions and restored receipts do not imply that fresh Wor
     const view = savePresentation(state({ acknowledgement }))
     expect(view.badge).toBe("Ready")
     expect(view.message).toBe("Version 2 in doc.haus")
-    expect(view.primary).toBe("save")
     expect(view.mismatch).toBeUndefined()
     expect(view.help).toBeUndefined()
   }
   expect(savePresentation(state({ connection: undefined })).message).toContain("Save to confirm this copy")
 })
 
-test("only observed changes get Changes to save; verified saves get the close action and one receipt line", () => {
-  expect(savePresentation(state({ content: "changed" }))).toMatchObject({ badge: "Changes to save", primary: "save" })
+test("only observed changes get Changes to save; verified saves get one receipt line", () => {
+  expect(savePresentation(state({ content: "changed" }))).toMatchObject({ badge: "Changes to save" })
   const receipt = { base: "v2", number: 2, fingerprint: "a".repeat(64), at: 1_700_000_000_000, overlap: false }
   const view = savePresentation(state({ status: "saved", content: "confirmed", acknowledgement: receipt }))
   expect(view.badge).toBe("Saved")
-  expect(view.primary).toBe("close")
   expect(view.message).toContain("Version 2 received at")
   expect(view.mismatch).toBeUndefined()
-  expect(savePresentation(state({ status: "saving", message: "Saving in Word…" }))).toMatchObject({ badge: "Saving…", primary: "save", message: "Saving in Word…" })
-  expect(savePresentation(state({ problem: true, content: "confirmed", acknowledgement: receipt, message: "doc.haus did not confirm this save." }))).toMatchObject({ badge: "Needs attention", primary: "save", message: "doc.haus did not confirm this save." })
+  expect(savePresentation(state({ status: "saving", message: "Saving in Word…" }))).toMatchObject({ badge: "Saving…", message: "Saving in Word…" })
+  expect(savePresentation(state({ problem: true, content: "confirmed", acknowledgement: receipt, message: "doc.haus did not confirm this save." }))).toMatchObject({ badge: "Needs attention", message: "doc.haus did not confirm this save." })
 })
 
 test("blocked copies show contextual recovery and only a real version mismatch gets the extra version line", () => {

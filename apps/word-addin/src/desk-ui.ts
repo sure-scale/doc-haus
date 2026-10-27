@@ -1,7 +1,6 @@
-import type { DeskComparison, DeskSource, DeskSourcePreview, DeskSources, DeskVersions } from "../../../dochaus/lib/word-source-desk-contract"
+import type { DeskComparison, DeskSource, DeskSources, DeskVersions } from "../../../dochaus/lib/word-source-desk-contract"
 import { wordDiff, type Piece } from "../../../dochaus/lib/redline"
 import type { DeskRequest, DeskView } from "./desk-protocol"
-import type { WordSelectionSnapshot } from "./selection"
 
 export type DeskTransport = { request(input: DeskRequest): Promise<unknown> }
 export type DeskContext = { view: DeskView; documentName?: string; matterName?: string }
@@ -13,9 +12,11 @@ type DeskOptions = {
   onViewChange?(view: DeskView): void
   onContextChange?(context: DeskContext): void
   onBusyChange?(busy: boolean): void
+  schedulePoll?(run: () => void, delayMs: number): () => void
+  now?(): number
 }
 
-/** Each document tab retains the exact saved snapshot that was opened. */
+/** Matter documents open in desktop Word; comparison remains a read-only pane view. */
 export function mountDesk(root: HTMLElement, transport: DeskTransport, options: DeskOptions) {
   root.classList.add("source-desk")
   root.classList.toggle("is-embedded", Boolean(options.embedded))
@@ -25,19 +26,12 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
       <nav class="desk-modes" aria-label="Document views"><button data-el="sources-mode" type="button" aria-pressed="true">Documents</button><button data-el="compare-mode" type="button" aria-pressed="false">Compare</button></nav>
       <button type="button" class="desk-icon" data-el="close" aria-label="${options.floating ? "Close window" : "Back to saving"}" title="${options.floating ? "Close window" : "Back to saving"}">×</button>
     </header>
-    <section data-el="source-tools"><div class="desk-document-bar">
-      <div class="desk-tabs" data-el="tabs" role="tablist" aria-label="Open documents"></div>
-      <button type="button" data-el="open-document">+ Open document</button>
-      <div class="desk-reader-actions"><button type="button" class="desk-icon" data-el="find-toggle" aria-label="Find exact wording (Cmd or Ctrl+F)" title="Find exact wording (Cmd or Ctrl+F)" aria-expanded="false">⌕</button>
-        <button type="button" data-el="selection-toggle" aria-label="Show selected Word text" title="Show selected Word text" aria-pressed="false">Word selection</button>
-        <button type="button" class="desk-icon" data-el="reload" aria-label="Refresh document list" title="Refresh document list">↻</button></div>
-      </div>
-      <div class="desk-find" data-el="find-bar" hidden><input data-el="find" type="search" aria-label="Exact wording" placeholder="Exact wording" maxlength="255" />
-        <span data-el="find-count" role="status"></span><button class="desk-icon" type="button" data-el="find-previous" aria-label="Previous match" title="Previous match">‹</button><button class="desk-icon" type="button" data-el="find-next" aria-label="Next match" title="Next match">›</button><button class="desk-icon" type="button" data-el="find-close" aria-label="Close Find (Escape)" title="Close Find (Escape)">×</button></div>
+    <section data-el="source-tools">
       <div class="desk-document-list" data-el="document-list"></div>
+      <p class="desk-meta desk-update-status" data-el="update-status" role="status" hidden></p>
     </section>
     <section data-el="compare-tools" hidden><div class="desk-compare-controls"><label>Earlier<select data-el="base" aria-label="Earlier version"></select></label><span aria-hidden="true">→</span><label>Later<select data-el="current" aria-label="Later version"></select></label><button type="button" data-el="compare" hidden>Compare</button><button type="button" class="desk-icon" data-el="reload-versions" aria-label="Refresh version list" title="Refresh version list">↻</button></div><p class="desk-warning" data-el="compare-warning" hidden></p></section>
-    <div class="desk-columns" data-el="columns"><section class="desk-context" aria-label="Word selection" data-el="left" hidden></section><section class="desk-reader" aria-label="Saved document" data-el="right"></section></div>
+    <div class="desk-columns"><section class="desk-reader" aria-label="Saved document" data-el="right"></section></div>
     <p class="desk-error" role="alert" data-el="status" hidden></p>`
   const el = <T extends HTMLElement>(name: string) => root.querySelector(`[data-el="${name}"]`) as T
   const button = (name: string) => el<HTMLButtonElement>(name)
@@ -55,7 +49,12 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     return result
   }
   const date = (value?: number | string) => value === undefined ? "" : new Date(value).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
-  const key = (source: DeskSource) => `${source.id}:${source.hash}`
+  const originLabel: Record<string, string> = {
+    word: "Saved from Word", upload: "Uploaded", replace: "Replaced", generated: "Created in doc.haus",
+    revision: "Revised in doc.haus", "agent-edit": "Edited in doc.haus", redaction: "Redacted",
+    accept: "Changes accepted", conversion: "Converted", copy: "Copied", restore: "Restored",
+    system: "Saved by doc.haus", unknown: "Saved in doc.haus",
+  }
   let disposed = false
   let pending = 0
   let mode: DeskView = options.initialView === "compare" ? "compare" : "documents"
@@ -64,22 +63,24 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
   let sourcesJob: Promise<void> | undefined
   let versionsJob: Promise<void> | undefined
   let comparisonJob: Promise<void> | undefined
-  let sourcesRefreshed: number | undefined
+  const updates = new Map<string, "New" | "Updated">()
+  const schedulePoll = options.schedulePoll ?? ((run: () => void, delay: number) => { const timer = setTimeout(run, delay); return () => clearTimeout(timer) })
+  let cancelPoll: (() => void) | undefined
+  const now = options.now ?? Date.now
+  type Handoff = { key: string; uri?: string; at?: number; retryAt?: number; error?: boolean; openingUntil?: number }
+  const openLinks = new Map<string, Handoff>()
+  const visible = new Set<Element>()
+  let preparing = false
+  const observer = typeof window.IntersectionObserver === "function" ? new window.IntersectionObserver(entries => {
+    for (const entry of entries) { if (entry.isIntersecting) visible.add(entry.target); else visible.delete(entry.target) }
+    void prepareOpenLinks()
+  }, { rootMargin: "80px" }) : undefined
   let versionsRefreshed: number | undefined
-  const documents = new Map<string, DeskSourcePreview>()
-  let activeKey = ""
-  let chooserOpen = true
-  let selectionVisible = false
-  let selection: WordSelectionSnapshot | undefined
-  let findOpen = false
-  let findIndex = 0
-  let findTotal = 0
   let comparison: DeskComparison | undefined
   let desiredPair = ""
   let retryPair = ""
   let change = 0
   const comparisons = new Map<string, DeskComparison>()
-  const active = () => documents.get(activeKey)
   const busy = () => pending > 0
   function error(message = "") {
     if (disposed) return
@@ -105,11 +106,8 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     if (disposed) return
     root.setAttribute("aria-busy", String(busy()))
     for (const control of root.querySelectorAll<HTMLButtonElement | HTMLSelectElement>("button, select")) {
-      if (!["close", "find-toggle", "find-close", "find-previous", "find-next"].includes(control.dataset.el ?? "")) control.disabled = busy()
+      if (control.dataset.el !== "close") control.disabled = busy()
     }
-    button("find-previous").disabled = button("find-next").disabled = !findTotal
-    const show = root.querySelector<HTMLButtonElement>('[data-el="show"]')
-    if (show) show.disabled = busy() || !selection?.navigable
     const count = comparison?.changes.length ?? 0
     const previous = root.querySelector<HTMLButtonElement>('[data-el="previous"]')
     const next = root.querySelector<HTMLButtonElement>('[data-el="next"]')
@@ -134,50 +132,109 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
       if (!disposed) { controls(); if (!pending) options.onBusyChange?.(false) }
     }
   }
-  const focusTab = (id = activeKey) => Array.from(el("tabs").querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((item) => item.dataset.document === id)?.focus()
-  function renderTabs() {
-    const tabs = el("tabs")
-    tabs.replaceChildren()
-    tabs.hidden = !documents.size
-    button("open-document").hidden = !documents.size
-    button("open-document").setAttribute("aria-expanded", String(chooserOpen))
-    for (const [id, source] of documents) {
-      const group = node("div", "", "desk-tab")
-      group.setAttribute("role", "presentation")
-      const pick = action("document-tab", source.name, () => { activeKey = id; chooserOpen = false; render(); focusTab(id) })
-      pick.dataset.document = id; pick.setAttribute("role", "tab"); pick.setAttribute("aria-selected", String(activeKey === id)); pick.tabIndex = activeKey === id ? 0 : -1
-      pick.title = `${source.name} · version ${source.version?.number ?? "unavailable"}`
-      pick.onkeydown = (event) => {
-        const ids = Array.from(documents.keys()), at = ids.indexOf(id)
-        const target = event.key === "ArrowRight" ? ids[(at + 1) % ids.length] : event.key === "ArrowLeft" ? ids[(at + ids.length - 1) % ids.length] : event.key === "Home" ? ids[0] : event.key === "End" ? ids[ids.length - 1] : undefined
-        if (!target) return
-        event.preventDefault(); activeKey = target; chooserOpen = false; render(); focusTab(target)
-      }
-      const close = action("close-document", `Close ${source.name}`, () => {
-        const ids = Array.from(documents.keys()), at = ids.indexOf(id)
-        documents.delete(id)
-        if (activeKey === id) activeKey = ids[at + 1] ?? ids[at - 1] ?? ""
-        if (!documents.size) chooserOpen = true
-        render(); if (documents.size) focusTab(); else el("document-list").querySelector<HTMLButtonElement>("button")?.focus()
-      }, "×")
-      group.append(pick, close); tabs.append(group)
-    }
-  }
   function renderList() {
     const list = el("document-list")
-    list.hidden = !chooserOpen
-    list.replaceChildren()
-    if (!chooserOpen) return
-    if (!sources) { if (sourcesJob) list.append(node("p", "Loading documents…", "desk-empty")); return }
+    if (!sources) { if (sourcesJob && !list.firstChild) list.append(node("p", "Loading documents…", "desk-empty")); return }
+    for (const note of list.querySelectorAll(".desk-empty, .desk-warning")) note.remove()
+    // Replacing a matter file may change its registry ID. Its unique filename
+    // keeps the row stable; the request still uses the latest ID and hash.
+    const rows = new Map(Array.from(list.querySelectorAll<HTMLAnchorElement>("[data-source-name]"), row => [row.dataset.sourceName!, row]))
+    const retained = new Set(sources.sources.map(source => source.name))
+    for (const [name, row] of rows) if (!retained.has(name)) { observer?.unobserve(row); visible.delete(row); openLinks.delete(name); row.remove() }
     if (!sources.sources.length) list.append(node("p", "No saved documents are available.", "desk-empty"))
-    for (const source of sources.sources) {
-      const row = action("choose-document", "", () => { void openDocument(source) })
-      row.dataset.source = source.id
-      row.className = "desk-document-choice"
-      row.append(node("span", source.name), node("span", [`Version ${source.version?.number ?? "unavailable"}`, date(source.version?.createdAt)].filter(Boolean).join(" · "), "desk-meta"))
-      list.append(row)
+    for (const [index, source] of sources.sources.entries()) {
+      const row = rows.get(source.name) ?? node("a")
+      if (!row.dataset.sourceName) {
+        row.dataset.sourceName = source.name; row.className = "desk-document-choice"; row.target = "_blank"; row.rel = "noopener noreferrer"; row.tabIndex = 0
+        row.setAttribute("role", "link")
+        row.append(node("span"), node("span", "", "desk-meta"), node("span", "", "desk-open-status"))
+        observer?.observe(row)
+      }
+      if (row.dataset.source !== source.id) row.dataset.source = source.id
+      row.onclick = event => activateDocument(event, row, source)
+      row.onkeydown = event => { if (event.key === "Enter" && !row.hasAttribute("href")) activateDocument(event, row, source) }
+      const name = row.children[0]!, meta = row.children[1]!
+      if (name.textContent !== source.name) name.textContent = source.name
+      const label = [`Version ${source.version?.number ?? "unavailable"}`, date(source.version?.createdAt)].filter(Boolean).join(" · ")
+      if (meta.textContent !== label) meta.textContent = label
+      const update = updates.get(source.name)
+      let badge = row.querySelector(".desk-update-badge")
+      if (update && !badge) { badge = node("span", update, "desk-update-badge"); row.append(badge) }
+      else if (!update && badge) badge.remove()
+      else if (badge && badge.textContent !== update) badge.textContent = update!
+      row.classList.toggle("has-update", Boolean(update))
+      updateOpenLink(row, source)
+      const at = list.children[index]
+      if (at !== row) list.insertBefore(row, at ?? null)
     }
-    if (sources.truncated) list.append(node("p", "Some documents have no saved preview or exceed the list limit.", "desk-warning"))
+    if (sources.truncated) list.append(node("p", "Some documents are unavailable or exceed the list limit.", "desk-warning"))
+    void prepareOpenLinks()
+  }
+  const sourceKey = (source: DeskSource) => `${source.id}:${source.hash}`
+  function patchLink(row: HTMLAnchorElement, href: string | undefined, label: string) {
+    if (href) { if (row.getAttribute("href") !== href) row.href = href }
+    else if (row.hasAttribute("href")) row.removeAttribute("href")
+    const disabled = String(!href)
+    if (row.getAttribute("aria-disabled") !== disabled) row.setAttribute("aria-disabled", disabled)
+    const state = row.querySelector(".desk-open-status")!
+    if (state.textContent !== label) state.textContent = label
+  }
+  function updateOpenLink(row: HTMLAnchorElement, source: DeskSource) {
+    if (!/\.docx$/i.test(source.name)) {
+      let href: string | undefined
+      try { const value = new URL(sources?.matterUrl ?? ""); if (/^https?:$/.test(value.protocol) && !value.username && !value.password) href = value.href } catch { /* The parent supplies a validated matter URL. */ }
+      patchLink(row, href, href ? "Open in doc.haus" : "Use Open matter in doc.haus below")
+      return
+    }
+    let state = openLinks.get(source.name)
+    if (!state || state.key !== sourceKey(source)) { state = { key: sourceKey(source) }; openLinks.set(source.name, state) }
+    const ready = state.uri && state.at !== undefined && now() - state.at < 45_000
+    patchLink(row, ready ? state.uri : undefined, state.openingUntil && state.openingUntil > now() ? "Opening in Word…" : state.error ? "Could not prepare Word. Retrying…" : ready ? "Open in Word" : "Preparing Word…")
+  }
+  function visibleSources() {
+    const rows = Array.from(el("document-list").querySelectorAll<HTMLAnchorElement>("[data-source-name]"))
+    const available = observer ? rows.filter(row => visible.has(row)) : rows.filter(row => { const bounds = row.getBoundingClientRect(); return !bounds.height || (bounds.bottom >= 0 && bounds.top < window.innerHeight + 80) })
+    const names = new Set(available.slice(0, 12).map(row => row.dataset.sourceName))
+    return (sources?.sources ?? []).filter(source => /\.docx$/i.test(source.name) && names.has(source.name))
+  }
+  async function prepareOpenLinks() {
+    if (preparing || !pollingAllowed() || !sources) return
+    preparing = true
+    try {
+      for (const source of visibleSources()) {
+        if (!pollingAllowed()) break
+        const row = Array.from(el("document-list").querySelectorAll<HTMLAnchorElement>("[data-source-name]")).find(item => item.dataset.sourceName === source.name)
+        if (!row) continue
+        updateOpenLink(row, source)
+        const state = openLinks.get(source.name)!
+        if ((state.at !== undefined && now() - state.at < 30_000) || (state.retryAt && now() < state.retryAt)) continue
+        const started = now()
+        try {
+          const handoff = await transport.request({ action: "open", sourceId: source.id, expectedHash: source.hash }) as { uri: string }
+          if (disposed || openLinks.get(source.name) !== state || sources?.sources.find(item => item.name === source.name)?.id !== source.id || sources?.sources.find(item => item.name === source.name)?.hash !== source.hash) continue
+          if (typeof handoff?.uri !== "string" || !handoff.uri.startsWith("doc.haus://word/open?") || now() - started >= 45_000) throw new Error("Expired Word handoff")
+          state.uri = handoff.uri; state.at = started; state.error = false; state.retryAt = undefined
+        } catch {
+          if (disposed || openLinks.get(source.name) !== state) continue
+          state.uri = undefined; state.at = undefined; state.error = true; state.retryAt = now() + 5_000
+        }
+        if (!disposed) updateOpenLink(row, source)
+      }
+    } finally { preparing = false }
+  }
+  function activateDocument(event: Event, row: HTMLAnchorElement, source: DeskSource) {
+    if (!/\.docx$/i.test(source.name)) { if (!row.hasAttribute("href")) event.preventDefault(); return }
+    updateOpenLink(row, source)
+    const state = openLinks.get(source.name)!
+    if (!row.hasAttribute("href")) { event.preventDefault(); state.retryAt = undefined; void prepareOpenLinks(); return }
+    updates.delete(source.name)
+    row.querySelector(".desk-update-badge")?.remove(); row.classList.remove("has-update")
+    state.openingUntil = now() + 5_000
+    // Clear the single-use link only after the real anchor's default navigation.
+    setTimeout(() => {
+      if (disposed || openLinks.get(source.name) !== state) return
+      state.uri = undefined; state.at = undefined; updateOpenLink(row, source); void prepareOpenLinks()
+    }, 0)
   }
   function details(area: HTMLElement, lines: string[]) {
     const detail = node("details", "", "desk-details")
@@ -190,73 +247,19 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     if (disposed) return
     el("source-tools").hidden = mode !== "documents"
     el("compare-tools").hidden = mode !== "compare"
-    el("left").hidden = mode !== "documents" || !selectionVisible
-    el("columns").classList.toggle("has-selection", mode === "documents" && selectionVisible)
     button("sources-mode").setAttribute("aria-pressed", String(mode === "documents"))
     button("compare-mode").setAttribute("aria-pressed", String(mode === "compare"))
-    button("selection-toggle").setAttribute("aria-pressed", String(selectionVisible))
-    button("selection-toggle").title = selectionVisible ? "Hide selected Word text" : "Show selected Word text"
-    el("find-bar").hidden = !findOpen
-    button("find-toggle").setAttribute("aria-expanded", String(findOpen))
-    renderTabs(); renderList()
-    const left = el("left"), right = el("right")
-    left.replaceChildren(); right.replaceChildren()
-    findTotal = 0
-    const query = mode === "documents" && findOpen ? el<HTMLInputElement>("find").value : ""
-    const highlighted = (area: HTMLElement, text: string) => {
-      if (!query) { area.textContent = text; return }
-      let from = 0, at = text.indexOf(query)
-      while (at >= 0) {
-        const index = findTotal++
-        // Count all exact matches; bound DOM marks while keeping the active match navigable.
-        if (index < 200 || index === findIndex) {
-          area.append(document.createTextNode(text.slice(from, at)))
-          const mark = node("mark", query)
-          mark.dataset.findIndex = String(index)
-          if (index === findIndex) { mark.className = "is-current"; mark.setAttribute("aria-current", "true") }
-          area.append(mark); from = at + query.length
-        }
-        at = text.indexOf(query, at + query.length)
-      }
-      area.append(document.createTextNode(text.slice(from)))
-    }
-    const textBlock = (text: string, className = "desk-text") => {
-      const block = node("div", "", className)
+    renderList()
+    const right = el("right")
+    right.replaceChildren()
+    const textBlock = (text: string) => {
+      const block = node("div", "", "desk-text")
       block.tabIndex = 0
-      for (const paragraph of text.split(/\n+/)) { const p = node("p"); highlighted(p, paragraph); block.append(p) }
+      for (const paragraph of text.split(/\n+/)) { const p = node("p"); p.textContent = paragraph; block.append(p) }
       return block
     }
     if (mode === "documents") {
-      if (selectionVisible) {
-        const head = node("div", "", "desk-selection-head")
-        head.append(node("h3", "Word selection"))
-        if (selection) head.append(node("time", date(selection.capturedAt), "desk-meta"))
-        head.append(action("capture", "Refresh Word selection", () => { void captureSelection().then(() => root.querySelector<HTMLButtonElement>('[data-el="capture"]')?.focus()) }, "↻"), action("show", "Show in Word", () => { if (selection?.navigable && !busy()) void work(async () => { await transport.request({ action: "show", selection: selection! }) }) }))
-        left.append(head)
-        if (selection?.text) left.append(textBlock(selection.text))
-        if (selection?.reason) left.append(node("p", selection.reason, "desk-warning"))
-        if (selection) details(left, ["Captured Word text; separate from saved matter versions.", "Show in Word requires one exact, unique passage in unchanged body text. Formatting and markup are not checked.", `Body text SHA-256 · ${selection.documentHash}`])
-      }
-      const source = active()
-      right.hidden = !source
-      if (source) {
-        const paper = node("article", "", "desk-paper")
-        paper.append(node("p", [`Version ${source.version?.number ?? "unavailable"}`, date(source.version?.createdAt), "Read-only"].filter(Boolean).join(" · "), "desk-meta"))
-        if (source.truncated) paper.append(node("p", `Partial preview · ${source.text.length.toLocaleString()} of ${source.characters.toLocaleString()} characters.`, "desk-warning"))
-        const body = node("div", "", "desk-text")
-        body.tabIndex = 0
-        const blocks = source.blocks?.length ? source.blocks : source.text.split(/\n+/).map((text) => ({ kind: "paragraph" as const, text }))
-        for (const block of blocks) {
-          const tag = block.kind === "heading" ? `h${Math.min(6, Math.max(2, (block.level ?? 1) + 1))}` as "h2" : "p"
-          const p = node(tag); highlighted(p, block.text); body.append(p)
-        }
-        if (!source.text) body.append(node("p", "No previewable text."))
-        paper.append(body)
-        details(paper, [`Saved version ID · ${source.version?.id ?? "unavailable"}`, `SHA-256 · ${source.hash}`, "This opened snapshot stays unchanged when the document list is refreshed.", ...(sourcesRefreshed ? [`Document list refreshed ${date(sourcesRefreshed)}`] : [])])
-        right.append(paper)
-      }
-      if (findIndex >= findTotal && findIndex) { findIndex = 0; render(); return }
-      el("find-count").textContent = query ? findTotal ? `${findIndex + 1} of ${findTotal}` : "0 matches" : ""
+      right.hidden = true
     } else {
       right.hidden = false
       const paper = node("article", "", "desk-paper")
@@ -264,7 +267,8 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
         const hunk = comparison.changes[change]
         const head = node("div", "", "desk-change-head")
         const heading = node("div")
-        heading.append(node("h3", hunk?.location.heading ?? (hunk ? "Text change" : "No text changes")), node("p", `Version ${comparison.base.number} → Version ${comparison.current.number} · Saved versions · Read-only`, "desk-meta"))
+        const scopeLabel = hunk && ({ body: "Text", header: "Header", footer: "Footer", footnote: "Footnote", endnote: "Endnote" }[hunk.location.scope])
+        heading.append(node("h3", hunk?.location.heading ?? (hunk ? `${scopeLabel} change` : "No text changes")), node("p", `Version ${comparison.base.number} → Version ${comparison.current.number} · Saved versions · Read-only`, "desk-meta"))
         if (hunk?.untracked) heading.append(node("span", "Untracked edit", "desk-tag"))
         const nav = node("div", "", "desk-change-nav")
         nav.append(action("previous", "Previous change", () => moveChange(-1), "‹"), node("span", comparison.changes.length ? `${change + 1} of ${comparison.changes.length}` : "0 changes"), action("next", "Next change", () => moveChange(1), "›"))
@@ -285,24 +289,43 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
           const legend = node("div", "", "desk-legend")
           legend.append(node("span", "Inserted", "legend-inserted"), node("span", "Deleted", "legend-deleted"), node("span", "Moved", "legend-moved")); paper.append(legend)
         }
-        const detail = details(paper, [
-          ...(hunk ? [`${hunk.kind} · ${hunk.location.scope} paragraph ${hunk.location.paragraph} in the ${hunk.location.side === "left" ? "earlier" : "later"} version`] : []),
-          ...[comparison.base, comparison.current].flatMap((side) => [`Version ${side.number} · ${date(side.createdAt)} · ${side.origin}`, `Version ID · ${side.id}`, `SHA-256 · ${side.hash}`, `${side.trackedChanges.count} input tracked ${side.trackedChanges.count === 1 ? "change" : "changes"}`]),
-          ...(versionsRefreshed ? [`Version list refreshed ${date(versionsRefreshed)}. Latest known refers to that list; this comparison retains its applied saved versions.`] : []),
-        ])
-        if (hunk) detail.append(node("h4", `Earlier · version ${comparison.base.number}`), textBlock(hunk.before || "No text."), node("h4", `Later · version ${comparison.current.number}`), textBlock(hunk.after || "No text."))
+        const detail = details(paper, [])
+        detail.classList.add("desk-comparison-details")
+        const pair = node("div", "", "desk-version-pair")
+        for (const [index, side] of [comparison.base, comparison.current].entries()) {
+          const section = node("section", "", "desk-version-section")
+          const title = `${index === 0 ? "Earlier" : "Later"} · Version ${side.number}`
+          section.setAttribute("aria-label", title)
+          section.append(node("h4", title))
+          const meta = node("p", "", "desk-meta")
+          const time = node("time", date(side.createdAt))
+          time.dateTime = new Date(side.createdAt).toISOString()
+          meta.append(time, document.createTextNode(` · ${originLabel[side.origin] ?? "Saved in doc.haus"}`))
+          section.append(meta)
+          if (side.trackedChanges.count) section.append(node("p", `${side.trackedChanges.count} tracked ${side.trackedChanges.count === 1 ? "change" : "changes"} in this version`, "desk-meta"))
+          if (hunk) section.append(textBlock((index === 0 ? hunk.before : hunk.after) || "No text."))
+          pair.append(section)
+        }
+        detail.append(pair)
+        const technical = node("details", "", "desk-technical")
+        technical.append(node("summary", "Technical details"))
+        if (hunk) technical.append(node("p", `${hunk.kind} · ${hunk.location.scope} paragraph ${hunk.location.paragraph} in the ${hunk.location.side === "left" ? "earlier" : "later"} version`, "desk-meta"))
+        for (const side of [comparison.base, comparison.current]) {
+          technical.append(node("h5", `Version ${side.number}`))
+          const fields = node("dl")
+          for (const [label, value] of [["Version ID", side.id], ["SHA-256", side.hash]]) {
+            const valueElement = node("dd")
+            valueElement.append(node("code", value))
+            fields.append(node("dt", label), valueElement)
+          }
+          technical.append(fields)
+        }
+        if (versionsRefreshed) technical.append(node("p", `Version list checked ${date(versionsRefreshed)}. Comparing the selected saved versions.`, "desk-meta"))
+        detail.append(technical)
       } else if (versions && versions.versions.filter((version) => !version.removed).length < 2) paper.append(node("p", "Two saved versions are needed to compare.", "desk-empty"))
       right.append(paper)
     }
     context(); controls()
-  }
-  function scrollMatch() {
-    root.querySelector<HTMLElement>(`[data-find-index="${findIndex}"]`)?.scrollIntoView?.({ block: "center" })
-  }
-  function moveMatch(direction: -1 | 1) {
-    if (!findTotal) return
-    findIndex = (findIndex + direction + findTotal) % findTotal
-    render(); scrollMatch()
   }
   function moveChange(direction: -1 | 1) {
     if (busy() || !comparison) return
@@ -310,35 +333,47 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     const preferred = button(direction === 1 ? "next" : "previous")
     ;(preferred.disabled ? button(direction === 1 ? "previous" : "next") : preferred).focus()
   }
-  async function openDocument(source: DeskSource) {
-    if (busy()) return
-    const id = key(source)
-    if (documents.has(id)) { activeKey = id; chooserOpen = false; render(); focusTab(); return }
-    if (documents.size >= 8) { error("Close a document tab before opening another (maximum 8)."); return }
-    await work(async () => {
-      const preview = await transport.request({ action: "source", sourceId: source.id, expectedHash: source.hash }) as DeskSourcePreview
-      if (disposed) return
-      documents.set(id, preview); activeKey = id; chooserOpen = false; render()
-    })
-    if (!disposed) focusTab()
+  function pollingAllowed() { return !disposed && mode === "documents" && document.visibilityState !== "hidden" }
+  function scheduleNextPoll() {
+    cancelPoll?.(); cancelPoll = undefined
+    if (!pollingAllowed()) return
+    cancelPoll = schedulePoll(() => {
+      cancelPoll = undefined
+      if (!pollingAllowed()) return
+      if (busy()) { scheduleNextPoll(); return }
+      void loadSources(true).finally(scheduleNextPoll)
+    }, 1_000)
   }
-  async function captureSelection() {
-    if (busy()) return
-    await work(async () => {
-      const snapshot = await transport.request({ action: "selection" }) as WordSelectionSnapshot
-      if (disposed) return
-      selection = snapshot; selectionVisible = true; render()
-    })
-  }
-  async function loadSources() {
+  async function loadSources(background = false) {
     if (sourcesJob) return sourcesJob
-    sourcesJob = work(async () => {
+    const read = async () => {
       const value = await transport.request({ action: "sources" }) as DeskSources
       if (disposed) return
-      sources = value; sourcesRefreshed = Date.now(); render()
-    })
-    renderList()
-    try { await sourcesJob } finally { sourcesJob = undefined; if (!disposed) renderList() }
+      const changed = JSON.stringify(value) !== JSON.stringify(sources)
+      const identityChanged = value.documentName !== sources?.documentName || value.matterName !== sources?.matterName
+      const initial = !sources
+      if (sources && changed) for (const source of value.sources) {
+        const previous = sources.sources.find(item => item.name === source.name)
+        if (!previous) updates.set(source.name, "New")
+        else if (JSON.stringify(previous) !== JSON.stringify(source)) updates.set(source.name, "Updated")
+      }
+      sources = value
+      if (background && initial) error()
+      const status = el("update-status")
+      if (!status.hidden) status.hidden = true
+      if (!background) render()
+      else if (changed) { renderList(); if (identityChanged) context() }
+      void prepareOpenLinks()
+    }
+    sourcesJob = background ? read().catch(() => {
+      if (disposed) return
+      const status = el("update-status")
+      const message = "Document updates paused. Reconnecting automatically…"
+      if (status.textContent !== message) status.textContent = message
+      if (status.hidden) status.hidden = false
+    }) : work(read)
+    if (!background) renderList()
+    try { await sourcesJob } finally { sourcesJob = undefined; if (!disposed && !background) renderList() }
   }
   async function loadVersions(autoCompare: boolean) {
     if (versionsJob) return versionsJob
@@ -384,30 +419,8 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     try { await comparisonJob } finally { comparisonJob = undefined }
     if (!disposed && desiredPair && desiredPair !== requested && chosenPair()?.key === desiredPair) await compareSelected()
   }
-  function toggleFind(open: boolean) {
-    findOpen = open; render()
-    if (open) { el<HTMLInputElement>("find").focus(); scrollMatch() } else button("find-toggle").focus()
-  }
-  const onKey = (event: KeyboardEvent) => {
-    if (mode !== "documents") return
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") { event.preventDefault(); toggleFind(true) }
-    if (event.key === "Escape" && findOpen) { event.preventDefault(); toggleFind(false) }
-    if (event.key === "Enter" && event.target === el("find")) { event.preventDefault(); moveMatch(event.shiftKey ? -1 : 1) }
-  }
-  root.addEventListener("keydown", onKey)
   button("close").onclick = options.close
-  button("open-document").onclick = () => { chooserOpen = !chooserOpen; render(); if (chooserOpen) el("document-list").querySelector<HTMLButtonElement>("button")?.focus() }
-  button("reload").onclick = () => { if (!busy()) void loadSources() }
   button("reload-versions").onclick = () => { if (!busy()) void loadVersions(false) }
-  button("selection-toggle").onclick = () => {
-    if (busy()) return
-    if (selectionVisible || selection) { selectionVisible = !selectionVisible; render() } else void captureSelection()
-  }
-  button("find-toggle").onclick = () => toggleFind(!findOpen)
-  button("find-close").onclick = () => toggleFind(false)
-  button("find-previous").onclick = () => moveMatch(-1)
-  button("find-next").onclick = () => moveMatch(1)
-  el<HTMLInputElement>("find").oninput = () => { findIndex = 0; render(); scrollMatch() }
   select("base").onchange = select("current").onchange = () => { void compareSelected() }
   button("compare").onclick = () => { if (!busy()) void compareSelected(true) }
   button("sources-mode").onclick = () => { void setView("documents") }
@@ -419,13 +432,22 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     render()
     if (mode === "documents" && !sources) await loadSources()
     if (mode === "compare" && !versions) await loadVersions(true)
+    scheduleNextPoll()
   }
+  const visibilityChanged = () => scheduleNextPoll()
+  const viewportChanged = () => { void prepareOpenLinks() }
+  document.addEventListener("visibilitychange", visibilityChanged)
+  document.addEventListener("scroll", viewportChanged, true)
+  window.addEventListener("resize", viewportChanged)
   render()
   const ready = mode === "compare" ? loadVersions(true) : loadSources()
+  void ready.then(scheduleNextPoll)
   return { ready, setView, dispose() {
     if (disposed) return
-    disposed = true; desiredPair = ""; documents.clear(); comparisons.clear()
+    disposed = true; cancelPoll?.(); document.removeEventListener("visibilitychange", visibilityChanged)
+    document.removeEventListener("scroll", viewportChanged, true); window.removeEventListener("resize", viewportChanged)
+    desiredPair = ""; comparisons.clear(); openLinks.clear(); observer?.disconnect()
     if (pending) options.onBusyChange?.(false)
-    root.removeEventListener("keydown", onKey); root.replaceChildren(); root.removeAttribute("aria-busy"); root.classList.remove("source-desk", "is-embedded")
+    root.replaceChildren(); root.removeAttribute("aria-busy"); root.classList.remove("source-desk", "is-embedded")
   } }
 }

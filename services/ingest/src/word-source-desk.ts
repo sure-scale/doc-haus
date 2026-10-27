@@ -35,6 +35,19 @@ function source(auth: Auth, row: Registered): DeskSource | undefined {
     version: { id: kept.current.id, number: kept.current.number, createdAt: kept.current.created_at } }
 }
 
+/** Resolve the displayed registry identifier to one confirmed matter file.
+ * Native opening additionally requires DOCX; neither caller paths nor another
+ * matter's document identifiers can select the target. */
+export function readDeskSource(auth: Auth, sourceId: string): DeskSource | undefined {
+  const rows = registry(auth.matter.dir, db => db.query("SELECT id, name, doc_path, role FROM documents").all() as Registered[])
+  const row = rows.find(row => String(row.id) === sourceId)
+  const selected = row ? source(auth, row) : undefined
+  if (!selected) return
+  const target = readDocumentTarget(auth.matter.dir, selected.name)
+  if (!target || rows.filter(row => documentRegistryIdentity(row.doc_path) === target.identity).length !== 1) return
+  return selected
+}
+
 function view(version: VersionRow, current: string | null): DeskVersion {
   return { id: version.id, number: version.number, hash: version.sha256, parent: version.parent,
     createdAt: version.created_at, bytes: version.bytes, origin: version.origin, label: version.label,

@@ -199,8 +199,8 @@ export class WordSync {
     if (state.version.state === "stale")
       return "A newer version is in doc.haus. Keep this Word file using Save As. In doc.haus, use Versions to compare or Open in Word for a fresh copy. This pane will not overwrite it."
     if (state.lease.state === "other")
-      return "Another editing session owns saving. Keep your Word edits here. Check status, or deliberately take over this session."
-    return "Ready to save. Choose Save or Save and close to start editing here. Your Word edits stay local until you save."
+      return "Another editing session owns saving. Keep your Word edits here. Wait for that session to finish, or take over editing here."
+    return "Ready to save. Choose Save and wait for Saved before closing Word."
   }
 
   private async inspect(claim: boolean): Promise<void> {
@@ -224,7 +224,7 @@ export class WordSync {
     })
   }
 
-  /** Inspect only; this menu action never claims, exports or retries a save. */
+  /** Inspect only; this command never claims, exports or retries a save. */
   checkStatus(): Promise<boolean> {
     return this.enqueue(async () => {
       await this.inspect(false)
@@ -341,7 +341,7 @@ export class WordSync {
         this.connection = await this.transport.done(this.base, this.connection!.lease.generation!)
         if (!(await this.matchesAcknowledgement())) {
           this.content = "changed"
-          throw documentStateError("Word has new changes. Choose Save and close again before closing.")
+          throw documentStateError("Word has new changes. Choose Save and wait for Saved before closing.")
         }
       } catch (error) {
         // A lost response may still have released editing. A heartbeat can

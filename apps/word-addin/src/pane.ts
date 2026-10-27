@@ -2,23 +2,19 @@ import { WORD_UPDATE_MESSAGE, WordClient, isCurrentPaneVersion, readLink } from 
 import { connectOffice } from "./office"
 import { browserCheckpoints, WordSync, type PaneState } from "./sync"
 import { setupSourceDesk } from "./desk-entry"
-import { configureConnectionRecovery, createPaneRenderer, setupSaveMenu } from "./pane-render"
+import { configureConnectionRecovery, createPaneRenderer } from "./pane-render"
 import { setupLatestVersion } from "./latest-version"
 
 const element = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
 const badge = element("status")
 const message = element("message")
 const save = element<HTMLButtonElement>("save")
-const saveAgain = element<HTMLButtonElement>("save-again")
-const done = element<HTMLButtonElement>("done")
-const refresh = element<HTMLButtonElement>("refresh")
 const takeover = element<HTMLButtonElement>("takeover")
 const release = element<HTMLButtonElement>("release")
-let primaryAction: "save" | "close" = "save"
 
 const renderPane = createPaneRenderer(document)
 let renderLatest: ((state: PaneState) => void) | undefined
-function render(state: PaneState): void { primaryAction = renderPane(state); renderLatest?.(state) }
+function render(state: PaneState): void { renderPane(state); renderLatest?.(state) }
 
 async function main(): Promise<void> {
   // An old cached manifest may still launch this page as a separate function
@@ -56,18 +52,9 @@ async function main(): Promise<void> {
     const client = new WordClient(link, crypto.randomUUID())
     renderLatest = setupLatestVersion(document, base => client.latest(base))
     const sync = new WordSync(link.baseVersion, office.host, client, checkpoints, render)
-    save.addEventListener("click", () => {
-      if (primaryAction === "close") void sync.done()
-      else void sync.save()
-    })
-    const menu = element<HTMLDetailsElement>("save-menu")
-    const closeMenu = setupSaveMenu(menu)
-    const menuAction = (control: HTMLButtonElement, action: () => Promise<boolean>) => control.addEventListener("click", () => { void action(); closeMenu() })
-    menuAction(saveAgain, () => sync.save())
-    menuAction(done, () => sync.done())
-    menuAction(refresh, () => sync.checkStatus())
-    menuAction(takeover, () => sync.takeover())
-    menuAction(release, () => sync.release())
+    save.addEventListener("click", () => { void sync.save() })
+    takeover.addEventListener("click", () => { void sync.takeover() })
+    release.addEventListener("click", () => { void sync.release() })
     // The read-only desk has its own lifecycle; opening/closing it never owns
     // or stops the existing saving queue.
     setupSourceDesk(link)

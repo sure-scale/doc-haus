@@ -6,7 +6,6 @@ export type SavePresentation = {
   message: string
   help?: string
   mismatch?: string
-  primary: "save" | "close"
 }
 
 /** A matching version ID is connection information, never a content receipt. */
@@ -16,7 +15,7 @@ export function savePresentation(state: PaneState): SavePresentation {
     ? `This copy: version ${version.base.number}. In doc.haus: version ${version.current.number}.`
     : undefined
   const result: SavePresentation = {
-    badge: "Ready", tone: "neutral", primary: "save", mismatch,
+    badge: "Ready", tone: "neutral", mismatch,
     message: version?.current ? `Version ${version.current.number} in doc.haus` : "Save to confirm this copy in doc.haus.",
   }
   if (state.status === "saving") return { ...result, badge: "Saving…", tone: "saving", message: state.message }
@@ -30,7 +29,7 @@ export function savePresentation(state: PaneState): SavePresentation {
   }
   if (state.connection?.lease.state === "other") return {
     ...result, badge: "Saving paused", tone: "blocked", message: "Another Word session is editing this document.",
-    help: "Your local changes stay in Word. Check status or deliberately take over editing here.",
+    help: "Your local changes stay in Word. Wait for the other session to finish, or take over editing here.",
   }
   if (state.problem) return { ...result, badge: "Needs attention", tone: "blocked", message: state.message }
   if (state.status === "saved" || state.status === "done") {
@@ -38,7 +37,7 @@ export function savePresentation(state: PaneState): SavePresentation {
     const time = receipt && new Date(receipt.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     const message = receipt ? `Version ${receipt.number} received at ${time}.` : "Save confirmed by doc.haus."
     return {
-      ...result, badge: "Saved", tone: "saved", primary: "close",
+      ...result, badge: "Saved", tone: "saved",
       message: state.status === "done" && state.message.includes("Close it in Word") ? `${message} Close it in Word.` : message,
       help: receipt?.overlap ? "Saved as a separate version because the matter document also changed. Compare the versions in doc.haus." : undefined,
     }
