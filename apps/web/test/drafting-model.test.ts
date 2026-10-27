@@ -641,7 +641,7 @@ test("the document timeline orders files newest first and preserves origins and 
     expect(grouped).toContain(`download="${name}"`)
     expect(grouped).toContain(`aria-label="Download ${name}"`)
   }
-  expect(grouped).toContain('aria-label="Remove supply-terms.docx"')
+  expect(grouped).toContain('aria-label="Delete supply-terms.docx"')
   expect(grouped).not.toContain('download="supply-terms.docx"')
   expect(grouped.match(/<span class="matter-files-count">\d+<\/span>/g)).toEqual(['<span class="matter-files-count">4</span>'])
   expect(grouped.match(/class="matter-files-collection"/g)).toHaveLength(1)
