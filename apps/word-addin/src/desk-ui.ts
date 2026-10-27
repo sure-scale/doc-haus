@@ -1,39 +1,44 @@
 import type { DeskComparison, DeskSourcePreview, DeskSources, DeskVersions } from "../../../dochaus/lib/word-source-desk-contract"
 import { wordDiff, type Piece } from "../../../dochaus/lib/redline"
-import type { DeskRequest } from "./desk-protocol"
+import type { DeskRequest, DeskView } from "./desk-protocol"
 import type { WordSelectionSnapshot } from "./selection"
 
 export type DeskTransport = { request(input: DeskRequest): Promise<unknown> }
 
 /** Open previews and kept sources retain their exact received saved snapshot. */
-export function mountDesk(root: HTMLElement, transport: DeskTransport, options: { close(): void; floating?: boolean }) {
+export function mountDesk(root: HTMLElement, transport: DeskTransport, options: { close(): void; floating?: boolean; initialView?: DeskView }) {
   root.classList.add("source-desk")
   root.innerHTML = `
     <header class="desk-head"><div class="desk-brand"><img src="./assets/icon.png" width="32" height="32" alt="" />
-      <div><h2>Source Desk</h2><p class="desk-subtitle" data-el="identity">Connecting to this matter…</p></div></div>
-      <button type="button" data-el="close">${options.floating ? "Close desk" : "Back to saving"}</button></header>
-    <nav class="desk-modes" aria-label="Desk views"><button class="desk-mode" data-el="sources-mode" aria-pressed="true" type="button">Sources</button>
+      <div><h2 data-el="title">Matter documents</h2><p class="desk-subtitle" data-el="identity">Connecting to this matter…</p></div></div>
+      <button type="button" data-el="close">${options.floating ? "Close window" : "Back to saving"}</button></header>
+    <nav class="desk-modes" aria-label="Document views"><button class="desk-mode" data-el="sources-mode" aria-pressed="true" type="button">Matter documents</button>
       <button class="desk-mode" data-el="compare-mode" aria-pressed="false" type="button">Compare versions</button></nav>
     <div data-el="source-tools"><div class="desk-toolbar">
-      <label>Open a source<select data-el="source-choice" aria-label="Open a source"><option value="">Loading sources…</option></select></label>
-      <button type="button" data-el="pin" disabled>Keep open</button><button type="button" data-el="reload">Refresh list</button>
-      <button type="button" data-el="find-toggle" aria-expanded="false">Find</button></div>
-      <div class="desk-find" data-el="find-bar" hidden><label>Find exact text<input data-el="find" type="search" placeholder="Find in these passages" maxlength="255" /></label>
+      <label>Choose a document<select data-el="source-choice" aria-label="Choose a document"><option value="">Loading documents…</option></select></label>
+      <button type="button" data-el="pin" hidden disabled>Keep open</button>
+      <button type="button" data-el="find-toggle" aria-expanded="false">Find</button>
+      <button type="button" data-el="selection-toggle" aria-expanded="false">Show selected Word text here</button>
+      <details class="desk-options" data-el="more"><summary>More options</summary><button type="button" data-el="reload">Refresh documents</button></details></div>
+      <p class="desk-help">Read documents already saved in this matter. You do not need to select text in Word.</p>
+      <div class="desk-find" data-el="find-bar" hidden><label>Find exact text<input data-el="find" type="search" placeholder="Find in the open document" maxlength="255" /></label>
         <span data-el="find-count" role="status"></span><button type="button" data-el="find-close">Close find</button></div>
-      <div class="desk-pins" data-el="pins" role="group" aria-label="Kept sources"></div></div>
+      <div class="desk-pins" data-el="pins" role="group" aria-label="Documents kept open"></div></div>
     <div data-el="compare-tools" hidden><div class="desk-toolbar">
       <label>Earlier version<select data-el="base" aria-label="Earlier version"></select></label><label>Later version<select data-el="current" aria-label="Later version"></select></label>
-      <button type="button" data-el="compare" class="desk-primary" disabled>Compare</button><button type="button" data-el="reload-versions">Refresh versions</button></div><p class="desk-warning" data-el="compare-warning" hidden></p></div>
-    <div class="desk-columns" data-el="columns"><section class="desk-column desk-context" aria-label="Word selection" data-el="left"></section>
-      <section class="desk-column desk-reader" aria-label="Source or comparison" data-el="right"></section></div>
-    <footer class="desk-footer"><p role="status" aria-live="polite" data-el="status">Opening Source Desk…</p><p class="desk-note" data-el="scope">Read-only · saved source previews</p></footer>`
+      <button type="button" data-el="compare" class="desk-primary" disabled>Compare</button>
+      <details class="desk-options" data-el="version-options"><summary>More options</summary><button type="button" data-el="reload-versions">Refresh versions</button></details></div><p class="desk-warning" data-el="compare-warning" hidden></p></div>
+    <div class="desk-columns" data-el="columns"><section class="desk-column desk-context" aria-label="Your selected Word text" data-el="left" hidden></section>
+      <section class="desk-column desk-reader" aria-label="Reference document or comparison" data-el="right"></section></div>
+    <footer class="desk-footer"><p role="status" aria-live="polite" data-el="status">Opening matter documents…</p><p class="desk-note" data-el="scope">Read-only · saved document previews</p></footer>`
   const el = <T extends HTMLElement>(name: string) => root.querySelector(`[data-el="${name}"]`) as T
   const button = (name: string) => el<HTMLButtonElement>(name)
   const select = (name: string) => el<HTMLSelectElement>(name)
   let disposed = false
   let busy = false
-  let mode: "sources" | "compare" = "sources"
+  let mode: "sources" | "compare" = options.initialView === "compare" ? "compare" : "sources"
   let findOpen = false
+  let selectionVisible = false
   let selection: WordSelectionSnapshot | undefined
   let sources: DeskSources | undefined
   let versions: DeskVersions | undefined
@@ -83,8 +88,9 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
   }
   function controls() {
     for (const control of root.querySelectorAll<HTMLButtonElement | HTMLSelectElement>("button, select")) {
-      if (!["close", "sources-mode", "compare-mode", "find-toggle", "find-close"].includes(control.dataset.el ?? "")) control.disabled = busy
+      if (!["close", "find-toggle", "find-close"].includes(control.dataset.el ?? "")) control.disabled = busy
     }
+    button("pin").hidden = !active
     button("pin").disabled = busy || !active || pins.has(key(active)) || pins.size >= 8
     button("pin").textContent = active && pins.has(key(active)) ? "Kept open" : "Keep open"
     const earlier = versions?.versions.find((version) => version.id === select("base").value)
@@ -110,12 +116,12 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
       pick.type = "button"; pick.dataset.pin = id
       pick.setAttribute("aria-pressed", String(active && key(active) === id))
       pick.onclick = () => {
-        active = source; select("source-choice").value = source.id; renderPins(); render(); say("Kept source opened at its saved version.")
+        active = source; select("source-choice").value = source.id; renderPins(); render(); say("Kept document opened at its saved version.")
         Array.from(el("pins").querySelectorAll<HTMLButtonElement>("button")).find((item) => item.dataset.pin === id)?.focus()
       }
       const remove = node("button", "×", "desk-unpin")
       remove.type = "button"; remove.setAttribute("aria-label", `Stop keeping ${source.name} open`)
-      remove.onclick = () => { pins.delete(id); renderPins(); render(); button("pin").focus(); say("Source removed from kept sources. Its preview is still open.") }
+      remove.onclick = () => { pins.delete(id); renderPins(); render(); button("pin").focus(); say("Document removed from kept documents. Its preview is still open.") }
       group.append(pick, remove); el("pins").append(group)
     }
     controls()
@@ -124,39 +130,45 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     if (disposed) return
     el("source-tools").hidden = mode !== "sources"
     el("compare-tools").hidden = mode !== "compare"
-    el("left").hidden = mode !== "sources"
+    el("title").textContent = mode === "compare" ? "Compare versions" : "Matter documents"
+    el("left").hidden = mode !== "sources" || !selectionVisible
+    el("columns").classList.toggle("has-selection", mode === "sources" && selectionVisible)
     el("columns").classList.toggle("is-compare", mode === "compare")
     button("sources-mode").setAttribute("aria-pressed", String(mode === "sources"))
     button("compare-mode").setAttribute("aria-pressed", String(mode === "compare"))
     el("find-bar").hidden = !findOpen
     button("find-toggle").setAttribute("aria-expanded", String(findOpen))
+    button("selection-toggle").setAttribute("aria-expanded", String(selectionVisible))
+    button("selection-toggle").textContent = selectionVisible ? "Hide selected Word text" : "Show selected Word text here"
+    el("left").replaceChildren()
     if (mode === "sources") {
       const query = findOpen ? el<HTMLInputElement>("find").value : ""
-      const left = column("left", "In Word", "Selected passage")
-      left.append(node("p", selection ? (selection.saved ? "Saved in Word" : "Unsaved in Word") : "Select text in your Word document.", selection && !selection.saved ? "badge is-unsaved" : "badge"))
-      const actions = node("div", "", "desk-actions")
-      actions.append(action("capture", "Use current selection", () => { void perform(captureSelection).then(() => { root.querySelector<HTMLButtonElement>('[data-el="capture"]')?.focus() }) }), action("show", "Show in Word", () => { void perform(async () => {
-        if (!selection?.navigable) return
-        await transport.request({ action: "show", selection })
-        say("The captured passage is selected in Word.")
-      }) }))
-      left.append(actions)
-      if (selection) {
+      if (selectionVisible && selection) {
+        const left = column("left", "Captured from Word", "Your selected Word text")
+        left.append(node("p", selection.saved ? "Saved in Word" : "Unsaved in Word", !selection.saved ? "badge is-unsaved" : "badge"))
+        const actions = node("div", "", "desk-actions")
+        actions.append(action("capture", "Update selected text", () => { void perform(captureSelection).then(() => { root.querySelector<HTMLButtonElement>('[data-el="capture"]')?.focus() }) }), action("show", "Show in Word", () => { void perform(async () => {
+          if (!selection?.navigable) return
+          await transport.request({ action: "show", selection })
+          say("The captured passage is selected in Word.")
+        }) }))
+        left.append(actions)
         left.append(textBlock(selection.text || "No text is selected.", query))
-        left.append(node("p", `Captured at ${new Date(selection.capturedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · use current selection to update`, "desk-note"))
+        left.append(node("p", `Captured at ${new Date(selection.capturedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · update selected text to capture again`, "desk-note"))
         if (selection.reason) left.append(node("p", selection.reason, "desk-warning"))
         metadata(left, "Selection details", ["Live Word context, separate from saved matter versions.", "Show in Word requires one exact, unchanged body passage. Formatting and markup are not checked."], selection.documentHash)
       }
-      const right = column("right", active ? "Saved matter source" : "Matter sources", active?.name ?? "Open a source to start reading")
+      const right = column("right", selectionVisible ? "Reference document" : "Saved in this matter", active?.name ?? "Choose a document to start reading")
       if (active) {
         right.append(node("p", `Version ${active.version?.number ?? "unavailable"}${pins.has(key(active)) ? " · kept open" : ""}`, "desk-version"))
         if (active.truncated) right.append(node("p", `Partial preview · showing ${active.text.length.toLocaleString()} of ${active.characters.toLocaleString()} characters.`, "desk-warning"))
-        right.append(textBlock(active.text || "This saved source has no previewable text.", query))
-        metadata(right, "Source details", [`${active.role === "deliverable" ? "Matter output" : "Matter source"} · saved version ${active.version?.number ?? "unavailable"}`, `Version ID · ${active.version?.id ?? "unavailable"}`, `${active.characters.toLocaleString()} characters`, "This snapshot stays unchanged when your Word selection or the source list changes."], active.hash)
-      } else right.append(node("p", "Choose a document above. Keep useful sources open to switch between them while you work in Word.", "desk-empty"))
+        right.append(textBlock(active.text || "This saved document has no previewable text.", query))
+        metadata(right, "Document details", [`${active.role === "deliverable" ? "Matter output" : "Matter document"} · saved version ${active.version?.number ?? "unavailable"}`, `Version ID · ${active.version?.id ?? "unavailable"}`, `${active.characters.toLocaleString()} characters`, "This snapshot stays unchanged when your Word selection or the document list changes."], active.hash)
+      } else right.append(node("p", "Choose a document above to read its saved text. For example, check an agreement, letter or earlier matter output while you draft in Word.", "desk-empty"))
       const matches = root.querySelectorAll("mark").length
-      el("find-count").textContent = query ? `${matches >= 200 ? "At least " : ""}${matches} exact ${matches === 1 ? "match" : "matches"}` : "In the selection and source"
-      el("scope").textContent = "Read-only · saved source previews"
+      el("find-count").textContent = query ? `${matches >= 200 ? "At least " : ""}${matches} exact ${matches === 1 ? "match" : "matches"}` : selectionVisible ? "In the selected Word text and document" : "In the open document"
+      el<HTMLInputElement>("find").placeholder = selectionVisible ? "Find in these passages" : "Find in the open document"
+      el("scope").textContent = "Read-only · saved document previews"
     } else {
       const hunk = comparison?.changes[change]
       const right = column("right", "Saved version comparison", comparison ? comparison.current.name : "Compare saved versions")
@@ -202,13 +214,13 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
   async function perform(work: () => Promise<void>) {
     if (busy || disposed) return
     busy = true; controls()
-    try { await work() } catch (error) { say(error instanceof Error ? error.message : "The desk could not complete this action. Try again.") }
+    try { await work() } catch (error) { say(error instanceof Error ? error.message : "This action could not be completed. Try again.") }
     finally { busy = false; if (!disposed) controls() }
   }
   async function captureSelection() {
     const value = await transport.request({ action: "selection" }) as WordSelectionSnapshot
     if (disposed) return
-    selection = value; render(); say(value.reason ?? "Word selection updated. Your sources stay open.")
+    selection = value; selectionVisible = true; render(); say(value.reason ?? "Selected Word text updated. Your documents stay open.")
   }
   async function loadSources() {
     const value = await transport.request({ action: "sources" }) as DeskSources
@@ -216,15 +228,16 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     sources = value
     el("identity").textContent = `${sources.documentName} · ${sources.matterName}`
     const choice = select("source-choice"), previous = choice.value
-    choice.replaceChildren(new Option("Choose a saved source…", ""))
+    choice.replaceChildren(new Option("Choose a document…", ""))
     for (const source of sources.sources) choice.add(new Option(`${source.name} · v${source.version?.number ?? "?"}`, source.id))
     if (sources.sources.some((source) => source.id === previous)) choice.value = previous
-    say(sources.truncated ? "Some sources have no saved preview or exceed the list limit. Open previews are unchanged." : `${sources.sources.length} sources available.`)
+    say(sources.truncated ? "Some documents have no saved preview or exceed the list limit. Open previews are unchanged." : `${sources.sources.length} saved documents available.`)
   }
   async function loadVersions() {
     const value = await transport.request({ action: "versions" }) as DeskVersions
     if (disposed) return
     versions = value
+    if (!sources) el("identity").textContent = versions.document.name
     for (const name of ["base", "current"]) {
       const control = select(name), previous = control.value
       control.replaceChildren()
@@ -250,8 +263,16 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
   }
   root.addEventListener("keydown", onKey)
   button("close").onclick = options.close
-  button("reload").onclick = () => { void perform(loadSources) }
-  button("reload-versions").onclick = () => { void perform(loadVersions) }
+  button("reload").onclick = () => { void perform(async () => {
+    await loadSources()
+    el<HTMLDetailsElement>("more").open = false
+    el("more").querySelector("summary")?.focus()
+  }) }
+  button("reload-versions").onclick = () => { void perform(async () => {
+    await loadVersions()
+    el<HTMLDetailsElement>("version-options").open = false
+    el("version-options").querySelector("summary")?.focus()
+  }) }
   select("source-choice").onchange = () => { void perform(async () => {
     const source = sources?.sources.find((item) => item.id === select("source-choice").value)
     if (!source) return
@@ -266,11 +287,16 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
   el<HTMLInputElement>("find").oninput = render
   button("find-toggle").onclick = () => toggleFind(!findOpen)
   button("find-close").onclick = () => toggleFind(false)
+  button("selection-toggle").onclick = () => {
+    if (busy) return
+    if (selectionVisible) { selectionVisible = false; render(); say("Selected Word text hidden. Your documents stay open."); return }
+    void perform(captureSelection)
+  }
   button("pin").onclick = () => {
     if (!active || pins.size >= 8 || busy) return
-    pins.set(key(active), active); renderPins(); render(); say("Source kept open at this saved version.")
+    pins.set(key(active), active); renderPins(); render(); say("Document kept open at this saved version.")
   }
-  button("sources-mode").onclick = () => { mode = "sources"; render(); say("Sources and your captured Word selection.") }
+  button("sources-mode").onclick = () => { mode = "sources"; render(); if (!sources) void perform(loadSources); else say("Read documents already saved in this matter.") }
   button("compare-mode").onclick = () => { mode = "compare"; render(); if (!versions) void perform(loadVersions) }
   button("compare").onclick = () => { void perform(async () => {
     const value = await transport.request({ action: "compare", baseVersion: select("base").value, currentVersion: select("current").value }) as DeskComparison
@@ -278,9 +304,6 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     comparison = value; change = 0; render(); say("Comparison ready. Insertions are underlined; deletions are struck through.")
   }) }
   render(); renderPins()
-  const ready = perform(async () => {
-    await loadSources()
-    try { await captureSelection() } catch { say("Sources are ready. Select text in Word, then choose Use current selection.") }
-  })
+  const ready = perform(mode === "compare" ? loadVersions : loadSources)
   return { ready, dispose() { disposed = true; pins.clear(); root.removeEventListener("keydown", onKey); root.replaceChildren(); root.classList.remove("source-desk") } }
 }

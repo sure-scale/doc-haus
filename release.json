@@ -1,5 +1,5 @@
 {
-  "version": 15,
-  "name": "2.0.13",
-  "notes": "Read matter sources beside your document in the Word Source Desk. Keep sources open, find exact wording and return to your captured passage in Word. Compare two saved versions with inline changes and step through each change. Available in desktop Word on Mac and Windows, with an option to use the task pane."
+  "version": 16,
+  "name": "2.0.14",
+  "notes": "Word add-in, including simpler matter-document reading and direct saved-version comparison. Open matter documents to read client instructions, heads of terms or correspondence beside your draft. Show selected Word text only when helpful, keep useful documents open, and find exact wording. Compare versions opens directly from the Word pane."
 }

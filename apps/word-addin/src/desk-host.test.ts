@@ -4,7 +4,7 @@ import { deskMessage, readDeskMessage } from "./desk-protocol"
 
 const ORIGIN = "https://localhost:4612"
 
-function install() {
+function install(expectedUrl = `${ORIGIN}/word-addin/desk.html?version=1`) {
   const original = Object.getOwnPropertyDescriptor(globalThis, "window")
   const listeners = new Map<string, Set<() => void>>()
   const parentHandlers = new Map<string, (event: { message: string; origin?: string } | { error: number }) => void>()
@@ -23,7 +23,7 @@ function install() {
       requirements: { isSetSupported: () => supported },
       ui: {
         displayDialogAsync: (url, options, callback) => {
-          expect(url).toBe(`${ORIGIN}/word-addin/desk.html?version=1`)
+          expect(url).toBe(expectedUrl)
           expect(options.displayInIframe).toBe(false)
           callback({
             status: "succeeded",
@@ -87,6 +87,27 @@ function install() {
     },
   }
 }
+
+test("initial document view accepts only the two known modes without widening the secure URL boundary", async () => {
+  for (const view of ["documents", "compare"]) {
+    const url = `${ORIGIN}/word-addin/desk.html?version=1&view=${view}`
+    const fixture = install(url)
+    try {
+      const dialog = await openDeskDialog({ url, office: fixture.office, handleRequest: async () => {} })
+      dialog.close()
+      for (const invalid of [
+        "?version=1&version=2&view=compare",
+        "?version=1&view=compare&view=documents",
+        "?version=1&view=latest",
+        "?version=1&view=",
+        "?version=1&view=compare&token=synthetic",
+        "?version=1&view=compare#fragment",
+      ]) {
+        await expect(openDeskDialog({ url: `/word-addin/desk.html${invalid}`, office: fixture.office, handleRequest: async () => {} })).rejects.toThrow("this doc.haus connection")
+      }
+    } finally { fixture.restore() }
+  }
+})
 
 test("Office modeless messaging rejects foreign/missing origins, invalid actions and stale channels", async () => {
   const fixture = install()
@@ -199,7 +220,7 @@ test("only user-safe errors cross the bridge and unsupported hosts keep the pane
   try {
     connection = await connectDeskDialog({ office: fixture.office })
     await expect(connection.request({ action: "sources" })).rejects.toThrow("This source changed")
-    await expect(connection.request({ action: "selection" })).rejects.toThrow("could not complete")
+    await expect(connection.request({ action: "selection" })).rejects.toThrow("could not be completed")
     expect(fixture.messages.join("\n")).not.toContain("Private host path")
     dialog.close()
     fixture.supported = false

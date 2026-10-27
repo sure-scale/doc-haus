@@ -33,11 +33,15 @@
           <button id="release" class="secondary" type="button" hidden>Release editing</button>
         </div>
       </section>
-      <section id="desk-entry" class="desk-entry" hidden aria-label="Source Desk">
-        <h2>Keep your sources in view</h2>
-        <p>Pin matter sources beside your Word passage, or compare two saved versions.</p>
-        <button id="open-desk" class="secondary" type="button">Open Source Desk ↗</button>
-        <button id="inline-desk" class="secondary" type="button">Use Source Desk in this pane</button>
+      <section id="desk-entry" class="desk-entry" hidden aria-label="Matter documents and versions">
+        <h2>Keep the matter beside your draft</h2>
+        <p>Read documents already saved in this matter, or compare saved versions of this document.</p>
+        <button id="open-desk" class="secondary" type="button">Open matter documents</button>
+        <button id="compare-desk" class="secondary" type="button">Compare versions</button>
+        <details class="desk-pane-options"><summary>Open in this pane</summary>
+          <button id="inline-desk" class="secondary" type="button">Matter documents in this pane</button>
+          <button id="inline-compare-desk" class="secondary" type="button">Compare versions in this pane</button>
+        </details>
         <p id="desk-message" class="hint" role="status"></p>
       </section>
       <div id="pane-desk" hidden></div>

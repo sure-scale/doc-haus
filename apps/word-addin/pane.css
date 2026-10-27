@@ -128,6 +128,10 @@ a:focus-visible {
 .desk-entry h2 { margin: 0; font-size: 17px; }
 .desk-entry p { font-size: 13px; }
 .desk-entry button + button { margin-top: 10px; }
+.desk-pane-options { margin-top: 10px; }
+.desk-pane-options summary { min-height: 44px; padding-block: 12px; color: #315e49; font-size: 13px; cursor: pointer; }
+.desk-pane-options summary:focus-visible { outline: 3px solid #c78324; outline-offset: 3px; }
+.desk-pane-options[open] > button:first-of-type { margin-top: 8px; }
 .desk-entry .hint:empty { display: none; }
 a {
   color: #315e49;
@@ -156,6 +160,7 @@ a {
     background: #a3d4b1;
   }
   .secondary,
+  .desk-pane-options summary,
   a {
     color: #b9ddc3;
   }

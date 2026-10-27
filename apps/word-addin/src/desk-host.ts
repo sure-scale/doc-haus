@@ -1,4 +1,4 @@
-import { deskMessage, isDeskRequest, readDeskMessage, type DeskRequest, type DeskPayload } from "./desk-protocol"
+import { deskMessage, isDeskRequest, isDeskView, readDeskMessage, type DeskRequest, type DeskPayload } from "./desk-protocol"
 import { SelectionError } from "./selection"
 
 type Result<T> = { status: string; value: T }
@@ -39,14 +39,14 @@ export class DeskRequestError extends Error {
 
 function runtime(): DeskOffice {
   const office = (window as unknown as { Office?: DeskOffice }).Office
-  if (!office) throw new Error("Open the Source Desk from the doc.haus pane in Word.")
+  if (!office) throw new Error("Open matter documents or comparison from the doc.haus pane in Word.")
   return office
 }
 
 function secureOrigin(value: string): string {
   const url = new URL(value)
   if (url.protocol !== "https:" || url.username || url.password || url.origin !== value)
-    throw new Error("A trusted HTTPS Word connection is required for the floating Source Desk.")
+    throw new Error("A trusted HTTPS Word connection is required for the floating document window.")
   return url.origin
 }
 
@@ -74,21 +74,23 @@ export async function openDeskDialog(options: {
     url.username ||
     url.password ||
     url.hash ||
-    Array.from(url.searchParams.keys()).some((key) => key !== "version") ||
-    url.searchParams.getAll("version").length > 1
+    Array.from(url.searchParams.keys()).some((key) => key !== "version" && key !== "view") ||
+    url.searchParams.getAll("version").length > 1 ||
+    url.searchParams.getAll("view").length > 1 ||
+    (url.searchParams.has("view") && !isDeskView(url.searchParams.get("view")))
   )
-    throw new Error("The floating Source Desk must use this doc.haus connection.")
+    throw new Error("The floating document window must use this doc.haus connection.")
   await office.onReady()
   if (!supported(office) || !office.context.ui?.displayDialogAsync)
-    throw new Error("This Word version cannot open a secure floating desk. Use Source Desk in this pane.")
-  if (activeDialog) throw new Error("The floating Source Desk is already open. Return to that window.")
+    throw new Error("This Word version cannot open a secure floating desk. Use Open in this pane.")
+  if (activeDialog) throw new Error("The floating document window is already open. Return to that window.")
   activeDialog = true
   return new Promise((resolve, reject) => {
     const opened = (result: Result<Dialog>) => {
       if (result.status !== "succeeded" || !result.value?.messageChild) {
         activeDialog = false
         result.value?.close?.()
-        reject(new Error("Word could not open the floating desk. Use Source Desk in this pane."))
+        reject(new Error("Word could not open the floating desk. Use Open in this pane."))
         return
       }
       const dialog = result.value
@@ -174,7 +176,7 @@ export async function openDeskDialog(options: {
             const detail =
               error instanceof SelectionError || error instanceof DeskRequestError
                 ? error.message.slice(0, 500)
-                : "The Source Desk could not complete this request. Refresh the desk and try again."
+                : "This request could not be completed. Close and reopen the document window to try again."
             try {
               send({ kind: "response", id: message.id, ok: false, error: detail })
             } catch {
@@ -191,7 +193,7 @@ export async function openDeskDialog(options: {
       office.context.ui.displayDialogAsync(url.href, { height: 75, width: 80, displayInIframe: false }, opened)
     } catch {
       activeDialog = false
-      reject(new Error("Word could not open the floating desk. Use Source Desk in this pane."))
+      reject(new Error("Word could not open the floating desk. Use Open in this pane."))
     }
   })
 }
@@ -213,7 +215,7 @@ export async function connectDeskDialog(
   const origin = secureOrigin(window.location.origin)
   await office.onReady()
   if (!supported(office) || !office.context.ui?.messageParent || !office.context.ui?.addHandlerAsync)
-    throw new Error("This Word version cannot connect the floating desk. Use Source Desk in the Word pane.")
+    throw new Error("This Word version cannot connect the floating desk. Use Open in this pane in Word.")
   const channel = crypto.randomUUID()
   const timeoutMs = options.timeoutMs ?? 70_000
   const pending = new Map<
@@ -241,7 +243,7 @@ export async function connectDeskDialog(
     window.removeEventListener("pagehide", leaving)
     // Office.UI exposes no removal API for this dialog event. The disposed
     // guard makes its listener inert until Office destroys the child page.
-    const error = new Error("The Word pane connection is closed. Reopen the Source Desk from Word.")
+    const error = new Error("The Word pane connection is closed. Reopen matter documents or comparison from Word.")
     readyReject(error)
     for (const request of pending.values()) {
       clearTimeout(request.timer)
@@ -292,13 +294,13 @@ export async function connectDeskDialog(
     request: (request) => {
       if (disposed || !connected)
         return Promise.reject(new Error("The Word pane connection is closed. Reopen the desk from Word."))
-      if (!isDeskRequest(request)) return Promise.reject(new Error("This Source Desk request is invalid."))
+      if (!isDeskRequest(request)) return Promise.reject(new Error("This document request is invalid."))
       const id = crypto.randomUUID()
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           pending.delete(id)
           reject(
-            new Error("The Word pane did not respond. Keep the document open and reopen the Source Desk from Word."),
+            new Error("The Word pane did not respond. Keep the document open and reopen matter documents or comparison from Word."),
           )
         }, timeoutMs)
         pending.set(id, { resolve, reject, timer })

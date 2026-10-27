@@ -1,4 +1,4 @@
-/* Source Desk follows the product's white document viewer and green controls.
+/* Matter documents follows the product's white document viewer and green controls.
    Its reading surface stays distinct from the captured Word context. */
 .desk-window, .source-desk {
   --desk-bg: #f8faf7;
@@ -79,6 +79,12 @@
 /* Native macOS menu styling otherwise ignores the select height in Word. */
 .source-desk select { appearance: none; -webkit-appearance: none; padding-right: 32px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23526057' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 11px center; }
 .desk-toolbar > button { flex: 0 1 auto; }
+.source-desk .desk-help { padding: 0 20px 14px; color: var(--desk-muted); font-size: 12px; line-height: 1.55; }
+.desk-options { flex: 0 1 auto; min-width: 0; max-width: 100%; color: var(--desk-muted); font-size: 12px; }
+.desk-options summary { min-height: 44px; padding: 12px 8px; cursor: pointer; overflow-wrap: anywhere; }
+.desk-options summary:hover { color: var(--desk-accent); }
+.desk-options[open] { flex-basis: 100%; }
+.desk-options[open] > button { margin: 4px 0 0 8px; }
 .desk-find { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 0 20px 12px; color: var(--desk-muted); background: var(--desk-paper); font-size: 12px; }
 .desk-find > input, .desk-find > label { flex: 1 1 240px; min-width: 0; }
 .desk-find > label { display: grid; gap: 5px; }
@@ -91,10 +97,12 @@
 .source-desk .desk-pin button { min-width: 0; border-radius: 8px 0 0 8px; text-align: left; font-size: 12px; }
 .source-desk .desk-pin button[aria-pressed="true"] { color: #154c3b; background: var(--desk-soft); border-color: #c3d7c9; font-weight: 600; }
 .source-desk .desk-pin .desk-unpin { flex: 0 0 44px; min-width: 44px; border-left: 0; border-radius: 0 8px 8px 0; padding-inline: 10px; text-align: center; font-size: 18px; font-weight: 400; }
-.desk-columns { display: grid; flex: 1 1 auto; grid-template-columns: minmax(240px, 280px) minmax(0, 1fr); min-width: 0; min-height: 380px; border-top: 1px solid var(--desk-line); background: var(--desk-bg); }
+.desk-columns { display: grid; flex: 1 1 auto; grid-template-columns: minmax(0, 1fr); min-width: 0; min-height: 380px; border-top: 1px solid var(--desk-line); background: var(--desk-bg); }
+.desk-columns.has-selection { grid-template-columns: minmax(240px, 280px) minmax(0, 1fr); }
 .desk-column { min-width: 0; padding: 22px 24px; }
 .desk-context { padding: 22px 20px; background: var(--desk-bg); }
-.desk-reader { background: var(--desk-paper); border-left: 1px solid var(--desk-line); }
+.desk-reader { background: var(--desk-paper); }
+.desk-columns.has-selection .desk-reader { border-left: 1px solid var(--desk-line); }
 .desk-column-head { display: flex; align-items: start; justify-content: space-between; gap: 12px; min-width: 0; margin-bottom: 16px; }
 .desk-column-head > div { min-width: 0; }
 .source-desk .badge, .desk-badge, .desk-version, .desk-tag { display: inline-flex; align-items: center; max-width: 100%; padding: 3px 8px; border: 1px solid var(--desk-line); border-radius: 5px; color: var(--desk-muted); background: var(--desk-bg); font-size: 11px; font-weight: 500; line-height: 1.5; overflow-wrap: anywhere; }
@@ -151,8 +159,8 @@
   .source-desk *, .source-desk *::before, .source-desk *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
 @media (max-width: 760px) {
-  .desk-columns { grid-template-columns: minmax(0, 1fr); min-height: 0; }
-  .desk-reader { border-top: 1px solid var(--desk-line); border-left: 0; }
+  .desk-columns, .desk-columns.has-selection { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .desk-columns.has-selection .desk-reader { border-top: 1px solid var(--desk-line); border-left: 0; }
   .desk-context { padding-block: 18px; }
   .desk-context .desk-text { max-height: 23vh; max-height: 23dvh; margin-top: 12px; }
   .desk-actions { margin-top: 12px; }
@@ -172,6 +180,7 @@
   .desk-toolbar { gap: 8px; padding: 12px 14px; }
   .desk-toolbar label { flex-basis: 100%; }
   .desk-toolbar > button { flex: 1 1 90px; }
+  .source-desk .desk-help { padding-inline: 14px; }
   .desk-find { gap: 8px; padding-inline: 14px; }
   .desk-find > input, .desk-find > label { flex-basis: 100%; }
   .desk-pins { padding-inline: 14px; }
