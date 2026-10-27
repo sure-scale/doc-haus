@@ -2,7 +2,7 @@ import { WORD_UPDATE_MESSAGE, WordClient, isCurrentPaneVersion, readLink } from 
 import { connectOffice } from "./office"
 import { browserCheckpoints, WordSync, type PaneState } from "./sync"
 import { setupSourceDesk } from "./desk-entry"
-import { createPaneRenderer, setupSaveMenu } from "./pane-render"
+import { configureConnectionRecovery, createPaneRenderer, setupSaveMenu } from "./pane-render"
 
 const element = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
 const badge = element("status")
@@ -43,6 +43,7 @@ async function main(): Promise<void> {
     const back = element<HTMLAnchorElement>("back")
     back.href = `${link.origin}/matter/${encodeURIComponent(link.matter)}`
     back.hidden = false
+    configureConnectionRecovery(document, link.apiOrigin)
     let storage: Storage | undefined
     try {
       storage = window.localStorage

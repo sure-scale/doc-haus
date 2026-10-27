@@ -313,6 +313,9 @@ async function main(args: string[]) {
 
     const paneStatus = await run([bun, "run", "--cwd", "apps/word-addin", "build"], ".")
     if (paneStatus !== 0) return await stop(paneStatus)
+    // Refresh protocol registration for existing installations too. The helper
+    // reports a visible warning on failure; ordinary startup can still proceed.
+    await run([bun, "run", "scripts/desktop-launcher.ts", "--startup"], ".")
     if (process.env.DOCHAUS_SETUP_WORD_ADDIN === "1") {
       delete process.env.DOCHAUS_SETUP_WORD_ADDIN
       if (await run([bun, "run", "scripts/setup-word-addin.ts", "--offer"], ".") !== 0)

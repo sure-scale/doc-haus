@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { ConnectionError, WordClient, httpsOrigin, isCurrentPaneVersion, readLink } from "./client"
 import { renderManifest } from "./manifest"
+import { wordBootstrapUrl } from "./bootstrap-contract"
 import { WORD_ADDIN_ID, WORD_ADDIN_VERSION, type WordConnectionState } from "../../../dochaus/lib/word-addin-contract"
 
 const link = {
@@ -65,9 +66,12 @@ test("manifest uses the shared identity and designated auto-open pane", () => {
   expect(manifest).toContain(`<Id>${WORD_ADDIN_ID}</Id>`)
   expect(manifest).toContain(`<Version>${WORD_ADDIN_VERSION}</Version>`)
   expect(manifest).toContain("<TaskpaneId>Office.AutoShowTaskpaneWithDocument</TaskpaneId>")
-  expect(manifest).toContain("https://localhost:4612/word-addin/pane.html")
+  expect(manifest).toContain(`<AppDomain>https://doc.haus</AppDomain>`)
+  expect(manifest).toContain(`<AppDomain>${link.apiOrigin}</AppDomain>`)
+  expect(manifest).toContain(wordBootstrapUrl(link.apiOrigin))
+  expect(manifest).toContain('DefaultValue="https://doc.haus/word-addin/assets/icon.png"')
   expect(
-    manifest.match(new RegExp(`pane\\.html\\?version=${WORD_ADDIN_VERSION.replaceAll(".", "\\.")}`, "g")),
+    manifest.match(new RegExp(`bootstrap\\?version=${WORD_ADDIN_VERSION.replaceAll(".", "\\.")}`, "g")),
   ).toHaveLength(2)
   expect(manifest.match(/xsi:type="ShowTaskpane"/g)).toHaveLength(1)
   expect(manifest).toContain('id="Button.Label" DefaultValue="doc.haus"')

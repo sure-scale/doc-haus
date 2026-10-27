@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, InsertedTextRun, Packer, Paragraph } from "docx"
@@ -130,9 +130,79 @@ test("handout links the current exact document; hash-only grants survive restart
   await start()
   expect((await ping(link, "session-one-0001")).status).toBe(200)
   const second = await handout("Identity.docx")
+  expect(second.link.token === link.token).toBe(true)
+  expect(Buffer.compare(second.bytes, bytes) === 0).toBe(true)
   expect((await route(`/documents/word?${query("Identity.docx")}`, { method: "DELETE" })).status).toBe(200)
   for (const token of [link, second.link]) expect((await ping(token, "session-one-0001")).status).toBe(401)
   expect((await status()).some(document => document.name === "Identity.docx")).toBe(false)
+})
+
+test("native handoff is one-use, preserves linkage and reuses its protected live grant across opens", async () => {
+  await create("Handoff.docx")
+  const issue = async (origin = browserOrigin) => {
+    const response = await route(`/documents/word/open?${query("Handoff.docx")}`, { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ origin }) })
+    expect(response.status).toBe(200)
+    const value = await response.json() as { uri: string; id: string }
+    const uri = new URL(value.uri), source = new URL(uri.searchParams.get("source")!)
+    expect(uri.protocol === "doc.haus:" && uri.host === "word" && uri.pathname === "/open").toBe(true)
+    expect(source.origin === paneOrigin && /^\/word\/open\/[A-Za-z0-9_-]{43}$/.test(source.pathname)).toBe(true)
+    expect(/^[a-f0-9-]{36}$/.test(value.id)).toBe(true)
+    expect(response.headers.get("Cache-Control")).toBe("no-store")
+    return Object.assign(source, { id: value.id })
+  }
+  const state = async (id: string) => (await (await route(`/documents/word/open/status?id=${id}`)).json() as { state: string }).state
+  const result = (source: URL, value: object, origin?: string) => request(`${source.pathname}/result`, { method: "POST",
+    headers: { "Content-Type": "application/json", ...(origin ? { Origin: origin } : {}) }, body: JSON.stringify(value) })
+  const first = await issue()
+  expect(await state(first.id)).toBe("pending")
+  expect((await result(first, { state: "opened" })).status).toBe(410)
+  const refused = await request(first.pathname, { headers: { Origin: browserOrigin } })
+  expect(refused.status).toBe(403)
+  expect((await request(first.pathname, { method: "HEAD" })).status).toBe(403)
+  const redemption = await request(first.pathname)
+  expect(redemption.status).toBe(200)
+  expect(redemption.headers.get("Content-Type")).toContain("wordprocessingml.document")
+  expect(redemption.headers.get("Cache-Control")).toBe("no-store")
+  const firstBytes = new Uint8Array(await redemption.arrayBuffer()), firstLink = readLink(firstBytes)
+  expect(firstLink.apiOrigin).toBe(paneOrigin)
+  expect(await state(first.id)).toBe("redeemed")
+  expect((await result(first, { state: "opened", path: "not-accepted" })).status).toBe(400)
+  expect((await result(first, { state: "opened" }, browserOrigin)).status).toBe(403)
+  expect((await result(first, { state: "opened" })).status).toBe(200)
+  expect(await state(first.id)).toBe("completed")
+  const otherMatter = await (await request("/matters", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: "Synthetic other matter" }) })).json() as { id: string }
+  expect((await request(`/matters/${otherMatter.id}/documents/word/open/status?id=${first.id}`)).status).toBe(404)
+  expect((await request(first.pathname)).status).toBe(410)
+  const second = await issue()
+  const secondBytes = new Uint8Array(await (await request(second.pathname)).arrayBuffer())
+  expect(Buffer.compare(firstBytes, secondBytes) === 0).toBe(true)
+  expect(readLink(secondBytes).token === firstLink.token).toBe(true)
+  const otherBrowser = await issue("https://browser.example")
+  const otherLink = readLink(new Uint8Array(await (await request(otherBrowser.pathname)).arrayBuffer()))
+  expect(otherLink.token !== firstLink.token).toBe(true)
+  expect((await result(otherBrowser, { state: "failed" })).status).toBe(200)
+  expect(await state(otherBrowser.id)).toBe("failed")
+  const cache = path.join(matter.dir, ".dochaus/word-handouts", firstLink.document)
+  const files = await readdir(cache)
+  expect(files.length > 0 && files.every(name => /^[a-f0-9]{64}\.[a-f0-9]{64}\.docx$/.test(name))).toBe(true)
+  if (process.platform !== "win32") {
+    expect((await stat(cache)).mode & 0o777).toBe(0o700)
+    expect((await stat(path.join(cache, files[0]!))).mode & 0o777).toBe(0o600)
+  }
+  const revoked = await issue()
+  expect((await route(`/documents/word?${query("Handoff.docx")}`, { method: "DELETE" })).status).toBe(200)
+  expect((await request(revoked.pathname)).status).toBe(410)
+  const renewed = await issue()
+  const renewedLink = readLink(new Uint8Array(await (await request(renewed.pathname)).arrayBuffer()))
+  expect(renewedLink.token !== firstLink.token).toBe(true)
+  const changed = await issue()
+  expect((await route("/documents/revisions", { method: "POST", body: file(await plain("A new current version."), "Handoff.docx") })).status).toBe(200)
+  expect((await request(changed.pathname)).status).toBe(410)
+  const fresh = await handout("Handoff.docx")
+  expect(fresh.link.baseVersion !== renewedLink.baseVersion).toBe(true)
+  expect(fresh.link.token !== renewedLink.token).toBe(true)
+  expect((await readdir(cache)).length).toBe(1)
 })
 
 test("token endpoints require the exact configured pane origin on success, errors and preflight", async () => {

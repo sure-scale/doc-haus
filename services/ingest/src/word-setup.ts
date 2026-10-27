@@ -4,6 +4,7 @@ import { Hono } from "hono"
 import { setupWordAddin, validateWordCertificate, wordAddinRegistered, wordCertificateTrusted, wordInstalled, type WordSetupOptions } from "../../../scripts/setup-word-addin"
 import { wordConfigurationFile, wordHttpsConfiguration } from "./word-configuration"
 import { startWordHttps, wordHttpsFailure, wordHttpsRunning, wordPaneBuilt } from "./word-https"
+import { wordBootstrapUrl } from "../../../apps/word-addin/src/bootstrap-contract"
 
 export type WordSetupStatus = {
   platform: "macos" | "windows" | "unsupported"
@@ -98,7 +99,7 @@ export function wordSetupRoutes(options: Options) {
           const response = await fetch(`${configuration.origin}/word-addin/${file}`, { redirect: "error", signal: AbortSignal.timeout(4000) })
           if (!response.ok) return false
           const content = await response.text()
-          return file === "manifest.xml" ? content.includes(`${configuration.origin}/word-addin/pane.html`) : content.includes("office.js")
+          return file === "manifest.xml" ? content.includes(wordBootstrapUrl(configuration.origin).replaceAll("&", "&amp;")) : content.includes("office.js")
         } catch { return false }
       }))
       running = trusted = available.every(Boolean)

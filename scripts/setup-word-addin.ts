@@ -7,6 +7,7 @@ import { generate } from "selfsigned"
 import { renderManifest } from "../apps/word-addin/src/manifest"
 import { WORD_ADDIN_ID } from "../dochaus/lib/word-addin-contract"
 import { wordConfigurationFile, wordOrigin } from "../services/ingest/src/word-configuration"
+import { refreshDesktopLauncher } from "./desktop-launcher"
 
 export function validateWordCertificate(certificate: string, key: string, hostname = "localhost") {
   const cert = new X509Certificate(readFileSync(certificate))
@@ -176,6 +177,7 @@ export async function setupWordAddin(args = process.argv.slice(2), options: Word
     writeFileSync(temporary, JSON.stringify(settings, null, 2) + "\n", { mode: 0o600, flag: "wx" })
     renameSync(temporary, file)
   } finally { rmSync(temporary, { force: true }) }
+  await refreshDesktopLauncher(options)
   return { origin, registrationChanged }
 }
 

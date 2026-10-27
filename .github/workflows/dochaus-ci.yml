@@ -105,6 +105,10 @@ jobs:
           (cd apps/word-addin && bun test src)
           (cd scripts && bun test test/word-addin-setup.test.ts)
 
+      - name: Test desktop handoff and selected installation refresh
+        working-directory: scripts
+        run: bun test test/desktop-launcher.test.ts test/word-open.test.ts --timeout 30000
+
       - name: Install updater route dependencies
         run: bun install --cwd services/ingest --frozen-lockfile
 
@@ -143,7 +147,7 @@ jobs:
         run: bun test src/document-amendment-libreoffice.test.ts --timeout 30000
       - name: Test linked Word saves, Source Desk and restricted HTTPS receiver
         working-directory: services/ingest
-        run: bun test src/word-linked-docx.test.ts src/word-documents-http.test.ts src/word-source-desk.test.ts src/word-https.test.ts --timeout 30000
+        run: bun test src/word-linked-docx.test.ts src/word-documents-http.test.ts src/word-source-desk.test.ts src/word-https.test.ts src/word-handouts.test.ts src/word-open-tickets.test.ts --timeout 30000
       - name: Test native discovery and selected sign-in reuse
         working-directory: services/engine
         run: bun test src/credential-reuse.test.ts test/provider-catalog.test.ts --timeout 30000
@@ -204,6 +208,9 @@ jobs:
         run: |
           (cd scripts && bun test windows)
           (cd scripts && bun test test/word-addin-setup.test.ts)
+          (cd scripts && bun test test/desktop-launcher.test.ts --timeout 30000)
+          (cd scripts && bun test test/word-open.test.ts --timeout 30000)
+          (cd services/ingest && bun test src/word-handouts.test.ts --timeout 30000)
           bun run --cwd apps/word-addin typecheck
           (cd apps/word-addin && bun test src)
           (cd dochaus && bun test lib/safe-file-name.test.ts)

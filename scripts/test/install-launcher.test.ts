@@ -70,7 +70,8 @@ printf '%s\\0' "$PWD" "\${DOCHAUS_DATA_ROOT:-}" "$WORKSPACE_ROOT" "$DOCHAUS_RUNT
   }
   async function reopenCommand() { await checked(command); return profile() }
   const dispatch = (action = "launch") => run(path.join(resources, "open-doc-haus.sh"), environment, [action])
-  const refresh = () => run(path.join(repository, "scripts/macos-app.sh"), environment, [checkout, app])
+  const refresh = (overrides: Record<string, string> = {}) => run(path.join(repository, "scripts/macos-app.sh"), { ...environment, ...overrides }, [checkout, app])
+  const wordOpen = (uri: string) => run(path.join(resources, "open-word.sh"), environment, [uri])
   const openCalls = async () => (await readFile(path.join(home, "open-calls"), "utf8").catch(() => "")).split("\0").filter(Boolean)
   async function launchOwner(web = true) {
     const runtime = path.join(checkout, ".dochaus-runtime"), script = path.join(root, "start.sh"), childScript = path.join(root, "web.ts")
@@ -96,7 +97,7 @@ while true; do sleep 0.1; done
     }
     throw new Error("Fixture launcher did not claim its runtime")
   }
-  return { root, home, checkout, app, resources, command, environment, install, reopenCommand, dispatch, refresh, openCalls, launchOwner }
+  return { root, home, checkout, app, resources, command, environment, install, reopenCommand, dispatch, refresh, wordOpen, openCalls, launchOwner }
 }
 
 test("the Mac app reopens the selected data paths and ports without retaining credentials", async () => {
@@ -211,6 +212,58 @@ test("a compilation failure leaves the previous app intact", async () => {
   expect(await f.openCalls()).toEqual([])
 })
 
+test("an unchanged desktop refresh skips compilation and retains the current bundle", async () => {
+  const f = await fixture()
+  await f.install()
+  expect((await f.refresh()).status).toBe(0)
+  const recovery = path.join(path.dirname(f.app), ".doc.haus-recovery")
+  const previous = await readdir(recovery)
+  await writeFile(path.join(f.home, "fail-compile"), "")
+  const result = await f.refresh()
+  expect(result.status).toBe(0)
+  expect(result.stdout).toContain("already current")
+  expect(await readdir(recovery)).toEqual(previous)
+  expect(await f.openCalls()).toEqual([])
+})
+
+test("the bundled Word dispatcher preserves the fixed Bun path, selected runtime and literal URI", async () => {
+  const f = await fixture()
+  await f.install()
+  const bun = path.join(f.root, "bun $(touch unexpected-helper)")
+  await writeFile(bun, `#!/bin/bash
+if [ "$1" = build ]; then
+  [ ! -f "$HOME/fail-helper" ] || exit 9
+  while [ "$1" != --outfile ]; do shift; done
+  printf '// synthetic self-contained Word helper\\n' > "$2"
+else
+  printf '%s\\0' "$@" > "$HOME/word-helper-calls"
+fi
+`)
+  await chmod(bun, 0o755)
+  const data = path.join(f.root, "selected data 'quotes' $(touch unexpected-data)")
+  expect((await f.refresh({ BUN_BIN: bun, DOCHAUS_DATA_ROOT: data, DOCHAUS_DESKTOP_HELPER: "1" })).status).toBe(0)
+  const uri = "doc.haus://word/open?source=" + encodeURIComponent("https://localhost:4511/word/open/" + "A".repeat(43))
+  expect((await f.wordOpen(uri)).status).toBe(0)
+  expect((await readFile(path.join(f.home, "word-helper-calls"), "utf8")).split("\0").slice(0, -1))
+    .toEqual([path.join(f.resources, "word-open.js"), "--runtime", path.join(data, "runtime"), uri])
+  expect(await Bun.file(path.join(f.root, "unexpected-helper")).exists()).toBe(false)
+  expect(await f.openCalls()).toEqual([])
+  const previous = await readFile(path.join(f.resources, "installation.sh"), "utf8")
+  const helper = await readFile(path.join(f.resources, "word-open.js"), "utf8")
+  const recovery = path.join(path.dirname(f.app), ".doc.haus-recovery")
+  const backups = await readdir(recovery)
+  await writeFile(path.join(f.home, "fail-helper"), "")
+  // A pre-dependency installer refresh must never downgrade an existing full
+  // desktop helper to a launch-only bundle when the new build is unavailable.
+  const optional = await f.refresh({ BUN_BIN: bun })
+  expect(optional.status).toBe(0)
+  expect(optional.stdout).toContain("keeping the existing desktop Word helper")
+  expect((await f.refresh({ BUN_BIN: bun, DOCHAUS_DESKTOP_HELPER: "1" })).status).not.toBe(0)
+  expect(await readFile(path.join(f.resources, "installation.sh"), "utf8")).toBe(previous)
+  expect(await readFile(path.join(f.resources, "word-open.js"), "utf8")).toBe(helper)
+  expect(await readdir(recovery)).toEqual(backups)
+})
+
 test("a failed app move restores the previous bundle from hidden recovery", async () => {
   const f = await fixture()
   await f.install()
@@ -227,7 +280,7 @@ exec /bin/mv "$@"
   expect(await f.openCalls()).toEqual([])
 })
 
-test.skipIf(process.platform !== "darwin")("the actual applet selects only its origin and exits after a bounded cold-start grace", async () => {
+test.skipIf(process.platform !== "darwin")("the applet isolates desktop browser instances and focuses only a matching tab", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dochaus-browser-selection-"))
   roots.push(root)
   const compiled = path.join(root, "launcher.scpt"), driver = path.join(root, "selection.applescript")
@@ -237,8 +290,130 @@ test.skipIf(process.platform !== "darwin")("the actual applet selects only its o
   const [compileStatus, compileError] = await Promise.all([compile.exited, new Response(compile.stderr).text()])
   expect(compileError).toBe("")
   expect(compileStatus).toBe(0)
-  await writeFile(driver, `on run argv
-    set launcher to load script POSIX file (item 1 of argv)
+  await writeFile(driver, `use framework "Foundation"
+use scripting additions
+
+on collectionOf(values)
+    script collection
+        property collectionValues : {}
+        on |get|()
+            return collectionValues
+        end |get|
+    end script
+    set collection's collectionValues to values
+    return collection
+end collectionOf
+
+on browserInstance(identifier, launchedThroughLS, policy, terminated, appURL)
+    script instance
+        property syntheticIdentifier : 0
+        property launchDateValue : missing value
+        property policyValue : 0
+        property terminatedValue : false
+        property bundleURLValue : missing value
+        on launchDate()
+            return launchDateValue
+        end launchDate
+        on activationPolicy()
+            return policyValue
+        end activationPolicy
+        on isTerminated()
+            return terminatedValue
+        end isTerminated
+        on bundleURL()
+            return bundleURLValue
+        end bundleURL
+    end script
+    set instance's syntheticIdentifier to identifier
+    if launchedThroughLS then set instance's launchDateValue to current date
+    set instance's policyValue to policy
+    set instance's terminatedValue to terminated
+    set instance's bundleURLValue to appURL
+    return instance
+end browserInstance
+
+on browserTab(address, tabIndex)
+    script browserTab
+        property addressValue : ""
+        property indexValue : 0
+        on |URL|()
+            return addressValue
+        end |URL|
+        on |index|()
+            return indexValue
+        end |index|
+    end script
+    -- ScriptingBridge returns Foundation strings for native properties.
+    set browserTab's addressValue to current application's NSString's stringWithString:address
+    set browserTab's indexValue to tabIndex
+    return browserTab
+end browserTab
+
+on browserWindow(tabValues, selectedIndex, windowMode)
+    script browserWindow
+        property tabCollection : missing value
+        property selected : 0
+        property minimizedValue : true
+        property indexValue : 2
+        property modeValue : "normal"
+        property familyValue : "chromium"
+        on |mode|()
+            return modeValue
+        end |mode|
+        on |tabs|()
+            if modeValue is "incognito" then error "Private tabs must never be queried"
+            return tabCollection
+        end |tabs|
+        on activeTabIndex()
+            return selected
+        end activeTabIndex
+        on currentTab()
+            return item selected of (tabCollection's |get|())
+        end currentTab
+        on setActiveTabIndex:chosenIndex
+            set selected to chosenIndex
+        end setActiveTabIndex:
+        on setCurrentTab:chosenTab
+            set selected to chosenTab's |index|()
+        end setCurrentTab:
+        on setMinimized:minimized
+            if familyValue is not "chromium" then error "Safari uses Cocoa miniaturized, not Chromium minimized"
+            set minimizedValue to minimized
+        end setMinimized:
+        on setMiniaturized:minimized
+            if familyValue is not "safari" then error "Chromium uses minimized, not Cocoa miniaturized"
+            set minimizedValue to minimized
+        end setMiniaturized:
+        on setIndex:windowIndex
+            set indexValue to windowIndex
+        end setIndex:
+    end script
+    set browserWindow's tabCollection to my collectionOf(tabValues)
+    set browserWindow's selected to selectedIndex
+    set browserWindow's modeValue to windowMode
+    return browserWindow
+end browserWindow
+
+on browserWithWindows(windowValues)
+    script browser
+        property windowCollection : missing value
+        on |windows|()
+            return windowCollection
+        end |windows|
+    end script
+    set browser's windowCollection to my collectionOf(windowValues)
+    return browser
+end browserWithWindows
+
+on run argv
+    set launcherFile to POSIX file (item 1 of argv)
+    set launcher to load script launcherFile
+    repeat with launchURL in {"doc.haus://launch", "doc.haus://launch/"}
+        if not (launcher's isLaunchURL(contents of launchURL)) then error "Launch route was rejected"
+    end repeat
+    repeat with launchURL in {"doc.haus://launch?instance=https%3A%2F%2Flocalhost", "doc.haus://launch#fragment", "doc.haus://user@launch", "doc.haus://launch:80", "doc.haus://launch/extra", "doc.haus://word/open", "https://launch", "DOC.HAUS://launch", "doc.haus://launch%2F"}
+        if (launcher's isLaunchURL(contents of launchURL)) then error "Unsupported launch route was accepted"
+    end repeat
     set targetOrigin to "http://localhost:5274"
     repeat with candidateURL in {targetOrigin, targetOrigin & "/", targetOrigin & "/matter/synthetic", targetOrigin & "?setup", targetOrigin & "#matter"}
         if not launcher's matchesOrigin(contents of candidateURL, targetOrigin) then error "Expected configured origin to match"
@@ -265,9 +440,39 @@ test.skipIf(process.platform !== "darwin")("the actual applet selects only its o
     if (launcher's browserFamily("com.google.Chrome")) is not "chromium" then error "Chrome family missing"
     if (launcher's browserFamily("com.apple.Safari")) is not "safari" then error "Safari family missing"
     if (launcher's browserFamily("org.mozilla.firefox")) is not "" then error "Unsupported browser should use normal opening"
-    if (launcher's canReuseBrowserInstanceCount(0)) then error "A stopped browser should open normally"
-    if not (launcher's canReuseBrowserInstanceCount(1)) then error "A single browser instance may reuse its tab"
-    if (launcher's canReuseBrowserInstanceCount(2)) then error "Separate browser instances must never be queried by bundle ID"
+    set expectedAppURL to current application's NSURL's fileURLWithPath:"/Applications/Synthetic Browser.app"
+    set desktopInstance to my browserInstance(41, true, 0, false, expectedAppURL)
+    set directInstance to my browserInstance(42, false, 0, false, expectedAppURL)
+    repeat with instances in {{desktopInstance, directInstance}, {directInstance, desktopInstance}, {desktopInstance}}
+        set chosenInstance to launcher's selectBrowserInstance(contents of instances, expectedAppURL)
+        if chosenInstance's syntheticIdentifier is not 41 then error "Direct-spawn browser displaced the desktop instance"
+    end repeat
+    set anotherDesktop to my browserInstance(43, true, 0, false, expectedAppURL)
+    set backgroundInstance to my browserInstance(44, true, 1, false, expectedAppURL)
+    set terminatedInstance to my browserInstance(45, true, 0, true, expectedAppURL)
+    set otherBundle to my browserInstance(46, true, 0, false, current application's NSURL's fileURLWithPath:"/Applications/Other Browser.app")
+    repeat with instances in {{}, {directInstance}, {desktopInstance, anotherDesktop}, {backgroundInstance}, {terminatedInstance}, {otherBundle}}
+        if (launcher's selectBrowserInstance(contents of instances, expectedAppURL)) is not missing value then error "Ambiguous or ineligible browser must open normally"
+    end repeat
+    set tabValues to {}
+    repeat with tabIndex from 1 to 27
+        set end of tabValues to my browserTab("https://unrelated.example/", tabIndex)
+    end repeat
+    set matterTab to my browserTab(targetOrigin & "/matter/synthetic?view=documents", 28)
+    set end of tabValues to matterTab
+    set normalWindow to my browserWindow(tabValues, 28, "normal")
+    set privateWindow to my browserWindow({}, 0, "incognito")
+    set browser to my browserWithWindows({privateWindow, normalWindow})
+    if not (launcher's focusBrowserTab(browser, "chromium", targetOrigin)) then error "PID browser transport lost the matching tab"
+    if normalWindow's selected is not 28 or normalWindow's minimizedValue or normalWindow's indexValue is not 1 then error "Matching window was not focused"
+    if (matterTab's addressValue as text) is not (targetOrigin & "/matter/synthetic?view=documents") then error "Matter path was changed"
+    set safariWindow to my browserWindow({my browserTab("https://unrelated.example/", 1), my browserTab(targetOrigin & "/matter/safari", 2)}, 1, "normal")
+    set safariWindow's familyValue to "safari"
+    if not (launcher's focusBrowserTab(my browserWithWindows({safariWindow}), "safari", targetOrigin)) then error "Safari native tab selection failed"
+    if safariWindow's selected is not 2 or safariWindow's minimizedValue or safariWindow's indexValue is not 1 then error "Safari did not select and reveal its matching tab"
+    set foreignWindow to my browserWindow({my browserTab("http://localhost:52740/", 1)}, 1, "normal")
+    if (launcher's focusBrowserTab(my browserWithWindows({foreignWindow}), "chromium", targetOrigin)) then error "Foreign origin was focused"
+    if foreignWindow's minimizedValue is not true or foreignWindow's indexValue is not 2 then error "An unrelated window was modified"
     set startedAt to current date
     if (launcher's launchGraceRemaining(missing value, startedAt)) is not 0 then error "Ready interface should exit promptly"
     if (launcher's launchGraceRemaining(startedAt, startedAt)) is not 10 then error "Cold launch needs its debounce grace"

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { Document, Packer, Paragraph } from "docx"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { DOMParser } from "@xmldom/xmldom"
-import { linkedWordDocx, stripWordLink, wordLastModifiedBy, WordPackageError } from "../../../dochaus/lib/word-linked-docx"
+import { linkedWordDocx, readWordLink as boundedReadWordLink, stripWordLink, wordLastModifiedBy, WordPackageError } from "../../../dochaus/lib/word-linked-docx"
 import { WORD_ADDIN_VERSION, WORD_LINK_SETTING, type WordDocumentLink } from "../../../dochaus/lib/word-addin-contract"
 
 const link: WordDocumentLink = { version: 1, origin: "http://localhost:5190", apiOrigin: "https://localhost:4612", matter: "synthetic-matter", matterName: "Synthetic matter",
@@ -11,15 +11,17 @@ const plain = () => Packer.toBuffer(new Document({ lastModifiedBy: "Synthetic re
 const xmls = (bytes: Uint8Array) => Object.values(unzipSync(bytes)).map(bytes => strFromU8(bytes)).join("\n")
 
 export function readWordLink(bytes: Uint8Array) {
-  for (const [name, part] of Object.entries(unzipSync(bytes))) {
-    if (!name.includes("webextension") || !name.endsWith(".xml")) continue
-    const doc = new DOMParser().parseFromString(strFromU8(part), "application/xml")
-    const property = Array.from(doc.getElementsByTagNameNS("http://schemas.microsoft.com/office/webextensions/webextension/2010/11", "property"))
-      .find(node => node.getAttribute("name") === WORD_LINK_SETTING)
-    if (property) return JSON.parse(property.getAttribute("value")!) as WordDocumentLink
-  }
-  throw new Error("No Word link found")
+  return boundedReadWordLink(bytes) as WordDocumentLink
 }
+
+test("reading a handoff rejects ambiguous owned extensions and duplicate link properties", async () => {
+  const bytes = await plain()
+  expect(boundedReadWordLink(bytes)).toBeNull()
+  const parts = unzipSync(linkedWordDocx(bytes, link)), extension = parts["word/webextensions/dochaus.xml"]!
+  expect(() => boundedReadWordLink(zipSync({ ...parts, "word/webextensions/duplicate.xml": extension }))).toThrow("ambiguous")
+  const duplicate = strFromU8(extension).replace("</we:properties>", `<we:property name="${WORD_LINK_SETTING}" value="{}"/></we:properties>`)
+  expect(() => boundedReadWordLink(zipSync({ ...parts, "word/webextensions/dochaus.xml": strToU8(duplicate) }))).toThrow("one doc.haus link")
+})
 
 test("linking changes only extension/package parts; stripping removes the capability and preserves unrelated add-ins", async () => {
   const original = unzipSync(await plain())

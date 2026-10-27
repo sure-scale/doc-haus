@@ -57,6 +57,33 @@ export async function linkedWordDocument(matterId: string, name: string, origin:
   return response.blob()
 }
 
+export type WordOpenState = "pending" | "redeemed" | "completed" | "failed" | "expired"
+
+// A short-lived read ticket reaches the installed desktop helper. It is not
+// the document's save capability and must never be sent to an arbitrary URI.
+export async function prepareWordOpen(matterId: string, name: string, origin: string, wordOrigin: string, signal?: AbortSignal): Promise<{ uri: string; id: string }> {
+  const response = await fetch(`${wordUrl(matterId)}/open?name=${encodeURIComponent(name)}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ origin }), signal,
+  })
+  if (!response.ok) throw new Error(await ingestError(response, `Could not open ${name} in Word`))
+  const value: unknown = await response.json()
+  const invalid = () => new Error("Could not prepare the desktop Word connection. Try again or download a Word copy.")
+  if (!value || typeof value !== "object" || !("uri" in value) || !("id" in value) || typeof value.uri !== "string" || typeof value.id !== "string" || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(value.id)) throw invalid()
+  try {
+    const uri = new URL(value.uri), source = new URL(uri.searchParams.get("source") || "")
+    if (uri.protocol !== "doc.haus:" || uri.host !== "word" || uri.pathname !== "/open" || uri.username || uri.password || uri.hash || [...uri.searchParams].length !== 1 || source.protocol !== "https:" || source.origin !== wordOrigin || source.username || source.password || source.search || source.hash || !/^\/word\/open\/[A-Za-z0-9_-]{43}$/.test(source.pathname)) throw invalid()
+  } catch { throw invalid() }
+  return { uri: value.uri, id: value.id }
+}
+
+export async function fetchWordOpenState(matterId: string, id: string, signal?: AbortSignal): Promise<WordOpenState> {
+  const response = await fetch(`${wordUrl(matterId)}/open/status?id=${encodeURIComponent(id)}`, { signal })
+  if (!response.ok) throw new Error("Could not confirm the Word launch. If Word did not open, try again or download a Word copy.")
+  const value: unknown = await response.json()
+  if (!value || typeof value !== "object" || !("state" in value) || !["pending", "redeemed", "completed", "failed", "expired"].includes(String(value.state))) throw new Error("Could not confirm the Word launch.")
+  return value.state as WordOpenState
+}
+
 export async function revokeWordDocument(matterId: string, name: string): Promise<void> {
   const response = await fetch(wordUrl(matterId, name), { method: "DELETE" })
   if (!response.ok) throw new Error(await ingestError(response, `Could not disconnect ${name} from Word`))

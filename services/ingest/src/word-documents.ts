@@ -15,6 +15,8 @@ import { SourceDocumentConflictError } from "./ingest"
 import { wordHttpsConfiguration } from "./word-configuration"
 import { wordHttpsAvailable, wordHttpsFailure } from "./word-https"
 import { installWordSourceDesk } from "./word-source-desk"
+import { WordOpenTickets, wordOpenPath, wordOpenResultPath } from "./word-open-tickets"
+import { readWordHandout, writeWordHandout, type WordHandoutIdentity } from "./word-handouts"
 
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 export const wordTokenPath = (pathname: string) => /^\/word\/(saves|heartbeat|done|lease|desk\/(sources|source|versions|compare))$/.test(pathname)
@@ -68,7 +70,14 @@ export async function wordCors(c: Context, next: () => Promise<void>) {
 
 export function wordDocumentRoutes(deps: Dependencies) {
   const app = new Hono()
+  const tickets = new WordOpenTickets<{ identity: WordHandoutIdentity; tokenHash: string; name: string }>()
+  app.use("/word/open/*", async (c, next) => {
+    c.header("Cache-Control", "no-store")
+    c.header("Referrer-Policy", "no-referrer")
+    await next()
+  })
   app.onError((error, c) => {
+    if (wordOpenPath(c.req.path)) tickets.result(c.req.param("nonce") ?? "", "failed")
     if (error instanceof EditingLeaseError) {
       const auth = authenticate(c)
       return c.json({ error: error.message, code: error.code, expiresAt: error.expiresAt,
@@ -85,10 +94,10 @@ export function wordDocumentRoutes(deps: Dependencies) {
   })
   app.get("/word/config", c => c.json(wordConfiguration()))
 
-  app.post("/matters/:id/documents/word", async c => {
+  const handout = (native: boolean) => async (c: Context) => {
     const config = wordConfiguration()
     if (!config.available || !config.origin) return failure(c, 503, "word_unavailable", config.reason ?? "Word is not configured.")
-    const matter = deps.matter(c.req.param("id"))
+    const matter = deps.matter(c.req.param("id") ?? "")
     const name = c.req.query("name") ?? ""
     if (!name.toLowerCase().endsWith(".docx") || /[\\/\0]/.test(name)) return failure(c, 400, "word_requires_docx", "Choose a Word document in this matter, without a path.")
     let input: unknown
@@ -115,13 +124,101 @@ export function wordDocumentRoutes(deps: Dependencies) {
         current = readCurrentVersion(matter.dir, target.name)
       }
       if (!current) return failure(c, 409, "word_version_missing", "The document's current version could not be captured.")
-      const token = randomBytes(32).toString("base64url")
-      const linked = linkedWordDocx(plain, { version: 1, origin: browserOrigin as string, apiOrigin: config.origin!,
-        matter: matter.id, matterName: matter.title, document: current.document.id, documentName: target.name, baseVersion: current.current.id, token })
+      const identity: WordHandoutIdentity = { origin: browserOrigin as string, apiOrigin: config.origin!,
+        matter: matter.id, document: current.document.id, baseVersion: current.current.id }
       const db = openDb(matter.dir)
-      try { db.run("INSERT INTO word_grants (token_hash, document_id, origin, issued_version, created_at) VALUES (?, ?, ?, ?, ?)",
-        [digest(token), current.document.id, config.origin!, current.current.id, Date.now()]) } finally { db.close() }
-      return new Response(linked, { headers: { "Content-Type": DOCX, "Content-Disposition": attachmentDocumentDisposition(target.name), "Cache-Control": "no-store" } })
+      let linked: Uint8Array, tokenHash: string
+      try {
+        const cached = readWordHandout(matter.dir, identity, hash => Boolean(db.query(`SELECT token_hash FROM word_grants
+          WHERE token_hash = ? AND document_id = ? AND origin = ? AND issued_version = ? AND revoked_at IS NULL`)
+          .get(hash, identity.document, identity.apiOrigin, identity.baseVersion)))
+        if (cached && cached.link.documentName === target.name) {
+          linked = cached.bytes
+          tokenHash = digest(cached.link.token)
+        } else {
+          const token = randomBytes(32).toString("base64url")
+          linked = linkedWordDocx(plain, { version: 1, ...identity, matterName: matter.title, documentName: target.name, token })
+          tokenHash = digest(token)
+          db.run("INSERT INTO word_grants (token_hash, document_id, origin, issued_version, created_at) VALUES (?, ?, ?, ?, ?)",
+            [tokenHash, current.document.id, config.origin!, current.current.id, Date.now()])
+          writeWordHandout(matter.dir, identity, linked)
+        }
+      } finally { db.close() }
+      if (native) {
+        const { nonce, id } = tickets.issue({ identity, tokenHash, name: target.name })
+        c.header("Cache-Control", "no-store")
+        return c.json({ uri: `doc.haus://word/open?source=${encodeURIComponent(`${config.origin}/word/open/${nonce}`)}`, id })
+      }
+      return new Response(new Uint8Array(linked), { headers: { "Content-Type": DOCX, "Content-Disposition": attachmentDocumentDisposition(target.name), "Cache-Control": "no-store" } })
+    })
+  }
+  app.post("/matters/:id/documents/word", handout(false))
+  app.post("/matters/:id/documents/word/open", handout(true))
+  app.get("/matters/:id/documents/word/open/status", c => {
+    const matter = deps.matter(c.req.param("id")), id = c.req.query("id") ?? ""
+    if (!/^[a-f0-9-]{36}$/.test(id)) return failure(c, 400, "word_open_status_invalid", "Provide a Word handoff identifier.")
+    const state = tickets.status(id, ticket => ticket.identity.matter === matter.id)
+    c.header("Cache-Control", "no-store")
+    return state ? c.json({ state }) : failure(c, 404, "word_open_status_missing", "This Word handoff is no longer available.")
+  })
+
+  app.post("/word/open/:nonce/result", async c => {
+    if (!wordOpenResultPath(c.req.path) || c.req.raw.headers.has("Origin") || c.req.raw.headers.has("Authorization"))
+      return failure(c, 403, "word_open_refused", "This Word handoff is only available to the desktop helper.")
+    if (!/^application\/json(?:\s*;|$)/i.test(c.req.header("Content-Type") ?? ""))
+      return failure(c, 400, "word_open_result_invalid", "Provide the Word launch result.")
+    const reader = c.req.raw.body?.getReader()
+    if (!reader) return failure(c, 400, "word_open_result_invalid", "Provide the Word launch result.")
+    const chunks: Uint8Array[] = []
+    let size = 0
+    while (true) {
+      const next = await reader.read()
+      if (next.done) break
+      size += next.value.byteLength
+      if (size > 64) { void reader.cancel().catch(() => {}); return failure(c, 400, "word_open_result_invalid", "Provide the Word launch result.") }
+      chunks.push(next.value)
+    }
+    const text = new TextDecoder().decode(Buffer.concat(chunks))
+    let input: unknown
+    try { if (text.length > 64) throw new Error(); input = JSON.parse(text) } catch { /* Refuse every additional or unbounded field. */ }
+    if (!input || typeof input !== "object" || Object.keys(input).length !== 1 || !("state" in input) || !["opened", "failed"].includes(String(input.state)))
+      return failure(c, 400, "word_open_result_invalid", "Provide the Word launch result.")
+    if (!tickets.result(c.req.param("nonce"), input.state as "opened" | "failed"))
+      return failure(c, 410, "word_open_expired", "This Word handoff is no longer available.")
+    c.header("Cache-Control", "no-store")
+    return c.json({ ok: true })
+  })
+
+  app.get("/word/open/:nonce", async c => {
+    if (c.req.method !== "GET") return failure(c, 403, "word_open_refused", "This Word handoff only accepts a desktop read.")
+    if (!wordOpenPath(c.req.path) || c.req.raw.headers.has("Origin") || c.req.raw.headers.has("Authorization"))
+      return failure(c, 403, "word_open_refused", "This Word handoff is only available to the desktop helper.")
+    const ticket = tickets.redeem(c.req.param("nonce"))
+    if (!ticket) return failure(c, 410, "word_open_expired", "This Word handoff expired or was already used. Choose Open in Word again.")
+    const config = wordConfiguration()
+    if (!config.available || config.origin !== ticket.identity.apiOrigin) {
+      tickets.result(c.req.param("nonce"), "failed")
+      return failure(c, 503, "word_unavailable", "The Word connection is not available. Open doc.haus and try again.")
+    }
+    const matter = deps.matter(ticket.identity.matter)
+    const target = readDocumentTarget(matter.dir, ticket.name)
+    if (!target || !existsSync(target.docPath)) { tickets.result(c.req.param("nonce"), "failed"); return failure(c, 410, "word_open_expired", "This document changed. Choose Open in Word again.") }
+    return withArtifactMutationLocksAsync(matter.dir, deps.locks(matter.dir, target.docPath), async () => {
+      const current = readCurrentVersion(matter.dir, target.name)
+      const db = openDb(matter.dir)
+      try {
+        const valid = current?.document.id === ticket.identity.document && current.current.id === ticket.identity.baseVersion &&
+          current.current.sha256 === sha256Hex(readFileSync(target.docPath)) && Boolean(getDocumentRole(db, target.docPath))
+        const cached = valid ? readWordHandout(matter.dir, ticket.identity, hash => hash === ticket.tokenHash && Boolean(db.query(`SELECT token_hash FROM word_grants
+          WHERE token_hash = ? AND document_id = ? AND origin = ? AND issued_version = ? AND revoked_at IS NULL`)
+          .get(hash, ticket.identity.document, ticket.identity.apiOrigin, ticket.identity.baseVersion))) : undefined
+        if (!cached || cached.link.documentName !== target.name) {
+          tickets.result(c.req.param("nonce"), "failed")
+          return failure(c, 410, "word_open_expired", "This document or its Word link changed. Choose Open in Word again.")
+        }
+        return new Response(new Uint8Array(cached.bytes), { headers: { "Content-Type": DOCX, "Content-Disposition": attachmentDocumentDisposition(target.name),
+          "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } })
+      } finally { db.close() }
     })
   })
 

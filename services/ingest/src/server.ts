@@ -4,6 +4,7 @@ import { updateRoutes, managedUpdateOwner } from "./updater"
 import { RepoUpdater } from "../../../scripts/updater"
 import { documentCopyRoutes } from "./document-copy"
 import { wordCors, wordDocumentRoutes, wordTokenPath } from "./word-documents"
+import { wordOpenPath } from "./word-open-tickets"
 import { startWordHttps, wordHttpsHandler } from "./word-https"
 import { wordHttpsConfiguration } from "./word-configuration"
 import { stripWordLink } from "../../../dochaus/lib/word-linked-docx"
@@ -175,7 +176,8 @@ app.on(["GET", "HEAD"], "/word-addin/*", (c) => {
 app.use("*", async (c, next) => {
   await next()
   if (!c.res.ok || !c.res.headers.get("content-type")?.includes("wordprocessingml.document") ||
-    (c.req.method === "POST" && /^\/matters\/[^/]+\/documents\/word$/.test(c.req.path))) return
+    (c.req.method === "POST" && /^\/matters\/[^/]+\/documents\/word$/.test(c.req.path)) ||
+    (c.req.method === "GET" && wordOpenPath(c.req.path))) return
   // Older generic content routes also use this MIME for spreadsheets/archives.
   // Only Word attachments carry this add-in; keep other formats byte-identical.
   const disposition = c.res.headers.get("content-disposition")

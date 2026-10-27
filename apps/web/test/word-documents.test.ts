@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { fetchWordConfig, fetchWordDocuments, linkedWordDocument, recoverWordEditing, revokeWordDocument, type WordOpenDocument } from "../src/api/ingest/word"
+import { fetchWordConfig, fetchWordDocuments, fetchWordOpenState, linkedWordDocument, prepareWordOpen, recoverWordEditing, revokeWordDocument, type WordOpenDocument } from "../src/api/ingest/word"
 import { wordSetupReason, wordVersionsChanged, wordWarning } from "../src/components/WordDocuments"
 import { versionOrigin } from "../src/components/DocumentVersions"
 
@@ -9,6 +9,30 @@ afterEach(() => { globalThis.fetch = originalFetch })
 const entry = (patch: Partial<WordOpenDocument> = {}): WordOpenDocument => ({ name: "Agreement.docx", open: true, currentVersion: "v-1", overlap: false, ...patch })
 
 describe("Word connection", () => {
+  test("desktop opening accepts only an exact ticket at this Word instance", async () => {
+    const source = `https://localhost:4511/word/open/${"a".repeat(43)}`
+    const id = "11111111-2222-4333-8444-555555555555"
+    const uri = `doc.haus://word/open?source=${encodeURIComponent(source)}`
+    let payload = { uri, id }
+    let sent: { url: string; init?: RequestInit } | undefined
+    globalThis.fetch = (async (input, init) => { sent = { url: String(input), init }; return Response.json(payload) }) as typeof fetch
+    expect(await prepareWordOpen("matter / one", "Draft #1.docx", "http://localhost:5174", "https://localhost:4511")).toEqual(payload)
+    expect(sent).toMatchObject({ url: expect.stringContaining("/matters/matter%20%2F%20one/documents/word/open?name=Draft%20%231.docx"), init: { method: "POST", body: '{"origin":"http://localhost:5174"}' } })
+    for (const bad of ["javascript:alert(1)", uri + "&extra=1", uri.replace("4511", "4512"), uri.replace("%2Fword%2Fopen%2F", "%2Fother%2F"), uri + "#x"]) {
+      payload = { uri: bad, id }
+      await expect(prepareWordOpen("m", "Draft.docx", "http://localhost:5174", "https://localhost:4511")).rejects.toThrow("Could not prepare")
+    }
+  })
+  test("a redeemed handoff is not reported as an OS launch, and status errors offer recovery", async () => {
+    for (const state of ["pending", "redeemed", "completed", "failed", "expired"] as const) {
+      globalThis.fetch = stubFetch(async () => Response.json({ state }))
+      expect(await fetchWordOpenState("m", "id")).toBe(state)
+    }
+    globalThis.fetch = stubFetch(async () => Response.json({ state: "saved" }))
+    await expect(fetchWordOpenState("m", "id")).rejects.toThrow("Could not confirm")
+    globalThis.fetch = stubFetch(async () => new Response(null, { status: 404 }))
+    await expect(fetchWordOpenState("m", "id")).rejects.toThrow("download a Word copy")
+  })
   test("editing recovery compares the displayed version and lease before changing ownership", async () => {
     let sent: { url: string; init?: RequestInit } | undefined
     globalThis.fetch = (async (input, init) => {
