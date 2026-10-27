@@ -38,7 +38,7 @@ import backdropClose from "./backdropClose"
 import { withSafeStyleValues } from "./docx-style-values"
 import { ProposalRedline } from "./redline"
 import { useDocumentNavigation } from "./DocumentNavigation"
-import { WordBadge, WordOpenControl, WordSetup, WordWarning, useWordRefresh, useWordEditingLocked } from "./WordDocuments"
+import { WordBadge, WordOpenControl, WordWarning, useWordRefresh, useWordEditingLocked } from "./WordDocuments"
 
 // How a Word file with tracked changes is painted: insertions underlined and
 // deletions struck through in their author's colour (styles.css), moves,
@@ -791,7 +791,6 @@ function WordDocumentViewer({
             <ModalClose onClose={onClose} />
           </div>
         </div>
-        <WordSetup />
         <WordWarning name={name} />
         {navigation.bar}
         <div className="viewer-with-navigation">
