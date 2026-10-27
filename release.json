@@ -1,5 +1,5 @@
 {
-  "version": 18,
-  "name": "2.0.16",
-  "notes": "Improvements to the way Word launches and the Word add-in user experience."
+  "version": 19,
+  "name": "2.0.17",
+  "notes": "Word add-in improvements, including simpler saving, opening matter documents directly in Word, and clearer version comparison."
 }
