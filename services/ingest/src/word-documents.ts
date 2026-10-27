@@ -14,9 +14,10 @@ import { DeliverableConflictError } from "./deliverable"
 import { SourceDocumentConflictError } from "./ingest"
 import { wordHttpsConfiguration } from "./word-configuration"
 import { wordHttpsFailure } from "./word-https"
+import { installWordSourceDesk } from "./word-source-desk"
 
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-export const wordTokenPath = (pathname: string) => /^\/word\/(saves|heartbeat|done|lease)$/.test(pathname)
+export const wordTokenPath = (pathname: string) => /^\/word\/(saves|heartbeat|done|lease|desk\/(sources|source|versions|compare))$/.test(pathname)
 
 export function wordConfiguration() {
   const failure = wordHttpsFailure()
@@ -58,7 +59,7 @@ export async function wordCors(c: Context, next: () => Promise<void>) {
     c.header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-DocHaus-Word-Base-Version, X-DocHaus-Word-Session, X-DocHaus-Word-Version, X-DocHaus-Word-Lease")
     return c.body(null, 204)
   }
-  if (c.req.method !== "POST") return failure(c, 403, "word_method_refused", "The Word connection can only save and report its own editing status.")
+  if (c.req.method !== "POST") return failure(c, 403, "word_method_refused", "The Word connection only accepts scoped document commands.")
   if (c.req.header("x-dochaus-word-version") !== WORD_ADDIN_VERSION)
     return failure(c, 426, "word_addin_update_required", "This Word add-in is out of date. Update Word setup in doc.haus, restart Word, then open a fresh copy.")
   await next()
@@ -177,6 +178,7 @@ export function wordDocumentRoutes(deps: Dependencies) {
     }
   }
   type Authenticated = NonNullable<ReturnType<typeof authenticate>>
+  installWordSourceDesk(app, authenticate)
   function identity(auth: Authenticated, session: string): WordLeaseIdentity {
     return { document: auth.grant.document_id, tokenHash: auth.grant.token_hash, session }
   }

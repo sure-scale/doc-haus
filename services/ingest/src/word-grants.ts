@@ -1,8 +1,9 @@
 import type { Database } from "bun:sqlite"
 import { createWordEditLeaseTable } from "../../../dochaus/lib/word-edit-lease"
 
-/** Write-only capabilities share the existing per-matter registry, never a
- * second document/version store. Only a SHA-256 digest is persisted. */
+/** Linked-document capabilities share the existing per-matter registry, never
+ * a second document/version store. They allow the document's guarded writes
+ * and the Source Desk's scoped matter reads. Only a SHA-256 digest persists. */
 export function createWordGrantTables(db: Database) {
   createWordEditLeaseTable(db)
   db.run(`CREATE TABLE IF NOT EXISTS word_grants (

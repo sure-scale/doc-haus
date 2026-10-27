@@ -1,4 +1,4 @@
-/** The document carries a write-only capability for its own doc.haus file. */
+/** The document carries a capability for its own writes and scoped matter reads. */
 export const WORD_ADDIN_ID = "4d857d21-6e86-47af-adba-cd7a4b056302"
 export const WORD_LINK_SETTING = "dochaus.link"
 export const WORD_ADDIN_VERSION = "1.1.0.0"

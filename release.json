@@ -1,5 +1,5 @@
 {
-  "version": 14,
-  "name": "2.0.12",
-  "notes": "Open a matter document in desktop Word and use Save to doc.haus to keep a confirmed version. Done in Word saves and closes the document. The pane checks its version and holds a recoverable editing lock while you work; doc.haus blocks competing changes, with explicit release and takeover. Background Word sync is best effort."
+  "version": 15,
+  "name": "2.0.13",
+  "notes": "Read matter sources beside your document in the Word Source Desk. Keep sources open, find exact wording and return to your captured passage in Word. Compare two saved versions with inline changes and step through each change. Available in desktop Word on Mac and Windows, with an option to use the task pane."
 }

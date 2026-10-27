@@ -5,18 +5,19 @@ import { wordHttpsConfiguration, type WordHttpsConfiguration } from "./word-conf
 
 type Fetch = (request: Request) => Response | Promise<Response>
 const assets = fileURLToPath(new URL("../../../apps/word-addin/dist/", import.meta.url))
-const writeRoutes = new Set(["/word/lease", "/word/saves", "/word/heartbeat", "/word/done"])
+const tokenRoutes = new Set(["/word/lease", "/word/saves", "/word/heartbeat", "/word/done",
+  "/word/desk/sources", "/word/desk/source", "/word/desk/versions", "/word/desk/compare"])
 let startupFailure: string | undefined
 
 /** A recoverable bridge failure must never make the ordinary product unavailable. */
 export function wordHttpsFailure() { return startupFailure }
 
-/** This HTTPS listener exposes static pane files and document-capability writes.
+/** This HTTPS listener exposes static pane files and scoped document capabilities.
  * It never forwards the ordinary matter, document-read or administration API. */
 export function wordHttpsHandler(fetch: Fetch, configuration: WordHttpsConfiguration, directory = assets): Fetch {
   return async request => {
     const url = new URL(request.url)
-    if (writeRoutes.has(url.pathname)) {
+    if (tokenRoutes.has(url.pathname)) {
       if (request.method !== "POST" && request.method !== "OPTIONS") return new Response("Method not allowed", { status: 405 })
       return fetch(request)
     }

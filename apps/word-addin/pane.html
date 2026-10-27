@@ -6,6 +6,7 @@
     <meta name="referrer" content="no-referrer" />
     <title>doc.haus in Word</title>
     <link rel="stylesheet" href="./pane.css" />
+    <link rel="stylesheet" href="./desk.css" />
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <script type="module" src="./pane.js"></script>
   </head>
@@ -32,6 +33,14 @@
           <button id="release" class="secondary" type="button" hidden>Release editing</button>
         </div>
       </section>
+      <section id="desk-entry" class="desk-entry" hidden aria-label="Source Desk">
+        <h2>Keep your sources in view</h2>
+        <p>Pin matter sources beside your Word passage, or compare two saved versions.</p>
+        <button id="open-desk" class="secondary" type="button">Open Source Desk ↗</button>
+        <button id="inline-desk" class="secondary" type="button">Use Source Desk in this pane</button>
+        <p id="desk-message" class="hint" role="status"></p>
+      </section>
+      <div id="pane-desk" hidden></div>
       <p id="background" class="hint">
         After your first Save to doc.haus, saved Word changes sync in the background while this pane is open. Some saves
         may be combined. Choose
