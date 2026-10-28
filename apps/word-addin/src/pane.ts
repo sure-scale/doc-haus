@@ -79,9 +79,9 @@ async function main(): Promise<void> {
       sourceUrl: source => source.provenance === "saved-version" ? `${link.origin}/matter/${encodeURIComponent(link.matter)}?view=documents` : undefined,
       async apply(proposal, request) {
         if (sync.snapshot().busy) throw new Error("Wait for the current Save to finish, then Apply.")
-        return sync.localEdit(async identity => {
+        return sync.localEdit({ conversationId: request.conversationId, turnId: request.turnId }, async identity => {
           localEditIdentity = identity
-          try { return await applyReviewedProposal(proposal, ({ ooxml }) => chat.request<WordChatAuthoredAmendment>("prepare", { ...request, ooxml })) }
+          try { return await applyReviewedProposal(proposal, ({ ooxml }) => chat.request<WordChatAuthoredAmendment>("prepare", { ...request, ooxml }), () => !sync.isDisposed()) }
           finally { localEditIdentity = undefined }
         })
       },
@@ -95,7 +95,7 @@ async function main(): Promise<void> {
       } finally { replacement.complete() }
     } : undefined)
     setupSourceDesk(link, { panel: chatPanel, storage })
-    window.addEventListener("pagehide", () => { replacement.dispose(); conversation.dispose() }, { once: true })
+    window.addEventListener("pagehide", () => { sync.dispose(); replacement.dispose(); conversation.dispose() }, { once: true })
     await sync.start()
     setInterval(() => {
       void sync.tick()

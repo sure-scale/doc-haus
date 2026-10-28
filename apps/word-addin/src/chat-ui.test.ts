@@ -829,3 +829,15 @@ test("formatting the final selected paragraph can be applied without asking for 
     expect(writes).toBe(1); expect(JSON.stringify(formatted)).toBe(original)
   } finally { f.restore() }
 })
+
+
+test("a reconstructed pane shows a confirmed proposal as applied", async () => {
+  let writes = 0
+  const f = fixture({ turns: [turn({ kind: "amendment", proposal, proposalApplied: true })], host: { apply: async () => { writes++ } } })
+  try {
+    await f.chat.ready
+    expect(f.root.textContent).toContain("Previously applied in Word")
+    expect(f.root.querySelectorAll(".chat-proposal-actions button")).toHaveLength(0)
+    expect(writes).toBe(0)
+  } finally { f.restore() }
+})

@@ -25,6 +25,7 @@ export type WordChatTurn = {
   attachments: WordChatMaterial[]
   selection?: WordChatContext["selection"]
   proposal?: WordChatProposal
+  proposalApplied?: boolean
   suggestions?: WordChatSuggestion[]
   suggestionCoverage?: { reviewed: number; total: number }
   error?: string

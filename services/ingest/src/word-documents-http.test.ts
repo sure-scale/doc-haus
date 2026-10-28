@@ -8,7 +8,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { openDb } from "./db"
 import type { DeskSources } from "../../../dochaus/lib/word-source-desk-contract"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
-import { linkedWordDocx } from "../../../dochaus/lib/word-linked-docx"
+import { linkedWordDocx, readWordLink } from "../../../dochaus/lib/word-linked-docx"
 import { WORD_ADDIN_VERSION, WORD_LINK_SETTING, type WordDocumentLink, type WordSaveResponse, type WordConnectionState, type WordLeaseAction } from "../../../dochaus/lib/word-addin-contract"
 
 const paneOrigin = "https://localhost:47612"
@@ -586,4 +586,183 @@ test("plain DOCX responses strip linkage from externally uploaded files while ot
   const downloaded = await route(`/documents/content?${query("Sample.zip")}`)
   expect(downloaded.status).toBe(200)
   expect(new Uint8Array(await downloaded.arrayBuffer())).toEqual(archive)
+})
+
+test("native operation admission fences takeover, recovery, revoke and every save until its exact owner settles", async () => {
+  await create("Native fence.docx")
+  const { link, bytes } = await handout("Native fence.docx")
+  const acquired = await claim(link), generation = acquired.lease.generation!
+  const operation = (input: object, session = "session-test-0001", fence = generation) => request("/word/native-operation", {
+    method: "POST", headers: tokenHeaders(link, { "content-type": "application/json", "x-dochaus-word-session": session,
+      "x-dochaus-word-lease": fence, "x-dochaus-word-base-version": link.baseVersion }), body: JSON.stringify(input),
+  })
+  const begin = { action: "begin", sequence: 0, operationId: "synthetic-operation-1", intent: "refresh", expectedCurrent: link.baseVersion }
+  expect((await operation({...begin, sequence: -1})).status).toBe(400)
+  expect((await operation({...begin, unexpected: true})).status).toBe(400)
+  expect((await operation(begin, "different-session")).status).toBe(423)
+  expect((await request("/word/native-operation", {method:"POST", headers:tokenHeaders(link, {"content-type":"application/json", "x-dochaus-word-session":"session-test-0001", "x-dochaus-word-lease":generation, "x-dochaus-word-base-version":link.baseVersion}), body:"x".repeat(4097)})).status).toBe(400)
+  expect(await (await operation(begin)).json()).toMatchObject({operation: { sequence: 1, operationId: "synthetic-operation-1", state: "pending" }})
+  expect(await (await operation(begin)).json()).toMatchObject({operation: { sequence: 1, state: "pending" }})
+  const inspected = await (await lease(link, "inspect")).json() as WordConnectionState
+  expect(inspected.nativeOperation).toEqual({ sequence: 1, state: "pending" })
+  const issued = await route(`/documents/word/open?${query("Native fence.docx")}`, {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({origin:browserOrigin})})
+  expect(issued.status).toBe(200)
+  const handoff = await issued.json() as { uri:string; id:string }
+  const openPath = new URL(new URL(handoff.uri).searchParams.get("source")!).pathname
+  const readState = () => { const registry = openDb(matter.dir); try { return { lease: registry.query("SELECT * FROM word_edit_leases WHERE document_id=?").get(link.document), sessions: registry.query("SELECT * FROM word_sessions ORDER BY session").all() } } finally { registry.close() } }
+  const beforeOpen = readState(), refusedOpen = await request(openPath)
+  expect(refusedOpen.status).toBe(423)
+  expect((await refusedOpen.json() as {error:string}).error).toContain("Open in Word again")
+  expect(readState()).toEqual(beforeOpen)
+  expect((await (await route(`/documents/word/open/status?id=${handoff.id}`)).json() as {state:string}).state).toBe("failed")
+  expect((await request(openPath)).status).toBe(410)
+  expect((await save(link, bytes)).status).toBe(423)
+  expect((await ping(link, "session-test-0001", true)).status).toBe(423)
+  expect((await lease(link, "release")).status).toBe(423)
+  expect((await lease(link, "takeover", "different-session", link.baseVersion, { expectedCurrent: link.baseVersion, expectedGeneration: generation })).status).toBe(423)
+  const recover = () => route(`/documents/word/recover?${query("Native fence.docx")}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "takeover", expectedCurrent: link.baseVersion, expectedGeneration: generation }) })
+  expect((await recover()).status).toBe(423)
+  expect((await route(`/documents/word?${query("Native fence.docx")}`, { method: "DELETE" })).status).toBe(423)
+  expect((await lease(link, "inspect")).status).toBe(200)
+  expect((await operation({action: "settle", sequence: 1, operationId: "other", outcome: "confirmed"})).status).toBe(423)
+  const db = openDb(matter.dir)
+  try { db.run("UPDATE word_edit_leases SET expires_at=1 WHERE document_id=?", [link.document]) } finally { db.close() }
+  expect((await lease(link, "claim", "different-session")).status).toBe(423)
+  expect((await ping(link, "session-test-0001")).status).toBe(200)
+  const settle = {action: "settle", sequence: 1, operationId: "synthetic-operation-1", outcome: "confirmed"}
+  expect((await operation(settle)).status).toBe(200)
+  expect((await operation(settle)).status).toBe(200)
+  expect((await operation({...settle, outcome: "not-dispatched"})).status).toBe(423)
+  expect((await save(link, bytes)).status).toBe(200)
+})
+
+test("a revoked grant cannot erase a pending native operation or let a replacement edit", async () => {
+  await create("Revoked native fence.docx")
+  const { link } = await handout("Revoked native fence.docx")
+  const acquired = await claim(link)
+  const headers = tokenHeaders(link, {"content-type":"application/json", "x-dochaus-word-session":"session-test-0001", "x-dochaus-word-lease": acquired.lease.generation!, "x-dochaus-word-base-version":link.baseVersion})
+  expect((await request("/word/native-operation", { method:"POST", headers, body:JSON.stringify({ action:"begin", sequence:0, operationId:"synthetic-revoked", intent:"refresh", expectedCurrent:link.baseVersion }) })).status).toBe(200)
+  const db = openDb(matter.dir)
+  try { db.run("UPDATE word_grants SET revoked_at=? WHERE document_id=?", [Date.now(), link.document]); db.run("UPDATE word_edit_leases SET expires_at=1 WHERE document_id=?", [link.document]) } finally { db.close() }
+  expect((await request("/word/native-operation", { method:"POST", headers, body:JSON.stringify({ action:"settle", sequence:1, operationId:"synthetic-revoked", outcome:"confirmed" }) })).status).toBe(401)
+  const fresh = await handout("Revoked native fence.docx")
+  expect((await lease(fresh.link, "claim", "different-session")).status).toBe(423)
+  const recover = await route(`/documents/word/recover?${query("Revoked native fence.docx")}`, { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({action:"takeover", expectedCurrent:link.baseVersion, expectedGeneration:acquired.lease.generation}) })
+  expect(recover.status).toBe(423)
+  expect((await lease(fresh.link, "inspect", "different-session")).status).toBe(200)
+})
+
+test("refresh admission binds stale source, exact latest version and original live owner", async () => {
+  await create("Native refresh fence.docx")
+  const { link } = await handout("Native refresh fence.docx"), acquired = await claim(link)
+  const saved = await save(link, await plain("New current version."))
+  expect(saved.status).toBe(200)
+  const latest = (await saved.json() as WordSaveResponse).version.id
+  const headers = tokenHeaders(link, {"content-type":"application/json", "x-dochaus-word-session":"session-test-0001", "x-dochaus-word-lease":acquired.lease.generation!, "x-dochaus-word-base-version":link.baseVersion})
+  const begin = (input: object, hdr: Record<string, string> = headers) => request("/word/native-operation", {method:"POST", headers:hdr, body:JSON.stringify(input)})
+  const refresh = { action:"begin", sequence:0, operationId:"refresh-operation", intent:"refresh", expectedCurrent:latest }
+  expect((await begin({...refresh, expectedCurrent:"changed-version"})).status).toBe(409)
+  expect((await begin({...refresh, intent:"amendment", expectedCurrent:undefined})).status).toBe(400)
+  expect((await begin(refresh, {...headers,"x-dochaus-word-session":"different-session"})).status).toBe(423)
+  const filename = path.join(matter.dir, "Native refresh fence.docx"), before = await readFile(filename)
+  await writeFile(filename, await plain("Unrecorded replacement."))
+  expect((await begin(refresh)).status).toBe(409)
+  await writeFile(filename, before)
+  const db = openDb(matter.dir)
+  try { db.run("UPDATE document_versions SET removed='redaction' WHERE id=?", [link.baseVersion]) } finally { db.close() }
+  expect((await begin(refresh)).status).toBe(401)
+  const restore = openDb(matter.dir)
+  try { restore.run("UPDATE document_versions SET removed=NULL WHERE id=?", [link.baseVersion]) } finally { restore.close() }
+  const beforeAdmission = openDb(matter.dir)
+  try { expect(beforeAdmission.query("SELECT native_sequence,native_state FROM word_edit_leases WHERE document_id=?").get(link.document)).toEqual({native_sequence:0,native_state:null}) } finally { beforeAdmission.close() }
+  const admitted = await begin(refresh)
+  expect(admitted.status).toBe(200)
+  expect(await admitted.json()).toMatchObject({operation:{sequence:1,operationId:"refresh-operation",state:"pending"},connection:{version:{base:{id:link.baseVersion},current:{id:latest},state:"stale"},lease:{state:"owned",generation:acquired.lease.generation}}})
+  expect((await begin(refresh)).status).toBe(200)
+  expect((await begin({action:"settle",sequence:1,operationId:"refresh-operation",outcome:"not-dispatched"})).status).toBe(200)
+})
+
+test("pending Word recovery copies only the confirmed saved version and leaves the original fenced", async () => {
+  await create("Isolated recovery.docx")
+  const { link } = await handout("Isolated recovery.docx"), owner = await claim(link)
+  const headers = tokenHeaders(link, {"content-type":"application/json", "x-dochaus-word-session":"session-test-0001", "x-dochaus-word-lease":owner.lease.generation!, "x-dochaus-word-base-version":link.baseVersion})
+  expect((await request("/word/native-operation", { method:"POST", headers, body:JSON.stringify({action:"begin",sequence:0,operationId:"recovery-op",intent:"refresh",expectedCurrent:link.baseVersion}) })).status).toBe(200)
+  const sourcePath = path.join(matter.dir, "Isolated recovery.docx"), saved = await readFile(sourcePath)
+  const db = openDb(matter.dir)
+  try { db.run("UPDATE word_grants SET revoked_at=? WHERE document_id=?", [Date.now(), link.document]) } finally { db.close() }
+  // Simulate an unrelated, unrecorded external working-file change; the copy
+  // must use the retained version, not this mutable file.
+  const external = await plain("Unrecorded external local source change.")
+  await writeFile(sourcePath, external)
+  const list = await (await route("/documents/word")).json() as { documents: { name:string; documentId?:string; nativeOperation?:{sequence:number;state:string} }[] }
+  expect(list.documents.find(row => row.name === "Isolated recovery.docx")).toMatchObject({documentId:link.document,nativeOperation:{sequence:1,state:"pending"}})
+  expect(JSON.stringify(list)).not.toContain(link.token)
+  expect(JSON.stringify(list)).not.toContain(owner.lease.generation!)
+  expect(JSON.stringify(list)).not.toContain("recovery-op")
+  const snapshot = () => { const registry=openDb(matter.dir); try { return {
+    document: registry.query("SELECT * FROM versioned_documents WHERE id=?").get(link.document),
+    versions: registry.query("SELECT * FROM document_versions WHERE document_id=? ORDER BY number").all(link.document),
+    lease: registry.query("SELECT * FROM word_edit_leases WHERE document_id=?").get(link.document),
+    grants: registry.query("SELECT * FROM word_grants WHERE document_id=? ORDER BY token_hash").all(link.document),
+    sessions: registry.query("SELECT s.* FROM word_sessions s JOIN word_grants g ON g.token_hash=s.token_hash WHERE g.document_id=? ORDER BY s.session").all(link.document),
+    roles: registry.query("SELECT name,role,doc_path FROM documents WHERE name=?").all("Isolated recovery.docx"),
+    redlines: registry.query("SELECT * FROM redlines WHERE doc_name=?").all("Isolated recovery.docx"),
+  } } finally { registry.close() } }
+  const before = snapshot()
+  const payload = {source:"Isolated recovery.docx",name:"Recovery copy.docx",document:link.document,version:link.baseVersion,sequence:1}
+  const copy = (body:object) => route("/documents/word/recovery-copy", {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)})
+  expect((await copy({...payload,sequence:2})).status).toBe(409)
+  expect((await copy({...payload,version:"other"})).status).toBe(409)
+  expect((await copy({...payload,name:"../unsafe.docx"})).status).toBe(409)
+  expect((await copy({...payload,name:"Isolated recovery.docx"})).status).toBe(409)
+  expect(snapshot()).toEqual(before)
+  const originalVersion = before.versions[0] as {document_id:string;sha256:string;ext:string}
+  const keptFile = path.join(matter.dir, ".dochaus", "revisions", originalVersion.document_id, `${originalVersion.sha256}${originalVersion.ext}`)
+  await writeFile(keptFile, "corrupt snapshot")
+  expect((await copy(payload)).status).toBe(409)
+  expect(snapshot()).toEqual(before)
+  await writeFile(keptFile, saved)
+  const registry = openDb(matter.dir)
+  try { registry.run("CREATE TRIGGER refuse_recovery_copy BEFORE INSERT ON documents WHEN NEW.name='Blocked recovery.docx' BEGIN SELECT RAISE(ABORT, 'synthetic'); END") } finally { registry.close() }
+  expect((await copy({...payload,name:"Blocked recovery.docx"})).status).toBe(503)
+  expect(await Bun.file(path.join(matter.dir,"Blocked recovery.docx")).exists()).toBe(false)
+  expect(snapshot()).toEqual(before)
+  const cleanup = openDb(matter.dir)
+  try { cleanup.run("DROP TRIGGER refuse_recovery_copy") } finally { cleanup.close() }
+  const responses = await Promise.all([copy(payload), copy(payload)])
+  expect(responses.map(response => response.status).sort()).toEqual([200,409])
+  const result = responses.find(response => response.status === 200)!
+  expect(await result.json()).toMatchObject({name:"Recovery copy.docx",sourceVersion:link.baseVersion})
+  expect(await readFile(path.join(matter.dir,"Recovery copy.docx"))).toEqual(saved)
+  expect(Buffer.compare(await readFile(sourcePath), external)).toBe(0)
+  expect(snapshot()).toEqual(before)
+  expect((await copy(payload)).status).toBe(409)
+  const recovered = await handout("Recovery copy.docx")
+  expect(recovered.link.document).not.toBe(link.document)
+  expect(recovered.link.token).not.toBe(link.token)
+  await claim(recovered.link, "copy-session-0001")
+  expect((await save(recovered.link, recovered.bytes)).status).toBe(200)
+  expect(snapshot()).toEqual(before)
+})
+
+
+test("saved recovery strips an inherited Word grant while retaining document content", async () => {
+  await create("Link seed.docx")
+  const seed = await handout("Link seed.docx")
+  const linked = linkedWordDocx(await plain("Saved with an earlier Word link."), seed.link)
+  expect((await route("/deliverables", {method:"POST", body:file(linked,"Embedded recovery.docx")})).status).toBe(200)
+  const original = await readFile(path.join(matter.dir,"Embedded recovery.docx"))
+  expect(readWordLink(original)).toBeTruthy()
+  const {link} = await handout("Embedded recovery.docx"), owner = await claim(link)
+  const headers = tokenHeaders(link,{"content-type":"application/json","x-dochaus-word-session":"session-test-0001","x-dochaus-word-lease":owner.lease.generation!,"x-dochaus-word-base-version":link.baseVersion})
+  expect((await request("/word/native-operation", {method:"POST",headers,body:JSON.stringify({action:"begin",intent:"refresh",sequence:0,operationId:"embedded-recovery",expectedCurrent:link.baseVersion})})).status).toBe(200)
+  const copied = await route("/documents/word/recovery-copy", {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({source:"Embedded recovery.docx",name:"Unlinked recovery.docx",document:link.document,version:link.baseVersion,sequence:1})})
+  expect(copied.status).toBe(200)
+  const result = await readFile(path.join(matter.dir,"Unlinked recovery.docx"))
+  expect(readWordLink(result)).toBeNull()
+  expect(unzipSync(result)["word/document.xml"]).toEqual(unzipSync(original)["word/document.xml"])
+  expect(await readFile(path.join(matter.dir,"Embedded recovery.docx"))).toEqual(original)
+  const handoutCopy = await handout("Unlinked recovery.docx")
+  expect(handoutCopy.link.document).not.toBe(link.document)
+  expect(handoutCopy.link.token).not.toBe(seed.link.token)
 })

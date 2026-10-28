@@ -4,24 +4,24 @@ import { existsSync, readFileSync } from "node:fs"
 import { linkedWordDocx, MAX_WORD_UPLOAD_BYTES, stripWordLink, wordLastModifiedBy, WordPackageError } from "../../../dochaus/lib/word-linked-docx"
 import { WORD_ADDIN_VERSION, type WordOpenDocument, type WordSaveResponse, type WordConnectionState } from "../../../dochaus/lib/word-addin-contract"
 import { wordChatPath } from "../../../dochaus/lib/word-chat-contract"
-import { claimWordEditLease, clearWordEditLease, EditingLeaseError, readWordEditLease, releaseWordEditLease, renewWordEditLease, requireWordEditLease, wordLeaseState, WORD_EDIT_LEASE_TTL, type WordLeaseIdentity, type WordLeaseOwner } from "../../../dochaus/lib/word-edit-lease"
+import { beginWordNativeOperation, readWordNativeOperation, settleWordNativeOperation, claimWordEditLease, clearWordEditLease, EditingLeaseError, readWordEditLease, releaseWordEditLease, renewWordEditLease, requireWordEditLease, wordLeaseState, WORD_EDIT_LEASE_TTL, type WordLeaseIdentity, type WordLeaseOwner } from "../../../dochaus/lib/word-edit-lease"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { getDocumentRole, openDb } from "./db"
 import { readDocumentTarget } from "./registered-document"
 import { readCurrentVersion, readVersion, sha256Hex, type CapturedVersion, type VersionWrite } from "./document-versions"
 import { activeWordSessions, type WordGrant } from "./word-grants"
 import { attachmentDocumentDisposition } from "./content-disposition"
-import { DeliverableConflictError } from "./deliverable"
+import { copyPendingWordSavedVersion, DeliverableConflictError } from "./deliverable"
 import { SourceDocumentConflictError } from "./ingest"
 import { wordHttpsConfiguration } from "./word-configuration"
 import { wordHttpsAvailable, wordHttpsFailure } from "./word-https"
 import { installWordSourceDesk, readDeskSource } from "./word-source-desk"
-import { installWordChat } from "./word-chat"
+import { installWordChat, WordChatError } from "./word-chat"
 import { WordOpenTickets, wordOpenPath, wordOpenResultPath } from "./word-open-tickets"
 import { readWordHandout, writeWordHandout, type WordHandoutIdentity } from "./word-handouts"
 
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-export const wordTokenPath = (pathname: string) => /^\/word\/(saves|heartbeat|done|lease|latest|desk\/(sources|source|versions|compare|open|upload))$/.test(pathname) || wordChatPath(pathname)
+export const wordTokenPath = (pathname: string) => /^\/word\/(saves|heartbeat|done|lease|latest|native-operation|desk\/(sources|source|versions|compare|open|upload))$/.test(pathname) || wordChatPath(pathname)
 
 export function wordConfiguration() {
   const failure = wordHttpsFailure()
@@ -40,6 +40,7 @@ export function wordConfiguration() {
 
 type Matter = { id: string; title: string; dir: string }
 type Dependencies = {
+  wordChatOptions?: Parameters<typeof installWordChat>[2]
   matter: (id: string) => Matter
   matters: () => Matter[]
   locks: (directory: string, file: string) => string[]
@@ -300,6 +301,8 @@ export function wordDocumentRoutes(deps: Dependencies) {
           tickets.result(c.req.param("nonce"), "failed")
           return failure(c, 410, "word_open_expired", "This document or its Word link changed. Choose Open in Word again.")
         }
+        if (readWordNativeOperation(db, ticket.identity.document).state === "pending")
+          throw new EditingLeaseError("A change in Word has not been confirmed. Keep the Word file and inspect it. Choose Open in Word again once it is resolved.")
         const previous = ticket.previousOwner
         if (previous) {
           const lease = readWordEditLease(db, previous.document)
@@ -319,16 +322,28 @@ export function wordDocumentRoutes(deps: Dependencies) {
     const db = openDb(matter.dir)
     try {
       const rows = db.query(`SELECT d.id, d.name, d.current_version, v.number, MAX(g.overlap) AS overlap FROM versioned_documents d
-        JOIN word_grants g ON g.document_id = d.id LEFT JOIN document_versions v ON v.id = d.current_version
-        WHERE d.removed_at IS NULL AND g.revoked_at IS NULL GROUP BY d.id`).all() as
+        LEFT JOIN word_grants g ON g.document_id = d.id AND g.revoked_at IS NULL LEFT JOIN word_edit_leases l ON l.document_id = d.id
+        LEFT JOIN document_versions v ON v.id = d.current_version
+        WHERE d.removed_at IS NULL AND (g.token_hash IS NOT NULL OR l.native_state = 'pending') GROUP BY d.id`).all() as
         { id: string; name: string; current_version: string | null; number: number | null; overlap: number }[]
       const documents: WordOpenDocument[] = rows.map(row => {
         const sessions = activeWordSessions(db, row.id)
+        const operation = readWordNativeOperation(db, row.id)
         return { name: row.name, open: sessions > 0, currentVersion: row.current_version, ...(row.number ? { currentNumber: row.number } : {}),
-          lease: wordLeaseState(db, row.id), overlap: Boolean(row.overlap) || sessions > 1 }
+          ...(operation.state === "pending" ? { documentId: row.id, nativeOperation: { sequence: operation.sequence, state: "pending" as const } } : {}),
+          lease: operation.state === "pending" ? { state: "other" as const, expiresAt: null } : wordLeaseState(db, row.id), overlap: Boolean(row.overlap) || sessions > 1 }
       })
       return c.json({ documents })
     } finally { db.close() }
+  })
+
+  app.post("/matters/:id/documents/word/recovery-copy", async c => {
+    const matter = deps.matter(c.req.param("id")), input = await c.req.json().catch(() => null) as { source?: unknown; name?: unknown; document?: unknown; version?: unknown; sequence?: unknown } | null
+    if (!input || Object.keys(input).some(key => !["source", "name", "document", "version", "sequence"].includes(key)) ||
+      typeof input.source !== "string" || typeof input.name !== "string" || typeof input.document !== "string" || typeof input.version !== "string" || !Number.isSafeInteger(input.sequence))
+      return failure(c, 400, "word_recovery_copy_invalid", "Choose a saved version and a separate Word filename.")
+    const result = await copyPendingWordSavedVersion(matter.dir, input.source, input.name, { document: input.document, version: input.version, sequence: input.sequence as number })
+    return c.json({ name: result.name, source: result.source, sourceVersion: result.sourceVersion })
   })
 
   app.delete("/matters/:id/documents/word", async c => {
@@ -371,7 +386,7 @@ export function wordDocumentRoutes(deps: Dependencies) {
   }
   type Authenticated = NonNullable<ReturnType<typeof authenticate>>
   installWordSourceDesk(app, authenticate)
-  installWordChat(app, authenticate)
+  const chat = installWordChat(app, authenticate, deps.wordChatOptions)
   function identity(auth: Authenticated, session: string): WordLeaseIdentity {
     return { document: auth.grant.document_id, tokenHash: auth.grant.token_hash, session }
   }
@@ -394,6 +409,7 @@ export function wordDocumentRoutes(deps: Dependencies) {
         current: currentMatches ? { id: current.current.id, number: current.current.number } : null,
         state: removed ? "removed" : unrecorded ? "unrecorded-change" : base === current.current.id ? "current" : "stale",
       }, lease: wordLeaseState(db, auth.grant.document_id, session ? identity(auth, session) : undefined),
+      nativeOperation: (() => { const { sequence, state } = readWordNativeOperation(db, auth.grant.document_id); return { sequence, state } })(),
     } } finally { db.close() }
   }
   function requireCurrent(c: Context, state: WordConnectionState) {
@@ -404,6 +420,75 @@ export function wordDocumentRoutes(deps: Dependencies) {
     if (state.version.state !== "current")
       return c.json({ error: "This Word copy is behind the current doc.haus version. Keep your local file and compare or reopen the current copy before saving.", code: "word_base_stale", ...state }, 409)
   }
+  app.post("/word/native-operation", async c => {
+    const auth = authenticate(c), session = sessionId(c), base = c.req.header("x-dochaus-word-base-version") ?? ""
+    if (!auth) return failure(c, 401, "word_link_revoked", "This Word connection is no longer valid.")
+    if (!session || !base) return failure(c, 400, "word_operation_invalid", "Check editing status before continuing.")
+    const reader = c.req.raw.body?.getReader()
+    if (!reader) return failure(c, 400, "word_operation_invalid", "Provide an operation request.")
+    const chunks: Uint8Array[] = []; let size = 0
+    try {
+      for (;;) {
+        const { done, value } = await reader.read(); if (done) break
+        size += value.length
+        if (size > 4096) { await reader.cancel(); return failure(c, 400, "word_operation_invalid", "The operation request is too large.") }
+        chunks.push(value)
+      }
+    } finally { reader.releaseLock() }
+    let input: { action?: unknown; sequence?: unknown; operationId?: unknown; outcome?: unknown; intent?: unknown; expectedCurrent?: unknown; proposal?: unknown } | null = null
+    try { input = JSON.parse(Buffer.concat(chunks).toString("utf8")) } catch { /* Refuse malformed input. */ }
+    if (!input || typeof input !== "object" || Array.isArray(input) ||
+      Object.keys(input).some(key => !["action", "sequence", "operationId", "outcome", "intent", "expectedCurrent", "proposal"].includes(key)) ||
+      !["read", "begin", "settle"].includes(String(input.action)) ||
+      input.action !== "read" && (!Number.isSafeInteger(input.sequence) || Number(input.sequence) < 0 || typeof input.operationId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(input.operationId)) ||
+      input.action === "settle" && !["confirmed", "not-dispatched"].includes(String(input.outcome)) ||
+      input.action !== "settle" && input.outcome !== undefined || input.action === "read" && (input.sequence !== undefined || input.operationId !== undefined) ||
+      input.action !== "begin" && (input.intent !== undefined || input.expectedCurrent !== undefined || input.proposal !== undefined) ||
+      input.action === "begin" && (input.intent !== "amendment" && input.intent !== "refresh" ||
+        (input.intent === "refresh" ? typeof input.expectedCurrent !== "string" || !input.expectedCurrent || input.proposal !== undefined : input.expectedCurrent !== undefined ||
+          !input.proposal || typeof input.proposal !== "object" || Array.isArray(input.proposal) ||
+          Object.keys(input.proposal).sort().join(",") !== "conversationId,turnId" ||
+          !["conversationId", "turnId"].every(key => typeof (input.proposal as Record<string, unknown>)[key] === "string" && /^[A-Za-z0-9_-]{1,160}$/.test((input.proposal as Record<string, string>)[key]!)))))
+      return failure(c, 400, "word_operation_invalid", "Provide a valid operation request.")
+    const admit = (revalidate?: () => Promise<void>) => withArtifactMutationLocksAsync(auth.matter.dir, deps.locks(auth.matter.dir, auth.target.docPath), async () => {
+      const live = authenticate(c)
+      if (!live || live.grant.document_id !== auth.grant.document_id || live.grant.token_hash !== auth.grant.token_hash)
+        return failure(c, 401, "word_link_revoked", "This Word connection is no longer valid.")
+      if (revalidate) await revalidate()
+      const state = connection(live, base, session), db = openDb(live.matter.dir)
+      try {
+        if (!state.version.base) return c.json({ error: "This copy's base version is unavailable.", code: "word_base_invalid", ...state }, 409)
+        const leaseOwner = owner(live, session, c)
+        const operation = db.transaction(() => {
+          if (input!.action === "read") {
+            const row = readWordEditLease(db, live.grant.document_id)
+            if (!row || row.token_hash !== leaseOwner.tokenHash || row.session !== session || row.generation !== leaseOwner.generation)
+              throw new EditingLeaseError("This pane no longer owns the Word operation.")
+            return readWordNativeOperation(db, live.grant.document_id)
+          }
+          if (input!.action === "begin") {
+            if (input!.intent === "refresh") {
+              if (!["current", "stale"].includes(state.version.state) || state.version.current?.id !== input!.expectedCurrent) return undefined
+            } else if (requireCurrent(c, state)) return undefined
+            return beginWordNativeOperation(db, leaseOwner, input!.sequence as number, input!.operationId as string, undefined,
+              input!.intent === "amendment" ? input!.proposal as { conversationId: string; turnId: string } : undefined)
+          }
+          return settleWordNativeOperation(db, leaseOwner, input!.sequence as number, input!.operationId as string, input!.outcome as "confirmed" | "not-dispatched")
+        }).immediate()
+        if (!operation) return requireCurrent(c, state) ?? c.json({ error: "The latest version changed. Review it again before loading it in Word.", code: "word_recovery_changed", ...state }, 409)
+        return c.json({ operation, connection: connection(live, base, session) })
+      } finally { db.close() }
+    })
+    try {
+      return input.action === "begin" && input.intent === "amendment"
+        ? await chat.withValidatedProposal(auth, input.proposal as { conversationId: string; turnId: string }, revalidate => admit(revalidate))
+        : await admit()
+    } catch (error) {
+      if (error instanceof WordChatError) return c.json({ error: error.message, code: "word_proposal_invalid" }, error.status)
+      throw error
+    }
+  })
+
   app.post("/word/lease", async c => {
     const auth = authenticate(c)
     if (!auth) return failure(c, 401, "word_link_revoked", "This Word connection is no longer valid. Reopen the document from doc.haus.")
@@ -421,21 +506,23 @@ export function wordDocumentRoutes(deps: Dependencies) {
       if (!state.version.base) return c.json({ error: "This save's base version does not belong to this document.", code: "word_base_invalid", ...state }, 409)
       const db = openDb(live.matter.dir)
       try {
-        if (input.action === "release") {
-          releaseWordEditLease(db, owner(live, session, c))
-          touch(live.matter, live.grant, session, true)
-        } else {
-          const refused = requireCurrent(c, state)
-          if (refused) return refused
-          if (input.action === "takeover") {
-            if (input.expectedCurrent !== state.version.current?.id || typeof input.expectedGeneration !== "string" || input.expectedGeneration !== readWordEditLease(db, live.grant.document_id)?.generation)
-              return c.json({ error: "Editing status changed after it was displayed. Check it again before taking over.", code: "word_recovery_changed", ...state }, 409)
-            clearWordEditLease(db, live.grant.document_id)
-            retireSessions(db, live.grant.document_id)
+        const refused = input.action === "release" ? undefined : requireCurrent(c, state)
+        if (refused) return refused
+        const changed = db.transaction(() => {
+          if (input.action === "release") {
+            releaseWordEditLease(db, owner(live, session, c))
+          } else {
+            if (input.action === "takeover") {
+              if (input.expectedCurrent !== state.version.current?.id || typeof input.expectedGeneration !== "string" || input.expectedGeneration !== readWordEditLease(db, live.grant.document_id)?.generation) return false
+              clearWordEditLease(db, live.grant.document_id)
+              retireSessions(db, live.grant.document_id)
+            }
+            claimWordEditLease(db, identity(live, session))
           }
-          claimWordEditLease(db, identity(live, session))
-          touch(live.matter, live.grant, session)
-        }
+          return true
+        }).immediate()
+        if (!changed) return c.json({ error: "Editing status changed after it was displayed. Check it again before taking over.", code: "word_recovery_changed", ...state }, 409)
+        touch(live.matter, live.grant, session, input.action === "release")
       } catch (error) {
         if (error instanceof EditingLeaseError) return c.json({ error: error.message, code: error.code, expiresAt: error.expiresAt, ...connection(live, base, session) }, 423)
         throw error
@@ -531,6 +618,7 @@ export function wordDocumentRoutes(deps: Dependencies) {
       const db = openDb(live.matter.dir)
       const priorSave = (() => { try {
         requireWordEditLease(db, leaseOwner)
+        if (readWordNativeOperation(db, leaseOwner.document).state === "pending") throw new EditingLeaseError("A change in Word has not been confirmed. Keep the Word file and inspect the change before continuing.")
         return db.query("SELECT id, number, parent FROM document_versions WHERE document_id = ? AND sha256 = ? AND origin = 'word' AND removed IS NULL AND (parent = ? OR id = ?) ORDER BY number DESC LIMIT 1")
           .get(live.grant.document_id, hash, base, base) as { id: string; number: number; parent: string | null } | null
       } finally { db.close() } })()

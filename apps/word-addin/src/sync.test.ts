@@ -839,17 +839,23 @@ test("a real background upload still shows Saving and remains busy until confirm
 test("rehydrated reviewed edits require explicit Save across lease ownership states", async () => {
   for (const outcome of ["success", "uncertain"] as const) for (const next of ["owned", "available", "other"] as const) {
     let owner: "owned" | "available" | "other" = "owned", bytes = 1, version = "base", uploads = 0, nativeSaves = 0
-    const current = (): WordConnectionState => ({ version: { base: {id: version, number: 1}, current: {id: version, number: 1}, state: "current" }, lease: owner === "available" ? { state: "available", expiresAt: null } : { state: owner, generation: "g1", expiresAt: 90000 } })
+    let operation: { sequence: number; operationId: string | null; state: "idle" | "pending" | "confirmed" | "not-dispatched" } = { sequence: 0, operationId: null, state: "idle" }
+    const current = (): WordConnectionState => ({ nativeOperation: { sequence: operation.sequence, state: operation.state }, version: { base: {id: version, number: 1}, current: {id: version, number: 1}, state: "current" }, lease: owner === "available" && operation.state !== "pending" ? { state: "available", expiresAt: null } : { state: owner === "owned" ? "owned" : "other", generation: "g1", expiresAt: 90000 } })
     const host = { saved: async () => true, save: async () => { nativeSaves++ }, export: async () => new Uint8Array([bytes]) }
     const transport = {
-      lease: async (action: string) => { if (action === "claim" || action === "takeover") owner = "owned"; return current() },
+      lease: async (action: string) => { if ((action === "claim" || action === "takeover") && operation.state !== "pending") owner = "owned"; return current() },
+      nativeOperation: async (_base: string, _generation: string, input: { action: "read" } | { action: "begin"; sequence: number; operationId: string } | { action: "settle"; sequence: number; operationId: string; outcome: "confirmed" | "not-dispatched" }) => {
+        if (input.action === "begin") operation = { sequence: input.sequence + 1, operationId: input.operationId, state: "pending" }
+        if (input.action === "settle") operation = { sequence: input.sequence, operationId: input.operationId, state: input.outcome }
+        return { operation, connection: current() }
+      },
       heartbeat: async () => current(), done: async () => current(),
       save: async () => { uploads++; version = `v${uploads}`; return { ...acknowledgement(version), connection: current() } },
     }
     const make = () => new CheckedWordSync("base", host, transport, checkpoints(), () => {}, fingerprint, immediate)
     const first = make()
     await first.start()
-    const edit = first.localEdit(async () => { bytes = 2; if (outcome === "uncertain") throw new Error("lost response") })
+    const edit = first.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => { bytes = 2; if (outcome === "uncertain") throw new Error("lost response") })
     if (outcome === "uncertain") await expect(edit).rejects.toThrow("lost response")
     else await edit
     await first.tick()
@@ -857,11 +863,17 @@ test("rehydrated reviewed edits require explicit Save across lease ownership sta
     owner = next
     const reopened = make()
     await reopened.checkStatus()
-    if (next === "available") expect(await reopened.startEditing()).toBe(true)
-    if (next === "other") expect(await reopened.takeover()).toBe(true)
+    if (outcome === "success" && next === "available") expect(await reopened.startEditing()).toBe(true)
+    if (outcome === "success" && next === "other") expect(await reopened.takeover()).toBe(true)
     await reopened.tick()
     expect(uploads).toBe(0)
     expect(nativeSaves).toBe(0)
+    if (outcome === "uncertain") {
+      expect(reopened.snapshot()).toMatchObject({status: "not-saved", canSave: false})
+      expect(await reopened.save()).toBe(false)
+      expect(uploads).toBe(0); expect(nativeSaves).toBe(0)
+      continue
+    }
     expect(reopened.snapshot()).toMatchObject({status: "not-saved", canSave: true})
     expect(await reopened.save()).toBe(true)
     expect(uploads).toBe(1)

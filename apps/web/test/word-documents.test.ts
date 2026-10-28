@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { fetchWordConfig, fetchWordDocuments, fetchWordOpenState, linkedWordDocument, prepareWordOpen, recoverWordEditing, revokeWordDocument, type WordOpenDocument } from "../src/api/ingest/word"
+import { copySavedWordRecovery, fetchWordConfig, fetchWordDocuments, fetchWordOpenState, linkedWordDocument, prepareWordOpen, recoverWordEditing, revokeWordDocument, type WordOpenDocument } from "../src/api/ingest/word"
 import { wordSetupReason, wordVersionsChanged, wordWarning } from "../src/components/WordDocuments"
 import { versionOrigin } from "../src/components/DocumentVersions"
 
@@ -110,4 +110,16 @@ describe("Word status semantics", () => {
   test("the explicit Word writer has a distinct saved-from-Word version label", () => {
     expect(versionOrigin({ id: "v-2", parent: "v-1", origin: "word" })).toBe("Saved from Word")
   })
+})
+
+
+test("pending Word recovery requests a separate saved version without forwarding operation credentials", async () => {
+  let sent: {url:string; init?:RequestInit} | undefined
+  globalThis.fetch = (async (url,init) => { sent = {url:String(url),init}; return Response.json({name:"Agreement (saved copy).docx"}) }) as typeof fetch
+  const pending = entry({documentId:"document-one", currentVersion:"version-one", nativeOperation:{sequence:7,state:"pending"}})
+  expect(await copySavedWordRecovery("matter",pending,"Agreement (saved copy).docx")).toEqual({name:"Agreement (saved copy).docx"})
+  expect(sent!.url).toContain("/matters/matter/documents/word/recovery-copy")
+  expect(JSON.parse(sent!.init!.body as string)).toEqual({source:"Agreement.docx",name:"Agreement (saved copy).docx",document:"document-one",version:"version-one",sequence:7})
+  expect(wordWarning([pending],"Agreement.docx")).toContain("Unsent Word edits will not be in the copy")
+  await expect(copySavedWordRecovery("matter",entry(),"copy.docx")).rejects.toThrow("Refresh Word status")
 })

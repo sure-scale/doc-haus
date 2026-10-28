@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite"
 import { createHash } from "node:crypto"
 import path from "node:path"
-import { existsSync, lstatSync, readFileSync } from "node:fs"
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import {
   getDocumentRole,
@@ -15,9 +15,10 @@ import { MatterDocumentIdentityError, resolveMatterDocumentTarget } from "./docu
 import { sha256File } from "../../../dochaus/lib/lineage"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { forgetSystemDocx, recordSystemDocx, replaceableDeliverable } from "../../../dochaus/lib/system-docx"
+import { stripWordLink } from "../../../dochaus/lib/word-linked-docx"
 import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
-import { captureVersion, stageVersionBytes, type VersionWrite } from "./document-versions"
-import { assertWordEditAllowed, type WordLeaseOwner } from "../../../dochaus/lib/word-edit-lease"
+import { captureVersion, readCurrentVersion, readVersionBytes, stageVersionBytes, type VersionWrite } from "./document-versions"
+import { assertWordEditAllowed, readWordNativeOperation, type WordLeaseOwner } from "../../../dochaus/lib/word-edit-lease"
 import {
   beginDocumentMutation,
   completeDocumentMutation,
@@ -126,6 +127,41 @@ export async function copyWordDocument(matterDir: string, sourceName: string, fi
     } finally {
       db.close()
     }
+  })
+}
+
+/** Creates a separate recovery document from the exact retained saved version.
+ * The pending original is never rewritten, released, rebased or inspected via
+ * currentOrFoundVersion. Missing journals must be recovered separately. */
+export async function copyPendingWordSavedVersion(matterDir: string, sourceName: string, fileName: string,
+  expected: { document: string; version: string; sequence: number }) {
+  const source = copyWordDocumentName(sourceName), name = copyWordDocumentName(fileName)
+  if (!source || !name || !expected.document || !expected.version || !Number.isSafeInteger(expected.sequence) || expected.sequence < 1)
+    throw new DeliverableConflictError("Choose a valid saved Word version and a separate filename.")
+  return withArtifactMutationLocksAsync(matterDir, [source, name, ".dochaus/source-corpus"], async () => {
+    // Generic journal recovery can touch the original; refuse rather than run it
+    // while offering an isolated recovery copy.
+    for (const kind of ["document-mutations", "source-mutations"]) {
+      const directory = path.join(matterDir, ".dochaus", kind)
+      if (existsSync(directory) && readdirSync(directory).length) throw new DeliverableConflictError("A document recovery is already pending. Resolve it before creating this copy.")
+    }
+    const original = deliverableTarget(matterDir, source), target = deliverableTarget(matterDir, name)
+    const db = openDb(matterDir, { commit: true })
+    try {
+      const current = readCurrentVersion(matterDir, source), operation = current && readWordNativeOperation(db, current.document.id)
+      if (!getDocumentRole(db, original.docPath) || !current || current.document.id !== expected.document ||
+        current.current.id !== expected.version || current.current.removed || current.document.removed_at != null ||
+        operation?.state !== "pending" || operation.sequence !== expected.sequence)
+        throw new DeliverableConflictError("The saved version or Word editing status changed. Refresh and try again.")
+      if (existsSync(target.docPath) || getDocumentRole(db, target.docPath))
+        throw new DeliverableConflictError(`Cannot create ${target.name}: that document already exists. Choose a different name.`)
+      const saved = readVersionBytes(matterDir, current.current)
+      if (!saved) throw new DeliverableConflictError("The saved version is unavailable or damaged. The original Word file is unchanged.")
+      // Strip only doc.haus capability linkage; the new handout receives its own.
+      const bytes = Buffer.from(stripWordLink(saved))
+      const version: VersionWrite = { origin: "copy", label: `Saved copy of ${original.name}, version ${current.current.number}` }
+      return { ...await persistDeliverable(db, matterDir, target, bytes, version), source: original.name, sourceVersion: current.current.id }
+    } finally { db.close() }
   })
 }
 

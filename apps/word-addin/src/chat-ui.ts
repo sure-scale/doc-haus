@@ -338,7 +338,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       for (const text of proposal.openItems) items.append(line("li", text)); card.append(items)
     }
     if (applied.has(proposal.id)) {
-      const note = line("p", "Applied in Word. Save when you’re ready.", "chat-local-note"); note.setAttribute("role", "status"); card.append(note); return card
+      const note = line("p", turn.proposalApplied ? "Previously applied in Word." : "Applied in Word. Save when you’re ready.", "chat-local-note"); note.setAttribute("role", "status"); card.append(note); return card
     }
     if (uncertain.has(proposal.id)) {
       const note = line("p", "Check the change in Word. Use Undo if needed.", "chat-proposal-error"); note.setAttribute("role", "alert"); card.append(note); return card
@@ -439,6 +439,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (nearBottom || forceScroll) scroller.scrollTop = scroller.scrollHeight
   }
   function updateTurn(turn: WordChatTurn) {
+    if (turn.proposalApplied && turn.proposal) applied.add(turn.proposal.id)
     const index = turns.findIndex(item => item.id === turn.id)
     if (index < 0) turns.push(turn); else turns[index] = turn
     if (turn.kind !== "suggestions") { foreground = turn.status === "running" ? turn : undefined; renderTurns() }
@@ -474,7 +475,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
         history.querySelectorAll(".chat-idea").forEach(node => node.remove())
         scope = id ? [...result.turns].reverse().find(turn => turn.kind !== "suggestions")?.scope ?? defaultScope : defaultScope
       }
-      conversation = result.conversation; turns = result.turns; foreground = turns.find(turn => turn.kind !== "suggestions" && turn.status === "running")
+      conversation = result.conversation; turns = result.turns; for (const turn of turns) if (turn.proposalApplied && turn.proposal) applied.add(turn.proposal.id); foreground = turns.find(turn => turn.kind !== "suggestions" && turn.status === "running")
       const existing = conversations.findIndex(item => item.id === conversation!.id)
       if (existing < 0) conversations.unshift(conversation); else conversations[existing] = conversation
       options(); renderTurns(true); status(); button("reconnect").hidden = true

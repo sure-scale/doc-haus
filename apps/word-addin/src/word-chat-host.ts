@@ -34,7 +34,7 @@ export type WordChatContext = {
 }
 export type WordChatWord = { run<T>(callback: (context: WordChatContext) => Promise<T>): Promise<T> }
 export type WordChatApplyResult = { status: "applied" | "already-applied"; tracked: true; saved: false; authors: string[]; target?: WordChatTarget }
-export type WordChatApplyInput = { proposalId: string; target: WordChatTarget; replacement: string; formatting?: WordChatParagraphFormat[]; author: (snapshot: { ooxml: string }) => Promise<WordChatAuthoredAmendment> }
+export type WordChatApplyInput = { proposalId: string; target: WordChatTarget; replacement: string; formatting?: WordChatParagraphFormat[]; author: (snapshot: { ooxml: string }) => Promise<WordChatAuthoredAmendment>; mayDispatch?: () => boolean }
 export class WordChatHostError extends Error {
   constructor(message: string, readonly mutationState: "unchanged" | "uncertain" = "unchanged") { super(message); this.name = "WordChatHostError" }
 }
@@ -460,6 +460,7 @@ export class WordChatHost {
     fresh: Awaited<ReturnType<WordChatHost["importSnapshot"]>>, authored: WordChatAuthoredAmendment,
     inserted = new Set<number>(), expectedFormatCount = authored.revisions.length): Promise<WordChatApplyResult> {
     const formatting = input.formatting!
+    if (input.mayDispatch && !input.mayDispatch()) throw new WordChatHostError("The Word pane closed before the change was applied. Your document is unchanged.")
     const paragraphs = input.target.paragraphs.map(p => context.document.getParagraphByUniqueLocalId(p.id))
     this.applied.set(input.proposalId, { identity, authors: [], uncertain: true })
     const nativeFormatting = formatting.filter(op => !inserted.has(op.paragraph))
@@ -515,7 +516,7 @@ const host = () => defaultHost ??= new WordChatHost()
 export const captureCurrentWordContext = (includeSelection = false) => host().capture(includeSelection)
 export const captureWordChatSelection = () => host().selection()
 export const applyReviewedProposal = (proposal: import("../../../dochaus/lib/word-chat-amendment-contract").WordChatProposal,
-  author: WordChatApplyInput["author"]) => {
+  author: WordChatApplyInput["author"], mayDispatch?: () => boolean) => {
   if (proposal.before !== proposal.target.text) throw new WordChatHostError("Review a fresh amendment before applying it.")
-  return host().apply({proposalId: proposal.id,target: proposal.target,replacement: proposal.after,formatting: proposal.formatting,author})
+  return host().apply({proposalId: proposal.id,target: proposal.target,replacement: proposal.after,formatting: proposal.formatting,author,mayDispatch})
 }

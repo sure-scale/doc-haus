@@ -10,7 +10,7 @@ import { extractDocumentText, ingestDocument } from "./ingest"
 import { readDeskSource } from "./word-source-desk"
 import { openDb } from "./db"
 import { readCurrentVersion } from "./document-versions"
-import { requireWordEditLease } from "../../../dochaus/lib/word-edit-lease"
+import { requirePendingWordProposal, wordProposalApplied } from "../../../dochaus/lib/word-edit-lease"
 import { authorWordChatAmendment, MAX_WORD_AMENDMENT_OOXML_BYTES, WordFormattingError } from "./word-chat-amendments"
 import { routeAgent, type ChatRouteTransport } from "../../../dochaus/lib/chat-routing"
 import { DOCUMENT_CHAT_ASSISTANTS } from "../../../dochaus/lib/conversation-assistants"
@@ -26,7 +26,7 @@ type NativeSession = { id: string; directory: string; parentID?: string; title?:
 type ChatAgent = typeof DOCUMENT_CHAT_ASSISTANTS[number]["name"]
 type RootMeta = { type: "word-chat"; document: string; uploads: WordChatUpload[]; contextMode?: "supplied"; titleRequested?: boolean }
 type TurnMeta = { type: "word-chat-turn"; document: string; input: WordChatSend; sources: WordChatSource[]; attachments: WordChatTurn["attachments"]; evidenceKey: string; sourceKey?: string; fingerprint: string; prompt: string; kind: WordChatKind; agent?: ChatAgent; contextMode?: "supplied"; suppliedContext?: true; coverage?: { reviewed: number; total: number }; cancelled?: boolean }
-class WordChatError extends Error { constructor(message: string, readonly status: 400 | 401 | 404 | 409 | 413 | 422 | 429 | 503 = 400) { super(message) } }
+export class WordChatError extends Error { constructor(message: string, readonly status: 400 | 401 | 404 | 409 | 413 | 422 | 429 | 503 = 400) { super(message) } }
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value))
 const identity = (value: unknown): value is string => typeof value === "string" && ID.test(value)
 const stamp = (value: unknown) => typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : Date.now()
@@ -152,6 +152,12 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
     return stale
   }
   async function readTurn(auth: WordChatAuth, root: string, child: NativeSession): Promise<WordChatTurn> {
+    const turn = await readTurnRaw(auth, root, child)
+    const db = openDb(auth.matter.dir)
+    try { if (wordProposalApplied(db, auth.grant.document_id, { conversationId: root, turnId: child.id })) turn.proposalApplied = true } finally { db.close() }
+    return turn
+  }
+  async function readTurnRaw(auth: WordChatAuth, root: string, child: NativeSession): Promise<WordChatTurn> {
     const meta = turnMeta(child, auth, root)
     if (!wordChatSourcesCurrent(auth, meta.sources)) return { id: child.id, conversationId: root, requestId: meta.input.requestId, kind: meta.kind, scope: meta.input.scope,
       text: meta.input.text, answer: "", status: "error", sources: [], attachments: meta.attachments, createdAt: stamp(child.time?.created), error: "Supporting material changed. Refresh context and send a new request." }
@@ -475,11 +481,23 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
     const { text: _text, ...publicMaterial } = material
     return { material: publicMaterial }
   }))
+  async function withValidatedProposal<T>(auth: WordChatAuth, binding: { conversationId: string; turnId: string }, run: (revalidate: () => Promise<void>) => Promise<T>): Promise<T> {
+    return serializeMatter(auth.matter.dir, async () => {
+      const revalidate = async () => {
+      const root = await session(auth, binding.conversationId); rootMeta(root, auth)
+      const child = await session(auth, binding.turnId); turnMeta(child, auth, root.id)
+      const turn = await readTurn(auth, root.id, child)
+      if (turn.status !== "complete" || !turn.proposal || turn.proposalApplied) throw new WordChatError("Review a fresh proposal before applying it.", 409)
+      }
+      await revalidate()
+      return run(revalidate)
+    })
+  }
   route("prepare", async (c, auth) => serializeMatter(auth.matter.dir, async () => {
     const input = await body(c); const root = await session(auth, input.conversationId); rootMeta(root, auth)
     const child = await session(auth, input.turnId), meta = turnMeta(child, auth, root.id)
     const turn = await readTurn(auth, root.id, child)
-    if (turn.status !== "complete" || !turn.proposal || typeof input.ooxml !== "string" || input.ooxml.length > MAX_WORD_AMENDMENT_OOXML_BYTES) throw new WordChatError("Review a complete proposal before applying it.", 409)
+    if (turn.status !== "complete" || !turn.proposal || turn.proposalApplied || typeof input.ooxml !== "string" || input.ooxml.length > MAX_WORD_AMENDMENT_OOXML_BYTES) throw new WordChatError("Review a complete proposal before applying it.", 409)
     const checkApplication = () => {
       const live = authenticate(c)
       if (!live || live.grant.document_id !== auth.grant.document_id || live.grant.token_hash !== auth.grant.token_hash) throw new WordChatError("Reopen this document from doc.haus.", 401)
@@ -488,7 +506,7 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
       try {
         const session = c.req.header("x-dochaus-word-session"), generation = c.req.header("x-dochaus-word-lease")
         if (!session || !generation) throw new WordChatError("Check editing status before applying this change.", 409)
-        requireWordEditLease(db, { document: auth.grant.document_id, tokenHash: auth.grant.token_hash, session, generation })
+        requirePendingWordProposal(db, { document: auth.grant.document_id, tokenHash: auth.grant.token_hash, session, generation }, { conversationId: root.id, turnId: child.id })
         const current = readCurrentVersion(auth.matter.dir, auth.target.name)
         if (current?.current.id !== c.req.header("x-dochaus-word-base-version")) throw new WordChatError("Check the latest version before applying this change.", 409)
       } finally { db.close() }
@@ -505,6 +523,7 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
     checkApplication()
     return authored
   }))
+  return { withValidatedProposal }
 }
 
 function selectedModel() { const value = readEngineConfig().model; if (typeof value !== "string" || !value.includes("/")) throw new WordChatError("Choose a model in doc.haus Settings, then reconnect.", 409); return value }

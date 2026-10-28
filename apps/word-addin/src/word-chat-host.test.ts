@@ -964,3 +964,21 @@ test.skip("a server artifact bound to another proposal is rejected before native
   expect(state.writes).toHaveLength(0)
   expect(state.modeChanges).toHaveLength(0)
 })
+
+test("a disposed pane cannot dispatch formatting after read-only preparation", async () => {
+  for (const allowed of [true, false]) {
+    const { state, host, nativeHost, author } = formattedOffice(), target = (await host.selection())!
+    const input = { proposalId: "disposed-before-dispatch", target, replacement: target.text, formatting: [{ paragraph: 2, spacingAfter: 6 }] }
+    const apply = nativeHost.apply({ ...input, author: author(input), mayDispatch: () => allowed })
+    if (allowed) {
+      await expect(apply).resolves.toMatchObject({ status: "applied" })
+      expect(state.nativeFormatting).toEqual(["paragraph-3"])
+      expect(state.modeChanges.length).toBeGreaterThan(0)
+    } else {
+      await expect(apply).rejects.toMatchObject({ mutationState: "unchanged", message: expect.stringContaining("pane closed") })
+      expect(state.nativeFormatting).toHaveLength(0)
+      expect(state.modeChanges).toHaveLength(0)
+    }
+    expect(state.authorCalls).toBe(1)
+  }
+})

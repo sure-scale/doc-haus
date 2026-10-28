@@ -88,6 +88,7 @@ export function readConnection(value: unknown): WordConnectionState | undefined 
   if (
     !state.version ||
     !state.lease ||
+    (state.nativeOperation !== undefined && (!state.nativeOperation || typeof state.nativeOperation !== "object" || !Number.isSafeInteger(state.nativeOperation.sequence) || state.nativeOperation.sequence < 0 || !["idle", "pending", "confirmed", "not-dispatched"].includes(state.nativeOperation.state))) ||
     !["current", "stale", "removed", "unrecorded-change"].includes(state.version.state) ||
     !ref(state.version.base) ||
     !ref(state.version.current) ||
@@ -114,7 +115,7 @@ export class WordClient {
   }
 
   private async post(
-    path: "saves" | "heartbeat" | "done" | "lease" | "latest",
+    path: "saves" | "heartbeat" | "done" | "lease" | "latest" | "native-operation",
     options: {
       bytes?: Uint8Array
       base: string
@@ -212,6 +213,26 @@ export class WordClient {
         },
       }),
     )
+  }
+
+  /** No retry grants permission to dispatch: the caller must know this call
+   * has not previously queued a Word mutation. */
+  async nativeOperation(base: string, generation: string, input: { action: "read" } | { action: "begin"; sequence: number; operationId: string; intent: "amendment"; proposal: { conversationId: string; turnId: string } } | { action: "begin"; sequence: number; operationId: string; intent: "refresh"; expectedCurrent: string } | { action: "settle"; sequence: number; operationId: string; outcome: "confirmed" | "not-dispatched" }) {
+    const value = await this.post("native-operation", { base, generation, input }) as { operation?: { sequence?: unknown; operationId?: unknown; state?: unknown }; connection?: unknown }
+    const operation = value?.operation
+    if (!operation || !Number.isSafeInteger(operation.sequence) || Number(operation.sequence) < 0 ||
+      !(operation.operationId === null || typeof operation.operationId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(operation.operationId)) ||
+      !["idle", "pending", "confirmed", "not-dispatched"].includes(String(operation.state)))
+      throw new ConnectionError("doc.haus could not confirm the Word operation. Inspect the document before continuing.", true)
+    const connection = this.connection(value.connection)
+    if (!connection.nativeOperation || connection.nativeOperation.sequence !== operation.sequence || connection.nativeOperation.state !== operation.state ||
+      input.action !== "read" && (operation.operationId !== input.operationId || operation.sequence !== (input.action === "begin" ? input.sequence + 1 : input.sequence)) ||
+      input.action === "begin" && (connection.lease.state !== "owned" || connection.lease.generation !== generation || connection.version.base?.id !== base ||
+        (input.intent === "refresh" ? !["current", "stale"].includes(connection.version.state) || connection.version.current?.id !== input.expectedCurrent
+          : connection.version.state !== "current" || connection.version.current?.id !== base)) ||
+      input.action === "settle" && operation.state !== input.outcome)
+      throw new ConnectionError("doc.haus could not confirm the Word operation. Inspect the document before continuing.", true)
+    return { operation: operation as { sequence: number; operationId: string | null; state: "idle" | "pending" | "confirmed" | "not-dispatched" }, connection }
   }
 
   async save(bytes: Uint8Array, base: string, generation: string): Promise<WordSaveResponse> {

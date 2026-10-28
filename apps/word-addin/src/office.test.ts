@@ -3,6 +3,7 @@ import { zipSync, strToU8, strFromU8, unzipSync } from "fflate"
 import { documentFingerprint } from "./fingerprint"
 import { connectOffice, DocumentStateError, exportFile, type OfficeFile } from "./office"
 import { WordSync, type Transport } from "./sync"
+import type { WordConnectionState } from "../../../dochaus/lib/word-addin-contract"
 
 test("DOCX fingerprint ignores ZIP timestamps, compression and entry order but detects changed content", async () => {
   const a = strToU8("<document>one</document>")
@@ -616,10 +617,18 @@ test("Load latest keeps the old base and fences saving when Word's imported docu
     parts["word/comments.xml"] = strToU8(strFromU8(parts["word/comments.xml"]!).replace("Retained comment", "Changed comment"))
     const f = installRefreshHost({ exportBytes: zipSync(parts) }), { host } = await connectOffice()
     const actions: string[] = []
+    let operation: { sequence: number; operationId: string | null; state: "idle" | "pending" | "confirmed" | "not-dispatched" } = { sequence: 0, operationId: null, state: "idle" }
+    const connection = (base: string): WordConnectionState => ({ version: { base: { id: base, number: base === "v1" ? 1 : 2 }, current: { id: "v2", number: 2 }, state: base === "v2" ? "current" : "stale" }, lease: { state: "owned", expiresAt: 100_000, generation: "owner" }, nativeOperation: { sequence: operation.sequence, state: operation.state } })
     const transport: Transport = {
       lease: async (action, base) => {
         actions.push(`${action}:${base}`)
-        return { version: { base: { id: base, number: base === "v1" ? 1 : 2 }, current: { id: "v2", number: 2 }, state: base === "v2" ? "current" : "stale" }, lease: { state: "owned", expiresAt: 100_000, generation: "owner" } }
+        return connection(base)
+      },
+      nativeOperation: async (base, _generation, input) => {
+        actions.push(`${input.action}:${base}`)
+        if (input.action === "begin") operation = { sequence: input.sequence + 1, operationId: input.operationId, state: "pending" }
+        if (input.action === "settle") operation = { sequence: input.sequence, operationId: input.operationId, state: input.outcome }
+        return { operation, connection: connection(base) }
       },
       save: async () => { throw new Error("unexpected upload") },
       heartbeat: async () => { throw new Error("unexpected heartbeat") },
@@ -631,6 +640,8 @@ test("Load latest keeps the old base and fences saving when Word's imported docu
     expect(sync.snapshot().message).toContain("could not verify its contents")
     expect(sync.snapshot().canSave).toBe(false)
     expect(cleared).toBe(false)
+    expect(operation.state).toBe("pending")
+    expect(actions).toContain("begin:v1"); expect(actions).not.toContain("settle:v1")
     expect(actions).not.toContain("release:v1")
     expect(f.events).not.toContain("settings-set")
     expect(await sync.loadLatest(async () => ({ version: { id: "v2", number: 2 }, bytes: latest }), () => true)).toBe(false)

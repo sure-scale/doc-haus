@@ -11,9 +11,11 @@ function fixture(owner: "owned" | "other" | "available" = "owned", fingerprint =
   let current = "v2"
   let bytes = 1
   let generation = "original-owner"
+  let operation: { sequence: number; operationId: string | null; state: "idle" | "pending" | "confirmed" | "not-dispatched" } = { sequence: 0, operationId: null, state: "idle" }
   let checkpoint: Acknowledgement | null = { base: "v1", fingerprint: "1", number: 1, at: 0, overlap: false }
   const state = (base: string): WordConnectionState => ({
     version: { base: { id: base, number: base === "v1" ? 1 : 2 }, current: { id: current, number: 2 }, state: base === current ? "current" : "stale" },
+    nativeOperation: { sequence: operation.sequence, state: operation.state },
     lease: { state: owner, expiresAt: owner === "available" ? null : 100_000, ...(owner === "available" ? {} : { generation }) },
   })
   const transport: Transport = {
@@ -25,6 +27,13 @@ function fixture(owner: "owned" | "other" | "available" = "owned", fingerprint =
         owner = "available"
       }
       return state(base)
+    },
+    nativeOperation: async (base, fence, input) => {
+      events.push(`${input.action}:${base}`)
+      if (owner !== "owned" || generation !== fence) throw new ConnectionError("Lease changed", false, state(base))
+      if (input.action === "begin") operation = { sequence: input.sequence + 1, operationId: input.operationId, state: "pending" }
+      if (input.action === "settle") operation = { sequence: input.sequence, operationId: input.operationId, state: input.outcome }
+      return { operation, connection: state(base) }
     },
     save: async (_bytes, base) => {
       events.push(`upload:${base}`)
@@ -62,7 +71,7 @@ function fixture(owner: "owned" | "other" | "available" = "owned", fingerprint =
 test("refresh replaces the current buffer, adopts only its version and releases only the old own lease without publishing", async () => {
   const f = fixture()
   expect(await f.sync.loadLatest(f.load, version => { expect(version).toEqual({ id: "v2", number: 2 }); return true })).toBe(true)
-  expect(f.events).toEqual(["inspect:v1", "export", "load:v1", "inspect:v2", "export", "replace:v2", "clear-checkpoint", "release:v1", "inspect:v2"])
+  expect(f.events).toEqual(["inspect:v1", "export", "load:v1", "inspect:v2", "export", "inspect:v1", "begin:v1", "export", "replace:v2", "settle:v1", "clear-checkpoint", "release:v1", "inspect:v2"])
   expect(f.bytes).toBe(2)
   expect(f.checkpoint).toBeNull()
   expect(f.sync.snapshot()).toMatchObject({ status: "not-saved", content: "changed", connection: { version: { state: "current", base: { id: "v2" } }, lease: { state: "available" } } })
@@ -78,10 +87,10 @@ test("refresh replaces the current buffer, adopts only its version and releases 
 
 test("refresh leaves another editor's lease intact and does not steal it", async () => {
   const f = fixture("other")
-  expect(await f.sync.loadLatest(f.load, () => true)).toBe(true)
+  expect(await f.sync.loadLatest(f.load, () => true)).toBe(false)
   expect(f.sync.snapshot().connection?.lease.state).toBe("other")
-  expect(f.events.some(value => /^(release|claim|takeover|upload):/.test(value))).toBe(false)
-  expect(f.bytes).toBe(2)
+  expect(f.events.some(value => /^(release|claim|takeover|upload|begin|replace):/.test(value))).toBe(false)
+  expect(f.bytes).toBe(1)
 })
 
 test("native AutoSave after refresh cannot publish even if lease release failed", async () => {
@@ -121,7 +130,7 @@ test("changes to the captured Word package during confirmation refuse import cau
 test("fresh package checks catch real body and header formatting changes with unchanged text", async () => {
   for (const part of ["word/document.xml", "word/header1.xml"]) {
     for (const changed of [false, true]) {
-      const f = fixture("other", documentFingerprint)
+      const f = fixture("owned", documentFingerprint)
       let bold = false
       const root = part.includes("header") ? "hdr" : "document"
       f.host.export = async () => zipSync({ [part]: strToU8(`<w:${root} xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r>${bold ? "<w:rPr><w:b/></w:rPr>" : ""}<w:t>Same clause text.</w:t></w:r></w:p></w:${root}>`) })
@@ -143,8 +152,7 @@ test("an owner race during native import cannot release the replacement editor",
   const f = fixture()
   const replace = f.host.replace!
   f.host.replace = async (...args) => { await replace(...args); f.owner = "other"; f.generation = "other-owner" }
-  expect(await f.sync.loadLatest(f.load, () => true)).toBe(true)
-  expect(f.sync.snapshot().connection?.lease.state).toBe("other")
+  expect(await f.sync.loadLatest(f.load, () => true)).toBe(false)
   expect(f.events.some(value => /^(claim|takeover|upload):/.test(value))).toBe(false)
 })
 
@@ -171,7 +179,7 @@ test("uncertain native/settings failure keeps old base, blocks repeat import, cl
   expect(await f.sync.save()).toBe(false)
   await f.sync.startEditing()
   await f.sync.refresh()
-  await expect(f.sync.localEdit(async () => { throw new Error("Must not apply") })).rejects.toBeInstanceOf(DocumentStateError)
+  await expect(f.sync.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => { throw new Error("Must not apply") })).rejects.toBeInstanceOf(DocumentStateError)
   expect(f.events.filter(value => value === "partial-import")).toHaveLength(1)
   expect(f.events.some(value => /^(claim|release|takeover|upload):/.test(value) || value === "native-save")).toBe(false)
   expect(f.sync.snapshot().canSave).toBe(false)
@@ -206,11 +214,11 @@ test("after refreshed link persistence, later Save acknowledgements use the name
 
 
 test("a failed post-import status check still reports replacement so stale chat context is cleared", async () => {
-  const f = fixture("available")
+  const f = fixture("owned")
   const lease = f.transport.lease
   let inspections = 0
   f.transport.lease = async (...args) => {
-    if (args[0] === "inspect" && ++inspections === 3) throw new ConnectionError("Offline", true)
+    if (args[0] === "inspect" && ++inspections === 4) throw new ConnectionError("Offline", true)
     return lease(...args)
   }
   expect(await f.sync.loadLatest(f.load, () => true)).toBe(true)
@@ -218,4 +226,23 @@ test("a failed post-import status check still reports replacement so stale chat 
   expect(f.sync.snapshot().status).toBe("not-saved")
   expect(f.sync.snapshot().acknowledgement).toBeUndefined()
   expect(f.events.some(value => value.startsWith("upload:") || value === "native-save")).toBe(false)
+})
+
+test("a failed post-BEGIN read settles as not dispatched without replacing Word", async () => {
+  const f = fixture(); const exportCurrent = f.host.export; let exports = 0
+  f.host.export = async () => { if (++exports === 3) throw new Error("Word export unavailable"); return exportCurrent() }
+  expect(await f.sync.loadLatest(f.load, () => true)).toBe(false)
+  expect(f.events).toContain("begin:v1"); expect(f.events).toContain("settle:v1")
+  expect(f.events).not.toContain("replace:v2"); expect(f.bytes).toBe(1)
+})
+
+test("closing the pane during the post-BEGIN read never replaces Word", async () => {
+  const f = fixture(); const exportCurrent = f.host.export; let exports = 0
+  let release!: () => void, entered!: () => void
+  const wait = new Promise<void>(resolve => { release = resolve }), ready = new Promise<void>(resolve => { entered = resolve })
+  f.host.export = async () => { if (++exports === 3) { entered(); await wait }; return exportCurrent() }
+  const loading = f.sync.loadLatest(f.load, () => true)
+  await ready; f.sync.dispose(); release()
+  expect(await loading).toBe(false); expect(f.events).toContain("settle:v1")
+  expect(f.events).not.toContain("replace:v2"); expect(f.bytes).toBe(1)
 })

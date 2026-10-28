@@ -117,3 +117,14 @@ export async function recoverWordEditing(matterId: string, document: WordOpenDoc
   })
   if (!response.ok) throw new Error(await ingestError(response, "Could not change Word editing ownership"))
 }
+
+/** Create a separately registered copy of the last saved version. */
+export async function copySavedWordRecovery(matterId: string, document: WordOpenDocument, name: string): Promise<{name: string}> {
+  if (!document.documentId || !document.currentVersion || document.nativeOperation?.state !== "pending") throw new Error("Refresh Word status before creating a copy.")
+  const response = await fetch(`${wordUrl(matterId)}/recovery-copy`, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source: document.name, name, document: document.documentId, version: document.currentVersion, sequence: document.nativeOperation.sequence }) })
+  if (!response.ok) throw new Error(await ingestError(response, "Could not create the saved copy"))
+  const result: unknown = await response.json()
+  if (!result || typeof result !== "object" || !("name" in result) || typeof result.name !== "string" || !result.name) throw new Error("Could not confirm the saved copy.")
+  return { name: result.name }
+}

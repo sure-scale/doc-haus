@@ -42,6 +42,7 @@ test("unchanged poll presentation preserves the pane DOM and focus while real sa
       render({ ...state, connection: { ...state.connection!, lease: { ...state.connection!.lease, expiresAt: 110_000 } } })
       render({ ...state })
       await Bun.sleep(0)
+      mutations.push(...observer.takeRecords())
       expect(mutations).toHaveLength(0)
       expect(document.getElementById("status")!.firstChild === text).toBe(true)
       expect(document.activeElement === details).toBe(true)

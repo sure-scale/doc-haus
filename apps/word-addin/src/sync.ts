@@ -21,6 +21,10 @@ export interface Checkpoints {
   clear?(): void
   rebase?(base: string): Promise<void>
 }
+type NativeOperation = { sequence: number; operationId: string | null; state: "idle" | "pending" | "confirmed" | "not-dispatched" }
+type ProposalBinding = { conversationId: string; turnId: string }
+type NativeIntent = { intent: "amendment"; proposal: ProposalBinding } | { intent: "refresh"; expectedCurrent: string }
+type NativeRequest = { action: "read" } | ({ action: "begin"; sequence: number; operationId: string } & NativeIntent) | { action: "settle"; sequence: number; operationId: string; outcome: "confirmed" | "not-dispatched" }
 export type Transport = {
   lease(
     action: WordLeaseAction,
@@ -28,6 +32,7 @@ export type Transport = {
     generation?: string,
     expected?: { current: string; generation: string },
   ): Promise<WordConnectionState>
+  nativeOperation?(base: string, generation: string, input: NativeRequest): Promise<{ operation: NativeOperation; connection: WordConnectionState }>
   save(bytes: Uint8Array, base: string, generation: string): Promise<WordSaveResponse>
   heartbeat(base: string, generation: string): Promise<WordConnectionState>
   done(base: string, generation: string): Promise<WordConnectionState>
@@ -97,6 +102,8 @@ export class WordSync {
   private queue: Promise<unknown> = Promise.resolve()
   private queued = 0
   private foreground = 0
+  private nativeUncertain = false
+  private closed = false
   private completed = false
   private completedCheckedAt = -Infinity
   private checkpointChecked = false
@@ -131,6 +138,9 @@ export class WordSync {
   ) {
     this.base = base
   }
+
+  dispose(): void { this.closed = true }
+  isDisposed(): boolean { return this.closed }
 
   snapshot(): PaneState {
     return { ...this.state }
@@ -190,21 +200,22 @@ export class WordSync {
   }
 
   private async heartbeat(force = false): Promise<void> {
-    if (!this.canWrite() || (!force && this.now() - this.heartbeatAt < 20_000)) return
+    if (!this.connection || this.connection.lease.state !== "owned" || !this.connection.lease.generation ||
+      (!force && this.now() - this.heartbeatAt < 20_000)) return
     this.heartbeatAt = this.now()
     this.connection = await this.transport.heartbeat(this.base, this.connection!.lease.generation!)
   }
 
   private canSave(): boolean {
     return (
-      !this.latestUncertain &&
+      !this.latestUncertain && !this.nativeUncertain && this.connection?.nativeOperation?.state !== "pending" &&
       this.connection?.version.state === "current" && (this.connection.lease.state === "available" || this.canWrite())
     )
   }
 
   private canWrite(): boolean {
     return (
-      !this.latestUncertain &&
+      !this.latestUncertain && !this.nativeUncertain && this.connection?.nativeOperation?.state !== "pending" &&
       this.connection?.version.state === "current" &&
       this.connection.lease.state === "owned" &&
       Boolean(this.connection.lease.generation)
@@ -212,9 +223,11 @@ export class WordSync {
   }
 
   private blockedMessage(): string {
+    if (this.nativeUncertain) return "A change in Word could not be confirmed. Keep this file and inspect it before continuing."
     if (this.latestUncertain)
       return "Word could not confirm the refresh. Check this document and open the latest copy from doc.haus before saving or applying changes."
     const state = this.connection
+    if (state?.nativeOperation?.state === "pending") return "A change in Word could not be confirmed. Keep this file and inspect it before continuing."
     if (!state) return "Check the connection before saving. Your Word changes stay in this file."
     if (state.version.state === "removed")
       return "This copy predates a redaction or removal. Keep your local file and reopen the current document from doc.haus."
@@ -229,7 +242,7 @@ export class WordSync {
 
   private async inspect(claim: boolean): Promise<void> {
     this.connection = await this.transport.lease("inspect", this.base)
-    if (claim && !this.latestUncertain && this.connection.version.state === "current" && this.connection.lease.state === "available") {
+    if (claim && !this.latestUncertain && !this.nativeUncertain && this.connection.nativeOperation?.state !== "pending" && this.connection.version.state === "current" && this.connection.lease.state === "available") {
       this.explicitSaveRequired = true
       this.connection = await this.transport.lease("claim", this.base)
     }
@@ -269,7 +282,7 @@ export class WordSync {
   ): Promise<boolean> {
     let loaded = false
     await this.enqueue(async () => {
-      if (this.latestUncertain) throw documentStateError(this.blockedMessage())
+      if (this.latestUncertain || this.nativeUncertain || this.connection?.nativeOperation?.state === "pending") throw documentStateError(this.blockedMessage())
       if (this.pending) throw documentStateError("Finish the pending Save before loading the latest version.")
       if (!this.host.replace)
         throw documentStateError("This version of Word cannot refresh the whole document here. Open the latest copy from doc.haus instead; this Word document is unchanged.")
@@ -290,13 +303,30 @@ export class WordSync {
         throw documentStateError("The latest version changed while loading. Review it and choose Load latest version again.")
       if ((await this.fingerprint(await this.host.export())) !== before)
         throw documentStateError("This Word document changed while loading. Your changes are still here. Choose Load latest version again if you want to replace them.")
-      const previousOwner = current.lease.state === "owned" ? current.lease.generation : undefined
+      const original = await this.transport.lease("inspect", oldBase)
+      this.connection = original
+      if (original.lease.state !== "owned" || !original.lease.generation || !original.nativeOperation || original.nativeOperation.state === "pending")
+        throw documentStateError("This pane cannot safely refresh without its existing editing session. Open the latest copy from doc.haus instead.")
+      const previousOwner = original.lease.generation
       this.show("not-saved", "Loading the latest contents into this Word document…")
-      // Native import/settings failures may happen after Word has changed. Do
-      // not let a later native Save automatically publish that uncertain buffer.
       this.explicitSaveRequired = true
+      const operation = await this.beginNative(oldBase, previousOwner, original.nativeOperation.sequence, { intent: "refresh", expectedCurrent: latest.version.id })
+      let fresh = false
+      try { fresh = !this.closed && (await this.fingerprint(await this.host.export())) === before && !this.closed }
+      catch (error) {
+        // No mutating Office command has been queued at this point.
+        await this.settleNative(operation, "not-dispatched")
+        throw error
+      }
+      if (!fresh) {
+        await this.settleNative(operation, "not-dispatched")
+        throw documentStateError("This Word document changed while loading. Your changes are still here. Open the latest copy from doc.haus instead.")
+      }
+      // Track-mode changes, import, verification and link settings form one
+      // native operation. Any exception leaves the server fence unresolved.
       this.latestUncertain = true
       await this.host.replace(latest.bytes, latest.version.id)
+      await this.settleNative(operation, "confirmed")
       this.latestUncertain = false
       this.base = latest.version.id
       this.acknowledgement = undefined
@@ -340,7 +370,7 @@ export class WordSync {
   takeover(): Promise<boolean> {
     const observed = this.connection
     return this.enqueue(async () => {
-      if (this.latestUncertain) throw documentStateError(this.blockedMessage())
+      if (this.latestUncertain || this.nativeUncertain || this.connection?.nativeOperation?.state === "pending") throw documentStateError(this.blockedMessage())
       this.completed = false
       if (
         !observed ||
@@ -411,6 +441,7 @@ export class WordSync {
       if (this.pending && !this.explicitSaveRequired && this.now() >= this.nextRetry) await this.flush()
       await this.inspect(false)
       if (!this.canWrite()) {
+        if (this.connection?.nativeOperation?.state === "pending") await this.heartbeat()
         this.show("not-saved", this.blockedMessage())
         return
       }
@@ -424,23 +455,84 @@ export class WordSync {
     return this.enqueue(() => this.explicitSave())
   }
 
-  /** Reviewed changes share Save's queue but never export, save or publish.
-   * The callback receives the live identity inspected inside that queue. */
-  async localEdit<T>(edit: (identity: { base: string; generation: string }) => Promise<T>): Promise<T> {
+  private async beginNative(base: string, generation: string, sequence: number, intent: NativeIntent) {
+    const command = this.transport.nativeOperation
+    if (!command) throw documentStateError("This Word connection needs an update before applying changes. Your document is unchanged.")
+    const operationId = crypto.randomUUID()
+    this.nativeUncertain = true
+    let response: Awaited<ReturnType<NonNullable<Transport["nativeOperation"]>>>
+    try { response = await command.call(this.transport, base, generation, { action: "begin", sequence, operationId, ...intent }) }
+    catch (error) {
+      // This uninterrupted call has not queued any Word mutation. A lost
+      // BEGIN response may be recovered by reading the exact operation.
+      try { response = await command.call(this.transport, base, generation, { action: "read" }) }
+      catch { throw error }
+    }
+    this.connection = response.connection
+    // A read proving no admission at the observed sequence means this caller
+    // has queued no mutation and can release its local uncertainty.
+    if (response.operation.sequence === sequence && response.operation.state !== "pending" &&
+      response.connection.lease.state === "owned" && response.connection.lease.generation === generation) this.nativeUncertain = false
+    if (response.operation.state !== "pending" || response.operation.sequence !== sequence + 1 || response.operation.operationId !== operationId ||
+      response.connection.nativeOperation?.state !== "pending" || response.connection.nativeOperation.sequence !== sequence + 1 ||
+      response.connection.lease.state !== "owned" || response.connection.lease.generation !== generation || (intent.intent === "refresh" ?
+        !["current", "stale"].includes(response.connection.version.state) || response.connection.version.current?.id !== intent.expectedCurrent : response.connection.version.state !== "current"))
+      throw documentStateError("Word could not confirm permission to apply this change. Your document is unchanged.")
+    return { base, generation, sequence: sequence + 1, operationId }
+  }
+
+  private async settleNative(operation: { base: string; generation: string; sequence: number; operationId: string }, outcome: "confirmed" | "not-dispatched") {
+    const command = this.transport.nativeOperation!
+    const request = { action: "settle" as const, sequence: operation.sequence, operationId: operation.operationId, outcome }
+    let response: Awaited<ReturnType<NonNullable<Transport["nativeOperation"]>>>
+    try { response = await command.call(this.transport, operation.base, operation.generation, request) }
+    catch (error) {
+      // Never reissue Word commands after a lost settlement response.
+      try { response = await command.call(this.transport, operation.base, operation.generation, { action: "read" }) }
+      catch { throw error }
+    }
+    this.connection = response.connection
+    if (response.operation.sequence !== operation.sequence || response.operation.operationId !== operation.operationId || response.operation.state !== outcome ||
+      response.connection.nativeOperation?.sequence !== operation.sequence || response.connection.nativeOperation.state !== outcome)
+      throw documentStateError("Word could not confirm this change. Keep the file and inspect it before continuing.")
+    this.nativeUncertain = false
+  }
+
+  /** Reviewed changes share Save's queue. BEGIN is committed before the host
+   * callback; only that uninterrupted callback may queue native writes. */
+  async localEdit<T>(proposal: ProposalBinding, edit: (identity: { base: string; generation: string }) => Promise<T>): Promise<T> {
     let value!: T
     let rejected: unknown
     const complete = await this.enqueue(async () => {
+      let operation: Awaited<ReturnType<WordSync["beginNative"]>> | undefined
       try {
+        if (!proposal?.conversationId || !proposal.turnId) throw documentStateError("Review the proposal again before applying it.")
         if (this.pending) throw documentStateError("Finish the pending Save before applying a change.")
         await this.inspect(true)
         if (!this.canWrite()) throw documentStateError(this.blockedMessage())
+        if (!this.connection?.nativeOperation) throw documentStateError("This Word connection needs an update before applying changes. Your document is unchanged.")
+        const identity = { base: this.base, generation: this.connection.lease.generation! }
+        if (this.closed) throw documentStateError("The Word pane closed before the change was applied.")
         this.completed = false
-        // Establish the fence before calling Word: a lost response can mean
-        // the edit happened, and Undo may restore Word's saved flag later.
         this.explicitSaveRequired = true
         this.content = "changed"
         this.show("not-saved", "Applying the reviewed change in Word…")
-        value = await edit({ base: this.base, generation: this.connection!.lease.generation! })
+        operation = await this.beginNative(identity.base, identity.generation, this.connection.nativeOperation.sequence, { intent: "amendment", proposal })
+        if (this.closed) {
+          try { await this.settleNative(operation, "not-dispatched") }
+          catch { throw Object.assign(new Error("Word could not confirm the operation status. Keep this file and inspect it before continuing."), { mutationState: "uncertain" }) }
+          throw documentStateError("The Word pane closed before the change was applied.")
+        }
+        try { value = await edit(identity) }
+        catch (error) {
+          if (error && typeof error === "object" && "mutationState" in error && error.mutationState === "unchanged") {
+            try { await this.settleNative(operation, "not-dispatched") }
+            catch { throw Object.assign(new Error("Word could not confirm the operation status. Keep this file and inspect it before continuing."), { mutationState: "uncertain" }) }
+          }
+          throw error
+        }
+        try { await this.settleNative(operation, "confirmed") }
+        catch { throw Object.assign(new Error("Word applied the change, but doc.haus could not confirm its status. Keep this file and inspect it before continuing."), { mutationState: "uncertain" }) }
         this.content = "changed"
         this.show("not-saved", "Applied in Word. Choose Save when you’re ready.")
       } catch (error) {

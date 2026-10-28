@@ -1,5 +1,8 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { Hono } from "hono"
+import { createHash, randomBytes } from "node:crypto"
+import { wordDocumentRoutes } from "./word-documents"
+import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -7,7 +10,7 @@ import { Document, Packer, Paragraph } from "docx"
 import { installWordChat } from "./word-chat"
 import { WordFormattingError } from "./word-chat-amendments"
 import { wordChatMaterials, wordChatSuggestionBatches, validateWordChatContext, type WordChatAuth } from "./word-chat-context"
-import { claimWordEditLease, clearWordEditLease } from "../../../dochaus/lib/word-edit-lease"
+import { beginWordNativeOperation, settleWordNativeOperation, claimWordEditLease, clearWordEditLease } from "../../../dochaus/lib/word-edit-lease"
 import { writeDeliverable, writeDeliverableRevision } from "./deliverable"
 import { openDb } from "./db"
 import { readCurrentVersion } from "./document-versions"
@@ -895,12 +898,14 @@ test("a long single Word paragraph is accepted within the complete bounded snaps
 test("prepare rechecks ownership and canonical base after asynchronous authoring", async () => {
   const id = await newConversation(); amend = true
   const turn = (await (await send(id, "document", "Rewrite delivery to Wednesday")).json() as { turn: WordChatTurn }).turn
+  const other = (await (await send(id, "document", "Rewrite delivery again")).json() as { turn: WordChatTurn }).turn
   amend = false
   const current = readCurrentVersion(directory, "Draft.docx")!
   const db = openDb(directory)
   db.run("INSERT INTO word_grants(token_hash,document_id,origin,issued_version,created_at) VALUES (?,?,?,?,?)", [auth.grant.token_hash, auth.grant.document_id, auth.grant.origin, auth.grant.issued_version, Date.now()])
   const identity = { document: auth.grant.document_id, tokenHash: auth.grant.token_hash, session: "synthetic-pane-session" }
   let owner = claimWordEditLease(db, identity)
+  beginWordNativeOperation(db, owner, 0, "prepare-one", undefined, { conversationId: id, turnId: turn.id })
   let duringAuthor: (() => Promise<void>) | undefined
   const preparing = new Hono()
   installWordChat(preparing, () => auth, { fetch: transport, engineURL: "http://synthetic.invalid", authorAmendment: async (_ooxml, proposal) => {
@@ -909,12 +914,16 @@ test("prepare rechecks ownership and canonical base after asynchronous authoring
   } })
   const prepare = () => preparing.request("/word/chat/prepare", { method: "POST", headers: { "content-type": "application/json", "x-dochaus-word-session": owner.session, "x-dochaus-word-lease": owner.generation, "x-dochaus-word-base-version": current.current.id },
     body: JSON.stringify({ conversationId: id, turnId: turn.id, ooxml: "synthetic-original-ooxml" }) })
+  // A different reviewed proposal cannot borrow the admitted operation.
+  const wrong = await preparing.request("/word/chat/prepare", { method: "POST", headers: { "content-type": "application/json", "x-dochaus-word-session": owner.session, "x-dochaus-word-lease": owner.generation, "x-dochaus-word-base-version": current.current.id }, body: JSON.stringify({ conversationId: id, turnId: other.id, ooxml: "synthetic-original-ooxml" }) })
+  expect(wrong.status).toBe(409)
   // Starting authority passes; only the change during the await causes refusal.
   expect((await prepare()).status).toBe(200)
-  duringAuthor = async () => { clearWordEditLease(db, auth.grant.document_id) }
+  duringAuthor = async () => { db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?", ["other-turn", owner.document]) }
   expect((await prepare()).status).toBe(409)
-  owner = claimWordEditLease(db, identity)
+  db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?", [turn.id, owner.document])
   duringAuthor = async () => {
+    settleWordNativeOperation(db, owner, 1, "prepare-one", "not-dispatched")
     const bytes = await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph("A concurrent acknowledged Word save.")] }] }))
     await writeDeliverableRevision(directory, "Draft.docx", bytes, { priorSha256: current.current.sha256, keepWorkingRecord: true, wordLeaseOwner: owner, version: { origin: "word" } })
   }
@@ -933,6 +942,8 @@ test("prepare returns actionable formatting failures while keeping other authori
   db.run("INSERT OR IGNORE INTO word_grants(token_hash,document_id,origin,issued_version,created_at) VALUES (?,?,?,?,?)", [auth.grant.token_hash, auth.grant.document_id, auth.grant.origin, auth.grant.issued_version, Date.now()])
   const owner = claimWordEditLease(db, { document: auth.grant.document_id, tokenHash: auth.grant.token_hash, session: "synthetic-format-session" })
   const current = readCurrentVersion(directory, "Draft.docx")!
+  const seq = (db.query("SELECT native_sequence FROM word_edit_leases WHERE document_id = ?").get(owner.document) as { native_sequence: number }).native_sequence
+  beginWordNativeOperation(db, owner, seq, "prepare-format", undefined, { conversationId: id, turnId: turn.id })
   let failure: Error = new Error("Private parser detail")
   const preparing = new Hono()
   installWordChat(preparing, () => auth, { fetch: transport, engineURL: "http://synthetic.invalid", authorAmendment: async () => { throw failure } })
@@ -955,7 +966,7 @@ test("prepare returns actionable formatting failures while keeping other authori
       expect(result.error).not.toContain("docx_")
       expect(result.error).not.toContain("private-proposal-id")
     }
-  } finally { clearWordEditLease(db, auth.grant.document_id); db.close() }
+  } finally { settleWordNativeOperation(db, owner, seq + 1, "prepare-format", "not-dispatched"); clearWordEditLease(db, auth.grant.document_id); db.close() }
 })
 
 test("prepare withholds the artifact when attached evidence changes during pure authoring", async () => {
@@ -970,6 +981,8 @@ test("prepare withholds the artifact when attached evidence changes during pure 
   expect(turn.proposal).toBeDefined()
   const db = openDb(directory), current = readCurrentVersion(directory, "Draft.docx")!.current.id
   const owner = claimWordEditLease(db, { document: auth.grant.document_id, tokenHash: auth.grant.token_hash, session: "synthetic-evidence-race" })
+  const seq = (db.query("SELECT native_sequence FROM word_edit_leases WHERE document_id = ?").get(owner.document) as { native_sequence: number }).native_sequence
+  beginWordNativeOperation(db, owner, seq, "prepare-evidence", undefined, { conversationId: id, turnId: turn.id })
   let changeEvidence = false, authors = 0
   const preparing = new Hono()
   installWordChat(preparing, () => auth, { fetch: transport, engineURL: "http://synthetic.invalid", authorAmendment: async (_ooxml, proposal) => {
@@ -989,7 +1002,7 @@ test("prepare withholds the artifact when attached evidence changes during pure 
     expect(result.ooxml).toBeUndefined()
     expect(authors).toBe(2)
     expect(readCurrentVersion(directory, "Draft.docx")!.current.id).toBe(current)
-  } finally { writeFileSync(path.join(directory, name), bytes); clearWordEditLease(db, auth.grant.document_id); db.close() }
+  } finally { writeFileSync(path.join(directory, name), bytes); settleWordNativeOperation(db, owner, seq + 1, "prepare-evidence", "not-dispatched"); clearWordEditLease(db, auth.grant.document_id); db.close() }
 })
 
 test("suggestion batches retain document context as well as the selected passage", () => {
@@ -1042,4 +1055,54 @@ test("selection identity separates follow-ups while incidental capture IDs do no
     if (question === "Explain selected delivery") expect(supplied.compatibleDiscussion).toEqual([])
     if (question === "Explain it again") expect(supplied.compatibleDiscussion.map(turn => turn.question)).toEqual(["Explain selected delivery"])
   }
+})
+
+test("authorized conversation returns its durable applied outcome and rejects replay validation", async () => {
+  const id = await newConversation(); amend = true
+  const result = (await (await send(id, "document", "Rewrite this for Wednesday delivery")).json() as { turn: WordChatTurn }).turn
+  amend = false
+  expect(result.proposal).toBeDefined()
+  const validator = installWordChat(new Hono(), () => auth, { fetch: transport, engineURL: "http://synthetic.invalid" })
+  expect(await validator.withValidatedProposal(auth, { conversationId: id, turnId: result.id }, async () => "admitted")).toBe("admitted")
+  const db = openDb(directory)
+  try { db.run("INSERT INTO word_chat_applied (document_id, conversation_id, turn_id) VALUES (?, ?, ?)", [auth.grant.document_id, id, result.id]) } finally { db.close() }
+  const opened = await (await post("conversation", { conversationId: id })).json() as { turns: WordChatTurn[] }
+  expect(opened.turns.find(turn => turn.id === result.id)?.proposalApplied).toBe(true)
+  expect((await post("prepare", { conversationId: id, turnId: result.id, ooxml: "synthetic" })).status).toBe(409)
+  await expect(validator.withValidatedProposal(auth, { conversationId: id, turnId: result.id }, async () => {})).rejects.toThrow("fresh proposal")
+  await expect(validator.withValidatedProposal(auth, { conversationId: "foreign", turnId: result.id }, async () => {})).rejects.toThrow()
+})
+
+
+test("native amendment admission validates the reviewed turn again after the artifact lock", async () => {
+  const id = await newConversation(); amend = true
+  const first = (await (await send(id, "document", "Rewrite delivery Wednesday")).json() as { turn: WordChatTurn }).turn
+  const second = (await (await send(id, "document", "Rewrite delivery again")).json() as { turn: WordChatTurn }).turn
+  amend = false
+  const token = randomBytes(32).toString("base64url"), tokenHash = createHash("sha256").update(token).digest("hex")
+  const current = readCurrentVersion(directory, "Draft.docx")!
+  const db = openDb(directory)
+  db.run("INSERT INTO word_grants(token_hash,document_id,origin,issued_version,created_at) VALUES (?,?,?,?,?)", [tokenHash, auth.grant.document_id, auth.grant.origin, current.current.id, Date.now()])
+  const owner = claimWordEditLease(db, { document: auth.grant.document_id, tokenHash, session: "route-test-pane" })
+  const sequence = (db.query("SELECT native_sequence FROM word_edit_leases WHERE document_id = ?").get(owner.document) as { native_sequence: number }).native_sequence
+  const routes = wordDocumentRoutes({ matter: () => auth.matter, matters: () => [auth.matter], locks: () => [auth.target.docPath], write: async () => { throw new Error("not used") }, wordChatOptions: { fetch: transport, engineURL: "http://synthetic.invalid" } })
+  const headers = { "content-type": "application/json", Authorization: `Bearer ${token}`, Origin: auth.grant.origin, "x-dochaus-word-session": owner.session, "x-dochaus-word-lease": owner.generation, "x-dochaus-word-base-version": current.current.id }
+  const request = (input: object) => routes.request("/word/native-operation", { method: "POST", headers, body: JSON.stringify(input) })
+  try {
+    const binding = { conversationId: id, turnId: first.id }
+    expect((await request({ action: "begin", intent: "amendment", sequence, operationId: "first", proposal: binding })).status).toBe(200)
+    expect((await request({ action: "settle", sequence: sequence + 1, operationId: "first", outcome: "confirmed" })).status).toBe(200)
+    expect((await request({ action: "begin", intent: "amendment", sequence: sequence + 1, operationId: "replay", proposal: binding })).status).toBe(409)
+    let release!: () => void, entered!: () => void, validated!: () => void
+    const held = new Promise<void>(resolve => { release = resolve }), locked = new Promise<void>(resolve => { entered = resolve }), initial = new Promise<void>(resolve => { validated = resolve })
+    const lock = withArtifactMutationLocksAsync(directory, [auth.target.docPath], async () => { entered(); await held })
+    await locked
+    engineHook = async (session, tail, method) => { if (session.id === second.id && tail === "/message" && method === "GET") validated() }
+    const pending = request({ action: "begin", intent: "amendment", sequence: sequence + 1, operationId: "second", proposal: { conversationId: id, turnId: second.id } })
+    await initial
+    sessions.get(second.id)!.metadata.cancelled = true
+    release(); await lock
+    expect((await pending).status).toBe(409)
+    expect((db.query("SELECT native_sequence FROM word_edit_leases WHERE document_id = ?").get(owner.document) as { native_sequence: number }).native_sequence).toBe(sequence + 1)
+  } finally { engineHook = undefined; clearWordEditLease(db, owner.document); db.close() }
 })
