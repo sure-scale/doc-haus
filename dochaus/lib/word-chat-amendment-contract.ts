@@ -46,7 +46,7 @@ export type WordChatAuthoredAmendment = {
   revisions: { author: string; type: "Added" | "Deleted" | "Formatted"; text: string }[]
   author: "doc.haus"
   formatting?: WordChatParagraphFormat[]
-  wording?: { ooxml: string; revisions: WordChatAuthoredAmendment["revisions"] }
+  wording?: { ooxml: string; unformattedOoxml?: string; revisions: WordChatAuthoredAmendment["revisions"] }
 }
 
 /** Paragraph formatting cannot borrow a partial selection's authority to

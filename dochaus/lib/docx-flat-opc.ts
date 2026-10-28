@@ -378,7 +378,7 @@ export async function authorWordChatTarget(ooxml: string, target: WordChatTarget
     if (mark) { require(mark.getAttributeNS(W, "author") === AUTHOR); revisions.push({ type: mark.localName === "ins" ? "Added" : "Deleted", author: AUTHOR, text: "\r" }) }
   }
   require(revisions.length > 0)
-  const wording = { ooxml: importFlatOpc(outputParts, source.types), revisions }
+  const wording = { ooxml: importFlatOpc(outputParts, source.types), revisions, unformattedOoxml: undefined as string | undefined }
   if (formatting) {
     const currentParagraphs = bodyParagraphs(parse(strFromU8(outputParts[MAIN]!)), false).paragraphs
     const retainedAfter = new Set(plan.structure?.retained.map(item => item.after) ?? expected.map((_, i) => i))
@@ -386,6 +386,24 @@ export async function authorWordChatTarget(ooxml: string, target: WordChatTarget
     const formatted = await authorParagraphFormatting(source, amended, currentParagraphs, formatting, true, inserted)
     const formattedParts = packageFromFlatOpc(formatted.ooxml).parts
     await assertLayeredRoundTrip(zipSync(formattedParts, { mtime: new Date(1980, 0, 1) }), bytes, amended)
+    // A new paragraph's approved properties belong to its tracked insertion.
+    // Transport those exact properties with the wording, so Word does not
+    // create a second property revision when it imports the insertion. Existing
+    // paragraphs keep their original properties until native formatting.
+    if (inserted.size) {
+      const deliveryDoc = parse(strFromU8(outputParts[MAIN]!))
+      const delivery = bodyParagraphs(deliveryDoc, false).paragraphs
+      const final = bodyParagraphs(parse(strFromU8(formattedParts[MAIN]!)), false).paragraphs
+      require(delivery.length === final.length)
+      for (const index of inserted) {
+        const paragraph = delivery[index]!
+        paragraph.parentNode!.replaceChild(deliveryDoc.importNode(final[index]!, true), paragraph)
+      }
+      const deliveryParts = { ...outputParts, [MAIN]: strToU8(serializer.serializeToString(deliveryDoc)) }
+      await assertLayeredRoundTrip(zipSync(deliveryParts, { mtime: new Date(1980, 0, 1) }), bytes, amended)
+      wording.unformattedOoxml = wording.ooxml
+      wording.ooxml = importFlatOpc(deliveryParts, source.types)
+    }
     return { ...formatted, paragraphs: expected, revisions: [...revisions, ...formatted.revisions], wording }
   }
   return { ...wording, paragraphs: expected, author: AUTHOR }

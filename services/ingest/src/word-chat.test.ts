@@ -665,6 +665,21 @@ test("mixed wording and layout follow shared Auto and receive one independent re
   } finally { amend = false; modelProposal = undefined; approveReview = true; routerAgent = "qa" }
 })
 
+test("a misplaced formatting array cannot silently become a wording-only proposal", async () => {
+  const id = await newConversation(), before = context.text, after = before.replace("Tuesday", "Wednesday")
+  routerAgent = "redliner"
+  modelRawOutput = JSON.stringify({ answer: "Prepared the wording and spacing.", citations: [],
+    proposal: { before, after, explanation: "Requested change", openItems: [] }, formatting: [{ paragraph: 0, spacingAfter: 6 }] })
+  try {
+    const response = await send(id, "document", "Rewrite the wording and adjust spacing")
+    const turn = (await response.json() as { turn: WordChatTurn }).turn
+    expect(turn.proposal).toBeUndefined()
+    expect(turn.error).toContain("formatting could not be included")
+    expect(turn.answer).toBe("")
+    expect([...sessions.values()].some(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")).toBe(false)
+  } finally { routerAgent = "qa"; modelRawOutput = undefined }
+})
+
 test("independent amendment review receives first/last paragraph offsets and local-save semantics", async () => {
   const id = await newConversation()
   const paragraphs = [{ id: "first-native-id", text: "First paragraph with its original full wording." }, { id: "last-native-id", text: "Second note." }]

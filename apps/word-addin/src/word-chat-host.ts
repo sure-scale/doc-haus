@@ -350,7 +350,7 @@ export class WordChatHost {
           const fresh = await this.importSnapshot(context, next, true, false, true)
           if (!sameImportedWordChat(verified.wording.ooxml, fresh.ooxml) || !sameWordChatInlineRevisions(verified.wording.ooxml, fresh.ooxml))
             throw new WordChatHostError("Word changed the amended passage before formatting. Inspect it and use Undo if needed.")
-          return this.applyNativeFormatting(context, { ...input, target: next, replacement: next.text }, identity, fresh, authored, verified.inserted, verified.formats.length)
+          return this.applyNativeFormatting(context, { ...input, target: next, replacement: next.text }, identity, fresh, authored, verified.inserted, verified.nativeFormatCount)
         })
       }
       return await this.word.run(async context => {
@@ -447,9 +447,10 @@ export class WordChatHost {
     const formatting = input.formatting!
     const paragraphs = input.target.paragraphs.map(p => context.document.getParagraphByUniqueLocalId(p.id))
     this.applied.set(input.proposalId, { identity, authors: [], uncertain: true })
+    const nativeFormatting = formatting.filter(op => !inserted.has(op.paragraph))
     try {
-      context.document.changeTrackingMode = "TrackAll"
-      for (const op of formatting) {
+      if (nativeFormatting.length) context.document.changeTrackingMode = "TrackAll"
+      for (const op of nativeFormatting) {
         const paragraph = paragraphs[op.paragraph]!
         if (op.style !== undefined) paragraph.styleBuiltIn = op.style
         if (op.spacingBefore !== undefined) paragraph.spaceBefore = op.spacingBefore
@@ -458,8 +459,10 @@ export class WordChatHost {
       }
       await context.sync()
     } finally {
-      context.document.changeTrackingMode = fresh.tracking
-      await context.sync()
+      if (nativeFormatting.length) {
+        context.document.changeTrackingMode = fresh.tracking
+        await context.sync()
+      }
     }
     const all = context.document.body.paragraphs
     all.load("items/uniqueLocalId")
@@ -482,8 +485,7 @@ export class WordChatHost {
         if (count) { prior.set(key, count - 1); return false }
         return true
       })
-      const insertedFormats = formatting.filter(op => inserted.has(op.paragraph)).length
-      confirmed &&= ![...prior.values()].some(Boolean) && (expectedFormatCount === insertedFormats || added.length > 0) &&
+      confirmed &&= ![...prior.values()].some(Boolean) && (expectedFormatCount === 0 || added.length > 0) &&
         added.every(change => change.type === "Formatted" && authors.includes(change.author))
     } catch { confirmed = false }
     if (!confirmed) throw new WordChatHostError("Word changed the formatting, but could not confirm the reviewed tracked markup. Inspect it and use Undo if needed. Do not apply this proposal again.")

@@ -199,7 +199,10 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
     if (completed && (!output || typeof output.answer !== "string" || (meta.suppliedContext ? child.outcome !== "succeeded" : child.outcome === "failed" || child.outcome === "interrupted"))) {
       turn.status = "error"; turn.error = "Chat could not finish this response. Try a new request."; return currentTurn(auth, meta, turn)
     }
-    if ((meta.kind === "amendment" || meta.kind === "formatting") && output && record(output.proposal)) {
+    if ((meta.kind === "amendment" || meta.kind === "formatting") && output?.formatting !== undefined) {
+      turn.answer = ""
+      turn.error = "The proposed formatting could not be included in the review. Ask again to prepare the complete change."
+    } else if ((meta.kind === "amendment" || meta.kind === "formatting") && output && record(output.proposal)) {
       const proposed = output.proposal
       const before = typeof proposed.before === "string" ? wordChatParagraphBreaks(proposed.before) : ""
       const after = typeof proposed.after === "string" ? wordChatParagraphBreaks(proposed.after) : ""

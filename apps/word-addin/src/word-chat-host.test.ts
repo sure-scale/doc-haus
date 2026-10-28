@@ -183,8 +183,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     let properties = Array.from(block.childNodes).find(n => n.nodeType === 1 && (n as Element).localName === "pPr") as Element | undefined
     if (!properties) { properties = doc.createElementNS(WORD_XML, "w:pPr"); block.insertBefore(properties, block.firstChild) }
     let change = Array.from(properties.childNodes).find(n => n.nodeType === 1 && (n as Element).localName === "pPrChange") as Element | undefined
-    const inserted = Array.from(properties.getElementsByTagNameNS(WORD_XML, "rPr")).some(run => run.getElementsByTagNameNS(WORD_XML, "ins").length)
-    if (!change && !inserted) {
+    if (!change) {
       const previous = properties.cloneNode(true)
       change = doc.createElementNS(WORD_XML, "w:pPrChange")
       change.setAttributeNS(WORD_XML, "w:id", "900")
@@ -493,6 +492,23 @@ test("mixed inserted heading and wording retain prior inline revisions before na
   expect(state.writes).toHaveLength(1)
   expect(state.nativeRevisions.filter(r => r.author === "Earlier reviewer")).toHaveLength(2)
   expect(state.nativeRevisions.filter(r => r.type === "Formatted")).toHaveLength(1)
+  expect(state.nativeFormatting).toEqual(["new-0-3"])
+  const heading = new DOMParser().parseFromString(state.paragraphXml.get("paragraph-1")!, "application/xml")
+  expect(heading.getElementsByTagNameNS(WORD_XML, "pStyle")[0]!.getAttributeNS(WORD_XML, "val")).toBe("Heading1")
+  expect(heading.getElementsByTagNameNS(WORD_XML, "pPrChange")).toHaveLength(0)
+})
+
+test("inserted-only formatting is carried in reviewed wording without native setters", async () => {
+  const { state, host } = formattedOffice(), target = (await host.selection())!
+  const replacement = "Scope of obligations\r" + target.text
+  const input = { proposalId: "inserted-only-format", target, replacement, formatting: [{ paragraph: 0, style: "Heading1" as const }] }
+  expect((await host.apply(input)).status).toBe("applied")
+  expect(state.writes).toHaveLength(1)
+  expect(state.nativeFormatting).toHaveLength(0)
+  expect(state.nativeRevisions.filter(r => r.type === "Formatted")).toHaveLength(0)
+  const heading = new DOMParser().parseFromString(state.paragraphXml.get("paragraph-1")!, "application/xml")
+  expect(heading.getElementsByTagNameNS(WORD_XML, "pStyle")[0]!.getAttributeNS(WORD_XML, "val")).toBe("Heading1")
+  expect(heading.getElementsByTagNameNS(WORD_XML, "pPrChange")).toHaveLength(0)
 })
 
 test("mixed wording beside an existing own revision preserves that exact revision", async () => {
@@ -538,6 +554,32 @@ test("mixed artifact tampering refuses before mutation and a lost import cannot 
       await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain" })
       expect(state.writes).toHaveLength(1)
     }
+  }
+})
+
+test("unreviewed inserted or retained paragraph properties refuse before native mutation", async () => {
+  for (const tamper of ["baseline-indent", "retained-indent", "heading-style"] as const) {
+    const { state, host, author } = formattedOffice(), target = (await host.selection())!
+    const replacement = "Scope of obligations\r" + target.text.replace("Retained qualification.", "Retained important qualification.")
+    const input = { proposalId: `properties-${tamper}`, target, replacement, formatting: [{ paragraph: 0, style: "Heading1" as const }, { paragraph: 3, spacingAfter: 6 }] }
+    const write = author(input)
+    await expect(host.apply({ ...input, author: async snapshot => {
+      const result = await write(snapshot), wording = result.wording!
+      const key = tamper === "baseline-indent" ? "unformattedOoxml" : "ooxml"
+      const doc = new DOMParser().parseFromString(wording[key]!, "application/xml")
+      const body = doc.getElementsByTagNameNS(WORD_XML, "body")[0]!
+      const paragraphs = Array.from(body.childNodes).filter((node): node is Element => node.nodeType === 1 && (node as Element).localName === "p")
+      const properties = paragraphs[tamper === "retained-indent" ? 1 : 0]!.getElementsByTagNameNS(WORD_XML, "pPr")[0]!
+      if (tamper === "heading-style") properties.getElementsByTagNameNS(WORD_XML, "pStyle")[0]!.setAttributeNS(WORD_XML, "w:val", "Heading2")
+      else {
+        const ind = doc.createElementNS(WORD_XML, "w:ind")
+        ind.setAttributeNS(WORD_XML, "w:left", "300")
+        properties.insertBefore(ind, properties.firstChild)
+      }
+      return { ...result, wording: { ...wording, [key]: new XMLSerializer().serializeToString(doc) } }
+    } })).rejects.toMatchObject({ mutationState: "unchanged" })
+    expect(state.writes).toHaveLength(0)
+    expect(state.modeChanges).toHaveLength(0)
   }
 })
 

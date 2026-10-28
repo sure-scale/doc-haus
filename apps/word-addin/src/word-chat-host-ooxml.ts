@@ -1,6 +1,6 @@
 import { DOMParser } from "@xmldom/xmldom"
 import { validWordChatFormatting, type WordChatAuthoredAmendment, type WordChatParagraphFormat, type WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { reviewedWordChatParagraphFormatting } from "../../../dochaus/lib/word-chat-formatting-ooxml"
+import { reviewedWordChatParagraphFormatting, wordChatParagraphFormatChanged } from "../../../dochaus/lib/word-chat-formatting-ooxml"
 
 const PKG = "http://schemas.microsoft.com/office/2006/xmlPackage"
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -154,6 +154,99 @@ export function sameImportedWordChat(authored: string, observed: string): boolea
     JSON.stringify(marks(authored)) === JSON.stringify(marks(observed)) && JSON.stringify(formats(authored)) === JSON.stringify(formats(observed))
 }
 
+const named = (node: Element, name: string) => elements(node).filter(child => child.namespaceURI === W && child.localName === name)
+const unique = (nodes: Element[]) => nodes.length === 1 ? nodes[0] : undefined
+function dependencyRoot(parts: Map<string, Element>, name: string) {
+  const part = parts.get(name), data = part && unique(elements(part).filter(node => node.namespaceURI === PKG && node.localName === "xmlData"))
+  return data && unique(elements(data))
+}
+
+/** Word may materialize a list level's inherited indentation into the old pPr
+ * when recording a formatting revision. Normalize only that exact proven shape,
+ * with unchanged styles/numbering and no competing inherited list or indent. */
+function normalizeNativeNumberingOldProperties(captured: string, observed: string, before: Element[], after: Element[]) {
+  const source = parse(captured), current = parse(observed)
+  const numbering = dependencyRoot(source, "/word/numbering.xml"), observedNumbering = dependencyRoot(current, "/word/numbering.xml")
+  const styles = dependencyRoot(source, "/word/styles.xml"), observedStyles = dependencyRoot(current, "/word/styles.xml")
+  if (!numbering || !observedNumbering || !styles || !observedStyles ||
+    JSON.stringify(canonical(numbering)) !== JSON.stringify(canonical(observedNumbering)) ||
+    JSON.stringify(canonical(styles)) !== JSON.stringify(canonical(observedStyles))) return
+  if (numbering.namespaceURI !== W || numbering.localName !== "numbering" || styles.namespaceURI !== W || styles.localName !== "styles") return
+  const styleList = named(styles, "style"), defaults = named(styles, "docDefaults")
+  if (defaults.length > 1 || defaults.some(node => node.getElementsByTagNameNS(W, "ind").length || node.getElementsByTagNameNS(W, "numPr").length)) return
+  const safeStyle = (original: Element) => {
+    const styleRef = unique(named(original, "pStyle"))?.getAttributeNS(W, "val")
+    const defaultStyle = unique(styleList.filter(style => style.getAttributeNS(W, "type") === "paragraph" && ["1", "true"].includes(style.getAttributeNS(W, "default") ?? "")))
+    const first = styleRef || defaultStyle?.getAttributeNS(W, "styleId")
+    if (!first) return false
+    const visited = new Set<string>()
+    for (const seed of [first, defaultStyle?.getAttributeNS(W, "styleId")]) {
+      let id = seed
+      const chain = new Set<string>()
+      while (id && !visited.has(id)) {
+        if (chain.has(id)) return false
+        chain.add(id)
+        const style = unique(styleList.filter(item => item.getAttributeNS(W, "styleId") === id && item.getAttributeNS(W, "type") === "paragraph"))
+        if (!style || named(style, "pPr").length > 1 || style.getElementsByTagNameNS(W, "ind").length || style.getElementsByTagNameNS(W, "numPr").length || named(style, "basedOn").length > 1) return false
+        id = unique(named(style, "basedOn"))?.getAttributeNS(W, "val")
+      }
+      if (id && chain.has(id)) return false
+      for (const item of chain) visited.add(item)
+    }
+    return true
+  }
+  for (const [index, paragraph] of after.entries()) {
+    const original = unique(named(before[index]!, "pPr")), properties = unique(named(paragraph, "pPr"))
+    const change = properties && unique(named(properties, "pPrChange")), old = change && unique(named(change, "pPr"))
+    if (!original || !old || named(original, "ind").length || !safeStyle(original)) continue
+    const originalNum = unique(named(original, "numPr")), oldNum = unique(named(old, "numPr")), ind = unique(named(old, "ind"))
+    const numId = originalNum && unique(named(originalNum, "numId"))?.getAttributeNS(W, "val")
+    const level = originalNum && unique(named(originalNum, "ilvl"))?.getAttributeNS(W, "val")
+    if (!originalNum || !oldNum || !ind || !numId || numId === "0" || !level || !/^[0-8]$/.test(level)) continue
+    const num = unique(named(numbering, "num").filter(node => node.getAttributeNS(W, "numId") === numId))
+    const abstractId = num && unique(named(num, "abstractNumId"))?.getAttributeNS(W, "val")
+    const abstract = abstractId && unique(named(numbering, "abstractNum").filter(node => node.getAttributeNS(W, "abstractNumId") === abstractId))
+    if (!num || !abstract || named(abstract, "numStyleLink").length || named(abstract, "styleLink").length || abstract.getElementsByTagNameNS(W, "pStyle").length) continue
+    const overrides = named(num, "lvlOverride").filter(node => node.getAttributeNS(W, "ilvl") === level)
+    if (overrides.length > 1 || overrides.some(node => node.getElementsByTagNameNS(W, "pStyle").length)) continue
+    const overrideLevels = overrides[0] ? named(overrides[0], "lvl") : []
+    if (overrideLevels.length > 1) continue
+    const lvl = overrideLevels[0] ?? unique(named(abstract, "lvl").filter(node => node.getAttributeNS(W, "ilvl") === level))
+    const lvlPr = lvl && unique(named(lvl, "pPr")), lvlInd = lvlPr && unique(named(lvlPr, "ind"))
+    if (!lvlInd || JSON.stringify(canonical(lvlInd)) !== JSON.stringify(canonical(ind))) continue
+    const normalized = old.cloneNode(true) as Element, normalizedNum = unique(named(normalized, "numPr"))!
+    normalized.removeChild(unique(named(normalized, "ind"))!)
+    const oldLevel = named(normalizedNum, "ilvl")
+    if (!oldLevel.length && level === "0") normalizedNum.insertBefore(originalNum.ownerDocument!.importNode(unique(named(originalNum, "ilvl"))!, true), normalizedNum.firstChild)
+    if (JSON.stringify(canonical(normalized)) !== JSON.stringify(canonical(original))) continue
+    change!.replaceChild(change!.ownerDocument!.importNode(original, true), old)
+  }
+}
+
+/** Word can renumber pre-existing inline revision IDs during a native save.
+ * Match them in paragraph order with all other markup exact and unique IDs. */
+function normalizeNativeRevisionIds(before: Element[], after: Element[]) {
+  const collect = (paragraph: Element) => {
+    const revisions: Element[] = []
+    const visit = (node: Element) => {
+      if (node.namespaceURI === W && ["pPr", "rPr"].includes(node.localName)) return
+      if (node.namespaceURI === W && ["ins", "del"].includes(node.localName)) { revisions.push(node); return }
+      elements(node).forEach(visit)
+    }
+    visit(paragraph); return revisions
+  }
+  const originals = before.map(collect), observed = after.map(collect)
+  const ids = (values: Element[][]) => values.flat().map(node => node.getAttributeNS(W, "id"))
+  const originalIds = ids(originals), currentIds = ids(observed)
+  if (originalIds.some(id => !id || !/^\d+$/.test(id)) || currentIds.some(id => !id || !/^\d+$/.test(id)) ||
+    new Set(originalIds).size !== originalIds.length || new Set(currentIds).size !== currentIds.length ||
+    originals.length !== observed.length || originals.some((marks, i) => marks.length !== observed[i]!.length)) return
+  const pairs = originals.flatMap((marks, i) => marks.map((mark, j) => [mark, observed[i]![j]!] as const))
+  const withoutId = (node: Element) => { const copy = node.cloneNode(true) as Element; copy.removeAttributeNS(W, "id"); return canonical(copy) }
+  if (pairs.some(([old, current]) => JSON.stringify(withoutId(old)) !== JSON.stringify(withoutId(current)))) return
+  for (const [old, current] of pairs) current.setAttributeNS(W, "w:id", old.getAttributeNS(W, "id")!)
+}
+
 /** Verify native paragraph formatting against both the captured source and the
  * independently checked authored artifact. Word owns the revision author for
  * property mutations; no other author or revision content is normalized. */
@@ -161,7 +254,7 @@ export function verifiedNativeWordChatFormatting(captured: string, authored: str
   const before = content(parse(captured), true, true).nodes
   const after = content(parse(observed), true, true).nodes.map(node => node.cloneNode(true) as Element)
   const authors: string[] = []
-  for (const paragraph of after) {
+  for (const [index, paragraph] of after.entries()) {
     const properties = elements(paragraph).find(node => node.namespaceURI === W && node.localName === "pPr")
     const changes = properties ? elements(properties).filter(node => node.namespaceURI === W && node.localName === "pPrChange") : []
     if (changes.length > 1) throw new Error("Ambiguous native formatting revision")
@@ -170,12 +263,27 @@ export function verifiedNativeWordChatFormatting(captured: string, authored: str
       if (!author?.trim()) throw new Error("Missing native formatting author")
       authors.push(author)
       changes[0].setAttributeNS(W, "w:author", "doc.haus")
+      // Word changes this paragraph-property editing-session ID when it
+      // creates the verified pPrChange. It is not a content or style value.
+      if (!before[index]?.hasAttributeNS(W, "rsidP")) paragraph.removeAttributeNS(W, "rsidP")
+      else paragraph.setAttributeNS(W, "w:rsidP", before[index]!.getAttributeNS(W, "rsidP")!)
     }
   }
-  // This checks exact captured inline markup, untouched properties, requested
-  // values, and the original pPr saved inside every native format revision.
-  reviewedWordChatParagraphFormatting(before, after, formatting, inserted)
+  normalizeNativeRevisionIds(before, after)
+  normalizeNativeNumberingOldProperties(captured, observed, before, after)
   const expected = content(parse(authored), false, false).nodes
+  // Inserted properties are already present in the verified wording import.
+  // Only retained paragraphs may acquire native formatting revisions here.
+  const retained = formatting.filter(op => !inserted.has(op.paragraph))
+  const hasExpectedRevision = expected.some(paragraph => {
+    const properties = unique(named(paragraph, "pPr"))
+    return properties && named(properties, "pPrChange").length > 0
+  })
+  if (hasExpectedRevision) reviewedWordChatParagraphFormatting(before, after, retained)
+  else {
+    if (before.length !== after.length) throw new Error("Formatting changes paragraph boundaries")
+    before.forEach((paragraph, index) => wordChatParagraphFormatChanged(paragraph, after[index]!))
+  }
   if (after.length !== expected.length || after.some((paragraph, index) =>
     JSON.stringify(paragraphView(paragraph, "Current")) !== JSON.stringify(paragraphView(expected[index]!, "Current")) ||
     JSON.stringify(paragraphView(paragraph, "Original")) !== JSON.stringify(paragraphView(expected[index]!, "Original"))))
@@ -190,15 +298,48 @@ export function reviewedMixedWordChatArtifact(artifact: WordChatAuthoredAmendmen
     JSON.stringify(artifact.formatting) !== JSON.stringify(formatting)) throw new Error("Invalid mixed amendment")
   const wording = { proposalId, author: artifact.author, paragraphs: artifact.paragraphs, revisions: artifact.wording.revisions, ooxml: artifact.wording.ooxml } satisfies WordChatAuthoredAmendment
   reviewedWordChatArtifact(wording, proposalId, target, expected, captured)
-  const before = content(parse(wording.ooxml), false, false).nodes
+  const delivered = content(parse(wording.ooxml), false, false).nodes
   const after = content(parse(artifact.ooxml), false, false).nodes
-  if (before.some(node => paragraphMark(node)?.localName === "del")) throw new Error("Mixed deletion is not supported")
-  const inserted = new Set(before.flatMap((node, index) => paragraphMark(node)?.localName === "ins" ? [index] : []))
+  if (delivered.some(node => paragraphMark(node)?.localName === "del")) throw new Error("Mixed deletion is not supported")
+  const inserted = new Set(delivered.flatMap((node, index) => paragraphMark(node)?.localName === "ins" ? [index] : []))
+  let before = delivered
+  if (inserted.size) {
+    if (!artifact.wording.unformattedOoxml) throw new Error("Missing insertion formatting baseline")
+    const baseline = { ...wording, ooxml: artifact.wording.unformattedOoxml }
+    reviewedWordChatArtifact(baseline, proposalId, target, expected, captured)
+    unchangedFormattingDependencies(captured, baseline.ooxml)
+    unchangedFormattingDependencies(captured, wording.ooxml)
+    before = content(parse(baseline.ooxml), false, false).nodes
+    if (before.length !== delivered.length) throw new Error("Insertion baseline differs")
+    for (const [index, paragraph] of before.entries()) {
+      if (inserted.has(index)) {
+        const pPr = unique(named(paragraph, "pPr")), run = pPr && unique(named(pPr, "rPr"))
+        // A new paragraph has no authority for arbitrary pre-existing direct
+        // properties. Only its independently checked insertion mark is allowed.
+        if (!pPr || !run || elements(pPr).length !== 1 || elements(run).length !== 1 ||
+          paragraphMark(paragraph)?.localName !== "ins" || Array.from(pPr.attributes).some(a => a.namespaceURI !== XMLNS) ||
+          Array.from(run.attributes).some(a => a.namespaceURI !== XMLNS)) throw new Error("Unreviewed insertion properties")
+        // Inserted wording is literal, with only the reviewed paragraph-level
+        // formatting. Do not let a server-authored baseline introduce bold or
+        // other unreviewed run properties inside that insertion.
+        const inlineHasProperties = (node: Element): boolean => {
+          if (node.namespaceURI === W && node.localName === "pPr") return false
+          if (node.namespaceURI === W && node.localName === "rPr") return true
+          return elements(node).some(inlineHasProperties)
+        }
+        if (inlineHasProperties(paragraph)) throw new Error("Unreviewed insertion run formatting")
+      }
+      const op = inserted.has(index) ? formatting.find(item => item.paragraph === index) : undefined
+      wordChatParagraphFormatChanged(paragraph, delivered[index]!, op)
+    }
+  } else if (artifact.wording.unformattedOoxml) throw new Error("Unexpected insertion baseline")
   unchangedFormattingDependencies(captured, artifact.ooxml)
-  const formats = reviewedWordChatParagraphFormatting(before, after, formatting, inserted).flat()
+  const byParagraph = reviewedWordChatParagraphFormatting(before, after, formatting, inserted)
+  const formats = byParagraph.flat()
   if (artifact.proposalId !== proposalId || artifact.author !== "doc.haus" || JSON.stringify(artifact.paragraphs) !== JSON.stringify(expected) ||
     JSON.stringify(artifact.revisions) !== JSON.stringify([...wording.revisions, ...formats])) throw new Error("Mixed amendment metadata differs from markup")
-  return { wording, inserted, formats }
+  const nativeFormatCount = byParagraph.reduce((count, changes, index) => count + (inserted.has(index) ? 0 : changes.length), 0)
+  return { wording, inserted, formats, nativeFormatCount }
 }
 
 export function sameWordChatParagraphContent(before: string, after: string): boolean {
