@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { conversationResponseContract, suppliedConversationContext } from "./conversation-context"
+import { AMENDMENT_FORMATTING_GUIDANCE, conversationResponseContract, suppliedConversationContext } from "./conversation-context"
 
 function payload(value: string) {
   return JSON.parse(value.split("\n").at(-2)!)
@@ -40,4 +40,18 @@ test("amendment contract permits mixed wording and layout without deciding unsup
   expect(contract).toContain("only when it is inside the authorized target")
   expect(conversationResponseContract("review")).toContain("punctuation and spacing at both boundaries")
   expect(contract).not.toContain("Choose a wording or formatting-only proposal")
+})
+
+test("wording-preservation guidance does not fabricate formatting from plain paragraph context", () => {
+  const paragraph = { id: "payment", text: 'Replace the literal **placeholder** with "Fee".' }
+  const context = { request: "Update the wording while preserving formatting.", formattingParagraphs: [paragraph] }
+  const supplied = payload(suppliedConversationContext({ kind: "amendment", context }))
+  expect(supplied.context).toEqual(context)
+  expect(Object.keys(supplied.context.formattingParagraphs[0])).toEqual(["id", "text"])
+  expect(supplied.responseContract).toContain(AMENDMENT_FORMATTING_GUIDANCE)
+  expect(supplied.responseContract).toContain("preserve existing character formatting, paragraph styles, numbering and spacing")
+  expect(supplied.responseContract).toContain("When formatting is also requested, propose only the requested supported properties and preserve other formatting")
+  expect(supplied.responseContract).toContain("retain those characters when they are literal source text")
+  expect(supplied.responseContract).toContain("Plain text and paragraph IDs do not reveal existing formatting")
+  expect(supplied.responseContract).toContain("Omit proposal.formatting when no paragraph properties are requested")
 })

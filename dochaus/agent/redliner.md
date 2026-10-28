@@ -64,6 +64,16 @@ defines the markup conventions every edit must follow.
 </locate>
 
 <edit>
+For wording-only changes, preserve existing character formatting, paragraph
+styles, numbering and spacing. When formatting is also requested, propose only
+the requested supported properties and preserve other formatting. Make the
+smallest sufficient wording change and leave unrelated words intact. Replacement
+wording is plain document text: do not insert Markdown, HTML or XML to recreate
+styling; retain those characters when they are literal source text. A plain-text
+extract does not reveal existing formatting:
+do not invent current styles or promise an ambiguous formatting mapping is safe.
+Disclose a material limitation for review instead of silently broadening the edit.
+
 When the lawyer requests a separate new copy, use `copy-document` first with a
 new filename, then direct every edit only at the returned document name. The
 copy preserves the canonical Word file exactly; pending app proposals on the
