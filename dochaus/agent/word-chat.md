@@ -2,7 +2,7 @@
 description: Answers one scoped Word conversation request using only supplied, identified evidence.
 mode: primary
 temperature: 0.2
-steps: 1
+steps: 2
 tools:
   "*": false
 permission:
