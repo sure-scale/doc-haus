@@ -43,7 +43,8 @@ export function createPaneRenderer(document: Document) {
     const detailLabel = `${view.badge}${number === undefined ? "" : `, version ${number}`}. Show save status and recovery details`
     if (details.getAttribute("aria-label") !== detailLabel) details.setAttribute("aria-label", detailLabel)
     const stale = connection?.version.state === "stale"
-    update(save, "hidden", stale)
+    const confirmed = view.tone === "saved" && state.content === "confirmed" && !state.busy && !state.connectionFailed
+    update(save, "hidden", stale || confirmed)
     update(element("load-latest"), "hidden", !stale)
     update(element("version-state"), "textContent", view.mismatch ?? "")
     update(element("version-state"), "hidden", !view.mismatch)
