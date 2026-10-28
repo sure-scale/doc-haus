@@ -1,3 +1,8 @@
+.research-test-confirmed {
+  color: #167047;
+  border-color: #167047;
+}
+
 .research-source-list {
   min-width: 0;
   padding: var(--space-3) 14px;

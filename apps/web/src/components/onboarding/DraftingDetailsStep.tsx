@@ -1,37 +1,14 @@
 import { useState, type Dispatch, type ReactNode, type SetStateAction } from "react"
 import { savePreferences, type DraftingPreferences } from "../../api/ingest/preferences"
 import type { Jurisdiction } from "../../api/ingest/matters"
-import { savePrefs } from "../../prefs"
-import JurisdictionSelect from "../JurisdictionSelect"
-import { SegRow } from "../settings/controls"
-import { LegendField, PageLayoutPreview } from "../settings/PageLayout"
-import { ADVICE_LEGENDS, AGREEMENT_LEGENDS, DATE_FORMATS, suggestedDateFormat, suggestedLegends } from "../settings/page-layout"
 
 type DateFormat = DraftingPreferences["dateFormat"]
-
-/** What Save and finish stores. The date format is the firm's pick in setup,
- * else the one its default jurisdictions suggest, else the saved setting. */
-export function detailsPreferences(drafting: DraftingPreferences, selectedJx: string[], dateFormatChoice: DateFormat | null) {
-  return {
-    attorney: drafting.attorney,
-    firm: drafting.firm,
-    agreementLegend: drafting.agreementLegend,
-    adviceLegend: drafting.adviceLegend,
-    dateFormat: dateFormatChoice ?? suggestedDateFormat(selectedJx) ?? drafting.dateFormat,
-  }
-}
 
 export default function DraftingDetailsStep({
   drafting,
   setDrafting,
-  jurisdictions,
-  selectedJx,
-  setSelectedJx,
-  dateFormatChoice,
-  setDateFormatChoice,
   setStep,
   onClose,
-  extra,
   busyLabel,
   disabled = false,
 }: {
@@ -52,9 +29,6 @@ export default function DraftingDetailsStep({
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
-  const suggested = suggestedLegends(selectedJx)
-  const suggestedDate = suggestedDateFormat(selectedJx)
-  const dateFormat = drafting && detailsPreferences(drafting, selectedJx, dateFormatChoice).dateFormat
   return (
     <>
       {error && <p role="alert" className="settings-warning">{error}</p>}
@@ -85,63 +59,8 @@ export default function DraftingDetailsStep({
         </div>
       </section>
 
-      <section className="settings-section">
-        <h3><label htmlFor="onboarding-jurisdictions">Default jurisdictions</label></h3>
-        <p id="onboarding-jurisdictions-hint" className="settings-hint muted">
-          Preselected on every new matter — most firms work in one or two. You can still change them per
-          matter.
-        </p>
-        <div className="row settings-row">
-          <JurisdictionSelect id="onboarding-jurisdictions" aria-describedby="onboarding-jurisdictions-hint" jurisdictions={jurisdictions} selected={selectedJx} onChange={setSelectedJx} />
-        </div>
-      </section>
-
-      <section className="settings-section">
-        <h3>Dates</h3>
-        <SegRow
-          label="Date format"
-          hint={`Used for every date in your documents, including the draft line.${suggestedDate && !dateFormatChoice ? " Suggested from your default jurisdictions." : ""}`}
-          disabled={busy || !drafting}
-          value={dateFormat ?? ""}
-          onChange={(value) => setDateFormatChoice(value as DateFormat)}
-          options={DATE_FORMATS}
-        />
-      </section>
-
-      <section className="settings-section">
-        <h3>Legends</h3>
-        <p className="settings-hint muted">
-          A legend has legal effect, so doc.haus adds none unless you choose one. Each appears only on the documents
-          it names.{suggested.agreement.length > 0 && " Suggestions follow common practice in your default jurisdictions."}
-        </p>
-        <LegendField
-          id="onboarding-agreement-legend"
-          label="Agreement legend"
-          hint="At the top of every page of an agreement."
-          presets={AGREEMENT_LEGENDS}
-          suggested={suggested.agreement}
-          disabled={busy || !drafting}
-          value={drafting?.agreementLegend ?? ""}
-          onChange={(agreementLegend) => setDrafting((d) => d && { ...d, agreementLegend })}
-        />
-        <LegendField
-          id="onboarding-advice-legend"
-          label="Advice legend"
-          hint="At the top of every page of advice, such as a memo, opinion or advice letter."
-          presets={ADVICE_LEGENDS}
-          suggested={suggested.advice}
-          disabled={busy || !drafting}
-          value={drafting?.adviceLegend ?? ""}
-          onChange={(adviceLegend) => setDrafting((d) => d && { ...d, adviceLegend })}
-        />
-        {drafting && dateFormat && <PageLayoutPreview prefs={{ ...drafting, dateFormat }} />}
-        <p className="settings-hint muted">Page numbers and the draft line can be changed in Settings → Drafting.</p>
-      </section>
-
-      {extra}
-
       <div className="onboarding-actions">
-        <button disabled={busy} onClick={() => setStep("research")}>Back to research</button>
+        <button type="button" className="onboarding-back" disabled={busy} onClick={() => setStep("research")}>Back to research</button>
         <button
           className="primary btn-lg"
           disabled={busy || !drafting || disabled}
@@ -149,8 +68,7 @@ export default function DraftingDetailsStep({
             if (!drafting || busy) return
             setBusy(true); setError("")
             try {
-              await savePreferences(detailsPreferences(drafting, selectedJx, dateFormatChoice))
-              savePrefs({ defaultJurisdictions: selectedJx })
+              await savePreferences({ attorney: drafting.attorney, firm: drafting.firm })
               await onClose()
             } catch { setError("Could not save drafting details. Retry.") }
             finally { setBusy(false) }

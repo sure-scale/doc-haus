@@ -147,7 +147,7 @@ function restoreAt(state: Fixture, name: string, id: string) {
 
 async function open(state: Fixture, width: number, height: number) {
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: width <= 768, reducedMotion: "reduce", timezoneId: "Europe/London" })
-  await context.addInitScript(() => { try { sessionStorage.setItem("dh.launch-notice.v1", "accepted"); localStorage.setItem("dh.sidebar", innerWidth > 960 ? "0" : "1") } catch { /* the browser's PDF viewer frame has no storage */ } })
+  await context.addInitScript(() => { try { localStorage.setItem("dh.launch-notice.v1", new Date().toDateString()); localStorage.setItem("dh.sidebar", innerWidth > 960 ? "0" : "1") } catch { /* the browser's PDF viewer frame has no storage */ } })
   await context.route("**/*", async (route: Route) => {
     const request = route.request()
     const url = new URL(request.url())

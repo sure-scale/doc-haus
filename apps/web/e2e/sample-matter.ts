@@ -28,7 +28,7 @@ function fixture(setup: "done" | "details", matters: Matter[], sampleFailures = 
 
 async function open(state: ReturnType<typeof fixture>, width = 1440, height = 1000) {
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: width <= 600, reducedMotion: "reduce" })
-  await context.addInitScript(() => sessionStorage.setItem("dh.launch-notice.v1", "accepted"))
+  await context.addInitScript(() => localStorage.setItem("dh.launch-notice.v1", new Date().toDateString()))
   await context.route("**/*", async route => {
     const request = route.request()
     const url = new URL(request.url())

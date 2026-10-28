@@ -11,10 +11,12 @@
 .ai-setup-actions .primary:last-child { margin-inline-start: auto; }
 .ai-setup-section-title { display: flex; align-items: center; gap: var(--space-3); }
 .ai-setup-section-title span { color: var(--muted); font-weight: 400; }
+.ai-setup-model-heading { display: flex; align-items: center; gap: var(--space-2); }
+.ai-setup-model-heading .ai-setup-section-title { margin: 0; }
+.ai-setup-refresh { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; border: 0; background: transparent; color: var(--muted); }
+.ai-setup-refresh:hover:not(:disabled) { color: var(--accent); background: var(--accent-soft); }
 .ai-setup-summary { display: grid; gap: var(--space-2); margin-block-end: var(--space-5); }
 .ai-setup-summary p { margin: 0; overflow-wrap: anywhere; }
-.ai-setup-manage > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
-.ai-setup-manage .settings-conn { gap: var(--space-3); flex-wrap: wrap; }
 @media (max-width: 600px) {
   .ai-setup-actions > button { flex: 1 1 auto; }
   .ai-setup-actions .primary:last-child { margin-inline-start: 0; }

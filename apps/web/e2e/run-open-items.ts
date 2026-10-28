@@ -26,7 +26,7 @@ const results: Record<string, unknown>[] = []
 try {
   for (const [run, status] of Object.entries(runs)) for (const [width, height] of [[1440, 1000], [1280, 720], [400, 860]]) {
     const context = await browser.newContext({ viewport: { width, height }, reducedMotion: "reduce" })
-    await context.addInitScript(() => sessionStorage.setItem("dh.launch-notice.v1", "accepted"))
+    await context.addInitScript(() => localStorage.setItem("dh.launch-notice.v1", new Date().toDateString()))
     const unexpected: string[] = []
     await context.route("**/*", async (route: {
       request: () => { url: () => string; method: () => string; resourceType: () => string }

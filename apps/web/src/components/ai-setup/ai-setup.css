@@ -17,6 +17,34 @@
   max-width: 100%;
 }
 
+.ai-setup-detected {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.ai-setup-detected p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: .875rem;
+}
+
+.ai-setup-detected-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.ai-setup-detected-options button {
+  min-height: 44px;
+}
+
+.ai-setup-detected-options button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .ai-setup-result-list {
   display: grid;
   gap: var(--space-3);

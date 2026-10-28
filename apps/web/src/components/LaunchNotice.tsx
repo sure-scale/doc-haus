@@ -3,12 +3,12 @@ import { useLayoutEffect, useRef, useState } from "react"
 import logo from "../assets/dochaus-logo.svg"
 import { useClosed } from "./useExit"
 
-// This is a per-tab acknowledgement, not an account-level consent record.
+// This is a browser-local daily acknowledgement, not an account-level consent record.
 // Change the version when the notice changes so it is shown again.
 const NOTICE_KEY = "dh.launch-notice.v1"
 
 export function hasAcceptedLaunchNotice() {
-  return readBrowserValue(NOTICE_KEY, true) === "accepted"
+  return readBrowserValue(NOTICE_KEY) === new Date().toDateString()
 }
 
 export default function LaunchNotice({ onAccept }: { onAccept: () => void }) {
@@ -26,7 +26,7 @@ export default function LaunchNotice({ onAccept }: { onAccept: () => void }) {
   }, [open])
 
   function accept() {
-    writeBrowserValue(NOTICE_KEY, "accepted", true)
+    writeBrowserValue(NOTICE_KEY, new Date().toDateString())
     onAccept()
   }
 

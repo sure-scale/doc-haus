@@ -10,7 +10,9 @@ import MatterDefaultsTab from "./MatterDefaultsTab"
 import ApprovalsTab from "./ApprovalsTab"
 import AppearanceTab from "./AppearanceTab"
 import WordAddin from "./WordAddin"
+import { connectionMessage, providerHealth } from "../../api/opencode/provider-health"
 import backdropClose from "../backdropClose"
+import { SettingsFooterContext } from "./SettingsFooter"
 
 // AI setup shares its provider, connection, model and test flow with onboarding.
 const TABS: { id: Tab; label: string }[] = [
@@ -24,18 +26,19 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "appearance", label: "Appearance" },
 ]
 
-export default function Settings({ onClose, closing = false, firstRun = false, initialTab, reconnectProvider, onSampleAdded }: { onClose: () => void; closing?: boolean; firstRun?: boolean; initialTab?: Tab; reconnectProvider?: string; onSampleAdded?: () => void }) {
+export default function Settings({ onClose, closing = false, firstRun = false, recoveryRequired = false, initialTab, reconnectProvider, onSampleAdded }: { onClose: () => void; closing?: boolean; firstRun?: boolean; recoveryRequired?: boolean; initialTab?: Tab; reconnectProvider?: string; onSampleAdded?: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const titleId = useId()
   const tabsId = useId()
+  const [footer, setFooter] = useState<HTMLDivElement | null>(null)
   const [narrow, setNarrow] = useState(() => window.matchMedia("(max-width: 700px)").matches)
   // Closes, and returns focus, as the exit starts; only the picture lingers.
   useLayoutEffect(() => {
     if (closing) return
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const modal = dialog.current
-    modal?.showModal()
-    modal?.querySelector<HTMLButtonElement>(".modal-close")?.focus({ preventScroll: true })
+    modal?.showModal();
+    (modal?.querySelector<HTMLElement>(".modal-close") ?? modal?.querySelector<HTMLElement>(".viewer-title"))?.focus({ preventScroll: true })
     return () => {
       modal?.close()
       if (opener?.isConnected) opener.focus({ preventScroll: true })
@@ -43,6 +46,7 @@ export default function Settings({ onClose, closing = false, firstRun = false, i
   }, [closing])
 
   const [tab, setTab] = useState<Tab>(() => initialTab ?? "ai")
+  useEffect(() => { if (recoveryRequired) setTab("ai") }, [recoveryRequired])
   useEffect(() => {
     const query = window.matchMedia("(max-width: 700px)")
     const update = () => setNarrow(query.matches)
@@ -54,7 +58,7 @@ export default function Settings({ onClose, closing = false, firstRun = false, i
   const [wordBusy, setWordBusy] = useState(false)
   const busy = aiSaving || wordBusy
   function switchTab(next: Tab) {
-    if (busy) return
+    if (busy || (recoveryRequired && next !== "ai")) return
     setTab(next)
   }
 
@@ -81,36 +85,35 @@ export default function Settings({ onClose, closing = false, firstRun = false, i
       className={`viewer-overlay settings-overlay${closing ? " is-closing" : ""}`}
       inert={closing}
       aria-labelledby={titleId}
-      onCancel={(event) => { event.preventDefault(); if (!busy) onClose() }}
-      {...backdropClose(() => { if (!busy) onClose() })}
+      onCancel={(event) => { event.preventDefault(); if (!busy && !recoveryRequired) onClose() }}
+      {...backdropClose(() => { if (!busy && !recoveryRequired) onClose() })}
     >
       <div className="picker-panel settings-panel" onClick={(e) => e.stopPropagation()}>
         <div className="viewer-bar">
-          <span className="viewer-title" id={titleId}>Settings</span>
-          <button className="modal-close" aria-label="Close" disabled={busy} onClick={onClose}>
+          <span className="viewer-title" id={titleId} tabIndex={-1}>Settings</span>
+          {!recoveryRequired && <button className="modal-close" aria-label="Close" disabled={busy} onClick={onClose}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
-          </button>
+          </button>}
         </div>
         <div className="settings-body">
           <div className="settings-nav" role="tablist" aria-label="Settings categories" aria-orientation={narrow ? "horizontal" : "vertical"} onKeyDown={navigateTabs}>
-            <p className="settings-nav-caption" aria-hidden="true">Your workspace</p>
             {TABS.map((t) => (
-              <button type="button" key={t.id} id={`${tabsId}-${t.id}`} role="tab" aria-selected={tab === t.id} aria-controls={`${tabsId}-panel`} tabIndex={tab === t.id ? 0 : -1} disabled={busy} className={tab === t.id ? "active" : ""} onClick={() => switchTab(t.id)}>
+              <button type="button" key={t.id} id={`${tabsId}-${t.id}`} role="tab" aria-selected={tab === t.id} aria-controls={`${tabsId}-panel`} tabIndex={tab === t.id ? 0 : -1} disabled={busy || (recoveryRequired && t.id !== "ai")} className={tab === t.id ? "active" : ""} onClick={() => switchTab(t.id)}>
                 {t.label}
               </button>
             ))}
           </div>
-          <div className="settings-content" id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-${tab}`} tabIndex={0}>
-            <div hidden={tab !== "ai"} inert={tab !== "ai"}><AISetup reconnectProvider={reconnectProvider} onProgress={progress => setAISaving(progress.saving === true)} onSaved={() => { toast("success", "AI setup saved."); if (firstRun) onClose() }} /></div>
+          <div className="settings-main"><SettingsFooterContext.Provider value={{ target: footer, tab }}><div className="settings-content" id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-${tab}`} tabIndex={0}>
+            <div hidden={tab !== "ai"} inert={tab !== "ai"}>{recoveryRequired && <div role="alert" className="settings-notice"><p>{connectionMessage(providerHealth.getSnapshot().find(item => ["auth", "model", "unavailable"].includes(item.status)) ?? { providerID: reconnectProvider ?? "", modelID: "", status: "unavailable" })}</p><button type="button" disabled={busy} onClick={() => void providerHealth.check(true).then(() => { if (providerHealth.getSnapshot().length > 0 && providerHealth.getSnapshot().every(item => item.status === "ready")) onClose() })}>Check again</button></div>}<AISetup key={`${recoveryRequired}:${reconnectProvider ?? ""}`} reconnectProvider={reconnectProvider} onProgress={progress => setAISaving(progress.saving === true)} onSaved={() => { toast("success", "AI setup saved."); if (firstRun || recoveryRequired) onClose() }} /></div>
 
             {tab === "drafting" && <DraftingTab onSaved={(m) => toast("success", m)} />}
             {tab === "research" && <ResearchTab onSaved={(m) => toast("success", m)} />}
             {tab === "data" && <StatisticsTab onSaved={(m) => toast("success", m)} onError={(m) => toast("error", m)} />}
-            {tab === "matters" && <MatterDefaultsTab onSampleAdded={() => { toast("success", "Sample matter added to your matters."); onSampleAdded?.() }} onError={(m) => toast("error", m)} />}
+            {tab === "matters" && <MatterDefaultsTab onSampleAdded={() => { toast("success", "Sample matter added to your matters."); onSampleAdded?.() }} onError={(m) => toast("error", m)} onSaved={() => toast("success", "Matter defaults saved.")} />}
             {tab === "addins" && <WordAddin onBusy={setWordBusy} />}
             {tab === "approvals" && <ApprovalsTab />}
             {tab === "appearance" && <AppearanceTab />}
-          </div>
+          </div><div className="settings-footer" ref={setFooter} /></SettingsFooterContext.Provider></div>
         </div>
       </div>
     </dialog>,

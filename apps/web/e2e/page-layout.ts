@@ -36,7 +36,7 @@ function fixture(setup: "done" | "details") {
 
 async function open(state: ReturnType<typeof fixture>, width: number, height: number) {
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: width <= 600, reducedMotion: "reduce", timezoneId: "Europe/London" })
-  await context.addInitScript(() => sessionStorage.setItem("dh.launch-notice.v1", "accepted"))
+  await context.addInitScript(date => localStorage.setItem("dh.launch-notice.v1", date), today.toDateString())
   await context.route("**/*", async route => {
     const request = route.request()
     const url = new URL(request.url())
@@ -88,12 +88,13 @@ async function open(state: ReturnType<typeof fixture>, width: number, height: nu
 }
 
 async function scenario(name: string, run: () => Promise<void>) {
+  if (process.env.DOCHAUS_E2E_SCENARIOS && !new RegExp(process.env.DOCHAUS_E2E_SCENARIOS).test(name)) return
   try { await run(); results.push({ name, status: "passed" }); console.log(`PASS ${name}`) }
   catch (error) { results.push({ name, status: "failed", error: error instanceof Error ? error.message : String(error) }); throw error }
 }
 const preview = (page: Page) => ({
-  header: page.getByRole("figure", { name: "Agreement page preview" }).locator('[data-preview="header"] p'),
-  footer: page.getByRole("figure", { name: "Agreement page preview" }).locator('[data-preview="footer"]'),
+  header: page.getByRole("figure", { name: /page preview$/ }).locator('[data-preview="header"] p'),
+  footer: page.getByRole("figure", { name: /page preview$/ }).locator('[data-preview="footer"]'),
 })
 const choice = (page: Page, group: string, label: string) => page.getByRole("radiogroup", { name: group }).getByRole("radio", { name: label, exact: true })
 const segment = (page: Page, group: string, label: string) => page.getByRole("group", { name: group }).getByRole("button", { name: label, exact: true })
@@ -163,6 +164,14 @@ try {
         await custom.fill("x".repeat(130))
         await expect(custom).toHaveValue("x".repeat(120))
         await custom.fill("Fixture advice legend")
+        await modal.getByRole("group", { name: "Preview document" }).getByRole("button", { name: "Advice" }).click()
+        await expect(preview(page).header).toHaveText(["Fixture advice legend", "Fixture Partners LLP draft: 20 October 2026"])
+        await modal.getByRole("group", { name: "Preview document" }).getByRole("button", { name: "Drafting notes" }).click()
+        await expect(preview(page).header).toHaveText(["Internal drafting notes — not for circulation"])
+        await segment(page, "Drafting notes marking", "Off").click()
+        await expect(preview(page).header).toHaveText(["No header"])
+        await segment(page, "Drafting notes marking", "On").click()
+        await modal.getByRole("group", { name: "Preview document" }).getByRole("button", { name: "Agreement" }).click()
         await choice(page, "Advice legend", "Privileged & confidential").check()
         await choice(page, "Advice legend", "Custom text").check()
         await expect(custom).toHaveValue("Fixture advice legend")

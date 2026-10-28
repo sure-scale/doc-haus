@@ -102,9 +102,15 @@ export function CheckRow({ id, label, hint, checked, onChange }: { id: string; l
 // number the renderer adds under these settings, dated today as an example.
 export function PageLayoutPreview({ prefs }: { prefs: LayoutPreferences }) {
   const [today] = useState(() => new Date())
-  const { header, pageNumber, firstPage } = agreementFurniture(prefs, today)
+  const [kind, setKind] = useState<"agreement" | "advice" | "notes">("agreement")
+  const { header, pageNumber, firstPage } = agreementFurniture(prefs, today, kind)
   return (
-    <figure className="page-layout-preview" aria-label="Agreement page preview">
+    <figure className="page-layout-preview" aria-label={`${kind === "notes" ? "Drafting notes" : kind === "advice" ? "Advice" : "Agreement"} page preview`}>
+      <div className="settings-seg page-layout-preview-toggle" role="group" aria-label="Preview document">
+        {([ ["agreement", "Agreement"], ["advice", "Advice"], ["notes", "Drafting notes"] ] as const).map(([value, label]) =>
+          <button key={value} type="button" className={kind === value ? "active" : ""} aria-pressed={kind === value} onClick={() => setKind(value)}>{label}</button>
+        )}
+      </div>
       <div className="page-layout-sheet">
         <div className="page-layout-header" data-preview="header">
           {header.length ? header.map(line => <p key={line}>{line}</p>) : <p className="page-layout-empty">No header</p>}
@@ -114,7 +120,7 @@ export function PageLayoutPreview({ prefs }: { prefs: LayoutPreferences }) {
           {pageNumber && !firstPage ? pageNumber.text : <span className="page-layout-empty">{pageNumber ? "Numbered from page 2" : "No page number"}</span>}
         </div>
       </div>
-      <figcaption className="settings-hint muted">An agreement's first page. The draft line carries the date the draft is first made.</figcaption>
+      <figcaption className="settings-hint muted">First page example. The draft line uses the date the draft is first made. Document styles are not shown.</figcaption>
     </figure>
   )
 }

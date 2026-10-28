@@ -84,6 +84,11 @@
   background: linear-gradient(var(--md-sys-state-pressed), var(--md-sys-state-pressed)), var(--md-sys-color-primary-container);
 }
 
+.settings-main { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
+.settings-footer { flex: none; padding: var(--space-3) var(--space-7); border-top: 1px solid var(--border); background: var(--panel); }
+.settings-footer:empty { display: none; }
+.settings-footer .settings-actions, .settings-footer .ai-setup-actions { margin: 0; padding: 0; }
+
 .settings-content {
   --settings-label-width: 152px;
   container: settings / inline-size;
@@ -156,6 +161,16 @@
   margin-left: calc(var(--settings-label-width) + 24px);
   padding-top: var(--space-4);
 }
+
+.settings-panel .settings-actions > .primary {
+  margin-inline-start: auto;
+}
+
+.settings-actions-end { justify-content: flex-end; }
+.settings-panel .settings-actions,
+.settings-panel .ai-setup-actions { justify-content: flex-end; }
+.settings-panel .research-test-action:not(.research-test-action-exa) > button { display: block; margin-inline-start: auto; }
+.settings-panel :is(.settings-section, .settings-notice, .ai-setup) > button:not(.ai-setup-refresh) { display: block; margin-inline-start: auto; }
 
 .settings-summary {
   margin: 0;

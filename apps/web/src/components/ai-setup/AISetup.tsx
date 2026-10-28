@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import type { IntegrationInfo } from "@opencode/client"
-import { getConfig, setDisabledProviders, type Config } from "../../api/opencode/config"
+import { getConfig, type Config } from "../../api/opencode/config"
 import { listIntegrations, listProviders } from "../../api/opencode/providers"
 import { settingsClient } from "../../api/opencode/client"
 import { isRemovedModel, isRemovedProvider } from "../../api/opencode/provider-readiness"
@@ -15,12 +15,13 @@ import { CLOUD_SETUPS } from "../settings/cloud-setups"
 import { visibleFields } from "./connection-fields"
 import { FieldRow } from "../settings/controls"
 import ConnectionEditor, { connectionChoices, methodDefaults, type ConnectionDraft } from "./ConnectionEditor"
-import ProviderPicker from "./ProviderPicker"
+import ProviderPicker, { providerDescription } from "./ProviderPicker"
 import ModelFields from "./ModelFields"
 import TestResults, { type ModelTestResult } from "./TestResults"
+import { SettingsFooter } from "../settings/SettingsFooter"
 
 export type SetupPhase = "provider" | "connection" | "models" | "test"
-export type AISetupProgress = { provider: boolean; connection: boolean; models: boolean; test: boolean; loading: boolean; busy: boolean; saving?: boolean }
+export type AISetupProgress = { provider: boolean; connection: boolean; models: boolean; test: boolean; loading: boolean; busy: boolean; saving?: boolean; saved?: boolean; cloudProviderCount?: number }
 const emptyDraft = (): ConnectionDraft => ({ choice: "", key: "", answer: {}, options: {}, name: "" })
 const message = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback
 const localID = (name: string) => name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
@@ -96,6 +97,8 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   const [saved, setSaved] = useState(false)
   const [attempt, setAttempt] = useState<(CandidateAuthResult & { type: "oauth" | "command" })>()
   const [authCode, setAuthCode] = useState("")
+  const connectionHeading = useRef<HTMLHeadingElement>(null)
+  const [focusConnection, setFocusConnection] = useState(false)
   const revision = useRef(0)
   const session = useRef("")
   const autoPrepare = useRef(false)
@@ -113,8 +116,9 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   const fingerprint = JSON.stringify([sessionID, primary, chosenFast])
   const passed = Boolean(sessionID && choiceValid && verified === fingerprint)
   const configured = Boolean(sessionID && modelReady)
-  const progress = { provider: Boolean(provider), connection: configured, models: choiceValid, test: passed, loading, busy, saving }
-  useEffect(() => { callbacks.current.onProgress?.(progress) }, [provider, configured, choiceValid, passed, loading, busy, saving])
+  const cloudProviderCount = providers.filter(item => item.activation !== "disabled" && !config.disabled_providers?.includes(item.id) && !["ollama", "lmstudio", "qvac"].includes(item.id) && !item.id.startsWith("local-")).length
+  const progress = { cloudProviderCount, saved, provider: Boolean(provider), connection: configured, models: choiceValid, test: passed, loading, busy, saving }
+  useEffect(() => { callbacks.current.onProgress?.(progress) }, [provider, configured, choiceValid, passed, loading, busy, saving, saved, cloudProviderCount])
 
   function clearTest() { revision.current++; setResults([]); setVerified(""); setSaved(false); setError(""); setContinuePending(false) }
   function resetCandidate() {
@@ -136,7 +140,7 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
       if (expected) for (let retry = 0; ; retry++) {
         const found = catalog.all.find(item => item.id === expected.providerID && item.activation !== "disabled")
         if (found && expected.models.every(id => Boolean(found.models[id.split("#")[0]!]))) break
-        if (retry === 15) throw new Error("AI setup was saved. Provider discovery is still updating. Refresh discovery to load it.")
+        if (retry === 15) throw new Error("AI setup was saved. Provider discovery is still updating. Retry provider discovery to load it.")
         await new Promise(resolve => setTimeout(resolve, 200))
         const [nextCatalog, nextAuth] = await Promise.all([listProviders(client), listIntegrations(client)])
         catalog = nextCatalog
@@ -148,7 +152,7 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
       const picked = all.find(item => item.id === target && item.activation !== "disabled")
       setProviders(all); setIntegrations(auth); setConfig(cfg)
       setReusable(reuse.sources.filter(source => source.status === "ready").flatMap(source => source.connections.map(connection => ({ sourceId: source.id, connectionId: connection.id, integrationID: connection.integrationID, label: connection.label, authType: connection.authType, sourceLabel: source.label }))))
-      setDiscoveryNotice(reuse.error || (reuse.sources.some(source => source.status === "unavailable") ? "Some saved sign-in sources could not be read. The connections listed are available to choose." : ""))
+      setDiscoveryNotice(reuse.error)
       setProvider(picked?.id ?? "")
       const next = prefill(picked, auth.find(item => item.id === (picked?.integrationID ?? picked?.id)), cfg)
       const pendingMethod = picked && pending?.providerID === picked.id ? auth.find(item => item.id === (picked.integrationID ?? picked.id))?.methods.find(item => "id" in item && item.id === pending.methodID && item.type === pending.attempt.type) : undefined
@@ -175,10 +179,19 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
     void prepare(false)
   }, [loadVersion, loading, busy, continuePending])
 
+  useEffect(() => {
+    if (!focusConnection) return
+    connectionHeading.current?.focus()
+    setFocusConnection(false)
+  }, [focusConnection, provider])
+
   function changeProvider(id: string) {
+    if (id === provider) return
     resetCandidate(); setProvider(id); setPrimary(""); setFast("")
     const item = providers.find(item => item.id === id)
-    setDraft(id === "__local_endpoint__" ? { ...emptyDraft(), options: { baseURL: "http://localhost:1234/v1" } } : prefill(item, integrations.find(integration => integration.id === (item?.integrationID ?? id)), config))
+    const next = id === "__local_endpoint__" ? { ...emptyDraft(), options: { baseURL: "http://localhost:1234/v1" } } : prefill(item, integrations.find(integration => integration.id === (item?.integrationID ?? id)), config)
+    if (next.choice.startsWith("method:") && reusable.some(connection => connection.integrationID === (item?.integrationID ?? id))) next.choice = ""
+    setDraft(next)
   }
   function changeDraft(next: ConnectionDraft) { resetCandidate(); setDraft(next) }
   function changePrimary(value: string) { clearTest(); setPrimary(value) }
@@ -265,7 +278,7 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
     } catch (failure) { if (action === "cancel") resetCandidate(); else setError(message(failure, "Could not check sign-in. Check its status before starting another attempt.")) }
     finally { setBusy(false) }
   }
-  async function runTests() {
+  async function runTests(continueOnSuccess = false) {
     if (!configured || !choiceValid || busy) return
     setBusy(true); setError(""); setVerified(""); setSaved(false)
     const current = revision.current
@@ -280,7 +293,10 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
         allPassed &&= outcome.ok
         setResults(results => results.map(item => item.model !== selected ? item : { ...item, status: outcome.ok ? "ready" : outcome.kind, ...(!outcome.ok ? { message: outcome.error } : {}) }))
       }
-      if (allPassed && revision.current === current) setVerified(fingerprint)
+      if (allPassed && revision.current === current) {
+        setVerified(fingerprint)
+        if (continueOnSuccess) await save(true)
+      }
     } catch (failure) {
       if (revision.current === current) {
         const detail = message(failure, "The connection test could not complete.")
@@ -293,8 +309,8 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
     try { await onSaved() }
     catch { setContinuePending(true); setError("AI setup was saved. Setup progress could not be updated. Continue again to retry that step.") }
   }
-  async function save() {
-    if (!passed || busy || saveUnconfirmed) return
+  async function save(testedJustNow = false) {
+    if ((!passed && !testedJustNow) || (busy && !testedJustNow) || saveUnconfirmed) return
     setSaving(true); setBusy(true); setError("")
     try {
       await saveCandidate(sessionID, modelID(primary), modelID(chosenFast))
@@ -320,31 +336,27 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   if (loading && !loaded) return <p className="settings-hint muted" role="status">Loading providers and saved connections…</p>
   if (!loaded) return <div role="alert"><p>{error}</p><button type="button" onClick={() => void load()}>Retry AI setup</button></div>
   return <div className="ai-setup" aria-busy={loading || busy}>
-    {mode === "settings" && <div className="ai-setup-summary">
-      <h3>AI setup</h3>
-      <p className="settings-hint muted">Choose a provider, configure its connection, then select and test your models.</p>
-      {config.model && <p className="settings-hint muted">Current primary model: <strong>{config.model}</strong></p>}
-    </div>}
     {error && <p role="alert" className="settings-warning">{error}</p>}
     {saveUnconfirmed && <button type="button" onClick={() => { setSaveUnconfirmed(false); resetCandidate(); void load() }}>Reload saved AI setup</button>}
     {saved && error && mode === "settings" && <button type="button" disabled={busy || loading} onClick={() => void load()}>Retry provider discovery</button>}
-    {continuePending && <button type="button" onClick={() => void continueAfterSave()}>Continue</button>}
+    {continuePending && mode === "settings" && <button type="button" onClick={() => void continueAfterSave()}>Continue</button>}
     {discoveryNotice && <p className="settings-hint muted">{discoveryNotice}</p>}
     {(isRemovedModel(config.model) || isRemovedModel(config.small_model)) && <p role="alert" className="settings-warning">The previously selected provider has been removed. Choose another provider and test both model choices.</p>}
     {show("provider") && <section className="settings-section">
       {mode === "settings" && <h3 className="ai-setup-section-title"><span>1</span> Provider</h3>}
-      <ProviderPicker providers={providers.filter(item => item.activation !== "disabled" && !config.disabled_providers?.includes(item.id))} provider={provider} onChange={changeProvider} reusableProviderIDs={reusable.map(item => item.integrationID)} disabled={busy || loading} />
+      {mode === "settings" && <p className="settings-hint muted">{providerDescription(cloudProviderCount)}</p>}
+      <ProviderPicker providers={providers.filter(item => item.activation !== "disabled" && !config.disabled_providers?.includes(item.id))} provider={provider} onChange={changeProvider} onDetectedSelect={id => { changeProvider(id); if (mode === "onboarding") onPhaseChange?.("connection"); else setFocusConnection(true) }} reusableProviderIDs={reusable.map(item => item.integrationID)} disabled={busy || loading} />
       {mode === "onboarding" && <div className="ai-setup-actions"><button type="button" className="primary" disabled={!provider || busy} onClick={() => onPhaseChange?.("connection")}>Continue to connection</button></div>}
     </section>}
     {show("connection") && <section className="settings-section">
-      {mode === "settings" && <h3 className="ai-setup-section-title"><span>2</span> Connection</h3>}
+      {mode === "settings" && <h3 ref={connectionHeading} tabIndex={-1} className="ai-setup-section-title"><span>2</span> Connection</h3>}
       {provider ? <>
         <ConnectionEditor provider={selected} integration={integration} reusable={matching} draft={draft} onChange={changeDraft} disabled={busy || loading} local={local} endpoint={endpoint} sourceOptions={sourceOptions} attempt={attempt} authCode={authCode} onAuthCode={setAuthCode} onAuthAction={action => void authAction(action)} />
-        {!attempt && <div className="ai-setup-actions">
-          {mode === "onboarding" && <button type="button" disabled={busy} onClick={() => onPhaseChange?.("provider")}>Back to providers</button>}
+        {!attempt && (mode === "onboarding" || !configured) && <div className="ai-setup-actions">
+          {mode === "onboarding" && <button type="button" className="onboarding-back" disabled={busy} onClick={() => onPhaseChange?.("provider")}>Back to providers</button>}
           <button type="button" className="primary" disabled={busy || (!local && !draft.choice)} onClick={() => configured && mode === "onboarding" ? onPhaseChange?.("models") : void prepare()}>{busy ? "Preparing connection…" : configured && mode === "onboarding" ? "Continue to models" : prepareLabel}</button>
         </div>}
-        {attempt?.status === "complete" && <div className="ai-setup-actions"><button type="button" disabled={busy} onClick={() => {
+        {attempt?.status === "complete" && (mode === "onboarding" || !configured) && <div className="ai-setup-actions"><button type="button" disabled={busy} onClick={() => {
           if (configured && mode === "onboarding") { onPhaseChange?.("models"); return }
           setBusy(true); setError("")
           void refreshModels(sessionID, revision.current).then(() => { if (mode === "onboarding") onPhaseChange?.("models") }).catch(failure => setError(message(failure, "Could not load models. Retry."))).finally(() => setBusy(false))
@@ -352,40 +364,29 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
       </> : <p className="settings-hint muted">Choose a provider to see its connection options.</p>}
     </section>}
     {show("models") && <section className="settings-section">
-      {mode === "settings" && <h3 className="ai-setup-section-title"><span>3</span> Models</h3>}
+      {mode === "settings" && <div className="ai-setup-model-heading"><h3 className="ai-setup-section-title"><span>3</span> Models</h3>{configured && <button type="button" className="ai-setup-refresh" aria-label="Refresh models" title="Refresh models" disabled={busy || loading} onClick={() => {
+        clearTest(); setBusy(true)
+        const current = revision.current
+        void refreshModels(sessionID, current).catch(failure => { if (revision.current === current) setError(message(failure, "Could not refresh models. Retry.")) }).finally(() => { if (revision.current === current) setBusy(false) })
+      }}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.5-4.7L3 9m0-6v6h6M4 13a8 8 0 0 0 14.5 4.7L21 15m0 6v-6h-6"/></svg></button>}</div>}
       {configured ? <>
         {customModels ? <>
           <FieldRow id="ai-setup-primary-id" label="Primary model ID" hint="Enter the model identifier served by this endpoint."><input id="ai-setup-primary-id" aria-describedby="ai-setup-primary-id-hint" disabled={busy} value={primary ? modelID(primary) : ""} onChange={event => changePrimary(event.target.value.trim() ? `${actualProvider}/${event.target.value.trim()}` : "")} /></FieldRow>
           <FieldRow id="ai-setup-fast-id" label="Fast model ID" hint="Leave blank to use the primary model for background tasks."><input id="ai-setup-fast-id" aria-describedby="ai-setup-fast-id-hint" disabled={busy} placeholder="Same as primary" value={fast ? modelID(fast) : ""} onChange={event => changeFast(event.target.value.trim() ? `${actualProvider}/${event.target.value.trim()}` : "")} /></FieldRow>
-        </> : <ModelFields models={models} primaryModels={primaryChoices} primary={primary} fast={fast} onPrimaryChange={changePrimary} onFastChange={changeFast} disabled={busy} />}
+        </> : <ModelFields showEffort={mode === "settings"} models={models} primaryModels={primaryChoices} primary={primary} fast={fast} onPrimaryChange={changePrimary} onFastChange={changeFast} disabled={busy} />}
         {!models.length && !customModels && <p className="settings-hint muted">No models are listed for this connection. Check the provider connection or refresh discovery.</p>}
       </> : <p className="settings-hint muted">Configure the connection to load its model choices.</p>}
-      {mode === "onboarding" && <div className="ai-setup-actions"><button type="button" disabled={busy} onClick={() => onPhaseChange?.("connection")}>Back to connection</button><button type="button" className="primary" disabled={!choiceValid || !configured || busy} onClick={() => onPhaseChange?.("test")}>Continue to test</button></div>}
+      {mode === "onboarding" && <div className="ai-setup-actions"><button type="button" className="onboarding-back" disabled={busy} onClick={() => onPhaseChange?.("connection")}>Back to connection</button><button type="button" className="primary" disabled={!choiceValid || !configured || busy} onClick={() => onPhaseChange?.("test")}>Continue to test</button></div>}
     </section>}
     {show("test") && <section className="settings-section">
       {mode === "settings" && <h3 className="ai-setup-section-title"><span>4</span> Test</h3>}
       {choiceValid && <p className="settings-hint ai-setup-selected-models">Primary: <strong>{primary}</strong><br />Fast: <strong>{chosenFast}</strong>{primary === chosenFast ? " (same as primary)" : ""}</p>}
-      <p className="settings-hint muted">Tests the selected connection, primary model and fast model with one short request per distinct model. Usage charges may apply.</p>
       <TestResults results={results} connectionStatus={passed ? "Connection verified for both selected model roles." : results.some(item => item.status === "auth") ? "The selected connection needs attention." : undefined} />
       {saved && <p role="status">AI setup saved.</p>}
-      <div className="ai-setup-actions">
-        {mode === "onboarding" && <button type="button" disabled={busy} onClick={() => onPhaseChange?.("models")}>Back to models</button>}
-        <button type="button" disabled={busy || !choiceValid || !configured} onClick={() => void runTests()}>{busy && results.some(item => item.status === "checking") ? "Testing connection…" : "Test connection"}</button>
-        <button type="button" className="primary" disabled={busy || !passed || saved || saveUnconfirmed} onClick={() => void save()}>{busy && passed ? "Saving…" : mode === "onboarding" ? "Save and continue" : "Save"}</button>
-      </div>
+      <SettingsFooter tab="ai"><div className="ai-setup-actions">
+        {mode === "onboarding" && <button type="button" className="onboarding-back" disabled={busy} onClick={() => onPhaseChange?.("models")}>Back to models</button>}
+        {mode === "onboarding" ? <button type="button" className="primary" disabled={busy || (!saved && (!choiceValid || !configured || saveUnconfirmed))} onClick={() => void (saved ? continueAfterSave() : runTests(true))}>{saving ? "Saving…" : busy ? "Testing connection…" : saved ? "Continue" : "Test and continue"}</button> : <button type="button" className="primary" disabled={busy || !choiceValid || !configured || saved || saveUnconfirmed} onClick={() => void runTests(true)}>{saving ? "Saving…" : busy ? "Testing connection…" : "Test and save"}</button>}
+      </div></SettingsFooter>
     </section>}
-    {mode === "settings" && <details className="ai-setup-manage settings-section"><summary>Manage connections</summary>
-      <p className="settings-hint muted">Saved connections remain available when you change provider. Enable or disable other providers here.</p>
-      {providers.map(item => {
-        const disabled = config.disabled_providers?.includes(item.id) ?? false
-        return <div className="settings-conn" key={item.id}><span className="settings-conn-name">{item.name}</span><button type="button" className="btn-sm ghost" disabled={busy || item.id === provider} onClick={async () => {
-          setBusy(true); setError("")
-          try { await setDisabledProviders(disabled ? (config.disabled_providers ?? []).filter(id => id !== item.id) : [...(config.disabled_providers ?? []), item.id]); setConfig(await getConfig()) }
-          catch (failure) { setError(message(failure, "Could not update this provider.")) }
-          finally { setBusy(false) }
-        }}>{disabled ? "Enable" : "Disable"}</button></div>
-      })}
-      <button type="button" className="ghost" disabled={busy} onClick={() => { resetCandidate(); void load() }}>Refresh discovery</button>
-    </details>}
   </div>
 }
