@@ -438,12 +438,25 @@ test("paragraph formatting refuses an adjacent insertion between neighbour disco
       } }
     } })
   })
-  await expect(host.apply({ proposalId: "neighbour-capture-race", target, replacement: target.text, formatting })).rejects.toThrow("This passage has changed")
+  await expect(host.apply({ proposalId: "neighbour-capture-race", target, replacement: target.text, formatting })).rejects.toThrow("paragraphs beside this review changed")
   expect(inserted).toBe(true)
   expect(state.authorCalls).toBe(0)
   expect(state.writes).toHaveLength(0)
   expect(state.modeChanges).toHaveLength(0)
   expect(state.paragraphs[3]!.text).toBe("A coauthor’s unsaved paragraph.")
+})
+
+test("formatting capture distinguishes an extra exported paragraph from different exported tracked text before authoring", async () => {
+  for (const extraParagraph of [true, false]) {
+    const { state, host, formatting } = formattedOffice()
+    const target = (await host.selection())!
+    const body = state.paragraphXml.get("paragraph-1")! + state.paragraphXml.get("paragraph-2")!
+    state.xml = flatOpc(extraParagraph ? body + "<w:p/>" : body.replace("The obligation is ", "The commitment is "), state.extraParts)
+    await expect(host.apply({ proposalId: `capture-diagnostic-${extraParagraph}`, target, replacement: target.text, formatting })).rejects.toThrow(extraParagraph ? "Word exported 3 paragraphs for this 2-paragraph review" : "exported text differs at reviewed paragraph 1")
+    expect(state.authorCalls).toBe(0)
+    expect(state.writes).toHaveLength(0)
+    expect(state.modeChanges).toHaveLength(0)
+  }
 })
 
 test("fresh paragraph proof confirms multiline edits despite returned insertion-range drift", async () => {
@@ -517,7 +530,7 @@ test("edits outside the target are preserved; changed target paragraphs refuse b
   const changed = office()
   const stale = (await changed.host.selection())!
   changed.state.paragraphs[0]!.text += " Changed qualification."
-  await expect(changed.host.apply({ proposalId: "stale", target: stale, replacement: "Different wording." })).rejects.toThrow("passage has changed")
+  await expect(changed.host.apply({ proposalId: "stale", target: stale, replacement: "Different wording." })).rejects.toThrow("could not match reviewed paragraph 1")
   expect(changed.state.writes).toHaveLength(0)
   expect(changed.state.modeChanges).toHaveLength(0)
 })

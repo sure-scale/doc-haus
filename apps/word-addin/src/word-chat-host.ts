@@ -43,6 +43,9 @@ const SNAPSHOT_BYTES = 1_750_000
 const INSIDE = new Set(["Inside", "InsideStart", "InsideEnd", "Equal"])
 const SEARCH_OPTIONS = { matchCase: true, matchWildcards: false, matchWholeWord: false, ignorePunct: false, ignoreSpace: false }
 const changedMessage = "This passage has changed. Prepare and review a fresh amendment against its current wording. Your Word changes are safe."
+function captureMismatch(reason: string) {
+  return new WordChatHostError(`${reason} Your document is unchanged. Review the passage in Word, then prepare it again.`)
+}
 function validate(target: WordChatTarget): void {
   if (!target || !target.id || !target.text?.trim() || target.text.length > LIMIT || !Array.isArray(target.paragraphs) ||
     !target.paragraphs.length || target.paragraphs.length > PARAGRAPH_LIMIT || target.paragraphs.some(p => !p.id || typeof p.text !== "string" || p.text.length > LIMIT) ||
@@ -207,20 +210,21 @@ export class WordChatHost {
     const paragraphs = target.paragraphs.map((p) => context.document.getParagraphByUniqueLocalId(p.id))
     for (const paragraph of paragraphs) paragraph.load("text,uniqueLocalId")
     await context.sync()
-    if (paragraphs.some((p, i) => p.uniqueLocalId !== target.paragraphs[i]!.id || p.text !== target.paragraphs[i]!.text))
-      throw new WordChatHostError(changedMessage)
+    const changed = paragraphs.findIndex((p, i) => p.uniqueLocalId !== target.paragraphs[i]!.id || p.text !== target.paragraphs[i]!.text)
+    if (changed >= 0)
+      throw captureMismatch(`Word could not match reviewed paragraph ${changed + 1} (${paragraphs[changed]!.text.length} Word characters; ${target.paragraphs[changed]!.text.length} reviewed).`)
     const union = paragraphs[0]!.getRange("Content").expandTo(paragraphs.at(-1)!.getRange("Content"))
     union.paragraphs.load("items/uniqueLocalId")
     const location = union.compareLocationWith(context.document.body.getRange())
     await context.sync()
     if (!INSIDE.has(location.value) || union.paragraphs.items.length !== paragraphs.length || union.paragraphs.items.some((p, i) => p.uniqueLocalId !== paragraphs[i]!.uniqueLocalId))
-      throw new WordChatHostError(changedMessage)
+      throw captureMismatch(`Word returned a different paragraph range (${union.paragraphs.items.length} paragraphs; ${paragraphs.length} reviewed).`)
     const start = await point(context, paragraphs[0]!.getRange("Content"), paragraphs[0]!.text, target.startOffset)
     const end = await point(context, paragraphs.at(-1)!.getRange("Content"), paragraphs.at(-1)!.text, target.endOffset)
     const range = start.expandTo(end)
     range.load("text")
     await context.sync()
-    if (range.text !== target.text) throw new WordChatHostError(changedMessage)
+    if (range.text !== target.text) throw captureMismatch(`Word returned different text for the reviewed range (${range.text.length} Word characters; ${target.text.length} reviewed).`)
     return { range, paragraphs }
   }
 
@@ -257,7 +261,7 @@ export class WordChatHost {
       all.load("items/uniqueLocalId")
       await context.sync()
       const at = all.items.findIndex(p => p.uniqueLocalId === target.paragraphs[0]!.id)
-      if (at < 0) throw new WordChatHostError(changedMessage)
+      if (at < 0) throw captureMismatch("Word could not locate the reviewed paragraph among the document’s current paragraphs.")
       neighbours = [all.items[at - 1], all.items[at + target.paragraphs.length]].filter((p): p is Paragraph => Boolean(p))
         .map(p => ({ id: p.uniqueLocalId, range: p.getRange("Whole") }))
     }
@@ -284,13 +288,22 @@ export class WordChatHost {
     let captured: string[]
     try { captured = capturedWordChatParagraphs(xml.value) }
     catch { throw new WordChatHostError("Word could not capture these complete paragraphs safely. Choose ordinary text within one clause or table cell; your document is unchanged.") }
-    if (JSON.stringify(captured) !== JSON.stringify(target.paragraphs.map(p => p.text)) || current.some((text, index) => text.value !== target.paragraphs[index]!.text)) throw new WordChatHostError(changedMessage)
-    if (selected.text !== target.text || paragraphs.some((p, index) => p.text !== target.paragraphs[index]!.text)) throw new WordChatHostError(changedMessage)
+    if (captured.length !== target.paragraphs.length)
+      throw captureMismatch(`Word exported ${captured.length} paragraphs for this ${target.paragraphs.length}-paragraph review.`)
+    const exportedMismatch = captured.findIndex((text, index) => text !== target.paragraphs[index]!.text)
+    if (exportedMismatch >= 0)
+      throw captureMismatch(`Word’s exported text differs at reviewed paragraph ${exportedMismatch + 1} (${captured[exportedMismatch]!.length} exported characters; ${target.paragraphs[exportedMismatch]!.text.length} reviewed).`)
+    const currentMismatch = current.findIndex((text, index) => text.value !== target.paragraphs[index]!.text)
+    if (currentMismatch >= 0)
+      throw captureMismatch(`Word’s current tracked-change text differs at reviewed paragraph ${currentMismatch + 1} (${current[currentMismatch]!.value.length} current characters; ${target.paragraphs[currentMismatch]!.text.length} reviewed).`)
+    if (selected.text !== target.text || paragraphs.some((p, index) => p.text !== target.paragraphs[index]!.text))
+      throw captureMismatch("Word’s paragraph or range text changed during capture.")
     const ids = all.items.map(p => p.uniqueLocalId)
     const index = ids.indexOf(target.paragraphs[0]!.id)
-    if (index < 0 || target.paragraphs.some((p, offset) => ids[index + offset] !== p.id)) throw new WordChatHostError(changedMessage)
+    if (index < 0 || target.paragraphs.some((p, offset) => ids[index + offset] !== p.id))
+      throw captureMismatch("The reviewed paragraphs changed identity or order during capture.")
     if (formatting && JSON.stringify([ids[index - 1], ids[index + target.paragraphs.length]].filter((id): id is string => id !== undefined)) !== JSON.stringify(adjacent.map(p => p.id)))
-      throw new WordChatHostError(changedMessage)
+      throw captureMismatch("The paragraphs beside this review changed during capture.")
     return { range, ooxml: xml.value, ids, index, adjacent: adjacent.map(p => ({ id: p.id, ooxml: p.xml.value })), tracking: context.document.changeTrackingMode,
       changes: bodyChanges.items.map(change => ({ author: change.author, type: change.type, text: change.text })) }
   }
