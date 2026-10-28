@@ -728,7 +728,7 @@ test("preexisting revisions elsewhere cannot masquerade as new authored markup",
   state.omitNewRevisions = true
   const target = (await host.selection())!
   const input = { proposalId: "preexisting-is-not-proof", target, replacement: target.text.replace("clear", "specific") }
-  await expect(host.apply(input)).rejects.toThrow("could not confirm")
+  await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("new revision signatures") })
   expect(state.writes).toHaveLength(1)
   await expect(host.apply(input)).rejects.toThrow("may already contain")
 })
@@ -900,7 +900,7 @@ test("unexpected inserted wording never reports a confirmed reviewed amendment",
   const target = (await host.selection())!
   state.corruptWrite = true
   const input = { proposalId: "wrong-host-result", target, replacement: target.text.replace("clear", "specific") }
-  await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("could not confirm") })
+  await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("current wording") })
   expect(state.writes).toHaveLength(1)
   await expect(host.apply(input)).rejects.toThrow("may already contain")
 })

@@ -143,15 +143,24 @@ function clauseView(xml: string, version: "Current" | "Original") {
     return false
   }).map(node => paragraphView(node, version))
 }
-export function sameImportedWordChat(authored: string, observed: string): boolean {
+export function importedWordChatDifference(authored: string, observed: string): string | undefined {
   const marks = (xml: string) => content(parse(xml), true, true).nodes.map(paragraphMark).filter((mark): mark is Element => Boolean(mark))
     .map(mark => [mark.localName, mark.getAttributeNS(W, "author")])
   const formats = (xml: string) => content(parse(xml), true, true).nodes.map(paragraph => {
     const pPr = elements(paragraph).find(node => node.namespaceURI === W && node.localName === "pPr")
     return pPr ? elements(pPr).filter(node => node.namespaceURI === W && node.localName === "pPrChange").map(node => node.getAttributeNS(W, "author")) : []
   })
-  return ["Current", "Original"].every(version => JSON.stringify(clauseView(authored, version as "Current" | "Original")) === JSON.stringify(clauseView(observed, version as "Current" | "Original"))) &&
-    JSON.stringify(marks(authored)) === JSON.stringify(marks(observed)) && JSON.stringify(formats(authored)) === JSON.stringify(formats(observed))
+  for (const version of ["Current", "Original"] as const) {
+    const expected = clauseView(authored, version), actual = clauseView(observed, version)
+    if (expected.length !== actual.length) return `${version.toLowerCase()} paragraph count`
+    for (let i = 0; i < expected.length; i++) for (const key of ["properties", "runs", "bookmarks"] as const)
+      if (JSON.stringify(expected[i]![key]) !== JSON.stringify(actual[i]![key])) return `${version.toLowerCase()} paragraph ${i + 1} ${key}`
+  }
+  if (JSON.stringify(marks(authored)) !== JSON.stringify(marks(observed))) return "paragraph revision marks"
+  if (JSON.stringify(formats(authored)) !== JSON.stringify(formats(observed))) return "format revision marks"
+}
+export function sameImportedWordChat(authored: string, observed: string): boolean {
+  return importedWordChatDifference(authored, observed) === undefined
 }
 
 const named = (node: Element, name: string) => elements(node).filter(child => child.namespaceURI === W && child.localName === name)

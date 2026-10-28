@@ -1,6 +1,6 @@
 import type { WordChatAuthoredAmendment, WordChatParagraphFormat, WordChatSnapshot, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { validWordChatFormatting, wordChatApplyPlan } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { capturedWordChatParagraphs, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, verifiedNativeWordChatFormatting } from "./word-chat-host-ooxml"
+import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, verifiedNativeWordChatFormatting } from "./word-chat-host-ooxml"
 import { DOMParser } from "@xmldom/xmldom"
 
 type ClientResult<T> = { value: T }
@@ -384,7 +384,7 @@ export class WordChatHost {
         await context.sync()
         const ids = all.items.map(p => p.uniqueLocalId)
         const physicalCount = authoredChanges.length, delta = physicalCount - input.target.paragraphs.length
-        let confirmed = ids.length === fresh.ids.length + delta && ids.every((id, index) =>
+        const identityConfirmed = ids.length === fresh.ids.length + delta && ids.every((id, index) =>
           index >= fresh.index && index < fresh.index + physicalCount || id === fresh.ids[index < fresh.index ? index : index - delta])
         const actual = all.items.slice(fresh.index, fresh.index + physicalCount).map(paragraph => {
           const content = paragraph.getRange("Content"), changes = content.getTrackedChanges()
@@ -415,11 +415,16 @@ export class WordChatHost {
           const native = (value: string) => plan.structure ? value.replace(/\r/g, "") : value
           return ["Added", "Deleted"].every(type => native(words(observed, type)) === native(words(wanted, type)))
         }
-        confirmed &&= ![...prior.values()].some(Boolean) && matches(added, authored.revisions) && importedText?.value === expected.join("\r") &&
+        const priorConfirmed = ![...prior.values()].some(Boolean), additionsConfirmed = matches(added, authored.revisions)
+        const textConfirmed = importedText?.value === expected.join("\r") &&
           (Boolean(plan.structure) || actual.every((item, index) => item.text.value === expected[index] && (formatting || wordingImport || matches(item.changes.items, authoredChanges[index]!))))
-        try { confirmed &&= Boolean(importedXml && sameImportedWordChat(authored.ooxml, importedXml.value) && (!wordingImport || sameWordChatInlineRevisions(authored.ooxml, importedXml.value))) && adjacent.every(p => sameWordChatParagraphContent(p.before, p.after.value)) }
-        catch { confirmed = false }
-        if (!confirmed) throw new WordChatHostError("Word has imported the amendment, but could not confirm its wording and tracked markup. Inspect it and use Undo if needed. Do not apply this proposal again.")
+        let viewDifference: string | undefined = "unavailable", inlineConfirmed = !wordingImport, neighboursConfirmed = false
+        try { viewDifference = importedXml ? importedWordChatDifference(authored.ooxml, importedXml.value) : "unavailable" } catch { viewDifference = "unreadable" }
+        try { inlineConfirmed = !wordingImport || Boolean(importedXml && sameWordChatInlineRevisions(authored.ooxml, importedXml.value)) } catch { /* Refuse unreadable inline revisions. */ }
+        try { neighboursConfirmed = adjacent.every(p => sameWordChatParagraphContent(p.before, p.after.value)) } catch { /* Refuse unreadable neighbouring content. */ }
+        const failed = [!identityConfirmed && "paragraph identity", !priorConfirmed && "prior revision signatures", !additionsConfirmed && "new revision signatures",
+          !textConfirmed && "current wording", viewDifference && `authored views: ${viewDifference}`, !inlineConfirmed && "inline revision markup", !neighboursConfirmed && "neighbouring content"].filter(Boolean)
+        if (failed.length) throw new WordChatHostError(`Word has imported the amendment, but could not confirm its wording and tracked markup (${failed.join(", ")}). Inspect it and use Undo if needed. Do not apply this proposal again.`)
         this.applied.set(input.proposalId, { identity, authors: ["doc.haus"], uncertain: false })
         // This scope comes only from the verified import, never the cursor.
         // The old model context and remembered authority describe the original

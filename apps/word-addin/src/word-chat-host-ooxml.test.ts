@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { reviewedMixedWordChatArtifact, sameWordChatOoxml, verifiedNativeWordChatFormatting, wordChatOoxmlDifference } from "./word-chat-host-ooxml"
+import { importedWordChatDifference, reviewedMixedWordChatArtifact, sameWordChatOoxml, verifiedNativeWordChatFormatting, wordChatOoxmlDifference } from "./word-chat-host-ooxml"
 import { reviewedWordChatParagraphFormatting } from "../../../dochaus/lib/word-chat-formatting-ooxml"
 import { DOMParser } from "@xmldom/xmldom"
 
@@ -49,6 +49,15 @@ test("main paragraph text diagnostics omit source text and values", () => {
   expect(reason).toContain("/word/document.xml[1]/p[1]/r[1]/t[1]: text changed")
   expect(reason).not.toContain("Private")
   expect(reason).not.toContain("wording")
+})
+
+test("imported view diagnostics identify the failed check without source text", () => {
+  const before = flat('<w:p><w:r><w:t>Private original wording.</w:t></w:r></w:p>')
+  const wording = flat('<w:p><w:r><w:t>Private altered wording.</w:t></w:r></w:p>')
+  const properties = flat('<w:p><w:pPr><w:ind w:left="300"/></w:pPr><w:r><w:t>Private original wording.</w:t></w:r></w:p>')
+  expect(importedWordChatDifference(before, before)).toBeUndefined()
+  expect(importedWordChatDifference(before, wording)).toBe("current paragraph 1 runs")
+  expect(importedWordChatDifference(before, properties)).toBe("current paragraph 1 properties")
 })
 
 test("native formatting must retain the prior properties and inline revisions and use the approved properties", () => {
