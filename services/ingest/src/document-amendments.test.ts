@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { AlignmentType, Document, Footer, Header, LevelFormat, Packer, Paragraph, Table, TableCell, TableRow, TextRun } from "docx"
+import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
 import { paragraphTargets, withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import { openDb, deleteDocument, getDocumentRole, getRedline, listDocuments, listSourceDocuments, upsertDocument } from "./db"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
@@ -259,6 +260,40 @@ const periods = [
   {before_quote:"ten business days",replacement:"fifteen business days",target_context:"cure period",reason:"Requested cure update."},
 ]
 const periodParagraphs = ["Notice must arrive within five days.","Retain records for three months.","Pay each invoice within thirty days.","Cure any breach within ten business days."]
+
+test("Prepare refuses a live REF result before approval while retaining and accepting a safe proposal", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "dochaus-field-prepare-"))
+  const engine = syntheticEngine(() => ({ amendments: [
+    { before_quote: "clause 2.1", replacement: "clause 2.2", target_context: "cross-reference", reason: "Change the reference." },
+    { before_quote: "five days", replacement: "seven days", target_context: "notice period", reason: "Change the notice period." },
+  ], open_items: [] }), firstCandidate)
+  const ingest = await isolatedIngest(temporary, engine.server)
+  try {
+    await ingest.start("field")
+    const matter = await ingest.matter("Field review")
+    const original = (await renderMarkdownToDocx(["# Agreement", "## 1. Notice", "1.1 Notice is due within five days.",
+      "1.2 The parties shall comply with clause 2.1.", "## 2. Terms", "2.1 The obligation applies."].join("\n\n"), undefined, undefined, { form: "agreement" })).bytes
+    const documentXml = (bytes: Uint8Array) => strFromU8(unzipSync(bytes)["word/document.xml"]!)
+    expect(documentXml(original)).toContain(" REF ")
+    expect(await matter.deliver(original)).toBe(200)
+    const stored = await Bun.file(matter.file).bytes()
+    const response = await matter.prepare("Update the reference and notice period.")
+    expect(response.status).toBe(200)
+    const prepared = await response.json() as { proposed: number; redline_ids: number[]; open_items: string[] }
+    expect(prepared.proposed).toBe(1)
+    expect(prepared.open_items).toHaveLength(1)
+    expect(prepared.open_items[0]).toContain("clause 2.1")
+    expect(prepared.open_items[0]).toContain("Word field")
+    expect(prepared.open_items[0]).toContain("Make this change in Word")
+    expect(await Bun.file(matter.file).bytes()).toEqual(stored)
+    expect(await matter.accept(prepared.redline_ids[0]!)).toBe(200)
+    const accepted = await Bun.file(matter.file).bytes()
+    expect((await createDocxRevision(accepted)).markdown).toContain("Notice is due within seven days.")
+    expect(documentXml(accepted).match(/<w:instrText[^>]*>[^<]* REF [^<]*<\/w:instrText>/g)).toEqual(
+      documentXml(stored).match(/<w:instrText[^>]*>[^<]* REF [^<]*<\/w:instrText>/g))
+    expect((await createDocxRevision(accepted)).markdown).toContain("comply with clause 2.1")
+  } finally { await ingest.stop(); engine.server.stop(true); await rm(temporary, { recursive: true, force: true }) }
+})
 
 test("proposals on separate paragraphs stay valid after one is accepted and across an ingest restart", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-restart-"))

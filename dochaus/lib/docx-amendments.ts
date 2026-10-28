@@ -3,7 +3,7 @@ import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { z } from "zod"
 import { REVISION_ELEMENTS } from "./docx-comments"
-import { paragraphFields, refInstruction, runText, unlink } from "./docx-fields"
+import { paragraphFields, refInstruction, runText } from "./docx-fields"
 import { docxodus } from "./docxodus"
 import { shownText } from "./list-label"
 import { normalizeUntrustedText } from "./untrusted-text"
@@ -181,21 +181,90 @@ function admitted(opened: Opened, binding: Binding) {
       : at > 0 && insideRevision(opened.session, paragraphSpan(whole, at - 1, 1)) && insideRevision(opened.session, paragraphSpan(whole, at, 1))
   }))
     throw new Error(`docx_own_revision:${amendment.id}`)
+  if (spanningFieldParagraphs(opened.documents[opened.paragraphs[ordinal]!.part]!).has(opened.paragraphs[ordinal]!.node))
+    throw new Error(`docx_field_replacement:${amendment.id}`)
   const xml = parse(opened.session.raw.getXml(match.enclosingAnchor.id))
-  if (!elements(xml, "fldChar").length && !elements(xml, "instrText").length) return { ...binding, changes, breaks, unlinks: [] as number[] }
-  // A live cross-reference (a REF field) is the only field an edit may stand
-  // beside. One the edit's changed text touches becomes the text it shows.
+  if (!elements(xml, "fldChar").length && !elements(xml, "instrText").length && !elements(xml, "fldSimple").length) return { ...binding, changes, breaks }
+  // Simple field offsets are mapped only when the projected and XML text agree.
+  const simple = elements(opened.paragraphs[ordinal]!.node, "fldSimple")
+  if (simple.length) {
+    const paragraph = opened.paragraphs[ordinal]!
+    if (runText(paragraph.node) !== paragraph.match.text) throw new Error(`docx_field_replacement:${amendment.id}`)
+    let offset = 0
+    const spans = new Map<Element, { from: number; to: number }>()
+    for (const text of elements(paragraph.node, "t")) {
+      const length = (text.textContent ?? "").length
+      for (let node = text.parentNode; node && node !== paragraph.node; node = node.parentNode) {
+        if (node.nodeType !== 1 || (node as Element).localName !== "fldSimple") continue
+        const field = node as Element, span = spans.get(field)
+        spans.set(field, { from: span?.from ?? offset, to: offset + length })
+      }
+      offset += length
+    }
+    if (simple.some(field => !spans.has(field))) throw new Error(`docx_field_replacement:${amendment.id}`)
+    if ([...spans.values()].some(field => changes.some(change => {
+      const start = change.match.span.start - paragraph.match.span.start
+      return change.match.text.length ? start < field.to && field.from < start + change.match.text.length
+        : field.from <= start && start <= field.to
+    }))) throw new Error(`docx_field_replacement:${amendment.id}`)
+    if (!elements(xml, "fldChar").length && !elements(xml, "instrText").length) return { ...binding, changes, breaks }
+  }
+  // Only a verified REF can safely stand beside an edit; its result remains live.
   const paragraph = opened.paragraphs[ordinal]!
   const fields = paragraphFields(paragraph.node)
   const owned = new Set(fields.flatMap(field => field.controls))
   if (runText(paragraph.node) !== paragraph.match.text || fields.some(field => !refInstruction(field))
     || [...elements(paragraph.node, "fldChar"), ...elements(paragraph.node, "instrText")].some(node => !owned.has(node)))
-    throw new Error("unsupported_field_replacement")
+    throw new Error(`docx_field_replacement:${amendment.id}`)
   const touches = (field: (typeof fields)[number]) => changes.some(change => {
     const start = change.match.span.start - paragraph.match.span.start
-    return start < field.to && field.from < start + change.match.text.length
+    return change.match.text.length ? start < field.to && field.from < start + change.match.text.length
+      : field.from <= start && start <= field.to
   })
-  return { ...binding, changes, breaks, unlinks: fields.flatMap((field, index) => touches(field) ? [index] : []) }
+  if (fields.some(touches)) throw new Error(`docx_field_replacement:${amendment.id}`)
+  return { ...binding, changes, breaks }
+}
+
+// Complex fields can span paragraphs (including table cells). Each document
+// part and each footnote, endnote, comment or text box is a separate story.
+// A cross-paragraph field holds every paragraph it occupies. Invalid or
+// unclosed markers make the whole story unsafe, including unmapped markers.
+function spanningFieldParagraphs(document: Document) {
+  const unsafe = new Set<Element>()
+  const storyNames = new Set(["footnote", "endnote", "comment", "txbxContent"])
+  const story = (node: Element) => {
+    for (let at: Node | null = node.parentNode; at && at.nodeType === 1; at = at.parentNode)
+      if ((at as Element).namespaceURI === W && storyNames.has((at as Element).localName)) return at as Element
+    return document.documentElement!
+  }
+  const groups = Map.groupBy(elements(document, "p"), story)
+  for (const [root, paragraphs] of groups) {
+    const paragraphSet = new Set(paragraphs)
+    let stack: { separate: boolean }[] = []
+    let invalid = false
+    for (const paragraph of paragraphs) {
+      const entering = stack.length > 0
+      for (const control of elements(paragraph, "*").filter(node => ["fldChar", "instrText"].includes(node.localName))) {
+        // Nested story or paragraph controls belong to their own paragraph.
+        if (story(control) !== root || closest(control, "p") !== paragraph) continue
+        if (control.localName === "instrText") {
+          if (!stack.length || stack.at(-1)!.separate) invalid = true
+          continue
+        }
+        const type = control.getAttributeNS(W, "fldCharType")
+        if (type === "begin") stack.push({ separate: false })
+        else if (type === "separate" && stack.length && !stack.at(-1)!.separate) stack.at(-1)!.separate = true
+        else if (type === "end" && stack.length) stack.pop()
+        else invalid = true
+      }
+      if (entering || stack.length) unsafe.add(paragraph)
+    }
+    if (stack.length) invalid = true
+    // A marker outside a mapped paragraph cannot be safely paired.
+    if ([...elements(root, "fldChar"), ...elements(root, "instrText")].some(control => story(control) === root && !paragraphSet.has(closest(control, "p")!))) invalid = true
+    if (invalid) paragraphs.forEach(paragraph => unsafe.add(paragraph))
+  }
+  return unsafe
 }
 
 // Whether a run of the changed span lies inside a tracked insertion, deletion or move.
@@ -211,14 +280,24 @@ function insideRevision(session: Session, match: Match) {
 /** Each selected amendment the writer would refuse for landing inside
  * doc.haus's own pending change (ownAuthors), by amendment id; nothing is
  * written. Prepare reports these as open items before qualifying the batch. */
-export async function ownRevisionRefusals(bytes: Uint8Array, packet: DocxLocalizationPacket, selections: unknown, options: DocxRevisionOptions) {
+export async function admissionRefusals(bytes: Uint8Array, packet: DocxLocalizationPacket, selections: unknown, options: DocxRevisionOptions) {
   const opened = await openRevision(new Uint8Array(bytes), options)
   try {
-    return new Set(selectedBindings(opened, packet, selectionSchema.parse(selections)).flatMap(binding => {
+    return new Map(selectedBindings(opened, packet, selectionSchema.parse(selections)).flatMap(binding => {
       try { admitted(opened, binding); return [] }
-      catch (error) { return error instanceof Error && error.message === `docx_own_revision:${binding.amendment.id}` ? [binding.amendment.id] : [] }
+      catch (error) {
+        if (error instanceof Error && ["docx_own_revision", "docx_field_replacement"].some(code => error.message === `${code}:${binding.amendment.id}`))
+          return [[binding.amendment.id, error.message.split(":")[0]!] as const]
+        throw error
+      }
     }))
   } finally { opened.session.close() }
+}
+
+/** Compatibility for callers interested only in earlier own revisions. */
+export async function ownRevisionRefusals(bytes: Uint8Array, packet: DocxLocalizationPacket, selections: unknown, options: DocxRevisionOptions) {
+  const refusals = await admissionRefusals(bytes, packet, selections, options)
+  return new Set([...refusals].filter(([, reason]) => reason === "docx_own_revision").map(([id]) => id))
 }
 
 /** Words quoted to the lawyer, as they read them. */
@@ -247,8 +326,7 @@ export function ownRevisionReason(text: string, verb: "proposed" | "applied" | "
 // text, so in a run holding text, then a tab or break, then more text, any edit
 // moves the tab or break to the run's start, and an insertion fails
 // (offset_out_of_range). In each edited paragraph such a run becomes one run per
-// piece, each with the run's properties, and the REF fields the edits touch
-// are unwrapped to their text.
+// piece, each with the run's properties.
 function editableSource(opened: Opened, edits: ReturnType<typeof admitted>[]) {
   const documents = new Map<string, Document>()
   let changed = false
@@ -257,9 +335,6 @@ function editableSource(opened: Opened, edits: ReturnType<typeof admitted>[]) {
     const doc = documents.get(part) ?? parse(strFromU8(opened.parts[part]!))
     documents.set(part, doc)
     const paragraph = elements(doc, "p")[elements(opened.documents[part]!, "p").indexOf(node)]!
-    const fields = paragraphFields(paragraph)
-    for (const index of new Set(rows.flatMap(row => row.unlinks))) unlink(fields[index]!)
-    changed ||= rows.some(row => row.unlinks.length)
     for (const run of elements(paragraph, "r")) {
       if (closest(run, "p") !== paragraph) continue
       const pieces = Array.from(run.childNodes).filter((child): child is Element => child.nodeType === 1)
@@ -284,20 +359,6 @@ function editableSource(opened: Opened, edits: ReturnType<typeof admitted>[]) {
 function closest(node: Node, name: string) {
   for (let at = node.parentNode; at && at.nodeType === 1; at = at.parentNode)
     if ((at as Element).namespaceURI === W && (at as Element).localName === name) return at as Element
-}
-
-// The report's line for the live cross-references editableSource made text:
-// how many, and the paragraphs they are in, by list number or opening words.
-function unlinkedFields(opened: Opened, edits: ReturnType<typeof admitted>[]) {
-  const counts = [...Map.groupBy(edits, edit => edit.ordinal)].map(([ordinal, rows]) => [ordinal, new Set(rows.flatMap(row => row.unlinks)).size] as const)
-    .filter(([, count]) => count)
-  if (!counts.length) return []
-  const total = counts.reduce((sum, [, count]) => sum + count, 0)
-  const where = counts.map(([ordinal]) => {
-    const view = opened.revision.paragraphs[ordinal]!
-    return view.label ?? `"${view.text.length > 40 ? `${view.text.slice(0, 40).trimEnd()}…` : view.text}"`
-  })
-  return [`${total} cross-reference field${total === 1 ? "" : "s"} converted to text in paragraph${where.length === 1 ? "" : "s"} ${where.join(", ")}`]
 }
 
 async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) {
@@ -395,7 +456,7 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
           limitation: [`changed text inherits first touched run formatting; structural edits and ${opened.options.pendingRevisions === "layer"
             ? "edits in paragraphs with pending tracked revisions" : "existing tracked revisions"} unsupported`,
             ...revisionAuthor ? [`changes tracked as ${[...new Set(edits.map(author))].join(", ")}`] : [],
-            ...unlinkedFields(opened, edits)].join("; "),
+            ].join("; "),
         },
       }
     } finally { reopened.session.close() }
@@ -796,6 +857,7 @@ export function verifyPreservation(before: Awaited<ReturnType<typeof openRevisio
       || canonical(children(a.node, "pPr")[0]) !== canonical(children(b.node, "pPr")[0]))
       throw new Error("docx_paragraph_properties_changed")
     verifyInlineControls(a.node, b.node, a.match.text, b.match.text, spans?.get(ordinal), before.options.revisionAuthor)
+    verifyFields(a.node, b.node)
     // Native UNIDs are transient, but within this session identify original runs.
     const edited = parse(before.session.raw.getXml(a.match.enclosingAnchor.id))
     const remaining = new Map(elements(edited, "r").map(run => [run.getAttributeNS(PT, "Unid"), run]))
@@ -805,6 +867,26 @@ export function verifyPreservation(before: Awaited<ReturnType<typeof openRevisio
         throw new Error("docx_existing_run_properties_changed")
     }
   }
+}
+
+// Field instructions and cached results must survive adjacent edits. Compare the
+// complete simple field and every XML element between a complex field's begin
+// and end, including result runs and their formatting.
+function verifyFields(before: Element, after: Element) {
+  const snapshot = (paragraph: Element) => {
+    const nodes = elements(paragraph, "*")
+    const simple = elements(paragraph, "fldSimple").map(node => canonical(node))
+    const complex = paragraphFields(paragraph).map(field => {
+      const start = nodes.indexOf(field.controls[0]!)
+      const end = nodes.indexOf(field.controls.at(-1)!)
+      if (start < 0 || end < start) throw new Error("docx_field_replacement")
+      return nodes.slice(start, end + 1).map(node => canonical(node))
+    })
+    const controls = nodes.filter(node => ["fldChar", "instrText"].includes(node.localName)).map(node => canonical(node))
+    return { simple, complex, controls }
+  }
+  if (JSON.stringify(snapshot(before)) !== JSON.stringify(snapshot(after)))
+    throw new Error("docx_field_replacement")
 }
 
 // Prove both the complete control markup and its position in the visible

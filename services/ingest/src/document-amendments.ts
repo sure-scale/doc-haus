@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
-import { createDocxRevision, createDocxLocalization, applyDocxLocalization, changedRange, DocxTrackedRevisionsError, othersPending, ownRevisionReason, ownRevisionRefusals, pendingRevisionParagraphs, quoted, balancedBrackets, trackedRevisionsReason, type DocxAmendment, type DocxLocalizationPacket, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
+import { createDocxRevision, createDocxLocalization, applyDocxLocalization, changedRange, DocxTrackedRevisionsError, othersPending, ownRevisionReason, admissionRefusals, pendingRevisionParagraphs, quoted, balancedBrackets, trackedRevisionsReason, type DocxAmendment, type DocxLocalizationPacket, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { docxProtectionMessage } from "./docx-protection-message"
 import { workingDocxKey, readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { paragraphTargets, resolveParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
@@ -223,10 +223,12 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   // the batch is qualified as it will be written: beside doc.haus's own pending
   // change, never inside it (docx_own_revision).
   const written:DocxRevisionOptions = pending?.size ? {...layer,revisionAuthor:author} : layer
-  const inside = resolved.length && pending?.size ? await ownRevisionRefusals(initial.bytes,
-    await createDocxLocalization(initial.bytes,resolved.map((value) => value.amendment),{},written),resolved.map((value) => value.selection),written) : new Set<string>()
+  const inside = resolved.length ? await admissionRefusals(initial.bytes,
+    await createDocxLocalization(initial.bytes,resolved.map((value) => value.amendment),{},written),resolved.map((value) => value.selection),written) : new Map<string,string>()
   for (const {row,amendment} of resolved) if (inside.has(amendment.id))
-    refused.push(ownRevisionReason(row.before_quote,"proposed"))
+    refused.push(inside.get(amendment.id) === "docx_field_replacement"
+      ? `The change to ${quoted(row.before_quote)} was not proposed: it touches a Word field that could not be safely preserved. Make this change in Word, then request edits again.`
+      : ownRevisionReason(row.before_quote,"proposed"))
   resolved = resolved.filter(({amendment}) => !inside.has(amendment.id))
   // The locator's own reason stays in the private diagnostic; the lawyer is
   // told which change was not placed and what to do.

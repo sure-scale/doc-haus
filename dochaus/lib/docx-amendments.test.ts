@@ -438,7 +438,7 @@ test("the revision view labels page header and footer text apart from the body; 
     "Subject to contract, the parties will meet monthly.", "Subject to board approval", "Doe & Partners LLP draft: 20 October 2026", "Page 1"])
   const page = await createDocxLocalization(source, [{ id: "page", before_quote: "Page", replacement: "Sheet" }])
   await expect(applyDocxLocalization(source, page, [{ amendment_id: "page", target_handle: page.candidates[0]!.target_handle }]))
-    .rejects.toThrow("unsupported_field_replacement")
+    .rejects.toThrow("docx_field_replacement")
 })
 
 test("the revision view shows each Word list number before its heading or paragraph, apart from the text quotes match", async () => {
@@ -460,21 +460,20 @@ describe("live cross-references", () => {
   const refs = (bytes: Uint8Array) => [...strFromU8(unzipSync(bytes)["word/document.xml"]!).matchAll(/<w:instrText[^>]*>([^<]*)<\/w:instrText>[\s\S]*?<w:t[^>]*>([^<]*)<\/w:t>/g)]
     .map(match => [match[1]!.replace(/_Ref\d+/, "_Ref#"), match[2]])
 
-  test("an edit beside a REF field keeps it live; an edit of its number leaves that number as text, and the report says so", async () => {
+  test("an edit beside a REF field keeps it live; an edit of its result is refused", async () => {
     const source = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes
     expect(refs(source)).toEqual([[" REF _Ref# \\r \\h ", "2.1"], [" REF _Ref# \\h ", "1"], [" REF _Ref# \\r \\h ", "2.1"]])
     const revision = await createDocxRevision(source)
     const handle = (start: string) => revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle
     const beside = { id: "beside", paragraph_handle: handle("In this Agreement"), occurrence: 0, before_quote: "the terms", replacement: "the defined terms" }
-    const output = await applyDocxParagraphEdits(source, [
-      beside,
-      { id: "number", paragraph_handle: handle("The Customer"), occurrence: 0, before_quote: "clause 2.1", replacement: "clause 2.2" },
-    ])
-    expect((await createDocxRevision(output.bytes)).paragraphs.map(row => row.text)).toContain("In this Agreement the defined terms in clause 2.1 and Schedule 1 apply.")
-    expect((await createDocxRevision(output.bytes)).paragraphs.map(row => row.text)).toContain("The Customer shall pay as set out in clause 2.2.")
-    expect(refs(output.bytes)).toEqual([[" REF _Ref# \\r \\h ", "2.1"], [" REF _Ref# \\h ", "1"]])
-    expect(output.report.limitation).toEndWith("; 1 cross-reference field converted to text in paragraph 2.2")
-    expect((await applyDocxParagraphEdits(source, [beside])).report.limitation).not.toContain("cross-reference")
+    const number = { id: "number", paragraph_handle: handle("The Customer"), occurrence: 0, before_quote: "clause 2.1", replacement: "clause 2.2" }
+    for (const options of [{}, { pendingRevisions: "layer" as const, revisionAuthor: "Reviewer" }]) {
+      await expect(applyDocxParagraphEdits(source, [beside, number], undefined, options)).rejects.toThrow("docx_field_replacement:number")
+      await expect(applyDocxParagraphEdits(source, [{ ...number, replacement: "clause 2.x1" }], undefined, options)).rejects.toThrow("docx_field_replacement:number")
+      await expect(applyDocxParagraphEdits(source, [{ ...number, replacement: "clause 2.1!" }], undefined, options)).rejects.toThrow("docx_field_replacement:number")
+      const output = await applyDocxParagraphEdits(source, [beside], undefined, options)
+      expect(refs(output.bytes)).toEqual(refs(source))
+    }
   })
 
   test("a sentence inserted on each side of a REF field, as Prepare joins two insertions, keeps it live, tracked or not", async () => {
@@ -506,9 +505,12 @@ describe("live cross-references", () => {
       const edit = { id: "words", paragraph_handle: revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle,
         occurrence: 0, before_quote, replacement }
       for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, { pendingRevisions: "layer" }, {}] as const) {
+        if (replacement.includes("1.4 and 2.1")) {
+          await expect(applyDocxParagraphEdits(source, [edit], undefined, options)).rejects.toThrow("docx_field_replacement:words")
+          continue
+        }
         const output = await applyDocxParagraphEdits(source, [edit], undefined, options)
         expect(refs(output.bytes)).toEqual(refs(source))
-        expect(output.report.limitation).not.toContain("cross-reference")
         expect(output.report.amendments[0]!.paragraph_after).toBe(after)
       }
     }
@@ -551,7 +553,12 @@ describe("live cross-references", () => {
         "Notice is required. The Supplier must notify the **Buyer** in writing under clause 1.4 and 2.1, and pay *the Fee* monthly."],
     ] as const) {
       for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
-        const output = await applyDocxParagraphEdits(source, [{ id: "words", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options)
+        const edit = { id: "words", paragraph_handle, occurrence: 0, before_quote, replacement }
+        if (replacement.includes("2.1 in full") || replacement.includes("1.4 and 2.1")) {
+          await expect(applyDocxParagraphEdits(source, [edit], undefined, options)).rejects.toThrow("docx_field_replacement:words")
+          continue
+        }
+        const output = await applyDocxParagraphEdits(source, [edit], undefined, options)
         expect(refs(output.bytes)).toEqual(refs(source))
         expect(output.report.limitation).not.toContain("cross-reference")
         expect(marked((await createDocxRevision(output.bytes, { pendingRevisions: "layer" })).paragraphs.find(row => row.label === "2.3")!)).toBe(after)
@@ -559,18 +566,15 @@ describe("live cross-references", () => {
     }
   })
 
-  test("a cross-reference added beside a live one leaves it live, and the change is the whole numbers added, tracked or not", async () => {
+  test("an insertion at a live field boundary is refused, tracked or not", async () => {
     const source = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes
     const paragraph_handle = (await createDocxRevision(source)).paragraphs.find(row => row.label === "2.2")!.paragraph_handle
     const [before_quote, replacement] = ["set out in clause 2.1.", "set out in clauses 3.2 and 2.1, as amended."]
     expect(wordChanges(before_quote, replacement)).toEqual([
       { offset: 11, replaced: "clause ", changed: "clauses 3.2 and " }, { offset: 21, replaced: "", changed: ", as amended" }])
     for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
-      const output = await applyDocxParagraphEdits(source, [{ id: "reference", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options)
-      expect(refs(output.bytes)).toEqual(refs(source))
-      expect(output.report.limitation).not.toContain("cross-reference")
-      expect((await createDocxRevision(output.bytes, { pendingRevisions: "layer" })).paragraphs.find(row => row.label === "2.2")!.text)
-        .toBe("The Customer shall pay as set out in clauses 3.2 and 2.1, as amended.")
+      await expect(applyDocxParagraphEdits(source, [{ id: "reference", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options))
+        .rejects.toThrow("docx_field_replacement:reference")
     }
   })
 
@@ -601,11 +605,11 @@ describe("live cross-references", () => {
     }
     try {
       await expect(applyDocxParagraphEdits(source, [plain])).rejects.toThrow("docx_existing_run_properties_changed")
-      await expect(applyDocxParagraphEdits(source, [plain, number])).rejects.toThrow("docx_existing_run_properties_changed")
+      await expect(applyDocxParagraphEdits(source, [plain, number])).rejects.toThrow("docx_field_replacement:number")
     } finally { prototype.replaceMatch = replaceMatch }
-    // Without the fault both batches apply.
-    expect((await createDocxRevision((await applyDocxParagraphEdits(source, [plain, number])).bytes)).paragraphs.map(row => row.text))
-      .toEqual(expect.arrayContaining(["Nothing in this clause limits the Supplier.", "The Customer shall pay as set out in clause 2.2."]))
+    // Without the fault the ordinary edit applies; the field edit remains refused.
+    expect((await createDocxRevision((await applyDocxParagraphEdits(source, [plain])).bytes)).paragraphs.map(row => row.text))
+      .toContain("Nothing in this clause limits the Supplier.")
   })
 })
 
@@ -1121,4 +1125,58 @@ test("refuses edits inside a control that already contains tracked markup", asyn
   // The same-author deletion is outside the selected text; the control has one current bold run plus tracked markup.
   // That combined control shape is unsupported, so the call returns no authored result.
   await expect(edit(fixture(true))).rejects.toThrow("docx_protected_inline_content_changed")
+})
+
+test("simple fields refuse result edits and insertions while an adjacent edit preserves the field", async () => {
+  const base = (await renderMarkdownToDocx("Before VALUE after.")).bytes
+  const parts = unzipSync(base)
+  parts["word/document.xml"] = strToU8(strFromU8(parts["word/document.xml"]!).replace("Before VALUE after.", 'Before </w:t></w:r><w:fldSimple w:instr=" DATE "><w:r><w:t>VALUE</w:t></w:r></w:fldSimple><w:r><w:t xml:space="preserve"> after.'))
+  const source = zipSync(parts)
+  const revision = await createDocxRevision(source)
+  const altered = { ...parts, "word/document.xml": strToU8(strFromU8(parts["word/document.xml"]!).replace('w:instr=" DATE "', 'w:instr=" PAGE "')) }
+  const originalOpened = await openRevision(source)
+  const alteredOpened = await openRevision(zipSync(altered))
+  try {
+    const ordinal = revision.paragraphs.findIndex(row => row.text.includes("VALUE"))
+    expect(() => verifyPreservation(originalOpened, alteredOpened, new Set([ordinal]))).toThrow("docx_field_replacement")
+  } finally { originalOpened.session.close(); alteredOpened.session.close() }
+  const orphanParts = { ...parts, "word/document.xml": strToU8(strFromU8(parts["word/document.xml"]!).replace("</w:fldSimple>", '</w:fldSimple><w:r><w:fldChar w:fldCharType="begin"/></w:r>')) }
+  const originalAgain = await openRevision(source)
+  const orphanOpened = await openRevision(zipSync(orphanParts))
+  try {
+    const ordinal = revision.paragraphs.findIndex(row => row.text.includes("VALUE"))
+    expect(() => verifyPreservation(originalAgain, orphanOpened, new Set([ordinal]))).toThrow("docx_field_replacement")
+  } finally { originalAgain.session.close(); orphanOpened.session.close() }
+  const paragraph_handle = revision.paragraphs.find(row => row.text.includes("VALUE"))!.paragraph_handle
+  const edit = (before_quote: string, replacement: string) => ({ id: "field", paragraph_handle, occurrence: 0, before_quote, replacement })
+  for (const options of [{}, { pendingRevisions: "layer" as const, revisionAuthor: "Reviewer" }]) {
+    await expect(applyDocxParagraphEdits(source, [edit("VALUE", "OTHER")], undefined, options)).rejects.toThrow("docx_field_replacement:field")
+    await expect(applyDocxParagraphEdits(source, [edit("VALUE", "VALXUE")], undefined, options)).rejects.toThrow("docx_field_replacement:field")
+    await expect(applyDocxParagraphEdits(source, [edit("Before VALUE after.", "Before VALUE! after.")], undefined, options)).rejects.toThrow("docx_field_replacement:field")
+    await expect(applyDocxParagraphEdits(source, [edit("Before VALUE after.", "Before !VALUE after.")], undefined, options)).rejects.toThrow("docx_field_replacement:field")
+    const result = await applyDocxParagraphEdits(source, [edit("Before", "Prior")], undefined, options)
+    expect(strFromU8(unzipSync(result.bytes)["word/document.xml"]!)).toContain('w:instr=" DATE "')
+  }
+})
+
+test("a complex field spanning paragraphs refuses changes throughout its result and leaves another paragraph editable", async () => {
+  const base = (await renderMarkdownToDocx("Before\n\nVALUE\n\nAfter\n\nOutside")).bytes
+  const parts = unzipSync(base)
+  const xml = strFromU8(parts["word/document.xml"]!)
+  const start = '<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> REF Target </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+  const end = '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
+  parts["word/document.xml"] = strToU8(xml.replace(/(<w:t[^>]*>Before<\/w:t><\/w:r>)/, `$1${start}`).replace(/(<w:t[^>]*>After<\/w:t><\/w:r>)/, `$1${end}`))
+  const source = zipSync(parts)
+  const revision = await createDocxRevision(source)
+  const change = (before_quote: string, replacement: string) => ({ id: before_quote, paragraph_handle: revision.paragraphs.find(row => row.text === before_quote)!.paragraph_handle, occurrence: 0, before_quote, replacement })
+  for (const options of [{}, { pendingRevisions: "layer" as const, revisionAuthor: "Reviewer" }]) {
+    await expect(applyDocxParagraphEdits(source, [change("VALUE", "OTHER")], undefined, options)).rejects.toThrow("docx_field_replacement:VALUE")
+    const result = await applyDocxParagraphEdits(source, [change("Outside", "Elsewhere")], undefined, options)
+    expect(strFromU8(unzipSync(result.bytes)["word/document.xml"]!)).toContain(' REF Target ')
+  }
+  const malformed = { ...parts, "word/document.xml": strToU8(strFromU8(parts["word/document.xml"]!).replace(end, "")) }
+  const broken = zipSync(malformed)
+  const brokenRevision = await createDocxRevision(broken)
+  const outside = { ...change("Outside", "Elsewhere"), paragraph_handle: brokenRevision.paragraphs.find(row => row.text === "Outside")!.paragraph_handle }
+  await expect(applyDocxParagraphEdits(broken, [outside])).rejects.toThrow("docx_field_replacement:Outside")
 })
