@@ -4,8 +4,7 @@ import path from "node:path"
 // The firm-wide preferences the ingest settings routes write
 // (services/ingest/src/preferences.ts). Read from disk on every call so a
 // settings save applies on the very next tool call, no engine restart.
-export function readFirmPreferences(): Record<string, unknown> {
-  const root = process.env.WORKSPACE_ROOT
+export function readFirmPreferences(root = process.env.WORKSPACE_ROOT): Record<string, unknown> {
   if (!root) return {}
   const file = path.join(root, ".preferences", "preferences.json")
   try {

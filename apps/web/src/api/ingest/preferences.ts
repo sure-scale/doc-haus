@@ -13,6 +13,7 @@ export type DraftingPreferences = {
   dateFormat: "month-day-year" | "day-month-year" | "iso"
   numberStyle: "words-and-numerals" | "numerals"
   houseStyle: string
+  practiceAreas: string[]
   webResearch: "official" | "open"
   searchApiKey: string
   caseLawApiKey: string

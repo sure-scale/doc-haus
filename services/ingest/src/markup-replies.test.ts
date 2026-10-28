@@ -79,9 +79,11 @@ beforeAll(async () => {
   const port = probe.port
   probe.stop(true)
   const log = path.join(temporary, "ingest.log")
+  const inheritedEnv = { ...process.env }
+  delete inheritedEnv.WORKSPACE_ROOT
   service = Bun.spawn([process.execPath, "run", "src/server.ts"], {
     cwd: path.resolve(import.meta.dir, ".."),
-    env: { ...process.env, WORKSPACE_ROOT: workspace, DOCHAUS_DIR: config, INGEST_PORT: String(port), INGEST_HOST: "127.0.0.1",
+    env: { ...inheritedEnv, DOCHAUS_DATA_ROOT: temporary, DOCHAUS_DIR: config, INGEST_PORT: String(port), INGEST_HOST: "127.0.0.1",
       OPENCODE_URL: `http://127.0.0.1:${engine.port}`, OPENCODE_SERVER_PASSWORD: "" },
     stdout: Bun.file(log), stderr: Bun.file(log),
   })
@@ -138,7 +140,22 @@ test("the prompt carries only the server-read thread, its clause and changes wit
   expect(block(prompt, "lawyer_steer")).toBe(steer)
   expect(prompt).toContain(`The lawyer acts for "${CLIENT}".`)
   expect(prompt).toContain(`Documents are prepared by ${ATTORNEY} of Reyes Partners.`)
+  expect(prompt).not.toContain("<practice_areas>")
   for (const absent of ["BROWSER", comments[2]!.text, plantedComment, "Governing law", "Waiver", "flagged"]) expect(prompt).not.toContain(absent)
+}, 60_000)
+
+test("comment replies use the firm's practice areas as background", async () => {
+  const file = path.join(temporary, "workspace", ".preferences", "preferences.json")
+  const original = await readFile(file, "utf8")
+  try {
+    await writeFile(file, JSON.stringify({ attorney: ATTORNEY, firm: "Reyes Partners", practiceAreas: ["Commercial"] }))
+    answers(VALID)
+    expect((await draft({ base_sha256: listed.version.sha256, thread: 0, decisions: [] })).status).toBe(200)
+    expect(generations[0]!.prompt).toContain('["Commercial"]')
+    expect(generations[0]!.prompt).toContain("Do not assume any area is the subject of this matter")
+  } finally {
+    await writeFile(file, original)
+  }
 }, 60_000)
 
 test("a comment written as instructions to an AI is drafted like any other: the model is not told, doc.haus names it in the open items", async () => {
