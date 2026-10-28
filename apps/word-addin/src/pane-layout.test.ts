@@ -12,7 +12,7 @@ function fixture() {
   return { page, document, get: <T extends HTMLElement>(id: string) => document.getElementById(id) as T }
 }
 
-test("chat scroll compacts the save overview without changing its receipt, controls or focus; other tabs restore normal flow", async () => {
+test("feature views keep tabs first and shared Save last while scrolling preserves draft, focus and confirmed status", () => {
   const { page, document, get } = fixture()
   const render = createPaneRenderer(document)
   const state: PaneState = { status: "saved", busy: false, canSave: true, content: "confirmed", message: "Confirmed",
@@ -20,43 +20,64 @@ test("chat scroll compacts the save overview without changing its receipt, contr
     connection: { version: { base: { id: "v2", number: 2 }, current: { id: "v2", number: 2 }, state: "current" }, lease: { state: "owned", generation: "synthetic", expiresAt: 200_000 } } }
   try {
     render(state)
-    expect(get("save-panel").dataset.compact).toBe("false")
-    const chat = get("pane-chat"); chat.hidden = false
+    const bar = get("save-panel"), tabs = get("desk-entry"), chat = get("pane-chat"), desk = get("pane-desk")
+    expect(bar.parentElement!.firstElementChild === tabs).toBe(true)
+    expect(bar.parentElement!.lastElementChild === bar).toBe(true)
+    expect(get("save-details").contains(get("background"))).toBe(true)
+    expect(get("background").contains(get("back"))).toBe(true)
+    tabs.hidden = false; chat.hidden = false
     chat.innerHTML = '<div data-chat="history" tabindex="0">Conversation retained</div><form><textarea>Draft retained</textarea></form>'
-    await Bun.sleep(0)
     const history = chat.querySelector<HTMLElement>('[data-chat="history"]')!
     history.focus(); history.scrollTop = 80
     history.dispatchEvent(new page.Event("scroll") as unknown as Event)
-    expect(get("save-panel").dataset.compact).toBe("true")
-    expect(get("save-panel").parentElement!.dataset.chatActive).toBe("true")
-    expect(get("status").textContent).toBe("Saved"); expect(get<HTMLButtonElement>("save").disabled).toBe(false)
     expect(document.activeElement === history).toBe(true)
+    expect(get("status").textContent).toBe("Saved"); expect(get("save-version").textContent).toBe("v2")
+    expect(get<HTMLButtonElement>("save").disabled).toBe(false)
+    for (const feature of ["documents", "compare"]) {
+      chat.hidden = true; desk.hidden = false; desk.setAttribute("aria-labelledby", `${feature}-tab`)
+      desk.scrollTop = 80; desk.dispatchEvent(new page.Event("scroll") as unknown as Event)
+      expect(tabs.hidden).toBe(false); expect(bar.hidden).toBe(false)
+      expect(bar.parentElement!.lastElementChild === bar).toBe(true)
+      expect(get("status").textContent).toBe("Saved")
+    }
+    chat.hidden = false; desk.hidden = true
+    expect(chat.querySelector("textarea")!.value).toBe("Draft retained")
     render({ ...state, status: "saving", busy: true, message: "Saving to doc.haus…" })
     expect(get("status").textContent).toBe("Saving…"); expect(get<HTMLButtonElement>("save").disabled).toBe(true)
-    expect(get("save-panel").dataset.compact).toBe("true")
-    history.scrollTop = 0; history.dispatchEvent(new page.Event("scroll") as unknown as Event)
-    expect(get("save-panel").dataset.compact).toBe("false")
-    history.scrollTop = 80; history.dispatchEvent(new page.Event("scroll") as unknown as Event)
-    chat.hidden = true; await Bun.sleep(0)
-    expect(get("save-panel").parentElement!.dataset.chatActive).toBe("false")
-    expect(get("save-panel").dataset.compact).toBe("false")
-    expect(chat.querySelector("textarea")!.value).toBe("Draft retained")
-    expect(get("background").previousElementSibling === get("pane-desk")).toBe(true)
   } finally { page.happyDOM.abort() }
 })
 
-test("full save advice is disclosed deliberately while unlinked opening instructions stay visible", async () => {
-  const { page, document, get } = fixture(), dispose = setupPaneLayout(document)
+test("upward save details fit between tabs and status, support keyboard dismissal, and expose unlinked opening instructions", async () => {
+  const { page, document, get } = fixture()
+  const bar = get("save-panel"), tabs = get("desk-entry"), details = get("save-details"), toggle = get<HTMLButtonElement>("save-details-toggle")
+  let barTop = 530
+  bar.getBoundingClientRect = () => ({ top: barTop } as DOMRect)
+  tabs.getBoundingClientRect = () => ({ bottom: 44 } as DOMRect)
+  tabs.hidden = false
+  const dispose = setupPaneLayout(document)
   try {
-    const details = get("save-details"), toggle = get<HTMLButtonElement>("save-details-toggle")
+    get("matter").textContent = "Long matter name"
+    get("matter").title = "Long matter name · Services agreement.docx"
     get("message").textContent = "Keep the current Word copy and review this complete recovery advice."
+    const chat = get("pane-chat"); chat.hidden = false; chat.innerHTML = '<textarea>Draft retained</textarea>'
     expect(details.hidden).toBe(true); expect(toggle.getAttribute("aria-expanded")).toBe("false")
-    expect(get("save-panel").querySelector(".save-summary")!.textContent).not.toContain("recovery advice")
+    expect(bar.querySelector(".save-summary")!.textContent).not.toContain("recovery advice")
     toggle.click(); expect(details.hidden).toBe(false); expect(toggle.getAttribute("aria-expanded")).toBe("true")
     expect(details.textContent).toContain("complete recovery advice")
-    get("release").dispatchEvent(new page.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event)
+    expect(get("save-details-matter").textContent).toBe("Long matter name · Services agreement.docx")
+    expect(details.style.getPropertyValue("--save-details-space")).toBe("474px")
+    barTop = 500; page.dispatchEvent(new page.Event("resize"))
+    expect(details.style.getPropertyValue("--save-details-space")).toBe("444px")
+    get("save-details-close").focus()
+    get("save-details-close").dispatchEvent(new page.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event)
     expect(details.hidden).toBe(true); expect(document.activeElement === toggle).toBe(true)
-    get("actions").hidden = true; await Bun.sleep(0)
+    toggle.click(); get("save-details-close").click()
+    expect(details.hidden).toBe(true); expect(document.activeElement === toggle).toBe(true)
+    toggle.click(); chat.querySelector("textarea")!.click()
+    expect(details.hidden).toBe(true); expect(chat.querySelector("textarea")!.value).toBe("Draft retained")
+    tabs.hidden = true; chat.hidden = true; get("actions").hidden = true; await Bun.sleep(0)
     expect(details.hidden).toBe(false); expect(toggle.getAttribute("aria-expanded")).toBe("true")
+    expect(details.style.getPropertyValue("--save-details-space")).toBe("488px")
+    expect(details.textContent).toContain("complete recovery advice")
   } finally { dispose(); page.happyDOM.abort() }
 })

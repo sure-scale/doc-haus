@@ -19,6 +19,7 @@ const prompts: string[] = []
 let directory: string, app: Hono, auth: WordChatAuth, next = 0, generations = 0, loseResponse = false, hold = false, inventCitation = false, amend = false, approveReview = true, deletion = false
 let modelProposal: { before: string; after?: string } | undefined
 let modelAnswer: string | undefined
+let modelRawOutput: string | undefined, reviewerRawOutput: string | undefined
 const oldRuntime = process.env.DOCHAUS_RUNTIME_DIR, oldWorkspace = process.env.WORKSPACE_ROOT
 const transport = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(String(input)); const method = init?.method ?? "GET"
@@ -54,7 +55,7 @@ const transport = Object.assign(async (input: RequestInfo | URL, init?: RequestI
         const source = sources.find(source => source.id !== "word") ?? sources[0]
         const output: Record<string, unknown> = session.metadata.type === "word-chat-review" ? { approved: approveReview, issues: approveReview ? [] : ["The replacement loses a qualification."] } : { answer: modelAnswer ?? `Answer ${source?.quote ?? ""}`, citations: source ? [{ sourceId: inventCitation ? "foreign-source" : source.id, quote: source.quote.slice(0, 100) }] : [], suggestions: [] }
         if (amend && session.metadata.type !== "word-chat-review") output.proposal = { before: deletion ? "Tuesday " : context.text, after: deletion ? "" : context.text.replace("Tuesday", "Wednesday"), ...modelProposal, explanation: "Requested delivery update", openItems: ["Confirm the date with the client"] }
-        rows.push({ id: `msg_answer_${next++}`, type: "assistant", content: [{ type: "text", text: JSON.stringify(output) }], time: { created: new Date().toISOString(), completed: new Date().toISOString() } })
+        rows.push({ id: `msg_answer_${next++}`, type: "assistant", content: [{ type: "text", text: (session.metadata.type === "word-chat-review" ? reviewerRawOutput : modelRawOutput) ?? JSON.stringify(output) }], time: { created: new Date().toISOString(), completed: new Date().toISOString() } })
         session.time.idle = new Date().toISOString(); session.outcome = "succeeded"
       }
     }
@@ -213,7 +214,15 @@ test("independent amendment review receives first/last paragraph offsets and loc
     expect(rejected.proposal).toBeUndefined()
     expect(rejected.error).toContain("needs revision")
     expect(rejected.answer).toContain("The replacement loses a qualification.")
-  } finally { amend = false; modelProposal = undefined; approveReview = true }
+    // A non-boolean approval or unparseable reviewer output remains a refusal.
+    approveReview = true
+    for (const output of ['{"approved":"true","issues":["The approval value is invalid."]}', "The review did not return a decision."]) {
+      reviewerRawOutput = output
+      const invalid = (await (await amendRequest(crypto.randomUUID())).json() as { turn: WordChatTurn }).turn
+      expect(invalid.proposal).toBeUndefined()
+      expect(invalid.error).toContain("needs revision")
+    }
+  } finally { amend = false; modelProposal = undefined; approveReview = true; reviewerRawOutput = undefined }
 })
 
 test("completed amendments without a usable proposal always expose an actionable error", async () => {
@@ -232,7 +241,16 @@ test("completed amendments without a usable proposal always expose an actionable
       expect(turn.error).toMatch(/ask|select/i)
       expect(generations - before).toBe(1)
     }
-  } finally { amend = false; modelProposal = undefined; modelAnswer = undefined }
+    for (const output of ["Prepared the tracked amendment for review.", "{}"] ) {
+      modelRawOutput = output
+      const response = await post("send", { conversationId: id, scope: "document", kind: "amendment", text: "Prepare the requested change for review.", requestId: crypto.randomUUID(), attachments: [], context })
+      const turn = (await response.json() as { turn: WordChatTurn }).turn
+      expect(turn.status).toBe("error")
+      expect(turn.proposal).toBeUndefined()
+      expect(turn.error).toContain("Try a new request")
+      expect(turn.answer).toBe("")
+    }
+  } finally { amend = false; modelProposal = undefined; modelAnswer = undefined; modelRawOutput = undefined }
 })
 test("source version changes invalidate late results and remove access to earlier quotes", async () => {
   const id = await newConversation()

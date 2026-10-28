@@ -13,27 +13,6 @@
   </head>
   <body>
     <main class="pane-main">
-      <section id="save-panel" class="save-panel" aria-label="Save status" data-compact="false">
-        <div class="save-summary">
-          <p id="matter" class="matter">doc.haus</p>
-          <div class="save-state"><span id="status" class="status" data-state="neutral" role="status" aria-live="polite">Connecting…</span><button id="save-details-toggle" class="save-details-toggle" type="button" aria-expanded="false" aria-controls="save-details">Details</button></div>
-        </div>
-        <div id="actions" class="save-controls">
-          <button id="save" class="primary" type="button" disabled>Save</button>
-          <button id="load-latest" class="primary" type="button" hidden>Load latest version</button>
-        </div>
-        <div id="save-details" class="save-details" hidden>
-          <p id="message">Checking this document's link…</p>
-          <p id="version-state" class="version-mismatch" hidden></p>
-          <p id="blocked-help" class="blocked-help" hidden></p>
-          <div class="save-detail-actions">
-            <button id="release" class="recovery-action" type="button" hidden disabled>Stop editing here</button>
-            <button id="takeover" class="recovery-action" type="button" hidden disabled>Take over editing here</button>
-            <a id="open-latest-copy" class="latest-separate" target="_blank" rel="noopener noreferrer" aria-disabled="true" hidden>Open a separate copy</a>
-          </div>
-          <p id="latest-message" class="blocked-help" role="status" hidden></p>
-        </div>
-      </section>
       <section id="desk-entry" class="desk-entry" hidden aria-label="Matter views">
         <nav class="pane-tabs" role="tablist" aria-label="Matter views">
           <button id="chat-tab" type="button" role="tab" aria-selected="false" aria-controls="pane-chat" tabindex="-1">Chat</button>
@@ -45,10 +24,32 @@
       </section>
       <section id="pane-chat" class="word-chat" role="tabpanel" aria-labelledby="chat-tab" hidden></section>
       <div id="pane-desk" hidden></div>
-      <footer id="background" class="saving-help">
-        <a id="back" hidden target="_blank" rel="noopener noreferrer">Open matter in doc.haus <span aria-hidden="true">↗</span></a>
-        <p id="connection-recovery" hidden><a id="open-dochaus" target="_blank" rel="noopener" hidden>Open doc.haus</a><span id="connection-help"></span></p>
-      </footer>
+      <section id="save-panel" class="save-panel" aria-label="Save status">
+        <div class="save-summary">
+          <p id="matter" class="matter">doc.haus</p>
+          <div class="save-state"><span id="status" class="status" data-state="neutral" role="status" aria-live="polite">Connecting…</span><span id="save-version" class="save-version" hidden></span><button id="save-details-toggle" class="save-details-toggle" type="button" aria-expanded="false" aria-controls="save-details">Details</button></div>
+        </div>
+        <div id="actions" class="save-controls">
+          <button id="save" class="primary" type="button" disabled>Save</button>
+          <button id="load-latest" class="primary" type="button" hidden>Load latest</button>
+        </div>
+        <div id="save-details" class="save-details" role="region" aria-label="Save details" hidden>
+          <div class="save-details-heading"><p id="save-details-matter" class="save-details-matter">doc.haus</p><button id="save-details-close" class="save-details-close" type="button" aria-label="Close save details">×</button></div>
+          <p id="message">Checking this document's link…</p>
+          <p id="version-state" class="version-mismatch" hidden></p>
+          <p id="blocked-help" class="blocked-help" hidden></p>
+          <div class="save-detail-actions">
+            <button id="release" class="recovery-action" type="button" hidden disabled>Stop editing here</button>
+            <button id="takeover" class="recovery-action" type="button" hidden disabled>Take over editing here</button>
+            <a id="open-latest-copy" class="latest-separate" target="_blank" rel="noopener noreferrer" aria-disabled="true" hidden>Open a separate copy</a>
+          </div>
+          <p id="latest-message" class="blocked-help" role="status" hidden></p>
+          <div id="background" class="saving-help">
+            <a id="back" hidden target="_blank" rel="noopener noreferrer">Open matter in doc.haus <span aria-hidden="true">↗</span></a>
+            <p id="connection-recovery" hidden><a id="open-dochaus" target="_blank" rel="noopener" hidden>Open doc.haus</a><span id="connection-help"></span></p>
+          </div>
+        </div>
+      </section>
     </main>
   </body>
 </html>

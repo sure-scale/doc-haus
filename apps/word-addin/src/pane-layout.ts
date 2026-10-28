@@ -1,45 +1,59 @@
-/** Size Chat from the actual header/footer, and retain Save while its history
- * scrolls. No native document, draft or feature-tab state is changed here. */
+/** Keep Save details above the persistent bottom bar, within the space below
+ * the feature tabs. Native document, conversation and draft state stay intact. */
 export function setupPaneLayout(document: Document): () => void {
-  const main = document.getElementById("save-panel")?.parentElement
-  const header = document.getElementById("save-panel")
-  const chat = document.getElementById("pane-chat")
+  const bar = document.getElementById("save-panel")
+  const tabs = document.getElementById("desk-entry")
   const toggle = document.getElementById("save-details-toggle")
+  const close = document.getElementById("save-details-close")
   const details = document.getElementById("save-details")
   const actions = document.getElementById("actions")
-  if (!main || !header || !chat || !toggle || !details || !actions) return () => {}
-  let compact = false
-  function showDetails(open: boolean) {
+  const matter = document.getElementById("matter")
+  const fullMatter = document.getElementById("save-details-matter")
+  if (!bar?.parentElement || !tabs || !toggle || !close || !details || !actions || !matter || !fullMatter) return () => {}
+  const view = document.defaultView
+  function positionDetails() {
+    if (details!.hidden) return
+    const name = matter!.title || matter!.textContent || "doc.haus"
+    if (fullMatter!.textContent !== name) fullMatter!.textContent = name
+    const space = Math.max(0, bar!.getBoundingClientRect().top - (tabs!.hidden ? 0 : tabs!.getBoundingClientRect().bottom) - 12)
+    const value = `${space}px`
+    if (details!.style.getPropertyValue("--save-details-space") !== value) details!.style.setProperty("--save-details-space", value)
+  }
+  function showDetails(open: boolean, restoreFocus = false) {
     details!.hidden = !open
     toggle!.setAttribute("aria-expanded", String(open))
-  }
-  function update() {
-    const active = !chat!.hidden
-    const position = chat!.querySelector<HTMLElement>('[data-chat="history"]')?.scrollTop ?? 0
-    if (!active || position <= 0) compact = false
-    else if (position > 24) compact = true
-    const mode = String(active), reduced = String(compact)
-    if (main!.dataset.chatActive !== mode) main!.dataset.chatActive = mode
-    if (header!.dataset.compact !== reduced) header!.dataset.compact = reduced
-    // Cached/outdated and unlinked panes have no Save action. Their opening
-    // instructions must remain visible without asking the user to find them.
-    if (actions!.hidden) showDetails(true)
+    if (open) positionDetails()
+    else if (restoreFocus) toggle!.focus()
   }
   const click = () => showDetails(details!.hidden)
+  const dismiss = () => showDetails(false, true)
   const keydown = (event: KeyboardEvent) => {
-    if (event.key === "Escape" && !details!.hidden && header!.contains(event.target as Node)) {
-      showDetails(false); toggle!.focus(); event.preventDefault()
+    if (event.key === "Escape" && !details!.hidden) {
+      dismiss(); event.preventDefault()
     }
   }
+  const outsideClick = (event: MouseEvent) => {
+    if (!details!.hidden && !bar!.contains(event.target as Node)) showDetails(false)
+  }
+  // Cached/outdated and unlinked panes have no Save action. Show their opening
+  // instructions immediately, even when the feature tabs are unavailable.
+  const openingInstructions = () => { if (actions!.hidden) showDetails(true) }
   toggle.addEventListener("click", click)
-  header.addEventListener("keydown", keydown)
-  chat.addEventListener("scroll", update, true)
-  const Observer = document.defaultView?.MutationObserver
-  const observer = Observer && new Observer(update)
-  observer?.observe(chat, { attributes: true, attributeFilter: ["hidden"], childList: true })
+  close.addEventListener("click", dismiss)
+  document.addEventListener("keydown", keydown)
+  document.addEventListener("click", outsideClick)
+  view?.addEventListener("resize", positionDetails)
+  const observer = view && new view.MutationObserver(() => { openingInstructions(); positionDetails() })
   observer?.observe(actions, { attributes: true, attributeFilter: ["hidden"] })
-  update()
+  const matterObserver = view && new view.MutationObserver(positionDetails)
+  matterObserver?.observe(matter, { attributes: true, attributeFilter: ["title"], childList: true, characterData: true, subtree: true })
+  const resizeObserver = view?.ResizeObserver && new view.ResizeObserver(positionDetails)
+  resizeObserver?.observe(bar); resizeObserver?.observe(tabs)
+  openingInstructions()
   return () => {
-    observer?.disconnect(); toggle.removeEventListener("click", click); header.removeEventListener("keydown", keydown); chat.removeEventListener("scroll", update, true)
+    observer?.disconnect(); matterObserver?.disconnect(); resizeObserver?.disconnect()
+    toggle.removeEventListener("click", click); close.removeEventListener("click", dismiss)
+    document.removeEventListener("keydown", keydown); document.removeEventListener("click", outsideClick)
+    view?.removeEventListener("resize", positionDetails)
   }
 }

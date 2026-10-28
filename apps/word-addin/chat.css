@@ -1,4 +1,4 @@
-.word-chat { display: flex; flex: 1 1 0; flex-direction: column; width: 100%; max-width: 100%; min-width: 0; min-height: 0; height: auto; padding-top: 8px; overflow: hidden; }
+.word-chat { display: flex; flex: 1 1 0; flex-direction: column; width: 100%; max-width: 100%; min-width: 0; min-height: 0; height: auto; padding: 8px 12px; overflow: hidden; }
 .word-chat > *, .chat-history > *, .chat-message > * { min-width: 0; max-width: 100%; }
 .chat-toolbar { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; margin: 2px 0 6px; }
 .chat-toolbar > button { flex: 0 1 auto; white-space: nowrap; }

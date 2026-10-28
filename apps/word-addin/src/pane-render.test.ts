@@ -23,6 +23,8 @@ test("unchanged poll presentation preserves the pane DOM and focus while real sa
     expect(document.getElementById("save-menu")).toBeNull()
     expect(document.getElementById("takeover")!.hidden).toBe(true)
     expect(document.getElementById("release")!.hidden).toBe(true)
+    expect(document.getElementById("save-version")!.textContent).toBe("v1")
+    expect(document.getElementById("save-version")!.title).toBe("This Word copy: version 1")
     button.focus()
     const text = document.getElementById("status")!.firstChild
     const mutations: unknown[] = []
@@ -77,6 +79,7 @@ test("blocked saving offers only the recovery action supported by the displayed 
     render({ ...state, connection: { ...state.connection!, version: { ...state.connection!.version, state: "stale", current: { id: "v2", number: 2 } } } })
     expect(document.getElementById("save")!.hidden).toBe(true)
     expect(document.getElementById("load-latest")!.hidden).toBe(false)
+    expect(document.getElementById("save-version")!.textContent).toBe("v1")
     expect(takeover.hidden).toBe(true)
   } finally { page.happyDOM.abort() }
 })
@@ -92,6 +95,7 @@ test("connection recovery launches only local doc.haus without navigating away f
       const recovery = document.getElementById("connection-recovery")!
       const launch = document.getElementById("open-dochaus") as HTMLAnchorElement
       expect(recovery.hidden).toBe(false)
+      expect(document.getElementById("save-version")!.hidden).toBe(true)
       expect(recovery.querySelectorAll('a[href^="https:"]')).toHaveLength(0)
       expect(recovery.textContent).toContain("Keep this pane open")
       expect(recovery.textContent).toContain("reconnects automatically")

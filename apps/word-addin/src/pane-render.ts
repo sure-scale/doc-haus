@@ -24,6 +24,7 @@ export function createPaneRenderer(document: Document) {
   const element = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
   const badge = element("status"), message = element("message")
   const save = element<HTMLButtonElement>("save")
+  const version = element("save-version")
   const takeover = element<HTMLButtonElement>("takeover"), release = element<HTMLButtonElement>("release")
   return (state: PaneState): void => {
     const view = savePresentation(state)
@@ -34,6 +35,10 @@ export function createPaneRenderer(document: Document) {
     update(message, "textContent", view.message)
     update(save, "disabled", state.busy || !state.canSave || state.status === "done")
     const connection = state.connection
+    const number = connection?.version.base?.number ?? state.acknowledgement?.number
+    update(version, "textContent", number === undefined ? "" : `v${number}`)
+    update(version, "title", number === undefined ? "" : `This Word copy: version ${number}`)
+    update(version, "hidden", number === undefined)
     const stale = connection?.version.state === "stale"
     update(save, "hidden", stale)
     update(element("load-latest"), "hidden", !stale)
