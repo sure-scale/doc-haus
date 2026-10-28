@@ -36,5 +36,8 @@ test("amendment contract permits mixed wording and layout without deciding unsup
   expect(contract).toContain("Put formatting inside proposal.formatting, never at the top level")
   expect(contract).toContain('"openItems":["unresolved item"],"formatting":')
   expect(contract).toContain("client decisions stay unresolved")
+  expect(contract).toContain("assembled neighboring sentence")
+  expect(contract).toContain("only when it is inside the authorized target")
+  expect(conversationResponseContract("review")).toContain("punctuation and spacing at both boundaries")
   expect(contract).not.toContain("Choose a wording or formatting-only proposal")
 })

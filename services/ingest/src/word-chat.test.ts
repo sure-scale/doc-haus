@@ -772,6 +772,26 @@ test("independent amendment review receives first/last paragraph offsets and loc
   } finally { amend = false; modelProposal = undefined; approveReview = true; reviewerRawOutput = undefined }
 })
 
+test("partial-selection review receives unchanged neighboring text and boundary guidance", async () => {
+  const id = await newConversation(), text = "The parties shall deliver, promptly and safely.", selected = "deliver"
+  const paragraphs = [{ id: "boundary-paragraph", text }], start = text.indexOf(selected)
+  const selection = { id: "boundary-selection", text: selected, paragraphs, startOffset: start, endOffset: start + selected.length, saved: false, capturedAt: context.capturedAt }
+  amend = true; modelProposal = { before: selected, after: "provide notice" }
+  try {
+    const response = await post("send", { conversationId: id, scope: "document", kind: "amendment", text: "Change the selected wording.", requestId: crypto.randomUUID(), attachments: [], context: { ...context, text, paragraphs, selection } })
+    const turn = (await response.json() as { turn: WordChatTurn }).turn
+    expect(turn.proposal?.before).toBe(selected)
+    const reviewer = [...sessions.values()].find(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")!
+    const prompt = sessionContext(reviewer.id), supplied = suppliedContext(prompt) as { proposal: NonNullable<WordChatTurn["proposal"]> }
+    expect(prompt).toContain("punctuation and spacing at both boundaries")
+    expect(prompt).toContain("never expand the reviewed span silently")
+    expect(supplied.proposal.target.paragraphs).toEqual(paragraphs)
+    expect(supplied.proposal.target.startOffset).toBe(start)
+    expect(supplied.proposal.target.endOffset).toBe(start + selected.length)
+    expect(supplied.proposal.after).toBe("provide notice")
+  } finally { amend = false; modelProposal = undefined }
+})
+
 test("completed amendments without a usable proposal always expose an actionable error", async () => {
   const id = await newConversation()
   modelAnswer = "Prepared the tracked amendment for review."

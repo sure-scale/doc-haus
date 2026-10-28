@@ -299,12 +299,20 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   function proposalCard(proposal: WordChatProposal, turn: WordChatTurn): HTMLElement {
     const formatting = proposal.formatting
     const wordingChanged = proposal.before !== proposal.after
+    const plan = wordChatApplyPlan(proposal.target, proposal.after, proposal.formatting)
     const card = document.createElement("section"); card.className = "chat-proposal"; card.setAttribute("aria-label", formatting && !wordingChanged ? "Formatting to review" : "Amendment to review")
     card.append(line("h3", wordingChanged ? "Review amendment" : "Review formatting"))
     if (wordingChanged) {
       const before = document.createElement("details"); before.className = "chat-format-target"
       before.append(line("summary", "Before"), line("pre", displayWordText(proposal.before), "chat-before"))
       card.append(before, line("h4", "After"), line("pre", displayWordText(proposal.after), "chat-after"))
+      const target = proposal.target, first = target.paragraphs[0], last = target.paragraphs.at(-1)
+      const partial = first && last && (target.startOffset !== 0 || target.endOffset !== last.text.length)
+      if (partial && plan.supported && proposal.before === target.text && wordChatTargetCurrent({ text: target.paragraphs.map(p => p.text).join("\r"), paragraphs: target.paragraphs, saved: target.saved, capturedAt: target.capturedAt, truncated: false }, target)) {
+        const context = document.createElement("details"); context.className = "chat-format-target"
+        context.append(line("summary", "In context"), line("pre", displayWordText(plan.paragraphs.join("\r"))))
+        card.append(context)
+      }
     }
     if (formatting) {
       if (!wordingChanged) card.append(line("p", "Wording unchanged", "chat-message-meta"))
@@ -346,7 +354,6 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (declined.has(proposal.id)) { card.append(line("p", "Declined. Your document is unchanged.", "chat-message-meta")); return card }
     const error = proposalErrors.get(proposal.id)
     if (error) { const note = line("p", error, "chat-proposal-error"); note.setAttribute("role", "alert"); card.append(note) }
-    const plan = wordChatApplyPlan(proposal.target, proposal.after, proposal.formatting)
     if (!plan.supported) card.append(line("p", plan.reason, "chat-proposal-limit"))
     const actions = document.createElement("div"); actions.className = "chat-proposal-actions"
     const refine = document.createElement("button"); refine.type = "button"; refine.className = "chat-subtle"; refine.textContent = "Refine"

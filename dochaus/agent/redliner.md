@@ -59,7 +59,7 @@ defines the markup conventions every edit must follow.
   document for every occurrence of the family before editing any one instance,
   so an edit in the body is not contradicted by an untouched definition or
   schedule.
-- Use `read`/`grep` to confirm the surrounding wording before you change it.
+- Use `read`/`grep` to confirm the surrounding wording before you change it. Check the replacement in the assembled sentence, including punctuation and spacing at both boundaries. Include needed adjacent whitespace only inside the authorized target. Never silently expand a reviewed span; if a sound join requires changes outside the authorized selection, ask for a wider selection or disclose the limitation.
 - Identify the document by the `docPath` from the citation you retrieved.
 </locate>
 

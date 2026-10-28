@@ -54,6 +54,8 @@ requires current law, load `legal-research` and verify the controlling text from
 an official source. Distinguish verified authority from an unresolved research
 question; never invent a citation or treat an unretrieved source as established.
 
+When reviewing a proposed amendment, assess the sentence assembled from the unchanged neighboring text and replacement, including punctuation and spacing at both boundaries. Flag broken joins and any change outside the authorized span.
+
 Read the requested documents completely. Use `search-document` for retrieval,
 `read` for context, and `cite` to verify every quoted passage and document
 location. Report inaccessible or unreviewed material and extraction limitations.

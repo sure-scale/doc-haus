@@ -755,6 +755,34 @@ test("formatting review groups adjacent identical operations while preserving un
   } finally { f.restore() }
 })
 
+test("partial wording review shows the assembled paragraph without expanding the applied span", async () => {
+  const text = "Send a notice .", selected = "notice", start = text.indexOf(selected)
+  const target: WordChatTarget = { ...passage, text: selected, paragraphs: [{ id: "boundary", text }], startOffset: start, endOffset: start + selected.length }
+  const change: WordChatProposal = { ...proposal, before: selected, after: "written notice", target }, applied: WordChatProposal[] = []
+  const f = fixture({ turns: [turn({ kind: "amendment", proposal: change })], host: { apply: async value => { applied.push(value) } } })
+  try {
+    await f.chat.ready
+    const card = f.root.querySelector(".chat-proposal")!
+    const detail = [...card.querySelectorAll("details")].find(item => item.querySelector("summary")?.textContent === "In context")!
+    expect(detail.open).toBe(false)
+    expect(detail.querySelector("pre")!.textContent).toBe("Send a written notice .")
+    ;[...card.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Apply")!.click()
+    await Bun.sleep(0)
+    expect(applied).toEqual([change])
+    expect(applied[0]!.target).toEqual(target)
+  } finally { f.restore() }
+})
+
+test("context preview is omitted for complete paragraphs, formatting-only and invalid targets", async () => {
+  for (const change of [proposal, { ...proposal, after: proposal.before, formatting: [{ paragraph: 0, spacingAfter: 6 }] }, { ...proposal, target: { ...passage, startOffset: 1 } }]) {
+    const f = fixture({ turns: [turn({ proposal: change })] })
+    try {
+      await f.chat.ready
+      expect([...f.root.querySelectorAll("summary")].some(item => item.textContent === "In context")).toBe(false)
+    } finally { f.restore() }
+  }
+})
+
 test("mixed review shows the replacement and collapsed layout, and applies the exact combined proposal once", async () => {
   const following = { id: "unchanged-tail", text: "This separate clause stays unchanged." }
   const target: WordChatTarget = { ...passage, text: `${passage.text}\r${following.text}`, paragraphs: [...passage.paragraphs, following], endOffset: following.text.length }
