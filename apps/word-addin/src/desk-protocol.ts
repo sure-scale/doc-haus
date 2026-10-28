@@ -20,6 +20,7 @@ export type DeskRequest =
   | { action: "open"; sourceId: string; expectedHash: string }
   | { action: "versions" }
   | { action: "compare"; baseVersion: string; currentVersion: string }
+  | { action: "document-upload"; name: string; data: string }
   | { action: "chat-materials" }
   | { action: "chat-attach"; material: WordChatAttachment }
   | { action: "chat-upload"; name: string; data: string; mode: "request" | "matter" }
@@ -104,6 +105,8 @@ export function isDeskRequest(value: unknown): value is DeskRequest {
     case "chat-upload":
       return keys(value, ["action", "name", "data", "mode"]) && isChatUploadName(value.name) &&
         uploadData(value.data) && (value.mode === "request" || value.mode === "matter")
+    case "document-upload":
+      return keys(value, ["action", "name", "data"]) && isChatUploadName(value.name) && uploadData(value.data)
     case "show":
       return keys(value, ["action", "selection"]) && snapshot(value.selection)
     case "source":
@@ -128,7 +131,7 @@ export function isDeskRequest(value: unknown): value is DeskRequest {
 
 export function deskMessage(channel: string, value: DeskPayload): string {
   const encoded = JSON.stringify({ protocol: PROTOCOL, version: 1, channel, ...value })
-  const limit = value.kind === "request" && value.request.action === "chat-upload" && isDeskRequest(value.request)
+  const limit = value.kind === "request" && ["chat-upload", "document-upload"].includes(value.request.action) && isDeskRequest(value.request)
     ? DESK_UPLOAD_MESSAGE_LIMIT : DESK_MESSAGE_LIMIT
   if (encoded.length > limit) throw new Error("This file is too large. Choose a smaller document.")
   return encoded
@@ -144,7 +147,7 @@ export function readDeskMessage(encoded: unknown): DeskMessage | undefined {
   }
   if (!record(value) || value.protocol !== PROTOCOL || value.version !== 1 || !identifier(value.channel)) return
   if (encoded.length > DESK_MESSAGE_LIMIT &&
-    !(value.kind === "request" && isDeskRequest(value.request) && value.request.action === "chat-upload")) return
+    !(value.kind === "request" && isDeskRequest(value.request) && ["chat-upload", "document-upload"].includes(value.request.action))) return
   const base = ["protocol", "version", "channel", "kind"]
   if (["ready", "connected", "disconnect"].includes(String(value.kind))) {
     if (keys(value, base)) return value as DeskMessage

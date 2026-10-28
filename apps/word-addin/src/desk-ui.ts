@@ -1,6 +1,6 @@
 import type { DeskComparison, DeskSource, DeskSources, DeskVersions } from "../../../dochaus/lib/word-source-desk-contract"
 import { wordDiff, type Piece } from "../../../dochaus/lib/redline"
-import type { DeskRequest, DeskView } from "./desk-protocol"
+import { CHAT_UPLOAD_MAX_BYTES, isChatUploadName, type DeskRequest, type DeskView } from "./desk-protocol"
 
 export type DeskTransport = { request(input: DeskRequest): Promise<unknown> }
 export type DeskContext = { view: DeskView; documentName?: string; matterName?: string }
@@ -27,6 +27,8 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
       <button type="button" class="desk-icon" data-el="close" aria-label="${options.floating ? "Close window" : "Back to saving"}" title="${options.floating ? "Close window" : "Back to saving"}">×</button>
     </header>
     <section data-el="source-tools">
+      <div class="desk-document-actions"><button data-el="upload-document" type="button"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 16v4h16v-4"/></svg><span data-el="upload-label">Upload document</span></button><input data-el="upload-file" type="file" accept=".docx,.pdf,.txt,.md,.csv,.xlsx,.rtf" aria-label="Choose a document to add to this matter" hidden></div>
+      <p class="desk-meta desk-upload-status" data-el="upload-status" role="status" hidden></p>
       <div class="desk-document-list" data-el="document-list"></div>
       <p class="desk-meta desk-update-status" data-el="update-status" role="status" hidden></p>
     </section>
@@ -57,6 +59,7 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
   }
   let disposed = false
   let pending = 0
+  let uploading = false
   let mode: DeskView = options.initialView === "compare" ? "compare" : "documents"
   let sources: DeskSources | undefined
   let versions: DeskVersions | undefined
@@ -108,6 +111,8 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
     for (const control of root.querySelectorAll<HTMLButtonElement | HTMLSelectElement>("button, select")) {
       if (control.dataset.el !== "close") control.disabled = busy()
     }
+    el<HTMLInputElement>("upload-file").disabled = busy()
+    el("upload-label").textContent = uploading ? "Uploading…" : "Upload document"
     const count = comparison?.changes.length ?? 0
     const previous = root.querySelector<HTMLButtonElement>('[data-el="previous"]')
     const next = root.querySelector<HTMLButtonElement>('[data-el="next"]')
@@ -425,6 +430,33 @@ export function mountDesk(root: HTMLElement, transport: DeskTransport, options: 
   button("compare").onclick = () => { if (!busy()) void compareSelected(true) }
   button("sources-mode").onclick = () => { void setView("documents") }
   button("compare-mode").onclick = () => { void setView("compare") }
+  const uploadFile = el<HTMLInputElement>("upload-file")
+  button("upload-document").onclick = () => { if (!busy() && !disposed) uploadFile.click() }
+  uploadFile.onchange = () => {
+    const file = uploadFile.files?.[0]
+    if (!file || busy() || disposed) return
+    uploadFile.value = ""
+    el("upload-status").hidden = true
+    if (!isChatUploadName(file.name) || file.size < 1 || file.size > CHAT_UPLOAD_MAX_BYTES) {
+      error("Choose a Word, PDF, text, spreadsheet or RTF file up to 16 MB."); return
+    }
+    uploading = true
+    void work(async () => {
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      if (disposed) return
+      const chunks: string[] = []
+      for (let start = 0; start < bytes.length; start += 32_768)
+        chunks.push(String.fromCharCode(...bytes.subarray(start, start + 32_768)))
+      const result = await transport.request({ action: "document-upload", name: file.name, data: btoa(chunks.join("")) }) as { name: string }
+      if (disposed) return
+      // Finish any earlier background read before refreshing the saved list.
+      await sourcesJob
+      await loadSources()
+      if (disposed) return
+      el("upload-status").textContent = `${result.name} added to this matter.`
+      el("upload-status").hidden = false
+    }).finally(() => { uploading = false; if (!disposed) controls() })
+  }
   async function setView(view: DeskView) {
     if (disposed) return
     const next = view === "compare" ? "compare" : "documents"

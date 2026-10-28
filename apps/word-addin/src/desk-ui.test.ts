@@ -449,3 +449,35 @@ test("unsupported wider windows preserve prepared native document links", async 
     expect(fixture.root.hidden).toBe(false)
   } finally { fixture.restore(); globalThis.fetch = previousFetch }
 })
+
+test("Documents uploads add to the matter and refresh the list without opening or replacing the Word buffer", async () => {
+  const fixture = install(), calls: DeskRequest[] = [], finish = deferred<{ name: string }>()
+  let uploaded = false
+  const added = { ...preview, id: "added", name: "Notes (2).txt" }
+  const desk = mountDesk(fixture.root, { async request(input) {
+    calls.push(input)
+    if (input.action === "sources") return uploaded ? { ...sources, sources: [...sources.sources, added] } : sources
+    if (input.action === "open") return handoff()
+    if (input.action === "document-upload") { const result = await finish.promise; uploaded = true; return result }
+    if (input.action === "versions") return versions
+    if (input.action === "compare") return comparison(input.baseVersion, input.currentVersion)
+    throw new Error("Unexpected action")
+  } }, { close() {} })
+  try {
+    await desk.ready; await settle()
+    const input = element<HTMLInputElement>(fixture.root, "upload-file")
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["Synthetic uploaded note."], "Notes.txt")] })
+    input.dispatchEvent(new fixture.page.Event("change") as unknown as Event)
+    await settle()
+    expect(button(fixture.root, "upload-document").disabled).toBe(true)
+    expect(button(fixture.root, "upload-document").textContent).toContain("Uploading")
+    expect(calls.find(call => call.action === "document-upload")).toEqual({ action: "document-upload", name: "Notes.txt", data: btoa("Synthetic uploaded note.") })
+    finish.resolve({ name: added.name }); await settle(); await settle()
+    expect(row(fixture.root, added.id).textContent).toContain(added.name)
+    expect(element(fixture.root, "upload-status").textContent).toBe("Notes (2).txt added to this matter.")
+    expect(button(fixture.root, "upload-document").disabled).toBe(false)
+    expect(calls.filter(call => call.action === "selection" || call.action === "show")).toHaveLength(0)
+    await desk.setView("compare")
+    expect(element(fixture.root, "source-tools").hidden).toBe(true)
+  } finally { desk.dispose(); fixture.restore() }
+})

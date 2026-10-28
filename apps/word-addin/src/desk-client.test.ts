@@ -72,3 +72,26 @@ test("document desk cannot forward attachment actions to another capability rout
   await expect(request({ action: "chat-upload", name: "Notes.txt", data: "YWJj", mode: "request" })).rejects.toThrow("Open Attach from the chat")
   expect(calls).toBe(0)
 })
+
+test("document uploads use a file-only multipart request scoped by the linked capability", async () => {
+  let calls = 0
+  const request = deskRequestHandler(link, async (url, init) => {
+    calls++
+    expect(String(url)).toBe(`${link.apiOrigin}/word/desk/upload`)
+    expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${link.token}`)
+    expect(new Headers(init?.headers).has("Content-Type")).toBe(false)
+    expect(init?.credentials).toBe("omit")
+    const form = init?.body as FormData
+    expect([...form.keys()]).toEqual(["file"])
+    const file = form.get("file") as File
+    expect(file.name).toBe("Notes.txt")
+    expect(await file.text()).toBe("café")
+    return Response.json({ name: "Notes (2).txt" })
+  })
+  const input = { action: "document-upload" as const, name: "Notes.txt", data: Buffer.from("café").toString("base64") }
+  expect(await request(input)).toEqual({ name: "Notes (2).txt" })
+  for (const invalid of [{ ...input, name: "../Notes.txt" }, { ...input, data: "bad" }, { ...input, matter: "other-matter" }]) {
+    await expect(request(invalid)).rejects.toThrow("supported document")
+  }
+  expect(calls).toBe(1)
+})

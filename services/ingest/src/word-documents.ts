@@ -21,7 +21,7 @@ import { WordOpenTickets, wordOpenPath, wordOpenResultPath } from "./word-open-t
 import { readWordHandout, writeWordHandout, type WordHandoutIdentity } from "./word-handouts"
 
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-export const wordTokenPath = (pathname: string) => /^\/word\/(saves|heartbeat|done|lease|latest|desk\/(sources|source|versions|compare|open))$/.test(pathname) || wordChatPath(pathname)
+export const wordTokenPath = (pathname: string) => /^\/word\/(saves|heartbeat|done|lease|latest|desk\/(sources|source|versions|compare|open|upload))$/.test(pathname) || wordChatPath(pathname)
 
 export function wordConfiguration() {
   const failure = wordHttpsFailure()
