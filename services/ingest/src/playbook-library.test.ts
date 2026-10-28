@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
@@ -40,6 +40,59 @@ test("DOCX sources use the document extractor and retain operative wording", asy
   expect(res.status).toBe(201)
   const source = await res.json()
   expect(readFileSync(path.join(root, ".playbook-library", source.source), "utf8").trim()).toBe(clause)
+})
+
+test("library chat sources are readable in each assistant directory and are not library entries", async () => {
+  for (const [kind, directory] of [["playbooks", ".playbook-library"], ["templates", ".templates"], ["skills", ".skills"], ["workflows", ".workflows"], ["agents", ".agents"]]) {
+    const body = new FormData()
+    body.append("file", new File(["Confidential source text"], "guide.markdown"))
+    const res = await app.request(`/library/${kind}/sources`, { method: "POST", body })
+    expect(res.status).toBe(201)
+    const source = await res.json()
+    expect(source.name).toBe("guide.markdown")
+    expect(readFileSync(path.join(root, directory!, source.source), "utf8")).toBe("Confidential source text")
+    expect(source.source).toMatch(/^\.chat-attachments\/[a-f0-9-]+\/text\.txt$/)
+    expect(readFileSync(path.join(root, directory!, source.original), "utf8")).toBe("Confidential source text")
+    expect((await app.request(`/library/${kind}/sources/${source.id}`, { method: "DELETE" })).status).toBe(200)
+    expect(existsSync(path.join(root, directory!, source.original))).toBe(false)
+    expect(existsSync(path.join(root, directory!, source.source))).toBe(false)
+  }
+  const body = new FormData()
+  body.append("file", new File(["bad"], "bad.exe"))
+  expect((await app.request("/library/skills/sources", { method: "POST", body })).status).toBe(400)
+  expect((await app.request("/library/other/sources", { method: "POST", body })).status).toBe(404)
+})
+
+test("library chat extracts PDF text for the assistant", async () => {
+  const body = new FormData()
+  body.append("file", new File([readFileSync(path.join(import.meta.dir, "fixtures/synthetic-text-layer.pdf"))], "guide.pdf"))
+  const res = await app.request("/library/playbooks/sources", { method: "POST", body })
+  expect(res.status).toBe(201)
+  const source = await res.json()
+  expect(readFileSync(path.join(root, ".playbook-library", source.source), "utf8").trim().length).toBeGreaterThan(0)
+  expect(readFileSync(path.join(root, ".playbook-library", source.original))).toEqual(readFileSync(path.join(import.meta.dir, "fixtures/synthetic-text-layer.pdf")))
+  const imported = await upload("guide.pdf", new Uint8Array(readFileSync(path.join(import.meta.dir, "fixtures/synthetic-text-layer.pdf"))))
+  expect(imported.status).toBe(201)
+  const importedSource = await imported.json()
+  expect(readFileSync(path.join(root, ".playbook-library", importedSource.source), "utf8").trim().length).toBeGreaterThan(0)
+})
+
+test("chat attachment preserves original Word bytes and rejects invalid removal ids", async () => {
+  const bytes = await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph("Original text")] }] }))
+  const body = new FormData()
+  body.append("file", new File([new Uint8Array(bytes)], "source.docx"))
+  const res = await app.request("/library/templates/sources", { method: "POST", body })
+  const source = await res.json()
+  expect(Array.from(readFileSync(path.join(root, ".templates", source.original)))).toEqual(Array.from(bytes))
+  expect((await app.request("/library/templates/sources/not-a-uuid", { method: "DELETE" })).status).toBe(400)
+  expect(existsSync(path.join(root, ".templates", source.original))).toBe(true)
+})
+
+test("attachment staging refuses a symlinked attachment directory", async () => {
+  const { stageChatAttachment } = await import("./chat-attachments")
+  const directory = mkdtempSync(path.join(root, "symlink-check-"))
+  symlinkSync(root, path.join(directory, ".chat-attachments"), "dir")
+  await expect(stageChatAttachment(directory, new File(["private"], "guide.txt"))).rejects.toThrow("Invalid attachment directory")
 })
 
 test("missing, unsupported, empty and broken files return actionable failures", async () => {

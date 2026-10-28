@@ -1,6 +1,3 @@
-.playbook-create {
-  margin-top: var(--space-3);
-}
 .playbook-editor {
   display: flex;
   flex-direction: column;

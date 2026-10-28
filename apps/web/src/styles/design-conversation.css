@@ -223,6 +223,30 @@
   padding: var(--space-1) var(--space-2) var(--space-2);
 }
 
+.design-conversation .library-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.design-conversation .library-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+}
+.design-conversation .library-attachment button {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1.1rem;
+}
+
 .design-conversation .composer-tools {
   flex: 1 1 auto;
   min-width: 0;
