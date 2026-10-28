@@ -75,6 +75,19 @@ async function alreadySelected(platform: string, home: string, source: Record<st
   } catch { return false }
 }
 
+export async function selectedDesktopInstallation(options: Options = {}) {
+  const platform = options.platform ?? process.platform
+  if (platform !== "darwin" && platform !== "win32") return false
+  const repository = canonical(fileURLToPath(new URL("../", import.meta.url)))
+  const source = options.environment ?? process.env
+  const home = options.home ?? os.homedir()
+  const environment: Record<string, string | undefined> = { ...selectedDesktopEnvironment(source), HOME: home, BUN_BIN: process.execPath }
+  for (const key of ["PATH", "USERPROFILE", "LOCALAPPDATA", "SystemRoot", "TEMP", "TMP", "TMPDIR"])
+    environment[key] = Object.entries(source).find(([name]) => name.toUpperCase() === key.toUpperCase())?.[1]
+  const selected = { repository, runtime: canonical(dataPaths(repository, selectedDesktopEnvironment(source)).runtime) }
+  return alreadySelected(platform, home, source, environment, selected, options)
+}
+
 export async function refreshDesktopLauncher(options: Options = {}) {
   const platform = options.platform ?? process.platform
   if (platform !== "darwin" && platform !== "win32") return
@@ -87,7 +100,7 @@ export async function refreshDesktopLauncher(options: Options = {}) {
   const selected = { repository, runtime: canonical(dataPaths(repository, selectedDesktopEnvironment(source)).runtime) }
   // The installers already set this flag when explicitly selecting a copy.
   // Ordinary startup may refresh only the desktop entry it already owns.
-  if (options.startup && source.DOCHAUS_SETUP_WORD_ADDIN !== "1" && !await alreadySelected(platform, home, source, environment, selected, options)) return
+  if (options.startup && source.DOCHAUS_SETUP_WORD_ADDIN !== "1" && !await selectedDesktopInstallation(options)) return
   const command = platform === "darwin"
     ? ["/bin/bash", path.join(repository, "scripts/macos-app.sh"), repository, path.join(home, "Applications/doc.haus.app")]
     : [process.execPath, path.join(repository, "scripts/windows/register-protocol.ts")]

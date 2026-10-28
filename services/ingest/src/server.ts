@@ -2038,5 +2038,10 @@ if (Number.isFinite(TELEMETRY_RETENTION_DAYS) && TELEMETRY_RETENTION_DAYS > 0) {
 const port = Number(process.env.INGEST_PORT ?? 4500)
 const hostname = process.env.INGEST_HOST ?? "127.0.0.1"
 console.log(`doc.haus ingest service listening on http://${hostname}:${port}`)
-startWordHttps(app.fetch)
+if (startWordHttps(app.fetch)) {
+  // Synchronize only a previously installed, trusted local add-in, and only
+  // after the configured listener has successfully bound its port.
+  void import("../../../scripts/setup-word-addin").then(({ syncWordAddinRegistration }) => syncWordAddinRegistration())
+    .catch(() => console.warn("doc.haus: Word registration could not be refreshed. Repair Word setup in Settings."))
+}
 export default { port, hostname, fetch: app.fetch }
