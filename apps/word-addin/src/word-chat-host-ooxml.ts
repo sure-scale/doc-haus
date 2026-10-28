@@ -523,3 +523,68 @@ export function reviewedWordChatArtifact(artifact: WordChatAuthoredAmendment, pr
   if (!revisions.flat().length || signature(revisions.flat()) !== signature(artifact.revisions)) throw new Error("The authored revision metadata differs from its Word markup")
   return revisions
 }
+
+/** Verify a backend-authored exact whole-control replacement. The caller must
+ * separately pin the live Word paragraph/control IDs and recapture freshness. */
+export function reviewedWordChatInlineControl(artifact: WordChatAuthoredAmendment, proposalId: string, target: WordChatTarget, replacement: string, captured: string) {
+  const fail = (): never => { throw new Error("Cannot verify the reviewed inline control") }
+  if (!target.id || target.paragraphs.length !== 1 || !target.paragraphs[0]?.id || !replacement || /[\r\n\t\v]/.test(replacement) ||
+    target.text[0] === replacement[0] || target.text.at(-1) === replacement.at(-1)) fail()
+  const sourceParts = parse(captured), resultParts = parse(artifact.ooxml)
+  const source = content(sourceParts, true, true).nodes, result = content(resultParts, false, false).nodes
+  if (source.length !== 1 || result.length !== 1) fail()
+  const oneControl = (paragraph: Element, parts: Map<string, Element>) => {
+    const main = dependencyRoot(parts, MAIN)
+    if (!main) return fail()
+    const controls = Array.from(main.getElementsByTagNameNS(W, "sdt"))
+    if (controls.length !== 1 || controls[0]!.parentNode !== paragraph) return fail()
+    const protectedNames = ["commentRangeStart", "commentRangeEnd", "commentReference", "moveFrom", "moveTo", "moveFromRangeStart", "moveFromRangeEnd", "moveToRangeStart", "moveToRangeEnd", "rPrChange", "pPrChange", "tblPrChange", "trPrChange", "tcPrChange", "fldChar", "fldSimple", "instrText", "drawing", "pict", "object", "hyperlink", "footnoteReference", "endnoteReference"]
+    if (protectedNames.some(name => main.getElementsByTagNameNS(W, name).length)) return fail()
+    for (const name of ["ins", "del"]) for (const node of Array.from(main.getElementsByTagNameNS(W, name))) {
+      let ancestor: Node | null = node
+      while (ancestor && ancestor !== paragraph) ancestor = ancestor.parentNode
+      if (!ancestor) return fail()
+    }
+    const control = controls[0]!, pieces = elements(control)
+    if (pieces.length !== 2 || pieces[0]!.namespaceURI !== W || pieces[0]!.localName !== "sdtPr" || pieces[1]!.namespaceURI !== W || pieces[1]!.localName !== "sdtContent") return fail()
+    const properties = elements(pieces[0]!), ids = named(pieces[0]!, "id")
+    if (ids.length !== 1 || !/^-?\d+$/.test(ids[0]!.getAttributeNS(W, "val") ?? "") ||
+      properties.some(p => p.namespaceURI !== W || !["id", "tag", "alias"].includes(p.localName) || elements(p).length) ||
+      new Set(properties.map(p => p.localName)).size !== properties.length) return fail()
+    return { control, properties: pieces[0]!, body: pieces[1]!, id: ids[0]!.getAttributeNS(W, "val")! }
+  }
+  const before = oneControl(source[0]!, sourceParts), after = oneControl(result[0]!, resultParts)
+  const plainText = (node: Element) => elements(node).length === 0 && Array.from(node.attributes).every(attr => attr.namespaceURI === XMLNS ||
+    attr.namespaceURI === "http://www.w3.org/XML/1998/namespace" && attr.localName === "space" && ["preserve", "default"].includes(attr.value)) &&
+    (!/^\s|\s$/.test(node.textContent ?? "") || node.getAttributeNS("http://www.w3.org/XML/1998/namespace", "space") === "preserve")
+  const priorRuns = elements(before.body), originalRun = priorRuns[0], originalFields = originalRun ? elements(originalRun) : []
+  if (priorRuns.length !== 1 || originalRun?.namespaceURI !== W || originalRun.localName !== "r" ||
+    originalFields.some(e => e.namespaceURI !== W || !["rPr", "t"].includes(e.localName)) || named(originalRun, "rPr").length > 1 || named(originalRun, "t").length !== 1 ||
+    !plainText(named(originalRun, "t")[0]!) || text(before.body) !== target.text) fail()
+  const siblings = elements(source[0]!), start = siblings.slice(0, siblings.indexOf(before.control)).map(node => text(node)).join("").length
+  if (start !== target.startOffset || start + target.text.length !== target.endOffset || text(source[0]!) !== target.paragraphs[0]!.text) fail()
+  const expected = target.paragraphs[0]!.text.slice(0, start) + replacement + target.paragraphs[0]!.text.slice(target.endOffset)
+  reviewedWordChatArtifact(artifact, proposalId, target, [expected], captured)
+  unchangedFormattingDependencies(captured, artifact.ooxml)
+  const marks = elements(after.body)
+  if (marks.length !== 2 || marks[0]!.namespaceURI !== W || marks[0]!.localName !== "del" || marks[1]!.namespaceURI !== W || marks[1]!.localName !== "ins") fail()
+  if (marks[0]!.getAttributeNS(W, "id") === marks[1]!.getAttributeNS(W, "id")) fail()
+  const runAttributes = JSON.stringify(canonical(originalRun!.cloneNode(false))), runProperties = JSON.stringify(canonical(named(originalRun!, "rPr")[0] ?? nullNode))
+  for (const [index, mark] of marks.entries()) {
+    const runs = elements(mark)
+    if (Array.from(mark.attributes).some(attr => attr.namespaceURI !== XMLNS && (attr.namespaceURI !== W || !["id", "author", "date"].includes(attr.localName))) ||
+      mark.getAttributeNS(W, "author") !== "doc.haus" || !/^\d+$/.test(mark.getAttributeNS(W, "id") ?? "") ||
+      !Number.isFinite(Date.parse(mark.getAttributeNS(W, "date") ?? "")) || runs.length !== 1 || runs[0]!.namespaceURI !== W || runs[0]!.localName !== "r" ||
+      JSON.stringify(canonical(runs[0]!.cloneNode(false))) !== runAttributes || JSON.stringify(canonical(named(runs[0]!, "rPr")[0] ?? nullNode)) !== runProperties) fail()
+    const fields = elements(runs[0]!), value = named(runs[0]!, index === 0 ? "delText" : "t")
+    if (value.length !== 1 || fields.some(field => field.namespaceURI !== W || !["rPr", index === 0 ? "delText" : "t"].includes(field.localName)) ||
+      named(runs[0]!, "rPr").length > 1 || !plainText(value[0]!) || value[0]!.textContent !== (index === 0 ? target.text : replacement)) fail()
+  }
+  const masked = (paragraph: Element) => {
+    const clone = paragraph.cloneNode(true) as Element, sdt = clone.getElementsByTagNameNS(W, "sdt")[0]!, body = named(sdt, "sdtContent")[0]!
+    while (body.firstChild) body.removeChild(body.firstChild)
+    return JSON.stringify(canonical(clone, true))
+  }
+  if (before.id !== after.id || masked(source[0]!) !== masked(result[0]!)) fail()
+  return { paragraphId: target.paragraphs[0]!.id, controlId: before.id, startOffset: start, endOffset: target.endOffset, before: target.text, after: replacement }
+}

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { importedWordChatDifference, reviewedMixedWordChatArtifact, sameWordChatOoxml, verifiedNativeWordChatFormatting, wordChatOoxmlDifference } from "./word-chat-host-ooxml"
+import { reviewedWordChatInlineControl, importedWordChatDifference, reviewedMixedWordChatArtifact, sameWordChatOoxml, verifiedNativeWordChatFormatting, wordChatOoxmlDifference } from "./word-chat-host-ooxml"
 import { reviewedWordChatParagraphFormatting } from "../../../dochaus/lib/word-chat-formatting-ooxml"
 import { DOMParser } from "@xmldom/xmldom"
 
@@ -118,4 +118,49 @@ test("inserted heading preformatting is proved against a constrained baseline", 
   expect(() => verify({ ...artifact, wording: { ...artifact.wording, ooxml: delivered.replace('<w:p><w:r><w:t>Retained.', '<w:p><w:pPr><w:ind w:left="300"/></w:pPr><w:r><w:t>Retained.') } })).toThrow()
   const bold = (xml: string) => xml.replace('<w:r><w:t>Heading</w:t></w:r>', '<w:r><w:rPr><w:b/></w:rPr><w:t>Heading</w:t></w:r>')
   expect(() => verify({ ...artifact, ooxml: bold(artifact.ooxml), wording: { ...artifact.wording, ooxml: bold(delivered), unformattedOoxml: bold(base) } })).toThrow("Unreviewed insertion run formatting")
+})
+
+
+test("exact inline control verifier binds the shared authored artifact and rejects tampering", async () => {
+  const authorModule: string = "../../../dochaus/lib/docx-flat-opc"
+  const { authorWordChatTarget } = await import(authorModule)
+  const rel = "http://schemas.openxmlformats.org/package/2006/relationships", office = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  const control = '<w:sdt><w:sdtPr><w:id w:val="41"/><w:tag w:val="colour"/></w:sdtPr><w:sdtContent><w:r><w:rPr><w:b/></w:rPr><w:t>red</w:t></w:r></w:sdtContent></w:sdt>'
+  const source = flat(`<w:p><w:r><w:t xml:space="preserve">A </w:t></w:r>${control}<w:r><w:t xml:space="preserve"> clause</w:t></w:r></w:p>`, "")
+    .replace('</pkg:package>', `<pkg:part pkg:name="/_rels/.rels" pkg:contentType="application/vnd.openxmlformats-package.relationships+xml"><pkg:xmlData><Relationships xmlns="${rel}"><Relationship Id="r1" Type="${office}/officeDocument" Target="word/document.xml"/></Relationships></pkg:xmlData></pkg:part></pkg:package>`)
+  const target = { id:"target", paragraphs:[{id:"paragraph",text:"A red clause"}],text:"red",startOffset:2,endOffset:5,saved:false,capturedAt:"2026-01-01T00:00:00Z" }
+  const authored = { ...await authorWordChatTarget(source, target, "blue"), proposalId:"proposal" }
+  const verify = (xml = authored.ooxml, input = source) => reviewedWordChatInlineControl({ ...authored, ooxml:xml }, "proposal", target, "blue", input)
+  expect(verify()).toEqual({paragraphId:"paragraph",controlId:"41",startOffset:2,endOffset:5,before:"red",after:"blue"})
+  for (const bad of [authored.ooxml.replace('w:val="41"', 'w:val="42"'), authored.ooxml.replace('w:val="colour"', 'w:val="other"'),
+    authored.ooxml.replace('<w:b/>', '<w:i/>'), authored.ooxml.replace('w:author="doc.haus"', 'w:author="Other"'),
+    authored.ooxml.replace('red</w:delText>', 'tan</w:delText>'), authored.ooxml.replace('blue</w:t>', 'gold</w:t>'),
+    authored.ooxml.replace(' clause</w:t>', ' wrong</w:t>'),
+    authored.ooxml.replace('w:author="doc.haus"', 'w:author="doc.haus" w:custom="bad"'),
+    authored.ooxml.replace('</w:sdt>', '</w:sdt><w:sdt><w:sdtPr/><w:sdtContent/></w:sdt>')]) {
+    expect(bad).not.toBe(authored.ooxml)
+    expect(() => verify(bad)).toThrow()
+  }
+  const deleted = authored.ooxml.match(/<w:del\b[^>]*>[\s\S]*?<\/w:del>/)?.[0]
+  const inserted = authored.ooxml.match(/<w:ins\b[^>]*>[\s\S]*?<\/w:ins>/)?.[0]
+  expect(deleted && inserted).toBeTruthy()
+  const swapped = authored.ooxml.replace(deleted! + inserted!, inserted! + deleted!)
+  expect(swapped).not.toBe(authored.ooxml)
+  expect(() => verify(swapped)).toThrow()
+  const deleteId = deleted!.match(/w:id="(\d+)"/)![1]!, insertId = inserted!.match(/w:id="(\d+)"/)![1]!
+  const duplicateId = authored.ooxml.replace(inserted!, inserted!.replace(`w:id="${insertId}"`, `w:id="${deleteId}"`))
+  expect(duplicateId).not.toBe(authored.ooxml)
+  expect(() => verify(duplicateId)).toThrow()
+  const extra = authored.ooxml.replace(inserted!, inserted! + inserted!)
+  expect(extra).not.toBe(authored.ooxml)
+  expect(() => verify(extra)).toThrow()
+  expect(() => verify(authored.ooxml, source.replace('</w:sdtPr>', '<w:lock w:val="sdtContentLocked"/></w:sdtPr>'))).toThrow()
+  expect(() => reviewedWordChatInlineControl(authored, "different", target, "blue", source)).toThrow()
+  expect(() => reviewedWordChatInlineControl(authored, "proposal", { ...target, startOffset: 1 }, "blue", source)).toThrow()
+  const table = source.replace('<w:body><w:p>', '<w:body><w:tbl><w:tr><w:tc><w:p>').replace('</w:p></w:body>', '</w:p></w:tc></w:tr></w:tbl></w:body>')
+  const tableArtifact = { ...await authorWordChatTarget(table, target, "blue"), proposalId: "proposal" }
+  expect(reviewedWordChatInlineControl(tableArtifact, "proposal", target, "blue", table).controlId).toBe("41")
+  const wrapped = table.replace('<w:tbl><w:tr>', '<w:tbl><w:sdt><w:sdtPr><w:lock w:val="sdtLocked"/></w:sdtPr><w:sdtContent><w:tr>')
+    .replace('</w:tr></w:tbl>', '</w:tr></w:sdtContent></w:sdt></w:tbl>')
+  expect(() => reviewedWordChatInlineControl(tableArtifact, "proposal", target, "blue", wrapped)).toThrow()
 })
