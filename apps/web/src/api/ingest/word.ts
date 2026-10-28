@@ -1,8 +1,10 @@
 import type { WordOpenDocument } from "../../../../../dochaus/lib/word-addin-contract"
+import type { WordChatPreferences } from "../../../../../dochaus/lib/word-chat-contract"
 import { INGEST_URL } from "../../config"
 import { ingestError } from "./errors"
 
 export type { WordOpenDocument }
+export type { WordChatPreferences }
 export type WordConfig = { available: boolean; origin: string | null; manifestUrl: string | null; reason?: string }
 export type WordSetupStatus = WordConfig & {
   platform: "macos" | "windows" | "unsupported"
@@ -18,6 +20,25 @@ export type WordSetupStatus = WordConfig & {
 }
 
 const wordUrl = (matterId: string, name?: string) => `${INGEST_URL}/matters/${encodeURIComponent(matterId)}/documents/word${name === undefined ? "" : `?name=${encodeURIComponent(name)}`}`
+
+function chatPreferences(value: unknown): WordChatPreferences {
+  if (!value || typeof value !== "object" || !("defaultScope" in value) || !("suggestions" in value) ||
+    value.defaultScope !== "document" && value.defaultScope !== "matter" || typeof value.suggestions !== "boolean")
+    throw new Error("Could not confirm Word chat defaults. Try again.")
+  return { defaultScope: value.defaultScope, suggestions: value.suggestions }
+}
+
+export async function fetchWordChatPreferences(): Promise<WordChatPreferences> {
+  const response = await fetch(`${INGEST_URL}/word/chat-preferences`, { signal: AbortSignal.timeout(15_000) })
+  if (!response.ok) throw new Error(await ingestError(response, "Could not load Word chat defaults"))
+  return chatPreferences(await response.json())
+}
+
+export async function saveWordChatPreferences(preferences: WordChatPreferences): Promise<WordChatPreferences> {
+  const response = await fetch(`${INGEST_URL}/word/chat-preferences`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(preferences), signal: AbortSignal.timeout(15_000) })
+  if (!response.ok) throw new Error(await ingestError(response, "Could not save Word chat defaults"))
+  return chatPreferences(await response.json())
+}
 
 export async function fetchWordConfig(): Promise<WordConfig> {
   const response = await fetch(`${INGEST_URL}/word/config`)

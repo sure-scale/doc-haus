@@ -13,27 +13,26 @@
   </head>
   <body>
     <main class="pane-main">
+      <header id="pane-header" class="pane-header">
       <section id="desk-entry" class="desk-entry" hidden aria-label="Matter views">
         <nav class="pane-tabs" role="tablist" aria-label="Matter views">
           <button id="chat-tab" type="button" role="tab" aria-selected="false" aria-controls="pane-chat" tabindex="-1">Chat</button>
           <button id="documents-tab" type="button" role="tab" aria-selected="true" aria-controls="pane-desk">Documents</button>
           <button id="compare-tab" type="button" role="tab" aria-selected="false" aria-controls="pane-desk" tabindex="-1">Compare</button>
         </nav>
-        <button id="open-desk-window" class="window-action" type="button" title="Open in window" aria-label="Open in window">↗</button>
-        <p id="desk-message" class="desk-message" role="status" hidden></p>
       </section>
+      <div class="save-state">
+        <span id="status" class="status" data-state="neutral" role="status" aria-live="polite">Connecting…</span>
+        <div id="actions" class="save-controls"><button id="save" class="save-link" type="button" disabled>Save</button></div>
+      </div>
+      <p id="desk-message" class="desk-message" role="status" hidden></p>
+      </header>
       <section id="pane-chat" class="word-chat" role="tabpanel" aria-labelledby="chat-tab" hidden></section>
       <div id="pane-desk" hidden></div>
       <section id="save-panel" class="save-panel" aria-label="Save status">
         <div class="save-summary">
           <p class="matter-path"><a id="matter" class="matter" target="_blank" rel="noopener noreferrer">doc.haus</a><span id="matter-path-separator" aria-hidden="true" hidden>/</span><span id="save-document" class="save-document" hidden></span></p>
-          <div class="save-state">
-            <button id="save-details-toggle" class="save-details-toggle" type="button" aria-label="Show save status and recovery details" aria-expanded="false" aria-controls="save-details"><span id="status" class="status" data-state="neutral" role="status" aria-live="polite">Connecting…</span><span id="save-version" class="save-version" hidden></span><span class="save-details-cue" aria-hidden="true">⌃</span></button>
-            <div id="actions" class="save-controls">
-              <button id="save" class="save-link" type="button" disabled>Save</button>
-              <button id="load-latest" class="save-link" type="button" hidden>Load latest</button>
-            </div>
-          </div>
+          <button id="save-details-toggle" class="save-details-toggle" type="button" aria-label="Show save status and recovery details" aria-expanded="false" aria-controls="save-details"><span id="save-version" class="save-version" hidden></span><svg class="save-details-cue" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="m4 10 4-4 4 4"/></svg></button>
         </div>
         <div id="save-details" class="save-details" role="region" aria-label="Save details" hidden>
           <div class="save-details-heading"><p id="save-details-matter" class="save-details-matter">doc.haus</p><button id="save-details-close" class="save-details-close" type="button" aria-label="Close save details">×</button></div>
@@ -41,9 +40,11 @@
           <p id="version-state" class="version-mismatch" hidden></p>
           <p id="blocked-help" class="blocked-help" hidden></p>
           <div class="save-detail-actions">
+            <button id="load-latest" class="recovery-action" type="button" hidden>Load latest</button>
             <button id="release" class="recovery-action" type="button" hidden disabled>Stop editing here</button>
             <button id="takeover" class="recovery-action" type="button" hidden disabled>Take over editing here</button>
             <a id="open-latest-copy" class="latest-separate" target="_blank" rel="noopener noreferrer" aria-disabled="true" hidden>Open a separate copy</a>
+            <button id="open-desk-window" class="recovery-action" type="button" title="Open in window" aria-label="Open in window" hidden>Open in window <span aria-hidden="true">↗</span></button>
           </div>
           <p id="latest-message" class="blocked-help" role="status" hidden></p>
           <div id="background" class="saving-help">

@@ -1,8 +1,8 @@
-import type { WordChatConversation, WordChatConversationResult, WordChatMaterials, WordChatMaterial, WordChatScope, WordChatSend, WordChatTurn, WordChatSuggestion, WordChatSource } from "../../../dochaus/lib/word-chat-contract"
+import type { WordChatConversation, WordChatConversationResult, WordChatMaterials, WordChatMaterial, WordChatScope, WordChatSend, WordChatTurn, WordChatSuggestion, WordChatSource, WordChatPreferences } from "../../../dochaus/lib/word-chat-contract"
 import type { WordChatProposal, WordChatSnapshot, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { wordChatApplyPlan, wordChatTargetCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { ChatRequestError, type WordChatApi } from "./chat-client"
-import { readChatPreferences, writeChatPreferences } from "./chat-preferences"
+import { nativeEventSession, subscribeNativeChatStream } from "../../../dochaus/lib/native-chat-stream"
 
 export type ChatHost = {
   documentName: string
@@ -19,15 +19,7 @@ export type ChatHost = {
 /** Mount once. Hiding a feature tab never remounts or submits the conversation. */
 export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHost) {
   root.dataset.documentName = host.documentName
-  root.innerHTML = `<section data-chat="settings" id="chat-settings" class="chat-settings" aria-label="Chat settings" hidden>
-    <div class="chat-panel-heading"><h2>Chat settings</h2><button data-chat="settings-close" class="chat-subtle" type="button">Done</button></div>
-    <label>New chats use<select data-chat="default-scope"><option value="document">This document</option><option value="matter">Whole matter</option></select></label>
-    <label class="chat-toggle"><input data-chat="proactive" type="checkbox"> Suggestions by default</label>
-    <div data-chat="suggestion-settings"><label>Suggest about<select data-chat="target"><option value="document">Whole document</option><option value="selection">Selected text</option></select></label>
-      <button data-chat="pause-setting" class="chat-subtle" type="button">Pause in this chat</button><button data-chat="resume" class="chat-subtle" type="button" hidden>Resume in this chat</button></div>
-    <p>Defaults are saved for all Word documents.</p>
-  </section>
-  <section data-chat="conversations" id="chat-conversations" class="chat-conversations" aria-label="Conversations" hidden>
+  root.innerHTML = `<section data-chat="conversations" id="chat-conversations" class="chat-conversations" aria-label="Conversations" hidden>
     <div class="chat-panel-heading"><h2>Conversations</h2><button data-chat="conversations-close" class="chat-subtle" type="button">Done</button></div><div data-chat="conversation-list" class="chat-conversation-list"></div>
   </section>
   <section data-chat="materials" class="chat-materials" aria-label="Attach material" hidden>
@@ -54,14 +46,13 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   <div class="chat-recovery"><p data-chat="activity" class="chat-activity" role="status" aria-live="polite"></p>
     <button data-chat="reconnect" class="chat-subtle" type="button" hidden>Reconnect</button>
     <button data-chat="stop" class="chat-subtle" type="button" hidden>Stop</button></div>
-  <div class="chat-toolbar">
-    <button data-chat="conversation" class="chat-subtle chat-history-toggle" type="button" aria-label="Conversations" aria-expanded="false" aria-controls="chat-conversations"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 2.7-6.4L3 8m0-5v5h5m4-1v5l3 2"/></svg><span>Chats</span></button>
-    <button data-chat="new" class="chat-subtle" type="button" title="New conversation" aria-label="New conversation">＋ New chat</button>
-    <button data-chat="settings-toggle" class="chat-icon" type="button" title="Chat settings" aria-label="Chat settings" aria-expanded="false" aria-controls="chat-settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 3-.6 2.2-1.4.8-2.2-.6-2.5 4.2 1.6 1.6v1.6L2.8 14l2.5 4.3 2.2-.6 1.4.8.6 2.5h5l.6-2.5 1.4-.8 2.2.6 2.5-4.3-1.6-1.2v-1.6l1.6-1.6-2.5-4.2-2.2.6-1.4-.8L14.5 3Z"/><circle cx="12" cy="12" r="3"/></svg><span>Settings</span></button>
-  </div>
   <form data-chat="form" class="chat-composer">
     <div data-chat="chips" class="chat-chips"></div>
-    <div class="chat-scope" role="group" aria-label="Chat context"><span data-chat="document-scope" class="chat-document-scope"><button data-chat="scope-document" type="button" aria-pressed="true" title="Use this Word document and attached material">This document</button><button data-chat="document-info" class="chat-document-info" type="button" aria-label="Document information" aria-describedby="chat-document-info" aria-expanded="false" aria-controls="chat-document-info"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.25"/><path d="M10 9v5m0-8v.2"/></svg></button><span data-chat="document-info-content" id="chat-document-info" class="chat-document-tooltip" role="tooltip" hidden></span></span><button data-chat="scope-matter" type="button" aria-pressed="false" title="Also use the matter’s sources and playbook">Whole matter</button></div>
+    <div class="chat-composer-context">
+      <div class="chat-scope" role="group" aria-label="Chat context"><span data-chat="document-scope" class="chat-document-scope"><button data-chat="scope-document" type="button" aria-pressed="true" title="Use this Word document and attached material">This document</button><button data-chat="document-info" class="chat-document-info" type="button" aria-label="Document information" aria-describedby="chat-document-info" aria-expanded="false" aria-controls="chat-document-info"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.25"/><path d="M10 9v5m0-8v.2"/></svg></button><span data-chat="document-info-content" id="chat-document-info" class="chat-document-tooltip" role="tooltip" hidden></span></span><button data-chat="scope-matter" type="button" aria-pressed="false" title="Also use the matter’s sources and playbook">Whole matter</button></div>
+      <button data-chat="conversation" class="chat-subtle chat-history-toggle" type="button" title="Conversations" aria-label="Conversations" aria-expanded="false" aria-controls="chat-conversations"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 2.7-6.4L3 8m0-5v5h5m4-1v5l3 2"/></svg></button>
+      <button data-chat="new" class="chat-subtle chat-new" type="button" title="New conversation" aria-label="New conversation"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg><span>New</span></button>
+    </div>
     <textarea data-chat="message" aria-label="Message doc.haus" placeholder="Ask doc.haus…" rows="2"></textarea>
     <div class="chat-composer-actions">
       <button data-chat="attach" class="chat-subtle" type="button" aria-expanded="false">＋ Attach</button>
@@ -79,18 +70,13 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   const button = (name: string) => get<HTMLButtonElement>(name)
   const message = get<HTMLTextAreaElement>("message")
   const history = get("history"), scroller = get("scroll"), activity = get("activity")
-  const proactive = get<HTMLInputElement>("proactive")
-  const target = get<HTMLSelectElement>("target")
   const now = host.now ?? Date.now
   const schedule = host.schedule ?? ((run: () => void, delay: number) => { const id = setTimeout(run, delay); return () => clearTimeout(id) })
-  const storage = (() => { try { return root.ownerDocument.defaultView?.localStorage } catch { return undefined } })()
-  const preferences = readChatPreferences(storage)
-  proactive.checked = preferences.suggestions; target.value = preferences.target
-  get<HTMLSelectElement>("default-scope").value = preferences.scope
+  let preferences: WordChatPreferences = { defaultScope: "document", suggestions: true }
   let conversations: WordChatConversation[] = [], conversation: WordChatConversation | undefined
   let turns: WordChatTurn[] = [], materials: WordChatMaterial[] = [], attachments: WordChatMaterial[] = []
-  let selection: WordChatTarget | undefined, scope: WordChatScope = preferences.scope
-  let defaultScope = preferences.scope
+  let selection: WordChatTarget | undefined, scope: WordChatScope = preferences.defaultScope
+  let defaultScope = preferences.defaultScope, scopeChanged = false
   let mode: "auto" | "qa" | "redline" = "auto"
   const modeLabels = { auto: "Auto", qa: "Q&A", redline: "Redline" }
   let disposed = false, connecting = false, sending = false, uploading = false, applying = false, stopping = false, pickerOpen = false, suggestionsPaused = false
@@ -102,7 +88,8 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   let foregroundEpoch = 0
   let materialTab: "existing" | "upload" = "existing"
   let suggestionKey = "", stableKey = "", stableAt = 0, lastSuggestion = -Infinity, lastMaterials = 0
-  let cancelMonitor: (() => void) | undefined, cancelPoll: (() => void) | undefined, monitorBusy = false
+  let cancelMonitor: (() => void) | undefined, cancelReconcile: (() => void) | undefined, monitorBusy = false
+  let stream: AbortController | undefined, streamEpoch = 0, conversationEpoch = 0, metadataRequest = 0
   const dismissed = new Set<string>(), applied = new Set<string>(), declined = new Set<string>(), uncertain = new Set<string>()
   const proposalErrors = new Map<string, string>()
   const nodes = new Map<string, { stamp: string; node: HTMLElement }>()
@@ -136,13 +123,10 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (disposed) return
     activity.textContent = text; activity.dataset.error = String(error)
   }
-  const suggestionsEnabled = () => proactive.checked && !suggestionsPaused
+  const suggestionsEnabled = () => preferences.suggestions && !suggestionsPaused
   const reviewingAmendment = () => turns.some(turn => turn.status === "complete" && turn.proposal && !applied.has(turn.proposal.id) && !declined.has(turn.proposal.id))
   const proposalFinished = (id: string) => applied.has(id) || declined.has(id) || uncertain.has(id)
   const conversationLocked = () => connecting || sending || applying || uploading || pickerOpen || Boolean(pending) || foreground?.status === "running"
-  function savePreferences() {
-    writeChatPreferences(storage, { scope: defaultScope, suggestions: proactive.checked, target: target.value === "selection" ? "selection" : "document" })
-  }
   function controls() {
     if (disposed) return
     button("send").disabled = conversationLocked() || selectionPending || !conversation || !message.value.trim()
@@ -162,10 +146,6 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     button("mode-toggle").setAttribute("aria-label", `Response mode: ${modeLabels[mode]}`)
     if (conversationLocked()) showModePicker(false)
     for (const value of ["document", "matter"] as const) button(`scope-${value}`).setAttribute("aria-pressed", String(scope === value))
-    target.disabled = !proactive.checked
-    get("suggestion-settings").hidden = !proactive.checked
-    button("pause-setting").hidden = suggestionsPaused
-    button("resume").hidden = !suggestionsPaused
   }
   function options() {
     const list = get("conversation-list"); list.replaceChildren()
@@ -186,10 +166,10 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       list.append(choice)
     }
   }
-  function setPanel(name: "settings" | "materials" | "conversations", open: boolean) {
-    const toggle = (panel: typeof name) => panel === "settings" ? "settings-toggle" : panel === "materials" ? "attach" : "conversation"
+  function setPanel(name: "materials" | "conversations", open: boolean) {
+    const toggle = (panel: typeof name) => panel === "materials" ? "attach" : "conversation"
     if (open) {
-      for (const other of ["settings", "materials", "conversations"] as const) if (other !== name) {
+      for (const other of ["materials", "conversations"] as const) if (other !== name) {
         get(other).hidden = true; button(toggle(other)).setAttribute("aria-expanded", "false")
       }
     }
@@ -201,7 +181,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     renderSuggestions()
     if (open) {
       if (name === "conversations") (get("conversation-list").querySelector<HTMLElement>("button") ?? button("conversations-close")).focus()
-      else get(name === "settings" ? "default-scope" : `material-${materialTab}-tab`).focus()
+      else get(`material-${materialTab}-tab`).focus()
     }
   }
   function setMaterialTab(next: "existing" | "upload", focus = false) {
@@ -278,7 +258,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (disposed || !conversation || connecting || applying || pickerOpen || uploading) return
     if (!host.openAttachments) { setPanel("materials", get("materials").hidden); materialList(); return }
     const conversationId = conversation.id, epoch = ++pickerEpoch
-    setPanel("settings", false); setPanel("conversations", false); setPanel("materials", false)
+    setPanel("conversations", false); setPanel("materials", false)
     pickerOpen = true; controls(); button("attach").setAttribute("aria-expanded", "true")
     try {
       await host.openAttachments({ conversationId, attached: attachments.map(material => ({ ...material })), onAttach(material) {
@@ -458,6 +438,14 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (disposed || conversation?.id !== conversationId) return
     const changed = JSON.stringify(materials) !== JSON.stringify(result.materials)
     materials = result.materials
+    if (result.preferences) {
+      const previousSuggestions = preferences.suggestions
+      preferences = { defaultScope: result.preferences.defaultScope === "matter" ? "matter" : "document", suggestions: result.preferences.suggestions !== false }
+      defaultScope = preferences.defaultScope
+      if (!scopeChanged && !turns.some(turn => turn.kind !== "suggestions")) scope = defaultScope
+      if (previousSuggestions !== preferences.suggestions) invalidateSuggestions()
+      renderSuggestions(); controls()
+    }
     if (changed) {
       attachments = attachments.map(item => item.kind === "upload" ? item : materials.find(next => next.kind === item.kind && next.id === item.id) ?? item)
       renderChips(); materialList(); invalidateSuggestions()
@@ -478,7 +466,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       const existing = conversations.findIndex(item => item.id === conversation!.id)
       if (existing < 0) conversations.unshift(conversation); else conversations[existing] = conversation
       options(); renderTurns(true); status(); button("reconnect").hidden = true
-      await refreshMaterials(); startPolling()
+      startStream(); await refreshMaterials(); scheduleReconciliation()
     } catch (error) { failure(error) }
     finally { connecting = false; controls() }
   }
@@ -496,20 +484,89 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       await openConversation(current)
     } catch (error) { failure(error) }
   }
-  function startPolling() {
-    cancelPoll?.()
-    if (disposed || !foreground) return
-    cancelPoll = schedule(() => { void pollForeground() }, 1_000)
+  async function refreshConversationMetadata() {
+    if (disposed || !conversation) return
+    const id = conversation.id, epoch = conversationEpoch, request = ++metadataRequest
+    try {
+      const result = await api.request<WordChatConversationResult>("conversation", { conversationId: id })
+      if (disposed || conversation?.id !== id || result.conversation.id !== id || epoch !== conversationEpoch || request !== metadataRequest) return
+      conversation = result.conversation
+      const index = conversations.findIndex(item => item.id === id)
+      if (index < 0) conversations.unshift(conversation); else conversations[index] = conversation
+      options()
+    } catch { /* Metadata refresh is best-effort; the current chat stays usable. */ }
+  }
+  function scheduleReconciliation() {
+    cancelReconcile?.()
+    if (disposed || !foreground && suggestion?.status !== "running") return
+    // SSE is the normal path. A missed event, suspended pane or unavailable
+    // streaming host still reconciles against native session history.
+    cancelReconcile = schedule(() => { void reconcileTurns() }, 15_000)
+  }
+  async function readTurn(id: string, conversationId: string, signal?: AbortSignal) {
+    const epoch = foregroundEpoch, ideasEpoch = suggestionEpoch
+    const result = await api.request<{ turn: WordChatTurn }>("poll", { conversationId, turnId: id }, signal)
+    return { turn: result.turn, conversationId, epoch, ideasEpoch }
+  }
+  function receiveTurn(result: Awaited<ReturnType<typeof readTurn>>) {
+    const { turn, conversationId, epoch, ideasEpoch } = result
+    if (disposed || conversation?.id !== conversationId || turn.conversationId !== conversationId) return
+    if (turn.kind === "suggestions") {
+      if (suggestion?.id !== turn.id || ideasEpoch !== suggestionEpoch || !suggestionsEnabled()) return
+      suggestion = turn; renderSuggestions(); controls()
+    } else {
+      if (stopping || foreground?.id !== turn.id || epoch !== foregroundEpoch) return
+      updateTurn(turn)
+      if (turn.status !== "running") { void refreshConversationMetadata(); status(turn.status === "error" ? turn.error : "", turn.status === "error"); button("reconnect").hidden = true }
+    }
+    scheduleReconciliation()
+  }
+  async function reconcileTurns() {
+    if (disposed || !conversation) return
+    const conversationId = conversation.id, epoch = foregroundEpoch, ideasEpoch = suggestionEpoch
+    const active = [!stopping ? foreground : undefined, suggestion?.status === "running" ? suggestion : undefined].filter((turn): turn is WordChatTurn => Boolean(turn))
+    await Promise.all(active.map(async current => {
+      try { receiveTurn(await readTurn(current.id, conversationId)) }
+      catch (error) { if (!disposed && conversation?.id === conversationId && foreground?.id === current.id && epoch === foregroundEpoch) failure(error) }
+    }))
+    if (!disposed && conversation?.id === conversationId && epoch === foregroundEpoch && ideasEpoch === suggestionEpoch) scheduleReconciliation()
+  }
+  function startStream() {
+    stream?.abort(); streamEpoch++
+    if (disposed || !conversation || !api.events) return
+    const controller = new AbortController(), conversationId = conversation.id, epoch = streamEpoch
+    stream = controller
+    const current = () => !disposed && conversation?.id === conversationId && epoch === streamEpoch
+    void subscribeNativeChatStream({
+      connect: signal => api.events!(conversationId, signal), signal: controller.signal,
+      acceptsSession: id => current() && (id === conversationId || !stopping && foreground?.id === id || suggestion?.id === id && suggestion.status === "running"),
+      needsRefresh: event => event.type === "session.status" && nativeEventSession(event) !== conversationId,
+      read: async (id, signal) => {
+        const turnEpoch = foregroundEpoch
+        try { return await readTurn(id, conversationId, signal) }
+        catch (error) {
+          if (current() && !stopping && foreground?.id === id && turnEpoch === foregroundEpoch) failure(error)
+          throw error
+        }
+      },
+      onSnapshot: (_id, result) => { if (current()) receiveTurn(result) },
+      onReconnect: () => { if (current()) void reconcileTurns() },
+      onDisconnect: () => { if (current() && foreground && !sending && !stopping && !applying) status("Reconnecting…") },
+      onEvent: event => {
+        if (event.type === "session.deleted") {
+          if (nativeEventSession(event) === conversationId) { controller.abort(); failure(new Error("This conversation is no longer available. Start a new chat.")) }
+          else if (foreground?.id === nativeEventSession(event)) { foregroundEpoch++; foreground = undefined; scheduleReconciliation(); controls(); status("This response is no longer available.") }
+        } else if (nativeEventSession(event) === conversationId) { void reconcileTurns(); void refreshConversationMetadata() }
+      },
+    })
   }
   async function pollForeground() {
     if (disposed || !foreground || !conversation) return
     const id = foreground.id, conversationId = conversation.id, epoch = foregroundEpoch
     try {
-      const result = await api.request<{ turn: WordChatTurn }>("poll", { conversationId, turnId: id })
+      const result = await readTurn(id, conversationId)
       if (disposed || conversation?.id !== conversationId || foreground?.id !== id || epoch !== foregroundEpoch) return
-      updateTurn(result.turn)
-      if (result.turn.status !== "running") { status(result.turn.status === "error" ? result.turn.error : "", result.turn.status === "error"); button("reconnect").hidden = true }
-      startPolling()
+      receiveTurn(result)
     } catch (error) { if (!disposed && foreground?.id === id && epoch === foregroundEpoch) failure(error) }
   }
   async function submit(retry = false) {
@@ -531,12 +588,12 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       const submitted = pending
       const result = await api.request<{ turn: WordChatTurn }>("send", submitted)
       if (disposed) return
-      if ([`Word · ${conversation.documentName}`, "Word conversation"].includes(conversation.title)) conversation.title = submitted.text.replace(/\s+/g, " ").slice(0, 100)
       conversation.updatedAt = now(); options()
       if (message.value.trim() === submitted.text) message.value = ""
       if (refinement?.id === submitted.proposal?.id) { refinement = undefined; message.placeholder = "Ask doc.haus…" }
       pending = undefined; renderChips()
-      updateTurn(result.turn); renderTurns(true); status(); button("reconnect").hidden = true; startPolling()
+      updateTurn(result.turn); renderTurns(true); status(); button("reconnect").hidden = true; scheduleReconciliation()
+      if (result.turn.status !== "running") void refreshConversationMetadata()
     } catch (error) {
       // A definite admission refusal can be corrected. An uncertain/lost
       // response keeps its identifier until Reconnect reconciles it.
@@ -590,7 +647,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       const note = line("p", `${coverage.reviewed} of ${coverage.total} passage groups`); note.title = "This batch samples the document. It is not a complete document review."; content.append(note)
     }
     const suggestions = ideas
-    if (!suggestions.length) { content.append(line("p", suggestion ? "No further suggestions for now." : suggestionCalls >= 6 ? "Batch limit reached. Pause and re-enable to prepare more." : target.value === "selection" ? "Waiting for a stable selection in Word." : "Waiting for a quiet moment…")); return }
+    if (!suggestions.length) { content.append(line("p", suggestion ? "No further suggestions for now." : "Waiting for a quiet moment…")); return }
     for (const { idea, index } of suggestions.slice(0, 3)) {
       const row = document.createElement("div"); row.className = "chat-suggestion-row"
       const card = document.createElement("button"); card.type = "button"; card.className = "chat-suggestion-card"; card.textContent = idea.title
@@ -618,40 +675,33 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (disposed) return
     const epoch = suggestionEpoch
     try {
-      if (!suggestionsEnabled() || reviewingAmendment() || !conversation || sending || foreground?.status === "running" || connecting || applying || pickerOpen || uploading || monitorBusy) return
+      if (!conversation || connecting || applying || pickerOpen || uploading || monitorBusy) return
       monitorBusy = true
       if (now() - lastMaterials > 30_000) await refreshMaterials()
+      if (!suggestionsEnabled() || reviewingAmendment() || sending || foreground?.status === "running") return
       const context = await host.capture(false)
       if (disposed || !suggestionsEnabled() || epoch !== suggestionEpoch) return
-      if (target.value === "selection" && selection) {
+      if (selection) {
         if (!wordChatTargetCurrent(context, selection)) {
           clearSelection(); renderChips(); invalidateSuggestions(); return
         }
         context.selection = selection
       }
-      if (target.value === "selection" && !context.selection?.text.trim()) {
-        if (suggestion || suggestionKey) invalidateSuggestions()
-        renderSuggestions(); return
-      }
       const selected = context.selection
-      const key = JSON.stringify([scope, target.value, attachments.map(({ kind, id, hash }) => [kind, id, hash]), context.text, context.paragraphs, target.value === "selection" && selected ? [selected.text, selected.paragraphs, selected.startOffset, selected.endOffset] : null])
+      const key = JSON.stringify([scope, attachments.map(({ kind, id, hash }) => [kind, id, hash]), context.text, context.paragraphs, selected ? [selected.text, selected.paragraphs, selected.startOffset, selected.endOffset] : null])
       if (key !== stableKey) { stableKey = key; stableAt = now(); if (suggestionKey && suggestionKey !== key) invalidateSuggestions(); stableKey = key; stableAt = now(); return }
-      if (suggestion?.status === "running") {
-        const result = await api.request<{ turn: WordChatTurn }>("poll", { conversationId: suggestion.conversationId, turnId: suggestion.id })
-        if (disposed || epoch !== suggestionEpoch || !suggestionsEnabled()) return
-        suggestion = result.turn; renderSuggestions(); return
-      }
+      if (suggestion?.status === "running") return
       if (suggestionCalls >= 6 || key === suggestionKey || now() - stableAt < 3_000 || now() - lastSuggestion < 45_000) return
       const requestId = crypto.randomUUID()
       // Count admission attempts too. A lost reply must not start paid work
       // again for unchanged inputs under a fresh identifier.
       suggestionCalls++; lastSuggestion = now(); suggestionKey = key; controls()
-      const result = await api.request<{ turn: WordChatTurn }>("suggest", { conversationId: conversation.id, requestId, text: "Prepare a few focused suggestions.", scope, attachments: attachments.map(({ kind, id, hash }) => ({ kind, id, hash })), context, kind: "suggestions", suggestionTarget: target.value === "selection" ? "selection" : "document" })
+      const result = await api.request<{ turn: WordChatTurn }>("suggest", { conversationId: conversation.id, requestId, text: "Prepare a few focused suggestions.", scope, attachments: attachments.map(({ kind, id, hash }) => ({ kind, id, hash })), context, kind: "suggestions" })
       if (disposed || epoch !== suggestionEpoch || !suggestionsEnabled()) {
         if (result.turn.status === "running") void api.request("cancel", { conversationId: result.turn.conversationId, turnId: result.turn.id }).catch(() => {})
         return
       }
-      suggestion = result.turn; renderSuggestions(); controls()
+      suggestion = result.turn; renderSuggestions(); controls(); scheduleReconciliation()
     } catch (error) {
       if (!disposed && suggestionsEnabled() && epoch === suggestionEpoch) { get("suggestion-content").replaceChildren(line("p", error instanceof Error ? error.message : "Suggestions are unavailable. Chat is ready.")); lastSuggestion = now() }
     } finally {
@@ -663,8 +713,6 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   get<HTMLFormElement>("form").onsubmit = event => { event.preventDefault(); void submit() }
   message.oninput = controls
   message.onkeydown = event => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void submit() } }
-  button("settings-toggle").onclick = () => setPanel("settings", get("settings").hidden)
-  button("settings-close").onclick = () => { setPanel("settings", false); message.focus() }
   button("conversation").onclick = () => { if (!conversationLocked()) { options(); setPanel("conversations", get("conversations").hidden) } }
   button("conversations-close").onclick = () => { setPanel("conversations", false); button("conversation").focus() }
   button("attach").onclick = () => { void openAttachments() }
@@ -696,27 +744,24 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   function changeConversation(id?: string) {
     if (disposed || conversationLocked() || !conversation) return
     if (!id) mode = "auto"
-    foregroundEpoch++; clearSelection(); invalidateSuggestions(); attachments = []; refinement = undefined
+    conversationEpoch++; foregroundEpoch++; clearSelection(); invalidateSuggestions(); attachments = []; refinement = undefined
     suggestionsPaused = false; suggestionCalls = 0; lastSuggestion = -Infinity
+    scopeChanged = false
     if (!id) scope = defaultScope
     renderChips(); setPanel("conversations", false); void openConversation(id)
   }
   button("new").onclick = () => changeConversation()
-  for (const value of ["document", "matter"] as const) button(`scope-${value}`).onclick = () => { scope = value; invalidateSuggestions(); controls() }
-  get<HTMLSelectElement>("default-scope").onchange = () => { defaultScope = get<HTMLSelectElement>("default-scope").value === "matter" ? "matter" : "document"; savePreferences() }
-  proactive.onchange = () => { suggestionsPaused = false; suggestionCalls = 0; lastSuggestion = -Infinity; savePreferences(); invalidateSuggestions() }
-  target.onchange = () => { savePreferences(); invalidateSuggestions() }
+  for (const value of ["document", "matter"] as const) button(`scope-${value}`).onclick = () => { scope = value; scopeChanged = true; invalidateSuggestions(); controls() }
   const pause = () => { suggestionsPaused = true; invalidateSuggestions() }
-  button("pause").onclick = pause; button("pause-setting").onclick = pause
-  button("resume").onclick = () => { suggestionsPaused = false; suggestionCalls = 0; lastSuggestion = -Infinity; invalidateSuggestions() }
+  button("pause").onclick = pause
   button("reconnect").onclick = () => { if (pending) void submit(true); else if (foreground) void pollForeground(); else void connect() }
   button("stop").onclick = async () => {
     if (!foreground || stopping) return
     const current = foreground
-    stopping = true; foregroundEpoch++; cancelPoll?.(); controls(); status("Stopping…")
-    try { const result = await api.request<{ turn: WordChatTurn }>("cancel", { conversationId: current.conversationId, turnId: current.id }); updateTurn(result.turn); status("Stopped"); cancelPoll?.() }
+    stopping = true; foregroundEpoch++; cancelReconcile?.(); controls(); status("Stopping…")
+    try { const result = await api.request<{ turn: WordChatTurn }>("cancel", { conversationId: current.conversationId, turnId: current.id }); updateTurn(result.turn); status("Stopped") }
     catch (error) { failure(error) }
-    finally { stopping = false; controls() }
+    finally { stopping = false; controls(); scheduleReconciliation() }
   }
   get<HTMLInputElement>("upload").onchange = async () => {
     const input = get<HTMLInputElement>("upload"), file = input.files?.[0]
@@ -735,10 +780,17 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   root.addEventListener("keydown", event => {
     if (event.key !== "Escape") return
     if (!get("mode-picker").hidden) { showModePicker(false, true); event.preventDefault(); event.stopPropagation() }
-    else if (!get("settings").hidden) { setPanel("settings", false); button("settings-toggle").focus() }
     else if (!get("materials").hidden) { setPanel("materials", false); button("attach").focus() }
     else if (!get("conversations").hidden) { setPanel("conversations", false); button("conversation").focus() }
   })
+  const onFocus = () => {
+    if (!root.ownerDocument.hidden) {
+      void reconcileTurns()
+      if (conversation && !connecting && !applying) void refreshMaterials().catch(() => {})
+    }
+  }
+  root.ownerDocument.addEventListener("visibilitychange", onFocus)
+  root.ownerDocument.defaultView?.addEventListener("focus", onFocus)
   renderTurns(); controls()
   const ready = connect().then(() => {
     if (disposed) return
@@ -754,6 +806,8 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     renderChips(); invalidateSuggestions()
   }, dispose() {
     root.ownerDocument.removeEventListener("click", dismissDocumentInfo)
-    disposed = true; suggestionEpoch++; selectionCaptureEpoch++; pickerEpoch++; cancelSelection?.(); stopWatchingSelection?.(); cancelMonitor?.(); cancelPoll?.(); root.replaceChildren()
+    root.ownerDocument.removeEventListener("visibilitychange", onFocus)
+    root.ownerDocument.defaultView?.removeEventListener("focus", onFocus)
+    disposed = true; streamEpoch++; stream?.abort(); foregroundEpoch++; suggestionEpoch++; selectionCaptureEpoch++; pickerEpoch++; cancelSelection?.(); stopWatchingSelection?.(); cancelMonitor?.(); cancelReconcile?.(); root.replaceChildren()
   } }
 }

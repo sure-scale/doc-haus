@@ -152,7 +152,7 @@ export function WordBadge({ name }: { name: string }) {
 export function wordSetupReason(config?: WordConfig, error?: string) {
   if (error) return error
   if (!config) return "Checking Word setup…"
-  if (!config.available) return "Word is not ready. Set it up in Settings → Add-ins."
+  if (!config.available) return "Word is not ready. Set it up in Settings → Word add-in."
 }
 
 // Kept nearby instead of repeated on every row. It remains discoverable when

@@ -5,6 +5,7 @@
 // clean. Names must match primary ids defined in dochaus/agent/*.md or
 // dochaus/mode/*.md.
 
+import { DOCUMENT_CHAT_ASSISTANTS } from "../../../dochaus/lib/conversation-assistants"
 export type AssistantMeta = { name: string; label: string; description: string }
 // `scope` decides which conversation a workflow runs in: "matter" routines span
 // every document and open as their own new chat; "document" routines act on the
@@ -23,16 +24,7 @@ export type WorkflowMeta = AssistantMeta & {
 // real primary assistant id loaded from dochaus/agent/*.md or dochaus/mode/*.md
 // — these are sent to the engine verbatim.
 export const CHAT_ASSISTANTS: AssistantMeta[] = [
-  {
-    name: "qa",
-    label: "Q&A",
-    description: "Answers questions about this matter's documents, always with citations.",
-  },
-  {
-    name: "redliner",
-    label: "Redline",
-    description: "Makes the edits you ask for in this matter's documents, as tracked changes you accept or reject in Word.",
-  },
+  ...DOCUMENT_CHAT_ASSISTANTS,
   {
     name: "redactor",
     label: "Redact",

@@ -73,7 +73,7 @@ export async function showBootstrap(document: Document, href: string, navigate: 
   const open = document.getElementById("open") as HTMLAnchorElement
   const origin = readBootstrapOrigin(href)
   if (!origin) {
-    message.textContent = "This Word connection needs updating. Open Settings → Add-ins in doc.haus and repair Word setup."
+    message.textContent = "This Word connection needs updating. Open Settings → Word add-in in doc.haus and repair Word setup."
     actions.hidden = true
     return false
   }

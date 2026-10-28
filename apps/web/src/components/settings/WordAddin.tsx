@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
-import { fetchWordSetup, setupWordAddin, type WordSetupStatus } from "../../api/ingest/word"
+import { fetchWordChatPreferences, fetchWordSetup, saveWordChatPreferences, setupWordAddin, type WordChatPreferences, type WordSetupStatus } from "../../api/ingest/word"
 import { humanizeError } from "../../api/ingest/errors"
+import { FieldRow, SegRow } from "./controls"
 
 export function useWordAddin() {
   const [status, setStatus] = useState<WordSetupStatus>()
@@ -66,10 +67,65 @@ export function WordAddinStatus({ state }: { state: WordAddinState }) {
   </>
 }
 
+export function WordChatDefaults({ onBusy }: { onBusy?: (busy: boolean) => void }) {
+  const [preferences, setPreferences] = useState<WordChatPreferences>()
+  const [saved, setSaved] = useState<WordChatPreferences>()
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState("")
+  const [message, setMessage] = useState("")
+  const alive = useRef(true), pending = useRef(false)
+  async function load() {
+    setLoading(true); setError("")
+    try {
+      const value = await fetchWordChatPreferences()
+      if (alive.current) { setPreferences(value); setSaved(value) }
+    } catch (cause) {
+      if (alive.current) setError(humanizeError(cause, "Could not load Word chat defaults."))
+    } finally { if (alive.current) setLoading(false) }
+  }
+  useEffect(() => { alive.current = true; void load(); return () => { alive.current = false } }, [])
+  useEffect(() => { onBusy?.(saving); return () => onBusy?.(false) }, [saving, onBusy])
+  function change(update: Partial<WordChatPreferences>) {
+    setPreferences(current => current ? { ...current, ...update } : current); setError(""); setMessage("")
+  }
+  async function save() {
+    if (!preferences || pending.current) return
+    pending.current = true; setSaving(true); setError(""); setMessage("")
+    try {
+      const value = await saveWordChatPreferences(preferences)
+      if (alive.current) { setPreferences(value); setSaved(value); setMessage("Chat defaults saved.") }
+    } catch (cause) {
+      if (alive.current) setError(humanizeError(cause, "Could not save Word chat defaults. Your choices are still here; try again."))
+    } finally { pending.current = false; if (alive.current) setSaving(false) }
+  }
+  const dirty = preferences && saved && (preferences.defaultScope !== saved.defaultScope || preferences.suggestions !== saved.suggestions)
+  return <div className="settings-section">
+    <h4>Chat defaults</h4>
+    <p className="settings-hint muted">Starting choices for new Word chats.</p>
+    {loading ? <p role="status">Loading chat defaults…</p> : preferences ? <>
+      <SegRow label="Default source scope" value={preferences.defaultScope} disabled={saving}
+        options={[{ value: "document", label: "This document" }, { value: "matter", label: "Whole matter" }]}
+        hint="You can change source scope in each chat."
+        onChange={value => change({ defaultScope: value as WordChatPreferences["defaultScope"] })} />
+      <FieldRow id="word-chat-suggestions" label="Suggestions" hint="Show up to three ideas beside your document.">
+        <button id="word-chat-suggestions" type="button" role="switch" aria-label="Suggestions" aria-checked={preferences.suggestions}
+          aria-describedby="word-chat-suggestions-hint" className={`switch${preferences.suggestions ? " on" : ""}`} disabled={saving}
+          onClick={() => change({ suggestions: !preferences.suggestions })} />
+        <span className="switch-state muted">{preferences.suggestions ? "On" : "Off"}</span>
+      </FieldRow>
+      <div className="row settings-row"><button type="button" className="primary" disabled={saving || !dirty} onClick={() => void save()}>{saving ? "Saving…" : "Save chat defaults"}</button></div>
+    </> : <button type="button" onClick={() => void load()}>Retry chat defaults</button>}
+    {error && <p role="alert" className="settings-warning">{error}</p>}
+    {message && <p role="status">{message}</p>}
+  </div>
+}
+
 export default function WordAddin({ onBusy }: { onBusy?: (busy: boolean) => void }) {
   const state = useWordAddin()
   const { status, busy, checking, error } = state
-  useEffect(() => { onBusy?.(busy); return () => onBusy?.(false) }, [busy, onBusy])
+  const [preferencesBusy, setPreferencesBusy] = useState(false)
+  useEffect(() => { onBusy?.(busy || preferencesBusy); return () => onBusy?.(false) }, [busy, preferencesBusy, onBusy])
   return <section className="settings-section">
     <h3>Microsoft Word</h3>
     <p className="settings-hint muted">Work in desktop Word with your matter documents and saved versions beside you.</p>
@@ -86,5 +142,6 @@ export default function WordAddin({ onBusy }: { onBusy?: (busy: boolean) => void
       <p>In a matter, choose Open in Word. Allow your browser to open doc.haus if asked; it opens the linked document in desktop Word. For an ordinary Word file, add it to the matter first. Keep doc.haus running while using the add-in.</p>
       {status?.origin && <p className="settings-hint muted">Connection: {status.origin}</p>}
     </details>
+    <WordChatDefaults onBusy={setPreferencesBusy} />
   </section>
 }

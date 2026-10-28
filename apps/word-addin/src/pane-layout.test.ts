@@ -12,7 +12,7 @@ function fixture() {
   return { page, document, get: <T extends HTMLElement>(id: string) => document.getElementById(id) as T }
 }
 
-test("feature views keep tabs first and shared Save last while scrolling preserves draft, focus and confirmed status", () => {
+test("all views retain top tabs and Save with one bottom breadcrumb/version row while drafts and status survive scrolling", () => {
   const { page, document, get } = fixture()
   const render = createPaneRenderer(document)
   const state: PaneState = { status: "saved", busy: false, canSave: true, content: "confirmed", message: "Confirmed",
@@ -20,10 +20,15 @@ test("feature views keep tabs first and shared Save last while scrolling preserv
     connection: { version: { base: { id: "v2", number: 2 }, current: { id: "v2", number: 2 }, state: "current" }, lease: { state: "owned", generation: "synthetic", expiresAt: 200_000 } } }
   try {
     render(state)
-    const bar = get("save-panel"), tabs = get("desk-entry"), chat = get("pane-chat"), desk = get("pane-desk")
-    expect(bar.parentElement!.firstElementChild === tabs).toBe(true)
+    const bar = get("save-panel"), tabs = get("desk-entry"), header = get("pane-header"), chat = get("pane-chat"), desk = get("pane-desk")
+    expect(bar.parentElement!.firstElementChild === header).toBe(true)
+    expect(header.contains(tabs)).toBe(true); expect(header.contains(get("status"))).toBe(true); expect(header.contains(get("save"))).toBe(true)
     expect(bar.parentElement!.lastElementChild === bar).toBe(true)
+    expect(bar.querySelector(".save-summary")!.contains(get("save-version"))).toBe(true)
+    expect(bar.querySelector(".save-summary")!.contains(get("matter"))).toBe(true)
+    expect(bar.querySelector(".save-summary")!.contains(get("status"))).toBe(false)
     expect(get("save-details").contains(get("background"))).toBe(true)
+    expect(get("save-details").contains(get("load-latest"))).toBe(true); expect(get("save-details").contains(get("open-desk-window"))).toBe(true)
     expect(get("background").contains(get("back"))).toBe(true)
     tabs.hidden = false; chat.hidden = false
     chat.innerHTML = '<div data-chat="history" tabindex="0">Conversation retained</div><form><textarea>Draft retained</textarea></form>'
@@ -32,6 +37,7 @@ test("feature views keep tabs first and shared Save last while scrolling preserv
     history.dispatchEvent(new page.Event("scroll") as unknown as Event)
     expect(document.activeElement === history).toBe(true)
     expect(get("status").textContent).toBe("Saved"); expect(get("save-version").textContent).toBe("v2")
+    expect(get("save-details-toggle").querySelector("svg path")!.getAttribute("d")).toBe("m4 10 4-4 4 4")
     expect(get<HTMLButtonElement>("save").disabled).toBe(false)
     for (const feature of ["documents", "compare"]) {
       chat.hidden = true; desk.hidden = false; desk.setAttribute("aria-labelledby", `${feature}-tab`)
@@ -52,7 +58,7 @@ test("upward save details fit between tabs and status, support keyboard dismissa
   const bar = get("save-panel"), tabs = get("desk-entry"), details = get("save-details"), toggle = get<HTMLButtonElement>("save-details-toggle")
   let barTop = 530
   bar.getBoundingClientRect = () => ({ top: barTop } as DOMRect)
-  tabs.getBoundingClientRect = () => ({ bottom: 44 } as DOMRect)
+  get("pane-header").getBoundingClientRect = () => ({ bottom: 44 } as DOMRect)
   tabs.hidden = false
   const dispose = setupPaneLayout(document)
   try {
@@ -83,7 +89,7 @@ test("upward save details fit between tabs and status, support keyboard dismissa
     expect(details.hidden).toBe(true); expect(chat.querySelector("textarea")!.value).toBe("Draft retained")
     tabs.hidden = true; chat.hidden = true; get("actions").hidden = true; await Bun.sleep(0)
     expect(details.hidden).toBe(false); expect(toggle.getAttribute("aria-expanded")).toBe("true")
-    expect(details.style.getPropertyValue("--save-details-space")).toBe("488px")
+    expect(details.style.getPropertyValue("--save-details-space")).toBe("444px")
     expect(details.textContent).toContain("complete recovery advice")
   } finally { dispose(); page.happyDOM.abort() }
 })

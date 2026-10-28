@@ -27,7 +27,8 @@ test("unchanged poll presentation preserves the pane DOM and focus while real sa
     expect(document.getElementById("save-version")!.title).toBe("This Word copy: version 1")
     const details = document.getElementById("save-details-toggle") as HTMLButtonElement
     expect(details.getAttribute("aria-label")).toBe("Saved, version 1. Show save status and recovery details")
-    expect(details.textContent).toContain("Saved"); expect(details.textContent).not.toContain("Details")
+    expect(details.textContent).toBe("v1"); expect(details.textContent).not.toContain("Details")
+    expect(document.getElementById("pane-header")!.contains(document.getElementById("status"))).toBe(true)
     let saves = 0; button.addEventListener("click", () => saves++)
     details.click(); expect(saves).toBe(0); expect(document.getElementById("save-details")!.hidden).toBe(false)
     details.click(); button.click(); expect(saves).toBe(1)

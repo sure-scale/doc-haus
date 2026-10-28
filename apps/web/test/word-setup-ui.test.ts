@@ -31,6 +31,7 @@ test("Word setup waits for a deliberate action, holds pending state and confirms
   let loseResponse = false
   let failStatus = false
   globalThis.fetch = (async (_url, init) => {
+    if (String(_url).endsWith("/word/chat-preferences")) return Response.json({ defaultScope: "document", suggestions: true })
     calls.push(init?.method ?? "GET")
     if (init?.method === "POST") {
       expect(init.body).toBe("{}")

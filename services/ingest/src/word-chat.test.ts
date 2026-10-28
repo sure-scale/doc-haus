@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import { Hono } from "hono"
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
@@ -12,27 +12,34 @@ import { writeDeliverable, writeDeliverableRevision } from "./deliverable"
 import { openDb } from "./db"
 import { readCurrentVersion } from "./document-versions"
 import { matterDocumentName } from "./ingest"
+import { writeWordChatPreferences } from "./word-chat-preferences"
 import type { WordChatMaterial, WordChatSend, WordChatTurn } from "../../../dochaus/lib/word-chat-contract"
 
 type Session = { id: string; parentID?: string; metadata: Record<string, unknown>; location: { directory: string }; title: string; agent: string; model: { providerID: string; id: string }; time: { created: string; updated: string; idle?: string }; outcome?: string }
-const sessions = new Map<string, Session>(), messages = new Map<string, Record<string, unknown>[]>()
-const prompts: string[] = []
+const sessions = new Map<string, Session>(), messages = new Map<string, Record<string, unknown>[]>(), inboxes = new Map<string, Record<string, unknown>[]>()
+const prompts: string[] = [], routerPrompts: string[] = [], titleActions: string[] = [], admissions: { session: string; tail: string; payload: Record<string, unknown> }[] = []
 let directory: string, app: Hono, auth: WordChatAuth, next = 0, generations = 0, loseResponse = false, hold = false, inventCitation = false, amend = false, approveReview = true, deletion = false
 let modelProposal: { before: string; after?: string; formatting?: unknown } | undefined
 let modelAnswer: string | undefined
 let modelRawOutput: string | undefined, reviewerRawOutput: string | undefined
+let routerAgent: "qa" | "redliner" = "qa", routerOutput: string | undefined, loseContextResponse = false
+let reviewerOutcome: "succeeded" | "failed" | "interrupted" = "succeeded"
+let mainOutcome: "succeeded" | "failed" | "interrupted" = "succeeded", queueReview = false
+const stoppedInputs: string[] = []
+let engineHook: ((session: Session, tail: string, method: string, payload: Record<string, unknown>) => Promise<void>) | undefined
 const oldRuntime = process.env.DOCHAUS_RUNTIME_DIR, oldWorkspace = process.env.WORKSPACE_ROOT
 const transport = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(String(input)); const method = init?.method ?? "GET"
   const payload = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : {}
   const match = /^\/api\/session\/([^/]+)(.*)$/.exec(url.pathname)
   const envelope = (data: unknown) => Response.json({ data })
+  if (/^\/api\/experimental\/session\/[^/]+\/wait$/.test(url.pathname)) return new Response(null, { status: 204 })
   if ((url.pathname === "/api/session" || url.pathname === "/api/dochaus/session") && method === "POST") {
     const id = String(payload.id ?? `ses_test_${++next}`)
     if (sessions.has(id)) return envelope(sessions.get(id))
     const parent = sessions.get(String(payload.parentID)); const time = new Date(Date.now() + next++).toISOString()
     const session = { ...payload, id, location: parent?.location ?? payload.location, time: { created: time, updated: time } } as Session
-    sessions.set(id, session); messages.set(id, []); return envelope(session)
+    sessions.set(id, session); messages.set(id, []); inboxes.set(id, []); return envelope(session)
   }
   if (url.pathname === "/api/session" && method === "GET") return Response.json({ data: [...sessions.values()].filter(session =>
     url.searchParams.get("parentID") === "null" ? !session.parentID : url.searchParams.has("parentID") ? session.parentID === url.searchParams.get("parentID") : true), cursor: {} })
@@ -40,27 +47,58 @@ const transport = Object.assign(async (input: RequestInfo | URL, init?: RequestI
   const session = sessions.get(match[1]!)
   if (!session) return Response.json({}, { status: 404 })
   const tail = match[2]
+  await engineHook?.(session, tail, method, payload)
   if (!tail && method === "GET") return envelope(session)
-  if (!tail && method === "PATCH") { Object.assign(session, payload); return new Response(null, { status: 204 }) }
+  if (!tail && method === "PATCH") {
+    if (typeof payload.expectedTitle === "string" && session.title !== payload.expectedTitle) return new Response(null, { status: 204 })
+    if (payload.title === "") { titleActions.push(session.id); Object.assign(session, payload, { title: "Delivery clause review" }) }
+    else Object.assign(session, payload)
+    return new Response(null, { status: 204 })
+  }
+  if (!tail && method === "DELETE") { sessions.delete(session.id); return new Response(null, { status: 204 }) }
+  if (tail === "/agent") { session.agent = String(payload.agent); return new Response(null, { status: 204 }) }
+  if (tail === "/model") { session.model = payload.model as Session["model"]; return new Response(null, { status: 204 }) }
   if (tail === "/message") return Response.json({ data: [...messages.get(session.id)!].reverse(), cursor: {} })
-  if (tail === "/inbox") return envelope([])
-  if (tail === "/interrupt") { session.outcome = "interrupted"; return Response.json({ interrupted: true }) }
+  if (tail === "/inbox") return envelope(inboxes.get(session.id)!)
+  if (tail?.startsWith("/inbox/") && method === "DELETE") {
+    const id = decodeURIComponent(tail.slice("/inbox/".length))
+    stoppedInputs.push(`${session.id}:delete:${id}`)
+    inboxes.set(session.id, inboxes.get(session.id)!.filter(value => value.id !== id)); return new Response(null, { status: 204 })
+  }
+  if (tail === "/interrupt") { stoppedInputs.push(`${session.id}:interrupt`); session.outcome = "interrupted"; return Response.json({ interrupted: true }) }
+  if (tail === "/synthetic") {
+    admissions.push({ session: session.id, tail, payload })
+    const rows = messages.get(session.id)!
+    if (!rows.some(message => message.id === payload.id) && !inboxes.get(session.id)!.some(message => message.id === payload.id)) {
+      prompts.push(String(payload.text))
+      if (queueReview && session.metadata.type === "word-chat-review") inboxes.get(session.id)!.push({ id: payload.id, type: "synthetic" })
+      else rows.push({ id: payload.id, type: "synthetic", text: payload.text, time: { created: new Date().toISOString() } })
+    }
+    if (loseContextResponse) { loseContextResponse = false; throw new Error("Lost context admission response") }
+    return envelope({ id: payload.id, sessionID: session.id, type: "synthetic", payload: { text: payload.text }, delivery: payload.delivery })
+  }
   if (tail === "/prompt") {
+    admissions.push({ session: session.id, tail, payload })
     const rows = messages.get(session.id)!
     const admission = { id: payload.id, sessionID: session.id, type: "user", payload: { text: payload.text }, delivery: payload.delivery }
-    if (!rows.some(message => message.id === payload.id)) {
-      generations++; prompts.push(String(payload.text))
+    if (!rows.some(message => message.id === payload.id) && !inboxes.get(session.id)!.some(message => message.id === payload.id)) {
+      if (session.agent === "router") routerPrompts.push(String(payload.text)); else generations++
+      if (!session.metadata.contextMode && session.agent !== "router") prompts.push(String(payload.text))
+      if (queueReview && session.metadata.type === "word-chat-review") {
+        inboxes.get(session.id)!.push({ id: payload.id, type: "user" })
+        return envelope(admission)
+      }
       rows.push({ id: payload.id, type: "user", text: payload.text, time: { created: new Date().toISOString() } })
-      if (!hold) {
+      if (!hold || session.agent === "router") {
         const sources = (session.metadata.sources ?? []) as { id: string; quote: string }[]
         const source = sources.find(source => source.id !== "word") ?? sources[0]
         const output: Record<string, unknown> = session.metadata.type === "word-chat-review" ? { approved: approveReview, issues: approveReview ? [] : ["The replacement loses a qualification."] } : { answer: modelAnswer ?? `Answer ${source?.quote ?? ""}`, citations: source ? [{ sourceId: inventCitation ? "foreign-source" : source.id, quote: source.quote.slice(0, 100) }] : [], suggestions: [] }
         if (amend && session.metadata.type !== "word-chat-review") output.proposal = { before: deletion ? "Tuesday " : context.text, after: deletion ? "" : context.text.replace("Tuesday", "Wednesday"), ...modelProposal, explanation: "Requested delivery update", openItems: ["Confirm the date with the client"] }
-        rows.push({ id: `msg_answer_${next++}`, type: "assistant", content: [{ type: "text", text: (session.metadata.type === "word-chat-review" ? reviewerRawOutput : modelRawOutput) ?? JSON.stringify(output) }], time: { created: new Date().toISOString(), completed: new Date().toISOString() } })
-        session.time.idle = new Date().toISOString(); session.outcome = "succeeded"
+        rows.push({ id: `msg_answer_${next++}`, type: "assistant", content: [{ type: "text", text: session.agent === "router" ? routerOutput ?? JSON.stringify({ route: amend ? "redliner" : routerAgent }) : (session.metadata.type === "word-chat-review" ? reviewerRawOutput : modelRawOutput) ?? JSON.stringify(output) }], time: { created: new Date().toISOString(), completed: new Date().toISOString() } })
+        session.time.idle = new Date().toISOString(); session.outcome = session.metadata.type === "word-chat-review" ? reviewerOutcome : session.agent === "router" ? "succeeded" : mainOutcome
       }
     }
-    if (loseResponse) { loseResponse = false; throw new Error("Lost admitted response") }
+    if (loseResponse && session.agent !== "router") { loseResponse = false; throw new Error("Lost admitted response") }
     return envelope(admission)
   }
   throw new Error(`Unexpected engine route ${method} ${url.pathname}`)
@@ -68,6 +106,8 @@ const transport = Object.assign(async (input: RequestInfo | URL, init?: RequestI
 const post = (action: string, body: object = {}) => app.request(`/word/chat/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
 const context = { text: "The current Word buffer uses Tuesday delivery.", paragraphs: [{ id: "11", text: "The current Word buffer uses Tuesday delivery." }], saved: false, capturedAt: "2026-01-01T00:00:00Z", truncated: false }
 const send = (conversationId: string, scope: "document" | "matter", text: string, requestId = crypto.randomUUID(), attachments: WordChatSend["attachments"] = []) => post("send", { conversationId, scope, text, requestId, attachments, context })
+const suppliedContext = (prompt: string) => JSON.parse(prompt.split("\n").at(-2)!).context
+const sessionContext = (id: string) => String(messages.get(id)!.find(message => message.type === "synthetic")!.text)
 const newConversation = async () => (await (await post("conversation")).json() as { conversation: { id: string } }).conversation.id
 
 beforeAll(async () => {
@@ -102,24 +142,33 @@ test("document-only cannot inherit matter evidence; explicit attachment delibera
   expect(prompts.at(-1)).not.toContain("DISTINCTIVE_EVIDENCE")
   expect(prompts.at(-1)).not.toContain("Monday delivery")
   expect(prompts.at(-1)).toContain("Tuesday delivery")
+  expect(routerPrompts.at(-1)).not.toContain("DISTINCTIVE_EVIDENCE")
   const source = wordChatMaterials(auth).find(material => material.name === "Other.docx")!
   expect((await send(id, "document", "Explain the attached evidence", crypto.randomUUID(), [source])).status).toBe(200)
   expect(prompts.at(-1)).toContain("DISTINCTIVE_EVIDENCE is a blue agreement.")
+  const routed = routerPrompts.length
   expect((await send(id, "document", "Explain this", crypto.randomUUID(), [{ ...source, hash: "0".repeat(64) }])).status).toBe(409)
+  expect(routerPrompts).toHaveLength(routed)
 })
-test("conversation history uses its first question instead of repeating the document filename", async () => {
+test("conversation naming uses the native title action once from clean user input, not a first-question prefix", async () => {
   const id = await newConversation()
   expect(sessions.get(id)?.title).toBe("Word · Draft.docx")
   expect((await send(id, "document", "Explain\n  the delivery clause")).status).toBe(200)
-  expect(sessions.get(id)?.title).toBe("Explain the delivery clause")
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(sessions.get(id)?.title).toBe("Delivery clause review")
   expect((await send(id, "document", "What needs clarification?")).status).toBe(200)
-  expect(sessions.get(id)?.title).toBe("Explain the delivery clause")
+  expect(sessions.get(id)?.title).toBe("Delivery clause review")
   const list = await (await post("conversations")).json() as { conversations: { id: string; title: string }[] }
-  expect(list.conversations.find(item => item.id === id)?.title).toBe("Explain the delivery clause")
-  // Earlier conversations receive a useful display label without a history migration.
+  expect(list.conversations.find(item => item.id === id)?.title).toBe("Delivery clause review")
+  const turns = [...sessions.values()].filter(session => session.parentID === id && session.metadata.type === "word-chat-turn")
+  expect(titleActions.filter(value => turns.some(turn => turn.id === value))).toEqual([turns[0]!.id])
+  const admitted = messages.get(turns[0]!.id)!.filter(message => message.type === "user")
+  expect(admitted.map(message => message.text)).toEqual(["Explain\n  the delivery clause"])
+  expect(sessionContext(turns[0]!.id)).toContain("supplied-conversation-context")
+  // Historical placeholders no longer fabricate a title from user text.
   sessions.get(id)!.title = "Word · Draft.docx"
   const opened = await (await post("conversation", { conversationId: id })).json() as { conversation: { title: string } }
-  expect(opened.conversation.title).toBe("Explain the delivery clause")
+  expect(opened.conversation.title).toBe("Word · Draft.docx")
 })
 test("native root and child ownership refuse another document; invented citations never reach the answer", async () => {
   const id = await newConversation()
@@ -142,6 +191,84 @@ test("lost prompt admission is reconciled with the exact native ID and generates
   expect(generations - before).toBe(1)
   expect((await send(id, "document", "A changed request", requestId)).status).toBe(409)
 })
+test("lost synthetic-context admission resumes with one context and one clean user message", async () => {
+  const id = await newConversation(), requestId = crypto.randomUUID(), before = generations
+  loseContextResponse = true
+  expect((await send(id, "document", "Explain this selected delivery wording", requestId)).status).toBe(503)
+  const child = [...sessions.values()].find(value => value.parentID === id && value.metadata.type === "word-chat-turn")!
+  expect(messages.get(child.id)!.map(message => message.type)).toEqual(["synthetic"])
+  expect((await send(id, "document", "Explain this selected delivery wording", requestId)).status).toBe(200)
+  expect(generations - before).toBe(1)
+  const rows = messages.get(child.id)!
+  expect(rows.filter(message => message.type === "synthetic")).toHaveLength(1)
+  expect(rows.filter(message => message.type === "user").map(message => message.text)).toEqual(["Explain this selected delivery wording"])
+  const contextAdmissions = admissions.filter(value => value.session === child.id && value.tail === "/synthetic")
+  expect(contextAdmissions).toHaveLength(2)
+  expect(new Set(contextAdmissions.map(value => value.payload.id)).size).toBe(1)
+  expect(contextAdmissions[0]!.payload).toMatchObject({ delivery: "steer", resume: false })
+  expect(admissions.find(value => value.session === child.id && value.tail === "/prompt")!.payload).toMatchObject({ text: "Explain this selected delivery wording", delivery: "steer", resume: true })
+})
+
+test("Auto obeys the shared native router while explicit modes and pinned refinement bypass it", async () => {
+  const id = await newConversation(), before = routerPrompts.length
+  const request = (text: string, extra: object = {}) => post("send", { conversationId: id, scope: "document", text, requestId: crypto.randomUUID(), attachments: [], context, ...extra })
+  try {
+    // A router decision, not a Word regex, owns the operation even when the
+    // question resembles a known editing command.
+    routerOutput = '{"route":"qa"}'
+    const answer = (await (await request("Rewrite this clause")).json() as { turn: WordChatTurn }).turn
+    expect(answer.kind).toBe("chat")
+    expect(sessions.get(answer.id)?.agent).toBe("qa")
+    expect(routerPrompts.at(-1)).toContain("- qa:")
+    expect(routerPrompts.at(-1)).toContain("- redliner:")
+    expect(routerPrompts.at(-1)).not.toContain("- draft:")
+    routerOutput = '{"route":"redliner"}'
+    modelRawOutput = JSON.stringify({ answer: "Prepared a layout proposal.", citations: [], proposal: { before: context.text, after: context.text, formatting: [{ paragraph: 0, spacingAfter: 6 }], explanation: "Separate this paragraph.", openItems: [] } })
+    const change = (await (await request("Could this presentation be clearer?")).json() as { turn: WordChatTurn }).turn
+    expect(sessions.get(change.id)?.agent).toBe("redliner")
+    expect(sessions.get(change.id)?.metadata.kind).toBe("amendment")
+    expect(change.kind).toBe("formatting")
+    expect(change.proposal?.formatting).toEqual([{ paragraph: 0, spacingAfter: 6 }])
+    const count = routerPrompts.length
+    routerOutput = '{"route":"unsupported"}'
+    const explicit = (await (await request("Rewrite this", { mode: "qa", kind: "formatting" })).json() as { turn: WordChatTurn }).turn
+    expect(explicit.kind).toBe("chat")
+    expect(explicit.proposal).toBeUndefined()
+    const refined = (await (await request("Keep that paragraph and use a little more space", { mode: "qa", proposal: change.proposal })).json() as { turn: WordChatTurn }).turn
+    expect(sessions.get(refined.id)?.agent).toBe("redliner")
+    expect(refined.proposal?.target).toEqual(change.proposal?.target)
+    expect(routerPrompts).toHaveLength(count)
+    const prior = generations
+    const failed = await request("Explain the document", { mode: "auto" })
+    expect(failed.status).toBe(503)
+    expect((await failed.json() as { error: string }).error).toContain("select Q&A or Redline")
+    expect(generations).toBe(prior)
+    expect([...sessions.values()].some(value => value.parentID === id && value.metadata.type === "word-chat-router")).toBe(false)
+    expect(routerPrompts.length).toBeGreaterThan(before)
+    for (const child of [...sessions.values()].filter(value => value.parentID === id)) {
+      expect(child.metadata.contextMode).toBe("supplied")
+      expect((child as unknown as { permissions: unknown }).permissions).toEqual([{ action: "*", resource: "*", effect: "deny" }])
+    }
+  } finally { routerOutput = undefined; modelRawOutput = undefined }
+})
+
+test("legacy admitted turns remain readable and reconcile their original prompt without a new context admission", async () => {
+  const id = await newConversation(), requestId = crypto.randomUUID()
+  const response = await send(id, "document", "Explain delivery", requestId)
+  const turn = (await response.json() as { turn: WordChatTurn }).turn
+  const child = sessions.get(turn.id)!
+  delete child.metadata.suppliedContext; delete child.metadata.contextMode; delete child.metadata.agent
+  child.agent = "word-chat"
+  const original = String(child.metadata.prompt)
+  const rows = messages.get(child.id)!.filter(message => message.type !== "synthetic")
+  rows.find(message => message.type === "user")!.text = original
+  messages.set(child.id, rows)
+  const before = generations, contextCount = admissions.filter(value => value.tail === "/synthetic").length
+  expect((await send(id, "document", "Explain delivery", requestId)).status).toBe(200)
+  expect(generations).toBe(before)
+  expect(admissions.filter(value => value.tail === "/synthetic")).toHaveLength(contextCount)
+  expect(admissions.at(-1)?.payload.text).toBe(original)
+})
 test("Stop cancels one scoped request and later polling cannot expose its late answer", async () => {
   const id = await newConversation(); hold = true
   const response = await send(id, "document", "Explain delivery")
@@ -155,10 +282,53 @@ test("Stop cancels one scoped request and later polling cannot expose its late a
 })
 test("suggestion passage batches stay small, sample across a large document, and disclose coverage", () => {
   const paragraphs = Array.from({ length: 30 }, (_, index) => ({ id: String(index), text: `Passage ${index}. ${"x".repeat(2000)}` }))
-  const split = wordChatSuggestionBatches({ ...context, paragraphs, text: paragraphs.map(paragraph => paragraph.text).join("\n") }, false)
+  const split = wordChatSuggestionBatches({ ...context, paragraphs, text: paragraphs.map(paragraph => paragraph.text).join("\n") })
   expect(split.batches).toHaveLength(3); expect(split.total).toBeGreaterThan(3)
   expect(split.batches[0]?.[0]?.id).toBe("0"); expect(split.batches.at(-1)?.at(-1)?.id).toBe("29")
   expect(split.batches.every(batch => batch.reduce((size, paragraph) => size + paragraph.text.length, 0) <= 8000)).toBe(true)
+})
+
+test("one suggestion flow retains whole-document passages and a crossing selection without duplicated ideas or naming", async () => {
+  const id = await newConversation()
+  const paragraphs = Array.from({ length: 30 }, (_, index) => ({ id: String(index), text: `Passage ${index}. ${"x".repeat(980)}` }))
+  const selected = paragraphs.slice(15, 17), text = selected.map(paragraph => paragraph.text).join("\r")
+  const selection = { id: "crossing", text, paragraphs: selected, startOffset: 0, endOffset: selected[1]!.text.length, saved: false, capturedAt: context.capturedAt }
+  const current = { ...context, text: paragraphs.map(paragraph => paragraph.text).join("\r"), paragraphs, selection }
+  const named = titleActions.length
+  modelRawOutput = JSON.stringify({ answer: "", citations: [], suggestions: [{ title: "Clarify this passage", explanation: "Confirm the intended wording.", passage: text }] })
+  try {
+    const response = await post("suggest", { conversationId: id, scope: "document", text: "", requestId: crypto.randomUUID(), attachments: [], context: current })
+    expect(response.status).toBe(200)
+    const turn = (await response.json() as { turn: WordChatTurn }).turn
+    expect(turn.suggestionCoverage).toEqual({ reviewed: 3, total: 4 })
+    expect(turn.suggestions).toHaveLength(1)
+    expect(turn.suggestions?.[0]?.passage).toBe(text)
+    const batches = [...sessions.values()].filter(value => value.parentID === turn.id)
+    expect(batches).toHaveLength(3)
+    const supplied = batches.map(value => suppliedContext(sessionContext(value.id)) as { target: { text: string }; sources: { id: string; quote: string }[] })
+    expect(supplied[0]!.sources.find(source => source.id === "word")?.quote).toContain("Passage 0.")
+    expect(supplied.at(-1)!.sources.find(source => source.id === "word")?.quote).toContain("Passage 29.")
+    for (const [index, value] of supplied.entries()) {
+      expect(value.target.text).toBe(text)
+      expect(value.sources.find(source => source.id === "word-selection")?.quote).toBe(text)
+      expect(batches[index]!.agent).toBe("qa")
+      expect(batches[index]!.metadata.contextMode).toBe("supplied")
+      expect(validateWordChatContext((batches[index]!.metadata.input as WordChatSend).context)).toBe(true)
+    }
+    expect(titleActions).toHaveLength(named)
+    expect(sessions.get(id)?.title).toBe("Word · Draft.docx")
+  } finally { modelRawOutput = undefined }
+})
+
+test("material loading supplies the persisted installation defaults without changing a conversation's scope", async () => {
+  const id = await newConversation()
+  writeWordChatPreferences({ defaultScope: "matter", suggestions: false })
+  try {
+    const material = await (await post("materials", { conversationId: id })).json() as { preferences: { defaultScope: string; suggestions: boolean } }
+    expect(material.preferences).toEqual({ defaultScope: "matter", suggestions: false })
+    const result = (await (await send(id, "document", "Explain the current delivery day")).json() as { turn: WordChatTurn }).turn
+    expect(result.scope).toBe("document")
+  } finally { writeWordChatPreferences({ defaultScope: "document", suggestions: true }) }
 })
 
 test("amendment preparation is checked by a separate denied-tool native reviewer before Apply", async () => {
@@ -173,6 +343,8 @@ test("amendment preparation is checked by a separate denied-tool native reviewer
   expect(generations - before).toBe(2)
   const review = [...sessions.values()].find(session => session.parentID === turn.id)!
   expect(review.metadata.type).toBe("word-chat-review")
+  expect(review.agent).toBe("document-reviewer")
+  expect(review.metadata.contextMode).toBe("supplied")
   expect((review as unknown as { permissions: unknown }).permissions).toEqual([{ action: "*", resource: "*", effect: "deny" }])
   expect((await post("prepare", { conversationId: id, turnId: turn.id, ooxml: "not authorized" })).status).toBe(409)
   approveReview = false; amend = true
@@ -180,6 +352,151 @@ test("amendment preparation is checked by a separate denied-tool native reviewer
   amend = false; approveReview = true
   expect(rejected.proposal).toBeUndefined()
   expect(rejected.error).toContain("needs revision")
+})
+
+test("an approved JSON result from an interrupted or failed reviewer does not authorize a proposal", async () => {
+  const id = await newConversation()
+  amend = true
+  try {
+    const baseline = (await (await send(id, "document", "Rewrite delivery for Wednesday")).json() as { turn: WordChatTurn }).turn
+    expect(baseline.proposal?.after).toContain("Wednesday")
+    for (const outcome of ["interrupted", "failed"] as const) {
+      reviewerOutcome = outcome
+      const turn = (await (await send(id, "document", "Rewrite delivery for Wednesday")).json() as { turn: WordChatTurn }).turn
+      expect(turn.proposal).toBeUndefined()
+      expect(turn.error).toContain("needs revision")
+      const review = [...sessions.values()].find(value => value.parentID === turn.id && value.metadata.type === "word-chat-review")!
+      const content = messages.get(review.id)!.find(message => message.type === "assistant")!.content as { text: string }[]
+      expect(JSON.parse(content[0]!.text).approved).toBe(true)
+    }
+  } finally { reviewerOutcome = "succeeded"; amend = false }
+})
+
+test("Stop queues behind an in-flight poll's reviewer admission and interrupts the admitted reviewer", async () => {
+  const id = await newConversation()
+  hold = true; amend = true
+  const response = await send(id, "document", "Rewrite delivery for Wednesday")
+  hold = false; amend = false
+  const running = (await response.json() as { turn: WordChatTurn }).turn
+  const child = sessions.get(running.id)!
+  messages.get(child.id)!.push({ id: `msg_late_${next++}`, type: "assistant", content: [{ type: "text", text: JSON.stringify({ answer: "Prepared a focused proposal.", citations: [], proposal: { before: context.text, after: context.text.replace("Tuesday", "Wednesday"), explanation: "Requested update.", openItems: [] } }) }], time: { created: new Date().toISOString(), completed: new Date().toISOString() } })
+  child.time.idle = new Date().toISOString(); child.outcome = "succeeded"
+  let enter!: () => void, release!: () => void
+  const entered = new Promise<void>(resolve => { enter = resolve }), gate = new Promise<void>(resolve => { release = resolve })
+  engineHook = async (value, tail) => { if (value.id === child.id && tail === "/message") { engineHook = undefined; enter(); await gate } }
+  hold = true // The newly admitted reviewer remains running until Stop.
+  queueReview = true
+  try {
+    const polling = post("poll", { conversationId: id, turnId: child.id })
+    await entered
+    const stopping = post("cancel", { conversationId: id, turnId: child.id })
+    await Promise.resolve(); await Promise.resolve()
+    expect(child.metadata.cancelled).not.toBe(true)
+    release()
+    const polled = (await (await polling).json() as { turn: WordChatTurn }).turn
+    expect(polled.status).toBe("running")
+    const stopped = (await (await stopping).json() as { turn: WordChatTurn }).turn
+    expect(stopped.status).toBe("cancelled")
+    const reviewers = [...sessions.values()].filter(value => value.parentID === child.id && value.metadata.type === "word-chat-review")
+    expect(reviewers).toHaveLength(1)
+    expect(reviewers[0]!.outcome).toBe("interrupted")
+    expect(inboxes.get(reviewers[0]!.id)).toEqual([])
+    const queuedStops = stoppedInputs.filter(value => value.startsWith(reviewers[0]!.id + ":"))
+    expect(queuedStops[0]).toBe(`${reviewers[0]!.id}:interrupt`)
+    expect(queuedStops.filter(value => value.includes(":delete:"))).toHaveLength(2)
+    expect(messages.get(child.id)!.some(message => message.type === "assistant")).toBe(true)
+    const before = generations
+    expect(((await (await post("poll", { conversationId: id, turnId: child.id })).json()) as { turn: WordChatTurn }).turn.proposal).toBeUndefined()
+    expect(generations).toBe(before)
+  } finally { release(); engineHook = undefined; hold = false; queueReview = false }
+})
+
+test("an attachment changed during transcript hydration cannot publish its earlier quote", async () => {
+  const name = "Late evidence.docx"
+  await writeDeliverable(directory, name, await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph("The attached source confirms synthetic delivery evidence.")] }] })))
+  const material = wordChatMaterials(auth).find(value => value.name === name)!, bytes = readFileSync(path.join(directory, name))
+  const id = await newConversation()
+  const baseline = (await (await send(id, "document", "Explain the attached evidence", crypto.randomUUID(), [material])).json() as { turn: WordChatTurn }).turn
+  expect(baseline.sources[0]?.quote).toContain("synthetic delivery evidence")
+  const requestId = crypto.randomUUID()
+  engineHook = async (value, tail) => {
+    if (value.parentID === id && (value.metadata.input as WordChatSend)?.requestId === requestId && tail === "/message") {
+      engineHook = undefined; writeFileSync(path.join(directory, name), "Replaced while the transcript was being read.")
+    }
+  }
+  try {
+    const changed = (await (await send(id, "document", "Explain it again", requestId, [material])).json() as { turn: WordChatTurn }).turn
+    expect(changed.status).toBe("error")
+    expect(changed.answer).toBe("")
+    expect(changed.sources).toEqual([])
+    expect(changed.proposal).toBeUndefined()
+    expect(changed.error).toContain("Supporting material changed")
+  } finally { engineHook = undefined; writeFileSync(path.join(directory, name), bytes) }
+})
+
+test("error exits clear earlier verified quotes when evidence changes during a bad-citation or failed answer", async () => {
+  const name = "Error evidence.docx"
+  await writeDeliverable(directory, name, await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph("A synthetic attached source supports this answer.")] }] })))
+  const material = wordChatMaterials(auth).find(value => value.name === name)!, bytes = readFileSync(path.join(directory, name))
+  const id = await newConversation()
+  const baseline = (await (await send(id, "document", "Explain the attached evidence", crypto.randomUUID(), [material])).json() as { turn: WordChatTurn }).turn
+  expect(baseline.status).toBe("complete")
+  const citation = { sourceId: baseline.sources[0]!.id, quote: baseline.sources[0]!.quote }
+  try {
+    for (const failure of ["citation", "failed"] as const) {
+      const requestId = crypto.randomUUID()
+      modelRawOutput = JSON.stringify({ answer: "The attached source supports this answer.", citations: [citation, ...(failure === "citation" ? [{ sourceId: "not-supplied", quote: "Unsupported quotation." }] : [])] })
+      mainOutcome = failure === "failed" ? "failed" : "succeeded"
+      engineHook = async (value, tail) => {
+        if ((value.metadata.input as WordChatSend)?.requestId === requestId && tail === "/message") {
+          engineHook = undefined; writeFileSync(path.join(directory, name), "Changed while the terminal output was being read.")
+        }
+      }
+      const changed = (await (await send(id, "document", "Explain the attached evidence again", requestId, [material])).json() as { turn: WordChatTurn }).turn
+      expect(changed.status).toBe("error")
+      expect(changed.answer).toBe("")
+      expect(changed.sources).toEqual([])
+      expect(changed.proposal).toBeUndefined()
+      expect(changed.error).toContain("Supporting material changed")
+      writeFileSync(path.join(directory, name), bytes)
+    }
+  } finally { engineHook = undefined; modelRawOutput = undefined; mainOutcome = "succeeded"; writeFileSync(path.join(directory, name), bytes) }
+})
+
+test("an interrupted scoped answer cannot release its otherwise valid amendment for independent approval", async () => {
+  const id = await newConversation()
+  amend = true
+  try {
+    const baseline = (await (await send(id, "document", "Rewrite delivery for Wednesday")).json() as { turn: WordChatTurn }).turn
+    expect(baseline.proposal).toBeDefined()
+    mainOutcome = "interrupted"
+    const interrupted = (await (await send(id, "document", "Rewrite delivery for Wednesday")).json() as { turn: WordChatTurn }).turn
+    expect(interrupted.status).toBe("error")
+    expect(interrupted.answer).toBe("")
+    expect(interrupted.sources).toEqual([])
+    expect(interrupted.proposal).toBeUndefined()
+    expect([...sessions.values()].filter(value => value.parentID === interrupted.id && value.metadata.type === "word-chat-review")).toHaveLength(0)
+  } finally { mainOutcome = "succeeded"; amend = false }
+})
+
+test("a completed answer is returned while its one native title job is still pending", async () => {
+  const id = await newConversation()
+  let enter!: () => void, release!: () => void
+  const entered = new Promise<void>(resolve => { enter = resolve }), gate = new Promise<void>(resolve => { release = resolve })
+  engineHook = async (value, tail, method, payload) => {
+    if (value.parentID === id && !tail && method === "PATCH" && payload.title === "") { enter(); await gate }
+  }
+  try {
+    const response = await send(id, "document", "Explain delivery without waiting for a conversation title")
+    const turn = (await response.json() as { turn: WordChatTurn }).turn
+    expect(turn.status).toBe("complete")
+    expect(turn.answer).toContain("Tuesday")
+    await entered
+    const before = titleActions.length
+    expect((await post("poll", { conversationId: id, turnId: turn.id })).status).toBe(200)
+    expect(titleActions).toHaveLength(before)
+  } finally { release(); engineHook = undefined; await new Promise(resolve => setTimeout(resolve, 0)) }
+  expect(sessions.get(id)?.title).toBe("Delivery clause review")
 })
 
 test("composer modes route questions, explicit changes and formatting without changing evidence scope", async () => {
@@ -199,6 +516,7 @@ test("composer modes route questions, explicit changes and formatting without ch
     ["Improve the layout", { mode: "redline" }, "formatting"],
     ["Prepare my requested change", { mode: "auto", kind: "amendment" }, "amendment"],
   ] as const) {
+    routerAgent = expected === "chat" ? "qa" : "redliner"
     const response = await request(text, extra)
     expect(response.status, text).toBe(200)
     const turn = (await response.json() as { turn: WordChatTurn }).turn
@@ -206,6 +524,7 @@ test("composer modes route questions, explicit changes and formatting without ch
     expect(turn.scope).toBe("document")
     if (expected === "chat") expect(turn.proposal).toBeUndefined()
   }
+  routerAgent = "qa"
   const before = generations
   for (const mode of ["unknown", ["qa"], { mode: "qa" }, 0, null])
     expect((await request("Rewrite this", { mode })).status).toBe(400)
@@ -220,6 +539,7 @@ test("format-only proposals retain exact paragraphs, carry bounded properties an
   const current = { ...context, text: before, paragraphs }
   const formatting = [{ paragraph: 0, style: "Title" as const, spacingAfter: 12 }, { paragraph: 1, spacingBefore: 6, lineSpacing: 1.5 }]
   const request = (extra: object = {}) => post("send", { conversationId: id, scope: "document", text: "Format the existing heading and improve paragraph spacing, preserving all wording.", requestId: crypto.randomUUID(), attachments: [], context: current, ...extra })
+  routerAgent = "redliner"
   amend = true; modelProposal = { before: before.replace(/\r/g, "\n"), after: before.replace(/\r/g, "\n"), formatting }
   try {
     const response = await request()
@@ -230,7 +550,7 @@ test("format-only proposals retain exact paragraphs, carry bounded properties an
     expect(turn.proposal?.before).toBe(before)
     expect(turn.proposal?.after).toBe(before)
     expect(turn.proposal?.target.paragraphs).toEqual(paragraphs)
-    const prompt = String(messages.get(turn.id)!.find(message => message.type === "user")!.text)
+    const prompt = sessionContext(turn.id)
     expect(prompt).toContain("spacingBefore")
     expect(prompt).toContain("points")
     expect(prompt).toContain("lineSpacing")
@@ -238,10 +558,10 @@ test("format-only proposals retain exact paragraphs, carry bounded properties an
     expect(prompt).toContain("brief")
     expect(prompt).toContain("explicit Apply")
     expect(prompt).not.toContain("No tools, document mutation")
-    const supplied = JSON.parse(prompt.split("\n").at(-1)!) as { formattingParagraphs: typeof paragraphs }
+    const supplied = suppliedContext(prompt) as { formattingParagraphs: typeof paragraphs }
     expect(supplied.formattingParagraphs).toEqual(paragraphs)
     const reviewer = [...sessions.values()].find(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")!
-    const reviewPrompt = String(messages.get(reviewer.id)!.find(message => message.type === "user")!.text)
+    const reviewPrompt = sessionContext(reviewer.id)
     expect(reviewPrompt).toContain("paragraph properties")
     expect(reviewPrompt).toContain("wording unchanged")
     // An explicit refinement keeps its already reviewed formatting target even in Q&A mode.
@@ -291,7 +611,7 @@ test("format-only proposals retain exact paragraphs, carry bounded properties an
       expect((await bounded.json() as { error: string }).error).toContain("complete paragraphs")
     }
     expect(generations).toBe(count)
-  } finally { amend = false; modelProposal = undefined; modelRawOutput = undefined; approveReview = true }
+  } finally { amend = false; modelProposal = undefined; modelRawOutput = undefined; approveReview = true; routerAgent = "qa" }
 })
 
 test("independent amendment review receives first/last paragraph offsets and local-save semantics", async () => {
@@ -307,14 +627,14 @@ test("independent amendment review receives first/last paragraph offsets and loc
     const turn = (await response.json() as { turn: WordChatTurn }).turn
     expect(turn.proposal?.before).toBe(before)
     const reviewer = [...sessions.values()].find(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")!
-    const prompt = String(messages.get(reviewer.id)!.find(message => message.type === "user")!.text)
+    const prompt = sessionContext(reviewer.id)
     expect(prompt).toContain("first target paragraph")
     expect(prompt).toContain("last target paragraph")
     expect(prompt).toContain("single-paragraph target")
     expect(prompt).toContain("already deterministically validated")
     expect(prompt).toContain("local Word buffer")
     expect(prompt).toContain("confirmed matter version")
-    const supplied = JSON.parse(prompt.split("\n").at(-1)!) as { proposal: NonNullable<WordChatTurn["proposal"]>; evidence: { id: string; provenance: string }[] }
+    const supplied = suppliedContext(prompt) as { proposal: NonNullable<WordChatTurn["proposal"]>; evidence: { id: string; provenance: string }[] }
     expect(supplied.proposal.target.paragraphs).toEqual(paragraphs)
     expect(supplied.proposal.target.startOffset).toBe(0)
     expect(supplied.proposal.target.endOffset).toBe(paragraphs[1]!.text.length)
@@ -345,7 +665,7 @@ test("completed amendments without a usable proposal always expose an actionable
     for (const proposal of [undefined, { before: "Wording absent from the current buffer.", after: "Replacement wording." }, { before: context.text, after: context.text }, { before: context.text, after: undefined }]) {
       amend = Boolean(proposal); modelProposal = proposal
       const before = generations
-      const response = await post("send", { conversationId: id, scope: "document", kind: "amendment", text: "Prepare the requested change for review.", requestId: crypto.randomUUID(), attachments: [], context })
+      const response = await post("send", { conversationId: id, scope: "document", mode: "redline", kind: "amendment", text: "Prepare the requested change for review.", requestId: crypto.randomUUID(), attachments: [], context })
       expect(response.status).toBe(200)
       const turn = (await response.json() as { turn: WordChatTurn }).turn
       expect(turn.status).toBe("complete")
@@ -356,7 +676,7 @@ test("completed amendments without a usable proposal always expose an actionable
     }
     for (const output of ["Prepared the tracked amendment for review.", "{}"] ) {
       modelRawOutput = output
-      const response = await post("send", { conversationId: id, scope: "document", kind: "amendment", text: "Prepare the requested change for review.", requestId: crypto.randomUUID(), attachments: [], context })
+      const response = await post("send", { conversationId: id, scope: "document", mode: "redline", kind: "amendment", text: "Prepare the requested change for review.", requestId: crypto.randomUUID(), attachments: [], context })
       const turn = (await response.json() as { turn: WordChatTurn }).turn
       expect(turn.status).toBe("error")
       expect(turn.proposal).toBeUndefined()
@@ -519,15 +839,50 @@ test("prepare returns actionable formatting failures while keeping other authori
   } finally { clearWordEditLease(db, auth.grant.document_id); db.close() }
 })
 
-test("multi-paragraph selection suggestion evidence includes the exact selected passage once", () => {
+test("prepare withholds the artifact when attached evidence changes during pure authoring", async () => {
+  const name = "Authoring evidence.docx"
+  await writeDeliverable(directory, name, await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph("The source supports the requested delivery review.")] }] })))
+  const material = wordChatMaterials(auth).find(value => value.name === name)!, bytes = readFileSync(path.join(directory, name))
+  const id = await newConversation()
+  amend = true
+  let turn: WordChatTurn
+  try { turn = (await (await send(id, "document", "Rewrite delivery for Wednesday", crypto.randomUUID(), [material])).json() as { turn: WordChatTurn }).turn }
+  finally { amend = false }
+  expect(turn.proposal).toBeDefined()
+  const db = openDb(directory), current = readCurrentVersion(directory, "Draft.docx")!.current.id
+  const owner = claimWordEditLease(db, { document: auth.grant.document_id, tokenHash: auth.grant.token_hash, session: "synthetic-evidence-race" })
+  let changeEvidence = false, authors = 0
+  const preparing = new Hono()
+  installWordChat(preparing, () => auth, { fetch: transport, engineURL: "http://synthetic.invalid", authorAmendment: async (_ooxml, proposal) => {
+    authors++
+    await Promise.resolve()
+    if (changeEvidence) writeFileSync(path.join(directory, name), "An external source replacement during authoring.")
+    return { proposalId: proposal.id, ooxml: "synthetic-reviewed-artifact", paragraphs: [proposal.after], revisions: [], author: "doc.haus" }
+  } })
+  const prepare = () => preparing.request("/word/chat/prepare", { method: "POST", headers: { "content-type": "application/json", "x-dochaus-word-session": owner.session, "x-dochaus-word-lease": owner.generation, "x-dochaus-word-base-version": current }, body: JSON.stringify({ conversationId: id, turnId: turn.id, ooxml: "synthetic-original-ooxml" }) })
+  try {
+    expect((await prepare()).status).toBe(200)
+    changeEvidence = true
+    const changed = await prepare()
+    expect(changed.status).toBe(409)
+    const result = await changed.json() as { error: string; ooxml?: string }
+    expect(result.error).toContain("Supporting material changed")
+    expect(result.ooxml).toBeUndefined()
+    expect(authors).toBe(2)
+    expect(readCurrentVersion(directory, "Draft.docx")!.current.id).toBe(current)
+  } finally { writeFileSync(path.join(directory, name), bytes); clearWordEditLease(db, auth.grant.document_id); db.close() }
+})
+
+test("suggestion batches retain document context as well as the selected passage", () => {
   const paragraphs = [{ id: "first", text: "Unselected prefix. First selected wording." }, { id: "second", text: "Second selected wording. Unselected suffix." }]
   const text = "First selected wording.\rSecond selected wording."
   const selection = { id: "selected", text, paragraphs, startOffset: 19, endOffset: 24, capturedAt: context.capturedAt, saved: false }
-  const result = wordChatSuggestionBatches({ ...context, paragraphs, text: paragraphs.map(paragraph => paragraph.text).join("\r"), selection }, true)
+  const result = wordChatSuggestionBatches({ ...context, paragraphs, text: paragraphs.map(paragraph => paragraph.text).join("\r"), selection })
   const supplied = result.batches.flat().map(paragraph => paragraph.text).join("\r")
-  expect(supplied).toBe(text)
+  expect(supplied).toBe(paragraphs.map(paragraph => paragraph.text).join("\r"))
   expect(result.batches.flat().map(paragraph => paragraph.id)).toEqual(["first", "second"])
-  expect(supplied).not.toContain("Unselected")
+  expect(supplied).toContain(text)
+  expect(supplied).toContain("Unselected")
 })
 
 test("follow-up evidence excludes changed Word buffers while retaining unchanged conversation context", async () => {
@@ -537,12 +892,12 @@ test("follow-up evidence excludes changed Word buffers while retaining unchanged
   expect(first.status).toBe(200)
   const second = await send(id, "document", "Explain the current day")
   expect(second.status).toBe(200)
-  const changed = JSON.parse(prompts.at(-1)!.split("\n").at(-1)!) as { compatibleDiscussion: unknown[]; sources: { quote: string }[] }
+  const changed = suppliedContext(prompts.at(-1)!) as { compatibleDiscussion: unknown[]; sources: { quote: string }[] }
   expect(changed.compatibleDiscussion).toEqual([])
   expect(prompts.at(-1)).not.toContain("Monday")
   expect(changed.sources[0]?.quote).toContain("Tuesday")
   expect((await send(id, "document", "Explain that once more")).status).toBe(200)
-  const unchanged = JSON.parse(prompts.at(-1)!.split("\n").at(-1)!) as { compatibleDiscussion: { question: string; answer: string }[] }
+  const unchanged = suppliedContext(prompts.at(-1)!) as { compatibleDiscussion: { question: string; answer: string }[] }
   expect(unchanged.compatibleDiscussion).toHaveLength(1)
   expect(unchanged.compatibleDiscussion[0]?.question).toBe("Explain the current day")
   expect(unchanged.compatibleDiscussion[0]?.answer).toContain("Tuesday")
@@ -564,7 +919,7 @@ test("selection identity separates follow-ups while incidental capture IDs do no
   const selected = (text: string) => ({ ...context, selection: { id: crypto.randomUUID(), text, paragraphs: context.paragraphs, startOffset: context.text.indexOf(text), endOffset: context.text.indexOf(text) + text.length, capturedAt: new Date().toISOString(), saved: false } })
   for (const [question, selectedContext] of [["Explain selected day", selected("Tuesday")], ["Explain selected delivery", selected("delivery")], ["Explain it again", selected("delivery")]] as const) {
     expect((await post("send", { conversationId: id, scope: "document", text: question, requestId: crypto.randomUUID(), attachments: [], context: selectedContext })).status).toBe(200)
-    const supplied = JSON.parse(prompts.at(-1)!.split("\n").at(-1)!) as { compatibleDiscussion: { question: string }[] }
+    const supplied = suppliedContext(prompts.at(-1)!) as { compatibleDiscussion: { question: string }[] }
     if (question === "Explain selected delivery") expect(supplied.compatibleDiscussion).toEqual([])
     if (question === "Explain it again") expect(supplied.compatibleDiscussion.map(turn => turn.question)).toEqual(["Explain selected delivery"])
   }

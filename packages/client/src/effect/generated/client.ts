@@ -468,7 +468,12 @@ const EndpointSessionUpdate = (raw: RawClient["server.session"]) => (input: Sess
   preserveEffect<SessionUpdateOutput>()(
     raw["session.update"]({
       params: { sessionID: input["sessionID"] },
-      payload: { title: input["title"], metadata: input["metadata"], permissions: input["permissions"] },
+      payload: {
+        title: input["title"],
+        expectedTitle: input["expectedTitle"],
+        metadata: input["metadata"],
+        permissions: input["permissions"],
+      },
     }).pipe(Effect.mapError(mapClientError)),
   )
 

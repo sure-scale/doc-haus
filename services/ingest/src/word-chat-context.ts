@@ -116,12 +116,8 @@ export async function wordChatEvidence(auth: WordChatAuth, context: WordChatCont
 }
 
 /** Three small independent passage jobs; a large document reports sampling. */
-export function wordChatSuggestionBatches(context: WordChatContext, selectionOnly: boolean) {
-  // A selection is one exact passage, possibly spanning several paragraphs.
-  // Split that passage once; repeating it per paragraph fabricates evidence.
-  const paragraphs = selectionOnly && context.selection ? wordChatParagraphBreaks(context.selection.text).split("\r").map((text, index) => ({
-    id: context.selection!.paragraphs?.[index]?.id ?? `selection-${index}`, text,
-  })) : context.paragraphs
+export function wordChatSuggestionBatches(context: WordChatContext) {
+  const paragraphs = context.paragraphs
   const groups: { id: string; text: string }[][] = []
   let group: typeof paragraphs = [], size = 0
   for (const paragraph of paragraphs) {
@@ -132,7 +128,12 @@ export function wordChatSuggestionBatches(context: WordChatContext, selectionOnl
     }
   }
   if (group.length) groups.push(group)
-  const indexes = [...new Set(groups.length <= 3 ? groups.map((_, index) => index) : [0, Math.floor((groups.length - 1) / 2), groups.length - 1])]
+  // One flow considers the document and current selection together. In a large
+  // document, prioritize its selected passage within the same bounded budget.
+  const selectedIDs = new Set(context.selection?.paragraphs.map(paragraph => paragraph.id))
+  const selected = groups.findIndex(group => group.some(paragraph => selectedIDs.has(paragraph.id)))
+  const indexes = groups.length <= 3 ? groups.map((_, index) => index)
+    : [...new Set([...(selected >= 0 ? [selected] : []), 0, groups.length - 1, Math.floor((groups.length - 1) / 2)])].slice(0, 3).sort((a, b) => a - b)
   return { batches: indexes.map(index => groups[index]!), reviewed: indexes.length, total: groups.length }
 }
 

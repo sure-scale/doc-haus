@@ -28,13 +28,13 @@ export function wordConfiguration() {
   if (failure) return { available: false, origin: null, manifestUrl: null, reason: failure }
   let config: ReturnType<typeof wordHttpsConfiguration>
   try { config = wordHttpsConfiguration() } catch {
-    return { available: false, origin: null, manifestUrl: null, reason: "Word setup needs repair. Open Settings → Add-ins." }
+    return { available: false, origin: null, manifestUrl: null, reason: "Word setup needs repair. Open Settings → Word add-in." }
   }
   const available = Boolean(config && wordHttpsAvailable(config))
   const origin = available ? config!.origin : null
   return {
     available, origin, manifestUrl: origin ? `${origin}/word-addin/manifest.xml` : null,
-    ...(!available ? { reason: "Set up or repair Microsoft Word in Settings → Add-ins." } : {}),
+    ...(!available ? { reason: "Set up or repair Microsoft Word in Settings → Word add-in." } : {}),
   }
 }
 

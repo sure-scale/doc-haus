@@ -18,6 +18,7 @@ import { answerDraftRoutes } from "./answer-drafts"
 import { readEngineSettings, patchEngineConfig, engineConfigFile } from "./engine-config"
 import { setupRoutes } from "./setup"
 import { wordSetupRoutes } from "./word-setup"
+import { wordChatPreferencesRoutes } from "./word-chat-preferences"
 import { authReuseRoutes } from "./auth-reuse"
 import { providerSetupRoutes } from "./provider-setup"
 import { Hono, type Context } from "hono"
@@ -250,6 +251,7 @@ app.put("/preferences", async (c) => {
   return c.json(writeDraftingPreferences(input))
 })
 app.route("/research", researchConnectionRoutes)
+app.route("/word/chat-preferences", wordChatPreferencesRoutes())
 
 // The jurisdiction packs a matter can be assigned, read from the dochaus config
 // layer. The web app populates its matter-creation dropdown from this (issue #18).

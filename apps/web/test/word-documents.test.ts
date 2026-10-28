@@ -77,7 +77,7 @@ describe("Word connection", () => {
   test("setup and write failures retain the service's actionable explanation", async () => {
     globalThis.fetch = stubFetch(async () => Response.json({ available: false, origin: null, manifestUrl: null, reason: "A trusted HTTPS connection has not been set up." }))
     const config = await fetchWordConfig()
-    expect(wordSetupReason(config)).toBe("Word is not ready. Set it up in Settings → Add-ins.")
+    expect(wordSetupReason(config)).toBe("Word is not ready. Set it up in Settings → Word add-in.")
     globalThis.fetch = stubFetch(async () => Response.json({ error: "Word setup must be completed before downloading a linked copy." }, { status: 503 }))
     await expect(linkedWordDocument("m", "Agreement.docx", "http://localhost")).rejects.toThrow("Word setup must be completed")
     await expect(revokeWordDocument("m", "Agreement.docx")).rejects.toThrow("Word setup must be completed")

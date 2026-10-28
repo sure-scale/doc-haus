@@ -154,7 +154,7 @@ export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => 
       if (setUpWord && !word.status?.available) {
         const configured = await word.prepare()
         if (!configured) {
-          setSaveNotice("Word setup did not finish. Try again, or clear Set up Microsoft Word to finish and set it up later in Settings → Add-ins. Your drafting details are saved.")
+          setSaveNotice("Word setup did not finish. Try again, or clear Set up Microsoft Word to finish and set it up later in Settings → Word add-in. Your drafting details are saved.")
           return
         }
         toast("success", configured.restartWord ? "Word is set up. Restart Word to load the add-in." : "Word is ready.")
@@ -190,7 +190,7 @@ export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => 
         <input id="onboarding-word" type="checkbox" checked={setUpWord} disabled={advancing} onChange={event => setIncludeWord(event.target.checked)} aria-describedby="onboarding-word-hint" />
         <span>Set up Microsoft Word</span>
       </label>
-      <p id="onboarding-word-hint" className="settings-hint muted">Save and finish installs the add-in and asks your computer to trust its local connection. Restart Word after setup. You can change this in Settings → Add-ins.</p>
+      <p id="onboarding-word-hint" className="settings-hint muted">Save and finish installs the add-in and asks your computer to trust its local connection. Restart Word after setup. You can change this in Settings → Word add-in.</p>
     </>}
     <WordAddinStatus state={word} />
     {word.error && <button type="button" disabled={word.checking || advancing} onClick={() => void word.refresh()}>Check Word again</button>}

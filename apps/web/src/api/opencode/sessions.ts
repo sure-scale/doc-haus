@@ -2,6 +2,9 @@ import type { SessionMessageInfo } from "@opencode/client"
 import { projectMessages } from "../session-view"
 import { boundedRequest, clientDirectories, location, type Client } from "./client"
 import { getConfig, modelSpec } from "./config"
+import { generateConversationTitle } from "../../../../../dochaus/lib/chat-session-title"
+
+const namingSessions = new Set<string>()
 
 export async function listAgents(client: Client) {
   const res = await client.agent.list({ location: location(client) })
@@ -16,7 +19,7 @@ export async function disposeInstance(_client: Client) {
 // not pin the composer, router, credential probe, or cleanup path indefinitely.
 // Optional native permission rules narrow the session's tools (e.g. a grid
 // re-check that may only read the passages in its prompt).
-export async function createSession(client: Client, title: string, timeoutMs = 10_000, permissions?: Array<{ action: string; resource: string; effect: "allow" | "deny" | "ask" }>) {
+export async function createSession(client: Client, title = "Conversation", timeoutMs = 10_000, permissions?: Array<{ action: string; resource: string; effect: "allow" | "deny" | "ask" }>) {
   return boundedRequest(client.session.create({ title, location: location(client), ...(permissions ? { permissions } : {}) }), timeoutMs, "Session creation")
 }
 
@@ -49,11 +52,11 @@ export async function waitForSession(client: Client, sessionID: string, timeoutM
 
 // Settled messages for one session, each as { info, parts }, used to replay a
 // past conversation back into the chat panel.
-export async function getMessages(client: Client, sessionID: string) {
+export async function getMessages(client: Client, sessionID: string, signal?: AbortSignal) {
   const messages: SessionMessageInfo[] = []
   let cursor: string | undefined
   do {
-    const page = await client.message.list({ sessionID, limit: 200, ...(cursor ? { cursor } : { order: "asc" }) })
+    const page = await client.message.list({ sessionID, limit: 200, ...(cursor ? { cursor } : { order: "asc" }) }, { signal })
     messages.push(...page.data)
     cursor = page.cursor.next ?? undefined
   } while (cursor)
@@ -83,6 +86,18 @@ export async function sendPrompt(client: Client, sessionID: string, agent: strin
     const failed = settled.find(message => "error" in message && message.error)
     throw new Error(failed && "error" in failed ? failed.error!.message :
       terminal.outcome === "interrupted" ? "The session was interrupted." : "The session failed.")
+  }
+  // This explicit placeholder prevents an automatic native title job racing
+  // the shared naming path. Naming is best effort and never delays the answer.
+  if (!namingSessions.has(sessionID)) {
+    namingSessions.add(sessionID)
+    void boundedRequest(client.session.get({ sessionID }), 10_000, "Conversation title").then(async session => {
+      if (session.title !== "Conversation") return
+      await generateConversationTitle({ sessionID, transport: {
+        get: id => boundedRequest(client.session.get({ sessionID: id }), 10_000, "Conversation title"),
+        rename: async (id, title) => { await client.session.update({ sessionID: id, title }) },
+      } })
+    }).catch(() => {}).finally(() => namingSessions.delete(sessionID))
   }
   return admitted
 }

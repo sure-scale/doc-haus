@@ -19,7 +19,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "research", label: "Research" },
   { id: "data", label: "Statistics" },
   { id: "matters", label: "Matter defaults" },
-  { id: "addins", label: "Add-ins" },
+  { id: "addins", label: "Word add-in" },
   { id: "approvals", label: "Approvals" },
   { id: "appearance", label: "Appearance" },
 ]

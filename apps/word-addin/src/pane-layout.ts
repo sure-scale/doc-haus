@@ -1,8 +1,9 @@
-/** Keep Save details above the persistent bottom bar, within the space below
- * the feature tabs. Native document, conversation and draft state stay intact. */
+/** Keep recovery above the breadcrumb/version row and below the persistent
+ * tabs/Save row. Native document, conversation and draft state stay intact. */
 export function setupPaneLayout(document: Document): () => void {
   const bar = document.getElementById("save-panel")
   const tabs = document.getElementById("desk-entry")
+  const header = document.getElementById("pane-header")
   const toggle = document.getElementById("save-details-toggle")
   const close = document.getElementById("save-details-close")
   const details = document.getElementById("save-details")
@@ -32,7 +33,8 @@ export function setupPaneLayout(document: Document): () => void {
   function positionDetails() {
     if (details!.hidden) return
     updateIdentity()
-    const space = Math.max(0, bar!.getBoundingClientRect().top - (tabs!.hidden ? 0 : tabs!.getBoundingClientRect().bottom) - 12)
+    const top = header ? header.getBoundingClientRect().bottom : tabs!.hidden ? 0 : tabs!.getBoundingClientRect().bottom
+    const space = Math.max(0, bar!.getBoundingClientRect().top - top - 12)
     const value = `${space}px`
     if (details!.style.getPropertyValue("--save-details-space") !== value) details!.style.setProperty("--save-details-space", value)
   }
@@ -67,7 +69,7 @@ export function setupPaneLayout(document: Document): () => void {
   if (chat) matterObserver?.observe(chat, { attributes: true, attributeFilter: ["data-document-name"] })
   if (back) matterObserver?.observe(back, { attributes: true, attributeFilter: ["href"] })
   const resizeObserver = view?.ResizeObserver && new view.ResizeObserver(positionDetails)
-  resizeObserver?.observe(bar); resizeObserver?.observe(tabs)
+  resizeObserver?.observe(bar); resizeObserver?.observe(header ?? tabs)
   updateIdentity(); openingInstructions()
   return () => {
     observer?.disconnect(); matterObserver?.disconnect(); resizeObserver?.disconnect()

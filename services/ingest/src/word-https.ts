@@ -119,7 +119,7 @@ export function startWordHttps(fetch: Fetch, environment: Record<string, string 
   } catch {
     // Native TLS errors can contain the private key/certificate paths. Keep the
     // log and API reason useful without retaining those diagnostics.
-    startupFailure = "The Word HTTPS connection could not start. Check Word setup and that its configured port is free, then choose Repair in Settings → Add-ins."
+    startupFailure = "The Word HTTPS connection could not start. Check Word setup and that its configured port is free, then choose Repair in Settings → Word add-in."
     console.warn(`doc.haus: ${startupFailure}`)
   }
 }
