@@ -1,6 +1,6 @@
-import type { WordChatAuthoredAmendment, WordChatSnapshot, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatAuthoredAmendment, WordChatParagraphFormat, WordChatSnapshot, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { wordChatApplyPlan } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { capturedWordChatParagraphs, reviewedWordChatArtifact, sameWordChatOoxml, sameImportedWordChat } from "./word-chat-host-ooxml"
+import { capturedWordChatParagraphs, reviewedWordChatArtifact, sameWordChatOoxml, sameImportedWordChat, sameWordChatParagraphContent } from "./word-chat-host-ooxml"
 import { DOMParser } from "@xmldom/xmldom"
 
 type ClientResult<T> = { value: T }
@@ -34,7 +34,7 @@ export type WordChatContext = {
 }
 export type WordChatWord = { run<T>(callback: (context: WordChatContext) => Promise<T>): Promise<T> }
 export type WordChatApplyResult = { status: "applied" | "already-applied"; tracked: true; saved: false; authors: string[]; target?: WordChatTarget }
-export type WordChatApplyInput = { proposalId: string; target: WordChatTarget; replacement: string; author: (snapshot: { ooxml: string }) => Promise<WordChatAuthoredAmendment> }
+export type WordChatApplyInput = { proposalId: string; target: WordChatTarget; replacement: string; formatting?: WordChatParagraphFormat[]; author: (snapshot: { ooxml: string }) => Promise<WordChatAuthoredAmendment> }
 export class WordChatHostError extends Error { constructor(message: string) { super(message); this.name = "WordChatHostError" } }
 const LIMIT = 24_000
 const PARAGRAPH_LIMIT = 64
@@ -77,7 +77,7 @@ const children = (node: Node) => Array.from(node.childNodes).filter(child => chi
  * body-level section layout even for one selected word. Inspect only selected
  * main-document content. A section break inside a paragraph remains protected;
  * the final body sectPr is package context and is outside our text-only edits. */
-function hasProtectedContent(value: string, authored = false): boolean {
+function hasProtectedContent(value: string, authored = false, formatting = false): boolean {
   try {
     const fail = () => { throw new Error("Invalid native XML") }
     const doc = new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(value, "application/xml")
@@ -93,7 +93,9 @@ function hasProtectedContent(value: string, authored = false): boolean {
     }
     if (!wordNamespaces.has(content.namespaceURI ?? "") || !["document", "body", "p", "r"].includes(content.localName)) return true
     const inspect = (node: Element): boolean => {
-      if (wordNamespaces.has(node.namespaceURI ?? "") && protectedContent.has(node.localName) && !(authored && ["ins", "del"].includes(node.localName))) return true
+      const inlineRevision = ["ins", "del"].includes(node.localName) && !(wordNamespaces.has((node.parentNode as Element | null)?.namespaceURI ?? "") && (node.parentNode as Element).localName === "rPr")
+      if (wordNamespaces.has(node.namespaceURI ?? "") && protectedContent.has(node.localName) &&
+        !(authored && ["ins", "del"].includes(node.localName) || formatting && inlineRevision || authored && formatting && node.localName === "pPrChange")) return true
       const elements = children(node)
       return elements.some((child, index) => {
         if (wordNamespaces.has(node.namespaceURI ?? "") && node.localName === "body" &&
@@ -226,9 +228,9 @@ export class WordChatHost {
     this.ready()
     validate(input.target)
     if (typeof input.author !== "function") throw new WordChatHostError("Reconnect to doc.haus to author this amendment before applying it. Your document is unchanged.")
-    if (!input.proposalId || typeof input.replacement !== "string" || input.replacement.length > LIMIT || input.replacement === input.target.text)
+    if (!input.proposalId || typeof input.replacement !== "string" || input.replacement.length > LIMIT || input.replacement === input.target.text && input.formatting === undefined)
       throw new WordChatHostError("Prepare and review a change before applying it.")
-    const identity = JSON.stringify([input.target, input.replacement])
+    const identity = JSON.stringify([input.target, input.replacement, input.formatting])
     const pending = this.pending.get(input.proposalId)
     if (pending) {
       if (pending.identity !== identity) throw new WordChatHostError("This proposal has different wording. Prepare a fresh proposal.")
@@ -247,24 +249,37 @@ export class WordChatHost {
 
   /** Complete paragraphs form the import transport. The approved edit still
    * names only target.text/startOffset/endOffset, checked in both authored views. */
-  private async importSnapshot(context: WordChatContext, target: WordChatTarget) {
+  private async importSnapshot(context: WordChatContext, target: WordChatTarget, formatting = false) {
     const { range: selected, paragraphs } = await this.resolve(context, target)
-    const range = paragraphs[0]!.getRange("Content").expandTo(paragraphs.at(-1)!.getRange("Content"))
+    const all = context.document.body.paragraphs
+    let neighbours: Array<{ id: string; range: WordChatRange }> = []
+    if (formatting) {
+      all.load("items/uniqueLocalId")
+      await context.sync()
+      const at = all.items.findIndex(p => p.uniqueLocalId === target.paragraphs[0]!.id)
+      if (at < 0) throw new WordChatHostError(changedMessage)
+      neighbours = [all.items[at - 1], all.items[at + target.paragraphs.length]].filter((p): p is Paragraph => Boolean(p))
+        .map(p => ({ id: p.uniqueLocalId, range: p.getRange("Whole") }))
+    }
+    // Complete paragraph formatting includes its final mark. Text amendments
+    // still exclude that mark; their authority remains the selected wording.
+    const location = formatting ? "Whole" : "Content"
+    const range = paragraphs[0]!.getRange(location).expandTo(paragraphs.at(-1)!.getRange(location))
     // Every preservation baseline comes from this final read batch. Context
     // discovery yields to Word and must never leave an earlier XML snapshot as
     // the authority for a later complete-paragraph replacement.
     const xml = range.getOoxml(), comments = range.getComments(), revisions = range.getTrackedChanges()
-    comments.load("items"); revisions.load("items/author")
+    comments.load("items"); revisions.load("items/author,items/type")
     const current = paragraphs.map(paragraph => paragraph.getRange("Content").getReviewedText("Current"))
     context.document.load("changeTrackingMode")
-    const all = context.document.body.paragraphs
     all.load("items/uniqueLocalId")
+    const adjacent = neighbours.map(p => ({ id: p.id, xml: p.range.getOoxml() }))
     const bodyChanges = context.document.body.getRange().getTrackedChanges()
     bodyChanges.load("items/author,items/type,items/text")
     selected.load("text")
     for (const paragraph of paragraphs) paragraph.load("text")
     await context.sync()
-    if (comments.items.length || revisions.items.length || hasProtectedContent(xml.value))
+    if (comments.items.length || (!formatting && revisions.items.length) || formatting && revisions.items.some(revision => !["Added", "Deleted"].includes((revision as TrackedChange).type)) || hasProtectedContent(xml.value, false, formatting))
       throw new WordChatHostError("This paragraph contains existing revisions, comments or a linked Word object. Review that passage in Word first, then prepare a fresh suggestion for ordinary text.")
     let captured: string[]
     try { captured = capturedWordChatParagraphs(xml.value) }
@@ -274,26 +289,29 @@ export class WordChatHost {
     const ids = all.items.map(p => p.uniqueLocalId)
     const index = ids.indexOf(target.paragraphs[0]!.id)
     if (index < 0 || target.paragraphs.some((p, offset) => ids[index + offset] !== p.id)) throw new WordChatHostError(changedMessage)
-    return { range, ooxml: xml.value, ids, index, tracking: context.document.changeTrackingMode,
+    if (formatting && JSON.stringify([ids[index - 1], ids[index + target.paragraphs.length]].filter((id): id is string => id !== undefined)) !== JSON.stringify(adjacent.map(p => p.id)))
+      throw new WordChatHostError(changedMessage)
+    return { range, ooxml: xml.value, ids, index, adjacent: adjacent.map(p => ({ id: p.id, ooxml: p.xml.value })), tracking: context.document.changeTrackingMode,
       changes: bodyChanges.items.map(change => ({ author: change.author, type: change.type, text: change.text })) }
   }
 
   private async applyOnce(input: WordChatApplyInput, identity: string): Promise<WordChatApplyResult> {
     try {
-      const afterParts = input.replacement.split("\r"), plan = wordChatApplyPlan(input.target, input.replacement)
+      const afterParts = input.replacement.split("\r"), plan = wordChatApplyPlan(input.target, input.replacement, input.formatting)
       if (!plan.supported) throw new WordChatHostError(plan.reason)
       const expected = plan.paragraphs
-      const snapshot = await this.word.run(context => this.importSnapshot(context, input.target))
+      const formatting = input.formatting !== undefined
+      const snapshot = await this.word.run(context => this.importSnapshot(context, input.target, formatting))
       // Shared Docxodus authoring is read-only. No Office proxy or canonical
       // write is kept pending while that service authors the reviewed result.
       const authored = await input.author({ ooxml: snapshot.ooxml })
       let authoredChanges: ReturnType<typeof reviewedWordChatArtifact>
       try {
-        authoredChanges = reviewedWordChatArtifact(authored, input.proposalId, input.target, expected, snapshot.ooxml)
-        if (hasProtectedContent(authored.ooxml, true)) throw new Error("Protected authored content")
+        authoredChanges = reviewedWordChatArtifact(authored, input.proposalId, input.target, expected, snapshot.ooxml, input.formatting)
+        if (hasProtectedContent(authored.ooxml, true, formatting)) throw new Error("Protected authored content")
       } catch { throw new WordChatHostError("doc.haus could not confirm this authored amendment matches the reviewed passage. Prepare it again; your Word document is unchanged.") }
       return await this.word.run(async context => {
-        const fresh = await this.importSnapshot(context, input.target)
+        const fresh = await this.importSnapshot(context, input.target, formatting)
         try {
           if (!sameWordChatOoxml(snapshot.ooxml, fresh.ooxml, authored.ooxml)) throw new Error("Changed clause formatting")
         } catch { throw new WordChatHostError("This paragraph or its formatting changed while doc.haus prepared the amendment. Prepare and review it again; your Word changes are safe.") }
@@ -329,8 +347,9 @@ export class WordChatHost {
         })
         const importedParagraphs = all.items.slice(fresh.index, fresh.index + physicalCount)
         const importedRange = importedParagraphs.length === physicalCount
-          ? importedParagraphs[0]!.getRange("Content").expandTo(importedParagraphs.at(-1)!.getRange("Content")) : undefined
+          ? importedParagraphs[0]!.getRange(formatting ? "Whole" : "Content").expandTo(importedParagraphs.at(-1)!.getRange(formatting ? "Whole" : "Content")) : undefined
         const importedXml = importedRange?.getOoxml(), importedText = importedRange?.getReviewedText("Current")
+        const adjacent = fresh.adjacent.map(p => ({ before: p.ooxml, after: context.document.getParagraphByUniqueLocalId(p.id).getRange("Whole").getOoxml() }))
         await context.sync()
         const signature = (change: TrackedChange) => JSON.stringify([change.author, change.type, change.text])
         const prior = new Map<string, number>()
@@ -341,6 +360,7 @@ export class WordChatHost {
           return true
         })
         const matches = (observed: TrackedChange[], wanted: TrackedChange[]) => {
+          if (formatting) return observed.length === wanted.length && observed.every(change => change.author === "doc.haus" && change.type === "Formatted") && wanted.every(change => change.type === "Formatted")
           if (observed.some(change => change.author !== "doc.haus" || !["Added", "Deleted"].includes(change.type))) return false
           // Word may group a paragraph mark with its text or expose it as an
           // empty text revision. Exact structural marks/authors are separately
@@ -349,9 +369,10 @@ export class WordChatHost {
           const native = (value: string) => plan.structure ? value.replace(/\r/g, "") : value
           return ["Added", "Deleted"].every(type => native(words(observed, type)) === native(words(wanted, type)))
         }
-        confirmed &&= ![...prior.values()].some(Boolean) && matches(added, authored.revisions) && importedText?.value === expected.join("\r") &&
-          (Boolean(plan.structure) || actual.every((item, index) => item.text.value === expected[index] && matches(item.changes.items, authoredChanges[index]!)))
-        try { confirmed &&= Boolean(importedXml && sameImportedWordChat(authored.ooxml, importedXml.value)) }
+        const wording = formatting ? importedText?.value.replace(/\r$/, "") : importedText?.value
+        confirmed &&= ![...prior.values()].some(Boolean) && matches(added, authored.revisions) && wording === expected.join("\r") &&
+          (Boolean(plan.structure) || actual.every((item, index) => item.text.value === expected[index] && (formatting || matches(item.changes.items, authoredChanges[index]!))))
+        try { confirmed &&= Boolean(importedXml && sameImportedWordChat(authored.ooxml, importedXml.value)) && adjacent.every(p => sameWordChatParagraphContent(p.before, p.after.value)) }
         catch { confirmed = false }
         if (!confirmed) throw new WordChatHostError("Word has imported the amendment, but could not confirm its wording and tracked markup. Inspect it and use Undo if needed. Do not apply this proposal again.")
         this.applied.set(input.proposalId, { identity, authors: ["doc.haus"], uncertain: false })
@@ -378,5 +399,5 @@ export const captureWordChatSelection = () => host().selection()
 export const applyReviewedProposal = (proposal: import("../../../dochaus/lib/word-chat-amendment-contract").WordChatProposal,
   author: WordChatApplyInput["author"]) => {
   if (proposal.before !== proposal.target.text) throw new WordChatHostError("Review a fresh amendment before applying it.")
-  return host().apply({proposalId: proposal.id,target: proposal.target,replacement: proposal.after,author})
+  return host().apply({proposalId: proposal.id,target: proposal.target,replacement: proposal.after,formatting: proposal.formatting,author})
 }

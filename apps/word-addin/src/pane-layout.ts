@@ -8,13 +8,30 @@ export function setupPaneLayout(document: Document): () => void {
   const details = document.getElementById("save-details")
   const actions = document.getElementById("actions")
   const matter = document.getElementById("matter")
+  const back = document.getElementById("back")
+  const chat = document.getElementById("pane-chat")
+  const documentName = document.getElementById("save-document")
+  const separator = document.getElementById("matter-path-separator")
   const fullMatter = document.getElementById("save-details-matter")
   if (!bar?.parentElement || !tabs || !toggle || !close || !details || !actions || !matter || !fullMatter) return () => {}
   const view = document.defaultView
+  function updateIdentity() {
+    const name = chat?.dataset.documentName ?? ""
+    if (documentName) {
+      if (documentName.textContent !== name) documentName.textContent = name
+      if (documentName.title !== name) documentName.title = name
+      if (documentName.hidden !== !name) documentName.hidden = !name
+    }
+    if (separator && separator.hidden !== !name) separator.hidden = !name
+    const href = back?.getAttribute("href")
+    if (href && matter!.getAttribute("href") !== href) matter!.setAttribute("href", href)
+    else if (!href && matter!.hasAttribute("href")) matter!.removeAttribute("href")
+    const fullName = name ? `${matter!.textContent} / ${name}` : matter!.title || matter!.textContent || "doc.haus"
+    if (fullMatter!.textContent !== fullName) fullMatter!.textContent = fullName
+  }
   function positionDetails() {
     if (details!.hidden) return
-    const name = matter!.title || matter!.textContent || "doc.haus"
-    if (fullMatter!.textContent !== name) fullMatter!.textContent = name
+    updateIdentity()
     const space = Math.max(0, bar!.getBoundingClientRect().top - (tabs!.hidden ? 0 : tabs!.getBoundingClientRect().bottom) - 12)
     const value = `${space}px`
     if (details!.style.getPropertyValue("--save-details-space") !== value) details!.style.setProperty("--save-details-space", value)
@@ -45,11 +62,13 @@ export function setupPaneLayout(document: Document): () => void {
   view?.addEventListener("resize", positionDetails)
   const observer = view && new view.MutationObserver(() => { openingInstructions(); positionDetails() })
   observer?.observe(actions, { attributes: true, attributeFilter: ["hidden"] })
-  const matterObserver = view && new view.MutationObserver(positionDetails)
+  const matterObserver = view && new view.MutationObserver(() => { updateIdentity(); positionDetails() })
   matterObserver?.observe(matter, { attributes: true, attributeFilter: ["title"], childList: true, characterData: true, subtree: true })
+  if (chat) matterObserver?.observe(chat, { attributes: true, attributeFilter: ["data-document-name"] })
+  if (back) matterObserver?.observe(back, { attributes: true, attributeFilter: ["href"] })
   const resizeObserver = view?.ResizeObserver && new view.ResizeObserver(positionDetails)
   resizeObserver?.observe(bar); resizeObserver?.observe(tabs)
-  openingInstructions()
+  updateIdentity(); openingInstructions()
   return () => {
     observer?.disconnect(); matterObserver?.disconnect(); resizeObserver?.disconnect()
     toggle.removeEventListener("click", click); close.removeEventListener("click", dismiss)

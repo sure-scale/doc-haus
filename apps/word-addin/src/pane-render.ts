@@ -25,6 +25,7 @@ export function createPaneRenderer(document: Document) {
   const badge = element("status"), message = element("message")
   const save = element<HTMLButtonElement>("save")
   const version = element("save-version")
+  const details = element("save-details-toggle")
   const takeover = element<HTMLButtonElement>("takeover"), release = element<HTMLButtonElement>("release")
   return (state: PaneState): void => {
     const view = savePresentation(state)
@@ -39,6 +40,8 @@ export function createPaneRenderer(document: Document) {
     update(version, "textContent", number === undefined ? "" : `v${number}`)
     update(version, "title", number === undefined ? "" : `This Word copy: version ${number}`)
     update(version, "hidden", number === undefined)
+    const detailLabel = `${view.badge}${number === undefined ? "" : `, version ${number}`}. Show save status and recovery details`
+    if (details.getAttribute("aria-label") !== detailLabel) details.setAttribute("aria-label", detailLabel)
     const stale = connection?.version.state === "stale"
     update(save, "hidden", stale)
     update(element("load-latest"), "hidden", !stale)

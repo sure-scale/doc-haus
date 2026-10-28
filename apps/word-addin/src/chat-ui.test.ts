@@ -44,6 +44,9 @@ test("settings and attachments retain typed text and exact optional selected con
   try {
     await f.chat.ready
     expect(f.get("settings").hidden).toBe(true); expect(f.get("materials").hidden).toBe(true)
+    expect(f.get("scroll").contains(f.get("history"))).toBe(true); expect(f.get("scroll").contains(f.get("suggestions"))).toBe(true)
+    expect(f.get("history").getAttribute("role")).toBe("log"); expect(f.get("history").contains(f.get("suggestions"))).toBe(false)
+    expect(f.get("scroll").contains(f.get("form"))).toBe(false)
     const message = f.get<HTMLTextAreaElement>("message"); message.value = "Explain this wording"
     f.click("settings-toggle"); expect(f.get("settings").hidden).toBe(false)
     f.click("attach"); expect(f.get("settings").hidden).toBe(true); expect(f.get("materials").hidden).toBe(false)
@@ -558,5 +561,108 @@ test("a completed amendment refused by review shows the actionable reason beside
     expect(f.get("activity").textContent).toBe("")
     expect(f.root.textContent!.split(refused.error!)).toHaveLength(2)
     expect(applied).toBe(false); expect(JSON.stringify(refused)).toBe(original)
+  } finally { f.restore() }
+})
+
+test("document info exposes the exact host filename on hover, focus and tap without changing scope or draft", async () => {
+  const name = "Services · agreement <review>.docx"
+  const f = fixture({ host: { documentName: name } })
+  try {
+    await f.chat.ready
+    const info = f.get<HTMLButtonElement>("document-info"), tooltip = f.get("document-info-content")
+    const message = f.get<HTMLTextAreaElement>("message"); message.value = "Keep this question"
+    expect(f.root.querySelector('[data-chat="document"]')).toBeNull()
+    expect(f.root.dataset.documentName).toBe(name); expect(tooltip.textContent).toBe(name); expect(tooltip.querySelector("review")).toBeNull()
+    expect(tooltip.hidden).toBe(true)
+    f.get("document-scope").dispatchEvent(new f.page.MouseEvent("mouseenter") as unknown as Event); expect(tooltip.hidden).toBe(false)
+    f.get("document-scope").dispatchEvent(new f.page.MouseEvent("mouseleave") as unknown as Event); expect(tooltip.hidden).toBe(true)
+    f.click("scope-matter"); info.focus(); expect(tooltip.hidden).toBe(false)
+    info.dispatchEvent(new f.page.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event)
+    expect(tooltip.hidden).toBe(true); expect(f.page.document.activeElement === info as never).toBe(true)
+    f.click("document-info"); expect(tooltip.hidden).toBe(false); expect(info.getAttribute("aria-expanded")).toBe("true")
+    f.click("document-info"); expect(tooltip.hidden).toBe(true)
+    expect(f.get("scope-matter").getAttribute("aria-pressed")).toBe("true")
+    expect(message.value).toBe("Keep this question"); expect(f.calls.some(call => call.action === "send" || call.action === "suggest")).toBe(false)
+  } finally { f.restore() }
+})
+
+test("response mode picker supports keyboard selection, freezes lost requests and resets new chats to Auto", async () => {
+  let sends = 0
+  const f = fixture({ request: async (action, input) => {
+    if (action !== "send") return
+    if (++sends === 1) throw new Error("Connection lost")
+    return { turn: turn({ text: (input as WordChatSend).text }) }
+  } })
+  try {
+    await f.chat.ready
+    const toggle = f.get<HTMLButtonElement>("mode-toggle")
+    expect(f.get("mode-label").textContent).toBe("Auto")
+    f.click("mode-toggle"); expect(f.get("mode-picker").hidden).toBe(false)
+    f.get("mode-auto").dispatchEvent(new f.page.KeyboardEvent("keydown", { key: "End", bubbles: true }) as unknown as Event)
+    expect(f.page.document.activeElement === f.get("mode-redline") as never).toBe(true)
+    f.click("mode-redline"); expect(f.get("mode-label").textContent).toBe("Redline"); expect(f.get("mode-picker").hidden).toBe(true)
+    expect(f.page.document.activeElement === toggle as never).toBe(true)
+    await f.send("Review this wording")
+    expect(toggle.disabled).toBe(true); f.click("mode-qa")
+    f.click("reconnect"); await Bun.sleep(0)
+    const sent = f.calls.filter(call => call.action === "send").map(call => call.input as WordChatSend)
+    expect(sent).toHaveLength(2); expect(sent[0]!.mode).toBe("redline"); expect(sent[1]).toEqual(sent[0])
+    expect(f.get("mode-label").textContent).toBe("Redline")
+    f.click("mode-toggle")
+    f.get("mode-picker").dispatchEvent(new f.page.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event)
+    expect(f.get("mode-picker").hidden).toBe(true); expect(f.page.document.activeElement === toggle as never).toBe(true)
+    f.click("new"); await Bun.sleep(0); expect(f.get("mode-label").textContent).toBe("Auto")
+    await f.send("Explain this wording")
+    expect((f.calls.filter(call => call.action === "send").at(-1)!.input as WordChatSend).mode).toBe("auto")
+  } finally { f.restore() }
+})
+
+test("formatting review shows one inspectable wording target and exact paragraph changes; Refine and Apply retain its original plan", async () => {
+  const formatted: WordChatProposal = { ...proposal, before: passage.text, after: passage.text, formatting: [{ paragraph: 0, style: "Heading1", spacingBefore: 0, spacingAfter: 6, lineSpacing: 1.15 }] }
+  const original = JSON.stringify(formatted)
+  const applied: WordChatProposal[] = []
+  const f = fixture({ turns: [turn({ kind: "formatting", proposal: formatted })], host: { apply: async value => { applied.push(value) } },
+    request: async action => action === "send" ? { turn: turn({ kind: "formatting", proposal: formatted }) } : undefined })
+  try {
+    await f.chat.ready
+    const card = () => f.root.querySelector(".chat-proposal")!
+    expect(card().querySelector("h3")!.textContent).toBe("Review formatting")
+    expect(card().textContent).toContain("Wording unchanged"); expect(card().querySelector(".chat-before")).toBeNull(); expect(card().querySelector(".chat-after")).toBeNull()
+    expect(card().querySelectorAll("pre")).toHaveLength(1)
+    expect(card().querySelector(".chat-format-target pre")!.textContent).toBe(passage.text)
+    expect(card().querySelector(".chat-format-plan")!.textContent).toContain("Heading 1 · 0 pt before · 6 pt after · 1.15× line spacing")
+    const action = (label: string) => [...card().querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(button => button.textContent === label)!
+    action("Refine").click(); f.click("mode-toggle"); f.click("mode-qa"); await f.send("Use more space after the heading")
+    const request = f.calls.find(call => call.action === "send")!.input as WordChatSend
+    expect(request.kind).toBe("formatting"); expect(request.mode).toBe("qa"); expect(request.proposal).toEqual(formatted)
+    action("Apply").click(); await Bun.sleep(0)
+    expect(applied).toEqual([formatted]); expect(JSON.stringify(formatted)).toBe(original)
+  } finally { f.restore() }
+})
+
+test("formatting review groups adjacent identical operations while preserving unique headings and every original Apply operation", async () => {
+  const paragraphs = Array.from({ length: 9 }, (_, index) => ({ id: `synthetic-paragraph-${index}`, text: index === 0 ? "Services agreement" : `Synthetic paragraph ${index + 1} wording.` }))
+  const text = paragraphs.map(paragraph => paragraph.text).join("\r")
+  const target: WordChatTarget = { ...passage, text, paragraphs, endOffset: paragraphs.at(-1)!.text.length }
+  const formatting: NonNullable<WordChatProposal["formatting"]> = [
+    { paragraph: 0, style: "Title", spacingAfter: 12 },
+    ...[2, 1, 3, 4, 5, 6, 7].map(paragraph => ({ paragraph, spacingAfter: 6, lineSpacing: 1.15 })),
+    { paragraph: 8, spacingAfter: 12, lineSpacing: 1.15 },
+  ]
+  const formatted: WordChatProposal = { ...proposal, before: text, after: text, target, formatting }
+  const original = JSON.stringify(formatted), applied: WordChatProposal[] = []
+  const f = fixture({ turns: [turn({ kind: "formatting", proposal: formatted })], host: { apply: async value => { applied.push(value) } } })
+  try {
+    await f.chat.ready
+    const card = f.root.querySelector(".chat-proposal")!, entries = card.querySelectorAll(".chat-format-plan li")
+    expect(entries).toHaveLength(3)
+    expect(entries[0]!.querySelector("strong")!.textContent).toBe("Services agreement"); expect(entries[0]!.textContent).toContain("Title · 12 pt after")
+    expect(entries[1]!.querySelector("strong")!.textContent).toBe("Paragraphs 2–8"); expect(entries[1]!.textContent).toContain("6 pt after · 1.15× line spacing")
+    expect(entries[1]!.textContent).not.toContain(paragraphs[1]!.text)
+    expect(entries[2]!.textContent).toContain(paragraphs[8]!.text); expect(entries[2]!.textContent).toContain("12 pt after")
+    expect(card.querySelector(".chat-format-target pre")!.textContent).toBe(text.replace(/\r/g, "\n"))
+    const apply = [...card.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(button => button.textContent === "Apply")!
+    apply.click(); await Bun.sleep(0)
+    expect(applied).toEqual([formatted]); expect(applied[0]!.formatting).toHaveLength(9); expect(JSON.stringify(formatted)).toBe(original)
   } finally { f.restore() }
 })

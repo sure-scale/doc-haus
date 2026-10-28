@@ -18,8 +18,8 @@ export type ChatHost = {
 
 /** Mount once. Hiding a feature tab never remounts or submits the conversation. */
 export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHost) {
-  root.innerHTML = `<p data-chat="document" class="chat-document"></p>
-  <section data-chat="settings" id="chat-settings" class="chat-settings" aria-label="Chat settings" hidden>
+  root.dataset.documentName = host.documentName
+  root.innerHTML = `<section data-chat="settings" id="chat-settings" class="chat-settings" aria-label="Chat settings" hidden>
     <div class="chat-panel-heading"><h2>Chat settings</h2><button data-chat="settings-close" class="chat-subtle" type="button">Done</button></div>
     <label>New chats use<select data-chat="default-scope"><option value="document">This document</option><option value="matter">Whole matter</option></select></label>
     <label class="chat-toggle"><input data-chat="proactive" type="checkbox"> Suggestions by default</label>
@@ -46,11 +46,11 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       </section>
     </div>
   </section>
-  <div data-chat="history" class="chat-history" role="log" aria-label="Conversation" aria-live="off"></div>
+  <div data-chat="scroll" class="chat-scroll"><div data-chat="history" class="chat-history" role="log" aria-label="Conversation" aria-live="off"></div>
   <section data-chat="suggestions" class="chat-suggestions" aria-label="Suggestions" hidden>
     <div class="chat-suggestions-heading"><h2>Suggestions</h2><button data-chat="pause" class="chat-subtle" type="button">Pause</button></div>
     <div data-chat="suggestion-content"></div>
-  </section>
+  </section></div>
   <div class="chat-recovery"><p data-chat="activity" class="chat-activity" role="status" aria-live="polite"></p>
     <button data-chat="reconnect" class="chat-subtle" type="button" hidden>Reconnect</button>
     <button data-chat="stop" class="chat-subtle" type="button" hidden>Stop</button></div>
@@ -61,17 +61,24 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   </div>
   <form data-chat="form" class="chat-composer">
     <div data-chat="chips" class="chat-chips"></div>
-    <div class="chat-scope" role="group" aria-label="Chat context"><button data-chat="scope-document" type="button" aria-pressed="true" title="Use this Word document and attached material">This document</button><button data-chat="scope-matter" type="button" aria-pressed="false" title="Also use the matter’s sources and playbook">Whole matter</button></div>
+    <div class="chat-scope" role="group" aria-label="Chat context"><span data-chat="document-scope" class="chat-document-scope"><button data-chat="scope-document" type="button" aria-pressed="true" title="Use this Word document and attached material">This document</button><button data-chat="document-info" class="chat-document-info" type="button" aria-label="Document information" aria-describedby="chat-document-info" aria-expanded="false" aria-controls="chat-document-info"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.25"/><path d="M10 9v5m0-8v.2"/></svg></button><span data-chat="document-info-content" id="chat-document-info" class="chat-document-tooltip" role="tooltip" hidden></span></span><button data-chat="scope-matter" type="button" aria-pressed="false" title="Also use the matter’s sources and playbook">Whole matter</button></div>
     <textarea data-chat="message" aria-label="Message doc.haus" placeholder="Ask doc.haus…" rows="2"></textarea>
     <div class="chat-composer-actions">
       <button data-chat="attach" class="chat-subtle" type="button" aria-expanded="false">＋ Attach</button>
+      <div data-chat="mode" class="chat-mode"><button data-chat="mode-toggle" class="chat-subtle" type="button" aria-label="Response mode: Auto" aria-haspopup="menu" aria-expanded="false" aria-controls="chat-mode-picker"><span data-chat="mode-label">Auto</span> <span aria-hidden="true">⌄</span></button>
+        <div data-chat="mode-picker" id="chat-mode-picker" class="chat-mode-picker" role="menu" aria-label="Response mode" hidden>
+          <button data-chat="mode-auto" type="button" role="menuitemradio" aria-checked="true" tabindex="0"><span>Auto</span><small>Choose for this request</small></button>
+          <button data-chat="mode-qa" type="button" role="menuitemradio" aria-checked="false" tabindex="-1"><span>Q&amp;A</span><small>Ask about the document</small></button>
+          <button data-chat="mode-redline" type="button" role="menuitemradio" aria-checked="false" tabindex="-1"><span>Redline</span><small>Prepare wording or formatting changes</small></button>
+        </div>
+      </div>
       <button data-chat="send" class="chat-send" type="submit">Send <span aria-hidden="true">↑</span></button>
     </div>
   </form>`
   const get = <T extends HTMLElement>(name: string) => root.querySelector(`[data-chat="${name}"]`) as T
   const button = (name: string) => get<HTMLButtonElement>(name)
   const message = get<HTMLTextAreaElement>("message")
-  const history = get("history"), activity = get("activity")
+  const history = get("history"), scroller = get("scroll"), activity = get("activity")
   const proactive = get<HTMLInputElement>("proactive")
   const target = get<HTMLSelectElement>("target")
   const now = host.now ?? Date.now
@@ -84,6 +91,8 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   let turns: WordChatTurn[] = [], materials: WordChatMaterial[] = [], attachments: WordChatMaterial[] = []
   let selection: WordChatTarget | undefined, scope: WordChatScope = preferences.scope
   let defaultScope = preferences.scope
+  let mode: "auto" | "qa" | "redline" = "auto"
+  const modeLabels = { auto: "Auto", qa: "Q&A", redline: "Redline" }
   let disposed = false, connecting = false, sending = false, uploading = false, applying = false, stopping = false, pickerOpen = false, suggestionsPaused = false
   let pending: WordChatSend | undefined, foreground: WordChatTurn | undefined, suggestion: WordChatTurn | undefined
   let refinement: WordChatProposal | undefined, suggestionEpoch = 0, suggestionCalls = 0
@@ -97,7 +106,31 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   const dismissed = new Set<string>(), applied = new Set<string>(), declined = new Set<string>()
   const proposalErrors = new Map<string, string>()
   const nodes = new Map<string, { stamp: string; node: HTMLElement }>()
-  get("document").textContent = host.documentName
+  get("document-info-content").textContent = host.documentName
+  let documentInfoPinned = false
+  function showDocumentInfo(open: boolean) {
+    get("document-info-content").hidden = !open
+    button("document-info").setAttribute("aria-expanded", String(open))
+  }
+  const dismissDocumentInfo = (event: MouseEvent) => {
+    if (!get("document-scope").contains(event.target as Node)) { documentInfoPinned = false; showDocumentInfo(false) }
+    if (!get("mode").contains(event.target as Node)) showModePicker(false)
+  }
+  get("document-scope").onmouseenter = () => showDocumentInfo(true)
+  get("document-scope").onmouseleave = () => { if (!documentInfoPinned && root.ownerDocument.activeElement !== button("document-info")) showDocumentInfo(false) }
+  button("document-info").onfocus = () => showDocumentInfo(true)
+  button("document-info").onblur = () => { documentInfoPinned = false; showDocumentInfo(false) }
+  button("document-info").onclick = () => { documentInfoPinned = !documentInfoPinned; showDocumentInfo(documentInfoPinned) }
+  button("document-info").onkeydown = event => {
+    if (event.key === "Escape") { documentInfoPinned = false; showDocumentInfo(false); event.preventDefault(); event.stopPropagation() }
+  }
+  root.ownerDocument.addEventListener("click", dismissDocumentInfo)
+  function showModePicker(open: boolean, restoreFocus = false) {
+    get("mode-picker").hidden = !open
+    button("mode-toggle").setAttribute("aria-expanded", String(open))
+    if (open) button(`mode-${mode}`).focus()
+    else if (restoreFocus) button("mode-toggle").focus()
+  }
 
   function status(text = "", error = false) {
     if (disposed) return
@@ -119,6 +152,14 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     button("stop").disabled = stopping
     for (const action of root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")) action.disabled = applying
     button("attach").disabled = !conversation || connecting || uploading || pickerOpen || applying
+    button("mode-toggle").disabled = conversationLocked()
+    for (const value of ["auto", "qa", "redline"] as const) {
+      const choice = button(`mode-${value}`)
+      choice.disabled = conversationLocked(); choice.setAttribute("aria-checked", String(mode === value)); choice.tabIndex = mode === value ? 0 : -1
+    }
+    get("mode-label").textContent = modeLabels[mode]
+    button("mode-toggle").setAttribute("aria-label", `Response mode: ${modeLabels[mode]}`)
+    if (conversationLocked()) showModePicker(false)
     for (const value of ["document", "matter"] as const) button(`scope-${value}`).setAttribute("aria-pressed", String(scope === value))
     target.disabled = !proactive.checked
     get("suggestion-settings").hidden = !proactive.checked
@@ -155,7 +196,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     button(toggle(name)).setAttribute("aria-expanded", String(open))
     // Attachments use the conversation's space, with one scrolling body.
     // The composer and its draft remain mounted underneath.
-    history.hidden = !get("materials").hidden || !get("conversations").hidden
+    scroller.hidden = history.hidden = !get("materials").hidden || !get("conversations").hidden
     renderSuggestions()
     if (open) {
       if (name === "conversations") (get("conversation-list").querySelector<HTMLElement>("button") ?? button("conversations-close")).focus()
@@ -267,8 +308,29 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     }
   }
   function proposalCard(proposal: WordChatProposal, turn: WordChatTurn): HTMLElement {
-    const card = document.createElement("section"); card.className = "chat-proposal"; card.setAttribute("aria-label", "Amendment to review")
-    card.append(line("h3", "Review amendment"), line("h4", "Before"), line("pre", displayWordText(proposal.before), "chat-before"), line("h4", "After"), line("pre", displayWordText(proposal.after), "chat-after"))
+    const formatting = proposal.formatting
+    const card = document.createElement("section"); card.className = "chat-proposal"; card.setAttribute("aria-label", formatting ? "Formatting to review" : "Amendment to review")
+    if (formatting) {
+      card.append(line("h3", "Review formatting"), line("p", "Wording unchanged", "chat-message-meta"))
+      const list = document.createElement("ul"); list.className = "chat-format-plan"
+      const groups: { first: number; last: number; change: typeof formatting[number]; key: string }[] = []
+      for (const change of [...formatting].sort((a, b) => a.paragraph - b.paragraph)) {
+        const key = JSON.stringify([change.style, change.spacingBefore, change.spacingAfter, change.lineSpacing])
+        const previous = groups.at(-1)
+        if (previous && previous.last + 1 === change.paragraph && previous.key === key) previous.last = change.paragraph
+        else groups.push({ first: change.paragraph, last: change.paragraph, change, key })
+      }
+      for (const { first, last, change } of groups) {
+        const item = document.createElement("li")
+        const text = displayWordText(proposal.target.paragraphs[change.paragraph]?.text ?? "").replace(/\s+/g, " ").trim()
+        const description = [change.style?.replace(/Heading(\d)/, "Heading $1"), change.spacingBefore === undefined ? "" : `${change.spacingBefore} pt before`, change.spacingAfter === undefined ? "" : `${change.spacingAfter} pt after`, change.lineSpacing === undefined ? "" : `${change.lineSpacing}× line spacing`].filter(Boolean).join(" · ")
+        const label = first !== last ? `Paragraphs ${first + 1}–${last + 1}` : text.length > 90 ? `${text.slice(0, 90)}…` : text || `Paragraph ${first + 1}`
+        item.append(line("strong", label), line("p", description)); list.append(item)
+      }
+      const target = document.createElement("details"); target.className = "chat-format-target"
+      target.append(line("summary", "Selected text"), line("pre", displayWordText(proposal.before)))
+      card.append(list, target)
+    } else card.append(line("h3", "Review amendment"), line("h4", "Before"), line("pre", displayWordText(proposal.before), "chat-before"), line("h4", "After"), line("pre", displayWordText(proposal.after), "chat-after"))
     if (proposal.explanation) card.append(line("p", proposal.explanation))
     if (proposal.openItems.length) {
       card.append(line("h4", "Open items")); const items = document.createElement("ul"); items.className = "chat-open-items"
@@ -278,7 +340,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (declined.has(proposal.id)) { card.append(line("p", "Declined. Your document is unchanged.", "chat-message-meta")); return card }
     const error = proposalErrors.get(proposal.id)
     if (error) { const note = line("p", error, "chat-proposal-error"); note.setAttribute("role", "alert"); card.append(note) }
-    const plan = wordChatApplyPlan(proposal.target, proposal.after)
+    const plan = wordChatApplyPlan(proposal.target, proposal.after, proposal.formatting)
     if (!plan.supported) card.append(line("p", plan.reason, "chat-proposal-limit"))
     const actions = document.createElement("div"); actions.className = "chat-proposal-actions"
     const refine = document.createElement("button"); refine.type = "button"; refine.className = "chat-subtle"; refine.textContent = "Refine"
@@ -315,7 +377,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   }
   function renderTurns(forceScroll = false) {
     if (disposed) return
-    const nearBottom = history.scrollHeight - history.scrollTop - history.clientHeight < 90
+    const nearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 90
     const visible = turns.filter(turn => turn.kind !== "suggestions")
     const live = new Set(visible.map(turn => turn.id))
     for (const [id, cached] of nodes) if (!live.has(id)) { cached.node.remove(); nodes.delete(id) }
@@ -371,7 +433,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       cached = { stamp, node: wrapper }; nodes.set(turn.id, cached)
     }
     renderSuggestions()
-    if (nearBottom || forceScroll) history.scrollTop = history.scrollHeight
+    if (nearBottom || forceScroll) scroller.scrollTop = scroller.scrollHeight
   }
   function updateTurn(turn: WordChatTurn) {
     const index = turns.findIndex(item => item.id === turn.id)
@@ -443,7 +505,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (disposed || connecting || sending || applying || uploading || pickerOpen || selectionPending || foreground?.status === "running" || !conversation || pending && !retry) return
     const text = message.value.trim()
     if (!retry && !text) return
-    const requestScope = scope, requestSelection = refinement?.target ?? selection, requestProposal = refinement
+    const requestScope = scope, requestSelection = refinement?.target ?? selection, requestProposal = refinement, requestMode = mode
     const requestAttachments = attachments.map(({ kind, id, hash }) => ({ kind, id, hash }))
     sending = true; controls(); status("Reading current Word text…"); invalidateSuggestions()
     try {
@@ -452,7 +514,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
         if (disposed) return
         if (requestSelection && !wordChatTargetCurrent(context, requestSelection)) throw new Error("Selected text changed. Select it again or remove it before sending.")
         if (requestSelection) context.selection = requestSelection
-        pending = { conversationId: conversation.id, requestId: crypto.randomUUID(), text, scope: requestScope, attachments: requestAttachments, context, ...(requestProposal ? { kind: "amendment", proposal: requestProposal } : {}) }
+        pending = { conversationId: conversation.id, requestId: crypto.randomUUID(), text, scope: requestScope, mode: requestMode, attachments: requestAttachments, context, ...(requestProposal ? { kind: requestProposal.formatting ? "formatting" : "amendment", proposal: requestProposal } : {}) }
       }
       status("Sending…")
       const submitted = pending
@@ -539,7 +601,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     ask.onclick = () => fillPrompt(`Let’s discuss: ${idea.title}\n${idea.explanation}`)
     card.append(ask); history.querySelector(".chat-empty")?.remove(); history.append(card)
     // Opening an idea never applies wording or makes another model call.
-    history.scrollTop = history.scrollHeight
+    scroller.scrollTop = scroller.scrollHeight
   }
   async function monitor() {
     if (disposed) return
@@ -595,6 +657,21 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   button("conversation").onclick = () => { if (!conversationLocked()) { options(); setPanel("conversations", get("conversations").hidden) } }
   button("conversations-close").onclick = () => { setPanel("conversations", false); button("conversation").focus() }
   button("attach").onclick = () => { void openAttachments() }
+  button("mode-toggle").onclick = () => { if (!conversationLocked()) showModePicker(get("mode-picker").hidden) }
+  button("mode-toggle").onkeydown = event => {
+    if (["ArrowDown", "ArrowUp"].includes(event.key) && !conversationLocked()) { event.preventDefault(); showModePicker(true) }
+  }
+  for (const value of ["auto", "qa", "redline"] as const) {
+    button(`mode-${value}`).onclick = () => { if (!conversationLocked()) { mode = value; controls(); showModePicker(false, true) } }
+    button(`mode-${value}`).onkeydown = event => {
+      const values = ["auto", "qa", "redline"] as const, at = values.indexOf(value)
+      if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+        event.preventDefault()
+        const next = event.key === "Home" ? 0 : event.key === "End" ? 2 : (at + (event.key === "ArrowDown" ? 1 : 2)) % 3
+        button(`mode-${values[next]}`).focus()
+      }
+    }
+  }
   button("materials-close").onclick = () => { setPanel("materials", false); message.focus() }
   for (const name of ["existing", "upload"] as const) {
     const tab = button(`material-${name}-tab`)
@@ -607,6 +684,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   }
   function changeConversation(id?: string) {
     if (disposed || conversationLocked() || !conversation) return
+    if (!id) mode = "auto"
     foregroundEpoch++; clearSelection(); invalidateSuggestions(); attachments = []; refinement = undefined
     suggestionsPaused = false; suggestionCalls = 0; lastSuggestion = -Infinity
     if (!id) scope = defaultScope
@@ -645,7 +723,8 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   }
   root.addEventListener("keydown", event => {
     if (event.key !== "Escape") return
-    if (!get("settings").hidden) { setPanel("settings", false); button("settings-toggle").focus() }
+    if (!get("mode-picker").hidden) { showModePicker(false, true); event.preventDefault(); event.stopPropagation() }
+    else if (!get("settings").hidden) { setPanel("settings", false); button("settings-toggle").focus() }
     else if (!get("materials").hidden) { setPanel("materials", false); button("attach").focus() }
     else if (!get("conversations").hidden) { setPanel("conversations", false); button("conversation").focus() }
   })
@@ -663,6 +742,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     message.placeholder = "Ask doc.haus…"
     renderChips(); invalidateSuggestions()
   }, dispose() {
+    root.ownerDocument.removeEventListener("click", dismissDocumentInfo)
     disposed = true; suggestionEpoch++; selectionCaptureEpoch++; pickerEpoch++; cancelSelection?.(); stopWatchingSelection?.(); cancelMonitor?.(); cancelPoll?.(); root.replaceChildren()
   } }
 }

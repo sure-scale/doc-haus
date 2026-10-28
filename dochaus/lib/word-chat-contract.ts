@@ -2,7 +2,8 @@
 export const WORD_CHAT_ROUTES = ["conversations", "conversation", "send", "poll", "cancel", "materials", "upload", "suggest", "prepare"] as const
 export const wordChatPath = (pathname: string) => WORD_CHAT_ROUTES.some(route => pathname === `/word/chat/${route}`)
 export type WordChatScope = "document" | "matter"
-export type WordChatKind = "chat" | "amendment" | "suggestions"
+export type WordChatKind = "chat" | "amendment" | "formatting" | "suggestions"
+export type WordChatMode = "auto" | "qa" | "redline"
 export type WordChatAttachment = { kind: "source" | "playbook" | "upload"; id: string; hash: string }
 export type WordChatMaterial = WordChatAttachment & { name: string; description?: string; provenance: "saved-version" | "instructions" | "request-upload" }
 import type { WordChatSnapshot, WordChatProposal } from "./word-chat-amendment-contract"
@@ -37,6 +38,8 @@ export type WordChatSend = {
   attachments: WordChatAttachment[]
   context: WordChatContext
   kind?: WordChatKind
+  /** A choice for this request, not permission to mutate the document. */
+  mode?: WordChatMode
   /** Exact earlier reviewed target; refining never follows a new cursor position. */
   proposal?: WordChatProposal
   suggestionTarget?: "document" | "selection"

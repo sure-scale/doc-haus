@@ -26,12 +26,14 @@
       <div id="pane-desk" hidden></div>
       <section id="save-panel" class="save-panel" aria-label="Save status">
         <div class="save-summary">
-          <p id="matter" class="matter">doc.haus</p>
-          <div class="save-state"><span id="status" class="status" data-state="neutral" role="status" aria-live="polite">Connecting…</span><span id="save-version" class="save-version" hidden></span><button id="save-details-toggle" class="save-details-toggle" type="button" aria-expanded="false" aria-controls="save-details">Details</button></div>
-        </div>
-        <div id="actions" class="save-controls">
-          <button id="save" class="primary" type="button" disabled>Save</button>
-          <button id="load-latest" class="primary" type="button" hidden>Load latest</button>
+          <p class="matter-path"><a id="matter" class="matter" target="_blank" rel="noopener noreferrer">doc.haus</a><span id="matter-path-separator" aria-hidden="true" hidden>/</span><span id="save-document" class="save-document" hidden></span></p>
+          <div class="save-state">
+            <button id="save-details-toggle" class="save-details-toggle" type="button" aria-label="Show save status and recovery details" aria-expanded="false" aria-controls="save-details"><span id="status" class="status" data-state="neutral" role="status" aria-live="polite">Connecting…</span><span id="save-version" class="save-version" hidden></span><span class="save-details-cue" aria-hidden="true">⌃</span></button>
+            <div id="actions" class="save-controls">
+              <button id="save" class="save-link" type="button" disabled>Save</button>
+              <button id="load-latest" class="save-link" type="button" hidden>Load latest</button>
+            </div>
+          </div>
         </div>
         <div id="save-details" class="save-details" role="region" aria-label="Save details" hidden>
           <div class="save-details-heading"><p id="save-details-matter" class="save-details-matter">doc.haus</p><button id="save-details-close" class="save-details-close" type="button" aria-label="Close save details">×</button></div>

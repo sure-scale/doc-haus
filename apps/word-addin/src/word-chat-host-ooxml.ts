@@ -1,5 +1,6 @@
 import { DOMParser } from "@xmldom/xmldom"
-import type { WordChatAuthoredAmendment, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { validWordChatFormatting, type WordChatAuthoredAmendment, type WordChatParagraphFormat, type WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { reviewedWordChatParagraphFormatting } from "../../../dochaus/lib/word-chat-formatting-ooxml"
 
 const PKG = "http://schemas.microsoft.com/office/2006/xmlPackage"
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -109,8 +110,14 @@ function paragraphView(paragraph: Element, version: "Current" | "Original") {
   visit(paragraph)
   const marks = [...bookmarks.values()]
   if (marks.some(mark => mark.end === undefined) || new Set(marks.map(mark => mark.name)).size !== marks.length) throw new Error("Incomplete clause bookmark")
-  const properties = elements(paragraph).find(node => node.namespaceURI === W && node.localName === "pPr")?.cloneNode(true) as Element | undefined
+  const currentProperties = elements(paragraph).find(node => node.namespaceURI === W && node.localName === "pPr")
+  const changes = currentProperties ? elements(currentProperties).filter(node => node.namespaceURI === W && node.localName === "pPrChange") : []
+  if (changes.length > 1) throw new Error("Ambiguous paragraph formatting")
+  const old = changes[0] && elements(changes[0]).find(node => node.namespaceURI === W && node.localName === "pPr")
+  if (changes[0] && !old) throw new Error("Missing original paragraph properties")
+  const properties = (version === "Original" && old ? old : currentProperties)?.cloneNode(true) as Element | undefined
   if (properties) {
+    for (const change of elements(properties)) if (change.namespaceURI === W && change.localName === "pPrChange") properties.removeChild(change)
     const run = elements(properties).find(node => node.namespaceURI === W && node.localName === "rPr")
     if (run) {
       for (const mark of elements(run)) if (mark.namespaceURI === W && ["ins", "del"].includes(mark.localName)) run.removeChild(mark)
@@ -139,8 +146,39 @@ function clauseView(xml: string, version: "Current" | "Original") {
 export function sameImportedWordChat(authored: string, observed: string): boolean {
   const marks = (xml: string) => content(parse(xml), true, true).nodes.map(paragraphMark).filter((mark): mark is Element => Boolean(mark))
     .map(mark => [mark.localName, mark.getAttributeNS(W, "author")])
+  const formats = (xml: string) => content(parse(xml), true, true).nodes.map(paragraph => {
+    const pPr = elements(paragraph).find(node => node.namespaceURI === W && node.localName === "pPr")
+    return pPr ? elements(pPr).filter(node => node.namespaceURI === W && node.localName === "pPrChange").map(node => node.getAttributeNS(W, "author")) : []
+  })
   return ["Current", "Original"].every(version => JSON.stringify(clauseView(authored, version as "Current" | "Original")) === JSON.stringify(clauseView(observed, version as "Current" | "Original"))) &&
-    JSON.stringify(marks(authored)) === JSON.stringify(marks(observed))
+    JSON.stringify(marks(authored)) === JSON.stringify(marks(observed)) && JSON.stringify(formats(authored)) === JSON.stringify(formats(observed))
+}
+
+export function sameWordChatParagraphContent(before: string, after: string): boolean {
+  const view = (xml: string) => content(parse(xml), true, true).shape.map(node => canonical(node, true))
+  return JSON.stringify(view(before)) === JSON.stringify(view(after))
+}
+
+function unchangedFormattingDependencies(before: string, after: string) {
+  const captured = parse(before), delivered = parse(after)
+  for (const [name, part] of delivered) {
+    if (name === MAIN) continue
+    if (["/word/settings.xml", "/word/webSettings.xml"].includes(name) || name.startsWith("/docProps/") || /(?:header|footer|webextension)/i.test(name)) throw new Error("Formatting exceeds the paragraph scope")
+    const original = captured.get(name)
+    if (!original || original.getAttributeNS(PKG, "contentType") !== part.getAttributeNS(PKG, "contentType")) throw new Error("Formatting dependency changed")
+    const data = elements(part)[0], prior = elements(original)[0]
+    if (!data || !prior) throw new Error("Missing formatting dependency")
+    if (name.endsWith(".rels")) {
+      const relations = elements(elements(data)[0]!)
+      if (name === "/_rels/.rels") {
+        if (relations.length !== 1 || relations[0]!.getAttribute("Target") !== "word/document.xml" || relations[0]!.getAttribute("Type") !== "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" || relations[0]!.getAttribute("TargetMode") === "External") throw new Error("Invalid scoped root relationship")
+      } else {
+        const sourceRelations = elements(elements(prior)[0]!)
+        if (relations.some(rel => !sourceRelations.some(old => JSON.stringify(canonical(rel)) === JSON.stringify(canonical(old))))) throw new Error("Formatting relationship changed")
+      }
+    } else if (data.localName === "binaryData" ? data.textContent?.replace(/\s/g, "") !== prior.textContent?.replace(/\s/g, "")
+      : JSON.stringify(elements(data).map(node => canonical(node))) !== JSON.stringify(elements(prior).map(node => canonical(node)))) throw new Error("Formatting dependency changed")
+  }
 }
 
 /** Compare the complete target and every dependency actually imported. Word's
@@ -164,9 +202,19 @@ export function sameWordChatOoxml(before: string, current: string, delivered: st
 
 /** Verify both views and the actual authored revision spans. The server cannot
  * expand a selected subspan merely by returning matching final paragraph text. */
-export function reviewedWordChatArtifact(artifact: WordChatAuthoredAmendment, proposalId: string, target: WordChatTarget, expected: string[], captured?: string) {
+export function reviewedWordChatArtifact(artifact: WordChatAuthoredAmendment, proposalId: string, target: WordChatTarget, expected: string[], captured?: string, formatting?: WordChatParagraphFormat[]) {
   if (!artifact || artifact.proposalId !== proposalId || artifact.author !== "doc.haus" || !Array.isArray(artifact.paragraphs) || JSON.stringify(artifact.paragraphs) !== JSON.stringify(expected) || !Array.isArray(artifact.revisions)) throw new Error("The authored amendment differs from the reviewed wording")
   const paragraphs = content(parse(artifact.ooxml), false, false).nodes
+  if (formatting !== undefined) {
+    if (!captured || !validWordChatFormatting(target, formatting) || JSON.stringify(artifact.formatting) !== JSON.stringify(formatting)) throw new Error("The formatting differs from the reviewed proposal")
+    const before = content(parse(captured), true, true).nodes
+    if (JSON.stringify(before.map(node => text(node))) !== JSON.stringify(expected)) throw new Error("The formatted passage changed")
+    unchangedFormattingDependencies(captured, artifact.ooxml)
+    const revisions = reviewedWordChatParagraphFormatting(before, paragraphs, formatting)
+    if (JSON.stringify(revisions.flat()) !== JSON.stringify(artifact.revisions)) throw new Error("The formatting revision metadata differs from its Word markup")
+    return revisions
+  }
+  if (artifact.formatting !== undefined) throw new Error("Unreviewed paragraph formatting")
   const current = clauseView(artifact.ooxml, "Current"), original = clauseView(artifact.ooxml, "Original")
   if (current.length !== expected.length || original.length !== target.paragraphs.length ||
     JSON.stringify(current.map(p => p.runs.map(r => r.text).join(""))) !== JSON.stringify(expected) ||

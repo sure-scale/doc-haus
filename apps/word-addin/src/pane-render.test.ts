@@ -25,6 +25,12 @@ test("unchanged poll presentation preserves the pane DOM and focus while real sa
     expect(document.getElementById("release")!.hidden).toBe(true)
     expect(document.getElementById("save-version")!.textContent).toBe("v1")
     expect(document.getElementById("save-version")!.title).toBe("This Word copy: version 1")
+    const details = document.getElementById("save-details-toggle") as HTMLButtonElement
+    expect(details.getAttribute("aria-label")).toBe("Saved, version 1. Show save status and recovery details")
+    expect(details.textContent).toContain("Saved"); expect(details.textContent).not.toContain("Details")
+    let saves = 0; button.addEventListener("click", () => saves++)
+    details.click(); expect(saves).toBe(0); expect(document.getElementById("save-details")!.hidden).toBe(false)
+    details.click(); button.click(); expect(saves).toBe(1)
     button.focus()
     const text = document.getElementById("status")!.firstChild
     const mutations: unknown[] = []

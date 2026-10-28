@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { DOMParser } from "@xmldom/xmldom"
-import { authorWordChatTarget, MAX_WORD_AMENDMENT_OOXML_BYTES } from "./docx-flat-opc"
+import { authorWordChatTarget, MAX_WORD_AMENDMENT_OOXML_BYTES, WordFormattingError } from "./docx-flat-opc"
 import type { WordChatTarget } from "./word-chat-amendment-contract"
 import { reviewedWordChatArtifact, sameImportedWordChat } from "../../apps/word-addin/src/word-chat-host-ooxml"
 
@@ -74,6 +74,54 @@ test("several inserted paragraphs keep reviewed punctuation literal and ordered 
   expect(reviewedWordChatArtifact({ ...result, proposalId: "several" }, "several", selected, expected, xml)).toHaveLength(4)
   expect(result.revisions.filter(r => r.text !== "\r").map(r => r.text)).toEqual(inserted)
   expect(parsed(result.ooxml).getElementsByTagNameNS(W, "hyperlink")).toHaveLength(0)
+})
+
+const formatStyles = `<pkg:part pkg:name="/word/styles.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"><pkg:xmlData><w:styles><w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/></w:rPr></w:style></w:styles></pkg:xmlData></pkg:part>`
+const styleRelation = `<Relationship Id="rStyle" Type="${O}/styles" Target="styles.xml"/>`
+
+test("combined paragraph formatting preserves inline text revisions and proves native accept/reject properties", async () => {
+  const texts = ["The obligation is ten days.", "Retained qualification."], selected = target(texts)
+  const body = '<w:p><w:pPr><w:spacing w:after="120"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>The obligation is </w:t></w:r><w:del w:id="42" w:author="Earlier reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:delText>five</w:delText></w:r></w:del><w:ins w:id="43" w:author="Earlier reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:t>ten</w:t></w:r></w:ins><w:r><w:t> days.</w:t></w:r></w:p>' + paragraph(texts[1]!)
+  const xml = flat(body, formatStyles, styleRelation), formatting = [{ paragraph: 0, style: "Heading1" as const, spacingBefore: 12, spacingAfter: 8, lineSpacing: 1.25 }, { paragraph: 1, spacingAfter: 6 }]
+  const result = await authorWordChatTarget(xml, selected, selected.text, formatting)
+  expect(result.paragraphs).toEqual(texts)
+  expect(result.formatting).toEqual(formatting)
+  expect(result.revisions).toEqual(texts.map(text => ({ author: "doc.haus", type: "Formatted", text })))
+  const doc = parsed(result.ooxml), changes = Array.from(doc.getElementsByTagNameNS(W, "pPrChange"))
+  expect(changes).toHaveLength(2)
+  expect(changes.every(node => node.getAttributeNS(W, "author") === "doc.haus")).toBe(true)
+  expect(doc.getElementsByTagNameNS(W, "rPrChange")).toHaveLength(0)
+  for (const tag of ["ins", "del"]) {
+    const existing = doc.getElementsByTagNameNS(W, tag)
+    expect(existing).toHaveLength(1)
+    expect(existing[0]!.getAttributeNS(W, "author")).toBe("Earlier reviewer")
+    expect(existing[0]!.getAttributeNS(W, "date")).toBe("2026-01-01T00:00:00Z")
+  }
+  const authored = { ...result, proposalId: "format" }
+  expect(reviewedWordChatArtifact(authored, "format", selected, texts, xml, formatting).flat()).toEqual(result.revisions)
+  expect(sameImportedWordChat(result.ooxml, result.ooxml)).toBe(true)
+  expect(() => reviewedWordChatArtifact({ ...authored, ooxml: authored.ooxml.replace(/<w:b\s*\/>/, '<w:i/>') }, "format", selected, texts, xml, formatting)).toThrow("inline")
+  expect(() => reviewedWordChatArtifact({ ...authored, ooxml: authored.ooxml.replace('w:after="160"', 'w:after="180"') }, "format", selected, texts, xml, formatting)).toThrow("spacing")
+  expect(() => reviewedWordChatArtifact({ ...authored, ooxml: authored.ooxml.replace('w:author="Earlier reviewer"', 'w:author="doc.haus"') }, "format", selected, texts, xml, formatting)).toThrow("inline")
+})
+
+test("formatting refuses unavailable styles, partial selections and changes that remove inherited numbering", async () => {
+  const selected = target(["A numbered paragraph."])
+  const styles = formatStyles.replace('</w:styles>', '<w:style w:type="paragraph" w:styleId="Numbered"><w:name w:val="Numbered"/><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="7"/></w:numPr></w:pPr></w:style></w:styles>')
+  const numbering = `<pkg:part pkg:name="/word/numbering.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"><pkg:xmlData><w:numbering><w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="(%2)"/></w:lvl></w:abstractNum><w:num w:numId="7"><w:abstractNumId w:val="7"/></w:num></w:numbering></pkg:xmlData></pkg:part>`
+  const xml = flat('<w:p><w:pPr><w:pStyle w:val="Numbered"/></w:pPr><w:r><w:t>A numbered paragraph.</w:t></w:r></w:p>', styles + numbering, styleRelation + `<Relationship Id="rNumber" Type="${O}/numbering" Target="numbering.xml"/>`)
+  await expect(authorWordChatTarget(xml, selected, selected.text, [{ paragraph: 0, style: "Heading2" }])).rejects.toBeInstanceOf(WordFormattingError)
+  await expect(authorWordChatTarget(xml, selected, selected.text, [{ paragraph: 0, style: "Heading1" }])).rejects.toThrow("numbering")
+  const result = await authorWordChatTarget(xml, selected, selected.text, [{ paragraph: 0, spacingAfter: 8 }])
+  expect(result.revisions).toEqual([{ author: "doc.haus", type: "Formatted", text: selected.text }])
+  expect(parsed(result.ooxml).getElementsByTagNameNS(W, "pStyle")[0]!.getAttributeNS(W, "val")).toBe("Numbered")
+  const direct = xml.replace('<w:pStyle w:val="Numbered"/>', '<w:numPr><w:ilvl w:val="1"/><w:numId w:val="7"/></w:numPr>')
+  const heading = await authorWordChatTarget(direct, selected, selected.text, [{ paragraph: 0, style: "Heading1", spacingAfter: 8 }])
+  expect(parsed(heading.ooxml).getElementsByTagNameNS(W, "numId")[0]!.getAttributeNS(W, "val")).toBe("7")
+  expect(parsed(heading.ooxml).getElementsByTagNameNS(W, "ilvl")[0]!.getAttributeNS(W, "val")).toBe("1")
+  expect(parsed(heading.ooxml).getElementsByTagNameNS(W, "pStyle")[0]!.getAttributeNS(W, "val")).toBe("Heading1")
+  const partial = target(["A numbered paragraph."], 2)
+  await expect(authorWordChatTarget(xml, partial, partial.text, [{ paragraph: 0, spacingAfter: 8 }])).rejects.toThrow("word_snapshot_unsupported")
 })
 
 test("formatting dependencies remain while unrelated header projections/settings/add-in context are excluded", async () => {

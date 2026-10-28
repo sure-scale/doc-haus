@@ -58,13 +58,19 @@ test("upward save details fit between tabs and status, support keyboard dismissa
   try {
     get("matter").textContent = "Long matter name"
     get("matter").title = "Long matter name · Services agreement.docx"
+    get("pane-chat").dataset.documentName = "Services · agreement.docx"
+    get("back").setAttribute("href", "https://dochaus.example/matter/synthetic")
     get("message").textContent = "Keep the current Word copy and review this complete recovery advice."
     const chat = get("pane-chat"); chat.hidden = false; chat.innerHTML = '<textarea>Draft retained</textarea>'
     expect(details.hidden).toBe(true); expect(toggle.getAttribute("aria-expanded")).toBe("false")
     expect(bar.querySelector(".save-summary")!.textContent).not.toContain("recovery advice")
     toggle.click(); expect(details.hidden).toBe(false); expect(toggle.getAttribute("aria-expanded")).toBe("true")
     expect(details.textContent).toContain("complete recovery advice")
-    expect(get("save-details-matter").textContent).toBe("Long matter name · Services agreement.docx")
+    expect(get("save-details-matter").textContent).toBe("Long matter name / Services · agreement.docx")
+    expect(get("save-document").textContent).toBe("Services · agreement.docx")
+    expect(get<HTMLAnchorElement>("matter").href).toBe(get<HTMLAnchorElement>("back").href)
+    expect(get<HTMLAnchorElement>("matter").target).toBe("_blank")
+    expect(get("matter-path-separator").hidden).toBe(false)
     expect(details.style.getPropertyValue("--save-details-space")).toBe("474px")
     barTop = 500; page.dispatchEvent(new page.Event("resize"))
     expect(details.style.getPropertyValue("--save-details-space")).toBe("444px")

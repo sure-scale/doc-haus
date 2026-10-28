@@ -1,9 +1,31 @@
 import { expect, test } from "bun:test"
-import { targetWordChatAmendment, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
 
 const snapshot = (): WordChatSnapshot => ({text: "Pay within thirty days.\rPay within thirty days.",
   paragraphs: [{id:"first",text:"Pay within thirty days."},{id:"second",text:"Pay within thirty days."}],
   saved:false,capturedAt:"2026-01-01T00:00:00Z",truncated:false})
+
+test("a formatting review keeps its wording and whole-paragraph authority", () => {
+  const value = snapshot()
+  const target = targetWordChatAmendment(value, value.text)!
+  const formatting = [{ paragraph: 0, style: "Heading1" as const, spacingBefore: 12, spacingAfter: 6 }, { paragraph: 1, lineSpacing: 1.15 }]
+  expect(validWordChatFormatting(target, formatting)).toBe(true)
+  expect(wordChatApplyPlan(target, target.text, formatting)).toEqual({ supported: true, paragraphs: value.paragraphs.map(p => p.text) })
+  expect(wordChatApplyPlan(target, target.text.replace("thirty", "sixty"), formatting).supported).toBe(false)
+  const partial = { ...target, startOffset: 4, text: target.text.slice(4) }
+  expect(wordChatApplyPlan(partial, partial.text, formatting).supported).toBe(false)
+  expect(validWordChatFormatting({ ...target, endOffset: target.endOffset - 1, text: target.text.slice(0, -1) }, formatting)).toBe(false)
+})
+
+test("formatting operations cannot smuggle edits or conflicting paragraph properties", () => {
+  const target = targetWordChatAmendment(snapshot(), snapshot().text)!
+  for (const operations of [[], [{ paragraph: 2, spacingAfter: 6 }], [{ paragraph: 0, spacingAfter: 6 }, { paragraph: 0, style: "Title" }],
+    [{ paragraph: 0 }], [{ paragraph: 0, style: "An arbitrary style" }], [{ paragraph: 0, spacingAfter: -1 }],
+    [{ paragraph: 0, spacingBefore: 49 }], [{ paragraph: 0, lineSpacing: 0 }], [{ paragraph: 0, spacingAfter: Infinity }],
+    [{ paragraph: 0, spacingAfter: 6, text: "Different wording" }], [{ paragraph: 0, ooxml: "<w:p/>" }]]) {
+    expect(validWordChatFormatting(target, operations)).toBe(false)
+  }
+})
 
 test("structural eligibility pins exact whole paragraphs and keeps the final import boundary", () => {
   const value = snapshot()

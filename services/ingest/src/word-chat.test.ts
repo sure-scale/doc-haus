@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
 import { installWordChat } from "./word-chat"
+import { WordFormattingError } from "./word-chat-amendments"
 import { wordChatMaterials, wordChatSuggestionBatches, validateWordChatContext, type WordChatAuth } from "./word-chat-context"
 import { claimWordEditLease, clearWordEditLease } from "../../../dochaus/lib/word-edit-lease"
 import { writeDeliverable, writeDeliverableRevision } from "./deliverable"
@@ -17,7 +18,7 @@ type Session = { id: string; parentID?: string; metadata: Record<string, unknown
 const sessions = new Map<string, Session>(), messages = new Map<string, Record<string, unknown>[]>()
 const prompts: string[] = []
 let directory: string, app: Hono, auth: WordChatAuth, next = 0, generations = 0, loseResponse = false, hold = false, inventCitation = false, amend = false, approveReview = true, deletion = false
-let modelProposal: { before: string; after?: string } | undefined
+let modelProposal: { before: string; after?: string; formatting?: unknown } | undefined
 let modelAnswer: string | undefined
 let modelRawOutput: string | undefined, reviewerRawOutput: string | undefined
 const oldRuntime = process.env.DOCHAUS_RUNTIME_DIR, oldWorkspace = process.env.WORKSPACE_ROOT
@@ -179,6 +180,118 @@ test("amendment preparation is checked by a separate denied-tool native reviewer
   amend = false; approveReview = true
   expect(rejected.proposal).toBeUndefined()
   expect(rejected.error).toContain("needs revision")
+})
+
+test("composer modes route questions, explicit changes and formatting without changing evidence scope", async () => {
+  const id = await newConversation()
+  const request = (text: string, extra: object = {}) => post("send", { conversationId: id, scope: "document", text, requestId: crypto.randomUUID(), attachments: [], context, ...extra })
+  for (const [text, extra, expected] of [
+    ["What formatting is used?", {}, "chat"],
+    ["How can I improve the spacing?", {}, "chat"],
+    ["Can you explain the heading styles?", {}, "chat"],
+    ["Can you format the document better, more spacing and better headings?", {}, "formatting"],
+    ["Please increase paragraph spacing without changing any words.", {}, "formatting"],
+    ["Apply Heading 2 to the existing headings.", {}, "formatting"],
+    ["Do not change the formatting. Explain it.", {}, "chat"],
+    ["Rewrite this clause", { mode: "qa", kind: "amendment" }, "chat"],
+    ["Format the document", { mode: "qa" }, "chat"],
+    ["Explain this clause", { mode: "redline" }, "amendment"],
+    ["Improve the layout", { mode: "redline" }, "formatting"],
+    ["Prepare my requested change", { mode: "auto", kind: "amendment" }, "amendment"],
+  ] as const) {
+    const response = await request(text, extra)
+    expect(response.status, text).toBe(200)
+    const turn = (await response.json() as { turn: WordChatTurn }).turn
+    expect(turn.kind, text).toBe(expected)
+    expect(turn.scope).toBe("document")
+    if (expected === "chat") expect(turn.proposal).toBeUndefined()
+  }
+  const before = generations
+  for (const mode of ["unknown", ["qa"], { mode: "qa" }, 0, null])
+    expect((await request("Rewrite this", { mode })).status).toBe(400)
+  expect((await request("Rewrite this", { scope: ["matter"] })).status).toBe(400)
+  expect(generations).toBe(before)
+})
+
+test("format-only proposals retain exact paragraphs, carry bounded properties and receive independent review", async () => {
+  const id = await newConversation()
+  const paragraphs = [{ id: "title", text: "Services agreement" }, { id: "terms", text: "The existing delivery wording stays unchanged." }]
+  const before = paragraphs.map(paragraph => paragraph.text).join("\r")
+  const current = { ...context, text: before, paragraphs }
+  const formatting = [{ paragraph: 0, style: "Title" as const, spacingAfter: 12 }, { paragraph: 1, spacingBefore: 6, lineSpacing: 1.5 }]
+  const request = (extra: object = {}) => post("send", { conversationId: id, scope: "document", text: "Format the existing heading and improve paragraph spacing, preserving all wording.", requestId: crypto.randomUUID(), attachments: [], context: current, ...extra })
+  amend = true; modelProposal = { before: before.replace(/\r/g, "\n"), after: before.replace(/\r/g, "\n"), formatting }
+  try {
+    const response = await request()
+    expect(response.status).toBe(200)
+    const turn = (await response.json() as { turn: WordChatTurn }).turn
+    expect(turn.kind).toBe("formatting")
+    expect(turn.proposal?.formatting).toEqual(formatting)
+    expect(turn.proposal?.before).toBe(before)
+    expect(turn.proposal?.after).toBe(before)
+    expect(turn.proposal?.target.paragraphs).toEqual(paragraphs)
+    const prompt = String(messages.get(turn.id)!.find(message => message.type === "user")!.text)
+    expect(prompt).toContain("spacingBefore")
+    expect(prompt).toContain("points")
+    expect(prompt).toContain("lineSpacing")
+    expect(prompt).toContain("reasonable layout choices")
+    expect(prompt).toContain("brief")
+    expect(prompt).toContain("explicit Apply")
+    expect(prompt).not.toContain("No tools, document mutation")
+    const supplied = JSON.parse(prompt.split("\n").at(-1)!) as { formattingParagraphs: typeof paragraphs }
+    expect(supplied.formattingParagraphs).toEqual(paragraphs)
+    const reviewer = [...sessions.values()].find(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")!
+    const reviewPrompt = String(messages.get(reviewer.id)!.find(message => message.type === "user")!.text)
+    expect(reviewPrompt).toContain("paragraph properties")
+    expect(reviewPrompt).toContain("wording unchanged")
+    // An explicit refinement keeps its already reviewed formatting target even in Q&A mode.
+    const refined = (await (await request({ mode: "qa", proposal: turn.proposal })).json() as { turn: WordChatTurn }).turn
+    expect(refined.kind).toBe("formatting")
+    expect(refined.proposal?.target).toEqual(turn.proposal?.target)
+    approveReview = false
+    const refused = (await (await request()).json() as { turn: WordChatTurn }).turn
+    expect(refused.proposal).toBeUndefined()
+    expect(refused.error).toContain("needs revision")
+    expect(refused.answer).toContain("loses a qualification")
+    approveReview = true
+    // Format requests cannot smuggle wording edits, unsupported properties or surrounding paragraph scope.
+    for (const proposal of [
+      { before, after: before + " Additional words.", formatting },
+      { before, after: before, formatting: [{ paragraph: 0, fontSize: 30 }] },
+      { before: "Services", after: "Services", formatting: [{ paragraph: 0, spacingAfter: 12 }] },
+    ]) {
+      modelProposal = proposal
+      const count = generations
+      const invalid = (await (await request()).json() as { turn: WordChatTurn }).turn
+      expect(invalid.proposal).toBeUndefined()
+      expect(invalid.error).toMatch(/complete paragraphs|wording unchanged/i)
+      expect(generations - count).toBe(1)
+    }
+    // Every complete paragraph supplied for layout is also verifiable Word evidence,
+    // including a target beyond the normal chat excerpt's initial 14k characters.
+    const tail = "Schedule"
+    const extended = [{ id: "long", text: "x".repeat(16_000) }, { id: "tail", text: tail }]
+    modelRawOutput = JSON.stringify({ answer: "Prepare spacing for the final existing heading [word].", citations: [{ sourceId: "word", quote: tail }], proposal: { before: tail, after: tail, formatting: [{ paragraph: 0, spacingBefore: 12 }], explanation: "Separate this existing heading.", openItems: [] } })
+    const extendedTurn = (await (await request({ context: { ...current, text: extended.map(paragraph => paragraph.text).join("\r"), paragraphs: extended } })).json() as { turn: WordChatTurn }).turn
+    expect(extendedTurn.status).toBe("complete")
+    expect(extendedTurn.proposal?.target.paragraphs).toEqual([extended[1]!])
+    expect(extendedTurn.sources[0]?.quote).toBe(tail)
+    modelRawOutput = undefined
+    const count = generations
+    const many = Array.from({ length: 65 }, (_, index) => ({ id: String(index), text: `Paragraph ${index}.` }))
+    const oversized = [{ id: "large", text: "x".repeat(24_001) }]
+    const partial = { id: "partial", text: "Services", paragraphs: [paragraphs[0]!], startOffset: 0, endOffset: 8, capturedAt: current.capturedAt, saved: false }
+    for (const boundedContext of [
+      { ...current, paragraphs: many, text: many.map(paragraph => paragraph.text).join("\r") },
+      { ...current, paragraphs: oversized, text: oversized[0]!.text },
+      { ...current, selection: partial },
+    ]) {
+      const bounded = await request({ context: boundedContext })
+      expect(bounded.status).toBe(409)
+      expect((await bounded.json() as { error: string }).error).toContain("complete paragraphs")
+    }
+    expect(generations).toBe(count)
+  } finally { amend = false; modelProposal = undefined; modelRawOutput = undefined; approveReview = true }
 })
 
 test("independent amendment review receives first/last paragraph offsets and local-save semantics", async () => {
@@ -376,6 +489,34 @@ test("prepare rechecks ownership and canonical base after asynchronous authoring
   }
   expect((await prepare()).status).toBe(409)
   clearWordEditLease(db, auth.grant.document_id); db.close()
+})
+
+test("prepare returns actionable formatting failures while keeping other authoring errors private", async () => {
+  const id = await newConversation()
+  amend = true; modelProposal = { before: context.text, after: context.text, formatting: [{ paragraph: 0, spacingAfter: 12 }] }
+  let turn: WordChatTurn
+  try { turn = (await (await send(id, "document", "Increase paragraph spacing")).json() as { turn: WordChatTurn }).turn }
+  finally { amend = false; modelProposal = undefined }
+  expect(turn.proposal?.formatting).toEqual([{ paragraph: 0, spacingAfter: 12 }])
+  const db = openDb(directory)
+  db.run("INSERT OR IGNORE INTO word_grants(token_hash,document_id,origin,issued_version,created_at) VALUES (?,?,?,?,?)", [auth.grant.token_hash, auth.grant.document_id, auth.grant.origin, auth.grant.issued_version, Date.now()])
+  const owner = claimWordEditLease(db, { document: auth.grant.document_id, tokenHash: auth.grant.token_hash, session: "synthetic-format-session" })
+  const current = readCurrentVersion(directory, "Draft.docx")!
+  let failure: Error = new Error("Private parser detail")
+  const preparing = new Hono()
+  installWordChat(preparing, () => auth, { fetch: transport, engineURL: "http://synthetic.invalid", authorAmendment: async () => { throw failure } })
+  const prepare = () => preparing.request("/word/chat/prepare", { method: "POST", headers: { "content-type": "application/json", "x-dochaus-word-session": owner.session, "x-dochaus-word-lease": owner.generation, "x-dochaus-word-base-version": current.current.id },
+    body: JSON.stringify({ conversationId: id, turnId: turn.id, ooxml: "synthetic-original-ooxml" }) })
+  try {
+    const generic = await prepare()
+    expect(generic.status).toBe(409)
+    expect((await generic.json() as { error: string }).error).toContain("passage changed")
+    const message = "That paragraph style is not available in this document. Choose an existing style in Word, then prepare the change again."
+    failure = new WordFormattingError(message)
+    const actionable = await prepare()
+    expect(actionable.status).toBe(409)
+    expect((await actionable.json() as { error: string }).error).toBe(message)
+  } finally { clearWordEditLease(db, auth.grant.document_id); db.close() }
 })
 
 test("multi-paragraph selection suggestion evidence includes the exact selected passage once", () => {

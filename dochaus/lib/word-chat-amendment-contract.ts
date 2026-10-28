@@ -26,13 +26,48 @@ export type WordChatProposal = {
   openItems: string[]
   target: WordChatTarget
   createdAt: string
+  /** Paragraph properties only; all wording and paragraph boundaries stay exact. */
+  formatting?: WordChatParagraphFormat[]
+}
+export type WordChatParagraphFormat = {
+  /** Zero-based index within target.paragraphs. */
+  paragraph: number
+  style?: "Title" | "Heading1" | "Heading2" | "Heading3" | "Normal"
+  /** Paragraph spacing in points, not Word twips. */
+  spacingBefore?: number
+  spacingAfter?: number
+  /** A multiple of single line spacing. */
+  lineSpacing?: number
 }
 export type WordChatAuthoredAmendment = {
   proposalId: string
   ooxml: string
   paragraphs: string[]
-  revisions: { author: string; type: "Added" | "Deleted"; text: string }[]
+  revisions: { author: string; type: "Added" | "Deleted" | "Formatted"; text: string }[]
   author: "doc.haus"
+  formatting?: WordChatParagraphFormat[]
+}
+
+/** Paragraph formatting cannot borrow a partial selection's authority to
+ * change the surrounding paragraph, or carry arbitrary model-authored XML. */
+export function validWordChatFormatting(target: WordChatTarget, value: unknown): value is WordChatParagraphFormat[] {
+  if (!target?.paragraphs?.length || target.paragraphs.length > 64 || target.startOffset !== 0 ||
+    target.endOffset !== target.paragraphs.at(-1)!.text.length ||
+    target.text !== target.paragraphs.map(p => p.text).join("\r") ||
+    !Array.isArray(value) || !value.length || value.length > 64) return false
+  const seen = new Set<number>()
+  const fields = new Set(["paragraph", "style", "spacingBefore", "spacingAfter", "lineSpacing"])
+  return value.every(op => {
+    if (!op || typeof op !== "object" || Array.isArray(op) || Object.keys(op).some(key => !fields.has(key)) ||
+      !Number.isSafeInteger(op.paragraph) || op.paragraph < 0 || op.paragraph >= target.paragraphs.length || seen.has(op.paragraph)) return false
+    seen.add(op.paragraph)
+    if (op.style !== undefined && !["Title", "Heading1", "Heading2", "Heading3", "Normal"].includes(op.style)) return false
+    for (const field of ["spacingBefore", "spacingAfter"] as const) if (op[field] !== undefined &&
+      (typeof op[field] !== "number" || !Number.isFinite(op[field]) || op[field] < 0 || op[field] > 48 || !Number.isInteger(op[field] * 20))) return false
+    if (op.lineSpacing !== undefined && (typeof op.lineSpacing !== "number" || !Number.isFinite(op.lineSpacing) ||
+      op.lineSpacing < 1 || op.lineSpacing > 2 || !Number.isInteger(op.lineSpacing * 240))) return false
+    return [...fields].some(field => field !== "paragraph" && op[field] !== undefined)
+  })
 }
 
 /** JSON/model paragraph separators use LF on some providers. Word Range.text
@@ -45,7 +80,10 @@ export type WordChatApplyPlan = { supported: true; paragraphs: string[];
 /** The scoped Word import ends before the existing final paragraph mark. Keep
  * that paragraph intact for structural changes; otherwise rejecting a revision
  * could join the clause to unrelated text after the approved passage. */
-export function wordChatApplyPlan(target: WordChatTarget, replacement: string): WordChatApplyPlan {
+export function wordChatApplyPlan(target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[]): WordChatApplyPlan {
+  if (formatting !== undefined) return replacement === target.text && validWordChatFormatting(target, formatting)
+    ? { supported: true, paragraphs: target.paragraphs.map(p => p.text) }
+    : { supported: false, reason: "Select complete paragraphs and prepare a formatting-only change. Wording must stay unchanged." }
   const unsupported = { supported: false as const, reason: "This change needs paragraph restructuring. Refine it into smaller changes, or make it directly in Word." }
   if (/\n/.test(replacement) || !target.paragraphs.length) return unsupported
   const before = target.paragraphs.map(p => p.text)
