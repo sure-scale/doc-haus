@@ -10,7 +10,10 @@ export function useWordAddin() {
   const [error, setError] = useState("")
   const alive = useRef(true)
   const pending = useRef(false)
+  const checkingNow = useRef(false)
   async function refresh() {
+    if (pending.current || checkingNow.current) return
+    checkingNow.current = true
     setChecking(true)
     try {
       const next = await fetchWordSetup()
@@ -21,12 +24,15 @@ export function useWordAddin() {
       return next
     } catch (cause) {
       if (alive.current) setError(humanizeError(cause, "Could not check Word setup."))
-    } finally { if (alive.current) setChecking(false) }
+    } finally { checkingNow.current = false; if (alive.current) setChecking(false) }
   }
   useEffect(() => {
     alive.current = true
     void refresh()
-    return () => { alive.current = false }
+    const onFocus = () => { void refresh() }
+    window.addEventListener("focus", onFocus)
+    const interval = window.setInterval(() => { if (document.visibilityState === "visible") void refresh() }, 30000)
+    return () => { alive.current = false; window.removeEventListener("focus", onFocus); window.clearInterval(interval) }
   }, [])
   async function prepare() {
     if (pending.current) return
@@ -35,7 +41,7 @@ export function useWordAddin() {
     try {
       const next = await setupWordAddin()
       if (alive.current) setStatus(next)
-      if (!next.available) throw new Error(next.reason || "Word setup needs attention. Check its status and try again.")
+      if (!next.available) throw new Error(next.reason || "Word setup needs attention. Try again.")
       window.dispatchEvent(new Event("dochaus:word-setup"))
       return next
     } catch (cause) {
@@ -43,7 +49,7 @@ export function useWordAddin() {
       const confirmed = await fetchWordSetup().catch(() => undefined)
       if (alive.current && confirmed) setStatus(confirmed)
       if (confirmed?.available) { window.dispatchEvent(new Event("dochaus:word-setup")); return confirmed }
-      if (alive.current) setError(humanizeError(cause, "Could not confirm Word setup. Check status before trying again."))
+      if (alive.current) setError(humanizeError(cause, "Could not confirm Word setup. Try again."))
       return
     } finally {
       pending.current = false
@@ -123,25 +129,21 @@ export function WordChatDefaults({ onBusy }: { onBusy?: (busy: boolean) => void 
 
 export default function WordAddin({ onBusy }: { onBusy?: (busy: boolean) => void }) {
   const state = useWordAddin()
-  const { status, busy, checking, error } = state
+  const { status, busy, checking } = state
   const [preferencesBusy, setPreferencesBusy] = useState(false)
   useEffect(() => { onBusy?.(busy || preferencesBusy); return () => onBusy?.(false) }, [busy, preferencesBusy, onBusy])
   return <section className="settings-section">
     <h3>Microsoft Word</h3>
-    <p className="settings-hint muted">Work in desktop Word with your matter documents and saved versions beside you.</p>
+    <p className="settings-hint muted">Open matter documents in Word and save versions back to doc.haus.</p>
     <WordAddinStatus state={state} />
     {status?.canSetup && !status.available && <p className="settings-hint muted">Setup installs the add-in for this account and asks your computer to trust its local connection.</p>}
-    <div className="row settings-row">
-      {status?.canSetup && <button type="button" className={status.available && !error ? "" : "primary"} disabled={busy || checking} onClick={() => void state.prepare()}>
+    <div className="row settings-row settings-actions-end">
+      {status?.canSetup && !status.available && <button type="button" className="primary" disabled={busy || checking} onClick={() => void state.prepare()}>
         {busy ? "Setting up…" : status.configured || status.registered ? "Repair Word connection" : "Set up Word"}
       </button>}
-      <button type="button" disabled={busy || checking} onClick={() => void state.refresh()}>Check status</button>
     </div>
     {status?.status === "external" && status.manifestUrl && <p><a href={status.manifestUrl} download="doc-haus-word.xml">Download Word add-in</a></p>}
-    <details><summary>Opening a document in Word</summary>
-      <p>In a matter, choose Open in Word. Allow your browser to open doc.haus if asked; it opens the linked document in desktop Word. For an ordinary Word file, add it to the matter first. Keep doc.haus running while using the add-in.</p>
-      {status?.origin && <p className="settings-hint muted">Connection: {status.origin}</p>}
-    </details>
+    {status?.origin && <p className="settings-hint muted">Connection: {status.origin}</p>}
     <WordChatDefaults onBusy={setPreferencesBusy} />
   </section>
 }

@@ -28,6 +28,7 @@ import "./styles/design-settings.css"
 import "./styles/design-matters.css"
 import "./styles/launch-notice.css"
 import "./styles/contrast.css"
+import "./styles/modal-frost.css"
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

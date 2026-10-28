@@ -8,7 +8,6 @@ export default function AppearanceTab() {
   const set = (patch: Partial<Prefs>) => setPrefs(savePrefs(patch))
   return (
     <section className="settings-section">
-      <h3>Appearance</h3>
       <p className="settings-hint muted">Display preferences for this browser. Changes apply and save immediately.</p>
       <SegRow
         label="Text size"
@@ -19,6 +18,16 @@ export default function AppearanceTab() {
           { value: "compact", label: "Compact" },
           { value: "standard", label: "Standard" },
           { value: "large", label: "Large" },
+        ]}
+      />
+      <SegRow
+        label="Contrast"
+        hint="Use your system setting or increase contrast in doc.haus."
+        value={prefs.contrast}
+        onChange={(contrast) => set({ contrast: contrast as Prefs["contrast"] })}
+        options={[
+          { value: "system", label: "System" },
+          { value: "high", label: "High" },
         ]}
       />
       <div className="settings-type-preview">

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Route, Routes, useLocation } from "react-router-dom"
 import Matters from "./pages/Matters"
 import Clients from "./pages/Clients"
@@ -30,10 +30,14 @@ export default function App() {
   const [settings, setSettings] = useState(false)
   const [settingsTab, setSettingsTab] = useState<Tab>("ai")
   const [settingsShown, settingsClosing] = useExit(settings)
+  const [recoveryRequired, setRecoveryRequired] = useState(false)
   const [reconnectProvider, setReconnectProvider] = useState<string | undefined>()
   // Text size lands as a data attribute on <html> the stylesheet keys off.
   useEffect(() => {
     applyAppearance()
+  }, [])
+  const openRecovery = useCallback((providerID: string) => {
+    setReconnectProvider(providerID); setSettingsTab("ai"); setRecoveryRequired(true); setSettings(true)
   }, [])
   const [onboarding, setOnboarding] = useState(false)
   const [setup, setSetup] = useState<SetupProgress | null>(null)
@@ -95,8 +99,7 @@ export default function App() {
         <div id="matter-drawer-slot" className="matter-drawer-slot" />
         <main id="main-content" className="content" tabIndex={-1}>
           <ConnectionBanner />
-          <ProviderConnectionBanner enabled={setup?.next === "done" && !onboarding} onOpenSettings={providerID => { setReconnectProvider(providerID); setSettings(true) }} />
-          {setup?.next !== "done" && !onboarding && <p className="settings-notice">Setup is incomplete. {setup?.ready ? "Your models are saved. Finish or skip the remaining optional steps before starting assistant work." : "Save your model choices before starting assistant work."} <button onClick={() => setOnboarding(true)}>Resume setup</button></p>}
+          <ProviderConnectionBanner enabled={setup?.next === "done" && !onboarding && !recoveryRequired} onOpenSettings={openRecovery} />
           {/* Keyed on the path so each page settles in with a short fade. */}
           <div className={`container route-fade${location.pathname.startsWith("/matter/") ? " matter-container" : ""}`} key={location.pathname}>
             <Routes>
@@ -125,12 +128,14 @@ export default function App() {
         {settingsShown && (
           <Settings
             closing={settingsClosing}
+            recoveryRequired={recoveryRequired}
             initialTab={reconnectProvider !== undefined ? "ai" : settingsTab}
             reconnectProvider={reconnectProvider}
             onSampleAdded={() => setMattersVersion((v) => v + 1)}
             onClose={() => {
               // A second close during the exit animation changes nothing.
               if (!settings) return
+              setRecoveryRequired(false)
               setSettings(false)
               void refreshSetup()
             }}

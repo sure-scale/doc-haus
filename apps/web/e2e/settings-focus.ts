@@ -21,7 +21,7 @@ let nextSession = 0
 const candidates = new Map<string, Set<string>>()
 const models = ["primary", "fast"].map(id => ({ providerID: "fixture", id, name: id, enabled: true, capabilities: { tools: true, input: ["text"], output: ["text"] } }))
 page.on("pageerror", (error: Error) => errors.push(error.message))
-await context.addInitScript(() => sessionStorage.setItem("dh.launch-notice.v1", "accepted"))
+await context.addInitScript(() => localStorage.setItem("dh.launch-notice.v1", new Date().toDateString()))
 await context.route("**/*", async route => {
   const request = route.request()
   const url = new URL(request.url())

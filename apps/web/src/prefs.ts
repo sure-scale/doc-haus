@@ -7,6 +7,7 @@ import { readBrowserJSON, writeBrowserValue } from "./browser-storage"
 // engine as an instructions file (see api/ingest.ts getPreferences).
 export type Prefs = {
   textSize: "compact" | "standard" | "large"
+  contrast: "system" | "high"
   // Auto-approve the engine's permission asks for redline/tracked-change
   // proposals. Safe to automate: the tools only record pending tracked changes
   // the lawyer still accepts or rejects in the document viewer.
@@ -20,6 +21,7 @@ export type Prefs = {
 
 export const DEFAULT_PREFS: Prefs = {
   textSize: "standard",
+  contrast: "system",
   autoApproveRedlines: false,
   autoApproveDrafting: false,
   defaultJurisdictions: [],
@@ -33,6 +35,7 @@ export function loadPrefs(): Prefs {
   return {
     ...DEFAULT_PREFS,
     ...values,
+    contrast: "contrast" in values && values.contrast === "high" ? "high" : "system",
     autoApproveRedlines: "autoApproveRedlines" in values && values.autoApproveRedlines === true,
     autoApproveDrafting: "autoApproveDrafting" in values && values.autoApproveDrafting === true,
   }
@@ -50,6 +53,7 @@ export function savePrefs(patch: Partial<Prefs>, options: { requireStorage?: boo
 // ([data-text] scales the UI).
 export function applyAppearance(prefs: Prefs = loadPrefs()) {
   document.documentElement.dataset.text = prefs.textSize
+  document.documentElement.dataset.contrast = prefs.contrast
 }
 
 // Which permission asks each auto-approve toggle covers. Direct edits and

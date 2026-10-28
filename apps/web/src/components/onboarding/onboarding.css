@@ -45,19 +45,6 @@
   color: var(--muted);
 }
 
-.onboarding-topline > button {
-  flex: 0 0 auto;
-  min-height: 44px;
-  font-size: .85rem;
-  color: var(--muted);
-}
-
-.onboarding-topline > button span {
-  margin-left: var(--space-2);
-  font-size: 20px;
-  line-height: 1;
-}
-
 .onboarding-progress {
   margin-top: 28px;
 }
@@ -552,6 +539,12 @@
   border-top: 1px solid var(--border-soft);
 }
 
+.onboarding-panel .settings-section > .settings-form-row:first-child,
+.onboarding-panel .ai-setup-connection > .settings-form-row:first-child,
+.onboarding-panel .ai-setup-models > .settings-form-row:first-child {
+  border-top: 0;
+}
+
 .onboarding-panel .settings-field-copy {
   padding-top: var(--space-2);
 }
@@ -565,6 +558,24 @@
   padding-top: var(--space-2);
 }
 
+.onboarding-panel button.onboarding-back {
+  min-height: 44px;
+  padding-inline: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--accent);
+}
+
+.onboarding-panel button.onboarding-back:hover:not(:disabled) {
+  background: transparent;
+  text-decoration: underline;
+}
+
+.onboarding-panel button.onboarding-back:disabled {
+  opacity: .5;
+}
+
 .onboarding-panel .onboarding-actions,
 .onboarding-panel .onboarding-research > .settings-section > .settings-actions {
   display: flex;
@@ -573,7 +584,7 @@
   gap: 10px;
   margin-top: var(--space-6);
   padding-top: var(--space-5);
-  border-top: 1px solid var(--border);
+  border-top: 0;
 }
 
 .onboarding-panel .onboarding-actions > .primary,
@@ -596,22 +607,6 @@
   margin: 0;
   color: var(--muted);
   font-size: .8rem;
-}
-
-.onboarding-footer {
-  flex: 0 0 auto;
-  padding: var(--space-4) var(--space-7);
-  border-top: 1px solid var(--border);
-  background: var(--bg);
-}
-
-.onboarding-footer p {
-  margin: 0;
-  font-size: .8rem;
-}
-
-.onboarding-footer p {
-  color: var(--muted);
 }
 
 .onboarding-status {
@@ -757,14 +752,6 @@
     margin-bottom: var(--space-1);
   }
 
-  .onboarding-footer {
-    align-items: flex-start;
-    padding: 14px var(--space-5);
-  }
-
-  .onboarding-footer p {
-    max-width: 24ch;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

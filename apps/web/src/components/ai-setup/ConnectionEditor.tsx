@@ -23,7 +23,7 @@ export function connectionChoices(provider: Provider | undefined, integration: I
     ? { value: `credential:${connection.id}`, label: `${connection.label} · saved ${connection.method === "oauth" ? "sign-in" : "API key"}` }
     : { value: `env:${connection.name}`, label: `Server environment · ${connection.name}` })
   if (provider.host && !integration?.connections.length) saved.push({ value: "host", label: `Server credentials${provider.host.sources.length ? " · detected" : ""}` })
-  saved.push(...reusable.map(connection => ({ value: `reuse:${connection.sourceId}:${connection.connectionId}`, label: `${connection.label} · from ${connection.sourceLabel}` })))
+  saved.push(...reusable.map(connection => ({ value: `reuse:${connection.sourceId}:${connection.connectionId}`, label: `${connection.label} (${connection.sourceLabel})` })))
   if (endpoint && !integration?.connections.length) saved.push({ value: "host", label: "Endpoint without API key" })
   const methods = [...(integration?.methods ?? []), ...(endpoint && !integration?.methods.some(method => method.type === "key") ? [{ type: "key" as const, label: "New API key" }] : [])]
   return [...saved, ...methods.flatMap((method, index) => method.type === "env" ? [] : [{ value: `method:${index}`, label: method.label || (method.type === "key" ? "New API key" : "Sign in"), method }])]
@@ -50,6 +50,8 @@ export default function ConnectionEditor({ provider, integration, reusable, draf
 }) {
   const id = useId()
   const choices = connectionChoices(provider, integration, reusable, endpoint)
+  const existingChoices = choices.filter(choice => !choice.value.startsWith("method:"))
+  const newChoices = choices.filter(choice => choice.value.startsWith("method:"))
   const method = choices.find(choice => choice.value === draft.choice)?.method
   const spec = CLOUD_SETUPS.find(item => item.ids.includes(provider?.id ?? ""))
   const fields = method && "form" in method ? method.form ?? [] : []
@@ -72,12 +74,12 @@ export default function ConnectionEditor({ provider, integration, reusable, draf
           onChange({ ...draft, choice: event.target.value, key: "", answer: methodDefaults(method) })
         }}>
           <option value="">Choose a connection method</option>
-          {choices.map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
+          {existingChoices.length > 0 && <optgroup label="Existing connections">{existingChoices.map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}</optgroup>}
+          {newChoices.length > 0 && <optgroup label="Add a new connection">{newChoices.map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}</optgroup>}
         </select>
       </FieldRow>
       {endpoint && <FieldRow id={`${id}-url`} label="Endpoint" hint="An OpenAI-compatible address reachable from the computer running doc.haus."><input id={`${id}-url`} aria-describedby={`${id}-url-hint`} disabled={disabled} value={draft.options.baseURL ?? ""} onChange={event => setOption("baseURL", event.target.value)} /></FieldRow>}
       {draft.choice.startsWith("env:") && <p className="settings-hint muted">Uses the detected environment value. When you save, a copy is stored as a connection in this installation.</p>}
-      {draft.choice.startsWith("reuse:") && <p className="settings-hint muted">Only this selected sign-in will be reused. It becomes active in this installation when you save.</p>}
       {method?.type === "key" && <FieldRow id={`${id}-key`} label="API key">
         <PasswordInput id={`${id}-key`} value={draft.key} disabled={disabled} onChange={key => onChange({ ...draft, key })} />
       </FieldRow>}

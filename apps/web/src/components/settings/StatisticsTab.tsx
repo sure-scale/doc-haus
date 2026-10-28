@@ -66,7 +66,6 @@ export default function StatisticsTab({ onSaved, onError }: { onSaved: (text: st
   }
   if (loadError) return (
     <section className="settings-section">
-      <h3>Statistics</h3>
       <p className="settings-hint settings-warning" role="status">Could not load statistics.</p>
       <button type="button" className="ghost" onClick={() => setLoadAttempt((attempt) => attempt + 1)}>Try again</button>
     </section>
@@ -74,7 +73,6 @@ export default function StatisticsTab({ onSaved, onError }: { onSaved: (text: st
   if (!prefs || !storage) return <p className="muted" role="status">Loading statistics...</p>
   return (
     <section className="settings-section">
-      <h3>Statistics</h3>
       <p className="settings-hint muted">
         Local usage telemetry used for cost and token reporting. These controls affect stored telemetry only; they do
         not change matter documents or drafting instructions.

@@ -52,7 +52,7 @@ function fixture(options: { setup?: "done" | "details"; list?: "filled" | "empty
 async function open(state: ReturnType<typeof fixture>, width: number, height: number) {
   allStates.push(state)
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: width <= 768, reducedMotion: "reduce", timezoneId: "Europe/London" })
-  await context.addInitScript(() => { sessionStorage.setItem("dh.launch-notice.v1", "accepted"); localStorage.setItem("dh.sidebar", innerWidth > 960 ? "0" : "1") })
+  await context.addInitScript(() => { localStorage.setItem("dh.launch-notice.v1", new Date().toDateString()); localStorage.setItem("dh.sidebar", innerWidth > 960 ? "0" : "1") })
   await context.route("**/*", async (route: Route) => {
     const request = route.request()
     const url = new URL(request.url())
