@@ -7,6 +7,7 @@ import { paragraphTargets } from "./drafting-amendment"
 import { renderMarkdownToDocx } from "./render"
 import { wordChanges } from "./word-changes"
 import { docxodus } from "./docxodus"
+import { readDocxComments } from "./docx-comments"
 import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx } from "../test/support/counterparty-markup-fixture"
 import { revisionTablesOriginalDocx } from "../test/support/revision-tables-fixture"
 
@@ -984,5 +985,108 @@ test("preservation refuses moved comment and bookmark anchors with unchanged vis
     const baseline = await openRevision(source), added = await openRevision(zipSync(parts))
     try { expect(() => verifyPreservation(baseline, added, new Set([0]))).toThrow("docx_protected_inline_content_changed") }
     finally { baseline.session.close(); added.session.close() }
+  }
+})
+
+test("edits a simple unlocked rich-text control with tracked and untracked writes", async () => {
+  const original = (await renderMarkdownToDocx("Before Alpha beta term after.\n\nOther paragraph.")).bytes, W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const fixture = (extra = "") => {
+    const parts = unzipSync(original), doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+    const text = Array.from(doc.getElementsByTagNameNS(W, "t")).find(node => node.textContent === "Before Alpha beta term after.")!, run = text.parentNode!, parent = run.parentNode!
+    const sample = new DOMParser().parseFromString(`<w:p xmlns:w="${W}"><w:r><w:t xml:space="preserve">Before </w:t></w:r><w:sdt><w:sdtPr><w:tag w:val="term"/><w:id w:val="27"/>${extra}</w:sdtPr><w:sdtContent><w:r><w:rPr><w:b/></w:rPr><w:t>Alpha beta term</w:t></w:r></w:sdtContent></w:sdt><w:r><w:t xml:space="preserve"> after.</w:t></w:r></w:p>`, "application/xml")
+    for (const child of Array.from(sample.documentElement.childNodes)) parent.insertBefore(doc.importNode(child, true), run)
+    parent.removeChild(run); parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc)); return zipSync(parts)
+  }
+  for (const options of [{}, { pendingRevisions: "layer" as const, revisionAuthor: "doc.haus" }]) {
+    const source = fixture(), revision = await createDocxRevision(source, options), p = revision.paragraphs.find(row => row.text.includes("Alpha beta"))!
+    const edit = { id: "term", paragraph_handle: p.paragraph_handle, occurrence: 0, before_quote: "beta", replacement: "delta" }
+    const output = await applyDocxParagraphEdits(source, [edit], undefined, options)
+    const doc = new DOMParser().parseFromString(strFromU8(unzipSync(output.bytes)["word/document.xml"]!), "application/xml"), control = doc.getElementsByTagNameNS(W, "sdt")[0]!
+    expect(control.getElementsByTagNameNS(W, "tag")[0]!.getAttributeNS(W, "val")).toBe("term")
+    expect(control.getElementsByTagNameNS(W, "id")[0]!.getAttributeNS(W, "val")).toBe("27")
+    expect(Array.from(control.getElementsByTagNameNS(W, "r")).every(run => run.getElementsByTagNameNS(W, "b").length === 1)).toBe(true)
+    if (options.revisionAuthor) {
+      const opened = await openRevision(source, { ...options, amendmentAuthors: { other: "Other" } }), ordinal = opened.revision.paragraphs.findIndex(row => row.text.includes("Alpha beta"))
+      const span = new Map([[ordinal, [{ offset: p.text.indexOf("beta"), replaced: "beta", changed: "delta" }]]])
+      const tamper = async (mutate: (control: Element) => void) => {
+        const parts = unzipSync(output.bytes), altered = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+        mutate(altered.getElementsByTagNameNS(W, "sdt")[0]!); parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(altered))
+        const saved = await openRevision(zipSync(parts), options)
+        try { expect(() => verifyPreservation(opened, saved, new Set([ordinal]), span)).toThrow("docx_protected_inline_content_changed") }
+        finally { saved.session.close() }
+      }
+      try {
+        await tamper(control => control.getElementsByTagNameNS(W, "tag")[0]!.setAttributeNS(W, "w:val", "wrong"))
+        await tamper(control => control.getElementsByTagNameNS(W, "ins")[0]!.setAttributeNS(W, "w:author", "Other"))
+        await tamper(control => control.getElementsByTagNameNS(W, "t")[0]!.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "default"))
+        await tamper(control => { const text = control.getElementsByTagNameNS(W, "t")[0]!; text.appendChild(text.ownerDocument.createElementNS(W, "w:object")) })
+        await tamper(control => { const bold = control.getElementsByTagNameNS(W, "b")[0]!; bold.parentNode!.replaceChild(bold.ownerDocument.createElementNS(W, "w:i"), bold) })
+      } finally { opened.session.close() }
+      const dx = await docxodus()
+      for (const accept of [false, true]) {
+        const session = dx.openDocxSession(output.bytes, { persistAnchorIds: false })
+        try {
+          for (const rev of session.listRevisions()) expect((accept ? session.acceptRevision(rev.id) : session.rejectRevision(rev.id)).success).toBe(true)
+          const resolved = new DOMParser().parseFromString(strFromU8(unzipSync(session.save())["word/document.xml"]!), "application/xml")
+          expect(resolved.getElementsByTagNameNS(W, "sdt")[0]!.textContent).toBe(accept ? "Alpha delta term" : "Alpha beta term")
+        } finally { session.close() }
+      }
+    }
+    const entire = { ...edit, before_quote: "Alpha beta term", replacement: "Gamma delta clause" }
+    const entireOutput = await applyDocxParagraphEdits(source, [entire], undefined, options)
+    expect((await createDocxRevision(entireOutput.bytes, { pendingRevisions: "layer" })).paragraphs.find(row => row.text.includes("Gamma delta clause"))).toBeDefined()
+    if (options.revisionAuthor) {
+      const dx = await docxodus()
+      for (const accept of [false, true]) {
+        const session = dx.openDocxSession(entireOutput.bytes, { persistAnchorIds: false })
+        try {
+          for (const rev of session.listRevisions()) expect((accept ? session.acceptRevision(rev.id) : session.rejectRevision(rev.id)).success).toBe(true)
+          const resolved = new DOMParser().parseFromString(strFromU8(unzipSync(session.save())["word/document.xml"]!), "application/xml")
+          expect(resolved.getElementsByTagNameNS(W, "sdt")[0]!.textContent).toBe(accept ? "Gamma delta clause" : "Alpha beta term")
+        } finally { session.close() }
+      }
+    }
+    // Shared words make this a partial edge edit, not an exact whole-control change.
+    await expect(applyDocxParagraphEdits(source, [{ ...entire, replacement: "Alpha delta clause" }], undefined, options)).rejects.toThrow("docx_protected_inline_content")
+    for (const [before_quote, replacement] of [["Alpha", "Gamma"], ["Before Alpha", "Before Gamma"], ["Alpha", "New Alpha"]])
+      await expect(applyDocxParagraphEdits(source, [{ ...edit, before_quote, replacement }], undefined, options)).rejects.toThrow("docx_protected_inline_content")
+    const nestedParts = unzipSync(source), nestedDoc = new DOMParser().parseFromString(strFromU8(nestedParts["word/document.xml"]!), "application/xml")
+    const content = nestedDoc.getElementsByTagNameNS(W, "sdtContent")[0]!, child = content.firstChild!
+    const nested = new DOMParser().parseFromString(`<w:sdt xmlns:w="${W}"><w:sdtPr><w:id w:val="28"/></w:sdtPr><w:sdtContent/></w:sdt>`, "application/xml")
+    const wrapped = nestedDoc.importNode(nested.documentElement, true) as Element
+    content.replaceChild(wrapped, child); wrapped.getElementsByTagNameNS(W, "sdtContent")[0]!.appendChild(child)
+    nestedParts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(nestedDoc)); const nestedFile = zipSync(nestedParts)
+    const nestedView = await createDocxRevision(nestedFile, options), nestedP = nestedView.paragraphs.find(row => row.text.includes("Alpha beta"))!
+    await expect(applyDocxParagraphEdits(nestedFile, [{ ...edit, paragraph_handle: nestedP.paragraph_handle }], undefined, options)).rejects.toThrow("docx_protected_inline_content")
+    for (const extra of ['<w:lock w:val="sdtLocked"/>', '<w:dataBinding w:storeItemID="id" w:xpath="/root"/>', '<w:text/>']) {
+      const protectedFile = fixture(extra), view = await createDocxRevision(protectedFile, options), row = view.paragraphs.find(row => row.text.includes("Alpha beta"))!
+      await expect(applyDocxParagraphEdits(protectedFile, [{ ...edit, paragraph_handle: row.paragraph_handle }], undefined, options)).rejects.toThrow("docx_protected_inline_content")
+    }
+  }
+})
+
+test("an edit inside a simple control preserves other reviewers' revisions and comments", async () => {
+  const parts = unzipSync(counterpartyMarkupDocx()), W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", parser = new DOMParser()
+  const doc = parser.parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+  const text = Array.from(doc.getElementsByTagNameNS(W, "t")).find(node => node.textContent === "9. Governing law. This Agreement is governed by the law of the Province.")!
+  const run = text.parentNode!, parent = run.parentNode!, block = parser.parseFromString(`<w:p xmlns:w="${W}"><w:r><w:t xml:space="preserve">9. Governing law. </w:t></w:r><w:sdt><w:sdtPr><w:tag w:val="law"/><w:id w:val="27"/></w:sdtPr><w:sdtContent><w:r><w:t>This Agreement is governed by the law of the Province.</w:t></w:r></w:sdtContent></w:sdt></w:p>`, "application/xml")
+  for (const child of Array.from(block.documentElement.childNodes)) parent.insertBefore(doc.importNode(child, true), run)
+  parent.removeChild(run); parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc)); const source = zipSync(parts)
+  const options = { pendingRevisions: "layer" as const, revisionAuthor: "doc.haus", ownAuthors: ["doc.haus"] }
+  const view = await createDocxRevision(source, options), paragraph = view.paragraphs.find(row => row.text.includes("the Province."))!
+  const output = await applyDocxParagraphEdits(source, [{ id: "law", paragraph_handle: paragraph.paragraph_handle, occurrence: 0, before_quote: "Province", replacement: "State" }], undefined, options)
+  expect(readDocxComments(output.bytes)).toEqual(readDocxComments(source))
+  const dx = await docxodus(), originalSession = dx.openDocxSession(source, { persistAnchorIds: false })
+  const previous = originalSession.listRevisions(); originalSession.close()
+  for (const accept of [false, true]) {
+    const session = dx.openDocxSession(output.bytes, { persistAnchorIds: false })
+    try {
+      const known = new Set(previous.map(rev => rev.id))
+      for (const rev of session.listRevisions().filter(rev => !known.has(rev.id))) expect((accept ? session.acceptRevision(rev.id) : session.rejectRevision(rev.id)).success).toBe(true)
+      expect(session.listRevisions().map(({ id, author, type, text, date }) => ({ id, author, type, text, date }))).toEqual(previous.map(({ id, author, type, text, date }) => ({ id, author, type, text, date })))
+      const result = parser.parseFromString(strFromU8(unzipSync(session.save())["word/document.xml"]!), "application/xml"), control = result.getElementsByTagNameNS(W, "sdt")[0]!
+      expect(control.textContent).toBe(`This Agreement is governed by the law of the ${accept ? "State" : "Province"}.`)
+      expect(control.getElementsByTagNameNS(W, "tag")[0]!.getAttributeNS(W, "val")).toBe("law")
+    } finally { session.close() }
   }
 })

@@ -367,11 +367,11 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
       const changed = new Set(edits.map(edit => edit.ordinal))
       // The edited runs are those of the session the edits were written in,
       // which stays open until its own check has compared their formatting.
-      const spans = new Map<number, WordChange[]>()
+      const spans = new Map<number, ProtectedWordChange[]>()
       for (const edit of edits) {
         const previous = spans.get(edit.ordinal) ?? []
         previous.push(...edit.changes.map(change => ({ offset: change.match.span.start - opened.paragraphs[edit.ordinal]!.match.span.start,
-          replaced: change.match.text, changed: change.replacement })))
+          replaced: change.match.text, changed: change.replacement, author: author(edit) })))
         spans.set(edit.ordinal, previous)
       }
       verifyPreservation(opened, reopened, changed, spans)
@@ -772,7 +772,9 @@ export async function openRevision(source: Uint8Array, options: DocxRevisionOpti
   } catch (error) { session.close(); throw error }
 }
 
-export function verifyPreservation(before: Awaited<ReturnType<typeof openRevision>>, saved: Awaited<ReturnType<typeof openRevision>>, changed: Set<number>, spans?: Map<number, WordChange[]>) {
+type ProtectedWordChange = WordChange & { author?: string }
+
+export function verifyPreservation(before: Awaited<ReturnType<typeof openRevision>>, saved: Awaited<ReturnType<typeof openRevision>>, changed: Set<number>, spans?: Map<number, ProtectedWordChange[]>) {
   const after = before.options.revisionAuthor ? withoutTrackChangesSetting(before, saved) : saved
   if (before.paragraphs.length !== after.paragraphs.length) throw new Error("docx_paragraph_structure_changed")
   const ignoredBefore = new Set([...changed].map(ordinal => before.paragraphs[ordinal].node))
@@ -793,7 +795,7 @@ export function verifyPreservation(before: Awaited<ReturnType<typeof openRevisio
     if (canonical(a.node.cloneNode(false)) !== canonical(b.node.cloneNode(false))
       || canonical(children(a.node, "pPr")[0]) !== canonical(children(b.node, "pPr")[0]))
       throw new Error("docx_paragraph_properties_changed")
-    verifyInlineControls(a.node, b.node, a.match.text, b.match.text, spans?.get(ordinal))
+    verifyInlineControls(a.node, b.node, a.match.text, b.match.text, spans?.get(ordinal), before.options.revisionAuthor)
     // Native UNIDs are transient, but within this session identify original runs.
     const edited = parse(before.session.raw.getXml(a.match.enclosingAnchor.id))
     const remaining = new Map(elements(edited, "r").map(run => [run.getAttributeNS(PT, "Unid"), run]))
@@ -806,37 +808,37 @@ export function verifyPreservation(before: Awaited<ReturnType<typeof openRevisio
 }
 
 // Prove both the complete control markup and its position in the visible
-// paragraph. Text edits beside a control can shift that position; edits through
-// or exactly at its boundary are ambiguous and are refused. The control's own
-// wording, lock and binding are never edited by this route.
-function verifyInlineControls(before: Element, after: Element, oldText: string, newText: string, actualChanges?: WordChange[]) {
+// paragraph. Edits beside a control can shift that position. A single edit
+// strictly inside, or exactly replacing all text in, a narrowly supported
+// rich-text control may change its wording; other boundary crossings refuse.
+function verifyInlineControls(before: Element, after: Element, oldText: string, newText: string, actualChanges?: ProtectedWordChange[], defaultAuthor?: string) {
   const annotations = (paragraph: Element) => {
     let offset = 0
-    const found: { kind: string; start: number; end: number; xml: string }[] = []
+    const found: { kind: string; start: number; end: number; xml: string; node: Element }[] = []
     const walk = (node: Element) => {
       if (node.namespaceURI === W && ["pPr", "rPr"].includes(node.localName)) return
       if (node.namespaceURI === W && ["del", "moveFrom"].includes(node.localName)) {
         if (["sdt", "bookmarkStart", "bookmarkEnd", "commentRangeStart", "commentRangeEnd", "commentReference"].some(name => elements(node, name).length))
-          found.push({ kind: node.localName, start: offset, end: offset, xml: canonical(node) })
+          found.push({ kind: node.localName, start: offset, end: offset, xml: canonical(node), node })
         return
       }
       if (node.namespaceURI === W && node.localName === "t") { offset += node.textContent?.length ?? 0; return }
       if (node.namespaceURI === W && node.localName === "ins" && ["sdt", "bookmarkStart", "bookmarkEnd", "commentRangeStart", "commentRangeEnd", "commentReference"].some(name => elements(node, name).length)) {
-        const record = { kind: "sdt", start: offset, end: offset, xml: canonical(node) }
+        const record = { kind: "sdt", start: offset, end: offset, xml: canonical(node), node }
         found.push(record)
         for (const child of Array.from(node.childNodes)) if (child.nodeType === 1) walk(child as Element)
         record.end = offset
         return
       }
       if (node.namespaceURI === W && node.localName === "sdt") {
-        const record = { kind: "sdt", start: offset, end: offset, xml: canonical(node) }
+        const record = { kind: "sdt", start: offset, end: offset, xml: canonical(node), node }
         found.push(record)
         for (const child of Array.from(node.childNodes)) if (child.nodeType === 1) walk(child as Element)
         record.end = offset
         return
       }
       if (node.namespaceURI === W && ["bookmarkStart", "bookmarkEnd", "commentRangeStart", "commentRangeEnd", "commentReference"].includes(node.localName))
-        found.push({ kind: node.localName, start: offset, end: offset, xml: canonical(node) })
+        found.push({ kind: node.localName, start: offset, end: offset, xml: canonical(node), node })
       for (const child of Array.from(node.childNodes)) if (child.nodeType === 1) walk(child as Element)
     }
     walk(paragraph)
@@ -844,18 +846,80 @@ function verifyInlineControls(before: Element, after: Element, oldText: string, 
   }
   const previous = annotations(before), current = annotations(after)
   if (!previous.length && !current.length) return
-  const changes = (actualChanges ?? wordChanges(oldText, newText)).filter(change => change.replaced || change.changed)
+  const changes: ProtectedWordChange[] = (actualChanges ?? wordChanges(oldText, newText)).filter(change => change.replaced || change.changed)
   const map = (point: number, includeAt = false) => point + changes.reduce((delta, change) =>
     delta + (change.offset + change.replaced.length <= point && (change.offset < point || includeAt && !change.replaced.length && change.offset === point) ? change.changed.length - change.replaced.length : 0), 0)
   if (previous.length !== current.length || previous.some((control, index) => {
     const next = current[index]!
-    return changes.some(change => control.kind === "sdt" ? change.replaced.length
+    const inside = control.kind === "sdt" && changes.filter(change => change.replaced.length
       ? change.offset < control.end && change.offset + change.replaced.length > control.start
-      : change.offset >= control.start && change.offset <= control.end
+      : change.offset >= control.start && change.offset <= control.end)
+    const approved = inside && inside.length === 1 && actualChanges && inside.every(change =>
+      change.offset > control.start && change.offset + change.replaced.length < control.end ||
+      change.offset === control.start && change.offset + change.replaced.length === control.end &&
+      change.replaced === oldText.slice(control.start, control.end) && !!change.changed) && safeControlTextEdit(control.node, next.node,
+      oldText.slice(control.start, control.end), newText.slice(map(control.start), map(control.end)), inside[0]!, inside[0]!.offset - control.start, inside[0]!.author ?? defaultAuthor)
+    return changes.some(change => control.kind === "sdt" ? !approved && (change.replaced.length
+      ? change.offset < control.end && change.offset + change.replaced.length > control.start
+      : change.offset >= control.start && change.offset <= control.end)
       : change.replaced.length ? change.offset < control.start && change.offset + change.replaced.length > control.start
       : change.offset === control.start && !["bookmarkStart", "bookmarkEnd"].includes(control.kind)) ||
-      control.kind !== next.kind || control.xml !== next.xml || map(control.start, control.kind === "bookmarkEnd") !== next.start || map(control.end, control.kind === "bookmarkEnd") !== next.end
+      control.kind !== next.kind || (!approved && control.xml !== next.xml) || map(control.start, control.kind === "bookmarkEnd") !== next.start || map(control.end, control.kind === "bookmarkEnd") !== next.end
   })) throw new Error("docx_protected_inline_content_changed")
+}
+
+// A deliberately narrow rich-text control: one unbound, unlocked, unnested
+// run with one text node and no existing markup in its content. Compare its
+// entire control shell and per-character run properties on both views.
+function safeControlTextEdit(before: Element, after: Element, oldText: string, newText: string, change: WordChange, localOffset: number, author?: string): boolean {
+  if (before.namespaceURI !== W || before.localName !== "sdt" || after.namespaceURI !== W || after.localName !== "sdt") return false
+  const direct = (node: Element) => Array.from(node.childNodes).filter((child): child is Element => child.nodeType === 1)
+  const b = direct(before), a = direct(after)
+  if (b.length !== 2 || a.length !== 2 || b[0]!.namespaceURI !== W || b[0]!.localName !== "sdtPr" ||
+    b[1]!.namespaceURI !== W || b[1]!.localName !== "sdtContent" || a[0]!.namespaceURI !== W || a[0]!.localName !== "sdtPr" ||
+    a[1]!.namespaceURI !== W || a[1]!.localName !== "sdtContent" || canonical(before.cloneNode(false)) !== canonical(after.cloneNode(false)) ||
+    canonical(b[0]) !== canonical(a[0]) || canonical(b[1]!.cloneNode(false)) !== canonical(a[1]!.cloneNode(false))) return false
+  if (!direct(b[0]!).every(node => node.namespaceURI === W && ["alias", "tag", "id"].includes(node.localName) && direct(node).length === 0)) return false
+  const plainText = (node: Element) => direct(node).length === 0 &&
+    (!/^\s|\s$/.test(node.textContent ?? "") || node.getAttributeNS("http://www.w3.org/XML/1998/namespace", "space") === "preserve") && Array.from(node.attributes).every(attr =>
+    attr.namespaceURI === "http://www.w3.org/2000/xmlns/" || attr.namespaceURI === "http://www.w3.org/XML/1998/namespace" &&
+      attr.localName === "space" && ["preserve", "default"].includes(attr.value))
+  const runs = direct(b[1]!)
+  if (runs.length !== 1 || runs[0]!.namespaceURI !== W || runs[0]!.localName !== "r") return false
+  const first = runs[0]!, fields = direct(first), text = fields.filter(node => node.namespaceURI === W && node.localName === "t")
+  if (text.length !== 1 || fields.some(node => node.namespaceURI !== W || !["rPr", "t"].includes(node.localName)) ||
+    children(first, "rPr").length > 1 || !plainText(text[0]!) || text[0]!.textContent !== oldText) return false
+  const attrs = canonical(first.cloneNode(false)), properties = canonical(children(first, "rPr")[0])
+  let current = "", original = "", revised = false
+  const revisions: { kind: string; text: string }[] = []
+  for (const node of direct(a[1]!)) {
+    if (node.namespaceURI !== W || !["r", "ins", "del"].includes(node.localName)) return false
+    const group = node.localName === "r" ? [node] : direct(node)
+    if (node.localName !== "r") {
+      revised = true
+      if (original.length !== localOffset + (node.localName === "ins" ? change.replaced.length : 0)) return false
+      if (Array.from(node.attributes).some(attr => attr.namespaceURI !== "http://www.w3.org/2000/xmlns/" &&
+        (attr.namespaceURI !== W || !["id", "author", "date"].includes(attr.localName)))) return false
+      if (!author || node.getAttributeNS(W, "author") !== author || !/^\d+$/.test(node.getAttributeNS(W, "id") ?? "") ||
+        !Number.isFinite(Date.parse(node.getAttributeNS(W, "date") ?? ""))) return false
+    }
+    if (!group.length) return false
+    let revisionText = ""
+    for (const run of group) {
+      if (run.namespaceURI !== W || run.localName !== "r" || canonical(run.cloneNode(false)) !== attrs || canonical(children(run, "rPr")[0]) !== properties) return false
+      const items = direct(run)
+      if (items.some(item => item.namespaceURI !== W || !["rPr", "t", "delText"].includes(item.localName)) || children(run, "rPr").length > 1) return false
+      const content = items.filter(item => item.localName === (node.localName === "del" ? "delText" : "t"))
+      if (content.length !== 1 || !plainText(content[0]!) || items.filter(item => ["t", "delText"].includes(item.localName)).length !== 1) return false
+      const value = content[0]!.textContent ?? ""
+      revisionText += value
+      if (node.localName !== "del") current += value
+      if (node.localName !== "ins") original += value
+    }
+    if (node.localName !== "r") revisions.push({ kind: node.localName, text: revisionText })
+  }
+  const expected = [...change.replaced ? [{ kind: "del", text: change.replaced }] : [], ...change.changed ? [{ kind: "ins", text: change.changed }] : []]
+  return current === newText && (author ? revised && original === oldText && JSON.stringify(revisions) === JSON.stringify(expected) : !revised)
 }
 
 // A tracked-change save switches Track Changes on: Docxodus adds
