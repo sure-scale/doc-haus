@@ -1,4 +1,6 @@
 import { docxodus } from "./docxodus"
+import { applyDocxParagraphFormatting } from "../../../dochaus/lib/docx-paragraph-formatting"
+import type { WordChatParagraphFormat } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { compareDocxWithPointers, paragraphTargets, resolveParagraphTarget, withStableRevisionDates, type ParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import type { RedlineRow } from "./db"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
@@ -96,6 +98,14 @@ export async function buildRedlined(original: Uint8Array, rows: RedlineRow[], st
   // Paragraph comments cannot safely follow a structural replay by ordinal.
   if (annotated && rows.some(row => /[\r\n\t]/.test(row.find_text + row.new_text)))
     throw new RedlinePreviewConflictError("Word review comments require paragraph-preserving proposals. Prepare a fresh change list without structural replacements.")
+  if (rows.some((row) => row.formatting_json != null)) {
+    try { return await trackedExport(original, rows, state, { ...options, pendingRevisions: "layer" }) }
+    catch (error) {
+      if (error instanceof RedlinePreviewConflictError) throw error
+      if (error instanceof RedlineReplayError) throw new RedlinePreviewConflictError(error.refusal)
+      throw new RedlinePreviewConflictError("A formatting proposal cannot be safely previewed. Prepare a fresh change list against the current document.")
+    }
+  }
   if (rows.some((row) => row.target_json != null)) {
     try {
       // An older clause rewrite replaces its whole paragraph, which a tracked
@@ -283,7 +293,7 @@ async function writeProposals(original: Uint8Array, rows: RedlineRow[], state: R
   const older = rows.filter((row) => row.target_json == null)
   const written = bound.length ? await bakeBound(original, bound, state,
     { ...options, ...how.ownAuthors ? { ownAuthors: how.ownAuthors } : {}, ...how.tracked ? trackedAs(bound) : {} }) : undefined
-  const replayed = older.length ? await bakeOlder(written?.bytes ?? original, older, how.tracked, how.locate) : undefined
+  const replayed = older.length ? await bakeOlder(written?.bytes ?? original, older, how.tracked, how.locate, options) : undefined
   const bytes = replayed?.bytes ?? written?.bytes ?? original
   if (!how.locate) return { bytes, positions: [] }
   const handles = written && await bodyParagraphPositions(original, options)
@@ -295,24 +305,55 @@ async function writeProposals(original: Uint8Array, rows: RedlineRow[], state: R
 // Older proposals, replayed by their text; `tracked`, as native tracked changes
 // under each proposal's author. With `locate`, an annotated row's position is
 // that of the one accepted paragraph its replay changes.
-async function bakeOlder(original: Uint8Array, rows: RedlineRow[], tracked = false, locate = false) {
+async function bakeOlder(original: Uint8Array, rows: RedlineRow[], tracked = false, locate = false, options: DocxRevisionOptions = {}) {
   const dx = await docxodus()
-  const session = dx.openDocxSession(original, tracked ? { trackedChanges: "render_inline", revisionAuthor: rowAuthor(rows[0]!) } : {})
-  try {
-    const positions = rows.map((row) => {
-      if (tracked) session.setRevisionAuthor(rowAuthor(row))
-      const before = locate && row.review_comment.trim() ? readDocxCommentParagraphPositions(session.save()) : undefined
+  let bytes = original
+  const positions: Array<number | undefined> = []
+  for (const row of rows) {
+    if (row.formatting_json != null) {
+      if (row.scope !== "clause" || row.target_json != null || /[\r\n\t]/.test(row.find_text + row.new_text))
+        throw new RedlineReplayError(row, "Formatting requires one complete existing paragraph.")
+      let format: Omit<WordChatParagraphFormat, "paragraph">
+      try { format = JSON.parse(row.formatting_json) } catch { throw new RedlineReplayError(row, "The formatting proposal is invalid.") }
+      const opened = await openRevision(bytes, { ...options, pendingRevisions: "layer", ownAuthors: ours([rowAuthor(row)]),
+        ...(tracked ? { revisionAuthor: rowAuthor(row) } : {}) })
+      let position: number, handle: string
+      try {
+        const matches = opened.paragraphs.filter(p => p.part === "word/document.xml" && p.match.text === row.find_text)
+        if (matches.length !== 1) throw new RedlineReplayError(row, "The complete formatting target is missing or ambiguous.")
+        const selected = matches[0]!
+        handle = opened.revision.paragraphs[opened.paragraphs.indexOf(selected)]!.paragraph_handle
+        position = Array.from(opened.documents["word/document.xml"]!.getElementsByTagNameNS(W, "p")).indexOf(selected.node)
+        if (position < 0) throw new RedlineReplayError(row, "The complete formatting target is unavailable.")
+        const refused = pendingRevisionRefusal(opened.session, pendingRevisionAnchors(opened.session), [selected.match.enclosingAnchor.id], row.find_text, "applied", ours([rowAuthor(row)]), true)
+        if (refused) throw new RedlineReplayError(row, refused)
+      } finally { opened.session.close() }
+      if (row.new_text !== row.find_text) {
+        try {
+          bytes = (await applyDocxParagraphEdits(bytes, [{ id: String(row.id), paragraph_handle: handle, occurrence: 0,
+            before_quote: row.find_text, replacement: row.new_text }], undefined,
+            { ...options, pendingRevisions: "layer", ownAuthors: ours([rowAuthor(row)]), ...(tracked ? { revisionAuthor: rowAuthor(row) } : {}) })).bytes
+        } catch { throw new RedlineReplayError(row, "The paragraph wording could not be changed safely.") }
+      }
+      try {
+        bytes = await applyDocxParagraphFormatting(bytes, { paragraphText: row.new_text, format, author: rowAuthor(row), tracked, allowNoop: row.find_text !== row.new_text,
+          options: { ...options, pendingRevisions: "layer", ownAuthors: ours([rowAuthor(row)]) } })
+      } catch { throw new RedlineReplayError(row, "The formatting target changed or cannot be formatted safely.") }
+      positions.push(locate && row.review_comment.trim() ? position : undefined)
+      continue
+    }
+    const session = dx.openDocxSession(bytes, tracked ? { trackedChanges: "render_inline", revisionAuthor: rowAuthor(row) } : {})
+    try {
+      const before = locate && row.review_comment.trim() ? readDocxCommentParagraphPositions(bytes) : undefined
       const result = applyProposal(session, row)
       if (!result.ok) throw new RedlineReplayError(row, result.error)
-      if (!before) return undefined
-      const after = readDocxCommentParagraphPositions(session.save())
-      const changed = after.filter((paragraph, index) => paragraph.paragraph_text !== before[index]?.paragraph_text)
-      return after.length === before.length && changed.length === 1 ? changed[0]!.xml_paragraph_indexes[0] : undefined
-    })
-    return { bytes: session.save(), positions }
-  } finally {
-    session.close()
+      bytes = session.save()
+      const after = before && readDocxCommentParagraphPositions(bytes)
+      const changed = before && after?.filter((paragraph, index) => paragraph.paragraph_text !== before[index]?.paragraph_text)
+      positions.push(before && after && after.length === before.length && changed?.length === 1 ? changed[0]!.xml_paragraph_indexes[0] : undefined)
+    } finally { session.close() }
   }
+  return { bytes, positions }
 }
 
 // Version 1 binds a proposal to the whole Word revision it was prepared against.

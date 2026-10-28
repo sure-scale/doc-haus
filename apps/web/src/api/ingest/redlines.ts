@@ -10,6 +10,7 @@ export type Redline = {
   new_text: string
   author: string
   review_comment: string
+  formatting_json?: string | null
   created_at: number
   stale?: boolean
   stale_reason?: string

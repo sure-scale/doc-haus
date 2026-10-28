@@ -24,7 +24,10 @@ test("legacy alias proposals remain visible and future writes use canonical path
     expect((db.query("SELECT doc_path FROM redlines WHERE id = ?").get(first.id) as { doc_path: string }).doc_path).toBe(realpathSync.native(file))
     // A row created by the old transport is kept verbatim; no data rewrite is needed.
     db.run("UPDATE redlines SET doc_path = ? WHERE id = ?", [path.join(alias, "source.docx"), first.id])
-    const second = recordRedlineProposal(matter, proposal(file, "second"))
+    const second = recordRedlineProposal(matter, { ...proposal(file, "second"), formatting: { style: "Heading1", spacingAfter: 6 } })
+    const stored = listPendingRedlines(db, file)
+    expect(stored[0]?.formatting_json).toBeNull()
+    expect(JSON.parse(stored[1]!.formatting_json!)).toEqual({ style: "Heading1", spacingAfter: 6 })
     expect(listPendingRedlines(db, realpathSync.native(file)).map(row => row.id)).toEqual([first.id, second.id])
     expect(pendingRedlineCounts(db)[documentRegistryIdentity(file)]).toBe(2)
     expect((db.query("SELECT doc_path FROM redlines WHERE id = ?").get(first.id) as { doc_path: string }).doc_path).toBe(path.join(alias, "source.docx"))

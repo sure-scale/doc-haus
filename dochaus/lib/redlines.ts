@@ -28,6 +28,7 @@ export function recordRedline(
     author: string
     reviewComment: string
     anchorId: string
+    formatting?: Record<string, unknown>
   },
 ) {
   const normalized = { ...row, docPath: canonicalRedlinePath(matterDir, row.docPath) }
@@ -82,6 +83,7 @@ export function recordRedlineProposal(
     author: string
     reviewComment: string
     anchorId: string
+    formatting?: Record<string, unknown>
   },
 ) {
   const normalized = { ...row, docPath: canonicalRedlinePath(matterDir, row.docPath) }
@@ -166,6 +168,8 @@ function openRedlineDb(matterDir: string) {
         created_at INTEGER NOT NULL
       )
     `)
+    if (!hasColumn(db, "redlines", "formatting_json"))
+      db.run("ALTER TABLE redlines ADD COLUMN formatting_json TEXT")
     if (!hasColumn(db, "redlines", "review_comment"))
       db.run("ALTER TABLE redlines ADD COLUMN review_comment TEXT NOT NULL DEFAULT ''")
   })
@@ -194,11 +198,12 @@ function insertRedline(
     author: string
     reviewComment: string
     anchorId: string
+    formatting?: Record<string, unknown>
   },
 ) {
   return Number(db.run(
-    "INSERT INTO redlines (doc_path, doc_name, scope, find_text, old_text, new_text, author, review_comment, anchor_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [row.docPath, row.docName, row.scope, row.findText, row.oldText, row.newText, row.author, row.reviewComment, row.anchorId, Date.now()],
+    "INSERT INTO redlines (doc_path, doc_name, scope, find_text, old_text, new_text, author, review_comment, anchor_id, formatting_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [row.docPath, row.docName, row.scope, row.findText, row.oldText, row.newText, row.author, row.reviewComment, row.anchorId, row.formatting ? JSON.stringify(row.formatting) : null, Date.now()],
   ).lastInsertRowid)
 }
 

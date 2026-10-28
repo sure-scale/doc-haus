@@ -73,7 +73,7 @@ Default to tracked changes — these are negotiation edits a reviewer must see.
 - `tracked-changes` — a surgical word or phrase swap (find the exact text, replace
   it). Use for the smallest change that satisfies the instruction. Pass a
   lawyer-facing `comment` explaining the issue, rationale, and support.
-- `redline` — rewrite a whole clause. Use when the instruction reworks a clause
+- `redline` — rewrite a whole clause. For requested paragraph formatting, provide the exact complete existing paragraph as `clause`, plain complete resulting wording as `replacement`, and only the requested `formatting` properties. One proposal addresses one existing paragraph; do not claim structural changes are supported. Use when the instruction reworks a clause
   rather than swapping a term; pass the citation excerpt as the `clause` anchor
   and a lawyer-facing `comment` explaining the issue, rationale, and support.
 - `word-integration` (action `replace`) — a silent, untracked edit. Use ONLY when

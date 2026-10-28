@@ -5,7 +5,10 @@ import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { pendingRedlinesForDoc } from "../lib/redlines"
 import { renderMarkdownToDocx } from "../lib/render"
-import { bake } from "../../services/ingest/src/redline"
+import { bake, buildRedlined } from "../../services/ingest/src/redline"
+import { readDocxComments } from "../lib/docx-comments"
+import { strFromU8, unzipSync } from "fflate"
+import { listPendingRedlines, openDb } from "../../services/ingest/src/db"
 import redline from "../tool/redline"
 import trackedChanges from "../tool/tracked-changes"
 import wordIntegration from "../tool/word-integration"
@@ -157,4 +160,64 @@ test("a plain edit whose replacement copies its clause's number prints it once",
   } finally {
     ingest.stop(true)
   }
+})
+
+test("paragraph formatting binds the full numbered paragraph without its displayed list label", async () => {
+  const { root, document, context } = await numbered()
+  const comment = "Clarify the payment term and layout."
+  const partial = await redline.execute({ document: "supply.docx", clause: "The Customer shall pay", replacement: "The Customer shall pay promptly.", comment, formatting: { spacingAfter: 6 } }, context)
+  expect(typeof partial === "string" ? partial : partial.output).toContain("complete paragraph")
+  expect(pendingRedlinesForDoc(root, document)).toEqual([])
+  const result = await redline.execute({ document: "supply.docx", clause: "The Customer shall pay within thirty days.", replacement: "The Customer shall pay within fourteen days.", comment, formatting: { spacingAfter: 6 } }, context)
+  expect(typeof result === "string" ? result : result.output).toContain("Recorded as pending")
+  expect(pendingRedlinesForDoc(root, document).map(row => [row.find_text, row.new_text])).toEqual([["The Customer shall pay within thirty days.", "The Customer shall pay within fourteen days."]])
+})
+
+test("formatting and mixed proposals preserve literal legal placeholders", async () => {
+  for (const replacement of ["[Company] shall pay [amount] under clause_A.", "[Company] must pay [amount] under clause_A."]) {
+    const { root, document, context } = await numbered("# Terms\n\n[Company] shall pay [amount] under clause_A.")
+    const result = await redline.execute({ document: "supply.docx", clause: "[Company] shall pay [amount] under clause_A.", replacement, comment: "Review wording and spacing.", formatting: { spacingAfter: 6 } }, context)
+    expect(typeof result === "string" ? result : result.output).toContain("Recorded as pending")
+    const db = openDb(root)
+    const rows = listPendingRedlines(db, document)
+    db.close()
+    const resultBytes = await bake(await Bun.file(document).bytes(), rows)
+    const session = (await docxodus()).openDocxSession(resultBytes, {})
+    try {
+      const match = session.findByText(replacement)
+      expect(match).toBeDefined()
+      expect(session.getAnchorInfo(match!.id)?.visibleText).toBe(replacement)
+    } finally { session.close() }
+  }
+})
+
+
+test("recorded numbered placeholder proposal previews and accepts wording, layout and its review comment", async () => {
+  const before = "[Company] shall pay [amount] under clause_A."
+  const after = "[Company] must pay [amount] under clause_A."
+  const comment = "Review this payment wording and paragraph spacing."
+  const { root, document, context } = await numbered(`# Terms\n\n## 1. Delivery\n\n1.1 The Supplier shall deliver the goods.\n\n## 2. Payment\n\n2.1 ${before}`)
+  const source = await Bun.file(document).bytes()
+  const result = await redline.execute({ document: "supply.docx", clause: before, replacement: after, comment, formatting: { spacingAfter: 6 } }, context)
+  expect(typeof result === "string" ? result : result.output).toContain("Recorded as pending")
+  const db = openDb(root), rows = listPendingRedlines(db, document)
+  db.close()
+  expect(rows).toHaveLength(1)
+  expect(JSON.parse(rows[0]!.formatting_json!)).toEqual({ spacingAfter: 6 })
+  const preview = await buildRedlined(source, rows)
+  const session = (await docxodus()).openDocxSession(preview, {})
+  try {
+    expect(session.listRevisions().some(revision => revision.type === "format")).toBe(true)
+    const match = session.findByText(after)!
+    expect(match.autoNumberPrefix).toBe("2.1")
+  } finally { session.close() }
+  expect(readDocxComments(preview).some(row => row.text.includes(comment))).toBe(true)
+  const accepted = await bake(source, rows)
+  const acceptedSession = (await docxodus()).openDocxSession(accepted, {})
+  try {
+    const match = acceptedSession.findByText(after)!
+    expect(match.autoNumberPrefix).toBe("2.1")
+    expect(acceptedSession.getAnchorInfo(match.id)?.visibleText).toBe(`2.1 ${after}`)
+  } finally { acceptedSession.close() }
+  expect(strFromU8(unzipSync(accepted)["word/document.xml"]!)).toContain('w:after="120"')
 })

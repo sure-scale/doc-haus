@@ -366,6 +366,8 @@ export function openDb(matterDir: string, options: { startup?: boolean; commit?:
   `)
   if (!hasColumn(db, "redlines", "review_comment"))
     db.run("ALTER TABLE redlines ADD COLUMN review_comment TEXT NOT NULL DEFAULT ''")
+  if (!hasColumn(db, "redlines", "formatting_json"))
+    db.run("ALTER TABLE redlines ADD COLUMN formatting_json TEXT")
   if (!hasColumn(db, "redlines", "target_json"))
     db.run("ALTER TABLE redlines ADD COLUMN target_json TEXT")
   // Document versions (#268): see document-versions.ts.
@@ -415,6 +417,7 @@ export type RedlineRow = {
   author: string
   review_comment: string
   anchor_id: string | null
+  formatting_json?: string | null
   target_json?: string | null
   // 'superseded': a later proposal on the same paragraph replaced this one before
   // review (set by the redline tools), so it never reaches the pending queue.

@@ -1,3 +1,4 @@
+import { formattingDescription, parseFormatting } from "./formatting-description"
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react"
 import { Closing } from "./useExit"
 import { SplitButton } from "./SplitButton"
@@ -863,6 +864,7 @@ function WordDocumentViewer({
                 >
                   <div className="change-author">{r.author}</div>
                   <ProposalRedline before={r.old_text} after={r.new_text} />
+                  {r.formatting_json && <div className="change-comment">{formattingDescription(parseFormatting(r.formatting_json))}</div>}
                   {r.review_comment && <div className="change-comment">{r.review_comment}</div>}
                   {r.stale_reason && <div className="change-comment">{r.stale_reason}</div>}
                   <div className="change-buttons">
