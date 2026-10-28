@@ -1,8 +1,10 @@
+import { useLibraryAttachments } from "./chat/use-library-attachments"
 import { draftingUpdateAdmission } from "../../../../dochaus/lib/drafting-update-admission"
 import { furnitureLegend } from "../../../../dochaus/lib/furniture-legend"
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import type { CompareParams } from "../api/ingest/compare"
 import type { Document } from "../api/ingest/documents"
+import { removeLibraryAttachment, uploadLibraryAttachment, type LibraryAttachment, type LibraryAttachmentScope } from "../api/ingest/library"
 import type { LeanDraftingStatus } from "../api/ingest/lean"
 import { matterClient, type Client } from "../api/opencode/client"
 import { CLIENT_SUMMARY, EXPLICIT_ONLY, QUICK_DRAFT, isAuto, type AssistantMeta, type WorkflowMeta } from "../agents"
@@ -82,8 +84,10 @@ export default function ChatPanel({
   onBusyChange,
   transcriptFooter,
   feed,
+  libraryAttachments,
 }: {
   directory: string
+  libraryAttachments?: LibraryAttachmentScope
   // Present on the matter chat. It lets Draft start the matter's drafting run,
   // which this chat then shows; pinned library assistants omit it.
   matterId?: string
@@ -173,6 +177,9 @@ export default function ChatPanel({
   const pendingFormsRef = useRef(0)
   const formsRefreshRef = useRef<() => void>(() => {})
   const state = useChatState(sessionID)
+  const [attachments, setAttachments] = useLibraryAttachments(directory, sessionID)
+  const [attaching, setAttaching] = useState(false)
+  const attachmentInput = useRef<HTMLInputElement>(null)
   const settlement = useTurnSettlement({ state, client, matterName, matterId, directory, onSessionCreated })
   // A drafting run started here: its narration answers under the request turn.
   const [drafting, setDrafting] = useState<{ owner: string; turn: number }>()
@@ -260,6 +267,46 @@ export default function ChatPanel({
   // answer) seats it in the composer for the lawyer to review and send —
   // prefill, never auto-send — and never over text the lawyer has typed.
   const toast = useToast()
+  async function attachFiles(files: File[]) {
+    if (!libraryAttachments || !files.length || attaching) return
+    setAttaching(true)
+    try {
+      for (const file of files) {
+        try {
+          const attachment = await uploadLibraryAttachment(libraryAttachments, file)
+          setAttachments((current) => [...current, attachment])
+        } catch (error) {
+          toast("error", error instanceof Error ? error.message : `Could not attach ${file.name}.`)
+        }
+      }
+    } finally {
+      setAttaching(false)
+    }
+  }
+
+  async function sendWithAttachments() {
+    if (busy || attaching) return
+    if (!attachments.length) { await onSend(); return }
+    const references = attachments.map(({ name, source, original }) => `${JSON.stringify(name)}: extracted text ${JSON.stringify(source)}, original file ${JSON.stringify(original)}`).join("\n")
+    const message = `${input.trim()}\n\nAttached files (read the complete extracted text; the original file is available when needed):\n${references}`.trim()
+    await onSend(message, input,
+      () => setAttachments((current) => current.map((item) => ({ ...item, dispatched: true }))),
+      () => setAttachments([]))
+  }
+  async function removeAttachment(attachment: LibraryAttachment) {
+    if (!libraryAttachments) return
+    setAttaching(true)
+    try {
+      // A lost response after dispatch may still have created a message. Keep
+      // its files available to that conversation even if the chip is removed.
+      if (!attachment.dispatched) await removeLibraryAttachment(libraryAttachments, attachment.id)
+      setAttachments((current) => current.filter((item) => item.id !== attachment.id))
+    } catch (error) {
+      toast("error", error instanceof Error ? error.message : "Could not remove attachment.")
+    } finally {
+      setAttaching(false)
+    }
+  }
   useEffect(() => {
     if (!initialPrompt || (sessionID && !onPromptSeated)) return
     if (input.trim() && input !== initialPrompt) toast("info", "Your unsent message was kept, so the suggested question was not added. Send or clear it, then try again.")
@@ -402,6 +449,19 @@ export default function ChatPanel({
   const composer = (documentsControl?: ReactNode) => (
     <Composer
       documentsControl={documentsControl}
+      attachmentControl={libraryAttachments && <div className="library-attachments">
+        <input ref={attachmentInput} type="file" hidden multiple accept=".pdf,.docx,.txt,.md,.markdown" onChange={(event) => {
+          const files = Array.from(event.currentTarget.files ?? [])
+          event.currentTarget.value = ""
+          void attachFiles(files)
+        }} />
+        {attachments.map((attachment) => <span className="library-attachment" key={attachment.source}>
+          {attachment.name}
+          <button type="button" aria-label={`Remove ${attachment.name}`} disabled={busy || attaching} onClick={() => void removeAttachment(attachment)}>×</button>
+        </span>)}
+        <button type="button" className="icon-btn" disabled={busy || attaching} onClick={() => attachmentInput.current?.click()}>{attaching ? "Attaching…" : "Attach"}</button>
+      </div>}
+      hasAttachments={attachments.length > 0}
       draftingUpdate={updatingRun}
       draftingClarification={clarifyingRun}
       pinned={pinned}
@@ -420,10 +480,10 @@ export default function ChatPanel({
       composerPlaceholder={clarifyingRun ? "Clarify the source or applicability for the held checklist…" : updatingRun ? "Add an instruction or consideration for this draft…" : composerPlaceholder}
       input={input}
       setInput={setInput}
-      onSend={updatingRun ? sendRunUpdate : onSend}
+      onSend={updatingRun ? sendRunUpdate : sendWithAttachments}
       onStop={busy ? onStop : undefined}
       stopping={stopping}
-      busy={busy || pendingRoute !== undefined || (updatingRun && (actions.busy || updateTooLate))}
+      busy={busy || attaching || pendingRoute !== undefined || (updatingRun && (actions.busy || updateTooLate))}
     />
   )
 

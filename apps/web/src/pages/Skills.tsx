@@ -5,6 +5,7 @@ import { useToast } from "../components/Toast"
 import Dropzone from "../components/Dropzone"
 import { humanizeError } from "../api/ingest/errors"
 import ChatPanel from "../components/ChatPanel"
+import { useLibraryChatKey } from "../components/chat/use-library-chat-key"
 import LibraryLayout from "../components/LibraryLayout"
 import { DocMarkdown } from "../components/markdown/Markdown"
 import { SKILL_BUILDER } from "../agents"
@@ -30,6 +31,7 @@ export default function Skills() {
   const [confirmName, setConfirmName] = useState<string | null>(null)
   const [viewing, setViewing] = useState<Skill>()
   const createdRef = useRef<string | undefined>(undefined)
+  const chatKey = useLibraryChatKey(session, undefined, createdRef)
   const toast = useToast()
 
   function refresh() {
@@ -117,8 +119,9 @@ export default function Skills() {
         assistant={
           dir && (
             <ChatPanel
-              key={session ?? "new"}
+              key={chatKey}
               directory={dir}
+              libraryAttachments="skills"
               sessionID={session}
               created={createdRef.current === session}
               agent={SKILL_BUILDER.name}

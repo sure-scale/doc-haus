@@ -8,6 +8,7 @@ import { applyDocxParagraphEdits, createDocxRevision, DocxTrackedRevisionsError,
 import { safeFileName } from "../../../dochaus/lib/safe-file-name"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { commitDocumentWrite } from "./atomic-document-write"
+import { stageChatAttachment, removeChatAttachment } from "./chat-attachments"
 import { inlineDocumentDisposition } from "./content-disposition"
 import { getDocumentRole, openDb } from "./db"
 import { resolveMatterDocumentTarget, MatterDocumentIdentityError } from "./document-identity"
@@ -132,6 +133,24 @@ export function templateDraftRoutes(resolveMatter = matterDir, root = workspaceR
   })
 
   app.get("/template-drafts/:id", (c) => c.json(readDraft(draftDir(c.req.param("id")))))
+  app.post("/template-drafts/:id/attachments", async (c) => {
+    const dir = draftDir(c.req.param("id"))
+    const file = (await c.req.parseBody()).file
+    if (!(file instanceof File)) return c.json({ error: "Choose a file to attach" }, 400)
+    return withDraftMutationLock(dir, async () => {
+      readDraft(dir)
+      try { return c.json(await stageChatAttachment(dir, file), 201) }
+      catch (error) { return c.json({ error: error instanceof Error ? error.message : "Could not attach this file." }, 400) }
+    })
+  })
+  app.delete("/template-drafts/:id/attachments/:attachmentId", async (c) => {
+    const dir = draftDir(c.req.param("id"))
+    return withDraftMutationLock(dir, async () => {
+      readDraft(dir)
+      try { await removeChatAttachment(dir, c.req.param("attachmentId")); return c.body(null, 204) }
+      catch (error) { return c.json({ error: error instanceof Error ? error.message : "Could not remove this attachment." }, 400) }
+    })
+  })
   app.get("/template-drafts/:id/text", async (c) => {
     const dir = draftDir(c.req.param("id"))
     return withDraftMutationLock(dir, async () => {

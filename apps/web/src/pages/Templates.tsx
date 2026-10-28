@@ -17,6 +17,7 @@ import { markerKind } from "../components/document-markers"
 import MatterPicker from "../components/MatterPicker"
 import { Exit } from "../components/useExit"
 import ChatPanel from "../components/ChatPanel"
+import { useLibraryChatKey } from "../components/chat/use-library-chat-key"
 import LibraryLayout from "../components/LibraryLayout"
 import TemplateDraftBuilder from "../components/TemplateDraftBuilder"
 import { TEMPLATE_BUILDER } from "../agents"
@@ -49,6 +50,7 @@ export default function Templates() {
   // The session id the composer just minted, so the remount that follows the first
   // send keeps the cursor seated (same pattern as MatterDetail).
   const createdRef = useRef<string | undefined>(undefined)
+  const chatKey = useLibraryChatKey(session, undefined, createdRef)
   const deletedDrafts = useRef(new Set<string>())
   const deletionPending = useRef(false)
   const toast = useToast()
@@ -176,8 +178,9 @@ export default function Templates() {
         assistant={
           draft ? <TemplateDraftBuilder key={draft} id={draft} onSaved={refresh} onDraftChanged={onDraftChanged} /> : dir && (
             <ChatPanel
-              key={session ?? "new"}
+              key={chatKey}
               directory={dir}
+              libraryAttachments="templates"
               sessionID={session}
               created={createdRef.current === session}
               agent={TEMPLATE_BUILDER.name}

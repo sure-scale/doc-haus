@@ -67,14 +67,17 @@ export async function getSessionStatus(client: Client, sessionID: string): Promi
 
 // Fire a prompt to a named agent. Resolves when the assistant turn completes;
 // live progress arrives separately through subscribeEvents.
-export async function sendPrompt(client: Client, sessionID: string, agent: string, text: string) {
+export async function sendPrompt(client: Client, sessionID: string, agent: string, text: string, onDispatch?: () => void, onAdmitted?: () => void) {
   // The selected product model is part of admission. A failed settings read
   // cannot silently select a different engine default.
   const model = modelSpec(await boundedRequest(getConfig(), 3_000, "Model configuration"))
   if (!model) throw new Error("Select a valid generation model before sending a message.")
   await client.session.switchAgent({ sessionID, agent })
   await client.session.switchModel({ sessionID, model: { providerID: model.providerID, id: model.modelID } })
+  // Once dispatched, a lost response cannot prove the engine did not admit it.
+  onDispatch?.()
   const admitted = await client.session.prompt({ sessionID, text, delivery: "queue" })
+  onAdmitted?.()
   await client.session.wait({ sessionID })
   const settled = (await client.message.list({ sessionID, order: "desc", limit: 2 })).data
   const terminal = settled[0]

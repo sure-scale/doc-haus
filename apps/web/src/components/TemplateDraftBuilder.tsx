@@ -6,6 +6,7 @@ import { fetchTemplateDraftBytes, getTemplateDraft, publishTemplateDraft, type T
 import { boundedRequest, matterClient } from "../api/opencode/client"
 import { listSessions } from "../api/opencode/sessions"
 import ChatPanel from "./ChatPanel"
+import { useLibraryChatKey } from "./chat/use-library-chat-key"
 import TemplateViewer from "./TemplateViewer"
 import { useToast } from "./Toast"
 import { Exit } from "./useExit"
@@ -33,6 +34,7 @@ export default function TemplateDraftBuilder({ id, onSaved, onDraftChanged }: { 
   const editedName = useRef(false)
   const editedDescription = useRef(false)
   const createdRef = useRef<string | undefined>(undefined)
+  const chatKey = useLibraryChatKey(session, undefined, createdRef)
   const toast = useToast()
 
   const refresh = useCallback(async () => {
@@ -165,8 +167,9 @@ export default function TemplateDraftBuilder({ id, onSaved, onDraftChanged }: { 
       setParams({ draft: id }, { replace: true })
     }}>Start a fresh conversation</button></p>
       : canOpenSession ? <ChatPanel
-        key={session ?? "new"}
+        key={chatKey}
         directory={draft.dir}
+        libraryAttachments={{ draftId: id }}
         sessionID={session}
         created={createdRef.current === session}
         initialPrompt={`Create a reusable template from the attached document "${draft.source.name}". Identify variable details and provisions that need my decision, preserve its wording and formatting, and prepare a proposed template for me to review before saving.`}

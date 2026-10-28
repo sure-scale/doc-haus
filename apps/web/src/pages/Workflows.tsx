@@ -5,6 +5,7 @@ import type { Matter } from "../api/ingest/matters"
 import { useToast } from "../components/Toast"
 import { humanizeError } from "../api/ingest/errors"
 import ChatPanel from "../components/ChatPanel"
+import { useLibraryChatKey } from "../components/chat/use-library-chat-key"
 import LibraryLayout from "../components/LibraryLayout"
 import MatterPicker from "../components/MatterPicker"
 import { DocMarkdown } from "../components/markdown/Markdown"
@@ -34,6 +35,7 @@ export default function Workflows() {
   const [viewing, setViewing] = useState<WorkflowMeta | CustomWorkflow>()
   const navigate = useNavigate()
   const createdRef = useRef<string | undefined>(undefined)
+  const chatKey = useLibraryChatKey(session, undefined, createdRef)
   const toast = useToast()
 
   function refresh() {
@@ -84,8 +86,9 @@ export default function Workflows() {
         assistant={
           dir && (
             <ChatPanel
-              key={session ?? "new"}
+              key={chatKey}
               directory={dir}
+              libraryAttachments="workflows"
               sessionID={session}
               created={createdRef.current === session}
               agent={WORKFLOW_BUILDER.name}

@@ -2,6 +2,27 @@ import { INGEST_URL } from "../../config"
 import { ingestError } from "./errors"
 import type { Playbook } from "./matters"
 
+export type LibraryAttachmentKind = "playbooks" | "templates" | "skills" | "workflows" | "agents"
+export type LibraryAttachmentScope = LibraryAttachmentKind | { draftId: string }
+export type LibraryAttachment = { id: string; name: string; source: string; original: string; dispatched?: boolean }
+
+function attachmentUrl(scope: LibraryAttachmentScope) {
+  return typeof scope === "string" ? `${INGEST_URL}/library/${scope}/sources` : `${INGEST_URL}/template-drafts/${encodeURIComponent(scope.draftId)}/attachments`
+}
+
+export async function uploadLibraryAttachment(kind: LibraryAttachmentScope, file: File): Promise<LibraryAttachment> {
+  const form = new FormData()
+  form.append("file", file)
+  const res = await fetch(attachmentUrl(kind), { method: "POST", body: form })
+  if (!res.ok) throw new Error(await ingestError(res, `Could not attach ${file.name}`))
+  return res.json()
+}
+
+export async function removeLibraryAttachment(kind: LibraryAttachmentScope, id: string): Promise<void> {
+  const res = await fetch(`${attachmentUrl(kind)}/${encodeURIComponent(id)}`, { method: "DELETE" })
+  if (!res.ok) throw new Error(await ingestError(res, "Could not remove attachment"))
+}
+
 export async function listPlaybookLibrary(): Promise<{ dir: string; playbooks: Playbook[] }> {
   const res = await fetch(`${INGEST_URL}/playbooks/library`)
   if (!res.ok) throw new Error(await ingestError(res, "Could not load playbooks"))

@@ -358,8 +358,8 @@ export function useChatActions({
     }
   }
 
-  async function onSend() {
-    const text = input.trim()
+  async function onSend(message?: string, restoreText?: string, onDispatch?: () => void, onAdmitted?: () => void) {
+    const text = (message ?? input).trim()
     if (!text || busy) return
     const turn = startTurn()
     const prior = turns
@@ -383,7 +383,7 @@ export function useChatActions({
       // scope is explained, with the full run offered, and nothing runs.
       if (agent === QUICK_DRAFT && matterId) {
         const limit = quickDraftLimit(withMatterSources((await routeMessage(text, prior, DRAFT_ONLY)).scope, sourceCount))
-        if (turn.stopped) return cancelUnsent(text)
+        if (turn.stopped) return cancelUnsent(restoreText ?? text)
         if (limit) {
           setTurns((prev) => prev.slice(0, -1))
           setInput((current) => (current.trim() ? current : text))
@@ -395,7 +395,7 @@ export function useChatActions({
       }
       const resolved = await resolveAgent(text, prior, turn)
       // Stopped while Auto chose the assistant.
-      if (turn.stopped) return cancelUnsent(text)
+      if (turn.stopped) return cancelUnsent(restoreText ?? text)
       // Auto acknowledges every routed request: the router's line, or the
       // chat's own short one by what happens next.
       const ack = (kind: keyof typeof FALLBACK_ACK) => isAuto(agent) && acknowledge(turn, text, resolved.ack ?? FALLBACK_ACK[kind])
@@ -423,17 +423,18 @@ export function useChatActions({
         onSessionPersisted?.(sessionRef.current)
         onSessionStarted?.()
       }
-      if (turn.stopped) return cancelUnsent(text)
+      if (turn.stopped) return cancelUnsent(restoreText ?? text)
       sent = true
-      await sendPrompt(client, sessionRef.current, target, text)
+      await sendPrompt(client, sessionRef.current, target, text, onDispatch, onAdmitted)
+      return true
     } catch (e) {
-      if (turn.stopped) return sent ? settleStopped() : cancelUnsent(text)
+      if (turn.stopped) return sent ? settleStopped() : cancelUnsent(restoreText ?? text)
       // Routing happens before a fresh session is minted, so there is no stored
       // user message to retry yet. Restore the text to the composer instead of
       // losing it when Auto cannot choose an assistant. Nothing was handed
       // over, so the acknowledgement goes.
       setTurns((prev) => withoutAck(prev, text))
-      setInput(text)
+      setInput(restoreText ?? text)
       failTurn(e instanceof Error ? e.message : "Could not reach the engine. Try again.")
     } finally {
       turn.owned = false

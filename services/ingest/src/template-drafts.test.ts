@@ -31,7 +31,7 @@ function fixture(engine: EngineRequestOptions = {}) {
     } finally { db.close() }
     return { dir, file }
   }
-  return { workspace, request, register, close: () => rmSync(temporary, { recursive: true, force: true }) }
+  return { workspace, app, request, register, close: () => rmSync(temporary, { recursive: true, force: true }) }
 }
 
 async function sourceDocument() {
@@ -73,6 +73,26 @@ async function candidate(f: ReturnType<typeof fixture>, draft: TemplateDraft) {
 function xmlContent(bytes: Uint8Array) {
   return new XMLSerializer().serializeToString(new DOMParser().parseFromString(strFromU8(bytes), "application/xml").documentElement)
 }
+
+test("additional chat attachments stay within their template draft and can be removed", async () => {
+  const f = fixture()
+  try {
+    f.register("matter-a", await sourceDocument(), "Selected.docx", true)
+    const first = await capture(f)
+    const second = await capture(f)
+    const body = new FormData()
+    body.append("file", new File(["Supplementary instructions"], "instructions.txt"))
+    const response = await f.app.request(`/template-drafts/${first.id}/attachments`, { method: "POST", body })
+    expect(response.status).toBe(201)
+    const attachment = await response.json() as { id: string; source: string }
+    expect(readFileSync(path.join(first.dir, attachment.source), "utf8")).toContain("Supplementary instructions")
+    expect(existsSync(path.join(second.dir, attachment.source))).toBe(false)
+    const deleted = await f.request(`/template-drafts/${first.id}/attachments/${attachment.id}`, "DELETE")
+    expect(deleted.status).toBe(204)
+    expect(existsSync(path.join(first.dir, attachment.source))).toBe(false)
+    expect((await f.app.request("/template-drafts/not-an-id/attachments", { method: "POST", body: new FormData() })).status).toBe(404)
+  } finally { f.close() }
+})
 
 test("captures one immutable source, preserves styled Word/table structure and saves only after review", async () => {
   const f = fixture()
