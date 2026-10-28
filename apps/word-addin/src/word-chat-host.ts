@@ -1,6 +1,6 @@
 import type { WordChatAuthoredAmendment, WordChatParagraphFormat, WordChatSnapshot, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { wordChatApplyPlan } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { capturedWordChatParagraphs, reviewedWordChatArtifact, sameWordChatOoxml, sameImportedWordChat, sameWordChatParagraphContent } from "./word-chat-host-ooxml"
+import { capturedWordChatParagraphs, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatParagraphContent } from "./word-chat-host-ooxml"
 import { DOMParser } from "@xmldom/xmldom"
 
 type ClientResult<T> = { value: T }
@@ -327,9 +327,11 @@ export class WordChatHost {
       } catch { throw new WordChatHostError("doc.haus could not confirm this authored amendment matches the reviewed passage. Prepare it again; your Word document is unchanged.") }
       return await this.word.run(async context => {
         const fresh = await this.importSnapshot(context, input.target, formatting)
+        let difference: string | undefined
         try {
-          if (!sameWordChatOoxml(snapshot.ooxml, fresh.ooxml, authored.ooxml)) throw new Error("Changed clause formatting")
+          difference = wordChatOoxmlDifference(snapshot.ooxml, fresh.ooxml, authored.ooxml)
         } catch { throw new WordChatHostError("This paragraph or its formatting changed while doc.haus prepared the amendment. Prepare and review it again; your Word changes are safe.") }
+        if (difference) throw new WordChatHostError(`This paragraph or its formatting changed while doc.haus prepared the amendment. Word’s recheck found ${difference}. Prepare and review it again; your Word changes are safe.`)
         this.applied.set(input.proposalId, { identity, authors: [], uncertain: true })
         let imported = false
         try {

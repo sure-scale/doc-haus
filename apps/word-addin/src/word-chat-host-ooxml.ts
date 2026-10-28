@@ -184,20 +184,52 @@ function unchangedFormattingDependencies(before: string, after: string) {
 /** Compare the complete target and every dependency actually imported. Word's
  * selected OOXML includes changing write IDs and unrelated document settings;
  * those do not authorize an edit or form part of the delivered paragraph. */
-export function sameWordChatOoxml(before: string, current: string, delivered: string): boolean {
+const diagnosticName = (value: string) => value.replace(/[^a-zA-Z0-9_./:-]/g, "?").slice(0, 120)
+function canonicalDifference(before: unknown, after: unknown, path: string): string | undefined {
+  if (JSON.stringify(before) === JSON.stringify(after)) return
+  if (before === undefined || after === undefined) return `${path}: XML node ${before === undefined ? "added" : "missing"}`
+  if (!Array.isArray(before) || !Array.isArray(after)) return `${path}: XML shape changed`
+  if (before[0] === "text" || after[0] === "text") return `${path}: text changed (text omitted)`
+  // canonical() represents each element as namespace/name/attributes/children.
+  if (before.length === 4 && after.length === 4 && typeof before[0] === "string" && typeof after[0] === "string") {
+    if (before[0] !== after[0] || before[1] !== after[1]) return `${path}: element name or namespace changed`
+    const element = `${path}/${diagnosticName(before[1] as string)}`
+    const oldAttributes = before[2] as string[][], newAttributes = after[2] as string[][]
+    const key = (attr: string[]) => JSON.stringify(attr.slice(0, 2))
+    for (const attr of oldAttributes) {
+      const current = newAttributes.find(candidate => key(candidate) === key(attr))
+      if (!current) return `${element}/@${diagnosticName(attr[1]!)}: attribute missing`
+      if (attr[2] !== current[2]) return `${element}/@${diagnosticName(attr[1]!)}: attribute changed (value omitted)`
+    }
+    const added = newAttributes.find(attr => !oldAttributes.some(candidate => key(candidate) === key(attr)))
+    if (added) return `${element}/@${diagnosticName(added[1]!)}: attribute added`
+    return canonicalDifference(before[3], after[3], element)
+  }
+  for (let index = 0; index < Math.max(before.length, after.length); index++) {
+    const difference = canonicalDifference(before[index], after[index], `${path}[${index + 1}]`)
+    if (difference) return difference
+  }
+  return `${path}: XML metadata changed`
+}
+export function wordChatOoxmlDifference(before: string, current: string, delivered: string): string | undefined {
   const names = [...parse(delivered).keys()].sort()
   if (names.some(name => ["/word/settings.xml", "/word/webSettings.xml"].includes(name) || name.startsWith("/docProps/") || /(?:header|footer|webextension)/i.test(name))) throw new Error("Import exceeds the clause scope")
-  const signature = (xml: string) => {
-    const parts = parse(xml)
-    return JSON.stringify(names.map(name => {
-      const part = parts.get(name)
-      if (!part) throw new Error("A clause formatting dependency changed")
-      return name === MAIN
-        ? [name, part.getAttributeNS(PKG, "contentType"), content(parts, true, true).shape.map(node => canonical(node, true))]
-        : [name, canonical(part)]
-    }))
+  const oldParts = parse(before), newParts = parse(current)
+  for (const name of names) {
+    const oldPart = oldParts.get(name), newPart = newParts.get(name), path = diagnosticName(name)
+    if (!oldPart || !newPart) return `${path}: dependency missing from ${!oldPart ? "reviewed" : "current"} Word capture`
+    if (name === MAIN) {
+      if (oldPart.getAttributeNS(PKG, "contentType") !== newPart.getAttributeNS(PKG, "contentType")) return `${path}: contentType changed`
+      const difference = canonicalDifference(content(oldParts, true, true).shape.map(node => canonical(node, true)), content(newParts, true, true).shape.map(node => canonical(node, true)), path)
+      if (difference) return difference
+    } else {
+      const difference = canonicalDifference(canonical(oldPart), canonical(newPart), path)
+      if (difference) return difference
+    }
   }
-  return signature(before) === signature(current)
+}
+export function sameWordChatOoxml(before: string, current: string, delivered: string): boolean {
+  return wordChatOoxmlDifference(before, current, delivered) === undefined
 }
 
 /** Verify both views and the actual authored revision spans. The server cannot
