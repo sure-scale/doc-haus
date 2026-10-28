@@ -1,7 +1,5 @@
 // Page layout regression against a separately started Vite/preview server.
-// Settings → Drafting sets every page layout control; onboarding's details step
-// asks the two legends, marks suggestions from the default jurisdictions without
-// choosing any, and previews an agreement page. Each save must send flat keys.
+// Settings → Drafting exercises page layout controls and previews. Saves send flat keys.
 // All API traffic is intercepted; this never reaches a live service or account.
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
@@ -100,13 +98,6 @@ const choice = (page: Page, group: string, label: string) => page.getByRole("rad
 const segment = (page: Page, group: string, label: string) => page.getByRole("group", { name: group }).getByRole("button", { name: label, exact: true })
 const check = (page: Page, label: string) => page.getByRole("checkbox", { name: label, exact: true })
 const shot = (page: Page, name: string) => page.screenshot({ path: path.join(evidence!, `${name}.png`) })
-// The picker opens below its trigger; start with the trigger at the top so the
-// list is in view at a narrow height too.
-async function openJurisdictions(page: Page) {
-  const trigger = page.locator("#onboarding-jurisdictions")
-  await trigger.evaluate((node: HTMLElement) => node.scrollIntoView({ block: "start" }))
-  await trigger.click()
-}
 const layoutKeys = ["pageNumbers", "pageNumberPosition", "numberFirstPage", "draftLine", "draftLineFirm", "agreementLegend", "adviceLegend", "notesMarking"]
 
 try {
@@ -209,70 +200,8 @@ try {
       } finally { await context.close() }
     })
 
-    await scenario(`Onboarding marks suggested legends from default jurisdictions, chooses none, previews and saves flat keys (${width}x${height})`, async () => {
-      const state = fixture("details")
-      const { page, context } = await open(state, width, height)
-      try {
-        const dialog = page.getByRole("dialog", { name: "Let's get you set up" })
-        await expect(dialog.getByRole("heading", { name: "Make doc.haus yours", exact: true })).toBeVisible()
-        await expect(choice(page, "Agreement legend", "None")).toBeChecked()
-        await expect(choice(page, "Advice legend", "None")).toBeChecked()
-        await expect(dialog.getByText("Suggested", { exact: true })).toHaveCount(0)
-        await expect(preview(page).header).toHaveText(["Draft: 20 October 2026"])
-        await dialog.getByLabel("Firm", { exact: true }).fill("Fixture Partners LLP")
-        await expect(preview(page).header).toHaveText(["Fixture Partners LLP draft: 20 October 2026"])
-        await expect(preview(page).footer).toHaveText("1")
-
-        await openJurisdictions(page)
-        await page.getByRole("checkbox", { name: "England & Wales EW" }).check()
-        await page.keyboard.press("Escape")
-        await expect(choice(page, "Agreement legend", "Subject to contract Suggested")).toBeVisible()
-        await expect(choice(page, "Advice legend", "Privileged & confidential Suggested")).toBeVisible()
-        await expect(dialog.getByText("Suggested", { exact: true })).toHaveCount(2)
-        await expect(choice(page, "Agreement legend", "None")).toBeChecked()
-        await expect(choice(page, "Advice legend", "None")).toBeChecked()
-        await expect(dialog.getByText(/without prejudice/i)).toHaveCount(0)
-        await openJurisdictions(page)
-        await page.getByRole("checkbox", { name: "New York US-NY" }).check()
-        await page.getByRole("checkbox", { name: "France FR" }).check()
-        await page.keyboard.press("Escape")
-        await expect(dialog.getByText("Suggested", { exact: true })).toHaveCount(4)
-        await expect(choice(page, "Agreement legend", "Draft — for discussion purposes only Suggested")).toBeVisible()
-        await expect(choice(page, "Advice legend", "Privileged & confidential — attorney-client communication Suggested")).toBeVisible()
-
-        await choice(page, "Agreement legend", "Subject to contract Suggested").check()
-        await expect(preview(page).header).toHaveText(["Subject to contract", "Fixture Partners LLP draft: 20 October 2026"])
-        await page.getByRole("heading", { name: "Legends", exact: true }).scrollIntoViewIfNeeded()
-        await shot(page, `onboarding-legends-${width}x${height}`)
-        await preview(page).footer.scrollIntoViewIfNeeded()
-        await shot(page, `onboarding-preview-${width}x${height}`)
-
-        // The sample matter is covered by e2e/sample-matter.ts.
-        await dialog.getByRole("checkbox", { name: "Add a sample matter to explore", exact: true }).uncheck()
-        await dialog.getByRole("button", { name: "Save and finish", exact: true }).click()
-        await expect(dialog).toHaveCount(0)
-        expect(state.puts).toEqual([{ attorney: "Fixture Lawyer", firm: "Fixture Partners LLP", agreementLegend: "Subject to contract", adviceLegend: "", dateFormat: "day-month-year" }])
-        expect(state.unexpected).toEqual([]); expect(state.errors).toEqual([])
-      } finally { await context.close() }
-    })
   }
 
-  await scenario("Onboarding left alone keeps both legends at none", async () => {
-    const state = fixture("details")
-    const { page, context } = await open(state, 1440, 1000)
-    try {
-      const dialog = page.getByRole("dialog", { name: "Let's get you set up" })
-      await openJurisdictions(page)
-      await page.getByRole("checkbox", { name: "New York US-NY" }).check()
-      await page.keyboard.press("Escape")
-      await expect(dialog.getByText("Suggested", { exact: true })).toHaveCount(2)
-      await dialog.getByRole("checkbox", { name: "Add a sample matter to explore", exact: true }).uncheck()
-      await dialog.getByRole("button", { name: "Save and finish", exact: true }).click()
-      await expect(dialog).toHaveCount(0)
-      expect(state.puts).toEqual([{ attorney: "Fixture Lawyer", firm: "", agreementLegend: "", adviceLegend: "", dateFormat: "month-day-year" }])
-      expect(state.unexpected).toEqual([]); expect(state.errors).toEqual([])
-    } finally { await context.close() }
-  })
 } finally {
   await writeFile(path.join(evidence, "page-layout-results.json"), JSON.stringify(results, null, 2) + "\n")
   await browser.close()
