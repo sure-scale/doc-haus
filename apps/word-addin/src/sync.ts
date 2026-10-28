@@ -104,9 +104,9 @@ export class WordSync {
   private connection?: WordConnectionState
   private pending?: Pending
   private acknowledgement?: Acknowledgement
-  // A refreshed buffer is already derived from a canonical version. A native
-  // Save/AutoSave must not turn the import into an automatic new version.
-  private latestNeedsSave = false
+  // Add-in mutations are local until a deliberate pane Save/Done. Native
+  // AutoSave or Undo can report saved=true without granting publication.
+  private explicitSaveRequired = false
   private latestUncertain = false
   private nextRetry = 0
   private heartbeatAt = -Infinity
@@ -292,7 +292,7 @@ export class WordSync {
       this.show("not-saved", "Loading the latest contents into this Word document…")
       // Native import/settings failures may happen after Word has changed. Do
       // not let a later native Save automatically publish that uncertain buffer.
-      this.latestNeedsSave = true
+      this.explicitSaveRequired = true
       this.latestUncertain = true
       await this.host.replace(latest.bytes, latest.version.id)
       this.latestUncertain = false
@@ -431,6 +431,10 @@ export class WordSync {
         await this.inspect(true)
         if (!this.canWrite()) throw documentStateError(this.blockedMessage())
         this.completed = false
+        // Establish the fence before calling Word: a lost response can mean
+        // the edit happened, and Undo may restore Word's saved flag later.
+        this.explicitSaveRequired = true
+        this.content = "changed"
         this.show("not-saved", "Applying the reviewed change in Word…")
         value = await edit({ base: this.base, generation: this.connection!.lease.generation! })
         this.content = "changed"
@@ -514,7 +518,7 @@ export class WordSync {
     if (this.latestUncertain) throw documentStateError(this.blockedMessage())
     this.completed = false
     this.show("saving", "Saving in Word…")
-    await this.restoreCheckpoint()
+    await this.restoreCheckpoint(true)
     // Retry already-sent bytes with their original fence before inspecting a
     // possibly advanced server base; only the server may confirm a lost ACK.
     try {
@@ -564,12 +568,12 @@ export class WordSync {
       this.show("not-saved", this.blockedMessage())
       return false
     }
-    if (this.latestNeedsSave && !requireAcknowledgement) {
+    if (this.explicitSaveRequired && !requireAcknowledgement) {
       this.content = "changed"
-      this.show("not-saved", "Latest contents are in Word. Choose Save when you’re ready.")
+      this.show("not-saved", "Your Word changes are local. Choose Save when you’re ready.")
       return false
     }
-    await this.restoreCheckpoint()
+    await this.restoreCheckpoint(requireAcknowledgement)
     if (!(await this.host.saved())) {
       this.content = "changed"
       this.show("not-saved", "You have changes in Word. Choose Save before closing.")
@@ -610,8 +614,8 @@ export class WordSync {
     return true
   }
 
-  private async restoreCheckpoint(): Promise<void> {
-    if (this.checkpointChecked) return
+  private async restoreCheckpoint(allowExport = false): Promise<void> {
+    if (this.checkpointChecked || this.explicitSaveRequired && !allowExport) return
     const previous = this.checkpoints.read()
     if (previous) {
       // Probe before editing/saving can replace an initially matching snapshot.
@@ -657,7 +661,7 @@ export class WordSync {
       overlap: response.overlap,
     }
     this.pending = undefined
-    this.latestNeedsSave = false
+    this.explicitSaveRequired = false
     this.nextRetry = 0
     this.checkpoints.write(this.acknowledgement)
   }

@@ -177,11 +177,12 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (className) element.className = className
     return element
   }
+  const displayWordText = (text: string) => text.replace(/\r\n?|\v/g, "\n")
   function renderChips() {
     const chips = get("chips"); chips.replaceChildren()
     function chip(label: string, detail: string, remove: () => void) {
       const row = document.createElement("div"); row.className = "chat-chip"
-      const details = document.createElement("details"); details.append(line("summary", label), line("p", detail))
+      const details = document.createElement("details"); details.append(line("summary", label), line("p", displayWordText(detail)))
       const close = document.createElement("button"); close.type = "button"; close.textContent = "×"; close.setAttribute("aria-label", `Remove ${label}`)
       close.onclick = remove; row.append(details, close); chips.append(row)
     }
@@ -267,7 +268,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   }
   function proposalCard(proposal: WordChatProposal, turn: WordChatTurn): HTMLElement {
     const card = document.createElement("section"); card.className = "chat-proposal"; card.setAttribute("aria-label", "Amendment to review")
-    card.append(line("h3", "Review amendment"), line("h4", "Before"), line("pre", proposal.before, "chat-before"), line("h4", "After"), line("pre", proposal.after, "chat-after"))
+    card.append(line("h3", "Review amendment"), line("h4", "Before"), line("pre", displayWordText(proposal.before), "chat-before"), line("h4", "After"), line("pre", displayWordText(proposal.after), "chat-after"))
     if (proposal.explanation) card.append(line("p", proposal.explanation))
     if (proposal.openItems.length) {
       card.append(line("h4", "Open items")); const items = document.createElement("ul"); items.className = "chat-open-items"

@@ -515,3 +515,28 @@ test("unsupported paragraph splits keep the full review and Refine action withou
     expect(applied).toBe(false)
   } finally { f.restore() }
 })
+
+test("native paragraph and soft breaks display as separate review/chip lines while Apply receives the exact original Word text", async () => {
+  const before = "Working notes\rFirst item\vMore detail.", after = "Working notes\rRevised item\vMore detail."
+  const target: WordChatTarget = { ...passage, text: before, paragraphs: [{ id: "notes", text: "Working notes" }, { id: "item", text: "First item\vMore detail." }], endOffset: "First item\vMore detail.".length }
+  const native = { ...proposal, before, after, target }
+  const crlf = { ...proposal, id: "crlf-proposal", before: "First paragraph.\r\nSecond paragraph.", after: "Updated first paragraph.\r\nSecond paragraph." }
+  const original = JSON.stringify([native, crlf]), applied: WordChatProposal[] = []
+  const f = fixture({ turns: [turn({ kind: "amendment", proposal: native }), turn({ id: "crlf-turn", kind: "amendment", proposal: crlf })], host: { captureSelection: async () => target, apply: async value => { applied.push(value) } } })
+  try {
+    await f.chat.ready
+    const cards = f.root.querySelectorAll(".chat-proposal")
+    expect(cards[0]!.querySelector(".chat-before")!.textContent).toBe("Working notes\nFirst item\nMore detail.")
+    expect(cards[0]!.querySelector(".chat-after")!.textContent).toBe("Working notes\nRevised item\nMore detail.")
+    expect(cards[1]!.querySelector(".chat-before")!.textContent).toBe("First paragraph.\nSecond paragraph.")
+    expect(cards[1]!.querySelector(".chat-after")!.textContent).toBe("Updated first paragraph.\nSecond paragraph.")
+    expect(f.get("chips").querySelector("p")!.textContent).toBe("Working notes\nFirst item\nMore detail.")
+    const actions = [...cards[0]!.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")]
+    actions.find(button => button.textContent === "Refine")!.click()
+    expect([...f.get("chips").querySelectorAll("p")].map(item => item.textContent)).toEqual(["Working notes\nFirst item\nMore detail.", "Working notes\nFirst item\nMore detail."])
+    actions.find(button => button.textContent === "Apply")!.click(); await Bun.sleep(0)
+    expect(applied).toHaveLength(1); expect(applied[0]!.before).toBe(before); expect(applied[0]!.after).toBe(after)
+    expect(applied[0]!.target).toEqual(target)
+    expect(JSON.stringify([native, crlf])).toBe(original)
+  } finally { f.restore() }
+})
