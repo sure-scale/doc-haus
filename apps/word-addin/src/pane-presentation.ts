@@ -16,7 +16,7 @@ export function savePresentation(state: PaneState): SavePresentation {
     : undefined
   const result: SavePresentation = {
     badge: "Ready", tone: "neutral", mismatch,
-    message: version?.current ? `Version ${version.current.number} in doc.haus` : "Save to confirm this copy in doc.haus.",
+    message: version?.current ? `Version ${version.current.number} in doc.haus. Choose Save to confirm this copy.` : "Save to confirm this copy in doc.haus.",
   }
   if (state.status === "saving") return { ...result, badge: "Saving…", tone: "saving", message: state.message }
   if (version && version.state !== "current") {

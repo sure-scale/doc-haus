@@ -104,9 +104,9 @@ export class WordSync {
   private connection?: WordConnectionState
   private pending?: Pending
   private acknowledgement?: Acknowledgement
-  // Add-in mutations are local until a deliberate pane Save/Done. Native
-  // AutoSave or Undo can report saved=true without granting publication.
-  private explicitSaveRequired = false
+  // A reconstructed pane cannot know whether an earlier add-in edit occurred.
+  // Require a deliberate Save/Done; native AutoSave or Undo grants no authority.
+  private explicitSaveRequired = true
   private latestUncertain = false
   private nextRetry = 0
   private heartbeatAt = -Infinity
@@ -229,8 +229,10 @@ export class WordSync {
 
   private async inspect(claim: boolean): Promise<void> {
     this.connection = await this.transport.lease("inspect", this.base)
-    if (claim && !this.latestUncertain && this.connection.version.state === "current" && this.connection.lease.state === "available")
+    if (claim && !this.latestUncertain && this.connection.version.state === "current" && this.connection.lease.state === "available") {
+      this.explicitSaveRequired = true
       this.connection = await this.transport.lease("claim", this.base)
+    }
   }
 
   refresh(): Promise<boolean> {
@@ -238,7 +240,7 @@ export class WordSync {
     return this.enqueue(async () => {
       this.completed = false
       await this.restoreCheckpoint()
-      if (this.pending) await this.flush()
+      if (this.pending && !this.explicitSaveRequired) await this.flush()
       await this.inspect(claim)
       if (!this.canWrite()) {
         this.show("not-saved", this.blockedMessage())
@@ -328,6 +330,7 @@ export class WordSync {
   startEditing(): Promise<boolean> {
     return this.enqueue(async () => {
       this.completed = false
+      this.explicitSaveRequired = true
       await this.inspect(true)
       this.discardFencedPending()
       this.show("not-saved", this.canWrite() ? "Editing started. Choose Save to confirm this copy in doc.haus." : this.blockedMessage())
@@ -347,6 +350,7 @@ export class WordSync {
         !observed.lease.generation
       )
         throw documentStateError("Check editing status before taking over.")
+      this.explicitSaveRequired = true
       this.connection = await this.transport.lease("takeover", this.base, undefined, {
         current: observed.version.current.id,
         generation: observed.lease.generation,
@@ -372,7 +376,7 @@ export class WordSync {
 
   start(): Promise<boolean> {
     return this.enqueue(async () => {
-      await this.restoreCheckpoint()
+      await this.restoreCheckpoint(true)
       // Opening/reconstructing a pane is read-only. It must not create a
       // version or compete for ownership before an explicit saving action.
       await this.inspect(false)
@@ -404,7 +408,7 @@ export class WordSync {
         this.show("not-saved", "You have new changes in Word. Choose Save before closing.")
         await this.heartbeat(true)
       }
-      if (this.pending && this.now() >= this.nextRetry) await this.flush()
+      if (this.pending && !this.explicitSaveRequired && this.now() >= this.nextRetry) await this.flush()
       await this.inspect(false)
       if (!this.canWrite()) {
         this.show("not-saved", this.blockedMessage())
@@ -515,8 +519,14 @@ export class WordSync {
   }
 
   private async explicitSave(): Promise<void> {
+    try { await this.saveCurrentBuffer() }
+    catch (error) { this.explicitSaveRequired = true; throw error }
+  }
+
+  private async saveCurrentBuffer(): Promise<void> {
     if (this.latestUncertain) throw documentStateError(this.blockedMessage())
     this.completed = false
+    this.explicitSaveRequired = true
     this.show("saving", "Saving in Word…")
     await this.restoreCheckpoint(true)
     // Retry already-sent bytes with their original fence before inspecting a
@@ -539,6 +549,9 @@ export class WordSync {
       await this.inspect(true)
       if (!this.discardFencedPending()) throw documentStateError(this.blockedMessage())
     }
+    // A retried pending upload may have cleared the fence; the current Word
+    // buffer still needs this explicit Save to complete before auto-publication.
+    this.explicitSaveRequired = true
     await this.inspect(true)
     if (!this.canWrite()) throw documentStateError(this.blockedMessage())
     await this.host.save()
@@ -569,8 +582,10 @@ export class WordSync {
       return false
     }
     if (this.explicitSaveRequired && !requireAcknowledgement) {
-      this.content = "changed"
-      this.show("not-saved", "Your Word changes are local. Choose Save when you’re ready.")
+      // Word's dirty flag is useful read-only evidence, but a saved flag does
+      // not itself authorize publishing an unverified or recovered buffer.
+      if (!(await this.host.saved())) this.content = "changed"
+      this.show("not-saved", this.content === "changed" ? "Your Word changes are local. Choose Save when you’re ready." : "Ready to save. Choose Save to send this document.")
       return false
     }
     await this.restoreCheckpoint(requireAcknowledgement)
