@@ -1,14 +1,14 @@
 import { expect, setSystemTime, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { mkdtemp, mkdir, rm } from "node:fs/promises"
-import { chmodSync, existsSync, realpathSync, rmSync } from "node:fs"
+import { chmodSync, existsSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { AlignmentType, Document, Footer, Header, LevelFormat, Packer, Paragraph, Table, TableCell, TableRow, TextRun } from "docx"
 import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
 import { paragraphTargets, withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
-import { openDb, deleteDocument, getDocumentRole, getRedline, listDocuments, listSourceDocuments, upsertDocument } from "./db"
+import { openDb, deleteDocument, getDocumentRole, getPreparedChanges, getRedline, listDocuments, listSourceDocuments, upsertDocument } from "./db"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { createDocxLocalization, createDocxRevision, openRevision, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
@@ -177,13 +177,15 @@ type LegalPass = {amendments:Array<{before_quote:string;replacement:string;targe
 // Protocol fixture only: a local stand-in for the engine's generate route. The
 // first pass returns frozen legal proposals; the second returns locator rows,
 // or, when locate returns anything but an array, that value as the whole reply.
-function syntheticEngine(legal:() => LegalPass,locate:(candidates:Candidate[]) => unknown) {
+function syntheticEngine(legal:() => LegalPass,locate:(candidates:Candidate[]) => unknown, recovery?:(prompt:string) => unknown) {
   const prompts:string[] = []
   const server = Bun.serve({port:0,fetch:async (request) => {
     const {prompt} = await request.json() as {prompt:string}
     prompts.push(prompt)
-    const located = prompt.includes("<draft_view") ? undefined : locate(JSON.parse(prompt.match(/<candidates>([\s\S]*)<\/candidates>/)![1]) as Candidate[])
-    const text = prompt.includes("<draft_view") ? JSON.stringify(legal())
+    const isCorrection = prompt.includes("One proposed amendment was refused")
+    const isReview = prompt.includes("Independently review this corrected single proposed amendment")
+    const located = prompt.includes("<draft_view") || isCorrection || isReview ? undefined : locate(JSON.parse(prompt.match(/<candidates>([\s\S]*)<\/candidates>/)![1]) as Candidate[])
+    const text = isCorrection || isReview ? JSON.stringify(await recovery?.(prompt) ?? { unresolved: "Not safely repairable" }) : prompt.includes("<draft_view") ? JSON.stringify(legal())
       : JSON.stringify(Array.isArray(located) ? {selections:located} : located)
     return Response.json({data:{text,model:{providerID:"fixture",id:"isolated"},elapsed_ms:1,usage:null}})
   }})
@@ -2643,4 +2645,100 @@ test("preparation reports a mixed-format replacement as an open item and leaves 
     })
     expect(await Bun.file(file).bytes()).toEqual(before)
   } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test("mixed-format correction stays one pinned proposal and requires a fresh independent review", async () => {
+  for (const mode of ["approved", "rejected", "unsafe", "sibling", "stale"] as const) {
+    const directory = await mkdtemp(path.join(tmpdir(), "dochaus-format-correction-")), file = path.join(directory, "working.docx")
+    const change = { before_quote: "Supplier shall pay the Fee", replacement: "Provider agrees remit Charge", target_context: "payment sentence", reason: "Update wording." }
+    const engine = syntheticEngine(() => ({ amendments: mode === "sibling" ? [change, { before_quote: "monthly", replacement: "weekly", target_context: "payment timing", reason: "Change timing." }] : [change], open_items: ["Confirm the fee."] }), firstCandidate, prompt =>
+      prompt.includes("One proposed amendment was refused") ? { after: mode === "unsafe" ? "Provider agrees remit Charge" : "Provider shall remit the Charge" } : (() => {
+        if (mode === "stale") writeFileSync(file, Buffer.from("changed while reviewing"))
+        return { approved: mode !== "rejected", issues: mode === "rejected" ? ["Requested meaning is incomplete."] : [] }
+      })())
+    try {
+      await writeDeliverable(directory, "working.docx", Buffer.from((await renderMarkdownToDocx("The **Supplier shall** pay *the Fee* monthly.")).bytes))
+      const before = await Bun.file(file).bytes()
+      await withPreparation(directory, engine, async prepare => {
+        const response = await prepare("Update the payment wording and preserve qualifications.")
+        expect(response.status).toBe(mode === "stale" ? 409 : 200)
+        if (mode === "stale") return
+        const result = await response.json() as { redline_ids?: number[]; proposed?: number; open_items: string[]; passes: unknown[] }
+        expect(result.passes).toHaveLength(mode === "sibling" ? 2 : mode === "unsafe" ? 3 : 4)
+        if (mode === "approved") {
+          expect(result.redline_ids).toHaveLength(1)
+          const db = openDb(directory)
+          try { const row = getRedline(db,result.redline_ids![0]!)!; expect([row.find_text,row.new_text]).toEqual([change.before_quote,"Provider shall remit the Charge"]) } finally { db.close() }
+          expect(result.open_items).toContain("Confirm the fee.")
+          const prompt = engine.prompts.find(value => value.includes("Independently review this corrected single proposed amendment"))!
+          const evidence = JSON.parse(prompt.match(/<context encoding="json">([\s\S]*)<\/context>/)![1]) as { instruction: string; corrected: { replacement: string }; open_items: string[]; candidate: { target_handle: string } }
+          expect(evidence.instruction).toBe("Update the payment wording and preserve qualifications.")
+          expect(evidence.corrected.replacement).toBe("Provider shall remit the Charge")
+          expect(evidence.open_items).toContain("Confirm the fee.")
+          const locator = engine.prompts.find(value => value.includes("<candidates>"))!
+          const offered = JSON.parse(locator.match(/<candidates>([\s\S]*)<\/candidates>/)![1]) as Candidate[]
+          expect(evidence.candidate.target_handle).toBe(offered[0]!.target_handle)
+          expect(prompt).toContain("lacks supporting context")
+        } else {
+          expect(result.open_items.join(" ")).toContain("different Word formatting")
+          expect(result.redline_ids?.length ?? 0).toBe(mode === "sibling" ? 1 : 0)
+        }
+      })
+      if (mode !== "stale") expect(await Bun.file(file).bytes()).toEqual(before)
+      else { const db = openDb(directory); try { expect(getPreparedChanges(db,file)?.redline_ids ?? []).toEqual([]) } finally { db.close() } }
+      expect(engine.prompts.filter(prompt => prompt.includes("One proposed amendment was refused"))).toHaveLength(mode === "sibling" ? 0 : 1)
+      expect(engine.prompts.filter(prompt => prompt.includes("Independently review this corrected single proposed amendment"))).toHaveLength(mode === "approved" || mode === "rejected" || mode === "stale" ? 1 : 0)
+    } finally { engine.server.stop(true); await rm(directory, { recursive: true, force: true }) }
+  }
+})
+
+
+test("an aborted format correction records no corrected proposal", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "dochaus-format-abort-")), file = path.join(directory, "working.docx")
+  const change = { before_quote: "Supplier shall pay the Fee", replacement: "Provider agrees remit Charge", target_context: "payment sentence", reason: "Update wording." }
+  const controller = new AbortController()
+  const engine = syntheticEngine(() => ({ amendments: [change], open_items: [] }), firstCandidate, async () => { controller.abort(); await Bun.sleep(80); return { after: "Provider shall remit the Charge" } })
+  const timeout = AbortSignal.timeout
+  AbortSignal.timeout = ms => ms === 45_000 ? controller.signal : timeout.call(AbortSignal, ms)
+  try {
+    await writeDeliverable(directory, "working.docx", Buffer.from((await renderMarkdownToDocx("The **Supplier shall** pay *the Fee* monthly.")).bytes))
+    const before = await Bun.file(file).bytes()
+    await withPreparation(directory, engine, async prepare => {
+      const response = await prepare("Update the payment wording.")
+      expect(response.status).toBe(200)
+      const result = await response.json() as { redline_ids?: number[]; proposed?: number; open_items: string[] }
+      expect(result.proposed ?? result.redline_ids?.length).toBe(0)
+      expect(result.open_items.join(" ")).toContain("different Word formatting")
+    })
+    expect(engine.prompts.filter(prompt => prompt.includes("One proposed amendment was refused"))).toHaveLength(1)
+    expect(engine.prompts.some(prompt => prompt.includes("Independently review this corrected single proposed amendment"))).toBe(false)
+    expect(await Bun.file(file).bytes()).toEqual(before)
+  } finally { AbortSignal.timeout = timeout; engine.server.stop(true); await rm(directory, { recursive: true, force: true }) }
+})
+
+test("mixed-format correction does not run when another selected or unresolved proposal may share its paragraph", async () => {
+  for (const mode of ["unresolved", "filtered"] as const) {
+    const directory = await mkdtemp(path.join(tmpdir(), "dochaus-format-sibling-")), file = path.join(directory, "working.docx")
+    const change = { before_quote: "Supplier shall pay the Fee", replacement: "Provider agrees remit Charge", target_context: "payment", reason: "Update payment." }
+    const sibling = { before_quote: "Supplier shall pay the Fee monthly.", replacement: "2. Supplier shall pay the Fee weekly.", target_context: "timing", reason: "Update timing." }
+    const engine = syntheticEngine(() => ({ amendments: [change, sibling], open_items: [] }), candidates => firstCandidate(candidates).map(row =>
+      mode === "unresolved" && row.amendment_id === "amendment-2" ? { amendment_id: row.amendment_id, unresolved_reason: "Cannot locate the other instruction." } : row), () => ({ after: "Provider shall remit the Charge" }))
+    try {
+      const bytes = await Packer.toBuffer(new Document({ numbering: { config: [{ reference: "clauses", levels: [{ level: 0, format: LevelFormat.DECIMAL, text: "%1.", alignment: AlignmentType.START }] }] }, sections: [{ children: [
+        new Paragraph({ numbering: { reference: "clauses", level: 0 }, children: [new TextRun({text:"Supplier shall",bold:true}),new TextRun(" pay "),new TextRun({text:"the Fee",italics:true}),new TextRun(" monthly.")] }),
+      ] }] }))
+      await writeDeliverable(directory, "working.docx", bytes)
+      const before = await Bun.file(file).bytes()
+      await withPreparation(directory, engine, async prepare => {
+        const response = await prepare("Update payment and timing.")
+        expect(response.status).toBe(200)
+        const result = await response.json() as { open_items: string[]; proposed?: number; redline_ids?: number[] }
+        expect(result.proposed ?? result.redline_ids?.length).toBe(0)
+        expect(result.open_items.join(" ")).toContain(mode === "filtered" ? "Word numbers that paragraph" : "could not be placed")
+        expect(result.open_items.join(" ")).toContain("different Word formatting")
+      })
+      expect(engine.prompts.some(prompt => prompt.includes("One proposed amendment was refused"))).toBe(false)
+      expect(await Bun.file(file).bytes()).toEqual(before)
+    } finally { engine.server.stop(true); await rm(directory, { recursive: true, force: true }) }
+  }
 })
