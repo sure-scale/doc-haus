@@ -462,3 +462,49 @@ test("native reopen metadata churn cannot hide wording, formatting, numbering or
     expect(await documentFingerprint(packageBytes(true, changed))).not.toBe(baseline)
   expect(bytes).toEqual(original)
 })
+
+const stylePart = (sessionId: string, reopened = false) => `<w:styles xmlns:w="${word}" xmlns:c="urn:synthetic"><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:rsid w:val="${sessionId}"/><w:pPr><w:spacing w:after="160"/></w:pPr><w:rPr><w:sz w:val="22"/></w:rPr></w:style><w:style w:type="character" w:default="1" w:styleId="DefaultParagraphFont"><w:name w:val="Default Paragraph Font"/><w:uiPriority w:val="1"/><w:semiHidden/><w:unhideWhenUsed/>${reopened ? "" : `<w:rsid w:val="${sessionId}"/>`}</w:style><w:style w:type="numbering" w:default="1" w:styleId="NoList"><w:name w:val="No List"/><w:uiPriority w:val="99"/><w:semiHidden/><w:unhideWhenUsed/>${reopened ? "" : `<w:rsid w:val="${sessionId}"/>`}</w:style></w:styles>`
+
+test("native reopen may omit style session IDs while real style and document changes remain significant", async () => {
+  const content = `<w:pPr><w:pStyle w:val="Normal"/><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:ins w:id="4" w:author="Synthetic reviewer">${run("Neutral text.")}</w:ins>`
+  const bytes = (styles: string, body = content) => zipSync({
+    "word/styles.xml": strToU8(styles), "word/document.xml": strToU8(document(body)),
+    "word/numbering.xml": strToU8(`<w:numbering xmlns:w="${word}"><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>`),
+  })
+  const saved = bytes(stylePart("00112233")), original = saved.slice(), baseline = await documentFingerprint(saved)
+  expect(await documentFingerprint(saved)).toBe(baseline)
+  // Word may keep some style IDs while omitting others after Save/close/reopen.
+  const reopened = stylePart("00112233", true)
+  expect(await documentFingerprint(bytes(reopened))).toBe(baseline)
+  expect(await documentFingerprint(bytes(stylePart("00445566", true)))).toBe(baseline)
+  for (const styles of [
+    reopened.replace('w:val="22"', 'w:val="24"'),
+    reopened.replace('w:after="160"', 'w:after="240"'),
+    reopened.replace('w:type="numbering"', 'w:type="paragraph"'),
+    reopened.replace('w:styleId="Normal"', 'w:styleId="Other"'),
+    reopened.replace('<w:rPr>', '<w:rPr><w:b/>'),
+    reopened.replace('<w:pPr>', '<w:pPr><w:numPr><w:numId w:val="2"/></w:numPr>'),
+    reopened.replace('<w:uiPriority w:val="99"/>', '<w:uiPriority w:val="99"/><c:metadata>retained</c:metadata>'),
+  ]) expect(await documentFingerprint(bytes(styles))).not.toBe(baseline)
+  for (const body of [
+    content.replace("Neutral", "Changed"), content.replace('w:numId w:val="1"', 'w:numId w:val="2"'),
+    content.replace('w:id="4"', 'w:id="5"'), content.replace("Synthetic reviewer", "Another reviewer"),
+  ]) expect(await documentFingerprint(bytes(reopened, body))).not.toBe(baseline)
+  expect(saved).toEqual(original)
+})
+
+test("style session ID normalization preserves malformed, nested, duplicate, foreign and extended leaves", async () => {
+  const hash = (part: string, styles: string) => documentFingerprint(zipSync({ [part]: strToU8(styles) }))
+  for (const transform of [
+    (xml: string) => xml.replaceAll('<w:rsid ', '<w:rsid c:metadata="retained" '),
+    (xml: string) => xml.replaceAll('<w:rsid ', '<c:rsid '),
+    (xml: string) => xml.replaceAll(/<w:rsid ([^>]+)\/>/g, '<w:rsid $1><c:data/></w:rsid>'),
+    (xml: string) => xml.replaceAll(/<w:rsid ([^>]+)\/>/g, '<w:rsid $1/><w:rsid w:val="77889900"/>'),
+    (xml: string) => xml.replaceAll(/<w:rsid ([^>]+)\/>/g, '<w:other><w:rsid $1/></w:other>'),
+    (xml: string) => xml.replaceAll('w:val="00', 'w:val="invalid-00'),
+    (xml: string) => xml.replaceAll('<w:styles ', '<w:other ' ).replaceAll('</w:styles>', '</w:other>'),
+    (xml: string) => xml.replaceAll('<w:style ', '<c:style ').replaceAll('</w:style>', '</c:style>'),
+  ]) expect(await hash("word/styles.xml", transform(stylePart("00112233")))).not.toBe(await hash("word/styles.xml", transform(stylePart("00445566"))))
+  for (const part of ["customXml/item1.xml", "word/custom.xml"])
+    expect(await hash(part, stylePart("00112233"))).not.toBe(await hash(part, stylePart("00445566")))
+})

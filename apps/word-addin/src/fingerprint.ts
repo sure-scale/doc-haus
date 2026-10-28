@@ -321,6 +321,28 @@ function normalizeSeparatorParagraphIds(name: string, root: Element): boolean {
   return changed
 }
 
+function normalizeStyleSessionIds(name: string, root: Element): boolean {
+  if (name !== "word/styles.xml" || root.localName !== "styles") return false
+  const namespace = root.namespaceURI!
+  let changed = false
+  for (const node of Array.from(root.childNodes)) {
+    if (node.nodeType !== 1) continue
+    const style = node as Element
+    if (style.namespaceURI !== namespace || style.localName !== "style") continue
+    const markers = Array.from(style.childNodes).filter(child => child.nodeType === 1 &&
+      (child as Element).namespaceURI === namespace && (child as Element).localName === "rsid") as Element[]
+    if (markers.length !== 1) continue
+    const marker = markers[0]!, attribute = marker.attributes[0]
+    if (marker.childNodes.length || marker.attributes.length !== 1 || attribute?.namespaceURI !== namespace ||
+      attribute.localName !== "val" || !/^[\da-f]{8}$/i.test(attribute.value)) continue
+    // This leaf records when the style was edited, not its formatting or a
+    // tracked change. Word may omit it when reopening the same saved package.
+    style.removeChild(marker)
+    changed = true
+  }
+  return changed
+}
+
 function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
   const wordPart = name.startsWith("word/") && name.endsWith(".xml")
   const extendedProperties = name === "docProps/app.xml"
@@ -442,6 +464,7 @@ function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
       }
     }
   }
+  changed = normalizeStyleSessionIds(name, root) || changed
   changed = normalizeSeparatorParagraphIds(name, root) || changed
   changed = normalizeTextFlow(name, root) || changed
   return changed ? strToU8(new XMLSerializer().serializeToString(doc)) : bytes
