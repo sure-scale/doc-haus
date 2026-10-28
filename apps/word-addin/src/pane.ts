@@ -9,6 +9,7 @@ import { mountWordChat } from "./chat-ui"
 import { captureCurrentWordContext, captureWordChatSelection, applyReviewedProposal } from "./word-chat-host"
 import { preferRoomyPane } from "./feature-tabs"
 import type { WordChatAuthoredAmendment } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { createReplaceConfirmation } from "./replace-confirmation"
 
 const element = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
 const badge = element("status")
@@ -81,16 +82,16 @@ async function main(): Promise<void> {
         })
       },
     })
+    const replacement = createReplaceConfirmation(document)
     renderLatest = setupLatestVersion(document, base => client.latest(base), office.host.replace ? async () => {
-      const loaded = await sync.loadLatest(
-        base => client.latestContent(base),
-        version => window.confirm(`Replace this Word document with version ${version.number} from doc.haus?\n\nChanges in this copy will be replaced. To keep them, cancel and use Save As first.`),
-      )
-      if (loaded) conversation.resetDocumentContext()
-      return loaded
+      try {
+        const loaded = await sync.loadLatest(base => client.latestContent(base), version => replacement.confirm(version))
+        if (loaded) conversation.resetDocumentContext()
+        return loaded
+      } finally { replacement.complete() }
     } : undefined)
     setupSourceDesk(link, { panel: chatPanel, storage })
-    window.addEventListener("pagehide", () => conversation.dispose(), { once: true })
+    window.addEventListener("pagehide", () => { replacement.dispose(); conversation.dispose() }, { once: true })
     await sync.start()
     setInterval(() => {
       void sync.tick()

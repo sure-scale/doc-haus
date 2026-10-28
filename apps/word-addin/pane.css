@@ -43,5 +43,13 @@ button:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px soli
 .saving-help p { margin: 0 0 8px; line-height: 1.6; }
 .saving-help a { display: inline-flex; align-items: center; min-height: 44px; color: #17634f; text-underline-offset: 3px; }
 [hidden] { display: none !important; }
+.replace-confirmation-layer { position: fixed; inset: 0; z-index: 100; display: grid; align-items: center; padding: 16px; overflow-y: auto; background: #263a2e66; }
+.replace-confirmation { width: 100%; min-width: 0; max-width: 440px; margin-inline: auto; padding: 20px; border: 1px solid #d4ddd4; border-radius: 14px; background: #fff; box-shadow: 0 12px 36px #172c2333; overflow-wrap: anywhere; }
+.replace-confirmation h2 { margin: 0 0 10px; font-size: 18px; font-weight: 600; }
+.replace-confirmation p { margin: 0 0 16px; color: #526057; font-size: 12px; line-height: 1.6; }
+.replace-confirmation .replace-confirmation-progress { color: #17634f; }
+.replace-confirmation-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.replace-confirmation-actions button { flex: 1 1 110px; width: auto; min-height: 40px; font-size: 12px; }
+.replace-confirmation-actions button:not(.primary) { color: #17634f; background: #edf4ee; }
 @media (max-width: 280px) { main { padding: 10px; } .pane-tabs { gap: 14px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

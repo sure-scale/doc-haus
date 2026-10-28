@@ -25,7 +25,7 @@ export function savePresentation(state: PaneState): SavePresentation {
       removed: ["Saving is unavailable for this copy.", "This copy predates a redaction or removal. Keep your local file and reopen the current document from doc.haus."],
       "unrecorded-change": ["The matter file changed outside its saved history.", "Keep your Word file and resolve that change in doc.haus before saving."],
     }[version.state]
-    return { ...result, badge: "Saving paused", tone: "blocked", message: copy[0], help: copy[1] }
+    return { ...result, badge: "Saving paused", tone: "blocked", message: state.problem ? state.message : copy[0], help: copy[1] }
   }
   if (state.connection?.lease.state === "other") return {
     ...result, badge: "Saving paused", tone: "blocked", message: "Another Word session is editing this document.",

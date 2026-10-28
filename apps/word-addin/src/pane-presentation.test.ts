@@ -39,3 +39,13 @@ test("blocked copies show contextual recovery and only a real version mismatch g
   expect(other.mismatch).toBeUndefined()
   expect(other.help).toContain("take over")
 })
+
+test("a refresh failure remains visible on a stale copy instead of being masked by version advice", () => {
+  const view = savePresentation(state({
+    canSave: false, problem: true, message: "This Word document changed while loading.",
+    connection: { ...current, version: { ...current.version, base: { id: "v1", number: 1 }, state: "stale" } },
+  }))
+  expect(view.message).toBe("This Word document changed while loading.")
+  expect(view.help).toContain("Save As")
+  expect(view.mismatch).toContain("version 1")
+})
