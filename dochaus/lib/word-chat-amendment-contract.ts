@@ -26,11 +26,11 @@ export type WordChatProposal = {
   openItems: string[]
   target: WordChatTarget
   createdAt: string
-  /** Paragraph properties only; all wording and paragraph boundaries stay exact. */
+  /** Optional reviewed paragraph properties, indexed against the resulting text. */
   formatting?: WordChatParagraphFormat[]
 }
 export type WordChatParagraphFormat = {
-  /** Zero-based index within target.paragraphs. */
+  /** Zero-based index within the resulting complete paragraphs. */
   paragraph: number
   style?: "Title" | "Heading1" | "Heading2" | "Heading3" | "Normal"
   /** Paragraph spacing in points, not Word twips. */
@@ -46,20 +46,22 @@ export type WordChatAuthoredAmendment = {
   revisions: { author: string; type: "Added" | "Deleted" | "Formatted"; text: string }[]
   author: "doc.haus"
   formatting?: WordChatParagraphFormat[]
+  wording?: { ooxml: string; revisions: WordChatAuthoredAmendment["revisions"] }
 }
 
 /** Paragraph formatting cannot borrow a partial selection's authority to
  * change the surrounding paragraph, or carry arbitrary model-authored XML. */
-export function validWordChatFormatting(target: WordChatTarget, value: unknown): value is WordChatParagraphFormat[] {
+export function validWordChatFormatting(target: WordChatTarget, value: unknown, replacement = target.text): value is WordChatParagraphFormat[] {
   if (!target?.paragraphs?.length || target.paragraphs.length > 64 || target.startOffset !== 0 ||
     target.endOffset !== target.paragraphs.at(-1)!.text.length ||
     target.text !== target.paragraphs.map(p => p.text).join("\r") ||
+    /\n/.test(replacement) || replacement.split("\r").length > 64 ||
     !Array.isArray(value) || !value.length || value.length > 64) return false
   const seen = new Set<number>()
   const fields = new Set(["paragraph", "style", "spacingBefore", "spacingAfter", "lineSpacing"])
   return value.every(op => {
     if (!op || typeof op !== "object" || Array.isArray(op) || Object.keys(op).some(key => !fields.has(key)) ||
-      !Number.isSafeInteger(op.paragraph) || op.paragraph < 0 || op.paragraph >= target.paragraphs.length || seen.has(op.paragraph)) return false
+      !Number.isSafeInteger(op.paragraph) || op.paragraph < 0 || op.paragraph >= replacement.split("\r").length || seen.has(op.paragraph)) return false
     seen.add(op.paragraph)
     if (op.style !== undefined && !["Title", "Heading1", "Heading2", "Heading3", "Normal"].includes(op.style)) return false
     for (const field of ["spacingBefore", "spacingAfter"] as const) if (op[field] !== undefined &&
@@ -81,16 +83,8 @@ export type WordChatApplyPlan = { supported: true; paragraphs: string[];
  * that paragraph intact for structural changes; otherwise rejecting a revision
  * could join the clause to unrelated text after the approved passage. */
 export function wordChatApplyPlan(target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[]): WordChatApplyPlan {
-  if (formatting !== undefined) {
-    if (replacement !== target.text || !validWordChatFormatting(target, formatting))
-      return { supported: false, reason: "Select complete paragraphs and prepare a formatting-only change. Wording must stay unchanged." }
-    // Native range import retains the destination's last paragraph properties,
-    // even for Whole replacement. The shared writer can author this change,
-    // but Apply must never silently lose the last reviewed property revision.
-    if (formatting.some(op => op.paragraph === target.paragraphs.length - 1))
-      return { supported: false, reason: "Word cannot import formatting for the last paragraph of this selection. Include an unchanged following paragraph, or format the last paragraph directly in Word." }
-    return { supported: true, paragraphs: target.paragraphs.map(p => p.text) }
-  }
+  if (formatting !== undefined && !validWordChatFormatting(target, formatting, replacement))
+    return { supported: false, reason: "Select complete paragraphs and prepare valid paragraph formatting." }
   const unsupported = { supported: false as const, reason: "This change needs paragraph restructuring. Refine it into smaller changes, or make it directly in Word." }
   if (/\n/.test(replacement) || !target.paragraphs.length) return unsupported
   const before = target.paragraphs.map(p => p.text)
@@ -99,12 +93,41 @@ export function wordChatApplyPlan(target: WordChatTarget, replacement: string, f
   if (paragraphs.length === before.length) return { supported: true, paragraphs }
   if (before.at(-1) !== paragraphs.at(-1) || before.some(p => !p.length) || paragraphs.some(p => !p.length || /[\t\v]/.test(p))) return unsupported
   const insert = paragraphs.length > before.length, shorter = insert ? before : paragraphs, longer = insert ? paragraphs : before
+  if (formatting && !insert) return unsupported
   // Count exact ordered alignments, pinning the unchanged final paragraph. A
   // repeated paragraph must not silently become the one that is removed.
   const paths = Array.from({ length: shorter.length }, (_, i) => Array<number>(longer.length).fill(i === shorter.length - 1 ? 1 : 0))
   for (let i = shorter.length - 2; i >= 0; i--) for (let j = longer.length - 2; j >= 0; j--)
     paths[i]![j] = Math.min(2, paths[i]![j + 1]! + (shorter[i] === longer[j] ? paths[i + 1]![j + 1]! : 0))
-  if (paths[0]![0] !== 1) return unsupported
+  if (paths[0]![0] !== 1) {
+    if (!insert || paths[0]![0] > 1 || target.startOffset !== 0 || target.endOffset !== before.at(-1)!.length) return unsupported
+    // Infer rewritten retained paragraphs only when a unique ordered mapping
+    // has strong wording overlap. Ambiguous mappings must be reviewed smaller.
+    const score = (a: string, b: string) => {
+      const words = (s: string) => new Set(s.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])
+      const x = words(a), y = words(b), common = [...x].filter(w => y.has(w)).length
+      return common >= 2 && common / Math.max(x.size, y.size) >= 0.5 ? common / Math.max(x.size, y.size) : -Infinity
+    }
+    const rows = before.length - 1, cols = paragraphs.length - 1
+    const dp = Array.from({ length: rows + 1 }, () => Array<{ score: number; count: number }>(cols + 1))
+    for (let j = 0; j <= cols; j++) dp[rows]![j] = { score: 0, count: 1 }
+    for (let i = rows - 1; i >= 0; i--) for (let j = cols; j >= 0; j--) {
+      const skip = j < cols ? dp[i]![j + 1]! : { score: -Infinity, count: 0 }
+      const next = j < cols ? dp[i + 1]![j + 1]! : { score: -Infinity, count: 0 }
+      const takeScore = j < cols ? score(before[i]!, paragraphs[j]!) + next.score : -Infinity
+      const best = Math.max(skip.score, takeScore)
+      dp[i]![j] = { score: best, count: best === -Infinity ? 0 : Math.min(2, (skip.score === best ? skip.count : 0) + (takeScore === best ? next.count : 0)) }
+    }
+    if (dp[0]![0]!.count !== 1) return unsupported
+    const retained: { before: number; after: number }[] = []
+    let j = 0
+    for (let i = 0; i < rows; i++) {
+      while (j < cols && score(before[i]!, paragraphs[j]!) + dp[i + 1]![j + 1]!.score !== dp[i]![j]!.score) j++
+      retained.push({ before: i, after: j++ })
+    }
+    retained.push({ before: rows, after: cols })
+    return { supported: true, paragraphs, structure: { kind: "insert", retained } }
+  }
   const retained: { before: number; after: number }[] = []
   let at = 0
   for (let i = 0; i < shorter.length; i++) {

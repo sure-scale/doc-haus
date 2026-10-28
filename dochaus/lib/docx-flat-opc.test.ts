@@ -79,6 +79,57 @@ test("several inserted paragraphs keep reviewed punctuation literal and ordered 
 const formatStyles = `<pkg:part pkg:name="/word/styles.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"><pkg:xmlData><w:styles><w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/></w:rPr></w:style></w:styles></pkg:xmlData></pkg:part>`
 const styleRelation = `<Relationship Id="rStyle" Type="${O}/styles" Target="styles.xml"/>`
 
+test("wording and formatting preserve a separate wording artifact", async () => {
+  const texts = ["The parties shall deliver the materials promptly.", "This qualification remains unchanged."], selected = target(texts)
+  const xml = flat(texts.map(paragraph).join(""), formatStyles, styleRelation)
+  const expected = ["The parties shall deliver the materials promptly and in writing.", texts[1]!]
+  const result = await authorWordChatTarget(xml, selected, expected.join("\r"), [{ paragraph: 0, spacingAfter: 6 }])
+  expect(result.paragraphs).toEqual(expected)
+  expect(result.wording).toBeDefined()
+  expect(result.revisions.some(r => r.type === "Formatted" && r.text === expected[0])).toBe(true)
+  expect(parsed(result.ooxml).getElementsByTagNameNS(W, "pPrChange")).toHaveLength(1)
+  expect(parsed(result.wording!.ooxml).getElementsByTagNameNS(W, "pPrChange")).toHaveLength(0)
+})
+
+test("mixed wording leaves earlier inline revisions in an untouched paragraph", async () => {
+  const texts = ["The obligation is ten days.", "Deliver the materials promptly.", "Retained qualification."], selected = target(texts)
+  const body = '<w:p><w:r><w:t>The obligation is </w:t></w:r><w:del w:id="42" w:author="Earlier reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:delText>five</w:delText></w:r></w:del><w:ins w:id="43" w:author="Earlier reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:t>ten</w:t></w:r></w:ins><w:r><w:t> days.</w:t></w:r></w:p>' + texts.slice(1).map(paragraph).join("")
+  const xml = flat(body, formatStyles, styleRelation), expected = [texts[0]!, "Deliver the materials promptly and in writing.", texts[2]!]
+  const result = await authorWordChatTarget(xml, selected, expected.join("\r"), [{ paragraph: 1, spacingAfter: 6 }])
+  for (const tag of ["ins", "del"]) expect(Array.from(parsed(result.ooxml).getElementsByTagNameNS(W, tag)).some(e => e.getAttributeNS(W, "author") === "Earlier reviewer")).toBe(true)
+  await expect(authorWordChatTarget(xml, selected, ["The obligation is twenty days.", texts[1]!, texts[2]!].join("\r"), [{ paragraph: 1, spacingAfter: 6 }])).rejects.toThrow()
+})
+
+test("layered wording changes beside an earlier own revision and refuses overlap", async () => {
+  const texts = ["A will supply B Market.", "Retained qualification."], selected = target(texts)
+  const body = '<w:p><w:r><w:t>A will supply B </w:t></w:r><w:del w:id="42" w:author="doc.haus" w:date="2026-01-01T00:00:00Z"><w:r><w:delText>Street</w:delText></w:r></w:del><w:ins w:id="43" w:author="doc.haus" w:date="2026-01-01T00:00:00Z"><w:r><w:t>Market</w:t></w:r></w:ins><w:r><w:t>.</w:t></w:r></w:p>' + paragraph(texts[1]!)
+  const xml = flat(body, formatStyles, styleRelation)
+  const result = await authorWordChatTarget(xml, selected, "A shall supply B Market.\r" + texts[1], [{ paragraph: 0, spacingAfter: 6 }])
+  const doc = parsed(result.ooxml)
+  for (const [tag, id] of [["del", "42"], ["ins", "43"]]) {
+    const prior = Array.from(doc.getElementsByTagNameNS(W, tag)).find(e => e.getAttributeNS(W, "id") === id)
+    expect(prior?.getAttributeNS(W, "author")).toBe("doc.haus")
+    expect(prior?.getAttributeNS(W, "date")).toBe("2026-01-01T00:00:00Z")
+    expect(prior?.textContent).toBe(tag === "del" ? "Street" : "Market")
+  }
+  expect(result.revisions.filter(r => r.type !== "Formatted").map(r => r.text).join(" ")).not.toContain("Market")
+  const wordingOnly = await authorWordChatTarget(xml, selected, "A shall supply B Market.\r" + texts[1])
+  expect(wordingOnly.revisions.map(r => r.text).join(" ")).not.toContain("Market")
+  expect(Array.from(parsed(wordingOnly.ooxml).getElementsByTagNameNS(W, "ins")).some(e => e.getAttributeNS(W, "id") === "43")).toBe(true)
+  await expect(authorWordChatTarget(xml, selected, "A will supply B Square.\r" + texts[1], [{ paragraph: 0, spacingAfter: 6 }])).rejects.toThrow("docx_own_revision")
+})
+
+test("inserted heading formatting travels with its tracked insertion", async () => {
+  const texts = ["The parties shall deliver the materials promptly.", "This qualification remains unchanged."], selected = target(texts)
+  const xml = flat(texts.map(paragraph).join(""), formatStyles, styleRelation)
+  const expected = ["Delivery", "The parties shall deliver the materials promptly and in writing.", texts[1]!]
+  const result = await authorWordChatTarget(xml, selected, expected.join("\r"), [{ paragraph: 0, style: "Heading1" }])
+  const doc = parsed(result.ooxml)
+  expect(doc.getElementsByTagNameNS(W, "pStyle")[0]!.getAttributeNS(W, "val")).toBe("Heading1")
+  expect(doc.getElementsByTagNameNS(W, "pPrChange")).toHaveLength(0)
+  expect(result.revisions.some(r => r.type === "Formatted" && r.text === "Delivery")).toBe(true)
+})
+
 test("combined paragraph formatting preserves inline text revisions and proves native accept/reject properties", async () => {
   const texts = ["The obligation is ten days.", "Retained qualification."], selected = target(texts)
   const body = '<w:p><w:pPr><w:spacing w:after="120"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>The obligation is </w:t></w:r><w:del w:id="42" w:author="Earlier reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:delText>five</w:delText></w:r></w:del><w:ins w:id="43" w:author="Earlier reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:t>ten</w:t></w:r></w:ins><w:r><w:t> days.</w:t></w:r></w:p>' + paragraph(texts[1]!)
@@ -187,8 +238,9 @@ test("changed text/offsets, protected content, structural changes and oversized 
   await expect(authorWordChatTarget(xml, target(["Tuesday"]), "Wednesday")).rejects.toThrow("word_snapshot_changed")
   await expect(authorWordChatTarget(xml, { ...target(["Monday"]), startOffset: 2 }, "Tuesday")).rejects.toThrow("word_snapshot_changed")
   await expect(authorWordChatTarget(xml, target(["Monday"]), "Tuesday\rWednesday")).rejects.toThrow("word_snapshot_unsupported")
-  for (const content of ['<w:ins w:author="Someone"><w:r><w:t>Monday</w:t></w:r></w:ins>', '<w:r><w:fldChar w:fldCharType="begin"/><w:t>Monday</w:t></w:r>', '<w:commentRangeStart w:id="1"/><w:r><w:t>Monday</w:t></w:r>']) {
+  for (const content of ['<w:r><w:fldChar w:fldCharType="begin"/><w:t>Monday</w:t></w:r>', '<w:commentRangeStart w:id="1"/><w:r><w:t>Monday</w:t></w:r>']) {
     await expect(authorWordChatTarget(flat(`<w:p>${content}</w:p>`), target(["Monday"]), "Tuesday")).rejects.toThrow("word_snapshot_unsupported")
   }
+  await expect(authorWordChatTarget(flat('<w:p><w:ins w:id="42" w:author="Someone" w:date="2026-01-01T00:00:00Z"><w:r><w:t>Monday</w:t></w:r></w:ins></w:p>'), target(["Monday"]), "Tuesday")).rejects.toThrow("docx_pending_revision")
   await expect(authorWordChatTarget(" ".repeat(MAX_WORD_AMENDMENT_OOXML_BYTES + 1), target(["Monday"]), "Tuesday")).rejects.toThrow("word_snapshot_large")
 })

@@ -36,6 +36,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     driftInsertedRanges: false, renewImportedIds: false, omitNewRevisions: false, authorCalls: 0, duringAuthor: undefined as undefined | (() => void | Promise<void>),
     nativeRevisions: [] as Array<{ start: number; end: number; author: string; type: string; text: string }>,
     extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false, wholeOoxmlTrailingParagraph: false,
+    nativeFormatting: [] as string[], dropNativeFormatting: false,
     paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
   }
   const text = () => state.paragraphs.map((p) => p.text).join("\r")
@@ -174,9 +175,41 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     track() { return this }
     untrack() { return this }
   }
+  const setFormat = (p: NativeParagraph, field: string, value: string) => queue.push(() => {
+    if (state.dropNativeFormatting) return
+    const xml = state.paragraphXml.get(p.id) ?? `<w:p><w:r><w:t>${escapeXml(p.text)}</w:t></w:r></w:p>`
+    const doc = new DOMParser().parseFromString(flatOpc(xml), "application/xml")
+    const block = doc.getElementsByTagNameNS(WORD_XML, "p")[0]!
+    let properties = Array.from(block.childNodes).find(n => n.nodeType === 1 && (n as Element).localName === "pPr") as Element | undefined
+    if (!properties) { properties = doc.createElementNS(WORD_XML, "w:pPr"); block.insertBefore(properties, block.firstChild) }
+    let change = Array.from(properties.childNodes).find(n => n.nodeType === 1 && (n as Element).localName === "pPrChange") as Element | undefined
+    const inserted = Array.from(properties.getElementsByTagNameNS(WORD_XML, "rPr")).some(run => run.getElementsByTagNameNS(WORD_XML, "ins").length)
+    if (!change && !inserted) {
+      const previous = properties.cloneNode(true)
+      change = doc.createElementNS(WORD_XML, "w:pPrChange")
+      change.setAttributeNS(WORD_XML, "w:id", "900")
+      change.setAttributeNS(WORD_XML, "w:author", "Word user")
+      change.setAttributeNS(WORD_XML, "w:date", "2026-01-01T00:00:00Z")
+      change.appendChild(previous); properties.appendChild(change)
+      const at = position(p.id)
+      state.nativeRevisions.push({ start: at.start, end: at.end, author: "Word user", type: "Formatted", text: p.text })
+      state.nativeFormatting.push(p.id)
+    }
+    const name = field === "style" ? "pStyle" : "spacing"
+    let element = Array.from(properties.childNodes).find(n => n.nodeType === 1 && (n as Element).localName === name) as Element | undefined
+    if (!element) { element = doc.createElementNS(WORD_XML, `w:${name}`); properties.insertBefore(element, field === "style" ? properties.firstChild : change ?? null) }
+    element.setAttributeNS(WORD_XML, `w:${field === "style" ? "val" : field}`, value)
+    if (field === "line") element.setAttributeNS(WORD_XML, "w:lineRule", "auto")
+    state.paragraphXml.set(p.id, new XMLSerializer().serializeToString(block))
+    state.saved = false
+  })
   const paragraph = (p: NativeParagraph) => ({
     get text() { return p.text }, get uniqueLocalId() { return p.id },
     get style() { return p.style ?? "Normal" }, get styleBuiltIn() { return p.styleBuiltIn ?? "Normal" },
+    set styleBuiltIn(value: string) { setFormat(p, "style", value) },
+    set spaceBefore(value: number) { setFormat(p, "before", String(value * 20)) },
+    set spaceAfter(value: number) { setFormat(p, "after", String(value * 20)) },
+    set lineSpacing(value: number) { setFormat(p, "line", String(value * 20)) },
     get outlineLevel() { return p.outlineLevel ?? 10 }, get isListItem() { return Boolean(p.list) },
     get tableNestingLevel() { return p.inTable ? 1 : 0 },
     get list() { if (!p.list) throw new Error("ItemNotFound"); return { id: p.list.id, load() {} } },
@@ -427,20 +460,107 @@ test("paragraph formatting refuses a target race before mutation and fences unce
   }
 })
 
-test("formatting the final selected paragraph refuses before authoring while an explicitly unchanged tail permits import", async () => {
-  const { state, host, formatting, text, texts } = formattedOffice()
-  const target = (await host.selection())!, unsupported = [...formatting, { paragraph: target.paragraphs.length - 1, spacingAfter: 6 }]
-  expect(validWordChatFormatting(target, unsupported)).toBe(true)
-  await expect(host.apply({ proposalId: "final-paragraph-format", target, replacement: target.text, formatting: unsupported })).rejects.toMatchObject({
-    mutationState: "unchanged", message: expect.stringContaining("Word cannot import formatting for the last paragraph"),
-  })
-  expect(state.authorCalls).toBe(0)
+test("native properties track the final selected paragraph without replacing the range", async () => {
+  const { state, host, text, texts } = formattedOffice()
+  const target = (await host.selection())!, formatting = [{ paragraph: target.paragraphs.length - 1, spacingAfter: 6 }]
+  const outside = [state.paragraphXml.get("paragraph-0"), state.paragraphXml.get("paragraph-4")]
+  expect(validWordChatFormatting(target, formatting)).toBe(true)
+  expect(await host.apply({ proposalId: "final-paragraph-format", target, replacement: target.text, formatting })).toMatchObject({ status: "applied", authors: ["Word user"] })
+  expect(state.authorCalls).toBe(1)
+  expect(state.writes).toHaveLength(0)
+  expect(state.nativeFormatting).toEqual(["paragraph-3"])
+  expect(state.modeChanges).toEqual(["TrackAll", "TrackAll"])
+  expect([state.paragraphXml.get("paragraph-0"), state.paragraphXml.get("paragraph-4")]).toEqual(outside)
+  expect(state.nativeRevisions.filter(r => r.author === "Earlier reviewer")).toHaveLength(2)
+  expect(text()).toBe(texts.join("\r"))
+})
+
+test("native final-boundary formatting verifies each requested property and prior revisions", async () => {
+  const { state, host, formatting } = formattedOffice(), target = (await host.selection())!
+  const operations = [...formatting, { paragraph: 2, spacingAfter: 6 }]
+  expect((await host.apply({ proposalId: "native-all-properties", target, replacement: target.text, formatting: operations })).status).toBe("applied")
+  expect(state.nativeFormatting).toEqual(["paragraph-1", "paragraph-2", "paragraph-3"])
+  expect(state.nativeRevisions.filter(r => r.author === "Earlier reviewer")).toHaveLength(2)
+  expect(state.writes).toHaveLength(0)
+})
+
+test("mixed inserted heading and wording retain prior inline revisions before native formatting", async () => {
+  const { state, host } = formattedOffice(), target = (await host.selection())!
+  const replacement = "Scope of obligations\r" + target.text.replace("Retained qualification.", "Retained important qualification.")
+  const formatting: WordChatParagraphFormat[] = [{ paragraph: 0, style: "Heading1" }, { paragraph: 3, spacingAfter: 6 }]
+  const result = await host.apply({ proposalId: "mixed-insert-format", target, replacement, formatting })
+  expect(result.status).toBe("applied")
+  expect(state.writes).toHaveLength(1)
+  expect(state.nativeRevisions.filter(r => r.author === "Earlier reviewer")).toHaveLength(2)
+  expect(state.nativeRevisions.filter(r => r.type === "Formatted")).toHaveLength(1)
+})
+
+test("mixed wording beside an existing own revision preserves that exact revision", async () => {
+  const { state, host } = formattedOffice(), target = (await host.selection())!
+  state.paragraphXml.set("paragraph-1", state.paragraphXml.get("paragraph-1")!.replaceAll('w:author="Earlier reviewer"', 'w:author="doc.haus"'))
+  for (const revision of state.nativeRevisions) revision.author = "doc.haus"
+  const previous = state.paragraphXml.get("paragraph-1")!
+  const replacement = "Scope of obligations\r" + target.text.replace("The obligation is", "The duty is")
+  const formatting: WordChatParagraphFormat[] = [{ paragraph: 0, style: "Heading1" }, { paragraph: 3, spacingAfter: 6 }]
+  const result = await host.apply({ proposalId: "mixed-existing-own", target, replacement, formatting })
+  expect(result.status).toBe("applied")
+  expect(state.writes).toHaveLength(1)
+  expect(state.nativeRevisions.some(r => r.author === "doc.haus" && r.type === "Deleted" && r.text === "five")).toBe(true)
+  expect(state.nativeRevisions.some(r => r.author === "doc.haus" && r.type === "Added" && r.text === "ten")).toBe(true)
+  expect(previous).toContain('w:author="doc.haus"')
+})
+
+test("mixed wording in a paragraph with another author's revision refuses before mutation", async () => {
+  const { state, host } = formattedOffice(), target = (await host.selection())!
+  const replacement = "Scope of obligations\r" + target.text.replace("The obligation is", "The duty is")
+  await expect(host.apply({ proposalId: "mixed-existing-other", target, replacement, formatting: [{ paragraph: 0, style: "Heading1" }] })).rejects.toMatchObject({ mutationState: "unchanged" })
   expect(state.writes).toHaveLength(0)
   expect(state.modeChanges).toHaveLength(0)
-  expect((await host.apply({ proposalId: "unchanged-final-paragraph", target, replacement: target.text, formatting })).status).toBe("applied")
-  expect(state.authorCalls).toBe(1)
-  expect(state.writes).toHaveLength(1)
-  expect(text()).toBe(texts.join("\r"))
+})
+
+test("mixed artifact tampering refuses before mutation and a lost import cannot be replayed", async () => {
+  for (const tamper of ["wording", "prior", "none"] as const) {
+    const { state, host, author } = formattedOffice(), target = (await host.selection())!
+    const replacement = "Scope of obligations\r" + target.text.replace("Retained qualification.", "Retained important qualification.")
+    const input = { proposalId: `mixed-failure-${tamper}`, target, replacement, formatting: [{ paragraph: 0, style: "Heading1" as const }, { paragraph: 3, spacingAfter: 6 }] }
+    if (tamper !== "none") {
+      const write = author(input)
+      await expect(host.apply({ ...input, author: async snapshot => {
+        const result = await write(snapshot)
+        return { ...result, wording: { ...result.wording!, ooxml: result.wording!.ooxml.replace(tamper === "prior" ? "five" : "qualification", "unexpected") } }
+      } })).rejects.toMatchObject({ mutationState: "unchanged" })
+      expect(state.writes).toHaveLength(0)
+    } else {
+      state.throwAfterWrite = true
+      await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain" })
+      expect(state.writes).toHaveLength(1)
+      expect(state.tracking).toBe("TrackAll")
+      await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain" })
+      expect(state.writes).toHaveLength(1)
+    }
+  }
+})
+
+test("a missing native format revision is uncertain and cannot be replayed", async () => {
+  const { state, host } = formattedOffice(), target = (await host.selection())!
+  state.dropNativeFormatting = true
+  const input = { proposalId: "missing-native-format", target, replacement: target.text, formatting: [{ paragraph: 2, spacingAfter: 6 }] }
+  await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("could not confirm") })
+  expect(state.tracking).toBe("TrackAll")
+  await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain" })
+  expect(state.writes).toHaveLength(0)
+})
+
+test("a lost native formatting response restores tracking and prevents replay", async () => {
+  const { state, host } = formattedOffice(), target = (await host.selection())!
+  state.tracking = "Off"
+  state.throwAfterWrite = true
+  const input = { proposalId: "lost-native-format", target, replacement: target.text, formatting: [{ paragraph: 2, spacingAfter: 6 }] }
+  await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain" })
+  expect(state.tracking).toBe("Off")
+  expect(state.nativeFormatting).toEqual(["paragraph-3"])
+  await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain" })
+  expect(state.nativeFormatting).toHaveLength(1)
 })
 
 test("formatting captures and verifies Content XML when Whole export adds a synthetic final paragraph", async () => {

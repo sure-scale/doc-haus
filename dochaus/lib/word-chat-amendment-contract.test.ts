@@ -13,22 +13,21 @@ test("a formatting review keeps its wording and whole-paragraph authority", () =
   const formatting = [{ paragraph: 0, style: "Heading1" as const, spacingBefore: 12, spacingAfter: 6 }, { paragraph: 1, lineSpacing: 1.15 }]
   expect(validWordChatFormatting(target, formatting)).toBe(true)
   expect(wordChatApplyPlan(target, target.text, formatting)).toEqual({ supported: true, paragraphs: value.paragraphs.map(p => p.text) })
-  expect(wordChatApplyPlan(target, target.text.replace("thirty", "sixty"), formatting).supported).toBe(false)
+  expect(wordChatApplyPlan(target, target.text.replace("thirty", "sixty"), formatting).supported).toBe(true)
   const partial = { ...target, startOffset: 4, text: target.text.slice(4) }
   expect(wordChatApplyPlan(partial, partial.text, formatting).supported).toBe(false)
   expect(validWordChatFormatting({ ...target, endOffset: target.endOffset - 1, text: target.text.slice(0, -1) }, formatting)).toBe(false)
 })
 
-test("native formatting eligibility requires an explicitly included unchanged final paragraph", () => {
+test("native formatting can include the final paragraph", () => {
   const value = snapshot(), target = targetWordChatAmendment(value, value.text)!
   const formatting = [{ paragraph: 0, spacingAfter: 6 }, { paragraph: 1, spacingAfter: 6 }]
   expect(validWordChatFormatting(target, formatting)).toBe(true)
-  expect(wordChatApplyPlan(target, target.text, formatting)).toEqual({ supported: false,
-    reason: "Word cannot import formatting for the last paragraph of this selection. Include an unchanged following paragraph, or format the last paragraph directly in Word." })
+  expect(wordChatApplyPlan(target, target.text, formatting)).toEqual({ supported: true, paragraphs: target.paragraphs.map(p => p.text) })
   expect(wordChatApplyPlan(target, target.text, formatting.slice(0, 1))).toEqual({ supported: true, paragraphs: target.paragraphs.map(p => p.text) })
   const one = { ...target, text: target.paragraphs[0]!.text, paragraphs: target.paragraphs.slice(0, 1) }
   expect(validWordChatFormatting(one, formatting.slice(0, 1))).toBe(true)
-  expect(wordChatApplyPlan(one, one.text, formatting.slice(0, 1)).supported).toBe(false)
+  expect(wordChatApplyPlan(one, one.text, formatting.slice(0, 1)).supported).toBe(true)
 })
 
 test("formatting operations cannot smuggle edits or conflicting paragraph properties", () => {
@@ -53,6 +52,16 @@ test("structural eligibility pins exact whole paragraphs and keeps the final imp
   const repeated = { ...target, paragraphs: [target.paragraphs[0]!, target.paragraphs[0]!, target.paragraphs[1]!], text: "Pay within thirty days.\rPay within thirty days.\rAn unchanged qualification." }
   expect(wordChatApplyPlan(repeated, target.text).supported).toBe(false)
   expect(wordChatApplyPlan({ ...target, startOffset: 4, text: target.text.slice(4) }, "A working note.\r" + target.text.slice(4)).supported).toBe(false)
+})
+
+test("mixed insertions index formatting against the result and reject ambiguous mappings", () => {
+  const texts = ["The parties shall deliver the materials promptly.", "Unchanged qualification."]
+  const target = targetWordChatAmendment({ ...snapshot(), text: texts.join("\r"), paragraphs: texts.map((text, i) => ({ id: String(i), text })) }, texts.join("\r"))!
+  const replacement = ["Delivery", "The parties shall deliver the materials promptly and in writing.", texts[1]!].join("\r")
+  expect(wordChatApplyPlan(target, replacement, [{ paragraph: 0, style: "Heading1" }])).toMatchObject({ supported: true, structure: { kind: "insert", retained: [{ before: 0, after: 1 }, { before: 1, after: 2 }] } })
+  expect(validWordChatFormatting(target, [{ paragraph: 2, spacingAfter: 6 }], replacement)).toBe(true)
+  expect(wordChatApplyPlan(target, replacement, [{ paragraph: 2, spacingAfter: 6 }]).supported).toBe(true)
+  expect(wordChatApplyPlan(target, ["The parties shall deliver promptly.", "The parties shall deliver promptly.", texts[1]!].join("\r")).supported).toBe(false)
 })
 
 test("retained selection rejects stale native paragraphs even when its old words remain elsewhere", () => {

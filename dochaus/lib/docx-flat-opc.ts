@@ -146,7 +146,7 @@ function paragraphText(paragraph: Element): string {
   return text(paragraph)
 }
 
-async function authorParagraphFormatting(source: ReturnType<typeof packageFromFlatOpc>, bytes: Uint8Array, before: Element[], formatting: WordChatParagraphFormat[]) {
+async function authorParagraphFormatting(source: ReturnType<typeof packageFromFlatOpc>, bytes: Uint8Array, before: Element[], formatting: WordChatParagraphFormat[], layeredWording = false, inserted = new Set<number>()) {
   const dx = await docxodus(), session = dx.openDocxSession(bytes, { smartQuotes: false, persistAnchorIds: false })
   let baked: Uint8Array
   try {
@@ -187,6 +187,7 @@ async function authorParagraphFormatting(source: ReturnType<typeof packageFromFl
   for (const [index, paragraph] of after.entries()) {
     if (!wordChatParagraphFormatChanged(before[index]!, paragraph, operations.get(index))) continue
     changed++
+    if (inserted.has(index)) continue
     const properties = children(paragraph).find(node => node.namespaceURI === W && node.localName === "pPr")!
     const previous = children(before[index]!).find(node => node.namespaceURI === W && node.localName === "pPr")
     const change = doc.createElementNS(W, "w:pPrChange")
@@ -195,10 +196,10 @@ async function authorParagraphFormatting(source: ReturnType<typeof packageFromFl
     properties.appendChild(change)
   }
   if (!changed) throw new WordFormattingError("These paragraphs already use the proposed formatting. Choose a different change.")
-  const revisions = reviewedWordChatParagraphFormatting(before, after, formatting).flat()
+  const revisions = reviewedWordChatParagraphFormatting(before, after, formatting, inserted).flat()
   parts[MAIN] = strToU8(serializer.serializeToString(doc))
   const authored = zipSync(parts, { mtime: new Date(1980, 0, 1) })
-  await assertLayeredRoundTrip(authored, bytes, baked)
+  if (!layeredWording) await assertLayeredRoundTrip(authored, bytes, baked)
   // The shared round-trip checks content and prior revisions. Also prove exact
   // paragraph/inline XML and properties after resolving only our format marks.
   for (const accept of [false, true]) {
@@ -209,7 +210,7 @@ async function authorParagraphFormatting(source: ReturnType<typeof packageFromFl
       const result = bodyParagraphs(parse(strFromU8(unzipSync(resolved.save())[MAIN]!)), false).paragraphs
       const expected = accept ? bodyParagraphs(parse(strFromU8(unzipSync(baked)[MAIN]!)), false).paragraphs : before
       require(result.length === expected.length)
-      result.forEach((paragraph, index) => wordChatParagraphFormatChanged(expected[index]!, paragraph))
+      result.forEach((paragraph, index) => wordChatParagraphFormatChanged(inserted.has(index) ? bodyParagraphs(parse(strFromU8(unzipSync(baked)[MAIN]!)), false).paragraphs[index]! : expected[index]!, paragraph))
     } finally { resolved.close() }
   }
   return { ooxml: importFlatOpc(parts, source.types), paragraphs: before.map(paragraphText), revisions, author: AUTHOR, formatting }
@@ -297,12 +298,12 @@ function importFlatOpc(parts: Record<string, Uint8Array>, originalTypes: Map<str
  * amendment engine. Native session IDs never become Docxodus paragraph IDs;
  * exact ordered text and selected UTF-16 offsets bind this ephemeral package. */
 export async function authorWordChatTarget(ooxml: string, target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[]): Promise<Omit<WordChatAuthoredAmendment, "proposalId">> {
-  const source = packageFromFlatOpc(ooxml), doc = parse(strFromU8(source.parts[MAIN]!)), { body, paragraphs } = bodyParagraphs(doc, true, Boolean(formatting))
+  const source = packageFromFlatOpc(ooxml), doc = parse(strFromU8(source.parts[MAIN]!)), { body, paragraphs } = bodyParagraphs(doc, true, true)
   const texts = paragraphs.map(paragraphText), proposed = replacement.split("\r")
   require(JSON.stringify(texts) === JSON.stringify(target.paragraphs.map(p => p.text)), "word_snapshot_changed")
   // Authoring supports every valid paragraph operation. The native host/UI
   // separately gate transport limitations, including the final paragraph mark.
-  if (formatting !== undefined) require(replacement === target.text && validWordChatFormatting(target, formatting))
+  if (formatting !== undefined) require(validWordChatFormatting(target, formatting, replacement))
   const plan = wordChatApplyPlan(target, replacement)
   require(plan.supported)
   require(Number.isSafeInteger(target.startOffset) && Number.isSafeInteger(target.endOffset) && target.startOffset >= 0 && target.endOffset >= 0 &&
@@ -316,16 +317,19 @@ export async function authorWordChatTarget(ooxml: string, target: WordChatTarget
   for (const p of paragraphs) body.insertBefore(p, section)
   source.parts[MAIN] = strToU8(serializer.serializeToString(doc))
   const bytes = zipSync(source.parts, { mtime: new Date(1980, 0, 1) })
-  if (formatting) return authorParagraphFormatting(source, bytes, paragraphs, formatting)
+  if (formatting && replacement === target.text) return authorParagraphFormatting(source, bytes, paragraphs, formatting)
   const options = { pendingRevisions: "layer" as const, revisionAuthor: AUTHOR, ownAuthors: [AUTHOR] }
-  const revision = plan.structure ? undefined : await createDocxRevision(bytes, options), projected = revision?.paragraphs.filter(p => p.scope === "body") ?? []
+  const revision = await createDocxRevision(bytes, options), projected = revision.paragraphs.filter(p => p.scope === "body")
   const nonempty = texts.filter(text => text.replace(/[\v\t]/g, "").length)
-  if (!plan.structure) require(JSON.stringify(projected.map(p => p.text)) === JSON.stringify(nonempty.map(text => text.replace(/[\v\t]/g, ""))), "word_snapshot_changed")
+  require(JSON.stringify(projected.map(p => p.text)) === JSON.stringify(nonempty.map(text => text.replace(/[\v\t]/g, ""))), "word_snapshot_changed")
   const edits: DocxParagraphEdit[] = [], expected = plan.paragraphs
   let ordinal = 0
-  if (!plan.structure) texts.forEach((text, i) => {
+  const retained = plan.structure?.retained ?? texts.map((_, i) => ({ before: i, after: i }))
+  texts.forEach((text, i) => {
     const paragraph = text.replace(/[\v\t]/g, "") ? projected[ordinal++] : undefined, { start, end } = spans[i]!
-    const before = text.slice(start, end), after = proposed[i]!
+    const mapping = retained.find(item => item.before === i)
+    if (!mapping) return
+    const before = text.slice(start, end), after = plan.structure ? expected[mapping.after]! : proposed[i]!
     if (before === after) return
     require(paragraph)
     const pieces = before.split(/([\v\t])/), replacements = after.split(/([\v\t])/)
@@ -345,19 +349,26 @@ export async function authorWordChatTarget(ooxml: string, target: WordChatTarget
     })
   })
   require(plan.structure || edits.length > 0)
-  const amended = plan.structure ? await authorParagraphStructure(bytes, texts, expected, plan.structure)
-    : (await applyDocxParagraphEdits(bytes, edits, undefined, options)).bytes
+  const edited = edits.length ? (await applyDocxParagraphEdits(bytes, edits, undefined, options)).bytes : bytes
+  const editedTexts = texts.map((text, i) => {
+    const mapping = retained.find(item => item.before === i)
+    return mapping && plan.structure ? expected[mapping.after]! : text
+  })
+  const amended = plan.structure ? await authorParagraphStructure(edited, editedTexts, expected, plan.structure) : edited
+  if (plan.structure) await assertLayeredRoundTrip(amended, bytes, amended)
   const outputParts = unzipSync(amended)
   const outputDoc = parse(strFromU8(outputParts[MAIN]!)), output = bodyParagraphs(outputDoc, false).paragraphs
   const current = output.filter(p => paragraphMark(p)?.localName !== "del")
   // Current text excludes deletions. Keep native soft breaks/tabs in the result.
   for (const deletion of all(outputDoc, W, "del")) deletion.parentNode!.removeChild(deletion)
   require(JSON.stringify(current.map(paragraphText)) === JSON.stringify(expected), "word_snapshot_changed")
+  const prior = new Set(paragraphs.flatMap(p => ["ins", "del"].flatMap(name => all(p, W, name).map(node => `${name}:${node.getAttributeNS(W, "id")}:${node.getAttributeNS(W, "author")}`))))
   const authored = parse(strFromU8(outputParts[MAIN]!)), revisions: WordChatAuthoredAmendment["revisions"] = []
   for (const p of bodyParagraphs(authored, false).paragraphs) {
     const visit = (node: Element) => {
       if (node.namespaceURI === W && ["ins", "del"].includes(node.localName)) {
         const added = node.localName === "ins", author = node.getAttributeNS(W, "author") ?? ""
+        if (prior.has(`${node.localName}:${node.getAttributeNS(W, "id")}:${author}`)) return
         require(author === AUTHOR)
         revisions.push({ type: added ? "Added" : "Deleted", author, text: all(node, W, added ? "t" : "delText").map(t => t.textContent ?? "").join("") })
       } else if (!(node.namespaceURI === W && ["pPr", "rPr"].includes(node.localName))) children(node).forEach(visit)
@@ -367,5 +378,15 @@ export async function authorWordChatTarget(ooxml: string, target: WordChatTarget
     if (mark) { require(mark.getAttributeNS(W, "author") === AUTHOR); revisions.push({ type: mark.localName === "ins" ? "Added" : "Deleted", author: AUTHOR, text: "\r" }) }
   }
   require(revisions.length > 0)
-  return { ooxml: importFlatOpc(outputParts, source.types), paragraphs: expected, revisions, author: AUTHOR }
+  const wording = { ooxml: importFlatOpc(outputParts, source.types), revisions }
+  if (formatting) {
+    const currentParagraphs = bodyParagraphs(parse(strFromU8(outputParts[MAIN]!)), false).paragraphs
+    const retainedAfter = new Set(plan.structure?.retained.map(item => item.after) ?? expected.map((_, i) => i))
+    const inserted = new Set(expected.map((_, i) => i).filter(i => !retainedAfter.has(i)))
+    const formatted = await authorParagraphFormatting(source, amended, currentParagraphs, formatting, true, inserted)
+    const formattedParts = packageFromFlatOpc(formatted.ooxml).parts
+    await assertLayeredRoundTrip(zipSync(formattedParts, { mtime: new Date(1980, 0, 1) }), bytes, amended)
+    return { ...formatted, paragraphs: expected, revisions: [...revisions, ...formatted.revisions], wording }
+  }
+  return { ...wording, paragraphs: expected, author: AUTHOR }
 }

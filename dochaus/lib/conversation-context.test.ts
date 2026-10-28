@@ -28,3 +28,11 @@ test("the same evidence receives the selected answer or independent-review contr
   expect(scoped.responseContract).toBe("Check this frozen target only.")
   expect(scoped.context).toEqual(context)
 })
+
+test("amendment contract permits mixed wording and layout without deciding unsupported matters", () => {
+  const contract = conversationResponseContract("amendment")
+  expect(contract).toContain("requested wording and layout together")
+  expect(contract).toContain("resulting complete paragraphs")
+  expect(contract).toContain("client decisions stay unresolved")
+  expect(contract).not.toContain("Choose a wording or formatting-only proposal")
+})

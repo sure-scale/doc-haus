@@ -9,7 +9,7 @@ export { MAX_WORD_AMENDMENT_OOXML_BYTES, WordAmendmentError, WordFormattingError
  * Neither this function nor the shared Docxodus writer publishes a version. */
 export async function authorWordChatAmendment(ooxml: string, proposal: WordChatProposal): Promise<WordChatAuthoredAmendment> {
   if (!proposal.id || proposal.before !== proposal.target.text || (proposal.formatting !== undefined
-    ? proposal.before !== proposal.after || !validWordChatFormatting(proposal.target, proposal.formatting)
+    ? !validWordChatFormatting(proposal.target, proposal.formatting, proposal.after)
     : proposal.before === proposal.after))
     throw new Error("word_proposal_changed")
   const authored = await authorWordChatTarget(ooxml, proposal.target, proposal.after, proposal.formatting)

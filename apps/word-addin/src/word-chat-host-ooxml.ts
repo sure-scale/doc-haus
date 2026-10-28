@@ -154,9 +154,72 @@ export function sameImportedWordChat(authored: string, observed: string): boolea
     JSON.stringify(marks(authored)) === JSON.stringify(marks(observed)) && JSON.stringify(formats(authored)) === JSON.stringify(formats(observed))
 }
 
+/** Verify native paragraph formatting against both the captured source and the
+ * independently checked authored artifact. Word owns the revision author for
+ * property mutations; no other author or revision content is normalized. */
+export function verifiedNativeWordChatFormatting(captured: string, authored: string, observed: string, formatting: WordChatParagraphFormat[], inserted = new Set<number>()): string[] {
+  const before = content(parse(captured), true, true).nodes
+  const after = content(parse(observed), true, true).nodes.map(node => node.cloneNode(true) as Element)
+  const authors: string[] = []
+  for (const paragraph of after) {
+    const properties = elements(paragraph).find(node => node.namespaceURI === W && node.localName === "pPr")
+    const changes = properties ? elements(properties).filter(node => node.namespaceURI === W && node.localName === "pPrChange") : []
+    if (changes.length > 1) throw new Error("Ambiguous native formatting revision")
+    if (changes[0]) {
+      const author = changes[0].getAttributeNS(W, "author")
+      if (!author?.trim()) throw new Error("Missing native formatting author")
+      authors.push(author)
+      changes[0].setAttributeNS(W, "w:author", "doc.haus")
+    }
+  }
+  // This checks exact captured inline markup, untouched properties, requested
+  // values, and the original pPr saved inside every native format revision.
+  reviewedWordChatParagraphFormatting(before, after, formatting, inserted)
+  const expected = content(parse(authored), false, false).nodes
+  if (after.length !== expected.length || after.some((paragraph, index) =>
+    JSON.stringify(paragraphView(paragraph, "Current")) !== JSON.stringify(paragraphView(expected[index]!, "Current")) ||
+    JSON.stringify(paragraphView(paragraph, "Original")) !== JSON.stringify(paragraphView(expected[index]!, "Original"))))
+    throw new Error("Native formatting differs from the reviewed artifact")
+  return [...new Set(authors)]
+}
+
+/** Both pieces are validated before Word is mutated. Inserted paragraph marks
+ * are identified only from the separately reviewed wording artifact. */
+export function reviewedMixedWordChatArtifact(artifact: WordChatAuthoredAmendment, proposalId: string, target: WordChatTarget, expected: string[], captured: string, formatting: WordChatParagraphFormat[]) {
+  if (!artifact.wording || !validWordChatFormatting(target, formatting, expected.join("\r")) ||
+    JSON.stringify(artifact.formatting) !== JSON.stringify(formatting)) throw new Error("Invalid mixed amendment")
+  const wording = { proposalId, author: artifact.author, paragraphs: artifact.paragraphs, revisions: artifact.wording.revisions, ooxml: artifact.wording.ooxml } satisfies WordChatAuthoredAmendment
+  reviewedWordChatArtifact(wording, proposalId, target, expected, captured)
+  const before = content(parse(wording.ooxml), false, false).nodes
+  const after = content(parse(artifact.ooxml), false, false).nodes
+  if (before.some(node => paragraphMark(node)?.localName === "del")) throw new Error("Mixed deletion is not supported")
+  const inserted = new Set(before.flatMap((node, index) => paragraphMark(node)?.localName === "ins" ? [index] : []))
+  unchangedFormattingDependencies(captured, artifact.ooxml)
+  const formats = reviewedWordChatParagraphFormatting(before, after, formatting, inserted).flat()
+  if (artifact.proposalId !== proposalId || artifact.author !== "doc.haus" || JSON.stringify(artifact.paragraphs) !== JSON.stringify(expected) ||
+    JSON.stringify(artifact.revisions) !== JSON.stringify([...wording.revisions, ...formats])) throw new Error("Mixed amendment metadata differs from markup")
+  return { wording, inserted, formats }
+}
+
 export function sameWordChatParagraphContent(before: string, after: string): boolean {
   const view = (xml: string) => content(parse(xml), true, true).shape.map(node => canonical(node, true))
   return JSON.stringify(view(before)) === JSON.stringify(view(after))
+}
+
+/** For layered wording imports compare every inline revision, including older
+ * ones, in its own physical paragraph. Do not infer preservation from author. */
+export function sameWordChatInlineRevisions(authored: string, observed: string): boolean {
+  const revisions = (xml: string) => content(parse(xml), true, true).nodes.map(paragraph => {
+    const result: unknown[] = []
+    const visit = (node: Element) => {
+      if (node.namespaceURI === W && ["pPr", "rPr"].includes(node.localName)) return
+      if (node.namespaceURI === W && ["ins", "del"].includes(node.localName)) { result.push(canonical(node)); return }
+      elements(node).forEach(visit)
+    }
+    visit(paragraph)
+    return result
+  })
+  return JSON.stringify(revisions(authored)) === JSON.stringify(revisions(observed))
 }
 
 function unchangedFormattingDependencies(before: string, after: string) {
@@ -248,20 +311,44 @@ export function reviewedWordChatArtifact(artifact: WordChatAuthoredAmendment, pr
   }
   if (artifact.formatting !== undefined) throw new Error("Unreviewed paragraph formatting")
   const current = clauseView(artifact.ooxml, "Current"), original = clauseView(artifact.ooxml, "Original")
+  const baseline = captured ? clauseView(captured, "Original") : undefined
   if (current.length !== expected.length || original.length !== target.paragraphs.length ||
     JSON.stringify(current.map(p => p.runs.map(r => r.text).join(""))) !== JSON.stringify(expected) ||
-    JSON.stringify(original.map(p => p.runs.map(r => r.text).join(""))) !== JSON.stringify(target.paragraphs.map(p => p.text)))
+    !baseline && JSON.stringify(original.map(p => p.runs.map(r => r.text).join(""))) !== JSON.stringify(target.paragraphs.map(p => p.text)))
     throw new Error("The authored amendment differs from the reviewed passage")
-  if (captured && JSON.stringify(clauseView(captured, "Original")) !== JSON.stringify(clauseView(artifact.ooxml, "Original"))) throw new Error("The authored amendment changes original formatting or bookmark anchors")
+  if (baseline && JSON.stringify(baseline) !== JSON.stringify(original)) throw new Error("The authored amendment changes original formatting or bookmark anchors")
+  const prior: Array<Map<string, number>> = []
+  if (captured) for (const paragraph of content(parse(captured), true, true).nodes) {
+    const marks = new Map<string, number>()
+    const visit = (node: Element) => {
+      if (node.namespaceURI === W && ["pPr", "rPr"].includes(node.localName)) return
+      if (node.namespaceURI === W && ["ins", "del"].includes(node.localName)) {
+        const key = JSON.stringify(canonical(node)), count = marks.get(key) ?? 0
+        marks.set(key, count + 1); return
+      }
+      elements(node).forEach(visit)
+    }
+    visit(paragraph)
+    prior.push(marks)
+  }
   const revisions: Array<Array<{ author: string; type: "Added" | "Deleted"; text: string }>> = []
   let offset = 0
   const start = target.startOffset, end = target.paragraphs.slice(0, -1).reduce((at, p) => at + p.text.length + 1, 0) + target.endOffset
+  let originalIndex = 0
   for (const [index, paragraph] of paragraphs.entries()) {
     const changes: typeof revisions[number] = []
+    const mark = paragraphMark(paragraph)
+    const priorInParagraph = mark?.localName === "ins" ? undefined : prior[originalIndex]
     const visit = (node: Element) => {
       if (node.namespaceURI === W && ["pPr", "rPr"].includes(node.localName)) return
       if (node.namespaceURI === W && ["ins", "del"].includes(node.localName)) {
         const added = node.localName === "ins", wording = text(node, added ? "Current" : "Original")
+        const key = JSON.stringify(canonical(node)), priorCount = priorInParagraph?.get(key) ?? 0
+        if (priorCount) {
+          priorInParagraph!.set(key, priorCount - 1)
+          if (added) offset += wording.length
+          return
+        }
         if (!wording || node.getAttributeNS(W, "author") !== "doc.haus" || offset < start || offset + (added ? 0 : wording.length) > end || node.getElementsByTagNameNS(W, "ins").length || node.getElementsByTagNameNS(W, "del").length) throw new Error("The authored revision exceeds the approved selection")
         changes.push({ author: "doc.haus", type: added ? "Added" : "Deleted", text: wording })
         if (!added) offset += wording.length
@@ -271,7 +358,6 @@ export function reviewedWordChatArtifact(artifact: WordChatAuthoredAmendment, pr
       for (const child of elements(node)) visit(child)
     }
     visit(paragraph)
-    const mark = paragraphMark(paragraph)
     if (mark) {
       const added = mark.localName === "ins"
       if (index === paragraphs.length - 1 || mark.getAttributeNS(W, "author") !== "doc.haus" || offset < start || offset + (added ? 0 : 1) > end)
@@ -279,8 +365,10 @@ export function reviewedWordChatArtifact(artifact: WordChatAuthoredAmendment, pr
       changes.push({ author: "doc.haus", type: added ? "Added" : "Deleted", text: "\r" })
     }
     if (index < paragraphs.length - 1 && mark?.localName !== "ins") offset++
+    if (mark?.localName !== "ins") originalIndex++
     revisions.push(changes)
   }
+  if (prior.some(marks => [...marks.values()].some(Boolean))) throw new Error("The authored amendment changes existing revisions")
   const signature = (changes: typeof artifact.revisions) => JSON.stringify(changes.map(change => [change.author, change.type, change.text]))
   if (!revisions.flat().length || signature(revisions.flat()) !== signature(artifact.revisions)) throw new Error("The authored revision metadata differs from its Word markup")
   return revisions

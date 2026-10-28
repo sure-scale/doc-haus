@@ -269,6 +269,33 @@ test("legacy admitted turns remain readable and reconcile their original prompt 
   expect(admissions.filter(value => value.tail === "/synthetic")).toHaveLength(contextCount)
   expect(admissions.at(-1)?.payload.text).toBe(original)
 })
+test("legacy proposal kinds retain their original wording and formatting boundaries", async () => {
+  const id = await newConversation(), before = context.text, after = before.replace("Tuesday", "Wednesday")
+  const formatting = [{ paragraph: 0, spacingAfter: 6 }]
+  routerAgent = "redliner"; amend = true; modelProposal = { before, after, formatting }
+  try {
+    const turn = (await (await send(id, "document", "Rewrite and adjust spacing")).json() as { turn: WordChatTurn }).turn
+    expect(turn.proposal?.after).toBe(after)
+    const child = sessions.get(turn.id)!
+    delete child.metadata.suppliedContext; delete child.metadata.contextMode
+    const answer = messages.get(turn.id)!.find(message => message.type === "assistant")!
+    const setProposal = (replacement: string, properties?: unknown) => {
+      answer.content = [{ type: "text", text: JSON.stringify({ answer: "Prepared.", citations: [], proposal: { before, after: replacement, ...(properties === undefined ? {} : { formatting: properties }), explanation: "Review", openItems: [] } }) }]
+    }
+    const poll = async () => (await (await post("poll", { conversationId: id, turnId: turn.id })).json() as { turn: WordChatTurn }).turn
+    child.metadata.kind = "formatting"
+    setProposal(before, formatting)
+    expect((await poll()).proposal?.formatting).toEqual(formatting)
+    setProposal(after, formatting)
+    expect((await poll()).proposal).toBeUndefined()
+    child.metadata.kind = "amendment"
+    setProposal(after)
+    expect((await poll()).proposal?.after).toBe(after)
+    setProposal(after, formatting)
+    expect((await poll()).proposal).toBeUndefined()
+  } finally { routerAgent = "qa"; amend = false; modelProposal = undefined }
+})
+
 test("Stop cancels one scoped request and later polling cannot expose its late answer", async () => {
   const id = await newConversation(); hold = true
   const response = await send(id, "document", "Explain delivery")
@@ -506,14 +533,14 @@ test("composer modes route questions, explicit changes and formatting without ch
     ["What formatting is used?", {}, "chat"],
     ["How can I improve the spacing?", {}, "chat"],
     ["Can you explain the heading styles?", {}, "chat"],
-    ["Can you format the document better, more spacing and better headings?", {}, "formatting"],
-    ["Please increase paragraph spacing without changing any words.", {}, "formatting"],
-    ["Apply Heading 2 to the existing headings.", {}, "formatting"],
+    ["Can you format the document better, more spacing and better headings?", {}, "amendment"],
+    ["Please increase paragraph spacing without changing any words.", {}, "amendment"],
+    ["Apply Heading 2 to the existing headings.", {}, "amendment"],
     ["Do not change the formatting. Explain it.", {}, "chat"],
     ["Rewrite this clause", { mode: "qa", kind: "amendment" }, "chat"],
     ["Format the document", { mode: "qa" }, "chat"],
     ["Explain this clause", { mode: "redline" }, "amendment"],
-    ["Improve the layout", { mode: "redline" }, "formatting"],
+    ["Improve the layout", { mode: "redline" }, "amendment"],
     ["Prepare my requested change", { mode: "auto", kind: "amendment" }, "amendment"],
   ] as const) {
     routerAgent = expected === "chat" ? "qa" : "redliner"
@@ -562,8 +589,8 @@ test("format-only proposals retain exact paragraphs, carry bounded properties an
     expect(supplied.formattingParagraphs).toEqual(paragraphs)
     const reviewer = [...sessions.values()].find(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")!
     const reviewPrompt = sessionContext(reviewer.id)
-    expect(reviewPrompt).toContain("paragraph properties")
-    expect(reviewPrompt).toContain("wording unchanged")
+    expect(reviewPrompt).toContain("Review the requested layout together with the proposed wording")
+    expect(reviewPrompt).toContain("resulting paragraphs")
     // An explicit refinement keeps its already reviewed formatting target even in Q&A mode.
     const refined = (await (await request({ mode: "qa", proposal: turn.proposal })).json() as { turn: WordChatTurn }).turn
     expect(refined.kind).toBe("formatting")
@@ -574,9 +601,8 @@ test("format-only proposals retain exact paragraphs, carry bounded properties an
     expect(refused.error).toContain("needs revision")
     expect(refused.answer).toContain("loses a qualification")
     approveReview = true
-    // Format requests cannot smuggle wording edits, unsupported properties or surrounding paragraph scope.
+    // Reject unsupported properties and formatting outside complete paragraph authority.
     for (const proposal of [
-      { before, after: before + " Additional words.", formatting },
       { before, after: before, formatting: [{ paragraph: 0, fontSize: 30 }] },
       { before: "Services", after: "Services", formatting: [{ paragraph: 0, spacingAfter: 12 }] },
     ]) {
@@ -584,7 +610,7 @@ test("format-only proposals retain exact paragraphs, carry bounded properties an
       const count = generations
       const invalid = (await (await request()).json() as { turn: WordChatTurn }).turn
       expect(invalid.proposal).toBeUndefined()
-      expect(invalid.error).toMatch(/complete paragraphs|wording unchanged/i)
+      expect(invalid.error).toMatch(/complete paragraphs|clear passage/i)
       expect(generations - count).toBe(1)
     }
     // Every complete paragraph supplied for layout is also verifiable Word evidence,
@@ -597,21 +623,46 @@ test("format-only proposals retain exact paragraphs, carry bounded properties an
     expect(extendedTurn.proposal?.target.paragraphs).toEqual([extended[1]!])
     expect(extendedTurn.sources[0]?.quote).toBe(tail)
     modelRawOutput = undefined
-    const count = generations
-    const many = Array.from({ length: 65 }, (_, index) => ({ id: String(index), text: `Paragraph ${index}.` }))
-    const oversized = [{ id: "large", text: "x".repeat(24_001) }]
-    const partial = { id: "partial", text: "Services", paragraphs: [paragraphs[0]!], startOffset: 0, endOffset: 8, capturedAt: current.capturedAt, saved: false }
-    for (const boundedContext of [
-      { ...current, paragraphs: many, text: many.map(paragraph => paragraph.text).join("\r") },
-      { ...current, paragraphs: oversized, text: oversized[0]!.text },
-      { ...current, selection: partial },
-    ]) {
-      const bounded = await request({ context: boundedContext })
-      expect(bounded.status).toBe(409)
-      expect((await bounded.json() as { error: string }).error).toContain("complete paragraphs")
-    }
-    expect(generations).toBe(count)
+
   } finally { amend = false; modelProposal = undefined; modelRawOutput = undefined; approveReview = true; routerAgent = "qa" }
+})
+
+test("mixed wording and layout follow shared Auto and receive one independent review", async () => {
+  const id = await newConversation()
+  const before = context.text
+  const after = before.replace("Tuesday", "Wednesday")
+  const formatting = [{ paragraph: 0, spacingAfter: 6 }]
+  routerAgent = "redliner"; amend = true
+  modelProposal = { before, after, formatting }
+  try {
+    const request = () => post("send", { conversationId: id, scope: "document", mode: "auto", text: "Add headings and sections and make the wording more formal.", requestId: crypto.randomUUID(), attachments: [], context })
+    const turn = (await (await request()).json() as { turn: WordChatTurn }).turn
+    expect(turn.kind).toBe("amendment")
+    expect(turn.proposal?.after).toBe(after)
+    expect(turn.proposal?.formatting).toEqual(formatting)
+    const prompt = sessionContext(turn.id)
+    expect(prompt).toContain("requested wording and layout together")
+    expect(prompt).not.toContain("Choose a wording or formatting-only proposal")
+    const reviewer = [...sessions.values()].find(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")!
+    const review = sessionContext(reviewer.id)
+    expect(review).toContain("Review the requested layout together with the proposed wording")
+    expect(review).toContain("invented client decision")
+    expect(review).toContain("Reject silently omitted requested work")
+    expect(review).toContain("remaining requested work is clearly disclosed")
+    expect(suppliedContext(review).proposal).toEqual(turn.proposal)
+    // Formatting references the resulting paragraphs, including inserted text.
+    modelProposal = { before, after: `Delivery\r${before}`, formatting: [{ paragraph: 1, spacingAfter: 6 }] }
+    const inserted = (await (await request()).json() as { turn: WordChatTurn }).turn
+    expect(inserted.proposal?.formatting).toEqual([{ paragraph: 1, spacingAfter: 6 }])
+    modelProposal = { before, after: `Delivery\r${before}`, formatting: [{ paragraph: 2, spacingAfter: 6 }] }
+    const outOfRange = (await (await request()).json() as { turn: WordChatTurn }).turn
+    expect(outOfRange.proposal).toBeUndefined()
+    modelProposal = { before, after, formatting }
+    approveReview = false
+    const rejected = (await (await request()).json() as { turn: WordChatTurn }).turn
+    expect(rejected.proposal).toBeUndefined()
+    expect(rejected.error).toContain("needs revision")
+  } finally { amend = false; modelProposal = undefined; approveReview = true; routerAgent = "qa" }
 })
 
 test("independent amendment review receives first/last paragraph offsets and local-save semantics", async () => {

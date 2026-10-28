@@ -755,6 +755,31 @@ test("formatting review groups adjacent identical operations while preserving un
   } finally { f.restore() }
 })
 
+test("mixed review shows the replacement and collapsed layout, and applies the exact combined proposal once", async () => {
+  const following = { id: "unchanged-tail", text: "This separate clause stays unchanged." }
+  const target: WordChatTarget = { ...passage, text: `${passage.text}\r${following.text}`, paragraphs: [...passage.paragraphs, following], endOffset: following.text.length }
+  const mixed: WordChatProposal = { ...proposal, before: target.text, after: `Payment\r${passage.text}\r${following.text}`, target, formatting: [{ paragraph: 0, style: "Heading1", spacingAfter: 6 }] }
+  const original = JSON.stringify(mixed), applied: WordChatProposal[] = []
+  const f = fixture({ turns: [turn({ kind: "amendment", proposal: mixed })], host: { apply: async value => { applied.push(value) } } })
+  try {
+    await f.chat.ready
+    const card = f.root.querySelector(".chat-proposal")!
+    expect(card.getAttribute("aria-label")).toBe("Amendment to review")
+    expect(card.querySelector("h3")!.textContent).toBe("Review amendment")
+    expect(card.textContent).not.toContain("Wording unchanged")
+    expect(card.querySelector(".chat-after")!.textContent).toBe(mixed.after.replace(/\r/g, "\n"))
+    const details = [...card.querySelectorAll("details")]
+    expect(details.map(item => item.querySelector("summary")!.textContent)).toEqual(["Before", "Layout changes"])
+    expect(details.every(item => !item.open)).toBe(true)
+    expect(card.querySelector(".chat-format-plan strong")!.textContent).toBe("Payment")
+    const apply = [...card.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Apply")!
+    apply.click(); apply.click(); await Bun.sleep(0)
+    expect(applied).toEqual([mixed]); expect(JSON.stringify(mixed)).toBe(original)
+    expect(Boolean(f.root.querySelector(".chat-proposal-actions"))).toBe(false)
+    expect(f.root.textContent).toContain("Applied in Word")
+  } finally { f.restore() }
+})
+
 test("Apply uncertainty hides every action and affected context, while pre-import errors with the same text remain retryable", async () => {
   for (const mutationState of ["unchanged", "uncertain"] as const) {
     let calls = 0
@@ -786,7 +811,7 @@ test("Apply uncertainty hides every action and affected context, while pre-impor
   }
 })
 
-test("formatting the final selected paragraph remains reviewable with guidance but no Apply action", async () => {
+test("formatting the final selected paragraph can be applied without asking for another paragraph", async () => {
   const formatted: WordChatProposal = { ...proposal, before: passage.text, after: passage.text, formatting: [{ paragraph: 0, spacingAfter: 6 }] }
   const original = JSON.stringify(formatted)
   let writes = 0
@@ -796,9 +821,11 @@ test("formatting the final selected paragraph remains reviewable with guidance b
     const card = f.root.querySelector(".chat-proposal")!
     expect(card.querySelector("h3")!.textContent).toBe("Review formatting")
     expect(card.querySelector(".chat-format-plan")!.textContent).toContain("6 pt after")
-    expect(card.querySelector(".chat-proposal-limit")!.textContent).toContain("Include an unchanged following paragraph")
-    expect([...card.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].map(button => button.textContent)).toEqual(["Refine", "Decline"])
+    expect(Boolean(card.querySelector(".chat-proposal-limit"))).toBe(false)
+    const buttons = [...card.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")]
+    expect(buttons.map(button => button.textContent)).toEqual(["Refine", "Apply", "Decline"])
     expect(card.querySelector(".chat-format-target pre")!.textContent).toBe(passage.text)
-    expect(writes).toBe(0); expect(JSON.stringify(formatted)).toBe(original)
+    buttons.find(button => button.textContent === "Apply")!.click(); await Bun.sleep(0)
+    expect(writes).toBe(1); expect(JSON.stringify(formatted)).toBe(original)
   } finally { f.restore() }
 })

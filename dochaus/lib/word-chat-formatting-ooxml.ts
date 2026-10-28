@@ -77,7 +77,7 @@ export function wordChatParagraphFormatChanged(before: Element, after: Element, 
 
 /** A format-only artifact records exactly the captured old pPr and only the
  * approved new leaves. Existing content/revision XML must remain untouched. */
-export function reviewedWordChatParagraphFormatting(before: Element[], after: Element[], formatting: WordChatParagraphFormat[]) {
+export function reviewedWordChatParagraphFormatting(before: Element[], after: Element[], formatting: WordChatParagraphFormat[], inserted = new Set<number>()) {
   if (before.length !== after.length) throw new Error("Formatting changes paragraph boundaries")
   const operations = new Map(formatting.map(op => [op.paragraph, op]))
   const revisions = before.map((original, index) => {
@@ -90,6 +90,10 @@ export function reviewedWordChatParagraphFormatting(before: Element[], after: El
     if (!changed) {
       if (change) throw new Error("Unchanged paragraph has a formatting revision")
       return []
+    }
+    if (inserted.has(index)) {
+      if (change) throw new Error("Inserted paragraph has a separate formatting revision")
+      return [{ author: "doc.haus", type: "Formatted" as const, text: currentText(original) }]
     }
     const old = change && elements(change)
     if (!change || change.getAttributeNS(W, "author") !== "doc.haus" || !/^\d+$/.test(change.getAttributeNS(W, "id") ?? "") ||
