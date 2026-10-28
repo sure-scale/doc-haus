@@ -103,7 +103,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   let materialTab: "existing" | "upload" = "existing"
   let suggestionKey = "", stableKey = "", stableAt = 0, lastSuggestion = -Infinity, lastMaterials = 0
   let cancelMonitor: (() => void) | undefined, cancelPoll: (() => void) | undefined, monitorBusy = false
-  const dismissed = new Set<string>(), applied = new Set<string>(), declined = new Set<string>()
+  const dismissed = new Set<string>(), applied = new Set<string>(), declined = new Set<string>(), uncertain = new Set<string>()
   const proposalErrors = new Map<string, string>()
   const nodes = new Map<string, { stamp: string; node: HTMLElement }>()
   get("document-info-content").textContent = host.documentName
@@ -138,6 +138,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   }
   const suggestionsEnabled = () => proactive.checked && !suggestionsPaused
   const reviewingAmendment = () => turns.some(turn => turn.status === "complete" && turn.proposal && !applied.has(turn.proposal.id) && !declined.has(turn.proposal.id))
+  const proposalFinished = (id: string) => applied.has(id) || declined.has(id) || uncertain.has(id)
   const conversationLocked = () => connecting || sending || applying || uploading || pickerOpen || Boolean(pending) || foreground?.status === "running"
   function savePreferences() {
     writeChatPreferences(storage, { scope: defaultScope, suggestions: proactive.checked, target: target.value === "selection" ? "selection" : "document" })
@@ -307,6 +308,14 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       list.append(choice)
     }
   }
+  function clearProposalContext(proposal: WordChatProposal) {
+    const affected = new Set(proposal.target.paragraphs.map(paragraph => paragraph.id))
+    if (selection && selection.paragraphs.some(paragraph => affected.has(paragraph.id))) clearSelection()
+    if (refinement?.id === proposal.id || refinement?.target.paragraphs.some(paragraph => affected.has(paragraph.id))) {
+      refinement = undefined; message.placeholder = "Ask doc.haus…"
+    }
+    renderChips()
+  }
   function proposalCard(proposal: WordChatProposal, turn: WordChatTurn): HTMLElement {
     const formatting = proposal.formatting
     const card = document.createElement("section"); card.className = "chat-proposal"; card.setAttribute("aria-label", formatting ? "Formatting to review" : "Amendment to review")
@@ -336,7 +345,12 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       card.append(line("h4", "Open items")); const items = document.createElement("ul"); items.className = "chat-open-items"
       for (const text of proposal.openItems) items.append(line("li", text)); card.append(items)
     }
-    if (applied.has(proposal.id)) { card.append(line("p", "Applied in Word as tracked changes. Choose Save to publish it to the matter.", "chat-local-note")); return card }
+    if (applied.has(proposal.id)) {
+      const note = line("p", "Applied in Word. Save when you’re ready.", "chat-local-note"); note.setAttribute("role", "status"); card.append(note); return card
+    }
+    if (uncertain.has(proposal.id)) {
+      const note = line("p", "Check the change in Word. Use Undo if needed.", "chat-proposal-error"); note.setAttribute("role", "alert"); card.append(note); return card
+    }
     if (declined.has(proposal.id)) { card.append(line("p", "Declined. Your document is unchanged.", "chat-message-meta")); return card }
     const error = proposalErrors.get(proposal.id)
     if (error) { const note = line("p", error, "chat-proposal-error"); note.setAttribute("role", "alert"); card.append(note) }
@@ -345,32 +359,29 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     const actions = document.createElement("div"); actions.className = "chat-proposal-actions"
     const refine = document.createElement("button"); refine.type = "button"; refine.className = "chat-subtle"; refine.textContent = "Refine"
     refine.disabled = applying
-    refine.onclick = () => { if (applying) return; cancelSelectionCapture(); refinement = proposal; renderChips(); controls(); message.placeholder = "How should this change?"; message.focus() }
+    refine.onclick = () => { if (applying || proposalFinished(proposal.id)) return; cancelSelectionCapture(); refinement = proposal; renderChips(); controls(); message.placeholder = "How should this change?"; message.focus() }
     const apply = document.createElement("button"); apply.type = "button"; apply.className = "chat-send"; apply.textContent = "Apply"; apply.disabled = applying
     apply.onclick = async () => {
-      if (applying || applied.has(proposal.id)) return
+      if (applying || proposalFinished(proposal.id)) return
       applying = true; cancelSelectionCapture(); controls(); status("Applying in Word…")
       try {
         await host.apply(proposal, { conversationId: turn.conversationId, turnId: turn.id })
         if (disposed) return
         applied.add(proposal.id); proposalErrors.delete(proposal.id)
-        const affected = new Set(proposal.target.paragraphs.map(paragraph => paragraph.id))
-        if (selection && selection.paragraphs.some(paragraph => affected.has(paragraph.id))) clearSelection()
-        if (refinement?.id === proposal.id || refinement?.target.paragraphs.some(paragraph => affected.has(paragraph.id))) {
-          refinement = undefined; message.placeholder = "Ask doc.haus…"
-        }
-        renderChips(); status("Applied in Word. Save when you’re ready."); invalidateSuggestions(); renderTurns()
+        clearProposalContext(proposal); status(); invalidateSuggestions(); renderTurns()
       }
       catch (error) {
         if (disposed) return
-        proposalErrors.set(proposal.id, error instanceof Error ? error.message : "Word could not apply this change. Refine it and try again.")
+        if (error && typeof error === "object" && "mutationState" in error && error.mutationState === "uncertain") {
+          uncertain.add(proposal.id); proposalErrors.delete(proposal.id); clearProposalContext(proposal)
+        } else proposalErrors.set(proposal.id, error instanceof Error ? error.message : "Word could not apply this change. Refine it and try again.")
         status(); renderTurns()
       }
       finally { applying = false; if (!disposed) apply.disabled = false; controls() }
     }
     const decline = document.createElement("button"); decline.type = "button"; decline.className = "chat-subtle"; decline.textContent = "Decline"
     decline.disabled = applying
-    decline.onclick = () => { if (applying) return; declined.add(proposal.id); proposalErrors.delete(proposal.id); if (refinement?.id === proposal.id) { refinement = undefined; renderChips() }; renderTurns() }
+    decline.onclick = () => { if (applying || proposalFinished(proposal.id)) return; declined.add(proposal.id); proposalErrors.delete(proposal.id); if (refinement?.id === proposal.id) { refinement = undefined; renderChips() }; renderTurns() }
     actions.append(refine)
     if (plan.supported) actions.append(apply)
     actions.append(decline); card.append(actions); return card
@@ -389,7 +400,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     }
     for (const turn of visible) {
       const proposal = turn.status === "complete" ? turn.proposal as WordChatProposal | undefined : undefined
-      const stamp = JSON.stringify([turn, proposal && applied.has(proposal.id), proposal && declined.has(proposal.id), proposal && proposalErrors.get(proposal.id)])
+      const stamp = JSON.stringify([turn, proposal && applied.has(proposal.id), proposal && declined.has(proposal.id), proposal && uncertain.has(proposal.id), proposal && proposalErrors.get(proposal.id)])
       let cached = nodes.get(turn.id)
       if (cached?.stamp === stamp) continue
       const wrapper = document.createElement("div"); wrapper.dataset.turn = turn.id

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { WordChatHost, type WordChatContext, type WordChatWord, type WordChatApplyInput } from "./word-chat-host"
+import { WordChatHost, WordChatHostError, type WordChatContext, type WordChatWord, type WordChatApplyInput } from "./word-chat-host"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import type { WordChatAuthoredAmendment, WordChatParagraphFormat, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { wordChanges } from "../../../dochaus/lib/word-changes"
@@ -629,11 +629,23 @@ test("a lost native response restores tracking and never blindly retries a possi
   const target = (await host.selection())!
   state.throwAfterWrite = true
   const input = { proposalId: "uncertain", target, replacement: target.text.replace("clear", "specific") }
-  await expect(host.apply(input)).rejects.toThrow("Inspect the clause")
+  await expect(host.apply(input)).rejects.toMatchObject({ name: "WordChatHostError", mutationState: "uncertain", message: expect.stringContaining("Inspect the clause") })
   expect(state.tracking).toBe("Off")
   expect(state.writes).toHaveLength(1)
-  await expect(host.apply(input)).rejects.toThrow("may already contain")
+  await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("may already contain") })
+  await expect(host.apply({ ...input, replacement: "A different requested change." })).rejects.toMatchObject({ mutationState: "uncertain" })
   expect(state.writes).toHaveLength(1)
+})
+
+test("pre-import refusal stays unchanged even when its message describes uncertainty", async () => {
+  const { state, host } = office()
+  const target = (await host.selection())!
+  const input = { proposalId: "read-only-refusal", target, replacement: "A different requested change.", author: async () => {
+    throw new WordChatHostError("Word may already contain this change. Inspect the clause.")
+  } }
+  await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "unchanged" })
+  expect(state.writes).toHaveLength(0)
+  expect(state.modeChanges).toHaveLength(0)
 })
 
 test("comments and revisions anywhere in imported paragraphs refuse; siblings remain untouched", async () => {
@@ -706,7 +718,7 @@ test("unexpected inserted wording never reports a confirmed reviewed amendment",
   const target = (await host.selection())!
   state.corruptWrite = true
   const input = { proposalId: "wrong-host-result", target, replacement: target.text.replace("clear", "specific") }
-  await expect(host.apply(input)).rejects.toThrow("could not confirm")
+  await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("could not confirm") })
   expect(state.writes).toHaveLength(1)
   await expect(host.apply(input)).rejects.toThrow("may already contain")
 })

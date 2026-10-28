@@ -159,8 +159,9 @@ test("review shows full wording and open items; deliberate Apply pins the review
     expect(f.root.textContent).toContain(proposal.before); expect(f.root.textContent).toContain(proposal.after); expect(f.root.textContent).toContain(proposal.openItems[0]!)
     const apply = [...f.root.querySelectorAll("button")].find(button => button.textContent === "Apply") as HTMLButtonElement
     apply.click(); apply.click(); await Bun.sleep(0)
-    expect(applied).toEqual([proposal]); expect(f.root.textContent).toContain("Choose Save to publish")
-    expect([...f.root.querySelectorAll("button")].some(button => button.textContent === "Apply")).toBe(false)
+    expect(applied).toEqual([proposal]); expect(f.root.querySelector('.chat-local-note[role="status"]')!.textContent).toBe("Applied in Word. Save when you’re ready.")
+    expect(f.root.querySelectorAll(".chat-proposal-actions button")).toHaveLength(0)
+    expect(f.get("activity").textContent).toBe("")
   } finally { f.restore() }
 })
 
@@ -239,7 +240,7 @@ test("a late selection capture cannot restore the pre-Apply target", async () =>
     apply.click()
     await Bun.sleep(0); finish(structuredClone(passage)); await Bun.sleep(0)
     expect(f.get("chips").textContent).not.toContain("Selected Word text")
-    expect(f.get("activity").textContent).toContain("Applied in Word")
+    expect(f.root.querySelector('.chat-local-note[role="status"]')!.textContent).toContain("Applied in Word")
   } finally { finish(structuredClone(passage)); f.restore() }
 })
 
@@ -665,4 +666,35 @@ test("formatting review groups adjacent identical operations while preserving un
     apply.click(); await Bun.sleep(0)
     expect(applied).toEqual([formatted]); expect(applied[0]!.formatting).toHaveLength(9); expect(JSON.stringify(formatted)).toBe(original)
   } finally { f.restore() }
+})
+
+test("Apply uncertainty hides every action and affected context, while pre-import errors with the same text remain retryable", async () => {
+  for (const mutationState of ["unchanged", "uncertain"] as const) {
+    let calls = 0
+    const error = Object.assign(new Error("Word could not confirm the imported change. Inspect it and use Undo if needed."), { mutationState })
+    const f = fixture({ turns: [turn({ kind: "amendment", proposal })], host: { apply: async () => { calls++; throw error } } })
+    try {
+      await f.chat.ready
+      const actions = () => [...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")]
+      const cached = actions(), apply = cached.find(button => button.textContent === "Apply")!
+      cached.find(button => button.textContent === "Refine")!.click()
+      const message = f.get<HTMLTextAreaElement>("message"); message.value = "Keep my next message"
+      apply.click(); await Bun.sleep(0)
+      const notice = f.root.querySelector('.chat-proposal-error[role="alert"]')!
+      expect(message.value).toBe("Keep my next message"); expect(f.get("activity").textContent).toBe("")
+      if (mutationState === "uncertain") {
+        expect(notice.textContent).toBe("Check the change in Word. Use Undo if needed.")
+        expect(actions()).toHaveLength(0)
+        expect(f.get("chips").textContent).not.toContain("Refining amendment"); expect(f.get("chips").textContent).not.toContain("Selected Word text")
+        expect(message.placeholder).toBe("Ask doc.haus…")
+        for (const button of cached) { button.disabled = false; button.click() }
+        await Bun.sleep(0)
+        expect(calls).toBe(1); expect(actions()).toHaveLength(0); expect(f.root.textContent).not.toContain("Declined. Your document is unchanged.")
+      } else {
+        expect(notice.textContent).toBe(error.message); expect(actions().map(button => button.textContent)).toEqual(["Refine", "Apply", "Decline"])
+        expect(actions().every(button => !button.disabled)).toBe(true); expect(f.get("chips").textContent).toContain("Refining amendment")
+        actions().find(button => button.textContent === "Apply")!.click(); await Bun.sleep(0); expect(calls).toBe(2)
+      }
+    } finally { f.restore() }
+  }
 })

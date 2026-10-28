@@ -35,7 +35,9 @@ export type WordChatContext = {
 export type WordChatWord = { run<T>(callback: (context: WordChatContext) => Promise<T>): Promise<T> }
 export type WordChatApplyResult = { status: "applied" | "already-applied"; tracked: true; saved: false; authors: string[]; target?: WordChatTarget }
 export type WordChatApplyInput = { proposalId: string; target: WordChatTarget; replacement: string; formatting?: WordChatParagraphFormat[]; author: (snapshot: { ooxml: string }) => Promise<WordChatAuthoredAmendment> }
-export class WordChatHostError extends Error { constructor(message: string) { super(message); this.name = "WordChatHostError" } }
+export class WordChatHostError extends Error {
+  constructor(message: string, readonly mutationState: "unchanged" | "uncertain" = "unchanged") { super(message); this.name = "WordChatHostError" }
+}
 const LIMIT = 24_000
 const PARAGRAPH_LIMIT = 64
 const SNAPSHOT_LIMIT = 512_000
@@ -242,8 +244,8 @@ export class WordChatHost {
     }
     const observed = this.applied.get(input.proposalId)
     if (observed) {
+      if (observed.uncertain) throw new WordChatHostError("Word may already contain this change. Inspect the clause and use Undo if needed before preparing a fresh proposal.", "uncertain")
       if (observed.identity !== identity) throw new WordChatHostError("This proposal has different wording. Prepare a fresh proposal.")
-      if (observed.uncertain) throw new WordChatHostError("Word may already contain this change. Inspect the clause and use Undo if needed before preparing a fresh proposal.")
       return { status: "already-applied", tracked: true, saved: false, authors: observed.authors }
     }
     const promise = this.applyOnce(input, identity)
@@ -404,7 +406,12 @@ export class WordChatHost {
         } : undefined
         return { status: "applied", tracked: true, saved: false, authors: ["doc.haus"], ...(target ? { target } : {}) }
       })
-    } catch (error) { failure(error, "Word could not complete the authored amendment. Inspect the clause before preparing a fresh proposal; your existing work has not been replaced by a saved copy.") }
+    } catch (error) {
+      const fallback = "Word could not complete the authored amendment. Inspect the clause before preparing a fresh proposal; your existing work has not been replaced by a saved copy."
+      if (this.applied.get(input.proposalId)?.uncertain)
+        throw new WordChatHostError(error instanceof WordChatHostError ? error.message : fallback, "uncertain")
+      failure(error, fallback)
+    }
   }
 
 }
