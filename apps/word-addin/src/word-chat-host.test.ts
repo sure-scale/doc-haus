@@ -35,7 +35,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     throwAfterWrite: false, corruptWrite: false, afterSync: undefined as undefined | (() => void),
     driftInsertedRanges: false, renewImportedIds: false, omitNewRevisions: false, authorCalls: 0, duringAuthor: undefined as undefined | (() => void | Promise<void>),
     nativeRevisions: [] as Array<{ start: number; end: number; author: string; type: string; text: string }>,
-    extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false,
+    extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false, wholeOoxmlTrailingParagraph: false,
     paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
   }
   const text = () => state.paragraphs.map((p) => p.text).join("\r")
@@ -145,7 +145,11 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       })
       return result
     }
-    getOoxml() { return { value: !state.writes.length && state.xml !== undefined ? state.xml : flatOpc(this.paragraphs.items.map(p => state.paragraphXml.get(p.uniqueLocalId) ?? `<w:p><w:r><w:t xml:space="preserve">${escapeXml(p.text)}</w:t></w:r></w:p>`).join(""), state.extraParts) } }
+    getOoxml() {
+      const paragraphs = this.paragraphs.items
+      const whole = paragraphs.length && this.end === position(paragraphs.at(-1)!.uniqueLocalId).end + 1
+      return { value: !state.writes.length && state.xml !== undefined ? state.xml : flatOpc(paragraphs.map(p => state.paragraphXml.get(p.uniqueLocalId) ?? `<w:p><w:r><w:t xml:space="preserve">${escapeXml(p.text)}</w:t></w:r></w:p>`).join("") + (state.wholeOoxmlTrailingParagraph && whole ? "<w:p/>" : ""), state.extraParts) }
+    }
     getReviewedText() {
       const paragraphs = state.paragraphs.filter(p => { const at = position(p.id); return this.start <= at.start && at.end <= this.end })
       const complete = paragraphs.length && position(paragraphs[0]!.id).start === this.start && position(paragraphs.at(-1)!.id).end === this.end
@@ -417,6 +421,32 @@ test("paragraph formatting refuses a target race before mutation and fences unce
       expect(state.writes).toHaveLength(1)
     }
   }
+})
+
+test("formatting captures and verifies Content XML when Whole export adds a synthetic final paragraph", async () => {
+  const { state, host, word, formatting, texts, text } = formattedOffice()
+  state.wholeOoxmlTrailingParagraph = true
+  const target = (await host.selection())!, outside = [state.paragraphXml.get("paragraph-0"), state.paragraphXml.get("paragraph-3")]
+  const counts = await word.run(async context => {
+    const first = context.document.getParagraphByUniqueLocalId(target.paragraphs[0]!.id), last = context.document.getParagraphByUniqueLocalId(target.paragraphs.at(-1)!.id)
+    return ["Content", "Whole"].map(location => {
+      const xml = first.getRange(location).expandTo(last.getRange(location)).getOoxml().value
+      return new DOMParser().parseFromString(xml, "application/xml").getElementsByTagNameNS(WORD_XML, "body")[0]!.getElementsByTagNameNS(WORD_XML, "p").length
+    })
+  })
+  expect(counts).toEqual([2, 3])
+  expect((await host.apply({ proposalId: "whole-export-final-paragraph", target, replacement: target.text, formatting })).status).toBe("applied")
+  expect(state.authorCalls).toBe(1)
+  expect(state.writes).toHaveLength(1)
+  expect(state.writes[0]!.before).toBe(target.text + "\r")
+  expect(state.writes[0]!.end).toBe(texts.slice(0, 3).join("\r").length + 1)
+  expect(state.paragraphs.map(p => p.id)).toEqual(["paragraph-0", "paragraph-1", "paragraph-2", "paragraph-3"])
+  expect(text()).toBe(texts.join("\r"))
+  expect([state.paragraphXml.get("paragraph-0"), state.paragraphXml.get("paragraph-3")]).toEqual(outside)
+  expect(state.nativeRevisions.filter(r => r.author === "Earlier reviewer")).toHaveLength(2)
+  expect(state.nativeRevisions.filter(r => r.type === "Formatted")).toHaveLength(2)
+  expect(state.tracking).toBe("TrackAll")
+  expect(state.saved).toBe(false)
 })
 
 test("paragraph formatting refuses an adjacent insertion between neighbour discovery and the final capture", async () => {

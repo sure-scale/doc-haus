@@ -265,14 +265,16 @@ export class WordChatHost {
       neighbours = [all.items[at - 1], all.items[at + target.paragraphs.length]].filter((p): p is Paragraph => Boolean(p))
         .map(p => ({ id: p.uniqueLocalId, range: p.getRange("Whole") }))
     }
-    // Complete paragraph formatting includes its final mark. Text amendments
-    // still exclude that mark; their authority remains the selected wording.
-    const location = formatting ? "Whole" : "Content"
-    const range = paragraphs[0]!.getRange(location).expandTo(paragraphs.at(-1)!.getRange(location))
+    // Content exports the exact paragraphs and all their pPr. Word's Whole
+    // export can add a synthetic trailing paragraph after the final mark.
+    // Only formatting replacement owns that mark; never discard exported
+    // paragraphs to make a Whole snapshot fit the reviewed target.
+    const content = paragraphs[0]!.getRange("Content").expandTo(paragraphs.at(-1)!.getRange("Content"))
+    const range = formatting ? paragraphs[0]!.getRange("Whole").expandTo(paragraphs.at(-1)!.getRange("Whole")) : content
     // Every preservation baseline comes from this final read batch. Context
     // discovery yields to Word and must never leave an earlier XML snapshot as
     // the authority for a later complete-paragraph replacement.
-    const xml = range.getOoxml(), comments = range.getComments(), revisions = range.getTrackedChanges()
+    const xml = content.getOoxml(), comments = range.getComments(), revisions = range.getTrackedChanges()
     comments.load("items"); revisions.load("items/author,items/type")
     const current = paragraphs.map(paragraph => paragraph.getRange("Content").getReviewedText("Current"))
     context.document.load("changeTrackingMode")
@@ -360,7 +362,7 @@ export class WordChatHost {
         })
         const importedParagraphs = all.items.slice(fresh.index, fresh.index + physicalCount)
         const importedRange = importedParagraphs.length === physicalCount
-          ? importedParagraphs[0]!.getRange(formatting ? "Whole" : "Content").expandTo(importedParagraphs.at(-1)!.getRange(formatting ? "Whole" : "Content")) : undefined
+          ? importedParagraphs[0]!.getRange("Content").expandTo(importedParagraphs.at(-1)!.getRange("Content")) : undefined
         const importedXml = importedRange?.getOoxml(), importedText = importedRange?.getReviewedText("Current")
         const adjacent = fresh.adjacent.map(p => ({ before: p.ooxml, after: context.document.getParagraphByUniqueLocalId(p.id).getRange("Whole").getOoxml() }))
         await context.sync()
@@ -382,8 +384,7 @@ export class WordChatHost {
           const native = (value: string) => plan.structure ? value.replace(/\r/g, "") : value
           return ["Added", "Deleted"].every(type => native(words(observed, type)) === native(words(wanted, type)))
         }
-        const wording = formatting ? importedText?.value.replace(/\r$/, "") : importedText?.value
-        confirmed &&= ![...prior.values()].some(Boolean) && matches(added, authored.revisions) && wording === expected.join("\r") &&
+        confirmed &&= ![...prior.values()].some(Boolean) && matches(added, authored.revisions) && importedText?.value === expected.join("\r") &&
           (Boolean(plan.structure) || actual.every((item, index) => item.text.value === expected[index] && (formatting || matches(item.changes.items, authoredChanges[index]!))))
         try { confirmed &&= Boolean(importedXml && sameImportedWordChat(authored.ooxml, importedXml.value)) && adjacent.every(p => sameWordChatParagraphContent(p.before, p.after.value)) }
         catch { confirmed = false }
