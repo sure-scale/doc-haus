@@ -2627,3 +2627,20 @@ test("only a body accept of a completed run touches its notes, and only while th
     await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
   }
 },120000)
+
+test("preparation reports a mixed-format replacement as an open item and leaves the document unchanged", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "dochaus-mixed-format-")), file = path.join(directory, "working.docx")
+  const engine = syntheticEngine(() => ({ amendments: [{ before_quote: "Supplier shall pay the Fee", replacement: "Provider agrees remit Charge", target_context: "payment sentence", reason: "Update wording." }], open_items: [] }), firstCandidate)
+  try {
+    await writeDeliverable(directory, "working.docx", Buffer.from((await renderMarkdownToDocx("The **Supplier shall** pay *the Fee* monthly.")).bytes))
+    const before = await Bun.file(file).bytes()
+    await withPreparation(directory, engine, async prepare => {
+      const response = await prepare("Update the payment wording.")
+      expect(response.status).toBe(200)
+      const result = await response.json() as { redline_ids?: number[]; proposed?: number; open_items: string[] }
+      expect(result.proposed ?? result.redline_ids?.length).toBe(0)
+      expect(result.open_items.join(" ")).toContain("different Word formatting")
+    })
+    expect(await Bun.file(file).bytes()).toEqual(before)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})

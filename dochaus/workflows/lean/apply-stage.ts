@@ -49,7 +49,7 @@ export async function runApply(directory: string, state: LeanState, document: Do
   const out = leanFile(directory, `${document}/body-applied.docx`)
   // An earlier round's output must not stand in for this round's.
   rmSync(out, { force: true })
-  const result = await applyAmendments({ docxPath: body, outPath: out, amendments: changes.amendments })
+  const result = await applyAmendments({ docxPath: body, outPath: out, amendments: changes.amendments, ownedMarkerDecoration: true })
     .then((value): ApplyResult => value, (error: unknown) => ({ error: message(directory, error) }))
   const settled = "error" in result ? settleApply(changes, undefined, false, result.error) : settleApply(changes, result, existsSync(out))
   if (settled.bodyUnchanged) copyFileSync(body, out)

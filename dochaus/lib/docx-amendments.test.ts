@@ -1180,3 +1180,38 @@ test("a complex field spanning paragraphs refuses changes throughout its result 
   const outside = { ...change("Outside", "Elsewhere"), paragraph_handle: brokenRevision.paragraphs.find(row => row.text === "Outside")!.paragraph_handle }
   await expect(applyDocxParagraphEdits(broken, [outside])).rejects.toThrow("docx_field_replacement:Outside")
 })
+
+test("changed spans cannot silently flatten mixed run formatting", async () => {
+  const source = (await renderMarkdownToDocx("The **Supplier shall** pay *the Fee* monthly.")).bytes
+  const initial = new Uint8Array(source), revision = await createDocxRevision(source), paragraph = revision.paragraphs[0]!
+  const edit = (before_quote: string, replacement: string) => ({ id: "mixed", paragraph_handle: paragraph.paragraph_handle, occurrence: 0, before_quote, replacement })
+  for (const options of [{}, { pendingRevisions: "layer" as const, revisionAuthor: "Reviewer", ownAuthors: ["Reviewer"] }]) {
+    await expect(applyDocxParagraphEdits(source, [edit("Supplier shall pay the Fee", "Provider agrees remit Charge")], undefined, options)).rejects.toThrow("docx_mixed_format_replacement:mixed")
+    expect(source).toEqual(initial)
+    const output = await applyDocxParagraphEdits(source, [edit("Supplier shall pay the Fee", "Supplier shall remit the Fee")], undefined, options)
+    expect((await createDocxRevision(output.bytes, options)).paragraphs[0]!.text).toBe("The Supplier shall remit the Fee monthly.")
+    if ("revisionAuthor" in options) {
+      const dx = await docxodus()
+      for (const accept of [true, false]) {
+        const session = dx.openDocxSession(output.bytes, { persistAnchorIds: false })
+        try {
+          for (const revision of session.listRevisions()) expect((accept ? session.acceptRevision(revision.id) : session.rejectRevision(revision.id)).success).toBe(true)
+          const view = await createDocxRevision(session.save())
+          expect(view.markdown).toContain(accept ? "**Supplier shall** remit *the Fee*" : "**Supplier shall** pay *the Fee*")
+        } finally { session.close() }
+      }
+    }
+  }
+})
+
+test("format guard admits deletion, uniform edits and insertion without changing neighboring styling", async () => {
+  const source = (await renderMarkdownToDocx("The **Supplier** pays the fee.")).bytes
+  const revision = await createDocxRevision(source), paragraph = revision.paragraphs[0]!
+  const edit = (before_quote: string, replacement: string) => ({ id: "span", paragraph_handle: paragraph.paragraph_handle, occurrence: 0, before_quote, replacement })
+  const deletion = await applyDocxParagraphEdits(source, [edit("Supplier pays", "")])
+  expect((await createDocxRevision(deletion.bytes)).paragraphs[0]!.text).toBe("The  the fee.")
+  const uniform = await applyDocxParagraphEdits(source, [edit("pays", "remits")])
+  expect((await createDocxRevision(uniform.bytes)).markdown).toContain("**Supplier** remits the fee")
+  const inserted = await applyDocxParagraphEdits(source, [edit("The Supplier", "The new Supplier")])
+  expect((await createDocxRevision(inserted.bytes)).markdown).toContain("The new **Supplier** pays")
+})

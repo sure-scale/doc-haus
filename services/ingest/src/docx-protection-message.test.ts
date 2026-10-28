@@ -11,5 +11,8 @@ test("protected Word content failures have actionable wording without internal c
     expect(message).not.toContain("unchanged")
   }
   expect(docxProtectionMessage(new Error("docx_protected_inline_content_changed_extra"))).toBeUndefined()
+  const mixed = docxProtectionMessage(new Error("docx_mixed_format_replacement:private-proposal-id"))!
+  expect(mixed).toContain("smaller changes")
+  expect(mixed).not.toContain("private-proposal-id")
   expect(docxProtectionMessage(new Error("unrelated"))).toBeUndefined()
 })

@@ -157,7 +157,7 @@ function paragraphSpan(paragraph: Match, start: number, length: number): Match {
     contextBefore: paragraph.text.slice(Math.max(0, start - 160), start), contextAfter: paragraph.text.slice(end, end + 160) }
 }
 
-function admitted(opened: Opened, binding: Binding) {
+function admittedFields(opened: Opened, binding: Binding) {
   const { amendment, match, ordinal } = binding
   // The touch rule (see pendingRevisionParagraphs); only a layer-mode reader marks paragraphs.
   // A paragraph inside a block content control is governed by its enclosing
@@ -267,6 +267,51 @@ function spanningFieldParagraphs(document: Document) {
   return unsafe
 }
 
+// A changed span cannot safely assign one inherited run style to several
+// different formatting regions or semantic containers. Compare the actual
+// changed words, not the surrounding quote; deletions introduce no formatting.
+function admitted(opened: Opened, binding: Binding) {
+  const result = admittedFields(opened, binding)
+  const paragraph = opened.paragraphs[binding.ordinal]!.match
+  for (const change of result.changes) assertDocxReplacementFormatting(opened.session, paragraph,
+    change.match.span.start - paragraph.span.start, change.match.text.length, change.replacement, binding.amendment.id)
+  return result
+}
+
+/** Guard each actual replacement hunk, including callers outside redline. */
+export function assertDocxReplacementFormatting(session: Session, paragraph: Match, start: number, length: number, replacement: string, id: string) {
+  // Insertions do not overwrite any existing styled text. The writer has
+  // explicit preceding/joins-after inheritance and separate structural guards.
+  if (!replacement || !length) return
+  const xml = parse(session.raw.getXml(paragraph.enclosingAnchor.id))
+  const runs = new Map(elements(xml, "r").map(run => [run.getAttributeNS(PT, "Unid"), run]))
+  const identities = new Map<Node, number>()
+  const spans = session.listInlineSpans(paragraph.enclosingAnchor.id).map(span => {
+    const run = runs.get(span.runUnid)
+    if (!run) return { ...span.span, text: span.text, key: undefined }
+    const ancestors: number[] = []
+    for (let node = run.parentNode; node && node.nodeType === 1 && (node as Element).localName !== "p"; node = node.parentNode) {
+      if (!identities.has(node)) identities.set(node, identities.size + 1)
+      ancestors.push(identities.get(node)!)
+    }
+    return { ...span.span, text: span.text, key: JSON.stringify([canonical(children(run, "rPr")[0]), span.direct, span.effective, ancestors]) }
+  })
+  const end = start + length
+  const touched = length ? spans.filter(span => span.start < end && start < span.start + span.length)
+    : spans.filter(span => span.start <= start && start <= span.start + span.length && (span.start < start || span.start + span.length > start))
+  const fail = () => { throw new Error(`docx_mixed_format_replacement:${id}`) }
+  if (!touched.length || touched.some(span => span.key === undefined) || new Set(touched.map(span => span.key)).size !== 1) fail()
+  if (length) {
+    let at = start
+    for (const span of touched) {
+      const from = Math.max(start, span.start), to = Math.min(end, span.start + span.length)
+      if (from !== at || span.text.slice(from - span.start, to - span.start) !== paragraph.text.slice(from, to)) fail()
+      at = to
+    }
+    if (at !== end) fail()
+  }
+}
+
 // Whether a run of the changed span lies inside a tracked insertion, deletion or move.
 function insideRevision(session: Session, match: Match) {
   const runs = new Map(elements(parse(session.raw.getXml(match.enclosingAnchor.id)), "r").map(run => [run.getAttributeNS(PT, "Unid"), run]))
@@ -286,7 +331,7 @@ export async function admissionRefusals(bytes: Uint8Array, packet: DocxLocalizat
     return new Map(selectedBindings(opened, packet, selectionSchema.parse(selections)).flatMap(binding => {
       try { admitted(opened, binding); return [] }
       catch (error) {
-        if (error instanceof Error && ["docx_own_revision", "docx_field_replacement"].some(code => error.message === `${code}:${binding.amendment.id}`))
+        if (error instanceof Error && ["docx_own_revision", "docx_field_replacement", "docx_mixed_format_replacement"].some(code => error.message === `${code}:${binding.amendment.id}`))
           return [[binding.amendment.id, error.message.split(":")[0]!] as const]
         throw error
       }
