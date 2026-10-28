@@ -145,6 +145,9 @@ jobs:
         # Committed LibreOffice-saved fixtures and a scripted engine; no model.
         # The live soffice case skips when LibreOffice is not installed.
         run: bun test src/document-amendment-libreoffice.test.ts --timeout 30000
+      - name: Test Word amendment and comment reply generation
+        working-directory: services/ingest
+        run: bun test src/document-amendments.test.ts src/markup-replies.test.ts --timeout 30000
       - name: Test linked Word saves, Source Desk and restricted HTTPS receiver
         working-directory: services/ingest
         run: bun test src/word-linked-docx.test.ts src/word-documents-http.test.ts src/word-source-desk.test.ts src/word-https.test.ts src/word-handouts.test.ts src/word-open-tickets.test.ts --timeout 30000
@@ -166,7 +169,7 @@ jobs:
         run: bun test test/redline-preview-attribution.test.ts test/search-document-filters.test.ts --timeout 30000
       - name: Test drafting preferences, research scope and connector consent
         working-directory: dochaus
-        run: bun test test/drafting-preferences.test.ts workflows/lean/posture.test.ts test/research-scope.test.ts test/research-source-fetch.test.ts test/research-source-exa.test.ts test/research-mcp.test.ts
+        run: bun test test/drafting-preferences.test.ts test/practice-areas.test.ts workflows/lean/posture.test.ts test/research-scope.test.ts test/research-source-fetch.test.ts test/research-source-exa.test.ts test/research-mcp.test.ts
       - name: Test lean question advice, delegation and checklist questions
         working-directory: dochaus
         # Synthetic matters through the real coordinator with a scripted model; no network.

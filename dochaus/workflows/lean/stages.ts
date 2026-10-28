@@ -13,6 +13,7 @@ import { combinedFileItems, DELIVERED_NOTES, requestedMemo } from "./deliverable
 import { evidenceOutputValid } from "./evidence"
 import { currentResearchGaps, researchOutputValid } from "./research"
 import { normalizeLegend, normalizePreferences, readFirmDraftingPreferences } from "../../lib/drafting-preferences"
+import { firmPracticeAreaContext } from "../../lib/practice-areas"
 import { pageFurniture, type FurnitureKind, type RequestedFurniture } from "../../lib/page-furniture"
 import { matterClient } from "../../lib/matter-client"
 import { readFirmPreferences } from "../../lib/preferences"
@@ -325,7 +326,9 @@ export function outlineBasis(directory: string) {
  * the same for lean agents): the firm's, with the run's Posture. With the firm's
  * own Posture the bytes, and so the keys, are the firm's rendering. */
 export function stageDraftingPreferences(directory: string) {
-  return readFirmDraftingPreferences("full", runPosture(directory))
+  const preferences = readFirmDraftingPreferences("full", runPosture(directory))
+  const areas = firmPracticeAreaContext()
+  return areas ? `${preferences}\n${areas}` : preferences
 }
 
 function outlineInputs(directory: string) {

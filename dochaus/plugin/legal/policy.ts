@@ -6,6 +6,7 @@ import { isOfficialSource, researchScope } from "../../lib/research"
 import { adaptAzureChatCompletionGpt5Params, adaptOpenAIPlanParams, applyAgentThinkingBudget, capLowThroughputModelOutput, modelID, optimizeRouterParams, paceLowThroughputModel } from "./model-policy"
 import { readMatterConflicts } from "./conflicts"
 import { readFirmDraftingPreferences } from "../../lib/drafting-preferences"
+import { firmPracticeAreaContext } from "../../lib/practice-areas"
 import { effectivePosture } from "../../lib/matter-client"
 import { runPosture } from "../../workflows/lean/plan"
 import { verifyCitation } from "./citations"
@@ -60,6 +61,12 @@ export const LegalPlugin: LegalPolicy = async (input) => {
       const draftingPreferences = preferencesMode === "none" ? undefined
         : readFirmDraftingPreferences(preferencesMode, agent?.startsWith("lean-") ? runPosture(directory) : effectivePosture(directory))
       if (draftingPreferences) output.system.push(draftingPreferences)
+      // These jobs extract or check a specific item solely against supplied
+      // source evidence; firm background is neither relevant nor in their cache keys.
+      if (preferencesMode === "full" && agent !== "lean-checklist-extract" && agent !== "lean-checklist-check") {
+        const practiceAreas = firmPracticeAreaContext()
+        if (practiceAreas) output.system.push(practiceAreas)
+      }
       // Untrusted-document guard (issue #17): injected for every agent — built-in
       // and firm-composed alike — so document content is always framed as data.
       // This is the model-side half of the defense; the ingest service detects and

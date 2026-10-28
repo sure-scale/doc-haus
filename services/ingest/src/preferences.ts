@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { workspaceRoot } from "./matter"
-import { DEFAULT_DRAFTING, normalizeApprovedSources, normalizePreferences, normalizeStyleTemplate, renderInstructions, type DraftingPreferences } from "../../../dochaus/lib/drafting-preferences"
+import { DEFAULT_DRAFTING, normalizeApprovedSources, normalizePracticeAreas, normalizePreferences, normalizeStyleTemplate, renderInstructions, type DraftingPreferences } from "../../../dochaus/lib/drafting-preferences"
 
 export { DEFAULT_DRAFTING, type DraftingPreferences, type RateOverride, type TelemetryPreferences } from "../../../dochaus/lib/drafting-preferences"
 
@@ -53,6 +53,9 @@ function readSavedPreferences() {
 export function validateResearchPreferences(input: unknown): asserts input is Record<string, unknown> {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new PreferencesValidationError("Preferences must be an object.")
   const patch = input as Record<string, unknown>
+  if (Object.hasOwn(patch, "practiceAreas") && (!Array.isArray(patch.practiceAreas) || patch.practiceAreas.length > 50 || patch.practiceAreas.some(value =>
+    typeof value !== "string" || /[\p{Cc}\u2028\u2029]/u.test(value) || !normalizePracticeAreas([value]).length)))
+    throw new PreferencesValidationError("Practice areas must be a list of up to 50 names, each no longer than 100 characters.")
   if (Object.hasOwn(patch, "webResearch") && patch.webResearch !== "official" && patch.webResearch !== "open")
     throw new PreferencesValidationError("Choose approved sources or the entire web.")
   for (const key of ["searchApiKey", "caseLawApiKey"]) {

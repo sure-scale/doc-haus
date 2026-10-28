@@ -97,6 +97,19 @@ test("research-only patches preserve unrelated drafting and operational preferen
   expect(instructions).not.toContain("trusted.example")
 })
 
+test("practice area catalogue persists independently of drafting preferences and rejects invalid saves", () => {
+  const saved = writeDraftingPreferences({ ...DEFAULT_DRAFTING, attorney: "Test lawyer", practiceAreas: ["  Corporate   law ", "corporate law", "Employment"] })
+  expect(saved.practiceAreas).toEqual(["Corporate law", "Employment"])
+  expect(readDraftingPreferences().practiceAreas).toEqual(saved.practiceAreas)
+  expect(readFirmDraftingPreferences()).not.toContain("Corporate law")
+  expect(writeDraftingPreferences({ houseStyle: "Plain language" }).practiceAreas).toEqual(saved.practiceAreas)
+  for (const practiceAreas of [["Bad\nname"], ["x".repeat(101)], Array(51).fill("Name"), "Corporate"]) {
+    expect(() => writeDraftingPreferences({ practiceAreas })).toThrow()
+    expect(readDraftingPreferences().practiceAreas).toEqual(saved.practiceAreas)
+  }
+  expect(writeDraftingPreferences({ practiceAreas: [] }).practiceAreas).toEqual([])
+})
+
 test("invalid research saves reject without changing the saved consent or any preference", () => {
   const baseline = writeDraftingPreferences({ ...DEFAULT_DRAFTING, attorney: "Preserved lawyer" })
   for (const patch of [null, [], { webResearch: "all" }, { courtlistenerMcpEnabled: "true" }, { searchApiKey: "token\nheader" },

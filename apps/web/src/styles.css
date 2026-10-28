@@ -925,6 +925,15 @@ li.list-row {
   background: var(--accent-tint);
 }
 
+.jx-add-custom {
+  width: 100%;
+  height: auto;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
 .jx-option.selected {
   background: var(--accent-soft);
 }

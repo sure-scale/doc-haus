@@ -6,12 +6,14 @@ import { readDocxMarkup, type DocxMarkup, type MarkupComment, type MarkupField, 
 import { readDocxBodyView } from "../../../dochaus/lib/docx-revision-views"
 import { renderInstructions } from "../../../dochaus/lib/drafting-preferences"
 import { effectivePosture, matterClient } from "../../../dochaus/lib/matter-client"
+import { firmPracticeAreaContext } from "../../../dochaus/lib/practice-areas"
 import { detectInjection, normalizeUntrustedText } from "../../../dochaus/lib/untrusted-text"
 import { notSource, sourceTarget, wordName } from "./document-markup"
 import { sha256Hex } from "./document-versions"
 import { EngineGenerationError, generate } from "./engine-generate"
 import type { MarkupDecision } from "./markup-decisions"
 import { readDraftingPreferences } from "./preferences"
+import { workspaceRoot } from "./matter"
 
 // A draft reply to one of the other side's comment threads (#200), for the
 // lawyer to edit and approve in the triage panel: one stateless call to the
@@ -172,11 +174,13 @@ function threadOf(comments: MarkupComment[], root: MarkupComment) {
 
 function replyPrompt(directory: string, input: Awaited<ReturnType<typeof replyInput>>, steer: string) {
   const client = matterClient(directory)
+  const areas = firmPracticeAreaContext(workspaceRoot())
   return [
     "<task>",
     `Draft one short reply from the lawyer to the other side's comment thread on a Word document they marked up. The lawyer acts for ${client ? data(client) : "the party opposite the comment authors"}. Answer the thread's latest point. Be consistent with the lawyer's decision on each listed tracked change: accept = agreed, reject = declined, hold = undecided (do not commit to it). Follow the steer when given. Do not invent facts, figures, commitments or authority; where the reply needs a fact or a position the material does not give, write a short placeholder [[…]] in the reply and list it in open_items. Write plain text as a margin reply, with no Markdown, headings or lists. Return ONLY JSON {"reply":"…","open_items":["…"]}.`,
     "</task>",
     renderInstructions({ ...readDraftingPreferences(), posture: effectivePosture(directory) }),
+    ...(areas ? [areas] : []),
     ...steer ? [`<lawyer_steer encoding="json">${data(steer)}</lawyer_steer>`] : [],
     "<untrusted-document>",
     `<thread encoding="json">${data(input.thread)}</thread>`,
