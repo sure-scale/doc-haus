@@ -1,5 +1,6 @@
 import { WORD_LINK_SETTING } from "../../../dochaus/lib/word-addin-contract"
 import { readLink } from "./client"
+import { documentFingerprint } from "./fingerprint"
 
 type Result<T> = { status: string; value: T }
 type Callback<T> = (result: Result<T>) => void
@@ -115,6 +116,13 @@ export async function connectOffice(): Promise<{ host: WordHost; link: unknown }
   const sameIdentity = (value: ReturnType<typeof readLink>) => Boolean(identity && value &&
     [value.apiOrigin, value.origin, value.matter, value.document, value.token].every((part, index) => part === identity[index]))
   let refreshUncertain = false
+  const exportCurrent = async () => {
+    const file = await asyncResult<OfficeFile>(
+      callback => office.context.document.getFileAsync(office.FileType.Compressed, { sliceSize: 1024 * 1024 }, callback),
+      "Word could not prepare the document. Try saving again.",
+    )
+    return exportFile(file)
+  }
   return {
     link,
     host: {
@@ -133,14 +141,7 @@ export async function connectOffice(): Promise<{ host: WordHost; link: unknown }
           if (!context.document.saved)
             throw new Error("Word has not saved the document yet. Try Save to doc.haus again.")
         }),
-      export: async () => {
-        const file = await asyncResult<OfficeFile>(
-          (callback) =>
-            office.context.document.getFileAsync(office.FileType.Compressed, { sliceSize: 1024 * 1024 }, callback),
-          "Word could not prepare the document. Try saving again.",
-        )
-        return exportFile(file)
-      },
+      export: exportCurrent,
       // Full-document import copies sections and their headers/footers. The
       // complete options set needs 1.7 (odd/even-page headers); body/range import
       // is not an equivalent fallback. Word limits this API to a 4 MB DOCX.
@@ -151,6 +152,9 @@ export async function connectOffice(): Promise<{ host: WordHost; link: unknown }
                 throw new DocumentStateError("Word could not confirm the previous refresh. Check this document and open the latest copy from doc.haus before continuing.")
               if (!base || !bytes.length || bytes.length > 4 * 1024 * 1024)
                 throw new DocumentStateError("This copy cannot be refreshed here. Open the latest copy from doc.haus instead; this Word document is unchanged.")
+              let expected: string
+              try { expected = await documentFingerprint(bytes) }
+              catch { throw new DocumentStateError("The latest copy could not be verified. Open it from doc.haus instead; this Word document is unchanged.") }
               const settings = office.context.document.settings
               const raw = settings.get(WORD_LINK_SETTING)
               const current = readLink(raw, window.location.origin)
@@ -167,6 +171,7 @@ export async function connectOffice(): Promise<{ host: WordHost; link: unknown }
                   throw new DocumentStateError("This document's link changed. Reopen the latest copy from doc.haus before continuing.")
                 const tracking = context.document.changeTrackingMode
                 let inserted = false
+                let verified = false
                 try {
                   // Loading an existing version must not redline the whole old
                   // document. Import the source's tracking mode and revisions.
@@ -185,6 +190,12 @@ export async function connectOffice(): Promise<{ host: WordHost; link: unknown }
                   })
                   await context.sync()
                   inserted = true
+                  // A successful native batch does not establish fidelity.
+                  // Compare the downloaded package with Word's current export
+                  // before changing the saved link or acknowledging the base.
+                  if (await documentFingerprint(await exportCurrent()) !== expected)
+                    throw new Error("Imported document differs from the reviewed copy")
+                  verified = true
                   // Import does not preserve document settings. Keep the same
                   // scoped capability; only its successfully loaded base moves.
                   const after = settings.get(WORD_LINK_SETTING)
@@ -205,7 +216,9 @@ export async function connectOffice(): Promise<{ host: WordHost; link: unknown }
                     } catch { /* A failed native batch may leave Word unavailable. */ }
                   }
                   throw new DocumentStateError(inserted
-                    ? "The latest contents loaded, but Word could not preserve this document's link. Keep it open and reopen the latest copy from doc.haus before saving."
+                    ? verified
+                      ? "The latest contents loaded, but Word could not preserve this document's link. Keep it open and reopen the latest copy from doc.haus before saving."
+                      : "Word loaded the latest copy but could not verify its contents. Check this document and reopen the latest copy from doc.haus before saving."
                     : "Word could not confirm the refresh. Check this document before trying again, or open the latest copy from doc.haus. Linked content, protection or unsupported controls can prevent refreshing here.")
                 }
               })
