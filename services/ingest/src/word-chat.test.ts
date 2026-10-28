@@ -17,7 +17,8 @@ type Session = { id: string; parentID?: string; metadata: Record<string, unknown
 const sessions = new Map<string, Session>(), messages = new Map<string, Record<string, unknown>[]>()
 const prompts: string[] = []
 let directory: string, app: Hono, auth: WordChatAuth, next = 0, generations = 0, loseResponse = false, hold = false, inventCitation = false, amend = false, approveReview = true, deletion = false
-let modelProposal: { before: string; after: string } | undefined
+let modelProposal: { before: string; after?: string } | undefined
+let modelAnswer: string | undefined
 const oldRuntime = process.env.DOCHAUS_RUNTIME_DIR, oldWorkspace = process.env.WORKSPACE_ROOT
 const transport = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(String(input)); const method = init?.method ?? "GET"
@@ -51,7 +52,7 @@ const transport = Object.assign(async (input: RequestInfo | URL, init?: RequestI
       if (!hold) {
         const sources = (session.metadata.sources ?? []) as { id: string; quote: string }[]
         const source = sources.find(source => source.id !== "word") ?? sources[0]
-        const output: Record<string, unknown> = session.metadata.type === "word-chat-review" ? { approved: approveReview, issues: approveReview ? [] : ["The replacement loses a qualification."] } : { answer: `Answer ${source?.quote ?? ""}`, citations: source ? [{ sourceId: inventCitation ? "foreign-source" : source.id, quote: source.quote.slice(0, 100) }] : [], suggestions: [] }
+        const output: Record<string, unknown> = session.metadata.type === "word-chat-review" ? { approved: approveReview, issues: approveReview ? [] : ["The replacement loses a qualification."] } : { answer: modelAnswer ?? `Answer ${source?.quote ?? ""}`, citations: source ? [{ sourceId: inventCitation ? "foreign-source" : source.id, quote: source.quote.slice(0, 100) }] : [], suggestions: [] }
         if (amend && session.metadata.type !== "word-chat-review") output.proposal = { before: deletion ? "Tuesday " : context.text, after: deletion ? "" : context.text.replace("Tuesday", "Wednesday"), ...modelProposal, explanation: "Requested delivery update", openItems: ["Confirm the date with the client"] }
         rows.push({ id: `msg_answer_${next++}`, type: "assistant", content: [{ type: "text", text: JSON.stringify(output) }], time: { created: new Date().toISOString(), completed: new Date().toISOString() } })
         session.time.idle = new Date().toISOString(); session.outcome = "succeeded"
@@ -177,6 +178,61 @@ test("amendment preparation is checked by a separate denied-tool native reviewer
   amend = false; approveReview = true
   expect(rejected.proposal).toBeUndefined()
   expect(rejected.error).toContain("needs revision")
+})
+
+test("independent amendment review receives first/last paragraph offsets and local-save semantics", async () => {
+  const id = await newConversation()
+  const paragraphs = [{ id: "first-native-id", text: "First paragraph with its original full wording." }, { id: "last-native-id", text: "Second note." }]
+  const before = paragraphs.map(paragraph => paragraph.text).join("\r")
+  const current = { ...context, text: before, paragraphs, saved: true }
+  const amendRequest = (requestId: string) => post("send", { conversationId: id, scope: "document", kind: "amendment", text: "Insert an ordinary heading before the two paragraphs and retain both verbatim.", requestId, attachments: [], context: current })
+  amend = true; modelProposal = { before, after: `Heading\r${before}` }
+  try {
+    const response = await amendRequest(crypto.randomUUID())
+    expect(response.status).toBe(200)
+    const turn = (await response.json() as { turn: WordChatTurn }).turn
+    expect(turn.proposal?.before).toBe(before)
+    const reviewer = [...sessions.values()].find(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")!
+    const prompt = String(messages.get(reviewer.id)!.find(message => message.type === "user")!.text)
+    expect(prompt).toContain("first target paragraph")
+    expect(prompt).toContain("last target paragraph")
+    expect(prompt).toContain("single-paragraph target")
+    expect(prompt).toContain("already deterministically validated")
+    expect(prompt).toContain("local Word buffer")
+    expect(prompt).toContain("confirmed matter version")
+    const supplied = JSON.parse(prompt.split("\n").at(-1)!) as { proposal: NonNullable<WordChatTurn["proposal"]>; evidence: { id: string; provenance: string }[] }
+    expect(supplied.proposal.target.paragraphs).toEqual(paragraphs)
+    expect(supplied.proposal.target.startOffset).toBe(0)
+    expect(supplied.proposal.target.endOffset).toBe(paragraphs[1]!.text.length)
+    expect(supplied.proposal.target.endOffset).toBeLessThan(paragraphs[0]!.text.length)
+    expect(supplied.proposal.target.saved).toBe(true)
+    expect(supplied.evidence.find(source => source.id === "word")?.provenance).toBe("word-buffer")
+    // Clarifying mechanical metadata must not bypass the independent content review.
+    approveReview = false
+    const rejected = (await (await amendRequest(crypto.randomUUID())).json() as { turn: WordChatTurn }).turn
+    expect(rejected.proposal).toBeUndefined()
+    expect(rejected.error).toContain("needs revision")
+    expect(rejected.answer).toContain("The replacement loses a qualification.")
+  } finally { amend = false; modelProposal = undefined; approveReview = true }
+})
+
+test("completed amendments without a usable proposal always expose an actionable error", async () => {
+  const id = await newConversation()
+  modelAnswer = "Prepared the tracked amendment for review."
+  try {
+    for (const proposal of [undefined, { before: "Wording absent from the current buffer.", after: "Replacement wording." }, { before: context.text, after: context.text }, { before: context.text, after: undefined }]) {
+      amend = Boolean(proposal); modelProposal = proposal
+      const before = generations
+      const response = await post("send", { conversationId: id, scope: "document", kind: "amendment", text: "Prepare the requested change for review.", requestId: crypto.randomUUID(), attachments: [], context })
+      expect(response.status).toBe(200)
+      const turn = (await response.json() as { turn: WordChatTurn }).turn
+      expect(turn.status).toBe("complete")
+      expect(turn.proposal).toBeUndefined()
+      expect(turn.error?.trim().length).toBeGreaterThan(0)
+      expect(turn.error).toMatch(/ask|select/i)
+      expect(generations - before).toBe(1)
+    }
+  } finally { amend = false; modelProposal = undefined; modelAnswer = undefined }
 })
 test("source version changes invalidate late results and remove access to earlier quotes", async () => {
   const id = await newConversation()

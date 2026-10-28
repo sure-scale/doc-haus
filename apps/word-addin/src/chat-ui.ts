@@ -346,7 +346,10 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       const displayedAnswer = turn.answer.replace(/\[([^\]\r\n]+)\]/g, (token, id: string) => references.has(id) ? `[${references.get(id)}]` : token)
       if (displayedAnswer) answer.append(line("p", displayedAnswer, "chat-answer-text"))
       if (turn.status === "running") answer.append(line("p", "Thinking…", "chat-message-meta"))
-      if (turn.status === "error") answer.append(line("p", turn.error || "This request could not be completed. Your Word document is unchanged.", "chat-message-meta"))
+      if (turn.status === "error" || turn.status === "complete" && turn.error?.trim()) {
+        const notice = line("p", turn.error || "This request could not be completed. Your Word document is unchanged.", "chat-message-meta")
+        notice.setAttribute("role", "alert"); answer.append(notice)
+      }
       if (turn.status === "cancelled") answer.append(line("p", "Stopped", "chat-message-meta"))
       const provenance = { "word-buffer": "Word text", "saved-version": "Saved source", instructions: "Playbook", "request-upload": "Chat attachment" }
       for (const [index, { source, excerpts }] of [...sources.values()].entries()) {

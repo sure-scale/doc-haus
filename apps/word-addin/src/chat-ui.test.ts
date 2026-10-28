@@ -540,3 +540,23 @@ test("native paragraph and soft breaks display as separate review/chip lines whi
     expect(JSON.stringify([native, crlf])).toBe(original)
   } finally { f.restore() }
 })
+
+test("a completed amendment refused by review shows the actionable reason beside its answer without offering Apply", async () => {
+  const refused = turn({ kind: "amendment", status: "complete", answer: "I prepared a change to the payment wording.", error: "This change did not pass review. Rephrase the request or select a smaller passage.", proposal: undefined })
+  const original = JSON.stringify(refused)
+  let applied = false
+  const f = fixture({ turns: [refused], host: { apply: async () => { applied = true } } })
+  try {
+    await f.chat.ready
+    const answer = f.root.querySelector('.chat-message[data-role="assistant"]')!
+    expect(answer.querySelector(".chat-answer-text")!.textContent).toBe(refused.answer)
+    const notice = answer.querySelector('[role="alert"]')!
+    expect(notice.textContent).toBe(refused.error!)
+    expect(notice.textContent).toContain("Rephrase the request or select a smaller passage")
+    expect(f.root.querySelector(".chat-proposal")).toBeNull()
+    expect([...f.root.querySelectorAll("button")].some(button => button.textContent === "Apply")).toBe(false)
+    expect(f.get("activity").textContent).toBe("")
+    expect(f.root.textContent!.split(refused.error!)).toHaveLength(2)
+    expect(applied).toBe(false); expect(JSON.stringify(refused)).toBe(original)
+  } finally { f.restore() }
+})
