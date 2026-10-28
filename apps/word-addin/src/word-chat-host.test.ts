@@ -296,6 +296,21 @@ test("current context reads unsaved body without requiring a selection and empty
   expect(state.selected).toBe(0)
 })
 
+test("scoped OOXML imports stop before authoring or mutation while document-wide numbering safety is unresolved", async () => {
+  for (const kind of ["wording", "structural", "mixed", "nonfinal-formatting"] as const) {
+    const { state, host } = office(["An opening paragraph.", "A retained paragraph."])
+    state.selection = [0, state.paragraphs.map(p => p.text).join("\r").length]
+    const target = (await host.selection())!
+    const replacement = kind === "structural" ? `A new paragraph.\r${target.text}` :
+      kind === "nonfinal-formatting" ? target.text : target.text.replace("opening", "revised")
+    const formatting = kind === "mixed" || kind === "nonfinal-formatting" ? [{ paragraph: 0, spacingAfter: 6 }] : undefined
+    await expect(host.apply({ proposalId: kind, target, replacement, formatting })).rejects.toThrow("numbering elsewhere")
+    expect(state.authorCalls).toBe(0)
+    expect(state.writes).toHaveLength(0)
+    expect(state.modeChanges).toEqual([])
+  }
+})
+
 test("current document context beyond 96k retains a selected later passage without truncation", async () => {
   const paragraphs = Array.from({length:6},(_,index) => `Section ${index}: ${"Ordinary current wording. ".repeat(800)}`)
   paragraphs.push("A later selected clause.")
@@ -317,7 +332,9 @@ test("over-limit current documents refuse clearly without sending a silently tru
   expect(state.writes).toHaveLength(0)
 })
 
-test("paragraph identity targets a repeated clause without touching the other copy", async () => {
+// Import-path model tests remain here for restoration after the numbering safety gate is lifted.
+// They are intentionally skipped: they cannot exercise the disabled host route.
+test.skip("paragraph identity targets a repeated clause without touching the other copy", async () => {
   const duplicate = "A clear obligation applies."
   const { state, host, text } = office([duplicate, duplicate])
   state.selection = [duplicate.length + 1, duplicate.length * 2 + 1]
@@ -329,7 +346,7 @@ test("paragraph identity targets a repeated clause without touching the other co
   expect(state.tracking).toBe("Off")
 })
 
-test("multiline authored markup uses one scoped import and restores TrackMineOnly", async () => {
+test.skip("multiline authored markup uses one scoped import and restores TrackMineOnly", async () => {
   const { state, host, text } = office(["The first obligation is clear.", "The second obligation is clear."])
   state.selection = [0, text().length]
   state.tracking = "TrackMineOnly"
@@ -342,7 +359,7 @@ test("multiline authored markup uses one scoped import and restores TrackMineOnl
   expect(state.tracking).toBe("TrackMineOnly")
 })
 
-test("real shared authoring imports reviewed whole-paragraph insertion/removal without touching outside unsaved text", async () => {
+test.skip("real shared authoring imports reviewed whole-paragraph insertion/removal without touching outside unsaved text", async () => {
   for (const kind of ["insert", "delete"] as const) {
     const texts = ["Unsaved preceding clause.", "Working note Tuesday.", "Unrelated BLUE FERN.", "Unsaved following clause."]
     const { state, host, word } = office(texts)
@@ -377,7 +394,7 @@ test("real shared authoring imports reviewed whole-paragraph insertion/removal w
   }
 })
 
-test("structural import still refuses a formatting race before native mutation", async () => {
+test.skip("structural import still refuses a formatting race before native mutation", async () => {
   const { state, host } = office(["Working note Tuesday.", "Unrelated BLUE FERN."])
   state.selection = [0, state.paragraphs.map(p => p.text).join("\r").length]
   const target = (await host.selection())!, replacement = "A non-operative heading:\r" + target.text
@@ -412,7 +429,7 @@ function formattedOffice() {
   return { ...fixture, texts, formatting }
 }
 
-test("real shared paragraph formatting preserves an unchanged final paragraph, prior text revisions and adjacent unsaved formatting", async () => {
+test.skip("real shared paragraph formatting preserves an unchanged final paragraph, prior text revisions and adjacent unsaved formatting", async () => {
   for (const emptyText of [false, true]) {
     const { state, host, text, texts, formatting } = formattedOffice()
     state.formattedTextEmpty = emptyText
@@ -442,7 +459,7 @@ test("real shared paragraph formatting preserves an unchanged final paragraph, p
   }
 })
 
-test("paragraph formatting refuses a target race before mutation and fences uncertain adjacent formatting changes", async () => {
+test.skip("paragraph formatting refuses a target race before mutation and fences uncertain adjacent formatting changes", async () => {
   for (const race of [true, false]) {
     const { state, host, formatting } = formattedOffice()
     const target = (await host.selection())!
@@ -483,7 +500,7 @@ test("native final-boundary formatting verifies each requested property and prio
   expect(state.writes).toHaveLength(0)
 })
 
-test("mixed inserted heading and wording retain prior inline revisions before native formatting", async () => {
+test.skip("mixed inserted heading and wording retain prior inline revisions before native formatting", async () => {
   const { state, host } = formattedOffice(), target = (await host.selection())!
   const replacement = "Scope of obligations\r" + target.text.replace("Retained qualification.", "Retained important qualification.")
   const formatting: WordChatParagraphFormat[] = [{ paragraph: 0, style: "Heading1" }, { paragraph: 3, spacingAfter: 6 }]
@@ -498,7 +515,7 @@ test("mixed inserted heading and wording retain prior inline revisions before na
   expect(heading.getElementsByTagNameNS(WORD_XML, "pPrChange")).toHaveLength(0)
 })
 
-test("inserted-only formatting is carried in reviewed wording without native setters", async () => {
+test.skip("inserted-only formatting is carried in reviewed wording without native setters", async () => {
   const { state, host } = formattedOffice(), target = (await host.selection())!
   const replacement = "Scope of obligations\r" + target.text
   const input = { proposalId: "inserted-only-format", target, replacement, formatting: [{ paragraph: 0, style: "Heading1" as const }] }
@@ -511,7 +528,7 @@ test("inserted-only formatting is carried in reviewed wording without native set
   expect(heading.getElementsByTagNameNS(WORD_XML, "pPrChange")).toHaveLength(0)
 })
 
-test("mixed wording beside an existing own revision preserves that exact revision", async () => {
+test.skip("mixed wording beside an existing own revision preserves that exact revision", async () => {
   const { state, host } = formattedOffice(), target = (await host.selection())!
   state.paragraphXml.set("paragraph-1", state.paragraphXml.get("paragraph-1")!.replaceAll('w:author="Earlier reviewer"', 'w:author="doc.haus"'))
   for (const revision of state.nativeRevisions) revision.author = "doc.haus"
@@ -526,7 +543,7 @@ test("mixed wording beside an existing own revision preserves that exact revisio
   expect(previous).toContain('w:author="doc.haus"')
 })
 
-test("mixed wording in a paragraph with another author's revision refuses before mutation", async () => {
+test.skip("mixed wording in a paragraph with another author's revision refuses before mutation", async () => {
   const { state, host } = formattedOffice(), target = (await host.selection())!
   const replacement = "Scope of obligations\r" + target.text.replace("The obligation is", "The duty is")
   await expect(host.apply({ proposalId: "mixed-existing-other", target, replacement, formatting: [{ paragraph: 0, style: "Heading1" }] })).rejects.toMatchObject({ mutationState: "unchanged" })
@@ -534,7 +551,7 @@ test("mixed wording in a paragraph with another author's revision refuses before
   expect(state.modeChanges).toHaveLength(0)
 })
 
-test("mixed artifact tampering refuses before mutation and a lost import cannot be replayed", async () => {
+test.skip("mixed artifact tampering refuses before mutation and a lost import cannot be replayed", async () => {
   for (const tamper of ["wording", "prior", "none"] as const) {
     const { state, host, author } = formattedOffice(), target = (await host.selection())!
     const replacement = "Scope of obligations\r" + target.text.replace("Retained qualification.", "Retained important qualification.")
@@ -557,7 +574,7 @@ test("mixed artifact tampering refuses before mutation and a lost import cannot 
   }
 })
 
-test("unreviewed inserted or retained paragraph properties refuse before native mutation", async () => {
+test.skip("unreviewed inserted or retained paragraph properties refuse before native mutation", async () => {
   for (const tamper of ["baseline-indent", "retained-indent", "heading-style"] as const) {
     const { state, host, author } = formattedOffice(), target = (await host.selection())!
     const replacement = "Scope of obligations\r" + target.text.replace("Retained qualification.", "Retained important qualification.")
@@ -605,7 +622,7 @@ test("a lost native formatting response restores tracking and prevents replay", 
   expect(state.nativeFormatting).toHaveLength(1)
 })
 
-test("formatting captures and verifies Content XML when Whole export adds a synthetic final paragraph", async () => {
+test.skip("formatting captures and verifies Content XML when Whole export adds a synthetic final paragraph", async () => {
   const { state, host, word, formatting, texts, text } = formattedOffice()
   state.wholeOoxmlTrailingParagraph = true
   const target = (await host.selection())!, outside = [state.paragraphXml.get("paragraph-0"), state.paragraphXml.get("paragraph-4")]
@@ -632,8 +649,9 @@ test("formatting captures and verifies Content XML when Whole export adds a synt
 })
 
 test("paragraph formatting refuses an adjacent insertion between neighbour discovery and the final capture", async () => {
-  const { state, host, word, formatting } = formattedOffice()
+  const { state, host, word, formatting: baseFormatting } = formattedOffice()
   const target = (await host.selection())!
+  const formatting = [...baseFormatting, { paragraph: target.paragraphs.length - 1, spacingAfter: 6 }]
   let inserted = false
   await word.run(async context => {
     const body = context.document.body, original = Object.getOwnPropertyDescriptor(body, "paragraphs")!.get!
@@ -660,8 +678,9 @@ test("paragraph formatting refuses an adjacent insertion between neighbour disco
 
 test("formatting capture distinguishes an extra exported paragraph from different exported tracked text before authoring", async () => {
   for (const extraParagraph of [true, false]) {
-    const { state, host, formatting } = formattedOffice()
+    const { state, host, formatting: baseFormatting } = formattedOffice()
     const target = (await host.selection())!
+    const formatting = [...baseFormatting, { paragraph: target.paragraphs.length - 1, spacingAfter: 6 }]
     const body = state.paragraphXml.get("paragraph-1")! + state.paragraphXml.get("paragraph-2")! + state.paragraphXml.get("paragraph-3")!
     state.xml = flatOpc(extraParagraph ? body + "<w:p/>" : body.replace("The obligation is ", "The commitment is "), state.extraParts)
     await expect(host.apply({ proposalId: `capture-diagnostic-${extraParagraph}`, target, replacement: target.text, formatting })).rejects.toThrow(extraParagraph ? "Word exported 4 paragraphs for this 3-paragraph review" : "exported text differs at reviewed paragraph 1")
@@ -671,7 +690,7 @@ test("formatting capture distinguishes an extra exported paragraph from differen
   }
 })
 
-test("fresh paragraph proof confirms multiline edits despite returned insertion-range drift", async () => {
+test.skip("fresh paragraph proof confirms multiline edits despite returned insertion-range drift", async () => {
   const { state, host, text } = office(["The supplier will promptly identify an issue.", "The recipient will promptly consider the issue."])
   state.selection = [0, text().length]
   state.driftInsertedRanges = true
@@ -683,7 +702,7 @@ test("fresh paragraph proof confirms multiline edits despite returned insertion-
   expect(state.tracking).toBe("Off")
 })
 
-test("native proof covers deletion-only and replaced spans without inserted-range assumptions", async () => {
+test.skip("native proof covers deletion-only and replaced spans without inserted-range assumptions", async () => {
   for (const replacement of ["A clause with an obligation.", "A clause with a specific duty."]) {
     const { state, host } = office()
     const target = (await host.selection())!
@@ -693,7 +712,7 @@ test("native proof covers deletion-only and replaced spans without inserted-rang
   }
 })
 
-test("two separated edits import in document order and preserve revisions in other paragraphs", async () => {
+test.skip("two separated edits import in document order and preserve revisions in other paragraphs", async () => {
   const { state, host, word } = office(["A clear obligation preserves the agreed commercial position and a firm deadline.", "Earlier revision remains."])
   const priorStart = state.paragraphs[0]!.text.length + 1
   state.nativeRevisions = [
@@ -718,7 +737,7 @@ test("two separated edits import in document order and preserve revisions in oth
   expect(state.paragraphs[0]!.text).toBe(replacement)
 })
 
-test("preexisting revisions elsewhere cannot masquerade as new authored markup", async () => {
+test.skip("preexisting revisions elsewhere cannot masquerade as new authored markup", async () => {
   const { state, host } = office(["A clear obligation.", "specific clear."])
   const priorStart = state.paragraphs[0]!.text.length + 1
   state.nativeRevisions = [
@@ -733,7 +752,7 @@ test("preexisting revisions elsewhere cannot masquerade as new authored markup",
   await expect(host.apply(input)).rejects.toThrow("may already contain")
 })
 
-test("edits outside the target are preserved; changed target paragraphs refuse before writing", async () => {
+test.skip("edits outside the target are preserved; changed target paragraphs refuse before writing", async () => {
   const { state, host } = office(["A clause with a clear obligation.", "The first qualification.", "The second qualification.", "A distant clause."])
   const target = (await host.selection())!
   state.paragraphs[3]!.text += " Unsaved local drafting."
@@ -747,7 +766,7 @@ test("edits outside the target are preserved; changed target paragraphs refuse b
   expect(changed.state.modeChanges).toHaveLength(0)
 })
 
-test("complete paragraph delivery keeps revision authority inside the exact selection", async () => {
+test.skip("complete paragraph delivery keeps revision authority inside the exact selection", async () => {
   const { state, host, text } = office(["Unchanged bold prefix. A clear obligation. Unchanged italic suffix."])
   const start = text().indexOf("A clear")
   state.selection = [start, start + "A clear obligation.".length]
@@ -765,7 +784,7 @@ test("table paragraphs refuse before authoring or native mutation, including a m
     const target = (await host.selection())!
     if (moveDuringAuthor) state.duringAuthor = () => { state.paragraphs[0]!.inTable = true }
     else state.paragraphs[0]!.inTable = true
-    await expect(host.apply({ proposalId: `table-${moveDuringAuthor}`, target, replacement: "A fee of 150 applies." })).rejects.toThrow("Word tables")
+    await expect(host.apply({ proposalId: `table-${moveDuringAuthor}`, target, replacement: target.text, formatting: [{ paragraph: 0, spacingAfter: 6 }] })).rejects.toThrow("Word tables")
     expect(state.authorCalls).toBe(moveDuringAuthor ? 1 : 0)
     expect(state.writes).toHaveLength(0)
     expect(state.modeChanges).toEqual([])
@@ -773,7 +792,7 @@ test("table paragraphs refuse before authoring or native mutation, including a m
   }
 })
 
-test("verified imported scope returns new IDs and exact selected offsets without following an adjacent cursor", async () => {
+test.skip("verified imported scope returns new IDs and exact selected offsets without following an adjacent cursor", async () => {
   for (const multiline of [false, true]) {
     const paragraphs = multiline ? ["Prefix clear.", "clear suffix.", "An unrelated adjacent clause."] : ["Prefix clear suffix.", "Prefix clear suffix."]
     const { state, host } = office(paragraphs)
@@ -800,7 +819,7 @@ test("verified imported scope returns new IDs and exact selected offsets without
   }
 })
 
-test("deleting the complete selected wording does not invent an expanded follow-up target", async () => {
+test.skip("deleting the complete selected wording does not invent an expanded follow-up target", async () => {
   const { state, host } = office(["Prefix clear suffix."])
   state.selection = [7, 13]
   const target = (await host.selection())!
@@ -810,7 +829,7 @@ test("deleting the complete selected wording does not invent an expanded follow-
   expect(state.paragraphs[0]!.text).toBe("Prefix suffix.")
 })
 
-test("a retry and simultaneous approvals cannot replay the same local proposal", async () => {
+test.skip("a retry and simultaneous approvals cannot replay the same local proposal", async () => {
   const { state, host } = office()
   const target = (await host.selection())!
   const input = { proposalId: "once", target, replacement: target.text.replace("clear", "specific") }
@@ -821,7 +840,7 @@ test("a retry and simultaneous approvals cannot replay the same local proposal",
   expect(state.writes).toHaveLength(1)
 })
 
-test("a lost native response restores tracking and never blindly retries a possible edit", async () => {
+test.skip("a lost native response restores tracking and never blindly retries a possible edit", async () => {
   const { state, host } = office()
   const target = (await host.selection())!
   state.throwAfterWrite = true
@@ -837,7 +856,7 @@ test("a lost native response restores tracking and never blindly retries a possi
 test("pre-import refusal stays unchanged even when its message describes uncertainty", async () => {
   const { state, host } = office()
   const target = (await host.selection())!
-  const input = { proposalId: "read-only-refusal", target, replacement: "A different requested change.", author: async () => {
+  const input = { proposalId: "read-only-refusal", target, replacement: target.text, formatting: [{ paragraph: 0, spacingAfter: 6 }], author: async () => {
     throw new WordChatHostError("Word may already contain this change. Inspect the clause.")
   } }
   await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "unchanged" })
@@ -845,7 +864,7 @@ test("pre-import refusal stays unchanged even when its message describes uncerta
   expect(state.modeChanges).toHaveLength(0)
 })
 
-test("comments and revisions anywhere in imported paragraphs refuse; siblings remain untouched", async () => {
+test.skip("comments and revisions anywhere in imported paragraphs refuse; siblings remain untouched", async () => {
   for (const kind of ["comments", "revisions"] as const) {
     const { state, host } = office()
     state.selection = [16, 21]
@@ -862,7 +881,7 @@ test("comments and revisions anywhere in imported paragraphs refuse; siblings re
   }
 })
 
-test("changed paragraph structure and field objects are disclosed before mutation", async () => {
+test.skip("changed paragraph structure and field objects are disclosed before mutation", async () => {
   const { state, host } = office()
   const target = (await host.selection())!
   await expect(host.apply({ proposalId: "structure", target, replacement: target.text + "\rA new paragraph." })).rejects.toThrow("paragraph restructuring")
@@ -871,7 +890,7 @@ test("changed paragraph structure and field objects are disclosed before mutatio
   expect(state.writes).toHaveLength(0)
 })
 
-test("native Flat OPC page layout and unrelated package parts do not block ordinary text", async () => {
+test.skip("native Flat OPC page layout and unrelated package parts do not block ordinary text", async () => {
   const { state, host } = office()
   const target = (await host.selection())!
   state.xml = flatOpc(`<w:p><w:r><w:t>${escapeXml(target.text)}</w:t></w:r></w:p>`, `<pkg:part pkg:name="/word/header1.xml"><pkg:xmlData><w:hdr><w:p><w:fldSimple w:instr="PAGE"/></w:p></w:hdr></pkg:xmlData></pkg:part>`)
@@ -881,7 +900,7 @@ test("native Flat OPC page layout and unrelated package parts do not block ordin
   expect(state.tracking).toBe("Off")
 })
 
-test("selected Flat OPC fields, links, revisions, comments and section breaks stay guarded", async () => {
+test.skip("selected Flat OPC fields, links, revisions, comments and section breaks stay guarded", async () => {
   const unsafe = [
     "<w:p><w:fldSimple w:instr=\"PAGE\"><w:r><w:t>clear</w:t></w:r></w:fldSimple></w:p>",
     "<w:p><w:hyperlink><w:r><w:t>clear</w:t></w:r></w:hyperlink></w:p>",
@@ -900,7 +919,7 @@ test("selected Flat OPC fields, links, revisions, comments and section breaks st
   }
 })
 
-test("malformed or ambiguous native XML cannot authorize an edit", async () => {
+test.skip("malformed or ambiguous native XML cannot authorize an edit", async () => {
   for (const xml of ["<w:p><broken>", "<unexpected/>", flatOpc("<w:p/>").replace("</pkg:package>", flatOpc("<w:p/>").match(/<pkg:part[\s\S]*<\/pkg:part>/)![0] + "</pkg:package>")]) {
     const { state, host } = office()
     const target = (await host.selection())!
@@ -910,7 +929,7 @@ test("malformed or ambiguous native XML cannot authorize an edit", async () => {
   }
 })
 
-test("unexpected inserted wording never reports a confirmed reviewed amendment", async () => {
+test.skip("unexpected inserted wording never reports a confirmed reviewed amendment", async () => {
   const { state, host } = office()
   const target = (await host.selection())!
   state.corruptWrite = true
@@ -928,7 +947,7 @@ test("the native host requires shared authoring and never falls back to a text e
   expect(state.modeChanges).toHaveLength(0)
 })
 
-test("a formatting change during shared authoring stops import before changing tracking", async () => {
+test.skip("a formatting change during shared authoring stops import before changing tracking", async () => {
   const { state, host } = office()
   const target = (await host.selection())!
   state.duringAuthor = () => { state.xml = flatOpc(`<w:p><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${escapeXml(target.text)}</w:t></w:r></w:p>`) }
@@ -937,7 +956,7 @@ test("a formatting change during shared authoring stops import before changing t
   expect(state.modeChanges).toHaveLength(0)
 })
 
-test("a server artifact bound to another proposal is rejected before native mutation", async () => {
+test.skip("a server artifact bound to another proposal is rejected before native mutation", async () => {
   const { state, host, author } = office()
   const target = (await host.selection())!
   const input = { proposalId: "artifact-binding", target, replacement: target.text.replace("clear", "specific") }

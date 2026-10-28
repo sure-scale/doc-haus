@@ -323,6 +323,11 @@ export class WordChatHost {
     try {
       const nativeFinalFormatting = input.formatting !== undefined && input.replacement === input.target.text &&
         validWordChatFormatting(input.target, input.formatting) && input.formatting.some(op => op.paragraph === input.target.paragraphs.length - 1)
+      // Scoped OOXML imports may change numbering elsewhere in Word, even
+      // outside the reviewed range. Stop before any authoring or mutation
+      // until the import's document-wide effects have been established.
+      if (!nativeFinalFormatting)
+        throw new WordChatHostError("Word cannot safely apply this amendment yet because it may change numbering elsewhere in the document. Make the change directly in Word; your document is unchanged.")
       const mixed = input.formatting !== undefined && input.replacement !== input.target.text
       const afterParts = input.replacement.split("\r"), plan = wordChatApplyPlan(input.target, input.replacement, nativeFinalFormatting || mixed ? undefined : input.formatting)
       if (!plan.supported) throw new WordChatHostError(plan.reason)
