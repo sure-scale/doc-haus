@@ -30,6 +30,8 @@ export default function Composer({
   draftingUpdate = false,
   draftingClarification = false,
   documentsControl,
+  attachmentControl,
+  hasAttachments = false,
 }: {
   pinned?: AssistantMeta
   available: Set<string>
@@ -56,6 +58,8 @@ export default function Composer({
   draftingClarification?: boolean
   // The matter's Documents control (see DocumentChips), seated after the playbook.
   documentsControl?: ReactNode
+  attachmentControl?: ReactNode
+  hasAttachments?: boolean
 }) {
   const hintId = useId()
   // A pinned surface (the template library) owns its one assistant — no
@@ -123,6 +127,7 @@ export default function Composer({
       />
       <div className="composer-footer">
         {tools}
+        {attachmentControl}
         <span id={hintId} className="sr-only">Enter to send. Shift and Enter for a new line.</span>
         <span className="composer-hint" aria-hidden>
           <span>
@@ -151,7 +156,7 @@ export default function Composer({
             type="button"
             className="send-btn btn-lg"
             onClick={onSend}
-            disabled={busy || !input.trim()}
+            disabled={busy || (!input.trim() && !hasAttachments)}
             aria-label={
               draftingClarification
                 ? "Send checklist clarification"

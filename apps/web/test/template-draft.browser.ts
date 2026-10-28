@@ -125,7 +125,11 @@ const server = Bun.serve({
     }
     if (request.method === "GET" && ["/matter/matter", "/templates"].includes(url.pathname)) return new Response(`<html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style><div id="root"></div><script type="module" src="/harness.js"></script></html>`, { headers: { "content-type": "text/html" } })
     if (route === "GET /ingest/matters/matter") return json(matter)
+    if (route === "GET /ingest/word/config") return json({ available: false })
+    if (route === "GET /ingest/matters/matter/documents/word") return json({ documents: [] })
     if (route === "GET /ingest/matters") return json([matter])
+    if (route === "GET /ingest/word/config") return json({ available: false })
+    if (route === "GET /ingest/matters/matter/documents/word") return json({ documents: [] })
     if (route === "GET /ingest/jurisdictions" || route === "GET /ingest/playbooks") return json([])
     if (route === "GET /ingest/workflows") return json({ dir: "/workflows", workflows: [] })
     if (route === "GET /ingest/templates") {
@@ -155,10 +159,15 @@ const server = Bun.serve({
       drafts.set(id, draft)
       return json(draft)
     }
-    const draftRoute = url.pathname.match(/^\/ingest\/template-drafts\/(draft_\d+)(?:\/(content|publish))?$/)
+    const draftRoute = url.pathname.match(/^\/ingest\/template-drafts\/(draft_\d+)(?:\/(content|publish|attachments))?$/)
     if (draftRoute) {
       const draft = drafts.get(draftRoute[1])
       if (!draft) return Response.json({ error: "Template draft not found." }, { status: 404 })
+      if (draftRoute[2] === "attachments" && request.method === "POST") {
+        const file = (await request.formData()).get("file") as File
+        assert.equal(file.name, "instructions.txt")
+        return json({ id: "attachment-1", name: file.name, source: ".chat-attachments/attachment-1.txt", original: ".chat-attachments/attachment-1.original.txt" })
+      }
       if (request.method === "DELETE" && !draftRoute[2]) {
         deleteAttempts += 1
         if (deleteAttempts === 1) return Response.json({ error: "The conversation service is unavailable." }, { status: 503 })
@@ -277,8 +286,11 @@ try {
   await page.getByRole("dialog", { name: "Services.docx" }).getByRole("button", { name: /Close/ }).click()
   console.log("PASS source handoff snapshots into a fresh library conversation, attaches visibly, and handles errors")
 
+  await page.getByRole('region', { name: 'Templates assistant' }).locator('input[type="file"][multiple]').setInputFiles({ name: "instructions.txt", mimeType: "text/plain", buffer: Buffer.from("Extra instructions") })
+  await page.getByRole("button", { name: "Remove instructions.txt" }).waitFor()
   await page.getByRole("button", { name: "Send message", exact: true }).click()
   await until(() => prompts.length === 1, "one new source conversation is created")
+  assert.ok(prompts[0].text.includes(".chat-attachments/attachment-1.txt"), "additional source is sent in the draft conversation")
   const firstSession = prompts[0].id
   await page.waitForURL(`**draft=draft_1&session=${firstSession}`)
   // The asked question opens by itself.
@@ -434,7 +446,19 @@ try {
   await page.setViewportSize({ width: 1280, height: 950 })
   console.log("PASS saved template viewer covers desktop/mobile/large-text viewports without restyling or scrolling the background")
 
-  await page.getByRole("button", { name: "Use", exact: true }).click()
+  const useSaved = page.getByRole("button", { name: "Use", exact: true })
+  for (const [width, height] of [[390, 844], [1280, 950]] as const) {
+    await page.setViewportSize({ width, height })
+    await useSaved.click()
+    const picker = page.getByRole("dialog", { name: 'Use "Standard services.docx" in a matter' })
+    await picker.getByRole("button", { name: /Services matter/ }).waitFor()
+    const backdrop = await page.locator(".viewer-overlay").boundingBox()
+    assert.deepEqual(backdrop, { x: 0, y: 0, width, height }, "matter picker backdrop covers the viewport")
+    await page.keyboard.press("Escape")
+    await picker.waitFor({ state: "hidden" })
+    assert.equal(await useSaved.evaluate((node) => node === document.activeElement), true, "picker restores focus to Use")
+  }
+  await useSaved.click()
   await page.getByRole("button", { name: /Services matter/ }).click()
   await page.waitForURL("**/matter/matter?view=chat&agent=draft&prompt=**")
   await page.waitForFunction(() => document.querySelector("textarea")?.value.includes("Draft a new document from the template"))

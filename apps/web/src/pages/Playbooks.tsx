@@ -6,6 +6,7 @@ import { humanizeError } from "../api/ingest/errors"
 import { PLAYBOOK_BUILDER } from "../agents"
 import { useToast } from "../components/Toast"
 import ChatPanel from "../components/ChatPanel"
+import { useLibraryChatKey } from "../components/chat/use-library-chat-key"
 import Dropzone from "../components/Dropzone"
 import LibraryLayout from "../components/LibraryLayout"
 import MatterPicker from "../components/MatterPicker"
@@ -27,10 +28,11 @@ export default function Playbooks() {
   const working = busy || assistantBusy
   const [confirmName, setConfirmName] = useState<string>()
   const [viewing, setViewing] = useState<Playbook>()
-  const [editing, setEditing] = useState<{ name: string; description: string; content: string; create: boolean }>()
+  const [editing, setEditing] = useState<{ name: string; description: string; content: string }>()
   const [using, setUsing] = useState<Playbook>()
   const [reimporting, setReimporting] = useState<Playbook>()
   const createdRef = useRef<string | undefined>(undefined)
+  const chatKey = useLibraryChatKey(session, params.get("prompt") ?? undefined, createdRef)
   const fileRef = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
   const toast = useToast()
@@ -92,7 +94,7 @@ export default function Playbooks() {
     if (!editing || working) return
     setBusy(true)
     try {
-      await savePlaybook(editing, editing.create)
+      await savePlaybook(editing, false)
       setEditing(undefined)
       await refresh()
       toast("success", "Saved playbook.")
@@ -127,28 +129,20 @@ export default function Playbooks() {
         count={loading || error ? undefined : playbooks.length}
         active={Boolean(session)}
         upload={
-          <>
-            <Dropzone
-              accept=".docx,.md,.txt"
-              busy={working || !dir}
-              onFiles={onFiles}
-              title={busy ? "Preparing playbook…" : "Import a playbook"}
-              hint="Drop a Word or text file. The assistant prepares it for your approval."
-            />
-            <button
-              className="icon-btn playbook-create"
-              disabled={working || !dir}
-              onClick={() => setEditing({ name: "playbook-", description: "", content: "", create: true })}
-            >
-              Create playbook
-            </button>
-          </>
+          <Dropzone
+            accept=".pdf,.docx,.md,.markdown,.txt"
+            busy={working || !dir}
+            onFiles={onFiles}
+            title={busy ? "Preparing playbook…" : "Import a playbook"}
+            hint="Drop a PDF, Word or text file. The assistant prepares it for your approval."
+          />
         }
         assistant={
           dir && (
             <ChatPanel
-              key={session ?? params.get("prompt") ?? "new"}
+              key={chatKey}
               directory={dir}
+              libraryAttachments="playbooks"
               sessionID={session}
               initialPrompt={params.get("prompt") ?? undefined}
               created={createdRef.current === session}
@@ -217,7 +211,7 @@ export default function Playbooks() {
                       <button
                         className="icon-btn"
                         disabled={working}
-                        onClick={() => setEditing({ ...p, create: false })}
+                        onClick={() => setEditing(p)}
                       >
                         Edit
                       </button>
@@ -258,7 +252,7 @@ export default function Playbooks() {
       <input
         ref={fileRef}
         type="file"
-        accept=".docx,.md,.txt"
+        accept=".pdf,.docx,.md,.markdown,.txt"
         hidden
         onChange={(e) => {
           const files = Array.from(e.target.files ?? [])
@@ -296,11 +290,11 @@ export default function Playbooks() {
             className="picker-panel doc-panel"
             role="dialog"
             aria-modal="true"
-            aria-label={editing.create ? "Create playbook" : "Edit playbook"}
+            aria-label="Edit playbook"
             onClick={(e) => e.stopPropagation()}
           >
             <ModalHeader
-              title={editing.create ? "Create playbook" : `Edit ${editing.name}`}
+              title={`Edit ${editing.name}`}
               onClose={() => {
                 if (!working) setEditing(undefined)
               }}
@@ -317,9 +311,8 @@ export default function Playbooks() {
                 <input
                   required
                   pattern="playbook-[a-z0-9][a-z0-9-]*"
-                  disabled={!editing.create || working}
+                  disabled
                   value={editing.name}
-                  onChange={(e) => setEditing({ ...editing, name: e.target.value })}
                 />
               </label>
               <label>

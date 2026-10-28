@@ -4,6 +4,7 @@ import { deleteAgent, listAgents, setAgentEnabled, type AgentRecord } from "../a
 import { useToast } from "../components/Toast"
 import { humanizeError } from "../api/ingest/errors"
 import ChatPanel from "../components/ChatPanel"
+import { useLibraryChatKey } from "../components/chat/use-library-chat-key"
 import LibraryLayout from "../components/LibraryLayout"
 import { DocMarkdown } from "../components/markdown/Markdown"
 import { AGENT_BUILDER } from "../agents"
@@ -28,6 +29,7 @@ export default function Agents() {
   const [confirmName, setConfirmName] = useState<string | null>(null)
   const [viewing, setViewing] = useState<AgentRecord>()
   const createdRef = useRef<string | undefined>(undefined)
+  const chatKey = useLibraryChatKey(session, undefined, createdRef)
   const toast = useToast()
 
   function refresh() {
@@ -87,8 +89,9 @@ export default function Agents() {
         assistant={
           dir && (
             <ChatPanel
-              key={session ?? "new"}
+              key={chatKey}
               directory={dir}
+              libraryAttachments="agents"
               sessionID={session}
               created={createdRef.current === session}
               agent={AGENT_BUILDER.name}
