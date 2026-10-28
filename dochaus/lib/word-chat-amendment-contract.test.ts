@@ -1,9 +1,39 @@
 import { expect, test } from "bun:test"
-import { targetWordChatAmendment, wordChatParagraphBreaks, type WordChatSnapshot } from "./word-chat-amendment-contract"
+import { targetWordChatAmendment, wordChatParagraphBreaks, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
 
 const snapshot = (): WordChatSnapshot => ({text: "Pay within thirty days.\rPay within thirty days.",
   paragraphs: [{id:"first",text:"Pay within thirty days."},{id:"second",text:"Pay within thirty days."}],
   saved:false,capturedAt:"2026-01-01T00:00:00Z",truncated:false})
+
+test("retained selection rejects stale native paragraphs even when its old words remain elsewhere", () => {
+  const value = snapshot()
+  const selected = { id: "selection", text: "thirty days", paragraphs: [{ ...value.paragraphs[1]! }], startOffset: 11, endOffset: 22, saved: false, capturedAt: value.capturedAt }
+  expect(wordChatTargetCurrent(value, selected)).toBe(true)
+  value.paragraphs[1]!.text = "Pay within forty days."
+  value.text = value.paragraphs.map(paragraph => paragraph.text).join("\r")
+  expect(value.text.includes(selected.text)).toBe(true)
+  expect(wordChatTargetCurrent(value, selected)).toBe(false)
+  value.paragraphs[1]!.text = selected.paragraphs[0]!.text
+  expect(wordChatTargetCurrent(value, { ...selected, startOffset: 0 })).toBe(false)
+  expect(wordChatTargetCurrent(value, { ...selected, endOffset: 500 })).toBe(false)
+  expect(wordChatTargetCurrent(value, { ...selected, paragraphs: [{ ...selected.paragraphs[0]!, id: "missing" }] })).toBe(false)
+  value.paragraphs[0]!.text = "An unrelated local edit."
+  expect(wordChatTargetCurrent(value, { ...selected, id: "fresh-capture", capturedAt: "2026-01-02T00:00:00Z" })).toBe(true)
+})
+
+test("retained multiline selection requires its exact contiguous sequence and boundary text", () => {
+  const value: WordChatSnapshot = { ...snapshot(), text: "Lead first words\rMiddle wording\rLast words tail", paragraphs: [
+    { id: "first", text: "Lead first words" }, { id: "middle", text: "Middle wording" }, { id: "last", text: "Last words tail" },
+  ] }
+  const selected = targetWordChatAmendment(value, "first words\rMiddle wording\rLast words")!
+  expect(wordChatTargetCurrent(value, selected)).toBe(true)
+  value.paragraphs.splice(1, 0, { id: "new", text: "Inserted between selected paragraphs." })
+  expect(wordChatTargetCurrent(value, selected)).toBe(false)
+  value.paragraphs.splice(1, 1)
+  expect(wordChatTargetCurrent(value, selected)).toBe(true)
+  expect(wordChatTargetCurrent(value, { ...selected, text: "Changed selection" })).toBe(false)
+  expect(wordChatTargetCurrent(value, { ...selected, paragraphs: [undefined as never] })).toBe(false)
+})
 
 test("ambiguous document wording requires a selected target rather than choosing the first copy", () => {
   const value = snapshot()

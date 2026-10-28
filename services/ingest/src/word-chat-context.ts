@@ -7,7 +7,7 @@ import { readDeskSource } from "./word-source-desk"
 import { readVersion, readVersionBytes } from "./document-versions"
 import { extractDocumentText } from "./ingest"
 import { listPlaybooks } from "./matter"
-import { wordChatParagraphBreaks } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { wordChatParagraphBreaks, wordChatTargetCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
 import type { WordGrant } from "./word-grants"
 
 export class WordChatContextError extends Error {}
@@ -42,7 +42,7 @@ export function validateWordChatContext(value: unknown): value is WordChatContex
     typeof input.saved === "boolean" && typeof input.capturedAt === "string" && typeof input.truncated === "boolean" && !input.truncated &&
     Array.isArray(input.paragraphs) && input.paragraphs.length <= 20_000 && input.paragraphs.every(paragraph =>
       paragraph && typeof paragraph.id === "string" && typeof paragraph.text === "string" && paragraph.text.length <= 512_000) &&
-    (!input.selection || typeof input.selection.text === "string" && input.selection.text.length <= 24_000 && input.text.includes(input.selection.text))
+    (!input.selection || wordChatTargetCurrent(input, input.selection) && input.text.includes(input.selection.text))
 }
 
 export function wordChatMaterials(auth: WordChatAuth, uploads: WordChatUpload[] = []): WordChatMaterial[] {

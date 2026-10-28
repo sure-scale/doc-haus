@@ -39,6 +39,28 @@ export type WordChatAuthoredAmendment = {
  * uses CR; soft line breaks remain their distinct native U+000B character. */
 export const wordChatParagraphBreaks = (text: string) => text.replace(/\r\n|\n/g, "\r")
 
+/** A retained selection must still name the same adjacent native paragraphs,
+ * not merely words that happen to survive elsewhere in the document. */
+export function wordChatTargetCurrent(snapshot: WordChatSnapshot, target: WordChatTarget): boolean {
+  if (!target || typeof target.text !== "string" || !target.text.trim() || target.text.length > 24_000 ||
+    !Array.isArray(target.paragraphs) || !target.paragraphs.length || target.paragraphs.length > 64 ||
+    target.paragraphs.some(paragraph => !paragraph || typeof paragraph.id !== "string" || !paragraph.id || typeof paragraph.text !== "string") ||
+    !Number.isSafeInteger(target.startOffset) || !Number.isSafeInteger(target.endOffset)) return false
+  const first = target.paragraphs[0]!
+  const at = snapshot.paragraphs.findIndex(paragraph => paragraph.id === first.id)
+  if (at < 0 || snapshot.paragraphs.some((paragraph, index) => index !== at && paragraph.id === first.id)) return false
+  const pieces: string[] = []
+  for (const [index, paragraph] of target.paragraphs.entries()) {
+    const current = snapshot.paragraphs[at + index]
+    if (!current || current.id !== paragraph.id || current.text !== paragraph.text) return false
+    const start = index === 0 ? target.startOffset : 0
+    const end = index === target.paragraphs.length - 1 ? target.endOffset : paragraph.text.length
+    if (start < 0 || end < start || end > paragraph.text.length) return false
+    pieces.push(paragraph.text.slice(start, end))
+  }
+  return pieces.join("\r") === wordChatParagraphBreaks(target.text)
+}
+
 /** The model supplies words, never native IDs or offsets. Resolve one exact
  * occurrence inside the explicitly selected passage, otherwise the open buffer.
  * The original paragraph sequence and selected boundaries remain authoritative. */

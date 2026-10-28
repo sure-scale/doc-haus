@@ -64,3 +64,11 @@ test("document lists carry only the validated linked matter's browser URL for ot
   expect(await request({ action: "sources" })).toEqual({ sources: [], matterUrl: `${link.origin}/matter/${link.matter}?view=documents` })
   expect(() => deskRequestHandler({ ...link, origin: "https://user:secret@untrusted.example" })).toThrow("browser origin")
 })
+
+test("document desk cannot forward attachment actions to another capability route", async () => {
+  let calls = 0
+  const request = deskRequestHandler(link, async () => { calls++; return Response.json({}) })
+  await expect(request({ action: "chat-materials" })).rejects.toThrow("Open Attach from the chat")
+  await expect(request({ action: "chat-upload", name: "Notes.txt", data: "YWJj", mode: "request" })).rejects.toThrow("Open Attach from the chat")
+  expect(calls).toBe(0)
+})

@@ -7,6 +7,8 @@ import { setupLatestVersion } from "./latest-version"
 import { chatClient } from "./chat-client"
 import { mountWordChat } from "./chat-ui"
 import { captureCurrentWordContext, captureWordChatSelection, applyReviewedProposal } from "./word-chat-host"
+import { watchWordChatSelection } from "./word-chat-selection"
+import { openChatAttachments } from "./chat-attachments"
 import { preferRoomyPane } from "./feature-tabs"
 import type { WordChatAuthoredAmendment } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { createReplaceConfirmation } from "./replace-confirmation"
@@ -72,6 +74,8 @@ async function main(): Promise<void> {
       documentName: link.documentName,
       capture: captureCurrentWordContext,
       captureSelection: captureWordChatSelection,
+      watchSelection: watchWordChatSelection,
+      openAttachments: options => openChatAttachments(chat, options),
       sourceUrl: source => source.provenance === "saved-version" ? `${link.origin}/matter/${encodeURIComponent(link.matter)}?view=documents` : undefined,
       async apply(proposal, request) {
         if (sync.snapshot().busy) throw new Error("Wait for the current Save to finish, then Apply.")

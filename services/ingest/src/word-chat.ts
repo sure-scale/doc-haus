@@ -25,6 +25,10 @@ const stamp = (value: unknown) => typeof value === "number" ? value : typeof val
 function conversation(session: NativeSession, auth: WordChatAuth): WordChatConversation {
   return { id: session.id, title: session.title || "Word conversation", documentName: auth.target.name, updatedAt: stamp(session.time?.updated) }
 }
+function untitled(session: NativeSession, auth: WordChatAuth) {
+  return !session.title || session.title === "Word conversation" || session.title === `Word · ${auth.target.name}`
+}
+const conversationTitle = (text: string) => text.replace(/\s+/g, " ").trim().slice(0, 100)
 function rootMeta(session: NativeSession, auth: WordChatAuth): RootMeta {
   const meta = session.metadata
   if (!record(meta) || meta.type !== "word-chat" || meta.document !== auth.grant.document_id || session.directory !== auth.matter.dir || session.parentID)
@@ -188,7 +192,10 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
       rootMeta(root, auth)
     }
     const turns = await Promise.all((await children(auth, root.id)).slice(-50).map(child => readTurn(auth, root.id, child)))
-    return { conversation: conversation(root, auth), turns }
+    const first = turns.find(turn => turn.kind !== "suggestions")
+    const item = conversation(root, auth)
+    if (first && untitled(root, auth)) item.title = conversationTitle(first.text)
+    return { conversation: item, turns }
   })
   route("materials", async (c, auth) => {
     const input = await body(c)
@@ -252,6 +259,12 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
       const nextMeta: TurnMeta = { type: "word-chat-turn", document: auth.grant.document_id, input, ...evidence, fingerprint, prompt, kind }
       const child = await api(auth, "/api/session", "POST", { parentID: root.id, id: `ses_word_${wordChatHash(`${root.id}:${input.requestId}`).slice(0, 40)}`, title: input.text.slice(0, 100) || "Word suggestions", agent: "word-chat", model: modelRef(selectedModel()), permissions: DENY_TOOLS, metadata: nextMeta }) as NativeSession
       turnMeta(child, auth, root.id)
+      if (kind !== "suggestions" && untitled(root, auth)) {
+        const first = prior.map(child => turnMeta(child, auth, root.id)).find(turn => turn.kind !== "suggestions")
+        // Use the first actual question as the native session's title. Naming
+        // must never prevent an admitted message from reaching the model.
+        await api(auth, `/api/session/${encodeURIComponent(root.id)}`, "PATCH", { title: conversationTitle(first?.input.text ?? input.text) }).catch(() => {})
+      }
       if (kind === "suggestions") await prepareSuggestionBatches(auth, child, nextMeta)
       else await submit(auth, child.id, nextMeta)
       return { turn: await readTurn(auth, root.id, await session(auth, child.id)) }

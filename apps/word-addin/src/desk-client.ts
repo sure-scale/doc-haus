@@ -16,6 +16,8 @@ export function deskRequestHandler(
     throw new Error("A doc.haus browser origin is required.")
   const matterUrl = new URL(`/matter/${encodeURIComponent(link.matter)}?view=documents`, browser.origin).href
   return async (input) => {
+    if (input.action === "chat-materials" || input.action === "chat-attach" || input.action === "chat-upload")
+      throw new DeskRequestError("Open Attach from the chat to choose material.")
     if (input.action === "selection") return captureSelection()
     if (input.action === "show") {
       await showSelection(input.selection)

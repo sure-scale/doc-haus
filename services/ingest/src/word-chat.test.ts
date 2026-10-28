@@ -103,6 +103,20 @@ test("document-only cannot inherit matter evidence; explicit attachment delibera
   expect(prompts.at(-1)).toContain("DISTINCTIVE_EVIDENCE is a blue agreement.")
   expect((await send(id, "document", "Explain this", crypto.randomUUID(), [{ ...source, hash: "0".repeat(64) }])).status).toBe(409)
 })
+test("conversation history uses its first question instead of repeating the document filename", async () => {
+  const id = await newConversation()
+  expect(sessions.get(id)?.title).toBe("Word · Draft.docx")
+  expect((await send(id, "document", "Explain\n  the delivery clause")).status).toBe(200)
+  expect(sessions.get(id)?.title).toBe("Explain the delivery clause")
+  expect((await send(id, "document", "What needs clarification?")).status).toBe(200)
+  expect(sessions.get(id)?.title).toBe("Explain the delivery clause")
+  const list = await (await post("conversations")).json() as { conversations: { id: string; title: string }[] }
+  expect(list.conversations.find(item => item.id === id)?.title).toBe("Explain the delivery clause")
+  // Earlier conversations receive a useful display label without a history migration.
+  sessions.get(id)!.title = "Word · Draft.docx"
+  const opened = await (await post("conversation", { conversationId: id })).json() as { conversation: { title: string } }
+  expect(opened.conversation.title).toBe("Explain the delivery clause")
+})
 test("native root and child ownership refuse another document; invented citations never reach the answer", async () => {
   const id = await newConversation()
   const old = auth

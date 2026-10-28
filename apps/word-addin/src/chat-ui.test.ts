@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { Window } from "happy-dom"
 import { mountWordChat, type ChatHost } from "./chat-ui"
 import { ChatRequestError, type WordChatApi, type ChatAction } from "./chat-client"
+import { chatPreferencesKey } from "./chat-preferences"
 import type { WordChatSend, WordChatTurn } from "../../../dochaus/lib/word-chat-contract"
 import type { WordChatProposal, WordChatSnapshot, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 
@@ -9,8 +10,9 @@ const passage: WordChatTarget = { id: "target-one", text: "Payment within 14 day
 const context: WordChatSnapshot = { text: passage.text, paragraphs: passage.paragraphs, saved: false, capturedAt: passage.capturedAt, truncated: false }
 const proposal: WordChatProposal = { id: "proposal-one", documentId: "document-one", before: passage.text, after: "Payment within 30 days.", explanation: "A longer payment period.", openItems: ["Confirm the intended period."], target: passage, createdAt: passage.capturedAt }
 function turn(input: Partial<WordChatTurn> = {}): WordChatTurn { return { id: "turn-one", conversationId: "conversation-one", requestId: "request-one", kind: "chat", scope: "document", text: "Explain payment", answer: "Payment is due in 14 days.", status: "complete", sources: [], attachments: [], createdAt: 1, ...input } }
-function fixture(overrides: { request?: (action: ChatAction, input: object) => Promise<unknown>; upload?: (conversationId: string, file: File, mode: "request" | "matter") => Promise<unknown>; turns?: WordChatTurn[]; host?: Partial<ChatHost> } = {}) {
+function fixture(overrides: { request?: (action: ChatAction, input: object) => Promise<unknown>; upload?: (conversationId: string, file: File, mode: "request" | "matter") => Promise<unknown>; turns?: WordChatTurn[]; host?: Partial<ChatHost>; storage?: Pick<Storage, "getItem" | "setItem"> } = {}) {
   const page = new Window({ url: "https://localhost:4612/word-addin/pane.html" })
+  if (overrides.storage) Object.defineProperty(page, "localStorage", { configurable: true, value: overrides.storage })
   const previous = ["window", "document"].map(key => Object.getOwnPropertyDescriptor(globalThis, key))
   Object.defineProperty(globalThis, "window", { configurable: true, value: page }); Object.defineProperty(globalThis, "document", { configurable: true, value: page.document })
   const root = page.document.createElement("section") as unknown as HTMLElement; page.document.body.append(root as never)
@@ -43,7 +45,7 @@ test("settings and attachments retain typed text and exact optional selected con
     await f.chat.ready
     expect(f.get("settings").hidden).toBe(true); expect(f.get("materials").hidden).toBe(true)
     const message = f.get<HTMLTextAreaElement>("message"); message.value = "Explain this wording"
-    f.click("selection"); await Bun.sleep(0); f.click("settings-toggle"); expect(f.get("settings").hidden).toBe(false)
+    f.click("settings-toggle"); expect(f.get("settings").hidden).toBe(false)
     f.click("attach"); expect(f.get("settings").hidden).toBe(true); expect(f.get("materials").hidden).toBe(false)
     f.click("materials-close"); expect(message.value).toBe("Explain this wording")
     expect(f.get("chips").textContent).toContain(passage.text)
@@ -84,7 +86,7 @@ test("Existing and Upload attachment tabs support keyboard focus and retain the 
   const f = fixture({ request: async action => action === "materials" ? { materials: [source], matterName: "Synthetic matter", documentName: "Draft.docx" } : undefined,
     upload: async (conversationId, file, mode) => { uploads.push({ conversationId, file: file.name, mode }); return { material: uploaded } } })
   try {
-    await f.chat.ready; f.click("selection"); await Bun.sleep(0)
+    await f.chat.ready
     f.get<HTMLTextAreaElement>("message").value = "Keep this question"
     f.click("attach")
     const existing = f.get<HTMLButtonElement>("material-existing-tab"), upload = f.get<HTMLButtonElement>("material-upload-tab")
@@ -181,7 +183,7 @@ test("pending Apply fences cached proposal and conversation actions; success cle
     capture: async () => ({ ...structuredClone(context), text: changed ? proposal.after : proposal.before }),
   } })
   try {
-    await f.chat.ready; f.click("selection"); await Bun.sleep(0)
+    await f.chat.ready
     const actions = [...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")]
     actions.find(button => button.textContent === "Refine")!.click()
     expect(f.get("chips").textContent).toContain("Refining amendment")
@@ -189,7 +191,7 @@ test("pending Apply fences cached proposal and conversation actions; success cle
     actions.find(button => button.textContent === "Apply")!.click()
     expect(actions.every(button => button.disabled)).toBe(true)
     expect(f.get<HTMLButtonElement>("new").disabled).toBe(true)
-    expect(f.get<HTMLSelectElement>("conversation").disabled).toBe(true)
+    expect(f.get<HTMLButtonElement>("conversation").disabled).toBe(true)
     for (const action of actions.filter(button => button.textContent === "Decline" || button.textContent === "Refine"))
       action.dispatchEvent(new f.page.MouseEvent("click", { bubbles: true }) as unknown as Event)
     f.click("new")
@@ -212,9 +214,9 @@ test("Send freezes selected context and scope before asynchronous Word capture c
   const captured = new Promise<WordChatSnapshot>(resolve => { finish = resolve })
   const f = fixture({ host: { capture: async () => captured } })
   try {
-    await f.chat.ready; f.click("selection"); await Bun.sleep(0)
+    await f.chat.ready
     await f.send("Explain this passage")
-    const scope = f.get<HTMLSelectElement>("scope"); scope.value = "matter"; scope.dispatchEvent(new f.page.Event("change") as unknown as Event)
+    f.click("scope-matter")
     f.root.querySelector<HTMLButtonElement>('[aria-label="Remove Selected Word text"]')!.click()
     f.get<HTMLTextAreaElement>("message").value = "A new draft while waiting"
     finish(structuredClone(context)); await Bun.sleep(0)
@@ -229,7 +231,7 @@ test("a late selection capture cannot restore the pre-Apply target", async () =>
   const captured = new Promise<WordChatTarget>(resolve => { finish = resolve })
   const f = fixture({ turns: [turn({ kind: "amendment", proposal })], host: { captureSelection: async () => captured } })
   try {
-    await f.chat.ready; f.click("selection")
+    await f.chat.ready
     const apply = [...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(button => button.textContent === "Apply")!
     apply.click()
     await Bun.sleep(0); finish(structuredClone(passage)); await Bun.sleep(0)
@@ -242,7 +244,7 @@ test("verified document replacement clears stale Word context and pauses ideas w
   const material = { kind: "source" as const, id: "source-one", hash: "a".repeat(64), name: "Supporting notes.docx", provenance: "saved-version" as const }
   const f = fixture({ turns: [turn({ kind: "amendment", proposal })], request: async action => action === "materials" ? { materials: [material], matterName: "Synthetic matter", documentName: "Draft.docx" } : action === "suggest" ? { turn: turn({ id: "idea-one", kind: "suggestions", status: "running", answer: "" }) } : undefined })
   try {
-    await f.chat.ready; f.click("selection"); await Bun.sleep(0)
+    await f.chat.ready
     f.click("attach"); f.get("material-list").querySelector<HTMLButtonElement>("button")!.click()
     const refine = [...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(button => button.textContent === "Refine")!
     refine.click()
@@ -255,7 +257,7 @@ test("verified document replacement clears stale Word context and pauses ideas w
     expect(f.get("chips").textContent).toContain(material.name)
     expect(message.value).toBe("Keep my question"); expect(f.page.document.activeElement).toBe(message as never)
     expect(f.get("history").textContent).toContain(proposal.after)
-    expect(enabled.checked).toBe(false); expect(f.get("suggestions").hidden).toBe(true)
+    expect(enabled.checked).toBe(true); expect(f.get("suggestions").hidden).toBe(true)
     expect(f.calls.some(call => call.action === "cancel")).toBe(true)
     const count = f.calls.filter(call => call.action === "suggest").length
     await f.advance(60_000)
@@ -263,7 +265,7 @@ test("verified document replacement clears stale Word context and pauses ideas w
   } finally { f.restore() }
 })
 
-test("suggestions require opt-in and stable context; scope changes cancel preparation while Send remains available", async () => {
+test("suggestions are on by default and wait for stable context; scope changes cancel preparation while Send remains available", async () => {
   const f = fixture({ request: async action => action === "suggest" ? { turn: turn({ kind: "suggestions", status: "running", answer: "" }) } : undefined })
   try {
     await f.chat.ready; await f.advance(5_000)
@@ -272,7 +274,7 @@ test("suggestions require opt-in and stable context; scope changes cancel prepar
     await f.advance(2_000); expect(f.calls.some(call => call.action === "suggest")).toBe(false)
     await f.advance(4_000); expect(f.calls.filter(call => call.action === "suggest")).toHaveLength(1)
     expect(f.root.querySelector(".chat-skeleton")).not.toBeNull()
-    const scope = f.get<HTMLSelectElement>("scope"); scope.value = "matter"; scope.dispatchEvent(new f.page.Event("change") as unknown as Event)
+    f.click("scope-matter")
     expect(f.root.querySelector(".chat-skeleton")).toBeNull(); expect(f.calls.some(call => call.action === "cancel")).toBe(true)
     f.click("pause"); expect(f.get("suggestions").hidden).toBe(true)
     await f.send("A foreground question still works"); expect(f.calls.some(call => call.action === "send")).toBe(true)
@@ -286,5 +288,183 @@ test("a lost suggestion reply does not automatically submit unchanged work under
     const enabled = f.get<HTMLInputElement>("proactive"); enabled.checked = true; enabled.dispatchEvent(new f.page.Event("change") as unknown as Event)
     await f.advance(2_000); await f.advance(4_000); await f.advance(50_000); await f.advance(50_000)
     expect(f.calls.filter(call => call.action === "suggest")).toHaveLength(1)
+  } finally { f.restore() }
+})
+
+test("empty chats show three usable prompts immediately; contextual ideas fill the draft directly and supplement fewer than three", async () => {
+  const idea = { title: "Clarify the payment period", explanation: "Discuss how the payment wording operates.", passage: passage.text }
+  const f = fixture({ request: async action => action === "suggest" ? { turn: turn({ id: "ideas", kind: "suggestions", suggestions: [idea], suggestionCoverage: { reviewed: 1, total: 3 } }) } : undefined })
+  try {
+    await f.chat.ready
+    expect(f.get<HTMLInputElement>("proactive").checked).toBe(true)
+    expect(f.root.querySelectorAll(".chat-empty .chat-starter")).toHaveLength(3)
+    const message = f.get<HTMLTextAreaElement>("message"); message.value = "My existing draft"
+    f.root.querySelector<HTMLButtonElement>(".chat-starter")!.click()
+    expect(message.value).toStartWith("My existing draft\n\n"); expect(message.value).toContain("Summarise")
+    expect(f.calls.some(call => call.action === "send" || call.action === "suggest")).toBe(false)
+    await f.send("A first question"); expect(f.root.querySelector(".chat-empty")).toBeNull()
+    f.click("new"); await Bun.sleep(0)
+    expect(f.root.querySelectorAll(".chat-empty .chat-starter")).toHaveLength(3)
+    await f.advance(2_000); await f.advance(4_000)
+    const prompts = f.root.querySelectorAll<HTMLButtonElement>(".chat-empty .chat-starter")
+    expect(prompts).toHaveLength(3); expect(prompts[0]!.textContent).toBe(idea.title)
+    expect(f.root.querySelector(".chat-empty")!.textContent).toContain("1 of 3 passage groups")
+    const before = f.calls.length; message.value = "Keep this thought"; prompts[0]!.click()
+    expect(message.value).toStartWith("Keep this thought\n\n"); expect(message.value).toContain(idea.explanation)
+    expect(f.calls).toHaveLength(before); expect(f.root.querySelector(".chat-idea")).toBeNull()
+    const enabled = f.get<HTMLInputElement>("proactive"); enabled.checked = false; enabled.dispatchEvent(new f.page.Event("change") as unknown as Event)
+    expect(f.root.querySelector<HTMLElement>(".chat-empty-prompts")!.hidden).toBe(true)
+  } finally { f.restore() }
+})
+
+test("saved defaults stay separate from live scope and pause; storage contains preferences alone across documents", async () => {
+  const values = new Map<string, string>(), storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) } }
+  let f = fixture({ storage })
+  try {
+    await f.chat.ready; f.click("scope-matter")
+    expect(f.get("scope-matter").getAttribute("aria-pressed")).toBe("true"); expect(values.size).toBe(0)
+    f.get<HTMLTextAreaElement>("message").value = "Private draft should never enter preferences"
+    f.click("new"); await Bun.sleep(0)
+    expect(f.get("scope-document").getAttribute("aria-pressed")).toBe("true")
+    const scope = f.get<HTMLSelectElement>("default-scope"); scope.value = "matter"; scope.dispatchEvent(new f.page.Event("change") as unknown as Event)
+    expect(f.get("scope-document").getAttribute("aria-pressed")).toBe("true")
+    const target = f.get<HTMLSelectElement>("target"); target.value = "selection"; target.dispatchEvent(new f.page.Event("change") as unknown as Event)
+    f.click("pause-setting")
+    expect(f.get<HTMLInputElement>("proactive").checked).toBe(true); expect(f.get("resume").hidden).toBe(false)
+    expect(f.root.querySelector<HTMLElement>(".chat-empty-prompts")!.hidden).toBe(true)
+    expect(JSON.parse(values.get(chatPreferencesKey)!)).toEqual({ scope: "matter", suggestions: true, target: "selection" })
+    expect([...values.keys()]).toEqual([chatPreferencesKey]); expect(values.get(chatPreferencesKey)).not.toContain("Private draft")
+    f.click("new"); await Bun.sleep(0)
+    expect(f.get("scope-matter").getAttribute("aria-pressed")).toBe("true")
+    expect(f.root.querySelector<HTMLElement>(".chat-empty-prompts")!.hidden).toBe(false)
+    expect(f.get<HTMLTextAreaElement>("message").value).toBe("Private draft should never enter preferences")
+    f.restore(); f = fixture({ storage, host: { documentName: "Another.docx" } }); await f.chat.ready
+    expect(f.get("scope-matter").getAttribute("aria-pressed")).toBe("true"); expect(f.get<HTMLSelectElement>("target").value).toBe("selection")
+    const enabled = f.get<HTMLInputElement>("proactive"); enabled.checked = false; enabled.dispatchEvent(new f.page.Event("change") as unknown as Event)
+    f.restore(); f = fixture({ storage }); await f.chat.ready
+    expect(f.get<HTMLInputElement>("proactive").checked).toBe(false)
+    expect(f.root.querySelector<HTMLElement>(".chat-empty-prompts")!.hidden).toBe(true)
+    f.restore(); f = fixture({ storage: { getItem() { throw new Error("Unavailable") }, setItem() { throw new Error("Unavailable") } } }); await f.chat.ready
+    expect(f.get<HTMLInputElement>("proactive").checked).toBe(true)
+    f.get<HTMLSelectElement>("default-scope").dispatchEvent(new f.page.Event("change") as unknown as Event)
+    expect(f.get("scope-document").getAttribute("aria-pressed")).toBe("true")
+  } finally { f.restore() }
+})
+
+test("selection watching debounces and fences Send, ignores incidental IDs, preserves pane-focus selection and permits deliberate reselection", async () => {
+  let selected: WordChatTarget | undefined = structuredClone(passage), changed = () => {}, captures = 0, stopped = 0
+  const f = fixture({ host: { captureSelection: async () => { captures++; return selected && structuredClone(selected) }, watchSelection(callback) { changed = callback; return () => { stopped++ } } } })
+  try {
+    await f.chat.ready; expect(captures).toBe(1); expect(f.get("chips").textContent).toContain(passage.text)
+    Object.defineProperty(f.page.document, "hasFocus", { configurable: true, value: () => true })
+    selected = { ...passage, id: "new-random-capture", capturedAt: "2026-10-29T12:00:00Z" }
+    changed(); changed(); await f.advance(199); expect(captures).toBe(1)
+    await f.send("Explain this exact selection"); expect(f.calls.some(call => call.action === "send")).toBe(false)
+    expect(f.get<HTMLButtonElement>("send").disabled).toBe(true)
+    await f.advance(1); expect(captures).toBe(2)
+    await f.send("Explain this exact selection")
+    expect((f.calls.find(call => call.action === "send")!.input as WordChatSend).context.selection?.id).toBe(passage.id)
+    selected = undefined; changed(); await f.advance(200)
+    expect(f.get("chips").textContent).toContain(passage.text)
+    f.root.querySelector<HTMLButtonElement>('[aria-label="Remove Selected Word text"]')!.click()
+    selected = { ...passage, id: "another-capture" }; changed(); await f.advance(200)
+    expect(f.get("chips").textContent).not.toContain("Selected Word text")
+    selected = undefined; changed(); await f.advance(200)
+    selected = passage; changed(); await f.advance(200)
+    expect(f.get("chips").textContent).not.toContain("Selected Word text")
+    Object.defineProperty(f.page.document, "hasFocus", { value: () => false })
+    selected = undefined; changed(); await f.advance(200)
+    selected = passage; changed(); await f.advance(200)
+    expect(f.get("chips").textContent).toContain(passage.text)
+  } finally { f.restore() }
+  expect(stopped).toBe(1)
+})
+
+test("late selection captures cannot restore replaced context or change a pinned refinement", async () => {
+  let changed = () => {}, finish!: (value: WordChatTarget) => void, pending = false
+  const waiting = new Promise<WordChatTarget>(done => { finish = done })
+  const f = fixture({ turns: [turn({ kind: "amendment", proposal })], host: { captureSelection: async () => pending ? waiting : structuredClone(passage), watchSelection(callback) { changed = callback; return () => {} } } })
+  try {
+    await f.chat.ready; pending = true; changed(); await f.advance(200)
+    f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")[0]!.click()
+    finish({ ...passage, id: "late-capture" }); await Bun.sleep(0)
+    expect(f.get("chips").textContent).toContain("Refining amendment")
+    await f.send("Keep the meaning but simplify it")
+    const sent = f.calls.find(call => call.action === "send")!.input as WordChatSend
+    expect(sent.proposal).toEqual(proposal); expect(sent.context.selection).toEqual(proposal.target)
+    f.chat.resetDocumentContext(); changed(); await f.advance(200); await Bun.sleep(0)
+    expect(f.get("chips").textContent).not.toContain("Selected Word text")
+    expect(f.get("chips").textContent).not.toContain("Refining amendment")
+    expect(f.get<HTMLTextAreaElement>("message").placeholder).toBe("Ask doc.haus…")
+  } finally { finish(passage); f.restore() }
+})
+
+test("fresh buffer validation blocks stale selected text even when the old wording remains elsewhere", async () => {
+  const changed = { ...context, text: `Payment within 30 days.\n${passage.text}`, paragraphs: [{ id: "paragraph-one", text: "Payment within 30 days." }, { id: "paragraph-two", text: passage.text }] }
+  const f = fixture({ host: { capture: async () => structuredClone(changed) } })
+  try {
+    await f.chat.ready; await f.send("Explain my selected text")
+    expect(f.calls.some(call => call.action === "send")).toBe(false)
+    expect(f.get("activity").textContent).toContain("Selected text changed")
+    expect(f.get<HTMLTextAreaElement>("message").value).toBe("Explain my selected text")
+    const target = f.get<HTMLSelectElement>("target"); target.value = "selection"; target.dispatchEvent(new f.page.Event("change") as unknown as Event)
+    await f.advance(2_000); await f.advance(4_000)
+    expect(f.calls.some(call => call.action === "suggest")).toBe(false)
+    expect(f.get("chips").textContent).not.toContain("Selected Word text")
+    await f.send("Explain my selected text")
+    expect((f.calls.find(call => call.action === "send")!.input as WordChatSend).context.selection).toBeUndefined()
+  } finally { f.restore() }
+})
+
+test("floating attachments bind to one conversation until close, reject late callbacks and fall back inline on unsupported hosts", async () => {
+  let options!: Parameters<NonNullable<ChatHost["openAttachments"]>>[0], close!: () => void
+  const waiting = new Promise<void>(done => { close = done })
+  const material = { kind: "source" as const, id: "notes", hash: "a".repeat(64), name: "Supporting notes.docx", provenance: "saved-version" as const }
+  const f = fixture({ host: { openAttachments: async input => { options = input; await waiting } } })
+  try {
+    await f.chat.ready; f.click("attach")
+    expect(options.conversationId).toBe("conversation-one"); expect(options.attached).toEqual([])
+    expect(f.get("materials").hidden).toBe(true)
+    expect(f.get<HTMLButtonElement>("new").disabled).toBe(true); expect(f.get<HTMLButtonElement>("conversation").disabled).toBe(true)
+    const before = f.calls.filter(call => call.action === "conversation").length
+    f.get("new").dispatchEvent(new f.page.MouseEvent("click", { bubbles: true }) as unknown as Event)
+    await f.send("Preserve my draft")
+    expect(f.calls.filter(call => call.action === "conversation")).toHaveLength(before)
+    expect(f.calls.some(call => call.action === "send")).toBe(false)
+    options.onAttach(material); options.onAttach(material)
+    expect([...f.root.querySelectorAll(".chat-chip summary")].filter(row => row.textContent === material.name)).toHaveLength(1)
+    close(); await Bun.sleep(0)
+    options.onAttach({ ...material, id: "late", name: "Late result.docx" })
+    expect(f.get("chips").textContent).not.toContain("Late result")
+    expect(f.get<HTMLTextAreaElement>("message").value).toBe("Preserve my draft")
+    expect(f.get<HTMLButtonElement>("new").disabled).toBe(false)
+  } finally { close(); f.restore() }
+  const fallback = fixture({ host: { openAttachments: async () => { throw new Error("Unsupported") } } })
+  try {
+    await fallback.chat.ready; fallback.click("attach"); await Bun.sleep(0)
+    expect(fallback.get("materials").hidden).toBe(false); expect(fallback.get("activity").textContent).toContain("Choose material here")
+  } finally { fallback.restore() }
+})
+
+test("the conversation picker distinguishes dates, refreshes derived titles and keeps the draft while switching", async () => {
+  const one = { id: "conversation-one", title: "Repeated question", documentName: "Draft.docx", updatedAt: 1_000 }
+  const two = { ...one, id: "conversation-two", updatedAt: 100_000 }
+  const third = { ...one, id: "conversation-three", title: "Word · Draft.docx" }
+  const f = fixture({ request: async (action, input) => action === "conversations" ? { conversations: [one, two] } : action === "conversation" ? (input as { conversationId?: string }).conversationId === one.id ? { conversation: { ...one, title: "Derived first question" }, turns: [] } : (input as { conversationId?: string }).conversationId === two.id ? { conversation: two, turns: [turn({ scope: "matter", conversationId: two.id })] } : { conversation: third, turns: [] } : undefined })
+  try {
+    await f.chat.ready; f.get<HTMLTextAreaElement>("message").value = "Keep the next question"; f.click("conversation")
+    const choices = f.get("conversation-list").querySelectorAll<HTMLButtonElement>("button")
+    expect(choices).toHaveLength(2); expect(choices[0]!.textContent).toContain("Derived first question")
+    expect(choices[0]!.getAttribute("aria-current")).toBe("true")
+    expect(choices[0]!.querySelector("small")!.textContent).not.toBe(choices[1]!.querySelector("small")!.textContent)
+    choices[1]!.click(); await Bun.sleep(0)
+    expect(f.get("conversations").hidden).toBe(true); expect(f.get("scope-matter").getAttribute("aria-pressed")).toBe("true")
+    expect(f.get<HTMLTextAreaElement>("message").value).toBe("Keep the next question")
+    f.click("new"); await Bun.sleep(0); expect(f.get("scope-document").getAttribute("aria-pressed")).toBe("true")
+    await f.send("A meaningful\n first question"); f.click("conversation")
+    expect(f.get("conversation-list").querySelector('[aria-current="true"]')!.textContent).toContain("A meaningful first question")
+    f.get("conversations").dispatchEvent(new f.page.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event)
+    expect(f.get("conversations").hidden).toBe(true); expect(f.page.document.activeElement === f.get("conversation") as never).toBe(true)
+    expect(f.root.querySelector('select[data-chat="conversation"]')).toBeNull()
   } finally { f.restore() }
 })
