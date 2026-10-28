@@ -1,4 +1,5 @@
 import type { WordChatAuthoredAmendment, WordChatSnapshot, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { wordChatApplyPlan } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { capturedWordChatParagraphs, reviewedWordChatArtifact, sameWordChatOoxml, sameImportedWordChat } from "./word-chat-host-ooxml"
 import { DOMParser } from "@xmldom/xmldom"
 
@@ -279,14 +280,9 @@ export class WordChatHost {
 
   private async applyOnce(input: WordChatApplyInput, identity: string): Promise<WordChatApplyResult> {
     try {
-      const beforeParts = input.target.text.split("\r"), afterParts = input.replacement.split("\r")
-      if (beforeParts.length !== afterParts.length || beforeParts.length !== input.target.paragraphs.length || /\n/.test(input.replacement))
-        throw new WordChatHostError("This proposal changes paragraph structure. Refine it to preserve the paragraph breaks, or apply the structural change directly in Word.")
-      const expected = input.target.paragraphs.map((paragraph, index) => {
-        const start = index === 0 ? input.target.startOffset : 0
-        const end = index === input.target.paragraphs.length - 1 ? input.target.endOffset : paragraph.text.length
-        return paragraph.text.slice(0, start) + afterParts[index]! + paragraph.text.slice(end)
-      })
+      const afterParts = input.replacement.split("\r"), plan = wordChatApplyPlan(input.target, input.replacement)
+      if (!plan.supported) throw new WordChatHostError(plan.reason)
+      const expected = plan.paragraphs
       const snapshot = await this.word.run(context => this.importSnapshot(context, input.target))
       // Shared Docxodus authoring is read-only. No Office proxy or canonical
       // write is kept pending while that service authors the reviewed result.
@@ -323,15 +319,18 @@ export class WordChatHost {
         changes.load("items/author,items/type,items/text")
         await context.sync()
         const ids = all.items.map(p => p.uniqueLocalId)
-        let confirmed = ids.length === fresh.ids.length && ids.every((id, index) => index >= fresh.index && index < fresh.index + expected.length || id === fresh.ids[index])
-        const actual = all.items.slice(fresh.index, fresh.index + expected.length).map(paragraph => {
+        const physicalCount = authoredChanges.length, delta = physicalCount - input.target.paragraphs.length
+        let confirmed = ids.length === fresh.ids.length + delta && ids.every((id, index) =>
+          index >= fresh.index && index < fresh.index + physicalCount || id === fresh.ids[index < fresh.index ? index : index - delta])
+        const actual = all.items.slice(fresh.index, fresh.index + physicalCount).map(paragraph => {
           const content = paragraph.getRange("Content"), changes = content.getTrackedChanges()
           changes.load("items/author,items/type,items/text")
           return { text: content.getReviewedText("Current"), changes }
         })
-        const importedParagraphs = all.items.slice(fresh.index, fresh.index + expected.length)
-        const importedXml = importedParagraphs.length === expected.length
-          ? importedParagraphs[0]!.getRange("Content").expandTo(importedParagraphs.at(-1)!.getRange("Content")).getOoxml() : undefined
+        const importedParagraphs = all.items.slice(fresh.index, fresh.index + physicalCount)
+        const importedRange = importedParagraphs.length === physicalCount
+          ? importedParagraphs[0]!.getRange("Content").expandTo(importedParagraphs.at(-1)!.getRange("Content")) : undefined
+        const importedXml = importedRange?.getOoxml(), importedText = importedRange?.getReviewedText("Current")
         await context.sync()
         const signature = (change: TrackedChange) => JSON.stringify([change.author, change.type, change.text])
         const prior = new Map<string, number>()
@@ -343,9 +342,15 @@ export class WordChatHost {
         })
         const matches = (observed: TrackedChange[], wanted: TrackedChange[]) => {
           if (observed.some(change => change.author !== "doc.haus" || !["Added", "Deleted"].includes(change.type))) return false
-          return ["Added", "Deleted"].every(type => observed.filter(change => change.type === type).map(change => change.text).join("") === wanted.filter(change => change.type === type).map(change => change.text).join(""))
+          // Word may group a paragraph mark with its text or expose it as an
+          // empty text revision. Exact structural marks/authors are separately
+          // verified in the freshly exported OOXML, in both document views.
+          const words = (changes: TrackedChange[], type: string) => changes.filter(change => change.type === type).map(change => change.text).join("")
+          const native = (value: string) => plan.structure ? value.replace(/\r/g, "") : value
+          return ["Added", "Deleted"].every(type => native(words(observed, type)) === native(words(wanted, type)))
         }
-        confirmed &&= ![...prior.values()].some(Boolean) && matches(added, authored.revisions) && actual.length === expected.length && actual.every((item, index) => item.text.value === expected[index] && matches(item.changes.items, authoredChanges[index]!))
+        confirmed &&= ![...prior.values()].some(Boolean) && matches(added, authored.revisions) && importedText?.value === expected.join("\r") &&
+          (Boolean(plan.structure) || actual.every((item, index) => item.text.value === expected[index] && matches(item.changes.items, authoredChanges[index]!)))
         try { confirmed &&= Boolean(importedXml && sameImportedWordChat(authored.ooxml, importedXml.value)) }
         catch { confirmed = false }
         if (!confirmed) throw new WordChatHostError("Word has imported the amendment, but could not confirm its wording and tracked markup. Inspect it and use Undo if needed. Do not apply this proposal again.")
@@ -353,7 +358,7 @@ export class WordChatHost {
         // This scope comes only from the verified import, never the cursor.
         // The old model context and remembered authority describe the original
         // wording; they must not be inherited by its changed replacement.
-        const target: WordChatTarget | undefined = input.replacement.trim() ? {
+        const target: WordChatTarget | undefined = input.replacement.trim() && actual.length === expected.length && actual.every((item, index) => item.text.value === expected[index]) ? {
           id: crypto.randomUUID(), text: input.replacement,
           paragraphs: actual.map((item, index) => ({ id: ids[fresh.index + index]!, text: item.text.value })),
           startOffset: input.target.startOffset,

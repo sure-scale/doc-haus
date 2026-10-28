@@ -39,6 +39,37 @@ export type WordChatAuthoredAmendment = {
  * uses CR; soft line breaks remain their distinct native U+000B character. */
 export const wordChatParagraphBreaks = (text: string) => text.replace(/\r\n|\n/g, "\r")
 
+export type WordChatApplyPlan = { supported: true; paragraphs: string[];
+  structure?: { kind: "insert" | "delete"; retained: { before: number; after: number }[] } } | { supported: false; reason: string }
+
+/** The scoped Word import ends before the existing final paragraph mark. Keep
+ * that paragraph intact for structural changes; otherwise rejecting a revision
+ * could join the clause to unrelated text after the approved passage. */
+export function wordChatApplyPlan(target: WordChatTarget, replacement: string): WordChatApplyPlan {
+  const unsupported = { supported: false as const, reason: "This change needs paragraph restructuring. Refine it into smaller changes, or make it directly in Word." }
+  if (/\n/.test(replacement) || !target.paragraphs.length) return unsupported
+  const before = target.paragraphs.map(p => p.text)
+  const paragraphs = (before[0]!.slice(0, target.startOffset) + replacement + before.at(-1)!.slice(target.endOffset)).split("\r")
+  if (paragraphs.length > 64) return { supported: false, reason: "Refine this change to use at most 64 paragraphs." }
+  if (paragraphs.length === before.length) return { supported: true, paragraphs }
+  if (before.at(-1) !== paragraphs.at(-1) || before.some(p => !p.length) || paragraphs.some(p => !p.length || /[\t\v]/.test(p))) return unsupported
+  const insert = paragraphs.length > before.length, shorter = insert ? before : paragraphs, longer = insert ? paragraphs : before
+  // Count exact ordered alignments, pinning the unchanged final paragraph. A
+  // repeated paragraph must not silently become the one that is removed.
+  const paths = Array.from({ length: shorter.length }, (_, i) => Array<number>(longer.length).fill(i === shorter.length - 1 ? 1 : 0))
+  for (let i = shorter.length - 2; i >= 0; i--) for (let j = longer.length - 2; j >= 0; j--)
+    paths[i]![j] = Math.min(2, paths[i]![j + 1]! + (shorter[i] === longer[j] ? paths[i + 1]![j + 1]! : 0))
+  if (paths[0]![0] !== 1) return unsupported
+  const retained: { before: number; after: number }[] = []
+  let at = 0
+  for (let i = 0; i < shorter.length; i++) {
+    if (i === shorter.length - 1) at = longer.length - 1
+    else while (at < longer.length - 1 && !(shorter[i] === longer[at] && paths[i + 1]![at + 1])) at++
+    retained.push(insert ? { before: i, after: at } : { before: at, after: i }); at++
+  }
+  return { supported: true, paragraphs, structure: { kind: insert ? "insert" : "delete", retained } }
+}
+
 /** A retained selection must still name the same adjacent native paragraphs,
  * not merely words that happen to survive elsewhere in the document. */
 export function wordChatTargetCurrent(snapshot: WordChatSnapshot, target: WordChatTarget): boolean {

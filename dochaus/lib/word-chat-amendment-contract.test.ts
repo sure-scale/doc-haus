@@ -1,9 +1,23 @@
 import { expect, test } from "bun:test"
-import { targetWordChatAmendment, wordChatParagraphBreaks, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
+import { targetWordChatAmendment, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
 
 const snapshot = (): WordChatSnapshot => ({text: "Pay within thirty days.\rPay within thirty days.",
   paragraphs: [{id:"first",text:"Pay within thirty days."},{id:"second",text:"Pay within thirty days."}],
   saved:false,capturedAt:"2026-01-01T00:00:00Z",truncated:false})
+
+test("structural eligibility pins exact whole paragraphs and keeps the final import boundary", () => {
+  const value = snapshot()
+  value.paragraphs[1]!.text = "An unchanged qualification."
+  const target = targetWordChatAmendment(value, value.paragraphs.map(p => p.text).join("\r"))!
+  expect(wordChatApplyPlan(target, "A working note.\r" + target.text)).toEqual({ supported: true,
+    paragraphs: ["A working note.", ...target.paragraphs.map(p => p.text)], structure: { kind: "insert", retained: [{ before: 0, after: 1 }, { before: 1, after: 2 }] } })
+  expect(wordChatApplyPlan(target, target.paragraphs[1]!.text)).toMatchObject({ supported: true, structure: { kind: "delete", retained: [{ before: 1, after: 0 }] } })
+  expect(wordChatApplyPlan(target, target.text + "\rA trailing note.").supported).toBe(false)
+  expect(wordChatApplyPlan(target, "Pay within\rthirty days.\rAn unchanged qualification.").supported).toBe(false)
+  const repeated = { ...target, paragraphs: [target.paragraphs[0]!, target.paragraphs[0]!, target.paragraphs[1]!], text: "Pay within thirty days.\rPay within thirty days.\rAn unchanged qualification." }
+  expect(wordChatApplyPlan(repeated, target.text).supported).toBe(false)
+  expect(wordChatApplyPlan({ ...target, startOffset: 4, text: target.text.slice(4) }, "A working note.\r" + target.text.slice(4)).supported).toBe(false)
+})
 
 test("retained selection rejects stale native paragraphs even when its old words remain elsewhere", () => {
   const value = snapshot()

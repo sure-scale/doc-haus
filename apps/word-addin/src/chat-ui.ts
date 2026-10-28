@@ -1,6 +1,6 @@
 import type { WordChatConversation, WordChatConversationResult, WordChatMaterials, WordChatMaterial, WordChatScope, WordChatSend, WordChatTurn, WordChatSuggestion, WordChatSource } from "../../../dochaus/lib/word-chat-contract"
 import type { WordChatProposal, WordChatSnapshot, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { wordChatTargetCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { wordChatApplyPlan, wordChatTargetCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { ChatRequestError, type WordChatApi } from "./chat-client"
 import { readChatPreferences, writeChatPreferences } from "./chat-preferences"
 
@@ -95,6 +95,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   let suggestionKey = "", stableKey = "", stableAt = 0, lastSuggestion = -Infinity, lastMaterials = 0
   let cancelMonitor: (() => void) | undefined, cancelPoll: (() => void) | undefined, monitorBusy = false
   const dismissed = new Set<string>(), applied = new Set<string>(), declined = new Set<string>()
+  const proposalErrors = new Map<string, string>()
   const nodes = new Map<string, { stamp: string; node: HTMLElement }>()
   get("document").textContent = host.documentName
 
@@ -103,6 +104,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     activity.textContent = text; activity.dataset.error = String(error)
   }
   const suggestionsEnabled = () => proactive.checked && !suggestionsPaused
+  const reviewingAmendment = () => turns.some(turn => turn.status === "complete" && turn.proposal && !applied.has(turn.proposal.id) && !declined.has(turn.proposal.id))
   const conversationLocked = () => connecting || sending || applying || uploading || pickerOpen || Boolean(pending) || foreground?.status === "running"
   function savePreferences() {
     writeChatPreferences(storage, { scope: defaultScope, suggestions: proactive.checked, target: target.value === "selection" ? "selection" : "document" })
@@ -273,6 +275,10 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     }
     if (applied.has(proposal.id)) { card.append(line("p", "Applied in Word as tracked changes. Choose Save to publish it to the matter.", "chat-local-note")); return card }
     if (declined.has(proposal.id)) { card.append(line("p", "Declined. Your document is unchanged.", "chat-message-meta")); return card }
+    const error = proposalErrors.get(proposal.id)
+    if (error) { const note = line("p", error, "chat-proposal-error"); note.setAttribute("role", "alert"); card.append(note) }
+    const plan = wordChatApplyPlan(proposal.target, proposal.after)
+    if (!plan.supported) card.append(line("p", plan.reason, "chat-proposal-limit"))
     const actions = document.createElement("div"); actions.className = "chat-proposal-actions"
     const refine = document.createElement("button"); refine.type = "button"; refine.className = "chat-subtle"; refine.textContent = "Refine"
     refine.disabled = applying
@@ -284,7 +290,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       try {
         await host.apply(proposal, { conversationId: turn.conversationId, turnId: turn.id })
         if (disposed) return
-        applied.add(proposal.id)
+        applied.add(proposal.id); proposalErrors.delete(proposal.id)
         const affected = new Set(proposal.target.paragraphs.map(paragraph => paragraph.id))
         if (selection && selection.paragraphs.some(paragraph => affected.has(paragraph.id))) clearSelection()
         if (refinement?.id === proposal.id || refinement?.target.paragraphs.some(paragraph => affected.has(paragraph.id))) {
@@ -292,13 +298,19 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
         }
         renderChips(); status("Applied in Word. Save when you’re ready."); invalidateSuggestions(); renderTurns()
       }
-      catch (error) { status(error instanceof Error ? error.message : "Word could not apply this amendment. Refresh it before trying again.", true) }
+      catch (error) {
+        if (disposed) return
+        proposalErrors.set(proposal.id, error instanceof Error ? error.message : "Word could not apply this change. Refine it and try again.")
+        status(); renderTurns()
+      }
       finally { applying = false; if (!disposed) apply.disabled = false; controls() }
     }
     const decline = document.createElement("button"); decline.type = "button"; decline.className = "chat-subtle"; decline.textContent = "Decline"
     decline.disabled = applying
-    decline.onclick = () => { if (applying) return; declined.add(proposal.id); if (refinement?.id === proposal.id) { refinement = undefined; renderChips() }; renderTurns() }
-    actions.append(refine, apply, decline); card.append(actions); return card
+    decline.onclick = () => { if (applying) return; declined.add(proposal.id); proposalErrors.delete(proposal.id); if (refinement?.id === proposal.id) { refinement = undefined; renderChips() }; renderTurns() }
+    actions.append(refine)
+    if (plan.supported) actions.append(apply)
+    actions.append(decline); card.append(actions); return card
   }
   function renderTurns(forceScroll = false) {
     if (disposed) return
@@ -314,7 +326,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     }
     for (const turn of visible) {
       const proposal = turn.status === "complete" ? turn.proposal as WordChatProposal | undefined : undefined
-      const stamp = JSON.stringify([turn, proposal && applied.has(proposal.id), proposal && declined.has(proposal.id)])
+      const stamp = JSON.stringify([turn, proposal && applied.has(proposal.id), proposal && declined.has(proposal.id), proposal && proposalErrors.get(proposal.id)])
       let cached = nodes.get(turn.id)
       if (cached?.stamp === stamp) continue
       const wrapper = document.createElement("div"); wrapper.dataset.turn = turn.id
@@ -488,7 +500,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
         }
       }
     }
-    area.hidden = !suggestionsEnabled() || history.hidden || !suggestion || Boolean(empty && suggestion.status !== "running")
+    area.hidden = !suggestionsEnabled() || reviewingAmendment() || history.hidden || !suggestion || Boolean(empty && suggestion.status !== "running")
     if (!suggestionsEnabled()) return
     content.replaceChildren()
     if (suggestion?.status === "running") {
@@ -529,7 +541,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (disposed) return
     const epoch = suggestionEpoch
     try {
-      if (!suggestionsEnabled() || !conversation || sending || foreground?.status === "running" || connecting || applying || pickerOpen || uploading || monitorBusy) return
+      if (!suggestionsEnabled() || reviewingAmendment() || !conversation || sending || foreground?.status === "running" || connecting || applying || pickerOpen || uploading || monitorBusy) return
       monitorBusy = true
       if (now() - lastMaterials > 30_000) await refreshMaterials()
       const context = await host.capture(false)

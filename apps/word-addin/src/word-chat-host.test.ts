@@ -1,15 +1,24 @@
 import { expect, test } from "bun:test"
 import { WordChatHost, type WordChatContext, type WordChatWord, type WordChatApplyInput } from "./word-chat-host"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
-import type { WordChatAuthoredAmendment } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatAuthoredAmendment, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { wordChanges } from "../../../dochaus/lib/word-changes"
+
+// This integration uses the real Bun/shared writer without pulling its server
+// dependencies and ES2024 library requirements into the browser's type graph.
+async function authorWordChatTarget(ooxml: string, target: WordChatTarget, replacement: string) {
+  const writer = await import(new URL("../../../dochaus/lib/docx-flat-opc.ts", import.meta.url).href) as {
+    authorWordChatTarget(xml: string, target: WordChatTarget, replacement: string): Promise<Omit<WordChatAuthoredAmendment, "proposalId">>
+  }
+  return writer.authorWordChatTarget(ooxml, target, replacement)
+}
 
 const WORD_XML = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const PACKAGE_XML = "http://schemas.microsoft.com/office/2006/xmlPackage"
 // Minimal reviewed synthetic shape of actual Mac Word Range.getOoxml(): even
 // one ordinary word exports Flat OPC with a final body-level section layout.
 const escapeXml = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
-const flatOpc = (content: string, extra = "") => `<pkg:package xmlns:pkg="${PACKAGE_XML}" xmlns:w="${WORD_XML}"><pkg:part pkg:name="/word/document.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"><pkg:xmlData><w:document><w:body>${content}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document></pkg:xmlData></pkg:part>${extra}</pkg:package>`
+const flatOpc = (content: string, extra = "") => `<pkg:package xmlns:pkg="${PACKAGE_XML}" xmlns:w="${WORD_XML}"><pkg:part pkg:name="/_rels/.rels" pkg:contentType="application/vnd.openxmlformats-package.relationships+xml"><pkg:xmlData><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/document.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"><pkg:xmlData><w:document><w:body>${content}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document></pkg:xmlData></pkg:part>${extra}</pkg:package>`
 
 /** A text-position Office host model: selections and paragraph ranges are real
  * offsets, searches return every occurrence, and writes execute only on sync. */
@@ -80,16 +89,20 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
         const doc = new DOMParser().parseFromString(xml, "application/xml")
         const blocks = Array.from(doc.getElementsByTagNameNS(WORD_XML, "body")[0]!.childNodes).filter((n): n is Element => n.nodeType === 1 && (n as Element).localName === "p")
         const owners = state.paragraphs.filter(p => { const at = position(p.id); return this.start <= at.start && at.end <= this.end })
-        if (owners.length !== blocks.length) throw new Error("Cannot replace paragraph structure")
         const start = this.start, end = this.end, before = this.text
         const current = (node: Node): string => {
           const element = node as Element
-          if (element.nodeType !== 1 || element.localName === "del") return ""
+          if (element.nodeType !== 1 || ["del", "pPr", "rPr"].includes(element.localName)) return ""
           if (element.localName === "t") return element.textContent || ""
+          if (element.localName === "tab") return "\t"
+          if (["br", "cr"].includes(element.localName)) return "\v"
           return Array.from(element.childNodes).map(current).join("")
         }
         const texts = blocks.map(current), replacement = texts.join("\r")
-        for (const [index, owner] of owners.entries()) {
+        const imported = blocks.map((_, index) => owners[index] ?? { id: `new-${state.writes.length}-${index}`, text: "" })
+        const at = state.paragraphs.indexOf(owners[0]!)
+        state.paragraphs.splice(at, owners.length, ...imported)
+        for (const [index, owner] of imported.entries()) {
           owner.text = state.corruptWrite && index === 0 ? "WRONG" : texts[index]!
           if (state.renewImportedIds) owner.id = `imported-${owner.id}`
           state.paragraphXml.set(owner.id, new XMLSerializer().serializeToString(blocks[index]!))
@@ -99,10 +112,11 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
         for (const kind of ["comments", "revisions"] as const) state[kind] = state[kind].map(([a, b]) => a >= end ? [a + delta, b + delta] : [a, b])
         for (const revision of state.nativeRevisions) if (revision.start >= end) { revision.start += delta; revision.end += delta }
         if (!state.omitNewRevisions) for (const [index, block] of blocks.entries()) {
-          let at = position(owners[index]!.id).start
+          let at = position(imported[index]!.id).start
           const visit = (node: Node) => {
             const element = node as Element
             if (element.nodeType !== 1) return
+            if (["pPr", "rPr"].includes(element.localName)) return
             if (["ins", "del"].includes(element.localName)) {
               const added = element.localName === "ins"
               const wording = Array.from(element.getElementsByTagNameNS(WORD_XML, added ? "t" : "delText")).map(n => n.textContent).join("")
@@ -114,6 +128,8 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
             for (const child of Array.from(element.childNodes)) visit(child)
           }
           visit(block)
+          const mark = Array.from(block.getElementsByTagNameNS(WORD_XML, "pPr")[0]?.getElementsByTagNameNS(WORD_XML, "rPr")[0]?.childNodes ?? []).find(n => n.nodeType === 1 && ["ins", "del"].includes((n as Element).localName)) as Element | undefined
+          if (mark) state.nativeRevisions.push({ start: at, end: at + 1, author: mark.getAttributeNS(WORD_XML, "author") || "", type: mark.localName === "ins" ? "Added" : "Deleted", text: "\r" })
         }
         state.saved = false
         if (state.driftInsertedRanges) { result.start = 0; result.end = text().length }
@@ -121,7 +137,11 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       return result
     }
     getOoxml() { return { value: !state.writes.length && state.xml !== undefined ? state.xml : flatOpc(this.paragraphs.items.map(p => state.paragraphXml.get(p.uniqueLocalId) ?? `<w:p><w:r><w:t xml:space="preserve">${escapeXml(p.text)}</w:t></w:r></w:p>`).join("")) } }
-    getReviewedText() { return { value: this.text } }
+    getReviewedText() {
+      const paragraphs = state.paragraphs.filter(p => { const at = position(p.id); return this.start <= at.start && at.end <= this.end })
+      const complete = paragraphs.length && position(paragraphs[0]!.id).start === this.start && position(paragraphs.at(-1)!.id).end === this.end
+      return { value: complete ? paragraphs.filter(p => !/<w:pPr>[\s\S]*?<w:rPr>[\s\S]*?<w:del\b/.test(state.paragraphXml.get(p.id) ?? "")).map(p => p.text).join("\r") : this.text }
+    }
     getComments() { return collection(state.comments.filter(([start, end]) => intersects(this.start, this.end, start, end))) }
     getTrackedChanges() {
       return collection([
@@ -268,6 +288,54 @@ test("multiline authored markup uses one scoped import and restores TrackMineOnl
   expect(state.writes[0]!.text).toBe(text())
   expect(state.modeChanges).toEqual(["Off", "TrackMineOnly"])
   expect(state.tracking).toBe("TrackMineOnly")
+})
+
+test("real shared authoring imports reviewed whole-paragraph insertion/removal without touching outside unsaved text", async () => {
+  for (const kind of ["insert", "delete"] as const) {
+    const texts = ["Unsaved preceding clause.", "Working note Tuesday.", "Unrelated BLUE FERN.", "Unsaved following clause."]
+    const { state, host, word } = office(texts)
+    state.selection = [texts[0]!.length + 1, texts.slice(0, 3).join("\r").length]
+    state.tracking = "TrackAll"
+    const selected = (await host.selection())!, originalXml = '<w:p><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="7"/></w:numPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>Working note Tuesday.</w:t></w:r></w:p>'
+    state.paragraphXml.set("paragraph-1", originalXml)
+    const replacement = kind === "insert" ? "Working notes — non-operative — retain, move or delete:\r" + selected.text : texts[2]!
+    const author: WordChatApplyInput["author"] = async snapshot => {
+      const authored = await authorWordChatTarget(snapshot.ooxml, selected, replacement)
+      // A cursor move and unrelated edits during preparation do not retarget
+      // the reviewed clause or get replaced by an older whole document.
+      state.selection = [0, 5]
+      state.paragraphs[3]!.text += " Local drafting."
+      return { ...authored, proposalId: kind }
+    }
+    const result = await host.apply({ proposalId: kind, target: selected, replacement, author })
+    expect(result.status).toBe("applied")
+    expect(state.writes).toHaveLength(1)
+    expect(state.writes[0]!.before).toBe(selected.text)
+    expect(state.tracking).toBe("TrackAll")
+    const current = await word.run(async context => context.document.body.getRange().getReviewedText("Current").value)
+    expect(current).toBe(texts[0] + "\r" + replacement + "\r" + texts[3] + " Local drafting.")
+    expect(state.paragraphs[0]!.id).toBe("paragraph-0")
+    expect(state.paragraphs.at(-1)!.id).toBe("paragraph-3")
+    expect(state.nativeRevisions.every(change => change.author === "doc.haus")).toBe(true)
+    expect(state.nativeRevisions.some(change => change.text === "\r" && change.type === (kind === "insert" ? "Added" : "Deleted"))).toBe(true)
+    expect([...state.paragraphXml.values()].some(xml => xml.includes('<w:ilvl w:val="1"') && xml.includes("<w:b"))).toBe(true)
+    expect(state.saved).toBe(false)
+    await host.apply({ proposalId: kind, target: selected, replacement, author })
+    expect(state.writes).toHaveLength(1)
+  }
+})
+
+test("structural import still refuses a formatting race before native mutation", async () => {
+  const { state, host } = office(["Working note Tuesday.", "Unrelated BLUE FERN."])
+  state.selection = [0, state.paragraphs.map(p => p.text).join("\r").length]
+  const target = (await host.selection())!, replacement = "A non-operative heading:\r" + target.text
+  const author: WordChatApplyInput["author"] = async snapshot => {
+    const authored = await authorWordChatTarget(snapshot.ooxml, target, replacement)
+    state.paragraphXml.set("paragraph-0", '<w:p><w:pPr><w:spacing w:after="240"/></w:pPr><w:r><w:t>Working note Tuesday.</w:t></w:r></w:p>')
+    return { ...authored, proposalId: "format-race" }
+  }
+  await expect(host.apply({ proposalId: "format-race", target, replacement, author })).rejects.toThrow("formatting changed")
+  expect(state.writes).toHaveLength(0)
 })
 
 test("fresh paragraph proof confirms multiline edits despite returned insertion-range drift", async () => {
@@ -437,7 +505,7 @@ test("comments and revisions anywhere in imported paragraphs refuse; siblings re
 test("changed paragraph structure and field objects are disclosed before mutation", async () => {
   const { state, host } = office()
   const target = (await host.selection())!
-  await expect(host.apply({ proposalId: "structure", target, replacement: target.text + "\rA new paragraph." })).rejects.toThrow("paragraph structure")
+  await expect(host.apply({ proposalId: "structure", target, replacement: target.text + "\rA new paragraph." })).rejects.toThrow("paragraph restructuring")
   state.xml = `<w:p xmlns:w="${WORD_XML}"><w:fldSimple/></w:p>`
   await expect(host.apply({ proposalId: "field", target, replacement: target.text.replace("clear", "specific") })).rejects.toThrow("linked Word object")
   expect(state.writes).toHaveLength(0)

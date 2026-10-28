@@ -1,6 +1,7 @@
 import type { PaneState } from "./sync"
 import { savePresentation } from "./pane-presentation"
 import { WORD_LAUNCH_URL, loopbackWordOrigin } from "./bootstrap-contract"
+import { setupPaneLayout } from "./pane-layout"
 
 function update<T, K extends keyof T>(target: T, key: K, value: T[K]): void {
   if (target[key] !== value) target[key] = value
@@ -19,6 +20,7 @@ export function configureConnectionRecovery(document: Document, origin: string) 
 
 /** Update only changed DOM values; importing this module never starts Office. */
 export function createPaneRenderer(document: Document) {
+  setupPaneLayout(document)
   const element = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
   const badge = element("status"), message = element("message")
   const save = element<HTMLButtonElement>("save")

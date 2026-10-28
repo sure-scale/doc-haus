@@ -109,15 +109,38 @@ function paragraphView(paragraph: Element, version: "Current" | "Original") {
   visit(paragraph)
   const marks = [...bookmarks.values()]
   if (marks.some(mark => mark.end === undefined) || new Set(marks.map(mark => mark.name)).size !== marks.length) throw new Error("Incomplete clause bookmark")
-  return { properties: canonical(elements(paragraph).find(node => node.namespaceURI === W && node.localName === "pPr") ?? nullNode) ?? null, runs,
+  const properties = elements(paragraph).find(node => node.namespaceURI === W && node.localName === "pPr")?.cloneNode(true) as Element | undefined
+  if (properties) {
+    const run = elements(properties).find(node => node.namespaceURI === W && node.localName === "rPr")
+    if (run) {
+      for (const mark of elements(run)) if (mark.namespaceURI === W && ["ins", "del"].includes(mark.localName)) run.removeChild(mark)
+      if (!elements(run).length && !run.attributes.length) properties.removeChild(run)
+    }
+  }
+  return { properties: canonical(properties && (elements(properties).length || properties.attributes.length) ? properties : nullNode) ?? null, runs,
     bookmarks: marks.sort((a, b) => a.name.localeCompare(b.name)) }
 }
 const nullNode = { nodeType: 0 } as Node
+function paragraphMark(paragraph: Element) {
+  const properties = elements(paragraph).find(node => node.namespaceURI === W && node.localName === "pPr")
+  const run = properties && elements(properties).find(node => node.namespaceURI === W && node.localName === "rPr")
+  const marks = run ? elements(run).filter(node => node.namespaceURI === W && ["ins", "del"].includes(node.localName)) : []
+  if (marks.length > 1) throw new Error("Ambiguous paragraph revision")
+  return marks[0]
+}
 function clauseView(xml: string, version: "Current" | "Original") {
-  return content(parse(xml), true, true).nodes.map(node => paragraphView(node, version))
+  return content(parse(xml), true, true).nodes.filter(node => {
+    const mark = paragraphMark(node)
+    if (mark?.localName !== (version === "Current" ? "del" : "ins")) return true
+    if (text(node, version)) throw new Error("Only complete paragraph insertions and deletions are supported")
+    return false
+  }).map(node => paragraphView(node, version))
 }
 export function sameImportedWordChat(authored: string, observed: string): boolean {
-  return JSON.stringify(clauseView(authored, "Current")) === JSON.stringify(clauseView(observed, "Current"))
+  const marks = (xml: string) => content(parse(xml), true, true).nodes.map(paragraphMark).filter((mark): mark is Element => Boolean(mark))
+    .map(mark => [mark.localName, mark.getAttributeNS(W, "author")])
+  return ["Current", "Original"].every(version => JSON.stringify(clauseView(authored, version as "Current" | "Original")) === JSON.stringify(clauseView(observed, version as "Current" | "Original"))) &&
+    JSON.stringify(marks(authored)) === JSON.stringify(marks(observed))
 }
 
 /** Compare the complete target and every dependency actually imported. Word's
@@ -144,15 +167,17 @@ export function sameWordChatOoxml(before: string, current: string, delivered: st
 export function reviewedWordChatArtifact(artifact: WordChatAuthoredAmendment, proposalId: string, target: WordChatTarget, expected: string[], captured?: string) {
   if (!artifact || artifact.proposalId !== proposalId || artifact.author !== "doc.haus" || !Array.isArray(artifact.paragraphs) || JSON.stringify(artifact.paragraphs) !== JSON.stringify(expected) || !Array.isArray(artifact.revisions)) throw new Error("The authored amendment differs from the reviewed wording")
   const paragraphs = content(parse(artifact.ooxml), false, false).nodes
-  if (paragraphs.length !== expected.length) throw new Error("The authored amendment changes paragraph structure")
+  const current = clauseView(artifact.ooxml, "Current"), original = clauseView(artifact.ooxml, "Original")
+  if (current.length !== expected.length || original.length !== target.paragraphs.length ||
+    JSON.stringify(current.map(p => p.runs.map(r => r.text).join(""))) !== JSON.stringify(expected) ||
+    JSON.stringify(original.map(p => p.runs.map(r => r.text).join(""))) !== JSON.stringify(target.paragraphs.map(p => p.text)))
+    throw new Error("The authored amendment differs from the reviewed passage")
   if (captured && JSON.stringify(clauseView(captured, "Original")) !== JSON.stringify(clauseView(artifact.ooxml, "Original"))) throw new Error("The authored amendment changes original formatting or bookmark anchors")
   const revisions: Array<Array<{ author: string; type: "Added" | "Deleted"; text: string }>> = []
+  let offset = 0
+  const start = target.startOffset, end = target.paragraphs.slice(0, -1).reduce((at, p) => at + p.text.length + 1, 0) + target.endOffset
   for (const [index, paragraph] of paragraphs.entries()) {
-    if (text(paragraph) !== expected[index] || text(paragraph, "Original") !== target.paragraphs[index]!.text) throw new Error("The authored amendment differs from the reviewed passage")
     const changes: typeof revisions[number] = []
-    let offset = 0
-    const start = index === 0 ? target.startOffset : 0
-    const end = index === paragraphs.length - 1 ? target.endOffset : target.paragraphs[index]!.text.length
     const visit = (node: Element) => {
       if (node.namespaceURI === W && ["pPr", "rPr"].includes(node.localName)) return
       if (node.namespaceURI === W && ["ins", "del"].includes(node.localName)) {
@@ -166,6 +191,14 @@ export function reviewedWordChatArtifact(artifact: WordChatAuthoredAmendment, pr
       for (const child of elements(node)) visit(child)
     }
     visit(paragraph)
+    const mark = paragraphMark(paragraph)
+    if (mark) {
+      const added = mark.localName === "ins"
+      if (index === paragraphs.length - 1 || mark.getAttributeNS(W, "author") !== "doc.haus" || offset < start || offset + (added ? 0 : 1) > end)
+        throw new Error("The paragraph revision exceeds the approved selection")
+      changes.push({ author: "doc.haus", type: added ? "Added" : "Deleted", text: "\r" })
+    }
+    if (index < paragraphs.length - 1 && mark?.localName !== "ins") offset++
     revisions.push(changes)
   }
   const signature = (changes: typeof artifact.revisions) => JSON.stringify(changes.map(change => [change.author, change.type, change.text]))

@@ -250,7 +250,7 @@ test("verified document replacement clears stale Word context and pauses ideas w
     refine.click()
     const enabled = f.get<HTMLInputElement>("proactive"); enabled.checked = true; enabled.dispatchEvent(new f.page.Event("change") as unknown as Event)
     await f.advance(2_000); await f.advance(4_000)
-    expect(f.root.querySelector(".chat-skeleton")).not.toBeNull()
+    expect(f.root.querySelector(".chat-skeleton")).toBeNull()
     const message = f.get<HTMLTextAreaElement>("message"); message.value = "Keep my question"; message.focus()
     f.chat.resetDocumentContext()
     expect(f.get("chips").textContent).not.toContain("Selected Word text"); expect(f.get("chips").textContent).not.toContain("Refining amendment")
@@ -258,7 +258,7 @@ test("verified document replacement clears stale Word context and pauses ideas w
     expect(message.value).toBe("Keep my question"); expect(f.page.document.activeElement).toBe(message as never)
     expect(f.get("history").textContent).toContain(proposal.after)
     expect(enabled.checked).toBe(true); expect(f.get("suggestions").hidden).toBe(true)
-    expect(f.calls.some(call => call.action === "cancel")).toBe(true)
+    expect(f.calls.some(call => call.action === "suggest")).toBe(false)
     const count = f.calls.filter(call => call.action === "suggest").length
     await f.advance(60_000)
     expect(f.calls.filter(call => call.action === "suggest")).toHaveLength(count)
@@ -466,5 +466,52 @@ test("the conversation picker distinguishes dates, refreshes derived titles and 
     f.get("conversations").dispatchEvent(new f.page.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event)
     expect(f.get("conversations").hidden).toBe(true); expect(f.page.document.activeElement === f.get("conversation") as never).toBe(true)
     expect(f.root.querySelector('select[data-chat="conversation"]')).toBeNull()
+  } finally { f.restore() }
+})
+
+test("Apply errors stay beside the retained review without a duplicate composer banner or competing suggestions", async () => {
+  const error = `This change needs a clearer paragraph boundary. ${"Synthetic-long-detail-".repeat(30)}`
+  const f = fixture({ turns: [turn({ kind: "amendment", proposal })], host: { apply: async () => { throw new Error(error) } },
+    request: async action => action === "suggest" ? { turn: turn({ id: "ideas-after-review", kind: "suggestions", status: "running" }) } : undefined })
+  try {
+    await f.chat.ready
+    const actions = () => [...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")]
+    actions().find(button => button.textContent === "Refine")!.click()
+    const message = f.get<HTMLTextAreaElement>("message"); message.value = "Keep this refinement draft"
+    actions().find(button => button.textContent === "Apply")!.click(); await Bun.sleep(0)
+    const note = f.root.querySelector(".chat-proposal-error")!
+    expect(note.textContent).toBe(error); expect(note.getAttribute("role")).toBe("alert")
+    expect(f.get("activity").textContent).toBe("")
+    expect(f.root.textContent!.split(error)).toHaveLength(2)
+    expect(f.root.querySelector(".chat-proposal")!.textContent).toContain(proposal.before)
+    expect(f.root.querySelector(".chat-proposal")!.textContent).toContain(proposal.after)
+    expect(f.get("chips").textContent).toContain("Refining amendment")
+    expect(message.value).toBe("Keep this refinement draft")
+    expect(actions().every(button => !button.disabled)).toBe(true)
+    await f.advance(2_000); await f.advance(4_000)
+    expect(f.get("suggestions").hidden).toBe(true); expect(f.calls.some(call => call.action === "suggest")).toBe(false)
+    actions().find(button => button.textContent === "Decline")!.click()
+    expect(f.root.querySelector(".chat-proposal-error")).toBeNull()
+    await f.advance(2_000); await f.advance(4_000)
+    expect(f.calls.filter(call => call.action === "suggest")).toHaveLength(1)
+  } finally { f.restore() }
+})
+
+test("unsupported paragraph splits keep the full review and Refine action without offering an Apply that must fail", async () => {
+  let applied = false
+  const unsupported = { ...proposal, after: "Payment is due.\nWithin the agreed period." }
+  const f = fixture({ turns: [turn({ kind: "amendment", proposal: unsupported })], host: { apply: async () => { applied = true } } })
+  try {
+    await f.chat.ready
+    const card = f.root.querySelector(".chat-proposal")!
+    expect(card.textContent).toContain(unsupported.after)
+    expect(card.querySelector(".chat-proposal-limit")!.textContent).toContain("Refine")
+    const actions = [...card.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")]
+    expect(actions.map(button => button.textContent)).toEqual(["Refine", "Decline"])
+    const message = f.get<HTMLTextAreaElement>("message"); message.value = "Keep my current draft"
+    actions[0]!.click()
+    expect(message.value).toBe("Keep my current draft"); expect(message.placeholder).toBe("How should this change?")
+    expect(f.get("chips").textContent).toContain("Refining amendment")
+    expect(applied).toBe(false)
   } finally { f.restore() }
 })

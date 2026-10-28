@@ -2,6 +2,8 @@ import path from "node:path"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { applyDocxParagraphEdits, createDocxRevision, type DocxParagraphEdit } from "./docx-amendments"
+import { docxodus } from "./docxodus"
+import { wordChatApplyPlan } from "./word-chat-amendment-contract"
 import type { WordChatAuthoredAmendment, WordChatTarget } from "./word-chat-amendment-contract"
 
 const PKG = "http://schemas.microsoft.com/office/2006/xmlPackage"
@@ -138,6 +140,36 @@ function paragraphText(paragraph: Element): string {
   return text(paragraph)
 }
 
+function paragraphMark(paragraph: Element) {
+  const properties = children(paragraph).find(p => p.namespaceURI === W && p.localName === "pPr")
+  const run = properties && children(properties).find(p => p.namespaceURI === W && p.localName === "rPr")
+  return run && children(run).find(p => p.namespaceURI === W && ["ins", "del"].includes(p.localName))
+}
+
+async function authorParagraphStructure(bytes: Uint8Array, texts: string[], expected: string[], structure: NonNullable<Extract<ReturnType<typeof wordChatApplyPlan>, { supported: true }>["structure"]>) {
+  const dx = await docxodus(), session = dx.openDocxSession(bytes, { smartQuotes: false, persistAnchorIds: false, trackedChanges: "render_inline", revisionAuthor: AUTHOR })
+  try {
+    const matches = session.grep("^[\\s\\S]*$", { scope: dx.ProjectionScopes.Body, whitespace: 0 })
+    require(JSON.stringify(matches.map(match => match.text)) === JSON.stringify(texts), "word_snapshot_changed")
+    if (structure.kind === "insert") {
+      const kept = new Set(structure.retained.map(p => p.after))
+      for (let index = 0; index < expected.length; index++) if (!kept.has(index)) {
+        const next = structure.retained.find(p => p.after > index)
+        require(next)
+        // The mutation API consumes Markdown. Escape syntax so the reviewed
+        // wording, including punctuation, is inserted as ordinary literal text.
+        const literal = expected[index]!.replace(/([\\`*_[\]{}()#+.!>|~\-])/g, "\\$1")
+        require(session.insertParagraph(matches[next.before]!.enclosingAnchor.id, "before", literal).success)
+      }
+    } else {
+      const kept = new Set(structure.retained.map(p => p.before))
+      for (let index = 0; index < texts.length; index++) if (!kept.has(index))
+        require(session.deleteBlock(matches[index]!.enclosingAnchor.id).success)
+    }
+    return session.save()
+  } finally { session.close() }
+}
+
 function importFlatOpc(parts: Record<string, Uint8Array>, originalTypes: Map<string, string>) {
   const contentTypes = parse(strFromU8(parts["[Content_Types].xml"]!))
   const typeFor = (name: string) => all(contentTypes, CT, "Override").find(e => e.getAttribute("PartName") === `/${name}`)?.getAttribute("ContentType")
@@ -193,7 +225,8 @@ export async function authorWordChatTarget(ooxml: string, target: WordChatTarget
   const source = packageFromFlatOpc(ooxml), doc = parse(strFromU8(source.parts[MAIN]!)), { body, paragraphs } = bodyParagraphs(doc, true)
   const texts = paragraphs.map(paragraphText), proposed = replacement.split("\r")
   require(JSON.stringify(texts) === JSON.stringify(target.paragraphs.map(p => p.text)), "word_snapshot_changed")
-  require(proposed.length === texts.length && !replacement.includes("\n"))
+  const plan = wordChatApplyPlan(target, replacement)
+  require(plan.supported)
   require(Number.isSafeInteger(target.startOffset) && Number.isSafeInteger(target.endOffset) && target.startOffset >= 0 && target.endOffset >= 0 &&
     target.startOffset <= texts[0]!.length && target.endOffset <= texts.at(-1)!.length && (texts.length > 1 || target.endOffset >= target.startOffset), "word_snapshot_changed")
   const spans = texts.map((text, i) => ({ start: i === 0 ? target.startOffset : 0, end: i === texts.length - 1 ? target.endOffset : text.length }))
@@ -206,12 +239,12 @@ export async function authorWordChatTarget(ooxml: string, target: WordChatTarget
   source.parts[MAIN] = strToU8(serializer.serializeToString(doc))
   const bytes = zipSync(source.parts, { mtime: new Date(1980, 0, 1) })
   const options = { pendingRevisions: "layer" as const, revisionAuthor: AUTHOR, ownAuthors: [AUTHOR] }
-  const revision = await createDocxRevision(bytes, options), projected = revision.paragraphs.filter(p => p.scope === "body")
+  const revision = plan.structure ? undefined : await createDocxRevision(bytes, options), projected = revision?.paragraphs.filter(p => p.scope === "body") ?? []
   const nonempty = texts.filter(text => text.replace(/[\v\t]/g, "").length)
-  require(JSON.stringify(projected.map(p => p.text)) === JSON.stringify(nonempty.map(text => text.replace(/[\v\t]/g, ""))), "word_snapshot_changed")
-  const edits: DocxParagraphEdit[] = [], expected = texts.map((text, i) => text.slice(0, spans[i]!.start) + proposed[i]! + text.slice(spans[i]!.end))
+  if (!plan.structure) require(JSON.stringify(projected.map(p => p.text)) === JSON.stringify(nonempty.map(text => text.replace(/[\v\t]/g, ""))), "word_snapshot_changed")
+  const edits: DocxParagraphEdit[] = [], expected = plan.paragraphs
   let ordinal = 0
-  texts.forEach((text, i) => {
+  if (!plan.structure) texts.forEach((text, i) => {
     const paragraph = text.replace(/[\v\t]/g, "") ? projected[ordinal++] : undefined, { start, end } = spans[i]!
     const before = text.slice(start, end), after = proposed[i]!
     if (before === after) return
@@ -232,12 +265,15 @@ export async function authorWordChatTarget(ooxml: string, target: WordChatTarget
       at += piece.length
     })
   })
-  require(edits.length > 0)
-  const amended = await applyDocxParagraphEdits(bytes, edits, undefined, options), outputParts = unzipSync(amended.bytes)
+  require(plan.structure || edits.length > 0)
+  const amended = plan.structure ? await authorParagraphStructure(bytes, texts, expected, plan.structure)
+    : (await applyDocxParagraphEdits(bytes, edits, undefined, options)).bytes
+  const outputParts = unzipSync(amended)
   const outputDoc = parse(strFromU8(outputParts[MAIN]!)), output = bodyParagraphs(outputDoc, false).paragraphs
+  const current = output.filter(p => paragraphMark(p)?.localName !== "del")
   // Current text excludes deletions. Keep native soft breaks/tabs in the result.
   for (const deletion of all(outputDoc, W, "del")) deletion.parentNode!.removeChild(deletion)
-  require(JSON.stringify(output.map(paragraphText)) === JSON.stringify(expected), "word_snapshot_changed")
+  require(JSON.stringify(current.map(paragraphText)) === JSON.stringify(expected), "word_snapshot_changed")
   const authored = parse(strFromU8(outputParts[MAIN]!)), revisions: WordChatAuthoredAmendment["revisions"] = []
   for (const p of bodyParagraphs(authored, false).paragraphs) {
     const visit = (node: Element) => {
@@ -245,9 +281,11 @@ export async function authorWordChatTarget(ooxml: string, target: WordChatTarget
         const added = node.localName === "ins", author = node.getAttributeNS(W, "author") ?? ""
         require(author === AUTHOR)
         revisions.push({ type: added ? "Added" : "Deleted", author, text: all(node, W, added ? "t" : "delText").map(t => t.textContent ?? "").join("") })
-      } else children(node).forEach(visit)
+      } else if (!(node.namespaceURI === W && ["pPr", "rPr"].includes(node.localName))) children(node).forEach(visit)
     }
     visit(p)
+    const mark = paragraphMark(p)
+    if (mark) { require(mark.getAttributeNS(W, "author") === AUTHOR); revisions.push({ type: mark.localName === "ins" ? "Added" : "Deleted", author: AUTHOR, text: "\r" }) }
   }
   require(revisions.length > 0)
   return { ooxml: importFlatOpc(outputParts, source.types), paragraphs: expected, revisions, author: AUTHOR }

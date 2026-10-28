@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { DOMParser } from "@xmldom/xmldom"
 import { authorWordChatTarget, MAX_WORD_AMENDMENT_OOXML_BYTES } from "./docx-flat-opc"
 import type { WordChatTarget } from "./word-chat-amendment-contract"
+import { reviewedWordChatArtifact, sameImportedWordChat } from "../../apps/word-addin/src/word-chat-host-ooxml"
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const PKG = "http://schemas.microsoft.com/office/2006/xmlPackage"
@@ -39,6 +40,40 @@ test("same-count multiline authoring preserves outside selected prefixes/suffixe
   expect(result.revisions.every(r => r.author === "doc.haus")).toBe(true)
   expect(result.revisions.map(r => r.text).join(" ")).not.toContain("Keep this paragraph")
   expect(parsed(result.ooxml).getElementsByTagNameNS(W, "p")).toHaveLength(3)
+})
+
+test("reviewed paragraph insertion and deletion use shared tracked authoring with original numbering and runs intact", async () => {
+  const texts = ["Working note Tuesday.", "Unrelated BLUE FERN."], note = "Working notes — non-operative — retain, move or delete:"
+  const body = '<w:p><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="7"/></w:numPr><w:spacing w:after="120"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>Working note Tuesday.</w:t></w:r></w:p>' + paragraph(texts[1]!)
+  const xml = flat(body), selected = target(texts), inserted = await authorWordChatTarget(xml, selected, note + "\r" + selected.text)
+  expect(inserted.paragraphs).toEqual([note, ...texts])
+  expect(inserted.revisions).toEqual([{ type: "Added", author: "doc.haus", text: note }, { type: "Added", author: "doc.haus", text: "\r" }])
+  const authored = { ...inserted, proposalId: "add-note" }
+  expect(reviewedWordChatArtifact(authored, "add-note", selected, inserted.paragraphs, xml)).toHaveLength(3)
+  expect(sameImportedWordChat(inserted.ooxml, inserted.ooxml)).toBe(true)
+  const doc = parsed(inserted.ooxml)
+  expect(doc.getElementsByTagNameNS(W, "ilvl")[0]!.getAttributeNS(W, "val")).toBe("1")
+  expect(doc.getElementsByTagNameNS(W, "numId")[0]!.getAttributeNS(W, "val")).toBe("7")
+  expect(doc.getElementsByTagNameNS(W, "b")).toHaveLength(1)
+  const deleted = await authorWordChatTarget(xml, selected, texts[1]!)
+  expect(deleted.paragraphs).toEqual([texts[1]!])
+  expect(deleted.revisions).toEqual([{ type: "Deleted", author: "doc.haus", text: texts[0]! }, { type: "Deleted", author: "doc.haus", text: "\r" }])
+  expect(reviewedWordChatArtifact({ ...deleted, proposalId: "remove-note" }, "remove-note", selected, deleted.paragraphs, xml)).toHaveLength(2)
+  // Losing the paragraph-mark revision or its attribution is a failed import,
+  // even when all visible words and ordinary run revisions still match.
+  expect(sameImportedWordChat(inserted.ooxml, inserted.ooxml.replace(/<w:rPr><w:ins[^>]*\/><\/w:rPr>/, ""))).toBe(false)
+  expect(() => reviewedWordChatArtifact({ ...authored, ooxml: authored.ooxml.replace('<w:spacing w:after="120"', '<w:spacing w:after="240"') }, "add-note", selected, inserted.paragraphs, xml)).toThrow("formatting")
+})
+
+test("several inserted paragraphs keep reviewed punctuation literal and ordered between retained paragraphs", async () => {
+  const texts = ["Retained opening.", "Retained ending."], selected = target(texts)
+  const inserted = ["# A literal *note* [reference](target).", "- Another note with \\ punctuation."]
+  const expected = [texts[0]!, ...inserted, texts[1]!]
+  const xml = flat(texts.map(paragraph).join("")), result = await authorWordChatTarget(xml, selected, expected.join("\r"))
+  expect(result.paragraphs).toEqual(expected)
+  expect(reviewedWordChatArtifact({ ...result, proposalId: "several" }, "several", selected, expected, xml)).toHaveLength(4)
+  expect(result.revisions.filter(r => r.text !== "\r").map(r => r.text)).toEqual(inserted)
+  expect(parsed(result.ooxml).getElementsByTagNameNS(W, "hyperlink")).toHaveLength(0)
 })
 
 test("formatting dependencies remain while unrelated header projections/settings/add-in context are excluded", async () => {
