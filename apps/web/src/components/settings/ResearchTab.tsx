@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react"
 import { OFFICIAL_SOURCE_HOSTS, OFFICIAL_SOURCE_SUFFIXES } from "../../../../../dochaus/lib/research-sources"
+import { SettingsFooter } from "./SettingsFooter"
 import { getPreferences, savePreferences, testResearchConnection, type DraftingPreferences } from "../../api/ingest/preferences"
 import { FieldRow, PasswordInput, SegRow } from "./controls"
 import "./ResearchTab.css"
@@ -10,10 +11,11 @@ import "./ResearchTab.css"
 // distinct, service-backed capability — not a drafting style choice.
 type Connection = "exa" | "courtlistener" | "courtlistener-mcp"
 
-export default function ResearchTab({ onSaved, onComplete, heading = "Research", actionLabel = "Save", secondaryActions }: {
+export default function ResearchTab({ onSaved, onComplete, showIntro = true, showCourtListener = true, actionLabel = "Save", secondaryActions }: {
   onSaved?: (text: string) => void
   onComplete?: () => void
-  heading?: string
+  showIntro?: boolean
+  showCourtListener?: boolean
   actionLabel?: string
   secondaryActions?: (busy: boolean) => ReactNode
 }) {
@@ -50,8 +52,10 @@ export default function ResearchTab({ onSaved, onComplete, heading = "Research",
   const connectionTest = (service: Connection, label: string, saveLabel: string) => {
     const patch = connectionPreferences(prefs, service)
     const changed = !saved || JSON.stringify(patch) !== JSON.stringify(connectionPreferences(saved, service))
-    return <div>
-      <button type="button" disabled={saving || testing !== null} onClick={async () => {
+    const exaTested = service === "exa" && tests[service]?.status === "verified"
+    return <div className={`research-test-action${service === "exa" ? " research-test-action-exa" : ""}`} aria-live="polite">
+      <button type="button" className={exaTested ? "research-test-confirmed" : undefined} disabled={saving || testing !== null} onClick={async () => {
+        setTests(previous => ({ ...previous, [service]: undefined }))
         setTesting(service)
         setError("")
         try {
@@ -68,16 +72,15 @@ export default function ResearchTab({ onSaved, onComplete, heading = "Research",
         } finally {
           setTesting(null)
         }
-      }}>{testing === service ? "Testing..." : changed ? saveLabel : label}</button>
-      {tests[service] && <p role="status" className={`settings-hint${tests[service]?.status === "verified" ? " muted" : " settings-warning"}`}>{tests[service]?.message}</p>}
+      }}>{testing === service ? "Testing..." : exaTested ? <><span aria-hidden="true">✓</span> Tested</> : changed ? saveLabel : label}</button>
+      {tests[service] && !exaTested && <p role="status" className={`settings-hint${tests[service]?.status === "verified" ? " muted" : " settings-warning"}`}>{tests[service]?.message}</p>}
     </div>
   }
   return (
     <section className="settings-section">
-      <h3>{heading}</h3>
-      <p className="settings-hint muted">
-        Connect services for live legal research. Keys stay in this installation.
-      </p>
+      {showIntro && <>
+        <p className="settings-hint muted">Connect services for live legal research. Keys stay in this installation.</p>
+      </>}
       <SegRow
         label="Web research"
         hint="Read across the web or limit research to approved sources."
@@ -129,8 +132,8 @@ export default function ResearchTab({ onSaved, onComplete, heading = "Research",
       <FieldRow
         id="research-exa-key"
         label="Exa API key"
-        labelAction={<a className="settings-hint" href="https://dashboard.exa.ai/" target="_blank" rel="noopener noreferrer">Sign up for Exa ↗</a>}
-        hint="For citation search and source text. Testing uses a small amount of your Exa search allowance."
+        labelAction={<a className="settings-hint" href="https://dashboard.exa.ai/" target="_blank" rel="noopener noreferrer">Sign up free ↗</a>}
+        hint="For citation search and source text."
       >
         <PasswordInput
           id="research-exa-key"
@@ -147,6 +150,7 @@ export default function ResearchTab({ onSaved, onComplete, heading = "Research",
           </p>
         )}
       </FieldRow>
+      {showCourtListener && <>
       <SegRow
         label="CourtListener connector"
         hint="Connect U.S. case-law research through CourtListener."
@@ -177,8 +181,9 @@ export default function ResearchTab({ onSaved, onComplete, heading = "Research",
           {connectionTest("courtlistener-mcp", "Test connector", "Save connector and test")}
         </> : <p className="settings-hint muted">Add a token to connect.</p>}
       </FieldRow>}
+      </>}
       {error && <p className="settings-hint settings-warning" role="alert">{error}</p>}
-      <div className="settings-actions">
+      <SettingsFooter tab="research"><div className="settings-actions">
         {secondaryActions?.(saving || testing !== null)}
         <button
           className={`primary${saving ? " btn-loading" : ""}`}
@@ -187,7 +192,7 @@ export default function ResearchTab({ onSaved, onComplete, heading = "Research",
             setSaving(true)
             setError("")
             try {
-              const updated = await savePreferences(researchPreferences(prefs))
+              const updated = await savePreferences(researchPreferences(prefs, showCourtListener))
               setPrefs(updated)
               setSaved(updated)
               setTests({})
@@ -202,7 +207,7 @@ export default function ResearchTab({ onSaved, onComplete, heading = "Research",
         >
           {actionLabel}
         </button>
-      </div>
+      </div></SettingsFooter>
     </section>
   )
 }
@@ -213,12 +218,11 @@ function connectionPreferences(prefs: DraftingPreferences, service: Connection) 
   return { caseLawApiKey: prefs.caseLawApiKey.trim(), courtlistenerMcpEnabled: prefs.courtlistenerMcpEnabled }
 }
 
-function researchPreferences(prefs: DraftingPreferences) {
+function researchPreferences(prefs: DraftingPreferences, includeCourtListener: boolean) {
   return {
     webResearch: prefs.webResearch,
     approvedSources: prefs.approvedSources.map(host => host.trim()).filter(Boolean),
     searchApiKey: prefs.searchApiKey,
-    caseLawApiKey: prefs.caseLawApiKey,
-    courtlistenerMcpEnabled: prefs.courtlistenerMcpEnabled,
+    ...(includeCourtListener ? { caseLawApiKey: prefs.caseLawApiKey, courtlistenerMcpEnabled: prefs.courtlistenerMcpEnabled } : {}),
   }
 }

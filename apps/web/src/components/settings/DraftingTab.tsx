@@ -4,6 +4,7 @@ import { getPreferences, POSTURES, savePreferences, type DraftingPreferences } f
 import { FieldRow, SegRow } from "./controls"
 import { CheckRow, LegendField, PageLayoutPreview } from "./PageLayout"
 import { ADVICE_LEGENDS, AGREEMENT_LEGENDS, DATE_FORMATS, NOTES_MARKING, draftLineText } from "./page-layout"
+import { SettingsFooter } from "./SettingsFooter"
 
 // Firm-wide drafting preferences. The engine renders the saved structured
 // settings into standing instructions for each drafting or explanation turn;
@@ -48,7 +49,6 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
   }, [reload])
   if (!prefs) return (
     <section className="settings-section">
-      <h3>Drafting preferences</h3>
       {error ? (
         <>
           <p className="settings-error" role="alert">{error}</p>
@@ -61,10 +61,8 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
   return (
     <>
       <section className="settings-section">
-        <h3>Drafting preferences</h3>
         <p className="settings-hint muted">
-          How doc.haus drafts, redlines, and explains its work across all matters. Changes apply to new replies
-          and when drafting resumes or completed work is revisited.
+          Applies across matters to new replies and resumed or revisited work.
         </p>
         <fieldset className="settings-drafting-fields" disabled={saving} aria-label="Drafting preferences">
           <FieldRow id="drafting-attorney" label="Attorney" hint="The lawyer identified as preparing documents.">
@@ -160,15 +158,13 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
       <section className="settings-section">
         <h3>Page layout</h3>
         <p className="settings-hint muted">
-          The document style, page numbers, draft line and legends of the documents doc.haus drafts. Changes apply
-          to documents rendered after you save; uploaded, counterparty and template files keep their own.
+          Changes apply to newly rendered documents. Uploaded files and templates keep their own layout.
         </p>
         <p className="settings-hint muted">
-          Legends have legal effect, so they are your firm's choice: none is added unless you choose one, and each
-          appears only on the documents it names.
+          Legends can have legal effect and are only added if you choose them.
         </p>
         <fieldset className="settings-drafting-fields" disabled={saving} aria-label="Page layout">
-          <FieldRow
+          {(Boolean(templates?.length) || Boolean(prefs.styleTemplate)) && <FieldRow
             id="drafting-style-template"
             label="Document style"
             hint="Fonts, heading and clause numbering styles and page size for documents drafted without a template of their own. A document drafted from a template or precedent takes that file's styles. Headers and footers follow the settings below."
@@ -185,7 +181,7 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
                 <option value={prefs.styleTemplate}>{prefs.styleTemplate}{templates ? " (not in the template library)" : ""}</option>
               )}
             </select>
-          </FieldRow>
+          </FieldRow>}
           <SegRow
             label="Page numbers"
             hint="In the footer of each page."
@@ -271,7 +267,7 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
         </fieldset>
       </section>
       {error && <p className="settings-error" role="alert">{error}</p>}
-      <div className="settings-actions">
+      <SettingsFooter tab="drafting"><div className="settings-actions">
         <button
           className={`primary${saving ? " btn-loading" : ""}`}
           disabled={saving}
@@ -293,7 +289,7 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
         >
           Save
         </button>
-      </div>
+      </div></SettingsFooter>
     </>
   )
 }

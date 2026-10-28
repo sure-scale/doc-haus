@@ -1,27 +1,25 @@
 import { useContext, useEffect, useRef, useState } from "react"
 import { getPreferences, type DraftingPreferences } from "../../api/ingest/preferences"
-import { addSampleMatter, listJurisdictions, listMatters, type Jurisdiction } from "../../api/ingest/matters"
-import { humanizeError } from "../../api/ingest/errors"
+import { listJurisdictions, type Jurisdiction } from "../../api/ingest/matters"
 import { getSetup, saveSetup, type SetupProgress } from "../../api/ingest/setup"
 import { loadPrefs } from "../../prefs"
 import { Closing } from "../useExit"
-import { useToast } from "../Toast"
 import DraftingDetailsStep from "./DraftingDetailsStep"
 import ResearchTab from "../settings/ResearchTab"
 import AISetup, { type AISetupProgress, type SetupPhase } from "../ai-setup/AISetup"
+import { providerDescription } from "../ai-setup/ProviderPicker"
 import "./onboarding.css"
-import { useWordAddin, WordAddinStatus } from "../settings/WordAddin"
 
 const stages = [
-  { id: "provider", label: "Provider", title: "Choose your model provider", description: "Connect the service you want to use for drafting and working with your matters." },
+  { id: "provider", label: "Provider", title: "Choose your model provider", description: "" },
   { id: "connection", label: "Connection", title: "Connect your provider", description: "Use an existing connection or sign in securely. Credentials are stored in this installation." },
   { id: "models", label: "Models", title: "Choose your models", description: "Pick a primary model for your matters and a fast model for smaller tasks." },
   { id: "test", label: "Test", title: "Test your connection", description: "Check that your connection works with both selected model roles, then save your setup." },
-  { id: "research", label: "Research", title: "Set up legal research", description: "Choose research sources and add service keys." },
+  { id: "research", label: "Research", title: "Set up legal research", description: "Connect services for live legal research. Keys stay in this installation." },
   { id: "details", label: "Details", title: "Make doc.haus yours", description: "Add the details you use in your drafts." },
 ]
 
-export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => void; onSampleAdded?: () => void }) {
+export default function Onboarding({ onClose }: { onClose: () => void; onSampleAdded?: () => void }) {
   // The trap lets go, and focus returns, as the exit starts.
   const closing = useContext(Closing)
   const [notice, setNotice] = useState("")
@@ -41,24 +39,15 @@ export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => 
   const [progress, setProgress] = useState<SetupProgress | null>(null)
   const [researchMounted, setResearchMounted] = useState(false)
   const [aiMounted, setAIMounted] = useState(false)
-  // The sample matter choice on the last step: pre-selected only for an empty
-  // workspace, and offered only while no sample exists. Kept across steps.
-  const [addSample, setAddSample] = useState<boolean | null>(null)
-  const [sampleExists, setSampleExists] = useState(false)
-  const [sampleState, setSampleState] = useState<"idle" | "adding" | "failed">("idle")
-  const [sampleError, setSampleError] = useState("")
-  const word = useWordAddin()
-  const [includeWord, setIncludeWord] = useState<boolean | null>(null)
-  const setUpWord = includeWord ?? (!!word.status?.canSetup && !word.status.available)
-  // Where setup goes once the sample is in, so a failed seed can still move on.
-  const [sampleNext, setSampleNext] = useState<SetupProgress["next"]>("done")
-  const toast = useToast()
   const panel = useRef<HTMLDivElement>(null)
   const body = useRef<HTMLDivElement>(null)
   const heading = useRef<HTMLHeadingElement>(null)
   const currentStage = step === "setup" ? phase : step
   const current = stages.findIndex(stage => stage.id === currentStage)
   const stage = stages[current]!
+  const description = currentStage === "provider"
+    ? providerDescription(ai.cloudProviderCount ?? 0)
+    : stage.description
 
   useEffect(() => {
     if (closing) return
@@ -88,9 +77,8 @@ export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => 
   async function load() {
     setLoading(true); setFailed(false); setNotice("")
     try {
-      const [next, preferences, list, matters] = await Promise.all([getSetup(), getPreferences(), listJurisdictions(), listMatters().catch(() => null)])
+      const [next, preferences, list] = await Promise.all([getSetup(), getPreferences(), listJurisdictions()])
       setProgress(next); setDrafting(preferences); setJurisdictions(list)
-      if (matters) { setSampleExists(matters.some(matter => matter.sample)); setAddSample(choice => choice ?? matters.length === 0) }
       if (next.ready && (next.next === "details" || next.next === "research")) setStep(next.next)
     } catch (error) { setFailed(true); setNotice(error instanceof Error ? error.message : "Could not load setup. Retry.") }
     finally { setLoading(false) }
@@ -110,7 +98,7 @@ export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => 
     if (advancing || ai.busy) return "Wait for the current action to finish."
     if (id === "connection" && !setupDone.provider) return "Choose a provider first."
     if (id === "models" && !setupDone.connection) return "Prepare a provider connection first."
-    if (id === "test" && (!setupDone.connection || !setupDone.models)) return "Choose your primary and fast models first."
+    if (id === "test" && !ai.saved && (!setupDone.connection || !setupDone.models)) return "Choose your primary and fast models first."
     if ((id === "research" || id === "details") && !modelsSaved) return "Test and save your model choices first."
     return ""
   }
@@ -134,67 +122,12 @@ export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => 
     if (next === "done") onClose()
     else setStep(next === "models" ? "setup" : next)
   }
-  // Setup progress is saved before seeding, so a failed seed never undoes it.
-  async function seedSample(next: SetupProgress["next"]) {
-    setSampleState("adding"); setSampleError(""); setSampleNext(next)
-    try {
-      await addSampleMatter()
-      setSampleExists(true); setSampleState("idle")
-      onSampleAdded?.()
-      toast("success", "Sample matter added to your matters.")
-      leave(next)
-    } catch (error) {
-      setSampleState("failed"); setSampleError(humanizeError(error, "Could not add the sample matter."))
-    }
-  }
   async function finishDetails() {
     if (advancing) return
     setAdvancing(true); setSaveNotice("")
-    try {
-      if (setUpWord && !word.status?.available) {
-        const configured = await word.prepare()
-        if (!configured) {
-          setSaveNotice("Word setup did not finish. Try again, or clear Set up Microsoft Word to finish and set it up later in Settings → Add-ins. Your drafting details are saved.")
-          return
-        }
-        toast("success", configured.restartWord ? "Word is set up. Restart Word to load the add-in." : "Word is ready.")
-      }
-      const next = await saveSetup("details", "completed")
-      setProgress(next)
-      if (addSample && !sampleExists) await seedSample(next.next)
-      else leave(next.next)
-    } finally { setAdvancing(false) }
+    try { const next = await saveSetup("details", "completed"); setProgress(next); leave(next.next) }
+    finally { setAdvancing(false) }
   }
-  async function retrySample() {
-    if (advancing) return
-    setAdvancing(true)
-    try { await seedSample(sampleNext) } finally { setAdvancing(false) }
-  }
-  const sampleChoice = !sampleExists && addSample !== null && <section className="settings-section onboarding-sample">
-    <h3>Sample matter</h3>
-    <label className="page-layout-check" htmlFor="onboarding-sample">
-      <input id="onboarding-sample" type="checkbox" checked={addSample} disabled={advancing} aria-describedby="onboarding-sample-hint" onChange={event => setAddSample(event.target.checked)} />
-      <span>Add a sample matter to explore</span>
-    </label>
-    <p id="onboarding-sample-hint" className="settings-hint muted">A fictional engagement letter, ready for cited questions and a legal review. Delete it like any matter when you are done.</p>
-    {sampleState === "adding" && <p role="status" className="settings-hint">Adding the sample matter…</p>}
-    {sampleState === "failed" && <div role="alert" className="settings-warning onboarding-sample-error">
-      <p>{sampleError} Your setup is saved.</p>
-      <div className="onboarding-sample-actions"><button disabled={advancing} onClick={() => void retrySample()}>Retry</button><button disabled={advancing} onClick={() => { setSampleState("idle"); leave(sampleNext) }}>Continue without it</button></div>
-    </div>}
-  </section>
-  const addinsChoice = <section className="settings-section">
-    <h3>Microsoft Word</h3>
-    {word.status?.canSetup && !word.status.available && <>
-      <label className="page-layout-check" htmlFor="onboarding-word">
-        <input id="onboarding-word" type="checkbox" checked={setUpWord} disabled={advancing} onChange={event => setIncludeWord(event.target.checked)} aria-describedby="onboarding-word-hint" />
-        <span>Set up Microsoft Word</span>
-      </label>
-      <p id="onboarding-word-hint" className="settings-hint muted">Save and finish installs the add-in and asks your computer to trust its local connection. Restart Word after setup. You can change this in Settings → Add-ins.</p>
-    </>}
-    <WordAddinStatus state={word} />
-    {word.error && <button type="button" disabled={word.checking || advancing} onClick={() => void word.refresh()}>Check Word again</button>}
-  </section>
   async function advance(which: "details" | "research", status: "completed" | "skipped") {
     if (advancing) return
     setAdvancing(true); setSaveNotice("")
@@ -206,11 +139,9 @@ export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => 
     } finally { setAdvancing(false) }
   }
   return <div className={`viewer-overlay onboarding-overlay${closing ? " is-closing" : ""}`} inert={closing}>
-    <div ref={panel} className="onboarding-panel" role="dialog" aria-modal="true" aria-labelledby="onboarding-title" aria-describedby="onboarding-description" onKeyDown={event => {
-      if (event.key === "Escape" && !ai.busy && !advancing && !document.querySelector(".jx-popover")) { event.stopPropagation(); onClose() }
-    }}>
+    <div ref={panel} className="onboarding-panel" role="dialog" aria-modal="true" aria-labelledby="onboarding-title" aria-describedby={description ? "onboarding-description" : undefined}>
       <header className="onboarding-header">
-        <div className="onboarding-topline"><div><span className="onboarding-brand">doc.haus</span><h1 id="onboarding-title">Let's get you set up</h1></div><button className="ghost" disabled={ai.busy || advancing} onClick={onClose}>Set up later <span aria-hidden="true">×</span></button></div>
+        <div className="onboarding-topline"><div><span className="onboarding-brand">doc.haus</span><h1 id="onboarding-title">Let's get you set up</h1></div></div>
         <nav aria-label="Setup progress" className="onboarding-progress">
           <ol>{stages.map((item, index) => {
             const reason = unavailable(item.id)
@@ -228,7 +159,7 @@ export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => 
         <p className="onboarding-mobile-progress">{stage.label}</p>
       </header>
       <div ref={body} className="onboarding-body" aria-busy={loading}>
-        <div className="onboarding-stage-heading"><h2 ref={heading} tabIndex={-1}>{stage.title}</h2><p id="onboarding-description">{stage.description}</p></div>
+        <div className="onboarding-stage-heading"><h2 ref={heading} tabIndex={-1}>{stage.title}</h2>{description && <p id="onboarding-description">{description}</p>}</div>
         {notice && <p role="alert" className="settings-notice">{notice}</p>}
         {saveNotice && <p role="alert" className="settings-notice">{saveNotice}</p>}
         {loading ? <div className="onboarding-status" role="status"><span className="onboarding-loading-dot" aria-hidden="true" />Loading your saved setup…</div>
@@ -237,13 +168,12 @@ export default function Onboarding({ onClose, onSampleAdded }: { onClose: () => 
           {(aiMounted || step === "setup") && <div className="onboarding-stage-content" hidden={step !== "setup"} inert={step !== "setup"}>
             <AISetup mode="onboarding" phase={phase} onPhaseChange={setPhase} onProgress={setAI} onSaved={modelsComplete} />
           </div>}
-          {currentStage === "details" && <DraftingDetailsStep drafting={drafting} setDrafting={setDrafting} jurisdictions={jurisdictions} selectedJx={selectedJx} setSelectedJx={setSelectedJx} dateFormatChoice={dateFormatChoice} setDateFormatChoice={setDateFormatChoice} setStep={setStep} onClose={finishDetails} extra={<>{addinsChoice}{sampleChoice}</>} disabled={word.checking} busyLabel={word.busy ? "Setting up Word…" : sampleState === "adding" ? "Adding sample matter…" : undefined} />}
+          {currentStage === "details" && <DraftingDetailsStep drafting={drafting} setDrafting={setDrafting} jurisdictions={jurisdictions} selectedJx={selectedJx} setSelectedJx={setSelectedJx} dateFormatChoice={dateFormatChoice} setDateFormatChoice={setDateFormatChoice} setStep={setStep} onClose={finishDetails} disabled={false} />}
           {(researchMounted || currentStage === "research") && <div className="onboarding-stage-content onboarding-research" hidden={currentStage !== "research"} inert={currentStage !== "research"}>
-            <ResearchTab heading="Sources and connections" actionLabel="Save and continue" secondaryActions={busy => <button disabled={busy || advancing} onClick={() => { setPhase("provider"); setStep("setup") }}>Back to AI setup</button>} onComplete={() => { void advance("research", "completed").catch(error => setSaveNotice(error instanceof Error ? error.message : "Could not save setup progress. Retry.")) }} />
+            <ResearchTab showIntro={false} showCourtListener={false} actionLabel="Save and continue" secondaryActions={busy => <button type="button" className="onboarding-back" disabled={busy || advancing} onClick={() => { setPhase("provider"); setStep("setup") }}>Back to AI setup</button>} onComplete={() => { void advance("research", "completed").catch(error => setSaveNotice(error instanceof Error ? error.message : "Could not save setup progress. Retry.")) }} />
           </div>}
         </>}
       </div>
-      <footer className="onboarding-footer"><p>Your saved setup resumes when you return.</p></footer>
     </div>
   </div>
 }

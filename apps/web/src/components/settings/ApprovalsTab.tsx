@@ -17,29 +17,25 @@ export default function ApprovalsTab() {
   }
   return (
     <section className="settings-section">
-      <h3>Approvals</h3>
       <p className="settings-hint muted">
-        Choose which requests this browser automatically allows, across all matters and conversations. Redlines remain
-        proposed changes for you to review in the document.
+        Automatically allow these requests in this browser across all matters. Redlines still need your review.
       </p>
       <ToggleRow
         title="Redlines & tracked changes"
-        description="Proposing a tracked change or redline in a document."
+        description="Propose changes for your review."
         on={prefs.autoApproveRedlines}
         onChange={(on) => set({ autoApproveRedlines: on })}
       />
       <ToggleRow
         title="New documents & templates"
-        description="Drafting a new document or creating a template."
+        description="Create documents and templates."
         on={prefs.autoApproveDrafting}
         onChange={(on) => set({ autoApproveDrafting: on })}
       />
       {error && <p className="settings-hint" role="alert">{error}</p>}
       <p className="settings-hint muted">
-        Draft runs follow their own review workflow and do not use these switches. Required questions still need your answers.
-      </p>
-      <p className="settings-hint muted">
-        Direct edits and redactions are outside these switches. Separately saved “Always allow” decisions still apply.
+        Draft runs have their own review process, and required questions still need answers. These switches don't cover
+        direct edits or redactions. Saved “Always allow” decisions also apply.
       </p>
     </section>
   )

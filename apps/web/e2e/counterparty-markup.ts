@@ -114,7 +114,7 @@ try {
   await startIngest()
   browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE })
   const context = await browser!.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: "reduce" })
-  await context.addInitScript(() => sessionStorage.setItem("dh.launch-notice.v1", "accepted"))
+  await context.addInitScript(() => localStorage.setItem("dh.launch-notice.v1", new Date().toDateString()))
   const origin = new URL(baseURL).origin
   // Engine traffic is answered here; ingest traffic continues through Vite's
   // /ingest proxy to the isolated service.

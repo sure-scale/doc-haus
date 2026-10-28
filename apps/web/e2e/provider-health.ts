@@ -10,6 +10,7 @@ if (!baseURL || !evidence) throw new Error("Set PLAYWRIGHT_BASE_URL and DOCHAUS_
 const appOrigin = new URL(baseURL).origin
 await mkdir(evidence, { recursive: true })
 const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE })
+const scenarioPattern = process.env.DOCHAUS_E2E_SCENARIOS ? new RegExp(process.env.DOCHAUS_E2E_SCENARIOS) : undefined
 const results: { name: string; status: string; error?: string }[] = []
 const errors: string[] = []
 const unexpected: string[] = []
@@ -22,7 +23,7 @@ async function fixture(name: string, options: { accepted?: boolean; width?: numb
   const page = await context.newPage()
   page.setDefaultTimeout(10000)
   page.on("pageerror", error => errors.push(`${name}: ${error.message}`))
-  if (options.accepted !== false) await context.addInitScript(() => sessionStorage.setItem("dh.launch-notice.v1", "accepted"))
+  if (options.accepted !== false) await context.addInitScript(() => localStorage.setItem("dh.launch-notice.v1", new Date().toDateString()))
   const providerID = options.publicModels ? "opencode" : "opencode-go"
   const provider = { id: providerID, name: options.publicModels ? "OpenCode" : "OpenCode Go", integrationID: providerID, activation: "enabled", ...(options.publicModels ? { settings: { apiKey: "public" } } : {}) }
   const go = { id: "opencode-go", name: "OpenCode Go", integrationID: "opencode-go", activation: "enabled" }
@@ -81,6 +82,7 @@ async function fixture(name: string, options: { accepted?: boolean; width?: numb
     }
     if (request.method() !== "GET") { unexpected.push(`${name}: ${request.method()} ${pathname}`); return route.abort() }
     if (pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
+    if (pathname === "/word/setup") return reply({ available: false, origin: null, manifestUrl: null, platform: "unsupported", wordInstalled: false, canSetup: false, configured: false, registered: false, trusted: false, running: false, status: "unsupported" })
     if (pathname === "/setup") return reply({ version: 1, ready: true, completed: state.setup === "done" ? ["models", "research", "details"] : [], skipped: [], next: state.setup })
     if (pathname === "/matters" || pathname === "/clients") return reply([])
     if (pathname === "/jurisdictions") return reply([{ code: "england-wales", name: "England and Wales" }])
@@ -102,6 +104,7 @@ async function fixture(name: string, options: { accepted?: boolean; width?: numb
 }
 
 async function scenario(name: string, run: () => Promise<void>) {
+  if (scenarioPattern && !scenarioPattern.test(name)) return
   try { await run(); results.push({ name, status: "passed" }); console.log(`PASS ${name}`) }
   catch (error) { results.push({ name, status: "failed", error: error instanceof Error ? error.message : String(error) }); throw error }
 }
@@ -133,10 +136,55 @@ try {
       await expect(f.page.locator(".provider-connection-banner")).toHaveCount(0)
     } finally { await f.context.close() }
   })
+  await scenario("Launch acknowledgement lasts through the local day across reloads and tabs", async () => {
+    const f = await fixture("daily-notice", { accepted: false })
+    try {
+      await expect(f.page.getByRole("dialog", { name: "Before you begin" })).toBeVisible()
+      await f.page.getByRole("button", { name: "I accept", exact: true }).click()
+      await f.page.reload()
+      await expect(f.page.getByRole("dialog", { name: "Before you begin" })).toHaveCount(0)
+      const second = await f.context.newPage()
+      await second.goto(baseURL!)
+      await expect(second.getByRole("dialog", { name: "Before you begin" })).toHaveCount(0)
+      const tomorrow = new Date()
+      tomorrow.setDate(tomorrow.getDate() + 1)
+      await second.clock.setFixedTime(tomorrow)
+      await second.reload()
+      await expect(second.getByRole("dialog", { name: "Before you begin" })).toBeVisible()
+    } finally { await f.context.close() }
+  })
+  await scenario("Recovery rechecks transient failure and requires confirmed recovery", async () => {
+    const f = await fixture("recovery-required", { outcome: { ok: false, kind: "unavailable" } })
+    try {
+      await expect.poll(() => f.probes().length).toBe(1)
+      await expect(f.page.getByRole("dialog", { name: "Settings" })).toHaveCount(0)
+      f.state.outcome = { ok: true }
+      await expect.poll(() => f.probes().length).toBe(2)
+      await expect(f.page.getByRole("dialog", { name: "Settings" })).toHaveCount(0)
+      f.state.outcome = { ok: false, kind: "auth", expired: true }
+      await f.page.reload()
+      const modal = f.page.getByRole("dialog", { name: "Settings" })
+      await expect(modal).toBeVisible({ timeout: 10000 })
+      await expect(modal.getByText(/saved API key has expired/)).toBeVisible()
+      await expect(modal.getByRole("button", { name: "Close" })).toHaveCount(0)
+      await f.page.keyboard.press("Escape")
+      await expect(modal).toBeVisible()
+      await expect(modal.getByRole("tab", { name: "Research" })).toBeDisabled()
+      f.state.outcome = { ok: true }
+      await modal.getByRole("button", { name: "Check again" }).click()
+      await expect(modal).toHaveCount(0)
+    } finally { await f.context.close() }
+  })
   await scenario("Incomplete setup does not run a provider probe", async () => {
     const f = await fixture("setup-gate", { setup: "models" })
     try {
       await expect(f.page.getByRole("heading", { name: "Choose your model provider", exact: true })).toBeVisible()
+      await expect(f.page.getByRole("button", { name: /set up later/i })).toHaveCount(0)
+      await expect(f.page.getByText("Setup is incomplete.")).toHaveCount(0)
+      await f.page.keyboard.press("Escape")
+      await expect(f.page.getByRole("dialog", { name: "Let's get you set up" })).toBeVisible()
+      await f.page.reload()
+      await expect(f.page.getByRole("dialog", { name: "Let's get you set up" })).toBeVisible()
       await f.page.waitForTimeout(250)
       expect(f.probes()).toEqual([])
     } finally { await f.context.close() }
@@ -150,10 +198,9 @@ try {
       await expect(modal.getByRole("tab", { name: "AI setup", exact: true })).toHaveAttribute("aria-selected", "true")
       await expect(modal.getByLabel("Primary model", { exact: true })).toBeEnabled()
       expect(f.candidateTests()).toEqual([])
-      await modal.getByRole("button", { name: "Test connection", exact: true }).click()
-      await expect(modal.getByText("Connection verified for both selected model roles.", { exact: true })).toBeVisible()
+      await modal.getByRole("button", { name: "Test and save", exact: true }).click()
+      await expect.poll(() => f.candidateTests().length).toBe(2)
       expect(f.candidateTests().map(request => (request.body as { modelID: string }).modelID)).toEqual(["primary", "fast"])
-      await modal.getByRole("button", { name: "Save", exact: true }).click()
       await expect(f.page.getByRole("status").filter({ hasText: "AI setup saved." }).first()).toBeVisible()
       expect(f.state.config).toEqual({ model: "opencode-go/primary", small_model: "opencode-go/fast" })
       expect(f.probes()).toHaveLength(2)
@@ -164,19 +211,9 @@ try {
   for (const width of [1440, 390]) await scenario(`Expired key recovery works at ${width}px with visible pointer targets and no overflow`, async () => {
     const f = await fixture(`expired-${width}`, { width, outcome: { ok: false, kind: "auth", expired: true } })
     try {
-      const banner = f.page.locator(".provider-connection-banner")
-      await expect(banner).toHaveAttribute("role", "alert")
-      await expect(banner).toContainText("OpenCode Go needs attention")
-      await expect(banner).toContainText("The saved API key has expired")
-      await expect(banner).toContainText("Signing in again will not renew this key")
-      const reconnect = banner.getByRole("button", { name: "Reconnect provider", exact: true })
-      await hitTarget(reconnect)
-      await hitTarget(banner.getByRole("button", { name: "Check again", exact: true }))
-      await noOverflow(f.page)
-      await f.page.screenshot({ path: path.join(evidence, `expired-${width}.png`) })
-      await reconnect.click()
       const modal = f.page.getByRole("dialog", { name: "Settings", exact: true })
-      await expect(modal.getByRole("heading", { name: "AI setup", exact: true })).toBeVisible()
+      await expect(modal).toBeVisible()
+      await expect(modal.getByText(/saved API key has expired/)).toBeVisible()
       await expect(modal.getByRole("combobox", { name: /^Provider/ })).toHaveValue("opencode-go")
       await expect(modal.getByLabel("Primary model", { exact: true })).toBeEnabled()
       expect(f.candidateTests()).toEqual([])
@@ -187,59 +224,36 @@ try {
       await noOverflow(f.page)
       await f.page.screenshot({ path: path.join(evidence, `reconnect-${width}.png`) })
       await connect.click()
-      await modal.getByRole("button", { name: "Test connection", exact: true }).click()
-      await expect(modal.getByText("Connection verified for both selected model roles.", { exact: true })).toBeVisible()
-      await expect(banner).toBeVisible()
-      await modal.getByRole("button", { name: "Save", exact: true }).click()
+      await modal.getByRole("button", { name: "Test and save", exact: true }).click()
       await expect(f.page.getByRole("status").filter({ hasText: "AI setup saved." }).first()).toBeVisible()
-      await expect(banner).toHaveCount(0)
-      expect(f.probes()).toHaveLength(1)
+      await expect(modal).toHaveCount(0)
+      expect(f.probes()).toHaveLength(2)
       expect(f.candidateTests()).toHaveLength(1)
       expect(f.candidateTests()[0].body).toMatchObject({ modelID: "primary" })
       expect(f.state.config).toEqual({ model: "opencode-go/primary", small_model: "opencode-go/primary" })
-      await modal.getByRole("button", { name: "Close", exact: true }).click()
       await noOverflow(f.page)
     } finally { await f.context.close() }
   })
-  await scenario("Transient provider failure asks to check availability and Check again recovers", async () => {
-    const f = await fixture("transient", { outcome: { ok: false, kind: "unavailable" } })
-    try {
-      const banner = f.page.locator(".provider-connection-banner")
-      await expect(banner).toContainText("Check your network and provider availability")
-      await expect(banner.getByRole("button", { name: "Reconnect provider", exact: true })).toHaveCount(0)
-      f.state.outcome = { ok: true }
-      await banner.getByRole("button", { name: "Check again", exact: true }).click()
-      await expect.poll(() => f.probes().length).toBe(2)
-      await expect(banner).toHaveCount(0)
-    } finally { await f.context.close() }
-  })
-  await scenario("Model access failure asks for model settings without claiming expired credentials", async () => {
+  await scenario("Model access failure explains the problem in recovery", async () => {
     const f = await fixture("model-access", { outcome: { ok: false, kind: "model" } })
     try {
-      const banner = f.page.locator(".provider-connection-banner")
-      await expect(banner).toContainText("The selected model is unavailable")
-      await expect(banner.getByRole("button", { name: "Reconnect provider", exact: true })).toHaveCount(0)
-      await expect(banner.getByRole("button", { name: "Open provider settings", exact: true })).toBeVisible()
+      const modal = f.page.getByRole("dialog", { name: "Settings" })
+      await expect(modal).toBeVisible()
+      await expect(modal.getByText(/selected model is unavailable/)).toBeVisible()
     } finally { await f.context.close() }
   })
   for (const width of [1440, 375]) await scenario(`Removed provider cannot be selected or checked; replacement stays deliberate at ${width}px`, async () => {
     const f = await fixture(`removed-provider-${width}`, { width, publicModels: true })
     try {
-      const banner = f.page.locator(".provider-connection-banner")
-      await expect(banner).toContainText("Removed provider needs attention")
-      await expect(banner).toContainText(/no longer available|not available|another provider/i)
-      await expect(banner).not.toContainText(/rejected.*sign-in|expired/i)
-      await expect(banner.getByRole("button", { name: "Reconnect provider", exact: true })).toHaveCount(0)
-      expect(f.probes()).toEqual([])
-      await noOverflow(f.page)
-      await banner.getByRole("button", { name: "Open provider settings", exact: true }).click()
       const modal = f.page.getByRole("dialog", { name: "Settings", exact: true })
-      await expect(modal.getByRole("heading", { name: "AI setup", exact: true })).toBeVisible()
+      await expect(modal).toBeVisible()
+      await expect(modal.getByText(/provider has been removed/).first()).toBeVisible()
+      expect(f.probes()).toEqual([])
       await expect(modal.locator('option[value="opencode"]')).toHaveCount(0)
       await expect(modal.locator('option[value="opencode-go"]')).toHaveCount(1)
       await expect(modal.getByLabel("Provider", { exact: true })).toHaveValue("")
       await expect(modal.locator('option[value^="opencode/"]')).toHaveCount(0)
-      await expect(modal.getByRole("button", { name: "Save", exact: true })).toBeDisabled()
+      await expect(modal.getByRole("button", { name: "Test and save", exact: true })).toBeDisabled()
       expect(f.state.config).toEqual({ model: "opencode/primary", small_model: "opencode/primary" })
       expect(f.probes()).toEqual([])
       await noOverflow(f.page)
@@ -249,11 +263,10 @@ try {
         await modal.getByRole("button", { name: "Load models", exact: true }).click()
         await modal.getByLabel("Primary model", { exact: true }).selectOption("opencode-go/primary")
         await modal.getByLabel("Fast model", { exact: true }).selectOption("opencode-go/fast")
-        await expect(modal.getByRole("button", { name: "Save", exact: true })).toBeDisabled()
-        await modal.getByRole("button", { name: "Test connection", exact: true }).click()
-        await modal.getByRole("button", { name: "Save", exact: true }).click()
+        await expect(modal.getByRole("button", { name: "Test and save", exact: true })).toBeEnabled()
+        await modal.getByRole("button", { name: "Test and save", exact: true }).click()
         await expect(f.page.getByRole("status").filter({ hasText: "AI setup saved." }).first()).toBeVisible()
-        await expect(banner).toHaveCount(0)
+        await expect(modal).toHaveCount(0)
         expect(f.probes()).toEqual([])
         expect(f.candidateTests().map(probe => (probe.body as { modelID: string }).modelID)).toEqual(["primary", "fast"])
         expect(f.state.config).toEqual({ model: "opencode-go/primary", small_model: "opencode-go/fast" })
@@ -283,7 +296,8 @@ try {
       await expect(f.page.locator(".provider-connection-banner")).toHaveCount(0)
       expect(requests.filter(request => request.scenario === "native-events" && request.path.startsWith("/api/session/"))).toEqual([])
       await receive([failure("owned-session", "/synthetic/matter")])
-      await expect(f.page.locator(".provider-connection-banner")).toContainText("The saved API key has expired")
+      await expect.poll(() => f.probes().length).toBe(2)
+      await expect(f.page.getByRole("dialog", { name: "Settings" })).toHaveCount(0)
       expect(requests.some(request => request.scenario === "native-events" && request.path === "/api/session/owned-session")).toBe(true)
       await f.page.screenshot({ path: path.join(evidence, "native-auth-rejection.png") })
     } finally { await f.context.close() }

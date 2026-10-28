@@ -561,7 +561,7 @@ const origin = new URL(baseURL).origin
 async function openPage(options: BrowserContextOptions, collapsedRail = false) {
   const context = await browser!.newContext({ reducedMotion: "reduce", ...options })
   await context.addInitScript((collapsed) => {
-    sessionStorage.setItem("dh.launch-notice.v1", "accepted")
+    localStorage.setItem("dh.launch-notice.v1", new Date().toDateString())
     // The rail starts collapsed at phone width, as on a first visit from a phone.
     if (collapsed) localStorage.setItem("dh.sidebar", "1")
   }, collapsedRail)

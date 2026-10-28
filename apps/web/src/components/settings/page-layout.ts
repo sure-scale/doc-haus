@@ -72,16 +72,16 @@ export function pageNumberText(format: Exclude<DraftingPreferences["pageNumbers"
   return String(page)
 }
 
-export type LayoutPreferences = Pick<DraftingPreferences, "firm" | "dateFormat" | "pageNumbers" | "pageNumberPosition" | "numberFirstPage" | "draftLine" | "draftLineFirm" | "agreementLegend">
+export type LayoutPreferences = Pick<DraftingPreferences, "firm" | "dateFormat" | "pageNumbers" | "pageNumberPosition" | "numberFirstPage" | "draftLine" | "draftLineFirm" | "agreementLegend" | "adviceLegend" | "notesMarking">
 
 /** What an agreement carries, as the renderer writes it: header lines in order,
  * the footer's page number as page 1 would print it, and `firstPage:
  * "unnumbered"` when page 1 leaves it out. */
-export function agreementFurniture(prefs: LayoutPreferences, date: Date) {
-  const legend = prefs.agreementLegend.trim()
+export function agreementFurniture(prefs: LayoutPreferences, date: Date, kind: "agreement" | "advice" | "notes" = "agreement") {
+  const legend = kind === "agreement" ? prefs.agreementLegend.trim() : kind === "advice" ? prefs.adviceLegend.trim() : prefs.notesMarking ? NOTES_MARKING : ""
   const format = prefs.pageNumbers === "off" ? undefined : prefs.pageNumbers
   return {
-    header: [...(legend ? [legend] : []), ...(prefs.draftLine ? [draftLineText(prefs, date)] : [])],
+    header: [...(legend ? [legend] : []), ...(prefs.draftLine && kind !== "notes" ? [draftLineText(prefs, date)] : [])],
     pageNumber: format ? { text: pageNumberText(format, 1), align: prefs.pageNumberPosition } : undefined,
     ...(format && !prefs.numberFirstPage ? { firstPage: "unnumbered" as const } : {}),
   }

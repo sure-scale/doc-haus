@@ -59,6 +59,20 @@
   .switch:disabled::after { background: GrayText; }
 }
 
+:root[data-contrast="high"] {
+  --border-soft: var(--border-strong);
+  --border: var(--border-strong);
+  --muted: var(--text);
+  --text-secondary: var(--text);
+  --placeholder: var(--md-sys-color-on-surface-variant);
+}
+:root[data-contrast="high"] :is(.sidebar .nav-item.active, .sidebar-history-body .convo-item.active, .settings-nav button.active, .settings-seg button.active, .assistant-option.selected, .jx-option.selected, .rail-strip-btn.is-active) {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+:root[data-contrast="high"] .sidebar-section-link.active { text-decoration: underline; text-decoration-color: var(--accent); text-decoration-thickness: 2px; text-underline-offset: 4px; }
+:root[data-contrast="high"] .switch.on::before { border-color: var(--text); }
+:root[data-contrast="high"] .dropzone.dragover { outline: 2px solid var(--accent); outline-offset: -3px; }
+
 /* More contrast: raise soft boundaries and secondary text to the stronger
    existing tokens, and give selected controls a 3:1 accent ring. */
 @media (prefers-contrast: more) {

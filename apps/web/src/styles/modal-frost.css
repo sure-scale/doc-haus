@@ -1,0 +1,18 @@
+/* Lightly obscure the workspace while keeping the dialog itself crisp. */
+.viewer-overlay,
+.review-detail-modal {
+  background: color-mix(in srgb, var(--panel) 62%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+dialog:is(.review-modal, .matter-edit, .launch-notice, .question-dialog, .telemetry-overlay)::backdrop,
+.design-conversation .question-dialog::backdrop {
+  background: color-mix(in srgb, var(--panel) 62%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+/* These full-screen dialogs already carry the frosted layer themselves. */
+.settings-overlay::backdrop,
+.review-detail-modal::backdrop { background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }

@@ -46,7 +46,7 @@ test("Word setup waits for a deliberate action, holds pending state and confirms
     expect(calls).toEqual(["GET"])
     act(() => findButton("Set up Word").click())
     expect(calls).toEqual(["GET", "POST"])
-    expect(findButton("Check status").disabled).toBe(true)
+    expect(container.textContent).not.toContain("Check status")
     expect(container.textContent).toContain("Setting up Word")
     expect(busy.at(-1)).toBe(true)
     await act(async () => { current = ready; finish!(Response.json(ready)) })
@@ -55,24 +55,20 @@ test("Word setup waits for a deliberate action, holds pending state and confirms
     expect(busy.at(-1)).toBe(false)
     loseResponse = true
     current = initial
-    await act(async () => { findButton("Repair Word connection").click() })
-    expect(calls).toEqual(["GET", "POST", "POST", "GET"])
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
+    await act(async () => { findButton("Set up Word").click() })
+    expect(calls).toEqual(["GET", "POST", "GET", "POST", "GET"])
     expect(container.querySelector('[role="alert"]')).not.toBeNull()
     expect(container.textContent).not.toContain("Ready")
     // The native operation finishes later. Checking status updates an already
     // mounted matter's configuration without repeating installation or trust.
     current = ready
-    await act(async () => { findButton("Check status").click() })
-    expect(calls).toEqual(["GET", "POST", "POST", "GET", "GET"])
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
+    expect(calls).toEqual(["GET", "POST", "GET", "POST", "GET", "GET"])
     expect(changes).toBe(2)
     expect(container.querySelector('[role="alert"]')).toBeNull()
-    await act(async () => { findButton("Repair Word connection").click() })
-    expect(calls).toEqual(["GET", "POST", "POST", "GET", "GET", "POST", "GET"])
-    expect(container.querySelector('[role="alert"]')).toBeNull()
-    expect(changes).toBe(3)
-    expect(busy.at(-1)).toBe(false)
     failStatus = true
-    await act(async () => { findButton("Check status").click() })
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
     expect(container.querySelector('[role="alert"]')).not.toBeNull()
     expect(container.textContent).not.toContain("Ready")
   } finally {
