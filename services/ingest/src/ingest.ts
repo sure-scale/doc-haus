@@ -18,7 +18,7 @@ import { readDocxMarkup, type DocxMarkup } from "../../../dochaus/lib/docx-marku
 import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { parseEmail, type ParsedEmail } from "../../../dochaus/lib/email"
-import { parseMsg } from "../../../dochaus/lib/msg"
+import { parseMsg, rtfToText } from "../../../dochaus/lib/msg"
 import { safeFileName } from "../../../dochaus/lib/safe-file-name"
 import { zipToText } from "../../../dochaus/lib/zip"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
@@ -36,7 +36,7 @@ import {
   type ActiveDocumentMutation,
 } from "./document-mutation"
 
-const MATTER_DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml", ".msg", ".zip"])
+const MATTER_DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml", ".msg", ".zip", ".txt", ".md", ".csv", ".rtf"])
 
 export class SourceDocumentConflictError extends Error {}
 
@@ -505,6 +505,11 @@ export async function extractDocumentText(fileName: string, buffer: Buffer) {
 
 async function extractRawText(fileName: string, buffer: Buffer): Promise<{ text: string; facts: ExtractionFacts }> {
   const lower = fileName.toLowerCase()
+  // These files already hold text; treating them as a ZIP-based DOCX rejects
+  // ordinary chat uploads before their evidence can be read. Keep Markdown and
+  // CSV syntax verbatim through the same normalization used by every extractor.
+  if (/\.(txt|md|csv)$/.test(lower)) return { text: buffer.toString("utf8"), facts: { format: "text" } }
+  if (lower.endsWith(".rtf")) return { text: rtfToText(buffer) ?? "", facts: { format: "text" } }
   if (lower.endsWith(".pdf")) {
     const { text, pages } = await readPdf(buffer)
     return { text, facts: { format: "pdf", pages } }

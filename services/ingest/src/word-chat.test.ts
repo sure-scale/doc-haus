@@ -10,7 +10,8 @@ import { claimWordEditLease, clearWordEditLease } from "../../../dochaus/lib/wor
 import { writeDeliverable, writeDeliverableRevision } from "./deliverable"
 import { openDb } from "./db"
 import { readCurrentVersion } from "./document-versions"
-import type { WordChatSend, WordChatTurn } from "../../../dochaus/lib/word-chat-contract"
+import { matterDocumentName } from "./ingest"
+import type { WordChatMaterial, WordChatSend, WordChatTurn } from "../../../dochaus/lib/word-chat-contract"
 
 type Session = { id: string; parentID?: string; metadata: Record<string, unknown>; location: { directory: string }; title: string; agent: string; model: { providerID: string; id: string }; time: { created: string; updated: string; idle?: string }; outcome?: string }
 const sessions = new Map<string, Session>(), messages = new Map<string, Record<string, unknown>[]>()
@@ -192,6 +193,51 @@ test("chunked multipart and JSON payloads are bounded before parsing", async () 
     const response = await app.request(`/word/chat/${route}`, { method: "POST", headers: { "content-type": contentType }, body: stream, duplex: "half" } as RequestInit)
     expect(response.status).toBe(413)
   }
+})
+
+test("multipart chat uploads read DOCX, UTF-8 text, Markdown, CSV and bounded RTF as attached evidence", async () => {
+  const id = await newConversation()
+  const files = [
+    { name: "Upload.docx", bytes: await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph("DOCX upload evidence.")] }] })), expected: "DOCX upload evidence." },
+    { name: "Upload.txt", bytes: Buffer.from("UTF-8 café upload evidence.\r\nSecond line."), expected: "UTF-8 café upload evidence.\nSecond line." },
+    { name: "Upload.md", bytes: Buffer.from("# Markdown evidence\n\nThe agreed wording is café."), expected: "# Markdown evidence\n\nThe agreed wording is café." },
+    { name: "Upload.csv", bytes: Buffer.from('name,amount\r\n"café",42'), expected: 'name,amount\n"café",42' },
+    { name: "Upload.rtf", bytes: Buffer.from(String.raw`{\rtf1\ansi\ansicpg1252{\fonttbl{\f0 Hidden Font;}}\f0 RTF caf\'e9 evidence.\par Second line.}`, "latin1"), expected: "RTF café evidence.\nSecond line." },
+  ]
+  for (const file of files) {
+    expect(matterDocumentName(file.name)).toBe(file.name)
+    const form = new FormData()
+    form.set("conversationId", id); form.set("mode", "request"); form.set("file", new File([Uint8Array.from(file.bytes)], file.name))
+    const response = await app.request("/word/chat/upload", { method: "POST", body: form })
+    expect(response.status, file.name).toBe(200)
+    const { material } = await response.json() as { material: WordChatMaterial }
+    expect(material.name).toBe(file.name)
+    expect(material.provenance).toBe("request-upload")
+    expect(material).not.toHaveProperty("text")
+    const turn = (await (await send(id, "document", "Explain the attached upload", crypto.randomUUID(), [material])).json() as { turn: WordChatTurn }).turn
+    expect(turn.status).toBe("complete")
+    expect(turn.sources[0]?.quote.trim()).toBe(file.expected)
+    expect(turn.sources[0]?.provenance).toBe("request-upload")
+    expect(prompts.at(-1)).not.toContain("Hidden Font")
+  }
+})
+
+test("RTF chat uploads refuse unreadable and parser-limit files without retaining an attachment", async () => {
+  const id = await newConversation()
+  const files = [
+    Buffer.from("This is ordinary text renamed as RTF."),
+    Buffer.from(String.raw`{\rtf1\ansi ` + "{".repeat(9_000) + "Over-nested content" + "}".repeat(9_000) + "}"),
+    Buffer.concat([Buffer.from(String.raw`{\rtf1 `), Buffer.alloc(8 * 1024 * 1024)]),
+  ]
+  for (const bytes of files) {
+    const form = new FormData()
+    form.set("conversationId", id); form.set("mode", "request"); form.set("file", new File([bytes], "Unreadable.rtf"))
+    const response = await app.request("/word/chat/upload", { method: "POST", body: form })
+    expect(response.status).toBe(413)
+    expect((await response.json() as { error: string }).error).toContain("readable text")
+  }
+  const response = await post("materials", { conversationId: id })
+  expect((await response.json() as { materials: WordChatMaterial[] }).materials.some(material => material.provenance === "request-upload")).toBe(false)
 })
 
 test("deleting selected wording prepares an exact reviewed empty replacement", async () => {

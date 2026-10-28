@@ -30,6 +30,7 @@ export type ExtractionQuality =
 // file, whose text only lists the files inside.
 export type ExtractionFacts =
   | { format: "docx" }
+  | { format: "text" }
   | { format: "pdf"; pages: number }
   | { format: "email"; body: string; attachments: number; bodyUnreadable?: true }
   | { format: "workbook"; cells: number; formulasWithoutValue: number }
