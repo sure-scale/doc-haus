@@ -126,6 +126,8 @@ const server = Bun.serve({
     if (request.method === "GET" && ["/matter/matter", "/templates"].includes(url.pathname)) return new Response(`<html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style><div id="root"></div><script type="module" src="/harness.js"></script></html>`, { headers: { "content-type": "text/html" } })
     if (route === "GET /ingest/matters/matter") return json(matter)
     if (route === "GET /ingest/matters") return json([matter])
+    if (route === "GET /ingest/word/config") return json({ available: false })
+    if (route === "GET /ingest/matters/matter/documents/word") return json({ documents: [] })
     if (route === "GET /ingest/jurisdictions" || route === "GET /ingest/playbooks") return json([])
     if (route === "GET /ingest/workflows") return json({ dir: "/workflows", workflows: [] })
     if (route === "GET /ingest/templates") {
@@ -434,7 +436,19 @@ try {
   await page.setViewportSize({ width: 1280, height: 950 })
   console.log("PASS saved template viewer covers desktop/mobile/large-text viewports without restyling or scrolling the background")
 
-  await page.getByRole("button", { name: "Use", exact: true }).click()
+  const useSaved = page.getByRole("button", { name: "Use", exact: true })
+  for (const [width, height] of [[390, 844], [1280, 950]] as const) {
+    await page.setViewportSize({ width, height })
+    await useSaved.click()
+    const picker = page.getByRole("dialog", { name: 'Use "Standard services.docx" in a matter' })
+    await picker.getByRole("button", { name: /Services matter/ }).waitFor()
+    const backdrop = await page.locator(".viewer-overlay").boundingBox()
+    assert.deepEqual(backdrop, { x: 0, y: 0, width, height }, "matter picker backdrop covers the viewport")
+    await page.keyboard.press("Escape")
+    await picker.waitFor({ state: "hidden" })
+    assert.equal(await useSaved.evaluate((node) => node === document.activeElement), true, "picker restores focus to Use")
+  }
+  await useSaved.click()
   await page.getByRole("button", { name: /Services matter/ }).click()
   await page.waitForURL("**/matter/matter?view=chat&agent=draft&prompt=**")
   await page.waitForFunction(() => document.querySelector("textarea")?.value.includes("Draft a new document from the template"))

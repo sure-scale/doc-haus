@@ -1,4 +1,5 @@
 import { useContext, useEffect, useState } from "react"
+import { createPortal } from "react-dom"
 import { Closing } from "./useExit"
 import { listJurisdictions, listMatters, type Jurisdiction, type Matter } from "../api/ingest/matters"
 import ModalHeader from "./ModalHeader"
@@ -30,7 +31,7 @@ export default function MatterPicker({
 
   const sorted = matters && [...matters].sort((a, b) => b.created_at - a.created_at)
 
-  return (
+  return createPortal(
     <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
       <div className="picker-panel" onClick={(e) => e.stopPropagation()}>
         <ModalHeader title={title} onClose={onClose} />
@@ -57,6 +58,7 @@ export default function MatterPicker({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
