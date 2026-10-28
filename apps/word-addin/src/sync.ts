@@ -4,7 +4,7 @@ import type {
   WordDocumentLink,
   WordSaveResponse,
 } from "../../../dochaus/lib/word-addin-contract"
-import { ConnectionError } from "./client"
+import { ConnectionError, type LatestWordContent } from "./client"
 import { documentFingerprint } from "./fingerprint"
 import { DocumentStateError, type WordHost } from "./office"
 
@@ -18,6 +18,8 @@ export type Acknowledgement = {
 export interface Checkpoints {
   read(): Acknowledgement | null
   write(value: Acknowledgement): void
+  clear?(): void
+  rebase?(base: string): Promise<void>
 }
 export type Transport = {
   lease(
@@ -46,9 +48,12 @@ type Pending = { bytes: Uint8Array; fingerprint: string; base: string; generatio
 
 /** Store no document bytes or bearer token. Failure to store is non-fatal. */
 export async function browserCheckpoints(link: WordDocumentLink, storage: Storage | undefined): Promise<Checkpoints> {
-  const identity = JSON.stringify([link.apiOrigin, link.matter, link.document, link.baseVersion, link.token])
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity))
-  const key = `dochaus.word.v1.${Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("")}`
+  const keyFor = async (base: string) => {
+    const identity = JSON.stringify([link.apiOrigin, link.matter, link.document, base, link.token])
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity))
+    return `dochaus.word.v1.${Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, "0")).join("")}`
+  }
+  let key = await keyFor(link.baseVersion)
   return {
     read() {
       try {
@@ -74,6 +79,17 @@ export async function browserCheckpoints(link: WordDocumentLink, storage: Storag
         /* Reopening can recover the saved file. */
       }
     },
+    clear() {
+      try { storage?.removeItem(key) } catch { /* Storage may be unavailable. */ }
+    },
+    async rebase(base) {
+      const next = await keyFor(base)
+      try {
+        storage?.removeItem(key)
+        storage?.removeItem(next)
+      } catch { /* Storage may be unavailable. */ }
+      key = next
+    },
   }
 }
 
@@ -88,6 +104,10 @@ export class WordSync {
   private connection?: WordConnectionState
   private pending?: Pending
   private acknowledgement?: Acknowledgement
+  // A refreshed buffer is already derived from a canonical version. A native
+  // Save/AutoSave must not turn the import into an automatic new version.
+  private latestNeedsSave = false
+  private latestUncertain = false
   private nextRetry = 0
   private heartbeatAt = -Infinity
   private content: PaneState["content"] = "unverified"
@@ -177,12 +197,14 @@ export class WordSync {
 
   private canSave(): boolean {
     return (
+      !this.latestUncertain &&
       this.connection?.version.state === "current" && (this.connection.lease.state === "available" || this.canWrite())
     )
   }
 
   private canWrite(): boolean {
     return (
+      !this.latestUncertain &&
       this.connection?.version.state === "current" &&
       this.connection.lease.state === "owned" &&
       Boolean(this.connection.lease.generation)
@@ -190,6 +212,8 @@ export class WordSync {
   }
 
   private blockedMessage(): string {
+    if (this.latestUncertain)
+      return "Word could not confirm the refresh. Check this document and open the latest copy from doc.haus before saving or applying changes."
     const state = this.connection
     if (!state) return "Check the connection before saving. Your Word changes stay in this file."
     if (state.version.state === "removed")
@@ -205,7 +229,7 @@ export class WordSync {
 
   private async inspect(claim: boolean): Promise<void> {
     this.connection = await this.transport.lease("inspect", this.base)
-    if (claim && this.connection.version.state === "current" && this.connection.lease.state === "available")
+    if (claim && !this.latestUncertain && this.connection.version.state === "current" && this.connection.lease.state === "available")
       this.connection = await this.transport.lease("claim", this.base)
   }
 
@@ -236,6 +260,70 @@ export class WordSync {
     })
   }
 
+  /** Replace this open Word document; this command never claims or publishes. */
+  async loadLatest(
+    load: (base: string) => Promise<LatestWordContent>,
+    confirm: (version: LatestWordContent["version"]) => boolean | Promise<boolean>,
+  ): Promise<boolean> {
+    let loaded = false
+    await this.enqueue(async () => {
+      if (this.latestUncertain) throw documentStateError(this.blockedMessage())
+      if (this.pending) throw documentStateError("Finish the pending Save before loading the latest version.")
+      if (!this.host.replace)
+        throw documentStateError("This version of Word cannot refresh the whole document here. Open the latest copy from doc.haus instead; this Word document is unchanged.")
+      await this.inspect(false)
+      if (this.connection?.version.state !== "stale" || !this.connection.version.base || !this.connection.version.current)
+        throw documentStateError(this.connection?.version.state === "current" ? "This copy is already on the latest version." : this.blockedMessage())
+      const oldBase = this.base
+      const before = await this.fingerprint(await this.host.export())
+      const latest = await load(oldBase)
+      if (!(await confirm(latest.version))) {
+        this.show("not-saved", "Loading cancelled. Your Word contents are unchanged.")
+        return
+      }
+      // Download/confirmation can take time. Check both the recorded version
+      // and the complete live Word package again before destructive import.
+      const current = await this.transport.lease("inspect", latest.version.id)
+      if (current.version.state !== "current" || current.version.base?.id !== latest.version.id || current.version.current?.id !== latest.version.id)
+        throw documentStateError("The latest version changed while loading. Review it and choose Load latest version again.")
+      if ((await this.fingerprint(await this.host.export())) !== before)
+        throw documentStateError("This Word document changed while loading. Your changes are still here. Choose Load latest version again if you want to replace them.")
+      const previousOwner = current.lease.state === "owned" ? current.lease.generation : undefined
+      this.show("not-saved", "Loading the latest contents into this Word document…")
+      // Native import/settings failures may happen after Word has changed. Do
+      // not let a later native Save automatically publish that uncertain buffer.
+      this.latestNeedsSave = true
+      this.latestUncertain = true
+      await this.host.replace(latest.bytes, latest.version.id)
+      this.latestUncertain = false
+      this.base = latest.version.id
+      this.acknowledgement = undefined
+      this.pending = undefined
+      try { this.checkpoints.clear?.() } catch { /* Storage failure is non-fatal. */ }
+      try { await this.checkpoints.rebase?.(this.base) } catch { /* Reopening can recover without a checkpoint. */ }
+      this.checkpointChecked = true
+      this.completed = false
+      this.nextRetry = 0
+      this.content = "changed"
+      loaded = true
+      if (previousOwner) {
+        try {
+          // The release is fenced to this session's old generation. It cannot
+          // release another editor that acquired ownership during the import.
+          await this.transport.lease("release", oldBase, previousOwner)
+        } catch { /* Inspect below; the imported document already exists. */ }
+      }
+      const after = await this.transport.lease("inspect", this.base)
+      this.connection = after
+      this.show("not-saved", after.version.state === "current"
+        ? "Latest version loaded in Word. Choose Save when you’re ready."
+        : "The version loaded in Word, and doc.haus has changed again. Check the latest version before saving.")
+    })
+    // Replacement invalidates the previous chat context even if the final
+    // connection check failed; enqueue already reports that failure in the pane.
+    return loaded
+  }
+
   /** Deliberate ownership claim only; current text still needs confirmation. */
   startEditing(): Promise<boolean> {
     return this.enqueue(async () => {
@@ -249,6 +337,7 @@ export class WordSync {
   takeover(): Promise<boolean> {
     const observed = this.connection
     return this.enqueue(async () => {
+      if (this.latestUncertain) throw documentStateError(this.blockedMessage())
       this.completed = false
       if (
         !observed ||
@@ -422,6 +511,7 @@ export class WordSync {
   }
 
   private async explicitSave(): Promise<void> {
+    if (this.latestUncertain) throw documentStateError(this.blockedMessage())
     this.completed = false
     this.show("saving", "Saving in Word…")
     await this.restoreCheckpoint()
@@ -472,6 +562,11 @@ export class WordSync {
   private async capture(requireAcknowledgement = false): Promise<boolean> {
     if (!this.canWrite()) {
       this.show("not-saved", this.blockedMessage())
+      return false
+    }
+    if (this.latestNeedsSave && !requireAcknowledgement) {
+      this.content = "changed"
+      this.show("not-saved", "Latest contents are in Word. Choose Save when you’re ready.")
       return false
     }
     await this.restoreCheckpoint()
@@ -562,6 +657,7 @@ export class WordSync {
       overlap: response.overlap,
     }
     this.pending = undefined
+    this.latestNeedsSave = false
     this.nextRetry = 0
     this.checkpoints.write(this.acknowledgement)
   }

@@ -24,6 +24,8 @@ button { min-width: 0; max-width: 100%; min-height: 44px; padding: 9px 12px; bor
 .primary { width: 100%; color: #fff; background: #17634f; }
 .latest-action { display: block; min-height: 44px; padding: 9px 12px; border: 1px solid transparent; border-radius: 8px; text-align: center; text-decoration: none; font-weight: 550; }
 .latest-action[aria-disabled="true"] { opacity: .55; cursor: default; }
+.latest-separate { max-width: 100%; padding-block: 4px; color: #17634f; font-size: 10px; text-align: right; text-underline-offset: 2px; }
+.latest-separate[aria-disabled="true"] { opacity: .55; cursor: default; }
 .primary:hover:not(:disabled) { background: #104f3e; }
 button:disabled { opacity: .55; cursor: default; }
 button:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid #17634f; outline-offset: 3px; }

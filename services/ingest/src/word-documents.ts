@@ -164,7 +164,7 @@ export function wordDocumentRoutes(deps: Dependencies) {
   app.post("/word/latest", async c => {
     const auth = authenticate(c)
     if (!auth) return failure(c, 401, "word_link_revoked", "This Word connection is no longer valid. Reopen the document from doc.haus.")
-    const input = await c.req.json().catch(() => null) as { origin?: unknown } | null
+    const input = await c.req.json().catch(() => null) as { origin?: unknown; mode?: unknown } | null
     const browserOrigin = input?.origin
     try {
       const url = new URL(typeof browserOrigin === "string" ? browserOrigin : "")
@@ -181,6 +181,13 @@ export function wordDocumentRoutes(deps: Dependencies) {
       if (!config.available || !config.origin) return failure(c, 503, "word_unavailable", config.reason ?? "Word is not configured.")
       const current = readCurrentVersion(live.matter.dir, live.target.name)
       if (!current || current.document.id !== live.grant.document_id) return failure(c, 404, "word_document_missing", "That document is no longer in this matter.")
+      if (input?.mode === "inline") {
+        const bytes = Buffer.from(stripWordLink(readFileSync(live.target.docPath)))
+        // Word's whole-document insertion API supports packages up to 4 MiB.
+        if (bytes.length > 4 * 1024 * 1024) return failure(c, 413, "word_refresh_too_large", "This document is too large to refresh here. Open the latest copy separately.")
+        c.header("Cache-Control", "no-store")
+        return c.json({ version: { id: current.current.id, number: current.current.number }, bytes: bytes.toString("base64"), sha256: sha256Hex(bytes) })
+      }
       // The explicit native read may hand over only this stale pane's own
       // lease. Another editor's lease is never changed, including after a race.
       const previousOwner = session && state.version.state === "stale" && state.lease.state === "owned" && state.lease.generation

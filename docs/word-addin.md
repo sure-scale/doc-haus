@@ -132,6 +132,11 @@ assumes an older or forwarded copy is the newest version. If a copy is stale, ke
 return to the matter and compare its versions before opening a fresh linked copy.
 Keep any unsent local edits separately before replacing your Word copy.
 
+In a current desktop Word, **Load latest version** replaces the open document
+after confirmation. Use Save As first to keep local work. Loading does not
+publish a version; choose **Save** when ready. **Open a separate copy** remains
+available for older Word versions or documents too large to refresh in place.
+
 One Word editor can hold the document's editing lock. While held, doc.haus
 refuses replacement, acceptance, rejection, restore, redaction and other writes
 to that document; viewing, comparing and downloading remain available. The pane

@@ -57,7 +57,6 @@ async function main(): Promise<void> {
     const checkpoints = await browserCheckpoints(link, storage)
     const session = crypto.randomUUID()
     const client = new WordClient(link, session)
-    renderLatest = setupLatestVersion(document, base => client.latest(base))
     const sync = new WordSync(link.baseVersion, office.host, client, checkpoints, render)
     save.addEventListener("click", () => { void sync.save() })
     takeover.addEventListener("click", () => { void sync.takeover() })
@@ -82,6 +81,14 @@ async function main(): Promise<void> {
         })
       },
     })
+    renderLatest = setupLatestVersion(document, base => client.latest(base), office.host.replace ? async () => {
+      const loaded = await sync.loadLatest(
+        base => client.latestContent(base),
+        version => window.confirm(`Replace this Word document with version ${version.number} from doc.haus?\n\nChanges in this copy will be replaced. To keep them, cancel and use Save As first.`),
+      )
+      if (loaded) conversation.resetDocumentContext()
+      return loaded
+    } : undefined)
     setupSourceDesk(link, { panel: chatPanel, storage })
     window.addEventListener("pagehide", () => conversation.dispose(), { once: true })
     await sync.start()

@@ -445,3 +445,117 @@ test("Done does not close if saving its settings fails or Word remains dirty", a
     else delete (globalThis as { window?: unknown }).window
   }
 })
+
+function installRefreshHost(options: { supported?: boolean; encoded?: boolean; failInsert?: boolean; failSettings?: boolean } = {}) {
+  const events: string[] = []
+  let raw: unknown = options.encoded ? JSON.stringify(linkedDocument) : { ...linkedDocument }
+  let tracking = "TrackAll"
+  let imported: { bytes: string; location: string; options: Record<string, boolean> } | undefined
+  const context = {
+    document: {
+      saved: true,
+      get changeTrackingMode() { return tracking },
+      set changeTrackingMode(value: string) { tracking = value; events.push(`tracking:${value}`) },
+      load: (value: string) => { events.push(`load:${value}`) },
+      save: () => { events.push("native-save") },
+      close: () => { events.push("native-close") },
+      insertFileFromBase64: (bytes: string, location: string, optionsValue: Record<string, boolean>) => {
+        expect(tracking).toBe("Off")
+        events.push("document-replace")
+        imported = { bytes, location, options: optionsValue }
+        if (options.failInsert) throw new Error("Synthetic unsupported native package")
+        tracking = "TrackMineOnly" // Simulate the imported source tracking mode.
+        raw = null // Native insertion does not preserve document settings.
+      },
+    },
+    sync: async () => { events.push("sync") },
+  }
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      location: { origin: linkedDocument.apiOrigin },
+      Office: {
+        onReady: async () => ({ host: "Word" }),
+        context: {
+          requirements: { isSetSupported: (name: string, version: string) => name === "WordApi" && (version !== "1.7" || options.supported !== false) },
+          document: { settings: {
+            get: () => raw,
+            set: (_key: string, value: unknown) => { events.push("settings-set"); raw = value },
+            saveAsync: (callback: (value: { status: string; value: undefined }) => void) => {
+              events.push("settings-save")
+              callback({ status: options.failSettings ? "failed" : "succeeded", value: undefined })
+            },
+          } },
+        },
+      },
+      Word: { run: async (action: (value: typeof context) => Promise<unknown>) => action(context) },
+    },
+  })
+  return { events, context, get raw() { return raw }, set raw(value: unknown) { raw = value }, get imported() { return imported } }
+}
+
+test("refresh uses full-document Replace with all fidelity options, retains the link and imports source tracking without saving", async () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window")
+  try {
+    for (const encoded of [false, true]) {
+      const f = installRefreshHost({ encoded })
+      const { host } = await connectOffice()
+      const bytes = new Uint8Array([80, 75, 0, 255, 1])
+      await host.replace!(bytes, "latest-v2")
+      expect(f.imported).toEqual({ bytes: btoa(String.fromCharCode(...bytes)), location: "Replace", options: {
+        importTheme: true, importStyles: true, importParagraphSpacing: true, importPageColor: true,
+        importChangeTrackingMode: true, importCustomProperties: true, importCustomXmlParts: true, importDifferentOddEvenPages: true,
+      } })
+      expect(typeof f.raw).toBe(encoded ? "string" : "object")
+      expect(encoded ? JSON.parse(f.raw as string) : f.raw).toEqual({ ...linkedDocument, baseVersion: "latest-v2" })
+      expect(f.context.document.changeTrackingMode).toBe("TrackMineOnly")
+      expect(f.events).toEqual(["load:changeTrackingMode", "sync", "tracking:Off", "sync", "document-replace", "sync", "settings-set", "settings-save"])
+    }
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "window", previous)
+    else delete (globalThis as { window?: unknown }).window
+  }
+})
+
+test("refresh refuses unsupported fidelity API, oversize packages and changed links before native mutation", async () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window")
+  try {
+    const unsupported = installRefreshHost({ supported: false })
+    expect((await connectOffice()).host.replace).toBeUndefined()
+    expect(unsupported.events).toEqual([])
+    for (const changed of [false, true]) {
+      const f = installRefreshHost()
+      const { host } = await connectOffice()
+      if (changed) f.raw = { ...linkedDocument, token: "another-capability" }
+      await expect(host.replace!(changed ? new Uint8Array([1]) : new Uint8Array(4 * 1024 * 1024 + 1), "v2")).rejects.toBeInstanceOf(DocumentStateError)
+      expect(f.events).toEqual([])
+    }
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "window", previous)
+    else delete (globalThis as { window?: unknown }).window
+  }
+})
+
+test("failed native replacement or link persistence never stamps a successful base or blindly repeats import", async () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window")
+  try {
+    for (const failSettings of [false, true]) {
+      const f = installRefreshHost({ failInsert: !failSettings, failSettings })
+      const { host } = await connectOffice()
+      await expect(host.replace!(new Uint8Array([1]), "v2")).rejects.toBeInstanceOf(DocumentStateError)
+      if (!failSettings) {
+        expect(f.raw).toEqual(linkedDocument)
+        expect(f.events).not.toContain("settings-set")
+        expect(f.context.document.changeTrackingMode).toBe("TrackAll")
+      }
+      const count = f.events.length
+      await expect(host.replace!(new Uint8Array([2]), "v2")).rejects.toThrow("previous refresh")
+      expect(f.events).toHaveLength(count)
+      expect(f.events).not.toContain("native-save")
+      expect(f.events).not.toContain("native-close")
+    }
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "window", previous)
+    else delete (globalThis as { window?: unknown }).window
+  }
+})

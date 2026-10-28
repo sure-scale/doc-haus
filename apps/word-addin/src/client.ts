@@ -9,6 +9,8 @@ import {
 export const WORD_UPDATE_MESSAGE =
   "This Word add-in is out of date. Update Word setup in doc.haus, restart Word, then open a fresh copy."
 
+export type LatestWordContent = { version: { id: string; number: number }; bytes: Uint8Array }
+
 export function isCurrentPaneVersion(value: string): boolean {
   try {
     const versions = new URL(value).searchParams.getAll("version")
@@ -253,6 +255,18 @@ export class WordClient {
     } catch {
       throw new ConnectionError("The latest copy could not be opened. Open this matter in doc.haus and choose Open in Word.")
     }
+  }
+  async latestContent(base: string): Promise<LatestWordContent> {
+    const value = await this.post("latest", { base, input: { origin: this.link.origin, mode: "inline" } }) as { version?: { id?: unknown; number?: unknown }; bytes?: unknown; sha256?: unknown }
+    if (!value?.version || typeof value.version.id !== "string" || !value.version.id || !Number.isSafeInteger(value.version.number) || Number(value.version.number) < 1 ||
+      typeof value.bytes !== "string" || !value.bytes.length || value.bytes.length > Math.ceil(4 * 1024 * 1024 / 3) * 4 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.bytes) || typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256))
+      throw new ConnectionError("The latest document could not be verified. Your Word copy is unchanged.")
+    const bytes = Uint8Array.from(atob(value.bytes), character => character.charCodeAt(0))
+    if (bytes.length > 4 * 1024 * 1024) throw new ConnectionError("Open the latest copy separately; it is too large to refresh here.")
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), byte => byte.toString(16).padStart(2, "0")).join("")
+    if (hash !== value.sha256) throw new ConnectionError("The latest document could not be verified. Your Word copy is unchanged.")
+    return { version: { id: value.version.id, number: Number(value.version.number) }, bytes }
   }
   async done(base: string, generation: string): Promise<WordConnectionState> {
     return this.connection(await this.post("done", { base, generation }))

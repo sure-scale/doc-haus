@@ -254,3 +254,20 @@ test("malformed or inconsistent save ownership cannot become an acknowledgement"
     await expect(client.save(new Uint8Array([1]), "original", "generation")).rejects.toThrow("did not confirm")
   }
 })
+
+test("inline latest content is scoped, bounded and integrity checked without changing the current base", async () => {
+  const bytes = new Uint8Array([80, 75, 3, 4]), encoded = btoa(String.fromCharCode(...bytes))
+  const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), byte => byte.toString(16).padStart(2, "0")).join("")
+  const payload = { version: { id: "new-base", number: 2 }, bytes: encoded, sha256: digest }
+  const client = new WordClient(link, "session", async (url, init) => {
+    expect(String(url)).toBe(`${link.apiOrigin}/word/latest`)
+    expect(JSON.parse(init!.body as string)).toEqual({ origin: link.origin, mode: "inline" })
+    expect(new Headers(init!.headers).get("x-dochaus-word-base-version")).toBe("old-base")
+    return Response.json(payload)
+  })
+  expect(await client.latestContent("old-base")).toEqual({ version: payload.version, bytes })
+  expect(link.baseVersion).toBe("original")
+  for (const bad of [{ ...payload, sha256: "0".repeat(64) }, { ...payload, bytes: "!bad" }, { ...payload, version: { id: "", number: 2 } }, { ...payload, bytes: "A".repeat(6_000_000) }]) {
+    await expect(new WordClient(link, "session", async () => Response.json(bad)).latestContent("old-base")).rejects.toThrow("could not be verified")
+  }
+})

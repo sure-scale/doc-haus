@@ -243,3 +243,54 @@ test("prepare rechecks ownership and canonical base after asynchronous authoring
   expect((await prepare()).status).toBe(409)
   clearWordEditLease(db, auth.grant.document_id); db.close()
 })
+
+test("multi-paragraph selection suggestion evidence includes the exact selected passage once", () => {
+  const paragraphs = [{ id: "first", text: "Unselected prefix. First selected wording." }, { id: "second", text: "Second selected wording. Unselected suffix." }]
+  const text = "First selected wording.\rSecond selected wording."
+  const selection = { id: "selected", text, paragraphs, startOffset: 19, endOffset: 24, capturedAt: context.capturedAt, saved: false }
+  const result = wordChatSuggestionBatches({ ...context, paragraphs, text: paragraphs.map(paragraph => paragraph.text).join("\r"), selection }, true)
+  const supplied = result.batches.flat().map(paragraph => paragraph.text).join("\r")
+  expect(supplied).toBe(text)
+  expect(result.batches.flat().map(paragraph => paragraph.id)).toEqual(["first", "second"])
+  expect(supplied).not.toContain("Unselected")
+})
+
+test("follow-up evidence excludes changed Word buffers while retaining unchanged conversation context", async () => {
+  const id = await newConversation()
+  const monday = { ...context, text: "The current Word buffer uses Monday delivery.", paragraphs: [{ id: "11", text: "The current Word buffer uses Monday delivery." }] }
+  const first = await post("send", { conversationId: id, scope: "document", text: "Explain delivery", requestId: crypto.randomUUID(), attachments: [], context: monday })
+  expect(first.status).toBe(200)
+  const second = await send(id, "document", "Explain the current day")
+  expect(second.status).toBe(200)
+  const changed = JSON.parse(prompts.at(-1)!.split("\n").at(-1)!) as { compatibleDiscussion: unknown[]; sources: { quote: string }[] }
+  expect(changed.compatibleDiscussion).toEqual([])
+  expect(prompts.at(-1)).not.toContain("Monday")
+  expect(changed.sources[0]?.quote).toContain("Tuesday")
+  expect((await send(id, "document", "Explain that once more")).status).toBe(200)
+  const unchanged = JSON.parse(prompts.at(-1)!.split("\n").at(-1)!) as { compatibleDiscussion: { question: string; answer: string }[] }
+  expect(unchanged.compatibleDiscussion).toHaveLength(1)
+  expect(unchanged.compatibleDiscussion[0]?.question).toBe("Explain the current day")
+  expect(unchanged.compatibleDiscussion[0]?.answer).toContain("Tuesday")
+  const visible = await post("conversation", { conversationId: id })
+  expect((await visible.json() as { turns: WordChatTurn[] }).turns).toHaveLength(3)
+})
+test("refinement keeps its reviewed target when unrelated Word wording changes", async () => {
+  const id = await newConversation(); amend = true
+  const turn = (await (await send(id, "document", "Revise delivery to Wednesday")).json() as { turn: WordChatTurn }).turn
+  const updated = { ...context, text: context.text + "\rAn unrelated unsaved note.", paragraphs: [...context.paragraphs, { id: "12", text: "An unrelated unsaved note." }] }
+  const result = await post("send", { conversationId: id, scope: "document", text: "Keep the same target and refine the delivery change", requestId: crypto.randomUUID(), attachments: [], context: updated, proposal: turn.proposal })
+  amend = false
+  expect(result.status).toBe(200)
+  expect((await result.json() as { turn: WordChatTurn }).turn.proposal?.target).toEqual(turn.proposal!.target)
+})
+
+test("selection identity separates follow-ups while incidental capture IDs do not", async () => {
+  const id = await newConversation()
+  const selected = (text: string) => ({ ...context, selection: { id: crypto.randomUUID(), text, paragraphs: context.paragraphs, startOffset: context.text.indexOf(text), endOffset: context.text.indexOf(text) + text.length, capturedAt: new Date().toISOString(), saved: false } })
+  for (const [question, selectedContext] of [["Explain selected day", selected("Tuesday")], ["Explain selected delivery", selected("delivery")], ["Explain it again", selected("delivery")]] as const) {
+    expect((await post("send", { conversationId: id, scope: "document", text: question, requestId: crypto.randomUUID(), attachments: [], context: selectedContext })).status).toBe(200)
+    const supplied = JSON.parse(prompts.at(-1)!.split("\n").at(-1)!) as { compatibleDiscussion: { question: string }[] }
+    if (question === "Explain selected delivery") expect(supplied.compatibleDiscussion).toEqual([])
+    if (question === "Explain it again") expect(supplied.compatibleDiscussion.map(turn => turn.question)).toEqual(["Explain selected delivery"])
+  }
+})

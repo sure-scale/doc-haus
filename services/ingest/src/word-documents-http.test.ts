@@ -218,6 +218,28 @@ const latestSource = async (response: Response) => {
   return new URL(new URL(value.uri).searchParams.get("source")!)
 }
 
+test("inline latest reads only this capability's current document without versions or lease changes", async () => {
+  await create("Inline latest.docx")
+  const old = await handout("Inline latest.docx")
+  const owner = await claim(old.link)
+  const saved = await save(old.link, await plain("Latest inline wording."))
+  const current = (await saved.json() as WordSaveResponse).version
+  const response = await latestCopy(old.link, {}, { origin: browserOrigin, mode: "inline", name: "Other.docx", matter: "foreign" })
+  expect(response.status).toBe(200)
+  expect(response.headers.get("Cache-Control")).toBe("no-store")
+  const value = await response.json() as { version: { id: string; number: number }; bytes: string; sha256: string }
+  expect(value.version).toEqual({ id: current.id, number: current.number })
+  const bytes = Buffer.from(value.bytes, "base64")
+  expect(value.sha256).toBe(new Bun.CryptoHasher("sha256").update(bytes).digest("hex"))
+  expect(strFromU8(unzipSync(bytes)["word/document.xml"]!)).toContain("Latest inline wording.")
+  expect(Object.values(unzipSync(bytes)).map(part => strFromU8(part)).join("")).not.toContain(old.link.token)
+  expect((await history("Inline latest.docx")).versions).toHaveLength(2)
+  expect(await (await lease(old.link, "inspect")).json()).toMatchObject({ version: { state: "stale" }, lease: { state: "owned", generation: owner.lease.generation } })
+  expect((await latestCopy(old.link, { "x-dochaus-word-base-version": "foreign" }, { origin: browserOrigin, mode: "inline" })).status).toBe(409)
+  await writeFile(path.join(matter.dir, "Inline latest.docx"), await plain("Unrecorded outside edit."))
+  expect((await latestCopy(old.link, {}, { origin: browserOrigin, mode: "inline" })).status).toBe(409)
+})
+
 test("latest copy opens a separate current handout and hands over only its own stale lease on native read", async () => {
   await create("Latest.docx")
   const old = await handout("Latest.docx")

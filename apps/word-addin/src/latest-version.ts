@@ -1,59 +1,50 @@
 import type { PaneState } from "./sync"
 
-/** Prepare the short-lived handoff before the click so Word can follow a real
- * user-activated link. The existing document and its saving queue stay open. */
-export function setupLatestVersion(document: Document, latest: (base: string) => Promise<string>, now = Date.now) {
-  const action = document.getElementById("load-latest") as HTMLAnchorElement
+/** The primary action refreshes this Word copy. A separate file stays available
+ * for hosts/packages that cannot safely replace the complete document. */
+export function setupLatestVersion(document: Document, latest: (base: string) => Promise<string>, refresh?: () => Promise<boolean>, now = Date.now) {
+  const action = document.getElementById("load-latest") as HTMLButtonElement
+  const separate = document.getElementById("open-latest-copy") as HTMLAnchorElement
   const message = document.getElementById("latest-message")!
-  let key = "", base = "", prepared = 0, pending = false, nextAttempt = 0
-  const clear = () => {
-    action.removeAttribute("href")
-    action.setAttribute("aria-disabled", "true")
-    prepared = 0
-  }
+  let key = "", base = "", prepared = 0, pending = false, loading = false, busy = false, nextAttempt = 0
+  const clear = () => { separate.removeAttribute("href"); separate.setAttribute("aria-disabled", "true"); prepared = 0 }
   const prepare = async () => {
     if (!key || pending || now() < nextAttempt || (prepared && now() - prepared < 30_000)) return
     pending = true
-    const requested = key
-    const started = now()
+    const requested = key, started = now()
     try {
       const uri = await latest(base)
       if (key !== requested) return
-      action.href = uri
-      action.setAttribute("aria-disabled", "false")
-      prepared = started
-      message.hidden = true
+      separate.href = uri; separate.setAttribute("aria-disabled", "false"); prepared = started
     } catch {
       if (key !== requested) return
-      clear()
-      nextAttempt = now() + 5_000
-      message.textContent = "Cannot load the latest copy yet. Check that doc.haus is running, or open the matter below."
-      message.hidden = false
+      clear(); nextAttempt = now() + 5_000
     } finally { pending = false }
   }
-  action.addEventListener("click", event => {
-    if (!prepared || now() - prepared >= 45_000) {
-      event.preventDefault()
-      clear()
-      void prepare()
-      return
-    }
-    // Tickets are single-use. A real anchor with target=_blank keeps the pane
-    // alive and avoids opening a popup after an asynchronous fetch.
-    message.textContent = "Opening the latest version. This older copy stays open."
-    message.hidden = false
+  action.addEventListener("click", async () => {
+    if (!refresh || loading || busy || !key) return
+    loading = true; action.disabled = true; action.textContent = "Loading…"
+    message.hidden = true
+    try { await refresh() }
+    finally { loading = false; action.disabled = busy; action.textContent = "Load latest version" }
+  })
+  separate.addEventListener("click", event => {
+    if (!prepared || now() - prepared >= 45_000 || busy || loading) { event.preventDefault(); clear(); void prepare(); return }
+    message.textContent = "Opening a separate copy. This document stays open."; message.hidden = false
     setTimeout(() => { clear(); void prepare() }, 0)
   })
   return (state: PaneState) => {
     const version = state.connection?.version
     const next = version?.state === "stale" && version.base && version.current ? `${version.base.id}:${version.current.id}` : ""
-    if (next !== key) {
-      key = next
-      base = version?.base?.id ?? ""
-      nextAttempt = 0
-      clear()
-      message.hidden = true
+    busy = state.busy
+    action.hidden = !next || !refresh
+    separate.hidden = !next
+    if (next && !refresh) {
+      const help = document.getElementById("blocked-help")
+      if (help) help.textContent = "This version of Word needs a separate copy. Use Save As first to keep local edits."
     }
+    action.disabled = busy || loading
+    if (next !== key) { key = next; base = version?.base?.id ?? ""; nextAttempt = 0; clear(); message.hidden = true }
     void prepare()
   }
 }

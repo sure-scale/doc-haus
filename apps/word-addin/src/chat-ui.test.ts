@@ -9,7 +9,7 @@ const passage: WordChatTarget = { id: "target-one", text: "Payment within 14 day
 const context: WordChatSnapshot = { text: passage.text, paragraphs: passage.paragraphs, saved: false, capturedAt: passage.capturedAt, truncated: false }
 const proposal: WordChatProposal = { id: "proposal-one", documentId: "document-one", before: passage.text, after: "Payment within 30 days.", explanation: "A longer payment period.", openItems: ["Confirm the intended period."], target: passage, createdAt: passage.capturedAt }
 function turn(input: Partial<WordChatTurn> = {}): WordChatTurn { return { id: "turn-one", conversationId: "conversation-one", requestId: "request-one", kind: "chat", scope: "document", text: "Explain payment", answer: "Payment is due in 14 days.", status: "complete", sources: [], attachments: [], createdAt: 1, ...input } }
-function fixture(overrides: { request?: (action: ChatAction, input: object) => Promise<unknown>; turns?: WordChatTurn[]; host?: Partial<ChatHost> } = {}) {
+function fixture(overrides: { request?: (action: ChatAction, input: object) => Promise<unknown>; upload?: (conversationId: string, file: File, mode: "request" | "matter") => Promise<unknown>; turns?: WordChatTurn[]; host?: Partial<ChatHost> } = {}) {
   const page = new Window({ url: "https://localhost:4612/word-addin/pane.html" })
   const previous = ["window", "document"].map(key => Object.getOwnPropertyDescriptor(globalThis, key))
   Object.defineProperty(globalThis, "window", { configurable: true, value: page }); Object.defineProperty(globalThis, "document", { configurable: true, value: page.document })
@@ -23,7 +23,7 @@ function fixture(overrides: { request?: (action: ChatAction, input: object) => P
       if (result === undefined) result = action === "conversations" ? { conversations: [conversation] } : action === "conversation" ? { conversation, turns: overrides.turns ?? [] } : action === "materials" ? { materials: [], matterName: "Synthetic matter", documentName: "Draft.docx" } : { turn: turn() }
       return result as T
     },
-    async upload<T>(): Promise<T> { throw new Error("Not used") },
+    async upload<T>(conversationId: string, file: File, mode: "request" | "matter"): Promise<T> { if (overrides.upload) return await overrides.upload(conversationId, file, mode) as T; throw new Error("Not used") },
   }
   const host: ChatHost = { documentName: "Draft.docx", capture: async () => structuredClone(context), captureSelection: async () => structuredClone(passage), apply: async () => {}, now: () => time,
     schedule(run, delay) { const entry = { run, at: time + delay, cancelled: false }; scheduled.push(entry); return () => { entry.cancelled = true } }, ...overrides.host }
@@ -52,6 +52,84 @@ test("settings and attachments retain typed text and exact optional selected con
     const sent = f.calls.find(call => call.action === "send")!.input as WordChatSend
     expect(sent.scope).toBe("document"); expect(sent.context.saved).toBe(false); expect(sent.context.selection).toEqual(passage)
   } finally { f.restore() }
+})
+
+test("answers use compact numbered references and merge repeated source identities without losing distinct quotes", async () => {
+  const reference = "playbook:synthetic-engagement-guidance"
+  const first = { id: reference, name: "Engagement guidance", quote: "Explain the agreed payment period.", location: "Attached guidance", provenance: "instructions" as const }
+  const second = { ...first, quote: "Keep any missing instruction visible.", location: "Open items" }
+  const third = { id: "source:42", name: "Instructions.txt", quote: "<img src=x onerror=unsafe()> is literal source text.", location: "Paragraph 2", provenance: "saved-version" as const }
+  const original = turn({ answer: `Explain the period [${reference}]. Disclose open items [${reference}]. See instructions [source:42].`, sources: [first, second, first, third] })
+  const snapshot = JSON.stringify(original)
+  const f = fixture({ turns: [original] })
+  try {
+    await f.chat.ready
+    const displayed = f.root.querySelector(".chat-answer-text")!.textContent
+    expect(displayed).toBe("Explain the period [1]. Disclose open items [1]. See instructions [2].")
+    expect(displayed).not.toContain(reference)
+    const disclosures = f.root.querySelectorAll(".chat-source")
+    expect(disclosures).toHaveLength(2)
+    expect(disclosures[0]!.querySelector("summary")!.textContent).toBe("[1] Engagement guidance · Playbook")
+    expect([...disclosures[0]!.querySelectorAll("p")].map(element => element.textContent)).toEqual([first.quote, second.quote])
+    expect(disclosures[0]!.textContent).toContain(first.location); expect(disclosures[0]!.textContent).toContain(second.location)
+    expect(disclosures[1]!.textContent).toContain(third.quote); expect(disclosures[1]!.querySelector("img")).toBeNull()
+    expect(JSON.stringify(original)).toBe(snapshot)
+  } finally { f.restore() }
+})
+
+test("Existing and Upload attachment tabs support keyboard focus and retain the composer and chosen context", async () => {
+  const source = { kind: "source" as const, id: "source-one", hash: "a".repeat(64), name: "Supporting notes.docx", provenance: "saved-version" as const }
+  const uploaded = { ...source, id: "uploaded-one", name: "New notes.txt" }
+  const uploads: { conversationId: string; file: string; mode: string }[] = []
+  const f = fixture({ request: async action => action === "materials" ? { materials: [source], matterName: "Synthetic matter", documentName: "Draft.docx" } : undefined,
+    upload: async (conversationId, file, mode) => { uploads.push({ conversationId, file: file.name, mode }); return { material: uploaded } } })
+  try {
+    await f.chat.ready; f.click("selection"); await Bun.sleep(0)
+    f.get<HTMLTextAreaElement>("message").value = "Keep this question"
+    f.click("attach")
+    const existing = f.get<HTMLButtonElement>("material-existing-tab"), upload = f.get<HTMLButtonElement>("material-upload-tab")
+    expect(f.page.document.activeElement).toBe(existing as never)
+    expect(existing.getAttribute("aria-selected")).toBe("true"); expect(f.get("history").hidden).toBe(true)
+    existing.dispatchEvent(new f.page.KeyboardEvent("keydown", { key: "End", bubbles: true }) as unknown as Event)
+    expect(upload.getAttribute("aria-selected")).toBe("true"); expect(f.page.document.activeElement).toBe(upload as never)
+    expect(f.get("material-existing").hidden).toBe(true); expect(f.get("material-upload").hidden).toBe(false)
+    upload.dispatchEvent(new f.page.KeyboardEvent("keydown", { key: "Home", bubbles: true }) as unknown as Event)
+    f.get("material-list").querySelector<HTMLButtonElement>("button")!.click()
+    expect(f.get("materials").hidden).toBe(true); expect(f.get("history").hidden).toBe(false)
+    expect(f.get("chips").textContent).toContain(source.name); expect(f.get("chips").textContent).toContain("Selected Word text")
+    f.click("attach"); f.click("material-upload-tab")
+    f.get<HTMLSelectElement>("upload-mode").value = "matter"
+    const input = f.get<HTMLInputElement>("upload")
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["Synthetic notes"], "New notes.txt")] })
+    input.dispatchEvent(new f.page.Event("change") as unknown as Event); await Bun.sleep(0)
+    expect(uploads).toEqual([{ conversationId: "conversation-one", file: "New notes.txt", mode: "matter" }])
+    expect(f.get("chips").textContent).toContain(uploaded.name)
+    expect(f.get<HTMLTextAreaElement>("message").value).toBe("Keep this question")
+    f.get("materials").dispatchEvent(new f.page.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event)
+    expect(f.get("materials").hidden).toBe(true); expect(f.page.document.activeElement).toBe(f.get("attach") as never)
+    expect(f.calls.some(call => call.action === "send" || call.action === "suggest")).toBe(false)
+  } finally { f.restore() }
+})
+
+test("Stop fences a late foreground poll result or failure so it cannot revive an answer or proposal", async () => {
+  for (const fail of [false, true]) {
+    let finish!: (value: unknown) => void, reject!: (error: Error) => void
+    const response = new Promise((resolve, refusal) => { finish = resolve; reject = refusal })
+    const f = fixture({ turns: [turn({ status: "running", answer: "" })], request: async action => action === "poll" ? response : action === "cancel" ? { turn: turn({ status: "cancelled", answer: "" }) } : undefined })
+    try {
+      await f.chat.ready; await f.advance(1_000)
+      expect(f.calls.filter(call => call.action === "poll")).toHaveLength(1)
+      f.get<HTMLTextAreaElement>("message").value = "A follow-up draft"
+      f.click("stop"); await Bun.sleep(0)
+      if (fail) reject(new Error("Outdated poll failure")); else finish({ turn: turn({ status: "complete", proposal, answer: "Outdated answer" }) })
+      await Bun.sleep(0); await f.advance(5_000)
+      expect(f.root.textContent).not.toContain("Outdated answer"); expect(f.root.textContent).not.toContain("Outdated poll failure")
+      expect(f.root.querySelector(".chat-proposal")).toBeNull()
+      expect(f.get("activity").textContent).toBe("Stopped"); expect(f.get("stop").hidden).toBe(true)
+      expect(f.get<HTMLTextAreaElement>("message").value).toBe("A follow-up draft")
+      expect(f.calls.filter(call => call.action === "poll")).toHaveLength(1)
+    } finally { finish(undefined); f.restore() }
+  }
 })
 
 test("lost Send retains its frozen request identifier and context during reconnect", async () => {
@@ -158,6 +236,31 @@ test("a late selection capture cannot restore the pre-Apply target", async () =>
     expect(f.get("chips").textContent).not.toContain("Selected Word text")
     expect(f.get("activity").textContent).toContain("Applied in Word")
   } finally { finish(structuredClone(passage)); f.restore() }
+})
+
+test("verified document replacement clears stale Word context and pauses ideas while retaining draft, attachments and history", async () => {
+  const material = { kind: "source" as const, id: "source-one", hash: "a".repeat(64), name: "Supporting notes.docx", provenance: "saved-version" as const }
+  const f = fixture({ turns: [turn({ kind: "amendment", proposal })], request: async action => action === "materials" ? { materials: [material], matterName: "Synthetic matter", documentName: "Draft.docx" } : action === "suggest" ? { turn: turn({ id: "idea-one", kind: "suggestions", status: "running", answer: "" }) } : undefined })
+  try {
+    await f.chat.ready; f.click("selection"); await Bun.sleep(0)
+    f.click("attach"); f.get("material-list").querySelector<HTMLButtonElement>("button")!.click()
+    const refine = [...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(button => button.textContent === "Refine")!
+    refine.click()
+    const enabled = f.get<HTMLInputElement>("proactive"); enabled.checked = true; enabled.dispatchEvent(new f.page.Event("change") as unknown as Event)
+    await f.advance(2_000); await f.advance(4_000)
+    expect(f.root.querySelector(".chat-skeleton")).not.toBeNull()
+    const message = f.get<HTMLTextAreaElement>("message"); message.value = "Keep my question"; message.focus()
+    f.chat.resetDocumentContext()
+    expect(f.get("chips").textContent).not.toContain("Selected Word text"); expect(f.get("chips").textContent).not.toContain("Refining amendment")
+    expect(f.get("chips").textContent).toContain(material.name)
+    expect(message.value).toBe("Keep my question"); expect(f.page.document.activeElement).toBe(message as never)
+    expect(f.get("history").textContent).toContain(proposal.after)
+    expect(enabled.checked).toBe(false); expect(f.get("suggestions").hidden).toBe(true)
+    expect(f.calls.some(call => call.action === "cancel")).toBe(true)
+    const count = f.calls.filter(call => call.action === "suggest").length
+    await f.advance(60_000)
+    expect(f.calls.filter(call => call.action === "suggest")).toHaveLength(count)
+  } finally { f.restore() }
 })
 
 test("suggestions require opt-in and stable context; scope changes cancel preparation while Send remains available", async () => {

@@ -7,6 +7,7 @@ import { readDeskSource } from "./word-source-desk"
 import { readVersion, readVersionBytes } from "./document-versions"
 import { extractDocumentText } from "./ingest"
 import { listPlaybooks } from "./matter"
+import { wordChatParagraphBreaks } from "../../../dochaus/lib/word-chat-amendment-contract"
 import type { WordGrant } from "./word-grants"
 
 export class WordChatContextError extends Error {}
@@ -106,12 +107,21 @@ export async function wordChatEvidence(auth: WordChatAuth, context: WordChatCont
       versions += wordChatHash(book.content)
     }
   }
-  return { sources, attachments: selected, evidenceKey: wordChatHash({ scope, attachments, versions }) }
+  const sourceKey = wordChatHash({ scope, attachments, versions })
+  // Visible history survives edits, but an earlier buffer/selection is not
+  // current evidence. Exclude capture timestamps and random selection IDs so
+  // unchanged context can still carry ordinary follow-up discussion.
+  const selection = context.selection ? { text: context.selection.text, paragraphs: context.selection.paragraphs.map(paragraph => paragraph.id), start: context.selection.startOffset, end: context.selection.endOffset } : null
+  return { sources, attachments: selected, sourceKey, evidenceKey: wordChatHash({ sourceKey, text: context.text, selection }) }
 }
 
 /** Three small independent passage jobs; a large document reports sampling. */
 export function wordChatSuggestionBatches(context: WordChatContext, selectionOnly: boolean) {
-  const paragraphs = selectionOnly && context.selection ? context.selection.paragraphs.map(paragraph => ({ ...paragraph, text: context.selection!.text })) : context.paragraphs
+  // A selection is one exact passage, possibly spanning several paragraphs.
+  // Split that passage once; repeating it per paragraph fabricates evidence.
+  const paragraphs = selectionOnly && context.selection ? wordChatParagraphBreaks(context.selection.text).split("\r").map((text, index) => ({
+    id: context.selection!.paragraphs?.[index]?.id ?? `selection-${index}`, text,
+  })) : context.paragraphs
   const groups: { id: string; text: string }[][] = []
   let group: typeof paragraphs = [], size = 0
   for (const paragraph of paragraphs) {

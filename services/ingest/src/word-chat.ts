@@ -17,7 +17,7 @@ const ID = /^[A-Za-z0-9_-]{1,160}$/
 const DENY_TOOLS = [{ action: "*", resource: "*", effect: "deny" }]
 type NativeSession = { id: string; directory: string; parentID?: string; title?: string; time?: { created: number; updated: number; idle?: number }; outcome?: string; metadata?: Record<string, unknown> }
 type RootMeta = { type: "word-chat"; document: string; uploads: WordChatUpload[] }
-type TurnMeta = { type: "word-chat-turn"; document: string; input: WordChatSend; sources: WordChatSource[]; attachments: WordChatTurn["attachments"]; evidenceKey: string; fingerprint: string; prompt: string; kind: WordChatKind; coverage?: { reviewed: number; total: number }; cancelled?: boolean }
+type TurnMeta = { type: "word-chat-turn"; document: string; input: WordChatSend; sources: WordChatSource[]; attachments: WordChatTurn["attachments"]; evidenceKey: string; sourceKey?: string; fingerprint: string; prompt: string; kind: WordChatKind; coverage?: { reviewed: number; total: number }; cancelled?: boolean }
 class WordChatError extends Error { constructor(message: string, readonly status: 400 | 401 | 404 | 409 | 413 | 422 | 429 | 503 = 400) { super(message) } }
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value))
 const identity = (value: unknown): value is string => typeof value === "string" && ID.test(value)
@@ -243,7 +243,7 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
       if (input.proposal) {
         const original = prior.find(child => child.id === input.proposal!.id)
         const reviewed = original ? (await readTurn(auth, root.id, original)).proposal : undefined
-        if (!reviewed || original && turnMeta(original, auth, root.id).evidenceKey !== evidence.evidenceKey || wordChatHash(reviewed) !== wordChatHash(input.proposal)) throw new WordChatError("Choose the proposal to refine again.", 409)
+        if (!reviewed || original && (turnMeta(original, auth, root.id).sourceKey ?? turnMeta(original, auth, root.id).evidenceKey) !== evidence.sourceKey || wordChatHash(reviewed) !== wordChatHash(input.proposal)) throw new WordChatError("Choose the proposal to refine again.", 409)
       }
       const history = (await Promise.all(prior.slice(-6).filter(child => (child.metadata as unknown as TurnMeta).evidenceKey === evidence.evidenceKey).map(child => readTurn(auth, root.id, child))))
         .filter(turn => turn.status === "complete" && turn.kind !== "suggestions").map(turn => ({ question: turn.text, answer: turn.answer })).slice(-4)
