@@ -112,7 +112,7 @@ function packageFromFlatOpc(xml: string) {
 const protectedContent = ["commentRangeStart", "commentRangeEnd", "commentReference", "ins", "del", "moveFrom", "moveTo",
   "moveFromRangeStart", "moveFromRangeEnd", "moveToRangeStart", "moveToRangeEnd", "rPrChange", "pPrChange", "tblPrChange", "trPrChange", "tcPrChange",
   "fldChar", "fldSimple", "instrText", "drawing", "pict", "object", "sdt", "hyperlink", "footnoteReference", "endnoteReference", "sectPr"]
-function bodyParagraphs(doc: Document, unrevised: boolean, formatting = false) {
+function bodyParagraphs(doc: Document, unrevised: boolean, formatting = false, exactControl = false) {
   const root = doc.documentElement
   require(root.namespaceURI === W && root.localName === "document")
   const bodies = children(root).filter(e => e.namespaceURI === W && e.localName === "body")
@@ -128,12 +128,19 @@ function bodyParagraphs(doc: Document, unrevised: boolean, formatting = false) {
     require(cells.length === 1 && all(table, W, "tbl").length === 0)
     paragraphs = children(cells[0]!).filter(e => e.namespaceURI === W && e.localName === "p")
     require(paragraphs.length === all(table, W, "p").length)
+    // Flattening removes the table wrapper. Never discard an enclosing control
+    // or other protected markup on the way to scoped shared authoring.
+    if (unrevised) for (const name of protectedContent) for (const node of all(table, W, name)) {
+      let parent: Node | null = node
+      while (parent && !paragraphs.includes(parent as Element)) parent = parent.parentNode
+      require(parent)
+    }
   } else {
     require(content.every(e => e.namespaceURI === W && e.localName === "p"))
     paragraphs = content
   }
   require(paragraphs.length > 0 && paragraphs.length <= 64)
-  if (unrevised) require(!paragraphs.some(p => protectedContent.some(name => !(formatting && ["ins", "del"].includes(name)) && all(p, W, name).length)))
+  if (unrevised) require(!paragraphs.some(p => protectedContent.some(name => !(formatting && ["ins", "del"].includes(name)) && !(exactControl && name === "sdt") && all(p, W, name).length)))
   if (formatting) require(!paragraphs.some(p => all(p, W, "pPr").some(properties => all(properties, W, "ins").length || all(properties, W, "del").length)))
   require(!paragraphs.some(p => all(p, W, "br").some(br => br.getAttributeNS(W, "type") && br.getAttributeNS(W, "type") !== "textWrapping")))
   return { body, paragraphs }
@@ -144,6 +151,35 @@ function paragraphText(paragraph: Element): string {
     : node.namespaceURI === W && node.localName === "tab" ? "\t"
     : node.namespaceURI === W && ["br", "cr"].includes(node.localName) ? "\v" : children(node).map(text).join("")
   return text(paragraph)
+}
+
+// Only an exact, whole inline control selection can use control-specific
+// transport. The shared writer independently verifies the complete shell,
+// run formatting, revision boundaries and all surrounding annotations.
+function exactInlineControl(paragraphs: Element[], target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[]) {
+  const controls = paragraphs.flatMap(p => all(p, W, "sdt"))
+  if (!controls.length) return false
+  require(paragraphs.length === 1 && controls.length === 1 && formatting === undefined &&
+    !/[\r\n\t\v]/.test(replacement) && replacement.length > 0)
+  const paragraph = paragraphs[0]!, control = controls[0]!
+  require(control.parentNode === paragraph)
+  const parts = children(control)
+  require(parts.length === 2 && parts[0]!.namespaceURI === W && parts[0]!.localName === "sdtPr" &&
+    parts[1]!.namespaceURI === W && parts[1]!.localName === "sdtContent")
+  const props = children(parts[0]!), ids = props.filter(p => p.namespaceURI === W && p.localName === "id")
+  require(ids.length === 1 && /^-?\d+$/.test(ids[0]!.getAttributeNS(W, "val") ?? "") &&
+    props.every(p => p.namespaceURI === W && ["id", "tag", "alias"].includes(p.localName) && children(p).length === 0) &&
+    new Set(props.map(p => p.localName)).size === props.length)
+  const runs = children(parts[1]!)
+  require(runs.length === 1 && runs[0]!.namespaceURI === W && runs[0]!.localName === "r")
+  const fields = children(runs[0]!), texts = fields.filter(p => p.namespaceURI === W && p.localName === "t")
+  require(texts.length === 1 && fields.every(p => p.namespaceURI === W && ["rPr", "t"].includes(p.localName)) &&
+    fields.filter(p => p.localName === "rPr").length <= 1 && children(texts[0]!).length === 0)
+  const old = texts[0]!.textContent ?? "", siblings = children(paragraph), position = siblings.indexOf(control)
+  const start = siblings.slice(0, position).map(paragraphText).join("").length
+  require(old.length > 0 && target.startOffset === start && target.endOffset === start + old.length && target.text === old &&
+    old[0] !== replacement[0] && old.at(-1) !== replacement.at(-1))
+  return true
 }
 
 async function authorParagraphFormatting(source: ReturnType<typeof packageFromFlatOpc>, bytes: Uint8Array, before: Element[], formatting: WordChatParagraphFormat[], layeredWording = false, inserted = new Set<number>()) {
@@ -298,7 +334,10 @@ function importFlatOpc(parts: Record<string, Uint8Array>, originalTypes: Map<str
  * amendment engine. Native session IDs never become Docxodus paragraph IDs;
  * exact ordered text and selected UTF-16 offsets bind this ephemeral package. */
 export async function authorWordChatTarget(ooxml: string, target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[]): Promise<Omit<WordChatAuthoredAmendment, "proposalId">> {
-  const source = packageFromFlatOpc(ooxml), doc = parse(strFromU8(source.parts[MAIN]!)), { body, paragraphs } = bodyParagraphs(doc, true, true)
+  const source = packageFromFlatOpc(ooxml), doc = parse(strFromU8(source.parts[MAIN]!))
+  const provisional = bodyParagraphs(doc, false, true)
+  const control = exactInlineControl(provisional.paragraphs, target, replacement, formatting)
+  const { body, paragraphs } = bodyParagraphs(doc, true, true, control)
   const texts = paragraphs.map(paragraphText), proposed = replacement.split("\r")
   require(JSON.stringify(texts) === JSON.stringify(target.paragraphs.map(p => p.text)), "word_snapshot_changed")
   // Authoring supports every valid paragraph operation. The native host/UI
@@ -378,6 +417,17 @@ export async function authorWordChatTarget(ooxml: string, target: WordChatTarget
     if (mark) { require(mark.getAttributeNS(W, "author") === AUTHOR); revisions.push({ type: mark.localName === "ins" ? "Added" : "Deleted", author: AUTHOR, text: "\r" }) }
   }
   require(revisions.length > 0)
+  if (control) {
+    const beforeControl = all(paragraphs[0]!, W, "sdt")[0]!
+    const resultParagraph = bodyParagraphs(authored, false).paragraphs[0]!, resultControls = all(resultParagraph, W, "sdt")
+    require(resultControls.length === 1 && resultControls[0]!.parentNode === resultParagraph)
+    const afterControl = resultControls[0]!, beforeParts = children(beforeControl), afterParts = children(afterControl)
+    const preceding = children(resultParagraph).slice(0, children(resultParagraph).indexOf(afterControl)).map(paragraphText).join("")
+    require(afterParts.length === 2 && serializer.serializeToString(beforeParts[0]!) === serializer.serializeToString(afterParts[0]!) &&
+      preceding.length === target.startOffset && JSON.stringify(revisions) === JSON.stringify([
+        { type: "Deleted", author: AUTHOR, text: target.text }, { type: "Added", author: AUTHOR, text: replacement },
+      ]) && all(afterControl, W, "del").length === 1 && all(afterControl, W, "ins").length === 1)
+  }
   const wording = { ooxml: importFlatOpc(outputParts, source.types), revisions, unformattedOoxml: undefined as string | undefined }
   if (formatting) {
     const currentParagraphs = bodyParagraphs(parse(strFromU8(outputParts[MAIN]!)), false).paragraphs

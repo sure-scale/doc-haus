@@ -250,3 +250,45 @@ test("changed text/offsets, protected content, structural changes and oversized 
   await expect(authorWordChatTarget(flat('<w:p><w:ins w:id="42" w:author="Someone" w:date="2026-01-01T00:00:00Z"><w:r><w:t>Monday</w:t></w:r></w:ins></w:p>'), target(["Monday"]), "Tuesday")).rejects.toThrow("docx_pending_revision")
   await expect(authorWordChatTarget(" ".repeat(MAX_WORD_AMENDMENT_OOXML_BYTES + 1), target(["Monday"]), "Tuesday")).rejects.toThrow("word_snapshot_large")
 })
+
+test("authors only an exactly selected simple inline control using tracked shared writer", async () => {
+  const control = '<w:sdt><w:sdtPr><w:id w:val="41"/><w:tag w:val="colour"/></w:sdtPr><w:sdtContent><w:r><w:rPr><w:b/></w:rPr><w:t>red</w:t></w:r></w:sdtContent></w:sdt>'
+  const xml = flat(`<w:p><w:r><w:t xml:space="preserve">A </w:t></w:r>${control}<w:r><w:t xml:space="preserve"> clause</w:t></w:r></w:p>`)
+  const selected = target(["A red clause"], 2, 5)
+  const result = await authorWordChatTarget(xml, selected, "blue")
+  expect(result.paragraphs).toEqual(["A blue clause"])
+  expect(result.revisions).toEqual([{ type: "Deleted", author: "doc.haus", text: "red" }, { type: "Added", author: "doc.haus", text: "blue" }])
+  const authored = parsed(result.ooxml), controls = authored.getElementsByTagNameNS(W, "sdt")
+  expect(controls).toHaveLength(1)
+  expect(controls[0]!.getElementsByTagNameNS(W, "id")[0]!.getAttributeNS(W, "val")).toBe("41")
+  expect(controls[0]!.getElementsByTagNameNS(W, "del")).toHaveLength(1)
+  expect(controls[0]!.getElementsByTagNameNS(W, "ins")).toHaveLength(1)
+  expect(() => reviewedWordChatArtifact({ ...result, proposalId: "proposal" }, "proposal", selected, ["A blue clause"], xml)).not.toThrow()
+})
+
+test("refuses ambiguous or protected inline controls before shared authoring", async () => {
+  const control = '<w:sdt><w:sdtPr><w:id w:val="41"/></w:sdtPr><w:sdtContent><w:r><w:t>red</w:t></w:r></w:sdtContent></w:sdt>'
+  const wrap = (value: string) => flat(`<w:p><w:r><w:t xml:space="preserve">A </w:t></w:r>${value}<w:r><w:t xml:space="preserve"> clause</w:t></w:r></w:p>`)
+  const selected = target(["A red clause"], 2, 5)
+  for (const bad of [
+    control.replace('</w:sdtPr>', '<w:lock w:val="sdtContentLocked"/></w:sdtPr>'),
+    control.replace('</w:sdtPr>', '<w:dataBinding w:xpath="/x"/></w:sdtPr>'),
+    control.replace('<w:r><w:t>red</w:t></w:r>', '<w:r><w:t>r</w:t></w:r><w:r><w:t>ed</w:t></w:r>'),
+    control.replace('<w:t>red</w:t>', '<w:fldChar w:fldCharType="begin"/><w:t>red</w:t>'),
+    control.replace('<w:r><w:t>red</w:t></w:r>', '<w:sdt><w:sdtPr/><w:sdtContent><w:r><w:t>red</w:t></w:r></w:sdtContent></w:sdt>'),
+    control.replace('<w:id w:val="41"/>', ''),
+    control.replace('</w:sdtPr>', '<w:temporary/></w:sdtPr>'),
+    control.replace('<w:t>red</w:t>', '<w:commentRangeStart w:id="2"/><w:t>red</w:t>'),
+    control.replace('<w:r><w:t>red</w:t></w:r>', '<w:ins w:id="2" w:author="Other" w:date="2026-01-01T00:00:00Z"><w:r><w:t>red</w:t></w:r></w:ins>'),
+    control + control,
+  ]) await expect(authorWordChatTarget(wrap(bad), selected, "blue")).rejects.toThrow()
+  await expect(authorWordChatTarget(wrap(control), target(["A red clause"], 3, 5), "blue")).rejects.toThrow()
+  await expect(authorWordChatTarget(wrap(control), target(["A red clause"], 1, 5), "blue")).rejects.toThrow()
+  await expect(authorWordChatTarget(wrap(control), selected, "reddish")).rejects.toThrow()
+  await expect(authorWordChatTarget(wrap(control), selected, "blue", [{ paragraph: 0, spacingAfter: 6 }])).rejects.toThrow()
+  const rowControl = `<w:tbl><w:sdt><w:sdtPr><w:lock w:val="sdtContentLocked"/></w:sdtPr><w:sdtContent><w:tr><w:tc><w:p><w:r><w:t xml:space="preserve">A </w:t></w:r>${control}<w:r><w:t xml:space="preserve"> clause</w:t></w:r></w:p></w:tc></w:tr></w:sdtContent></w:sdt></w:tbl>`
+  const normalTable = rowControl.replace('<w:sdt><w:sdtPr><w:lock w:val="sdtContentLocked"/></w:sdtPr><w:sdtContent><w:tr>', '<w:tr>')
+    .replace('</w:tr></w:sdtContent></w:sdt></w:tbl>', '</w:tr></w:tbl>')
+  expect((await authorWordChatTarget(flat(normalTable), selected, "blue")).paragraphs).toEqual(["A blue clause"])
+  await expect(authorWordChatTarget(flat(rowControl), selected, "blue")).rejects.toThrow()
+})
