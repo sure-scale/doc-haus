@@ -947,6 +947,14 @@ test("prepare returns actionable formatting failures while keeping other authori
     const actionable = await prepare()
     expect(actionable.status).toBe(409)
     expect((await actionable.json() as { error: string }).error).toBe(message)
+    for (const code of ["docx_protected_inline_content:private-proposal-id", "docx_protected_inline_content_changed"]) {
+      failure = new Error(code)
+      const refused = await prepare(), result = await refused.json() as { error: string }
+      expect(refused.status).toBe(409)
+      expect(result.error).toContain("Word")
+      expect(result.error).not.toContain("docx_")
+      expect(result.error).not.toContain("private-proposal-id")
+    }
   } finally { clearWordEditLease(db, auth.grant.document_id); db.close() }
 })
 

@@ -3,6 +3,7 @@ import path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { createDocxRevision, createDocxLocalization, applyDocxLocalization, changedRange, DocxTrackedRevisionsError, othersPending, ownRevisionReason, ownRevisionRefusals, pendingRevisionParagraphs, quoted, balancedBrackets, trackedRevisionsReason, type DocxAmendment, type DocxLocalizationPacket, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
+import { docxProtectionMessage } from "./docx-protection-message"
 import { workingDocxKey, readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { paragraphTargets, resolveParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
@@ -60,10 +61,10 @@ export function documentAmendmentRoutes(options: { directory: (id: string) => st
       // gets what happened and what to do.
       console.warn("[document-amendments] preparation failed", { ...diagnosticErrorMetadata(error), ...error instanceof EngineGenerationError ? { detail: error.message } : {} })
       const reference = error && typeof error === "object" ? preparationReferences.get(error) : undefined
-      return c.json({error:error instanceof EngineGenerationError ? "No changes were prepared. Try again." : error instanceof DocumentAmendmentConflictError ? error.message :
+      return c.json({error:docxProtectionMessage(error) ?? (error instanceof EngineGenerationError ? "No changes were prepared. Try again." : error instanceof DocumentAmendmentConflictError ? error.message :
         error instanceof DocxTrackedRevisionsError ? trackedRevisionsReason :
         // Another change held the document for longer than Prepare waits.
-        error instanceof DirectoryLockContentionError ? "This document is busy with another change. Try again in a moment." : "Preparation could not be confirmed.",
+        error instanceof DirectoryLockContentionError ? "This document is busy with another change. Try again in a moment." : "Preparation could not be confirmed."),
         ...(reference ? {diagnostic_ref:reference,diagnostic_hint:"Inspect the latest private preparation diagnostic in this matter before trying again."} : {})},409)
     }
   })

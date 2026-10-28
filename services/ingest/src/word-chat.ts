@@ -18,6 +18,7 @@ import { generateConversationTitle } from "../../../dochaus/lib/chat-session-tit
 import { conversationResponseContract, suppliedConversationContext } from "../../../dochaus/lib/conversation-context"
 import { readWordChatPreferences } from "./word-chat-preferences"
 import { installWordChatEvents } from "./word-chat-events"
+import { docxProtectionMessage } from "./docx-protection-message"
 
 const ID = /^[A-Za-z0-9_-]{1,160}$/
 const DENY_TOOLS = [{ action: "*", resource: "*", effect: "deny" }]
@@ -497,7 +498,7 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
     try { authored = await (options.authorAmendment ?? authorWordChatAmendment)(input.ooxml, turn.proposal) }
     catch (error) {
       if (error instanceof WordFormattingError) throw new WordChatError(error.message, 409)
-      throw new WordChatError("The passage changed or cannot be edited safely. Refresh and review a new proposal.", 409)
+      throw new WordChatError(docxProtectionMessage(error) ?? "The passage changed or cannot be edited safely. Refresh and review a new proposal.", 409)
     }
     // Pure authoring awaits Docxodus. Ownership/base may advance while it runs;
     // never release an application artifact under the superseded authority.

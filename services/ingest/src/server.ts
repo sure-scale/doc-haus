@@ -58,6 +58,7 @@ import { EmbeddingModelUnavailableError, migrateEmbeddings } from "./embed"
 import { migrateSections, migrateStructure } from "./structure"
 import { pdfToDocx } from "./convert"
 import { buildRedlined, bake, layeredRedline, redlineState, redlineStaleReason, RedlineAcceptConflictError, RedlinePreviewConflictError, RedlineReplayError, staleBatchReason } from "./redline"
+import { docxProtectionMessage } from "./docx-protection-message"
 import { listMatters, createMatter, getMatter, renameMatter, deleteMatter, recordConflicts, matterDir, listJurisdictions, listPlaybooks, updatePlaybook, deletePlaybook, PlaybookError, PLAYBOOK_DIR, MatterNotFoundError, MatterValidationError, type Conflicts } from "./matter"
 import { listTemplates, templatePath, setTemplateDescription, removeTemplateDescription, TEMPLATES_DIR } from "./template"
 import { listWorkflows, createWorkflow, updateWorkflow, deleteWorkflow, NAME_RE, WORKFLOWS_DIR } from "./workflow"
@@ -1331,8 +1332,9 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
       redline = await prepareDeliveredRedline(dir,current.doc_path,baked)
       await writeDocumentRevision(dir,current.doc_name,baked,[current.id],prior,current.target_json != null,{version:acceptVersion(c,[current.id])})
     } catch (error) {
+      if (error instanceof RedlineReplayError) return c.json({error:error.refusal},409)
       console.warn("[redline] acceptance refused",diagnosticErrorMetadata(error))
-      return c.json({error:"Acceptance could not be confirmed. Refresh the document and change list before trying again."},409)
+      return c.json({error:docxProtectionMessage(error) ?? "Acceptance could not be confirmed. Refresh the document and change list before trying again."},409)
     }
     // In order: the redline, the notes addendum, then the combined file built from the parts as written.
     return c.json({ ok: true, ...await writeDeliveredRedline(redline), ...await recordAcceptedChangesInRunNotes(dir, row.doc_path, [current]), ...await rebuildCombinedFile(combined) })
@@ -1405,7 +1407,7 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
       if (error instanceof RedlineAcceptConflictError) return c.json({error:error.message},409)
       if (error instanceof RedlineReplayError) return c.json({error:error.refusal},409)
       console.warn("[redline] batch acceptance refused",diagnosticErrorMetadata(error))
-      return c.json({error:"Batch acceptance could not be confirmed. Refresh the document and change list before trying again."},409)
+      return c.json({error:docxProtectionMessage(error) ?? "Batch acceptance could not be confirmed. Refresh the document and change list before trying again."},409)
     }
     return c.json({ ok: true, accepted: rows.length, ...await writeDeliveredRedline(redline), ...await recordAcceptedChangesInRunNotes(dir, file, rows), ...await rebuildCombinedFile(combined) })
   })

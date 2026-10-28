@@ -9,6 +9,51 @@ import { recordRedlineProposal } from "../../../dochaus/lib/redlines"
 import { getRedline, listSourceDocuments, openDb } from "./db"
 import { docxodus } from "./docxodus"
 import { readDocxCommentParagraphs, readDocxComments } from "../../../dochaus/lib/docx-comments"
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
+
+test("HTTP single acceptance explains protected mixed-format content without publishing", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "dochaus-protected-redline-http-"))
+  const workspace = path.join(temporary, "workspace"), config = path.join(temporary, "config")
+  await mkdir(workspace); await mkdir(config); await writeFile(path.join(config, "opencode.json"), "{}\n")
+  const engine = Bun.serve({ port: 0, fetch: () => new Response("No engine", { status: 503 }) })
+  const probe = Bun.serve({ port: 0, fetch: () => new Response() }), port = probe.port; probe.stop(true)
+  const log = path.join(temporary, "ingest.log")
+  const service = Bun.spawn([process.execPath, "run", "src/server.ts"], { cwd: path.resolve(import.meta.dir, ".."),
+    env: { ...process.env, WORKSPACE_ROOT: workspace, DOCHAUS_DIR: config, INGEST_PORT: String(port), INGEST_HOST: "127.0.0.1", OPENCODE_URL: `http://127.0.0.1:${engine.port}` }, stdout: Bun.file(log), stderr: Bun.file(log) })
+  const request = (route: string, options?: RequestInit) => fetch(`http://127.0.0.1:${port}${route}`, { ...options, signal: AbortSignal.timeout(30_000) })
+  try {
+    const deadline = Date.now() + 20_000
+    while (!await request("/matters").then(response => response.ok).catch(() => false)) {
+      if (Date.now() >= deadline) throw new Error("Isolated ingest did not start")
+      await Bun.sleep(50)
+    }
+    const created = await request("/matters", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Synthetic protected content" }) })
+    const matter = await created.json() as { id: string; dir: string }, name = "protected.docx", file = path.join(matter.dir, name)
+    const rendered = await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph("A fee of 500 applies.")] }] }))
+    const parts = unzipSync(rendered), W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    const doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+    const text = Array.from(doc.getElementsByTagNameNS(W, "t")).find(node => node.textContent === "A fee of 500 applies.")!
+    const run = text.parentNode!, parent = run.parentNode!, fixture = new DOMParser().parseFromString(`<w:p xmlns:w="${W}"><w:r><w:t xml:space="preserve">A fee of </w:t></w:r><w:sdt><w:sdtPr><w:tag w:val="fee"/><w:id w:val="27"/><w:lock w:val="contentLocked"/></w:sdtPr><w:sdtContent><w:r><w:t>500</w:t></w:r></w:sdtContent></w:sdt><w:r><w:t xml:space="preserve"> applies.</w:t></w:r></w:p>`, "application/xml")
+    for (const child of Array.from(fixture.documentElement.childNodes)) parent.insertBefore(doc.importNode(child, true), run)
+    parent.removeChild(run); parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+    const source = zipSync(parts), form = new FormData(); form.append("file", new File([source], name))
+    expect((await request(`/matters/${matter.id}/documents`, { method: "POST", body: form })).status).toBe(200)
+    const id = recordRedlineProposal(matter.dir, { docPath: file, docName: name, scope: "clause", findText: "A fee of 500 applies.", oldText: "A fee of 500 applies.", newText: "A fee of 750 applies.", author: "Synthetic reviewer", reviewComment: "", anchorId: "synthetic" }).id
+    const db = openDb(matter.dir)
+    try { db.run("UPDATE redlines SET formatting_json = ? WHERE id = ?", [JSON.stringify({ spacingAfter: 6 }), id]) } finally { db.close() }
+    const response = await request(`/matters/${matter.id}/redlines/${id}/accept`, { method: "POST" })
+    const body = await response.json() as { error: string }
+    expect(response.status).toBe(409)
+    expect(body.error).toContain("Word content")
+    expect(body.error).not.toContain("docx_")
+    expect(Buffer.from(await Bun.file(file).bytes()).equals(Buffer.from(source))).toBe(true)
+    const check = openDb(matter.dir)
+    try { expect(getRedline(check, id)?.status).toBe("pending") } finally { check.close() }
+  } finally {
+    service.kill(); await service.exited; engine.stop(true); await rm(temporary, { recursive: true, force: true })
+  }
+}, 90_000)
 
 test("HTTP redline decisions preserve rejected bytes and publish an accepted, reindexed source", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(), "dochaus-redline-http-"))

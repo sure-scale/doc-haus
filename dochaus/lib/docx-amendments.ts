@@ -160,6 +160,9 @@ function paragraphSpan(paragraph: Match, start: number, length: number): Match {
 function admitted(opened: Opened, binding: Binding) {
   const { amendment, match, ordinal } = binding
   // The touch rule (see pendingRevisionParagraphs); only a layer-mode reader marks paragraphs.
+  // A paragraph inside a block content control is governed by its enclosing
+  // control, outside the paragraph XML we can safely verify here.
+  if (closest(opened.paragraphs[ordinal]!.node, "sdt")) throw new Error(`docx_protected_inline_content:${amendment.id}`)
   const pending = opened.paragraphs[ordinal]!.pending
   if (othersPending(pending, opened.options.ownAuthors).length) throw new Error(`docx_pending_revision:${amendment.id}`)
   if (/[\r\n\t]/.test(amendment.replacement)) throw new Error("unsupported_structural_replacement")
@@ -364,8 +367,15 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
       const changed = new Set(edits.map(edit => edit.ordinal))
       // The edited runs are those of the session the edits were written in,
       // which stays open until its own check has compared their formatting.
-      verifyPreservation(opened, reopened, changed)
-      if (target !== opened) verifyPreservation(target, reopened, changed)
+      const spans = new Map<number, WordChange[]>()
+      for (const edit of edits) {
+        const previous = spans.get(edit.ordinal) ?? []
+        previous.push(...edit.changes.map(change => ({ offset: change.match.span.start - opened.paragraphs[edit.ordinal]!.match.span.start,
+          replaced: change.match.text, changed: change.replacement })))
+        spans.set(edit.ordinal, previous)
+      }
+      verifyPreservation(opened, reopened, changed, spans)
+      if (target !== opened) verifyPreservation(target, reopened, changed, spans)
       return {
         bytes: output,
         // The projection these edits were admitted against.
@@ -762,7 +772,7 @@ export async function openRevision(source: Uint8Array, options: DocxRevisionOpti
   } catch (error) { session.close(); throw error }
 }
 
-export function verifyPreservation(before: Awaited<ReturnType<typeof openRevision>>, saved: Awaited<ReturnType<typeof openRevision>>, changed: Set<number>) {
+export function verifyPreservation(before: Awaited<ReturnType<typeof openRevision>>, saved: Awaited<ReturnType<typeof openRevision>>, changed: Set<number>, spans?: Map<number, WordChange[]>) {
   const after = before.options.revisionAuthor ? withoutTrackChangesSetting(before, saved) : saved
   if (before.paragraphs.length !== after.paragraphs.length) throw new Error("docx_paragraph_structure_changed")
   const ignoredBefore = new Set([...changed].map(ordinal => before.paragraphs[ordinal].node))
@@ -783,6 +793,7 @@ export function verifyPreservation(before: Awaited<ReturnType<typeof openRevisio
     if (canonical(a.node.cloneNode(false)) !== canonical(b.node.cloneNode(false))
       || canonical(children(a.node, "pPr")[0]) !== canonical(children(b.node, "pPr")[0]))
       throw new Error("docx_paragraph_properties_changed")
+    verifyInlineControls(a.node, b.node, a.match.text, b.match.text, spans?.get(ordinal))
     // Native UNIDs are transient, but within this session identify original runs.
     const edited = parse(before.session.raw.getXml(a.match.enclosingAnchor.id))
     const remaining = new Map(elements(edited, "r").map(run => [run.getAttributeNS(PT, "Unid"), run]))
@@ -792,6 +803,59 @@ export function verifyPreservation(before: Awaited<ReturnType<typeof openRevisio
         throw new Error("docx_existing_run_properties_changed")
     }
   }
+}
+
+// Prove both the complete control markup and its position in the visible
+// paragraph. Text edits beside a control can shift that position; edits through
+// or exactly at its boundary are ambiguous and are refused. The control's own
+// wording, lock and binding are never edited by this route.
+function verifyInlineControls(before: Element, after: Element, oldText: string, newText: string, actualChanges?: WordChange[]) {
+  const annotations = (paragraph: Element) => {
+    let offset = 0
+    const found: { kind: string; start: number; end: number; xml: string }[] = []
+    const walk = (node: Element) => {
+      if (node.namespaceURI === W && ["pPr", "rPr"].includes(node.localName)) return
+      if (node.namespaceURI === W && ["del", "moveFrom"].includes(node.localName)) {
+        if (["sdt", "bookmarkStart", "bookmarkEnd", "commentRangeStart", "commentRangeEnd", "commentReference"].some(name => elements(node, name).length))
+          found.push({ kind: node.localName, start: offset, end: offset, xml: canonical(node) })
+        return
+      }
+      if (node.namespaceURI === W && node.localName === "t") { offset += node.textContent?.length ?? 0; return }
+      if (node.namespaceURI === W && node.localName === "ins" && ["sdt", "bookmarkStart", "bookmarkEnd", "commentRangeStart", "commentRangeEnd", "commentReference"].some(name => elements(node, name).length)) {
+        const record = { kind: "sdt", start: offset, end: offset, xml: canonical(node) }
+        found.push(record)
+        for (const child of Array.from(node.childNodes)) if (child.nodeType === 1) walk(child as Element)
+        record.end = offset
+        return
+      }
+      if (node.namespaceURI === W && node.localName === "sdt") {
+        const record = { kind: "sdt", start: offset, end: offset, xml: canonical(node) }
+        found.push(record)
+        for (const child of Array.from(node.childNodes)) if (child.nodeType === 1) walk(child as Element)
+        record.end = offset
+        return
+      }
+      if (node.namespaceURI === W && ["bookmarkStart", "bookmarkEnd", "commentRangeStart", "commentRangeEnd", "commentReference"].includes(node.localName))
+        found.push({ kind: node.localName, start: offset, end: offset, xml: canonical(node) })
+      for (const child of Array.from(node.childNodes)) if (child.nodeType === 1) walk(child as Element)
+    }
+    walk(paragraph)
+    return found
+  }
+  const previous = annotations(before), current = annotations(after)
+  if (!previous.length && !current.length) return
+  const changes = (actualChanges ?? wordChanges(oldText, newText)).filter(change => change.replaced || change.changed)
+  const map = (point: number, includeAt = false) => point + changes.reduce((delta, change) =>
+    delta + (change.offset + change.replaced.length <= point && (change.offset < point || includeAt && !change.replaced.length && change.offset === point) ? change.changed.length - change.replaced.length : 0), 0)
+  if (previous.length !== current.length || previous.some((control, index) => {
+    const next = current[index]!
+    return changes.some(change => control.kind === "sdt" ? change.replaced.length
+      ? change.offset < control.end && change.offset + change.replaced.length > control.start
+      : change.offset >= control.start && change.offset <= control.end
+      : change.replaced.length ? change.offset < control.start && change.offset + change.replaced.length > control.start
+      : change.offset === control.start && !["bookmarkStart", "bookmarkEnd"].includes(control.kind)) ||
+      control.kind !== next.kind || control.xml !== next.xml || map(control.start, control.kind === "bookmarkEnd") !== next.start || map(control.end, control.kind === "bookmarkEnd") !== next.end
+  })) throw new Error("docx_protected_inline_content_changed")
 }
 
 // A tracked-change save switches Track Changes on: Docxodus adds

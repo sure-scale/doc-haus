@@ -12,6 +12,7 @@ import { listNames } from "./document-versions"
 import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphPositions, readDocxCommentParagraphs } from "../../../dochaus/lib/docx-comments"
 import { assertLayeredRoundTrip, assertRedlineRoundTrip } from "../../../dochaus/lib/redline-round-trip"
 import { discloseSourceRevisions } from "../../../dochaus/lib/docx-revision-views"
+import { docxProtectionMessage } from "./docx-protection-message"
 
 // Replay and bake pending redline proposals against a .docx.
 //
@@ -30,10 +31,10 @@ export class RedlineAcceptConflictError extends Error {}
  * replay's reason; `refusal` is Accept all's, which names the proposal. */
 export class RedlineReplayError extends Error {
   readonly refusal: string
-  constructor(row: RedlineRow, reason: string) {
+  constructor(row: RedlineRow, reason: string, actionable = false) {
     super(reason)
     // The touch rule's refusal already names the change and what to do.
-    this.refusal = reason.startsWith("The change to ") ? reason
+    this.refusal = actionable || reason.startsWith("The change to ") ? reason
       : `The change to ${quoted(row.find_text)} cannot be written with the rest: its words have changed, or another proposal in this list changes them. Reject it, accept the rest, then request that edit again.`
   }
 }
@@ -103,6 +104,8 @@ export async function buildRedlined(original: Uint8Array, rows: RedlineRow[], st
     catch (error) {
       if (error instanceof RedlinePreviewConflictError) throw error
       if (error instanceof RedlineReplayError) throw new RedlinePreviewConflictError(error.refusal)
+      const protection = docxProtectionMessage(error)
+      if (protection) throw new RedlinePreviewConflictError(protection)
       throw new RedlinePreviewConflictError("A formatting proposal cannot be safely previewed. Prepare a fresh change list against the current document.")
     }
   }
@@ -122,6 +125,8 @@ export async function buildRedlined(original: Uint8Array, rows: RedlineRow[], st
     } catch (error) {
       if (error instanceof RedlinePreviewConflictError) throw error
       if (error instanceof RedlineReplayError) throw new RedlinePreviewConflictError(error.refusal)
+      const protection = docxProtectionMessage(error)
+      if (protection) throw new RedlinePreviewConflictError(protection)
       throw new RedlinePreviewConflictError("A proposal no longer resolves against this Word revision. Prepare a fresh change list before exporting its tracked changes and review comments.")
     }
   }
@@ -333,12 +338,18 @@ async function bakeOlder(original: Uint8Array, rows: RedlineRow[], tracked = fal
           bytes = (await applyDocxParagraphEdits(bytes, [{ id: String(row.id), paragraph_handle: handle, occurrence: 0,
             before_quote: row.find_text, replacement: row.new_text }], undefined,
             { ...options, pendingRevisions: "layer", ownAuthors: ours([rowAuthor(row)]), ...(tracked ? { revisionAuthor: rowAuthor(row) } : {}) })).bytes
-        } catch { throw new RedlineReplayError(row, "The paragraph wording could not be changed safely.") }
+        } catch (error) {
+          const protection = docxProtectionMessage(error)
+          throw new RedlineReplayError(row, protection ?? "The paragraph wording could not be changed safely.", Boolean(protection))
+        }
       }
       try {
         bytes = await applyDocxParagraphFormatting(bytes, { paragraphText: row.new_text, format, author: rowAuthor(row), tracked, allowNoop: row.find_text !== row.new_text,
           options: { ...options, pendingRevisions: "layer", ownAuthors: ours([rowAuthor(row)]) } })
-      } catch { throw new RedlineReplayError(row, "The formatting target changed or cannot be formatted safely.") }
+      } catch (error) {
+        const protection = docxProtectionMessage(error)
+        throw new RedlineReplayError(row, protection ?? "The formatting target changed or cannot be formatted safely.", Boolean(protection))
+      }
       positions.push(locate && row.review_comment.trim() ? position : undefined)
       continue
     }
