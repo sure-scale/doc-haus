@@ -7,7 +7,9 @@
 * { box-sizing: border-box; }
 body { margin: 0; }
 main { min-width: 0; width: 100%; padding: 12px; margin: 0; }
-.save-panel { padding: 0 0 12px; }
+.save-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; column-gap: 12px; padding: 0 0 12px; }
+.save-summary { min-width: 0; }
+.save-panel > :not(.save-summary, .save-controls) { grid-column: 1 / -1; }
 .matter { max-width: 100%; margin: 0 0 6px; color: #526057; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .save-state { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 8px; min-width: 0; }
 .status { flex: 0 1 auto; margin: 0; padding: 3px 7px; border-radius: 5px; color: #526057; background: #edf1ec; font-size: 11px; font-weight: 650; line-height: 1.5; }
@@ -16,7 +18,8 @@ main { min-width: 0; width: 100%; padding: 12px; margin: 0; }
 .status[data-state="changed"], .status[data-state="blocked"] { color: #805311; background: #fff0d1; }
 #message { flex: 1 1 160px; min-width: 0; margin: 0; font-size: 12px; overflow-wrap: anywhere; }
 .version-mismatch, .blocked-help { margin: 7px 0 0; color: #805311; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
-.save-controls { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 4px; margin-top: 10px; }
+.save-controls { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; align-items: end; gap: 4px; max-width: 160px; }
+.save-controls .primary { width: auto; min-width: 72px; min-height: 36px; padding: 7px 13px; font-size: 12px; }
 button { min-width: 0; max-width: 100%; min-height: 44px; padding: 9px 12px; border: 1px solid transparent; border-radius: 8px; font: inherit; font-weight: 550; line-height: 1.45; cursor: pointer; overflow-wrap: anywhere; }
 .primary { width: 100%; color: #fff; background: #17634f; }
 .latest-action { display: block; min-height: 44px; padding: 9px 12px; border: 1px solid transparent; border-radius: 8px; text-align: center; text-decoration: none; font-weight: 550; }

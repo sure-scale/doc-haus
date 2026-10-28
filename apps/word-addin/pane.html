@@ -7,6 +7,7 @@
     <title>doc.haus in Word</title>
     <link rel="stylesheet" href="./pane.css" />
     <link rel="stylesheet" href="./desk.css" />
+    <link rel="stylesheet" href="./chat.css" />
     <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
     <script type="module" src="./pane.js"></script>
   </head>
@@ -27,14 +28,16 @@
         </div>
         <p id="latest-message" class="blocked-help" role="status" hidden></p>
       </section>
-      <section id="desk-entry" class="desk-entry" hidden aria-label="Matter documents and versions">
+      <section id="desk-entry" class="desk-entry" hidden aria-label="Matter views">
         <nav class="pane-tabs" role="tablist" aria-label="Matter views">
+          <button id="chat-tab" type="button" role="tab" aria-selected="false" aria-controls="pane-chat" tabindex="-1">Chat</button>
           <button id="documents-tab" type="button" role="tab" aria-selected="true" aria-controls="pane-desk">Documents</button>
           <button id="compare-tab" type="button" role="tab" aria-selected="false" aria-controls="pane-desk" tabindex="-1">Compare</button>
         </nav>
         <button id="open-desk-window" class="window-action" type="button" title="Open in window" aria-label="Open in window">↗</button>
         <p id="desk-message" class="desk-message" role="status" hidden></p>
       </section>
+      <section id="pane-chat" class="word-chat" role="tabpanel" aria-labelledby="chat-tab" hidden></section>
       <div id="pane-desk" hidden></div>
       <footer id="background" class="saving-help">
         <a id="back" hidden target="_blank" rel="noopener noreferrer">Open matter in doc.haus <span aria-hidden="true">↗</span></a>

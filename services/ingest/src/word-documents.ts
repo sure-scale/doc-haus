@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import { linkedWordDocx, MAX_WORD_UPLOAD_BYTES, stripWordLink, wordLastModifiedBy, WordPackageError } from "../../../dochaus/lib/word-linked-docx"
 import { WORD_ADDIN_VERSION, type WordOpenDocument, type WordSaveResponse, type WordConnectionState } from "../../../dochaus/lib/word-addin-contract"
+import { wordChatPath } from "../../../dochaus/lib/word-chat-contract"
 import { claimWordEditLease, clearWordEditLease, EditingLeaseError, readWordEditLease, releaseWordEditLease, renewWordEditLease, requireWordEditLease, wordLeaseState, WORD_EDIT_LEASE_TTL, type WordLeaseIdentity, type WordLeaseOwner } from "../../../dochaus/lib/word-edit-lease"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { getDocumentRole, openDb } from "./db"
@@ -15,11 +16,12 @@ import { SourceDocumentConflictError } from "./ingest"
 import { wordHttpsConfiguration } from "./word-configuration"
 import { wordHttpsAvailable, wordHttpsFailure } from "./word-https"
 import { installWordSourceDesk, readDeskSource } from "./word-source-desk"
+import { installWordChat } from "./word-chat"
 import { WordOpenTickets, wordOpenPath, wordOpenResultPath } from "./word-open-tickets"
 import { readWordHandout, writeWordHandout, type WordHandoutIdentity } from "./word-handouts"
 
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-export const wordTokenPath = (pathname: string) => /^\/word\/(saves|heartbeat|done|lease|latest|desk\/(sources|source|versions|compare|open))$/.test(pathname)
+export const wordTokenPath = (pathname: string) => /^\/word\/(saves|heartbeat|done|lease|latest|desk\/(sources|source|versions|compare|open))$/.test(pathname) || wordChatPath(pathname)
 
 export function wordConfiguration() {
   const failure = wordHttpsFailure()
@@ -362,6 +364,7 @@ export function wordDocumentRoutes(deps: Dependencies) {
   }
   type Authenticated = NonNullable<ReturnType<typeof authenticate>>
   installWordSourceDesk(app, authenticate)
+  installWordChat(app, authenticate)
   function identity(auth: Authenticated, session: string): WordLeaseIdentity {
     return { document: auth.grant.document_id, tokenHash: auth.grant.token_hash, session }
   }

@@ -3,10 +3,7 @@
 Use **Open in Word** on a Word document in a matter. Allow the browser to open
 doc.haus if asked; the installed desktop helper opens a linked, editable working
 copy in Microsoft Word. The doc.haus pane identifies its matter and
-document. Choose **Save** and wait for confirmation before closing.
-**Save and close** saves, confirms the final document, clears its open badge and
-closes that document. If Word cannot close it, the pane keeps the saved
-confirmation visible so you can close it manually.
+document. Choose **Save** and wait for confirmation before closing in Word.
 
 Opening a linked copy checks its version without changing doc.haus or taking an
 editing lock. The first **Save** claims editing if the copy is current.
@@ -98,7 +95,10 @@ DOCHAUS_WORD_EXTERNAL_HTTPS=1
 Terminate TLS at your existing reverse proxy. Forward `/word-addin/*`, exact
 GET `/word/open/<ticket>` and POST `/word/open/<ticket>/result`, and only
 POST/OPTIONS `/word/lease`, `/word/saves`, `/word/heartbeat`, `/word/done` and
-`/word/desk/sources`, `/word/desk/source`, `/word/desk/versions`, `/word/desk/compare` to ingest. Do not
+`/word/desk/sources`, `/word/desk/source`, `/word/desk/versions`, `/word/desk/compare`,
+`/word/desk/open`, and the exact `/word/chat/` commands `conversations`,
+`conversation`, `send`, `poll`, `cancel`, `materials`, `upload`, `suggest` and
+`prepare` to ingest. Do not
 expose the rest of the ingest API through this Word receiver. In Docker, build
 the pane with `bun run --cwd apps/word-addin build` and include its `dist` assets
 with the server. The normal start scripts build these assets automatically.
@@ -128,23 +128,22 @@ matter versions appear only when they disagree. **Ready** describes a connected
 copy without claiming its content is saved. **Saved** requires confirmed matching
 content. The pane checks versions before saving and after reconnecting. If Word reloads its pane, it
 can recover a confirmation only when the saved content matches exactly; it never
-assumes an older or forwarded copy is the newest version. **Save and close** updates the link
-in this physical copy before closing. If a copy is stale, keep its local file,
+assumes an older or forwarded copy is the newest version. If a copy is stale, keep its local file,
 return to the matter and compare its versions before opening a fresh linked copy.
 Keep any unsent local edits separately before replacing your Word copy.
 
 One Word editor can hold the document's editing lock. While held, doc.haus
 refuses replacement, acceptance, rejection, restore, redaction and other writes
 to that document; viewing, comparing and downloading remain available. The pane
-renews its lock while connected. **Save and close** releases it; an abandoned lock expires
+renews its lock while connected; an abandoned lock expires
 after two minutes. **Release Word lock** and **Take over editing** in doc.haus
 compare the displayed version and owner before acting. Taking over disconnects
 earlier linked copies, whose local files remain intact. Expired or replaced
 owners must check their version and explicitly claim editing again.
 
 The lock protects writes to doc.haus. Word still allows local editing and native
-Save; the add-in cannot promise to disable those commands. Its **Save** and **Save and close**
-actions pause when the copy is stale or another editor owns the document.
+Save; the add-in cannot promise to disable those commands. Its **Save** action
+pauses when the copy is stale or another editor owns the document.
 The separate open badge is a contact hint and cannot prove a file is closed.
 
 Each linked file contains a bearer capability that can add versions only to its
@@ -155,13 +154,40 @@ those matter previews. Taking over editing revokes earlier copies' save links.
 Deleting and recreating a same-named document does not restore old access.
 Ordinary **Download** copies have the doc.haus link and token removed, while
 preserving unrelated add-ins. Tokens cannot delete documents or call the normal
-API. Desk reads use a separate bounded route set; the receiver accepts only its
-configured pane origin.
+API. Chat commands use the linked matter and document and never proxy arbitrary
+engine sessions or tools. The receiver accepts only its configured pane origin.
+
+## Chat beside the document
+
+Ask a question or request a change in **Chat**. **Use selected text** adds the
+exact passage selected in Word; remove its chip to ask without it. **Attach**
+adds a saved matter document, a playbook or a supported upload. Uploading for
+the chat leaves the matter's files alone; **Add to this matter** uses normal
+source ingestion. Referencing a playbook does not change the matter's default.
+
+Chat settings are behind the cog. **This document** uses the current Word text
+plus deliberately attached material. **Whole matter** can also retrieve saved
+matter sources and its playbook. Earlier broader answers remain visible but
+cannot supply evidence after switching to the restricted scope.
+
+**Prepare suggestions** is off initially. Enabling it permits bounded work for
+this document, either across sampled passages or about the current selection.
+Ideas never apply themselves. Pause stops new preparation; ordinary chat remains
+available. Suggestions are not a complete document review.
+
+A proposed amendment shows its full before/after wording and any open items.
+**Refine** keeps the original target; **Apply** imports the reviewed change into
+Word with tracking. A changed or unsupported passage requires a fresh review.
+Apply leaves the matter's version history alone: choose **Save** to publish it.
+Reviewed application requires current Microsoft 365 Word with WordApi 1.6;
+unsupported hosts retain chat and the existing save flow.
 
 ## Matter documents and version comparison
 
-The **Documents** and **Compare** tabs sit below the save controls. Documents
-opens by default with a list of files already saved in this matter, such as
+The **Chat**, **Documents** and **Compare** tabs sit below the save controls.
+Chat opens on first use; the pane remembers the last tab deliberately selected
+on this installation. Switching tabs keeps the chat draft and review in place.
+Documents lists files already saved in this matter, such as
 client instructions, heads of terms or correspondence. Choose a file to read it;
 no Word selection is needed or captured automatically. The ↗ button opens the
 current view in a wider movable window. Keep the Word pane open for that window's

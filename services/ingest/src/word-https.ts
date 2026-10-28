@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { renderManifest } from "../../../apps/word-addin/src/manifest"
 import { WORD_ADDIN_VERSION } from "../../../dochaus/lib/word-addin-contract"
+import { wordChatPath } from "../../../dochaus/lib/word-chat-contract"
 import { WORD_BOOTSTRAP_ORIGIN, WORD_HEALTH_PATH } from "../../../apps/word-addin/src/bootstrap-contract"
 import { wordHttpsConfiguration, type WordHttpsConfiguration } from "./word-configuration"
 import { wordOpenPath, wordOpenResultPath } from "./word-open-tickets"
@@ -16,7 +17,7 @@ let startupFailure: string | undefined
 let activeServer: ReturnType<typeof Bun.serve> | undefined
 let activeIdentity: string | undefined
 let activeAssets = assets
-const paneFiles = ["pane.html", "pane.js", "pane.css", "desk.html", "desk.js", "desk.css", "assets/icon.png"]
+const paneFiles = ["pane.html", "pane.js", "pane.css", "chat.css", "desk.html", "desk.js", "desk.css", "assets/icon.png"]
 
 export function wordPaneBuilt(directory = assets) {
   return paneFiles.every(file => existsSync(path.join(directory, file)))
@@ -74,7 +75,7 @@ export function wordHttpsHandler(fetch: Fetch, configuration: WordHttpsConfigura
       return new Response(request.method === "HEAD" ? null : JSON.stringify({ ready, version: WORD_ADDIN_VERSION }),
         { status: ready ? 200 : 503, headers })
     }
-    if (tokenRoutes.has(url.pathname)) {
+    if (tokenRoutes.has(url.pathname) || wordChatPath(url.pathname)) {
       if (request.method !== "POST" && request.method !== "OPTIONS") return new Response("Method not allowed", { status: 405 })
       return fetch(request)
     }

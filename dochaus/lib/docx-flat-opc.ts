@@ -1,0 +1,254 @@
+import path from "node:path"
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
+import { applyDocxParagraphEdits, createDocxRevision, type DocxParagraphEdit } from "./docx-amendments"
+import type { WordChatAuthoredAmendment, WordChatTarget } from "./word-chat-amendment-contract"
+
+const PKG = "http://schemas.microsoft.com/office/2006/xmlPackage"
+const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+const REL = "http://schemas.openxmlformats.org/package/2006/relationships"
+const CT = "http://schemas.openxmlformats.org/package/2006/content-types"
+const XMLNS = "http://www.w3.org/2000/xmlns/"
+const MAIN = "word/document.xml"
+const AUTHOR = "doc.haus" as const
+export const MAX_WORD_AMENDMENT_OOXML_BYTES = 1024 * 1024
+const serializer = new XMLSerializer()
+const children = (node: Node) => Array.from(node.childNodes).filter(child => child.nodeType === 1) as Element[]
+const all = (node: Element | Document, namespace: string, local: string) => Array.from(node.getElementsByTagNameNS(namespace, local))
+
+export class WordAmendmentError extends Error {
+  constructor(readonly code: "word_snapshot_changed" | "word_snapshot_unsupported" | "word_snapshot_large") {
+    super(code)
+    this.name = "WordAmendmentError"
+  }
+}
+function require(condition: unknown, code: WordAmendmentError["code"] = "word_snapshot_unsupported"): asserts condition {
+  if (!condition) throw new WordAmendmentError(code)
+}
+function parse(xml: string) {
+  require(xml.length <= MAX_WORD_AMENDMENT_OOXML_BYTES * 2 && !/<!DOCTYPE/i.test(xml))
+  const fail = () => { throw new WordAmendmentError("word_snapshot_unsupported") }
+  const doc = new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(xml, "application/xml")
+  require(doc.documentElement && !doc.doctype)
+  return doc
+}
+
+// A Flat OPC XML part may inherit namespaces from pkg:package/xmlData. Its ZIP
+// entry must keep that context when it becomes an independent XML document.
+function standalone(element: Element): string {
+  const clone = element.cloneNode(true) as Element
+  const present = new Set(Array.from(clone.attributes).filter(a => a.namespaceURI === XMLNS).map(a => a.name))
+  for (let ancestor = element.parentNode; ancestor && ancestor.nodeType === 1; ancestor = ancestor.parentNode) {
+    for (const attr of Array.from((ancestor as Element).attributes)) {
+      if (attr.namespaceURI !== XMLNS || present.has(attr.name)) continue
+      clone.setAttributeNS(XMLNS, attr.name, attr.value)
+      present.add(attr.name)
+    }
+  }
+  return serializer.serializeToString(clone)
+}
+
+function packageFromFlatOpc(xml: string) {
+  require(new TextEncoder().encode(xml).byteLength <= MAX_WORD_AMENDMENT_OOXML_BYTES, "word_snapshot_large")
+  const root = parse(xml).documentElement
+  require(root.namespaceURI === PKG && root.localName === "package")
+  const parts: Record<string, Uint8Array> = Object.create(null), types = new Map<string, string>()
+  const rows = children(root)
+  require(rows.length > 0 && rows.length <= 64)
+  for (const part of rows) {
+    require(part.namespaceURI === PKG && part.localName === "part")
+    const name = part.getAttributeNS(PKG, "name") ?? "", type = part.getAttributeNS(PKG, "contentType") ?? ""
+    require(name.startsWith("/") && name === path.posix.normalize(name) && !/[\\\x00?#]/.test(name) && !name.endsWith("/") && name !== "/[Content_Types].xml")
+    const key = name.slice(1)
+    require(!parts[key] && type.length > 0 && type.length <= 256)
+    const data = children(part)
+    require(data.length === 1 && data[0]!.namespaceURI === PKG)
+    if (data[0]!.localName === "xmlData") {
+      const content = children(data[0]!)
+      require(content.length === 1)
+      parts[key] = strToU8(standalone(content[0]!))
+    } else {
+      require(data[0]!.localName === "binaryData")
+      const encoded = (data[0]!.textContent ?? "").replace(/\s/g, "")
+      require(/^(?:[a-zA-Z0-9+/]{4})*(?:[a-zA-Z0-9+/]{2}==|[a-zA-Z0-9+/]{3}=)?$/.test(encoded))
+      parts[key] = new Uint8Array(Buffer.from(encoded, "base64"))
+    }
+    types.set(key, type)
+  }
+  require(parts[MAIN])
+  require(parts["_rels/.rels"])
+  const roots = parse(strFromU8(parts["_rels/.rels"]!))
+  require(roots.documentElement.namespaceURI === REL && children(roots.documentElement).some(rel => rel.namespaceURI === REL &&
+    rel.localName === "Relationship" && rel.getAttribute("Type") === "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" &&
+    rel.getAttribute("TargetMode") !== "External" && path.posix.resolve("/", rel.getAttribute("Target") ?? "").slice(1) === MAIN))
+  // Complete a minimal selection package before shared tracked authoring adds
+  // its settings relationship. Preservation is checked against this full base.
+  if (!parts["word/_rels/document.xml.rels"]) {
+    parts["word/_rels/document.xml.rels"] = strToU8(`<Relationships xmlns="${REL}"/>`)
+    types.set("word/_rels/document.xml.rels", "application/vnd.openxmlformats-package.relationships+xml")
+  }
+  const doc = parse(`<Types xmlns="${CT}"/>`)
+  for (const [extension, type] of [["rels", "application/vnd.openxmlformats-package.relationships+xml"], ["xml", "application/xml"]]) {
+    const fallback = doc.createElementNS(CT, "Default")
+    fallback.setAttribute("Extension", extension!); fallback.setAttribute("ContentType", type!)
+    doc.documentElement.appendChild(fallback)
+  }
+  for (const [name, type] of types) {
+    const override = doc.createElementNS(CT, "Override")
+    override.setAttribute("PartName", `/${name}`); override.setAttribute("ContentType", type)
+    doc.documentElement.appendChild(override)
+  }
+  parts["[Content_Types].xml"] = strToU8(serializer.serializeToString(doc))
+  return { parts, types }
+}
+
+const protectedContent = ["commentRangeStart", "commentRangeEnd", "commentReference", "ins", "del", "moveFrom", "moveTo",
+  "moveFromRangeStart", "moveFromRangeEnd", "moveToRangeStart", "moveToRangeEnd", "rPrChange", "pPrChange", "tblPrChange", "trPrChange", "tcPrChange",
+  "fldChar", "fldSimple", "instrText", "drawing", "pict", "object", "sdt", "hyperlink", "footnoteReference", "endnoteReference", "sectPr"]
+function bodyParagraphs(doc: Document, unrevised: boolean) {
+  const root = doc.documentElement
+  require(root.namespaceURI === W && root.localName === "document")
+  const bodies = children(root).filter(e => e.namespaceURI === W && e.localName === "body")
+  require(bodies.length === 1)
+  const body = bodies[0]!, bodyChildren = children(body), content = bodyChildren.filter(e => !(e.namespaceURI === W && e.localName === "sectPr" && e === bodyChildren.at(-1)))
+  require(content.length > 0)
+  let paragraphs: Element[]
+  if (content.length === 1 && content[0]!.namespaceURI === W && content[0]!.localName === "tbl") {
+    // Word may wrap a selected cell's paragraph in its containing table. Only a
+    // complete single-cell snapshot can become paragraph-only scoped transport;
+    // the native adapter separately proves the actual target stays in that cell.
+    const table = content[0]!, cells = all(table, W, "tc")
+    require(cells.length === 1 && all(table, W, "tbl").length === 0)
+    paragraphs = children(cells[0]!).filter(e => e.namespaceURI === W && e.localName === "p")
+    require(paragraphs.length === all(table, W, "p").length)
+  } else {
+    require(content.every(e => e.namespaceURI === W && e.localName === "p"))
+    paragraphs = content
+  }
+  require(paragraphs.length > 0 && paragraphs.length <= 64)
+  if (unrevised) require(!paragraphs.some(p => protectedContent.some(name => all(p, W, name).length)))
+  require(!paragraphs.some(p => all(p, W, "br").some(br => br.getAttributeNS(W, "type") && br.getAttributeNS(W, "type") !== "textWrapping")))
+  return { body, paragraphs }
+}
+function paragraphText(paragraph: Element): string {
+  const text = (node: Element): string => node.namespaceURI === W && ["pPr", "rPr"].includes(node.localName) ? ""
+    : node.namespaceURI === W && node.localName === "t" ? node.textContent ?? ""
+    : node.namespaceURI === W && node.localName === "tab" ? "\t"
+    : node.namespaceURI === W && ["br", "cr"].includes(node.localName) ? "\v" : children(node).map(text).join("")
+  return text(paragraph)
+}
+
+function importFlatOpc(parts: Record<string, Uint8Array>, originalTypes: Map<string, string>) {
+  const contentTypes = parse(strFromU8(parts["[Content_Types].xml"]!))
+  const typeFor = (name: string) => all(contentTypes, CT, "Override").find(e => e.getAttribute("PartName") === `/${name}`)?.getAttribute("ContentType")
+    ?? all(contentTypes, CT, "Default").find(e => e.getAttribute("Extension") === name.split(".").at(-1))?.getAttribute("ContentType") ?? originalTypes.get(name)
+  const selected: Record<string, Uint8Array> = Object.create(null), queue = [MAIN]
+  const permitted = new Set(["styles", "theme", "fontTable", "numbering", "font"])
+  while (queue.length) {
+    const name = queue.shift()!
+    if (selected[name]) continue
+    require(parts[name]); selected[name] = parts[name]!
+    const relName = path.posix.join(path.posix.dirname(name), "_rels", `${path.posix.basename(name)}.rels`)
+    if (!parts[relName]) continue
+    const rels = parse(strFromU8(parts[relName]!))
+    require(rels.documentElement.namespaceURI === REL && rels.documentElement.localName === "Relationships")
+    for (const rel of children(rels.documentElement)) {
+      require(rel.namespaceURI === REL && rel.localName === "Relationship")
+      const kind = (rel.getAttribute("Type") ?? "").split("/").at(-1)!
+      // Retained numbering/theme parts can reference embedded images (for
+      // example a picture bullet). Their relationship closure must travel with
+      // the formatting; otherwise Word receives a dangling image reference.
+      if (!permitted.has(kind) && !(kind === "image" && name !== MAIN)) { rel.parentNode!.removeChild(rel); continue }
+      require(rel.getAttribute("TargetMode") !== "External")
+      const target = rel.getAttribute("Target") ?? ""
+      require(target && !/[\\\x00?#]/.test(target))
+      const resolved = path.posix.resolve("/", path.posix.dirname(name), target).slice(1)
+      require(parts[resolved]); queue.push(resolved)
+    }
+    if (children(rels.documentElement).length) selected[relName] = strToU8(serializer.serializeToString(rels))
+  }
+  const doc = parse(strFromU8(selected[MAIN]!)), { body } = bodyParagraphs(doc, false)
+  for (const child of children(body)) if (child.namespaceURI === W && child.localName === "sectPr") body.removeChild(child)
+  selected[MAIN] = strToU8(serializer.serializeToString(doc))
+  selected["_rels/.rels"] = strToU8(`<Relationships xmlns="${REL}"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`)
+  const flat = parse(`<pkg:package xmlns:pkg="${PKG}"/>`)
+  for (const [name, bytes] of Object.entries(selected)) {
+    const type = name.endsWith(".rels") ? "application/vnd.openxmlformats-package.relationships+xml" : typeFor(name)
+    require(type)
+    const part = flat.createElementNS(PKG, "pkg:part")
+    part.setAttributeNS(PKG, "pkg:name", `/${name}`); part.setAttributeNS(PKG, "pkg:contentType", type)
+    const xml = type.endsWith("+xml") || type === "application/xml"
+    const data = flat.createElementNS(PKG, xml ? "pkg:xmlData" : "pkg:binaryData")
+    if (xml) data.appendChild(flat.importNode(parse(strFromU8(bytes)).documentElement, true))
+    else data.textContent = Buffer.from(bytes).toString("base64")
+    part.appendChild(data); flat.documentElement.appendChild(part)
+  }
+  return serializer.serializeToString(flat)
+}
+
+/** Transform a live, complete paragraph snapshot privately through the shared
+ * amendment engine. Native session IDs never become Docxodus paragraph IDs;
+ * exact ordered text and selected UTF-16 offsets bind this ephemeral package. */
+export async function authorWordChatTarget(ooxml: string, target: WordChatTarget, replacement: string): Promise<Omit<WordChatAuthoredAmendment, "proposalId">> {
+  const source = packageFromFlatOpc(ooxml), doc = parse(strFromU8(source.parts[MAIN]!)), { body, paragraphs } = bodyParagraphs(doc, true)
+  const texts = paragraphs.map(paragraphText), proposed = replacement.split("\r")
+  require(JSON.stringify(texts) === JSON.stringify(target.paragraphs.map(p => p.text)), "word_snapshot_changed")
+  require(proposed.length === texts.length && !replacement.includes("\n"))
+  require(Number.isSafeInteger(target.startOffset) && Number.isSafeInteger(target.endOffset) && target.startOffset >= 0 && target.endOffset >= 0 &&
+    target.startOffset <= texts[0]!.length && target.endOffset <= texts.at(-1)!.length && (texts.length > 1 || target.endOffset >= target.startOffset), "word_snapshot_changed")
+  const spans = texts.map((text, i) => ({ start: i === 0 ? target.startOffset : 0, end: i === texts.length - 1 ? target.endOffset : text.length }))
+  require(texts.map((text, i) => text.slice(spans[i]!.start, spans[i]!.end)).join("\r") === target.text, "word_snapshot_changed")
+  // Strip only an optional table/cell transport wrapper, retaining each complete
+  // paragraph XML. No table geometry or unrelated content is imported into Word.
+  for (const child of children(body)) if (!(child.namespaceURI === W && child.localName === "sectPr")) body.removeChild(child)
+  const section = children(body)[0] ?? null
+  for (const p of paragraphs) body.insertBefore(p, section)
+  source.parts[MAIN] = strToU8(serializer.serializeToString(doc))
+  const bytes = zipSync(source.parts, { mtime: new Date(1980, 0, 1) })
+  const options = { pendingRevisions: "layer" as const, revisionAuthor: AUTHOR, ownAuthors: [AUTHOR] }
+  const revision = await createDocxRevision(bytes, options), projected = revision.paragraphs.filter(p => p.scope === "body")
+  const nonempty = texts.filter(text => text.replace(/[\v\t]/g, "").length)
+  require(JSON.stringify(projected.map(p => p.text)) === JSON.stringify(nonempty.map(text => text.replace(/[\v\t]/g, ""))), "word_snapshot_changed")
+  const edits: DocxParagraphEdit[] = [], expected = texts.map((text, i) => text.slice(0, spans[i]!.start) + proposed[i]! + text.slice(spans[i]!.end))
+  let ordinal = 0
+  texts.forEach((text, i) => {
+    const paragraph = text.replace(/[\v\t]/g, "") ? projected[ordinal++] : undefined, { start, end } = spans[i]!
+    const before = text.slice(start, end), after = proposed[i]!
+    if (before === after) return
+    require(paragraph)
+    const pieces = before.split(/([\v\t])/), replacements = after.split(/([\v\t])/)
+    require(pieces.length === replacements.length && pieces.every((piece, at) => at % 2 === 0 || piece === replacements[at]))
+    let at = text.slice(0, start).replace(/[\v\t]/g, "").length
+    pieces.forEach((piece, part) => {
+      if (part % 2) return
+      if (piece !== replacements[part]) {
+        require(piece.length > 0)
+        const projectedText = paragraph.text
+        let occurrence = 0, found = projectedText.indexOf(piece)
+        while (found >= 0 && found < at) { occurrence++; found = projectedText.indexOf(piece, found + piece.length) }
+        require(found === at, "word_snapshot_changed")
+        edits.push({ id: `paragraph-${i}-span-${part}`, paragraph_handle: paragraph.paragraph_handle, occurrence, before_quote: piece, replacement: replacements[part]! })
+      }
+      at += piece.length
+    })
+  })
+  require(edits.length > 0)
+  const amended = await applyDocxParagraphEdits(bytes, edits, undefined, options), outputParts = unzipSync(amended.bytes)
+  const outputDoc = parse(strFromU8(outputParts[MAIN]!)), output = bodyParagraphs(outputDoc, false).paragraphs
+  // Current text excludes deletions. Keep native soft breaks/tabs in the result.
+  for (const deletion of all(outputDoc, W, "del")) deletion.parentNode!.removeChild(deletion)
+  require(JSON.stringify(output.map(paragraphText)) === JSON.stringify(expected), "word_snapshot_changed")
+  const authored = parse(strFromU8(outputParts[MAIN]!)), revisions: WordChatAuthoredAmendment["revisions"] = []
+  for (const p of bodyParagraphs(authored, false).paragraphs) {
+    const visit = (node: Element) => {
+      if (node.namespaceURI === W && ["ins", "del"].includes(node.localName)) {
+        const added = node.localName === "ins", author = node.getAttributeNS(W, "author") ?? ""
+        require(author === AUTHOR)
+        revisions.push({ type: added ? "Added" : "Deleted", author, text: all(node, W, added ? "t" : "delText").map(t => t.textContent ?? "").join("") })
+      } else children(node).forEach(visit)
+    }
+    visit(p)
+  }
+  require(revisions.length > 0)
+  return { ooxml: importFlatOpc(outputParts, source.types), paragraphs: expected, revisions, author: AUTHOR }
+}

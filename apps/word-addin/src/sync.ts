@@ -331,6 +331,31 @@ export class WordSync {
     return this.enqueue(() => this.explicitSave())
   }
 
+  /** Reviewed changes share Save's queue but never export, save or publish.
+   * The callback receives the live identity inspected inside that queue. */
+  async localEdit<T>(edit: (identity: { base: string; generation: string }) => Promise<T>): Promise<T> {
+    let value!: T
+    let rejected: unknown
+    const complete = await this.enqueue(async () => {
+      try {
+        if (this.pending) throw documentStateError("Finish the pending Save before applying a change.")
+        await this.inspect(true)
+        if (!this.canWrite()) throw documentStateError(this.blockedMessage())
+        this.completed = false
+        this.show("not-saved", "Applying the reviewed change in Word…")
+        value = await edit({ base: this.base, generation: this.connection!.lease.generation! })
+        this.content = "changed"
+        this.show("not-saved", "Applied in Word. Choose Save when you’re ready.")
+      } catch (error) {
+        rejected = error
+        if (error instanceof ConnectionError || error instanceof DocumentStateError) throw error
+        throw documentStateError(error instanceof Error ? error.message : "Word could not apply this change. Review it again.")
+      }
+    })
+    if (!complete) throw rejected instanceof Error ? rejected : documentStateError(this.state.message)
+    return value
+  }
+
   done(): Promise<boolean> {
     return this.enqueue(async () => {
       await this.explicitSave()
