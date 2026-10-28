@@ -642,6 +642,7 @@ test("mixed wording and layout follow shared Auto and receive one independent re
     expect(turn.proposal?.formatting).toEqual(formatting)
     const prompt = sessionContext(turn.id)
     expect(prompt).toContain("requested wording and layout together")
+    expect(prompt).toContain("not from the document-wide formattingParagraphs list")
     expect(prompt).not.toContain("Choose a wording or formatting-only proposal")
     const reviewer = [...sessions.values()].find(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")!
     const review = sessionContext(reviewer.id)
@@ -654,15 +655,19 @@ test("mixed wording and layout follow shared Auto and receive one independent re
     modelProposal = { before, after: `Delivery\r${before}`, formatting: [{ paragraph: 1, spacingAfter: 6 }] }
     const inserted = (await (await request()).json() as { turn: WordChatTurn }).turn
     expect(inserted.proposal?.formatting).toEqual([{ paragraph: 1, spacingAfter: 6 }])
-    modelProposal = { before, after: `Delivery\r${before}`, formatting: [{ paragraph: 2, spacingAfter: 6 }] }
+    modelRawOutput = JSON.stringify({ answer: "Added the heading.", citations: [], proposal: { before, after: `Delivery\r${before}`, formatting: [{ paragraph: 2, spacingAfter: 6 }] } })
     const outOfRange = (await (await request()).json() as { turn: WordChatTurn }).turn
     expect(outOfRange.proposal).toBeUndefined()
+    expect(outOfRange.answer).toBe("")
+    expect(outOfRange.error).toContain("Select one clear passage")
+    expect([...sessions.values()].some(session => session.parentID === outOfRange.id && session.metadata.type === "word-chat-review")).toBe(false)
+    modelRawOutput = undefined
     modelProposal = { before, after, formatting }
     approveReview = false
     const rejected = (await (await request()).json() as { turn: WordChatTurn }).turn
     expect(rejected.proposal).toBeUndefined()
     expect(rejected.error).toContain("needs revision")
-  } finally { amend = false; modelProposal = undefined; approveReview = true; routerAgent = "qa" }
+  } finally { amend = false; modelProposal = undefined; modelRawOutput = undefined; approveReview = true; routerAgent = "qa" }
 })
 
 test("a misplaced formatting array cannot silently become a wording-only proposal", async () => {
@@ -677,6 +682,31 @@ test("a misplaced formatting array cannot silently become a wording-only proposa
     expect(turn.error).toContain("formatting could not be included")
     expect(turn.answer).toBe("")
     expect([...sessions.values()].some(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")).toBe(false)
+  } finally { routerAgent = "qa"; modelRawOutput = undefined }
+})
+
+test("a completion claim without a proposal is not shown as an applied change", async () => {
+  const id = await newConversation()
+  routerAgent = "redliner"
+  modelRawOutput = JSON.stringify({ answer: "Added the requested section.", citations: [] })
+  try {
+    const turn = (await (await send(id, "document", "Add a section")).json() as { turn: WordChatTurn }).turn
+    expect(turn.proposal).toBeUndefined()
+    expect(turn.answer).toBe("")
+    expect(turn.error).toContain("No amendment was prepared")
+  } finally { routerAgent = "qa"; modelRawOutput = undefined }
+})
+
+test("an unprepared amendment can ask a necessary clarification without claiming an edit", async () => {
+  const id = await newConversation()
+  routerAgent = "redliner"
+  modelRawOutput = JSON.stringify({ answer: "I added the requested notice period.", citations: [], clarificationQuestions: ["Should clause 6.2 apply?", "Should Acme Ltd. use U.S. law?", "Not a question."] })
+  try {
+    const turn = (await (await send(id, "document", "Add a termination notice period")).json() as { turn: WordChatTurn }).turn
+    expect(turn.proposal).toBeUndefined()
+    expect(turn.answer).toBe("Should clause 6.2 apply?\nShould Acme Ltd. use U.S. law?")
+    expect(turn.error).toContain("No amendment was prepared")
+    expect(sessionContext(turn.id)).toContain("clarificationQuestions")
   } finally { routerAgent = "qa"; modelRawOutput = undefined }
 })
 

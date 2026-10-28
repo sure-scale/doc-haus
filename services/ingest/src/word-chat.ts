@@ -197,7 +197,7 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
       turn.status = "error"; turn.answer = ""; turn.sources = []; turn.error = "A source reference could not be verified. Ask again with the relevant passage."; return currentTurn(auth, meta, turn)
     }
     if (completed && (!output || typeof output.answer !== "string" || (meta.suppliedContext ? child.outcome !== "succeeded" : child.outcome === "failed" || child.outcome === "interrupted"))) {
-      turn.status = "error"; turn.error = "Chat could not finish this response. Try a new request."; return currentTurn(auth, meta, turn)
+      turn.status = "error"; turn.answer = ""; turn.error = "Chat could not finish this response. Try a new request."; return currentTurn(auth, meta, turn)
     }
     if ((meta.kind === "amendment" || meta.kind === "formatting") && output?.formatting !== undefined) {
       turn.answer = ""
@@ -220,9 +220,14 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
           openItems: Array.isArray(proposed.openItems) ? proposed.openItems.filter((value): value is string => typeof value === "string").slice(0, 20) : [], createdAt: new Date(turn.createdAt).toISOString(),
           ...(proposed.formatting !== undefined ? { formatting: proposed.formatting as NonNullable<WordChatProposal["formatting"]> } : {}) }
       } else if (completed) {
+        turn.answer = ""
         turn.error = proposalKind === "formatting" ? "Select complete paragraphs and ask for formatting with all wording unchanged." : "Select one clear passage in Word, then request the amendment again."
       }
     } else if ((meta.kind === "amendment" || meta.kind === "formatting") && completed) {
+      // Only surface structured questions here: the free-form answer can
+      // incorrectly claim that an unprepared edit has already been made.
+      const questions = Array.isArray(output?.clarificationQuestions) ? output.clarificationQuestions : []
+      turn.answer = questions.filter((value): value is string => typeof value === "string" && value.length <= 300 && /^[^\r\n]+\?$/.test(value.trim())).slice(0, 3).map(value => value.trim()).join("\n")
       turn.error = meta.kind === "formatting" ? "No formatting proposal was prepared. Select complete paragraphs and ask again." : "No amendment was prepared for review. Ask again with the exact passage and requested change."
     }
     if (meta.kind === "suggestions" && output && Array.isArray(output.suggestions)) {
@@ -249,11 +254,11 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
       const lastReview = Array.isArray(reviewMessages) ? reviewMessages.filter(record).filter(message => record(message.info) && message.info.role === "assistant").at(-1) : undefined
       const reviewText = lastReview && Array.isArray(lastReview.parts) ? lastReview.parts.filter(record).filter(part => part.type === "text").map(part => part.text).join("") : ""
       const checked = parseOutput(reviewText)
-      if (!reviewed.time?.idle && !reviewed.outcome) { turn.status = "running"; delete turn.proposal }
+      if (!reviewed.time?.idle && !reviewed.outcome) { turn.status = "running"; turn.answer = ""; delete turn.proposal }
       else if (checked?.approved !== true || reviewed.outcome !== "succeeded") {
         delete turn.proposal
         turn.error = "The proposal needs revision before it can be applied."
-        if (Array.isArray(checked?.issues)) turn.answer += "\n\n" + checked.issues.filter(issue => typeof issue === "string").slice(0, 5).join("\n")
+        turn.answer = Array.isArray(checked?.issues) ? checked.issues.filter(issue => typeof issue === "string").slice(0, 5).join("\n") : ""
       }
     }
     void nameConversation(auth, root, child, turn, meta)
@@ -504,7 +509,7 @@ function selectedModel() { const value = readEngineConfig().model; if (typeof va
 function modelRef(value: string) { const slash = value.indexOf("/"); return { providerID: value.slice(0, slash), modelID: value.slice(slash + 1) } }
 function buildPrompt(input: WordChatSend, kind: WordChatKind, sources: WordChatSource[], history: { question: string; answer: string }[], selection = input.context.selection) {
   const target = kind === "suggestions" && selection ? { text: wordChatExcerpts(selection.text, input.text, 8000), paragraphIds: selection.paragraphs.map(paragraph => paragraph.id).slice(0, 64), complete: selection.text.length <= 8000 } : input.proposal?.target ?? input.context.selection
-  const format = kind === "amendment" ? conversationResponseContract("amendment") + " Keep before unchanged when refining. Do not propose outside the selected target. Address the requested wording and layout together when supported; an unclear request is an open item, never permission to expand its scope." :
+  const format = kind === "amendment" ? conversationResponseContract("amendment") + " When a necessary decision is missing and no proposal can be prepared, put up to three short direct questions in clarificationQuestions, as an array of strings ending in question marks. Formatting paragraph indexes count from zero within proposal.after only, not from the document-wide formattingParagraphs list. For each operation, count the resulting paragraphs in proposal.after, including inserted paragraphs; the first is 0. Keep before unchanged when refining. Do not propose outside the selected target. Address the requested wording and layout together when supported; an unclear request is an open item, never permission to expand its scope." :
     kind === "formatting" ? 'Prepare a formatting-only proposal from formattingParagraphs. Include "proposal":{"before":"exact complete adjacent paragraphs joined with \\r","after":"identical to before","explanation":"brief layout reason","openItems":[],"formatting":[{"paragraph":0,"style":"Heading1","spacingBefore":12,"spacingAfter":6,"lineSpacing":1.5}]}. The formatting array has at most 64 distinct zero-based paragraph indexes relative to the exact before target. Each operation may set style (Title, Heading1, Heading2, Heading3 or Normal), spacingBefore/spacingAfter in points from 0 to 48, or lineSpacing as a multiple from 1 to 2; omit properties you are not changing. Use complete paragraphs only. Preserve every word, paragraph order and boundary; before and after must be identical. Apply heading/title styles only to existing heading/title text. Make reasonable layout choices when no style guide is supplied. Uncertainty in unchanged wording does not itself prevent layout improvement; never resolve it or remove working notes. Do not claim knowledge of existing paragraph formats, which are not supplied. Keep before unchanged when refining and stay inside the supplied target.' :
     kind === "suggestions" ? 'Include "suggestions":[{"title":"short actionable idea","explanation":"reason and uncertainty","passage":"exact current Word passage"}]. Return zero to three ideas about the supplied target. This is bounded preparation, not a complete document review.' : 'Answer the question only. Do not prepare a proposal.'
   const paragraphs = input.proposal?.target.paragraphs ?? input.context.selection?.paragraphs ?? input.context.paragraphs
