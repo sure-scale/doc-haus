@@ -266,6 +266,23 @@ test("authors only an exactly selected simple inline control using tracked share
   expect(() => reviewedWordChatArtifact({ ...result, proposalId: "proposal" }, "proposal", selected, ["A blue clause"], xml)).not.toThrow()
 })
 
+test("refuses whole-control edits with unchanged endpoint characters pending native redline proof", async () => {
+  const control = '<w:sdt><w:sdtPr><w:id w:val="41"/><w:tag w:val="colour"/></w:sdtPr><w:sdtContent><w:r><w:rPr><w:b/></w:rPr><w:t>red</w:t></w:r></w:sdtContent></w:sdt>'
+  const xml = flat(`<w:p><w:r><w:t xml:space="preserve">A </w:t></w:r>${control}<w:r><w:t xml:space="preserve"> clause</w:t></w:r></w:p>`)
+  const selected = target(["A red clause"], 2, 5)
+
+  // The current Flat OPC boundary accepts this exact whole-control replacement.
+  const accepted = await authorWordChatTarget(xml, selected, "blue")
+  expect(accepted.revisions).toEqual([
+    { type: "Deleted", author: "doc.haus", text: "red" },
+    { type: "Added", author: "doc.haus", text: "blue" },
+  ])
+
+  // Keeping either endpoint could make a native Word Replace mark different boundaries from the minimized shared diff.
+  for (const replacement of ["rose", "bed"])
+    await expect(authorWordChatTarget(xml, selected, replacement)).rejects.toMatchObject({ code: "word_snapshot_unsupported" })
+})
+
 test("refuses ambiguous or protected inline controls before shared authoring", async () => {
   const control = '<w:sdt><w:sdtPr><w:id w:val="41"/></w:sdtPr><w:sdtContent><w:r><w:t>red</w:t></w:r></w:sdtContent></w:sdt>'
   const wrap = (value: string) => flat(`<w:p><w:r><w:t xml:space="preserve">A </w:t></w:r>${value}<w:r><w:t xml:space="preserve"> clause</w:t></w:r></w:p>`)

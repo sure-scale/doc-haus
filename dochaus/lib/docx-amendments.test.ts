@@ -1090,3 +1090,35 @@ test("an edit inside a simple control preserves other reviewers' revisions and c
     } finally { session.close() }
   }
 })
+
+test("refuses edits inside a control that already contains tracked markup", async () => {
+  const original = (await renderMarkdownToDocx("Before Alpha beta term after.\n\nOther paragraph.")).bytes
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const fixture = (marked: boolean) => {
+    const parts = unzipSync(original), doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+    const text = Array.from(doc.getElementsByTagNameNS(W, "t")).find(node => node.textContent === "Before Alpha beta term after.")!
+    const run = text.parentNode!, parent = run.parentNode!
+    const content = marked
+      ? '<w:del w:id="91" w:author="doc.haus" w:date="2026-01-01T00:00:00Z"><w:r><w:rPr><w:b/></w:rPr><w:delText>Superseded wording</w:delText></w:r></w:del><w:r><w:rPr><w:b/></w:rPr><w:t>Alpha beta term</w:t></w:r>'
+      : '<w:r><w:rPr><w:b/></w:rPr><w:t>Alpha beta term</w:t></w:r>'
+    const sample = new DOMParser().parseFromString(`<w:p xmlns:w="${W}"><w:r><w:t xml:space="preserve">Before </w:t></w:r><w:sdt><w:sdtPr><w:tag w:val="term"/><w:id w:val="27"/></w:sdtPr><w:sdtContent>${content}</w:sdtContent></w:sdt><w:r><w:t xml:space="preserve"> after.</w:t></w:r></w:p>`, "application/xml")
+    for (const child of Array.from(sample.documentElement.childNodes)) parent.insertBefore(doc.importNode(child, true), run)
+    parent.removeChild(run)
+    parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+    return zipSync(parts)
+  }
+  const options = { pendingRevisions: "layer" as const, revisionAuthor: "doc.haus", ownAuthors: ["doc.haus"] }
+  const edit = async (bytes: Uint8Array) => {
+    const revision = await createDocxRevision(bytes, options)
+    const paragraph = revision.paragraphs.find(row => row.text.includes("Alpha beta term"))!
+    expect(paragraph.text).toBe("Before Alpha beta term after.")
+    return applyDocxParagraphEdits(bytes, [{ id: "control", paragraph_handle: paragraph.paragraph_handle,
+      occurrence: 0, before_quote: "beta", replacement: "delta" }], undefined, options)
+  }
+
+  // The identical current wording is editable while the control has no prior markup.
+  expect((await edit(fixture(false))).bytes).toBeInstanceOf(Uint8Array)
+  // The same-author deletion is outside the selected text; the control has one current bold run plus tracked markup.
+  // That combined control shape is unsupported, so the call returns no authored result.
+  await expect(edit(fixture(true))).rejects.toThrow("docx_protected_inline_content_changed")
+})
