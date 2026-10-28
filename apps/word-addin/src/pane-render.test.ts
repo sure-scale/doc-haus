@@ -49,6 +49,7 @@ test("unchanged poll presentation preserves the pane DOM and focus while real sa
       expect(button.disabled).toBe(false)
       render({ ...state, status: "saving", busy: true, message: "Saving to doc.haus…" })
       await Bun.sleep(0)
+      mutations.push(...observer.takeRecords())
       expect(mutations.length).toBeGreaterThan(0)
       expect(button.disabled).toBe(true)
       expect(button.hidden).toBe(false)

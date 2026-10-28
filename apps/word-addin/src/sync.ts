@@ -21,6 +21,9 @@ export interface Checkpoints {
   clear?(): void
   rebase?(base: string): Promise<void>
 }
+const nativeUnknown = "The status of a Word operation could not be confirmed. Keep this Word file and its local edits. Check the document status in the matter in doc.haus; if it shows an unconfirmed Word change, choose Create saved copy. The copy will not include unsent Word edits."
+const nativeRecovery = "A Word change could not be confirmed. Keep this Word file and its local edits. In the matter in doc.haus, choose Create saved copy for this document; the copy will not include unsent Word edits."
+
 type NativeOperation = { sequence: number; operationId: string | null; state: "idle" | "pending" | "confirmed" | "not-dispatched" }
 type ProposalBinding = { conversationId: string; turnId: string }
 type NativeIntent = { intent: "amendment"; proposal: ProposalBinding } | { intent: "refresh"; expectedCurrent: string }
@@ -115,6 +118,7 @@ export class WordSync {
   // Require a deliberate Save/Done; native AutoSave or Undo grants no authority.
   private explicitSaveRequired = true
   private latestUncertain = false
+  private refreshFailure?: { sequence: number; message: string }
   private nextRetry = 0
   private heartbeatAt = -Infinity
   private content: PaneState["content"] = "unverified"
@@ -183,7 +187,9 @@ export class WordSync {
               : "Word could not finish the save. Keep this document open and try Save again."
         this.show(
           "not-saved",
-          error instanceof ConnectionError && this.connection && !this.canWrite() ? this.blockedMessage() : message,
+          this.nativeUncertain || this.connection?.nativeOperation?.state === "pending" ?
+            this.blockedMessage() :
+            error instanceof ConnectionError && this.connection && !this.canWrite() ? this.blockedMessage() : message,
           true,
           error instanceof ConnectionError && error.retryable,
         )
@@ -223,11 +229,14 @@ export class WordSync {
   }
 
   private blockedMessage(): string {
-    if (this.nativeUncertain) return "A change in Word could not be confirmed. Keep this file and inspect it before continuing."
+    if (this.connection?.nativeOperation?.state === "pending") {
+      const failure = this.refreshFailure
+      return this.latestUncertain && failure?.sequence === this.connection.nativeOperation.sequence ? `${failure.message} ${nativeRecovery}` : nativeRecovery
+    }
+    if (this.nativeUncertain) return nativeUnknown
     if (this.latestUncertain)
       return "Word could not confirm the refresh. Check this document and open the latest copy from doc.haus before saving or applying changes."
     const state = this.connection
-    if (state?.nativeOperation?.state === "pending") return "A change in Word could not be confirmed. Keep this file and inspect it before continuing."
     if (!state) return "Check the connection before saving. Your Word changes stay in this file."
     if (state.version.state === "removed")
       return "This copy predates a redaction or removal. Keep your local file and reopen the current document from doc.haus."
@@ -325,9 +334,15 @@ export class WordSync {
       // Track-mode changes, import, verification and link settings form one
       // native operation. Any exception leaves the server fence unresolved.
       this.latestUncertain = true
-      await this.host.replace(latest.bytes, latest.version.id)
+      this.refreshFailure = undefined
+      try { await this.host.replace(latest.bytes, latest.version.id) }
+      catch (error) {
+        if (error instanceof DocumentStateError) this.refreshFailure = { sequence: operation.sequence, message: error.message }
+        throw error
+      }
       await this.settleNative(operation, "confirmed")
       this.latestUncertain = false
+      this.refreshFailure = undefined
       this.base = latest.version.id
       this.acknowledgement = undefined
       this.pending = undefined
@@ -494,7 +509,7 @@ export class WordSync {
     this.connection = response.connection
     if (response.operation.sequence !== operation.sequence || response.operation.operationId !== operation.operationId || response.operation.state !== outcome ||
       response.connection.nativeOperation?.sequence !== operation.sequence || response.connection.nativeOperation.state !== outcome)
-      throw documentStateError("Word could not confirm this change. Keep the file and inspect it before continuing.")
+      throw documentStateError(this.blockedMessage())
     this.nativeUncertain = false
   }
 
@@ -520,19 +535,19 @@ export class WordSync {
         operation = await this.beginNative(identity.base, identity.generation, this.connection.nativeOperation.sequence, { intent: "amendment", proposal })
         if (this.closed) {
           try { await this.settleNative(operation, "not-dispatched") }
-          catch { throw Object.assign(new Error("Word could not confirm the operation status. Keep this file and inspect it before continuing."), { mutationState: "uncertain" }) }
+          catch { throw Object.assign(new Error(this.blockedMessage()), { mutationState: "uncertain" }) }
           throw documentStateError("The Word pane closed before the change was applied.")
         }
         try { value = await edit(identity) }
         catch (error) {
           if (error && typeof error === "object" && "mutationState" in error && error.mutationState === "unchanged") {
             try { await this.settleNative(operation, "not-dispatched") }
-            catch { throw Object.assign(new Error("Word could not confirm the operation status. Keep this file and inspect it before continuing."), { mutationState: "uncertain" }) }
+            catch { throw Object.assign(new Error(this.blockedMessage()), { mutationState: "uncertain" }) }
           }
           throw error
         }
         try { await this.settleNative(operation, "confirmed") }
-        catch { throw Object.assign(new Error("Word applied the change, but doc.haus could not confirm its status. Keep this file and inspect it before continuing."), { mutationState: "uncertain" }) }
+        catch { throw Object.assign(new Error(this.blockedMessage()), { mutationState: "uncertain" }) }
         this.content = "changed"
         this.show("not-saved", "Applied in Word. Choose Save when you’re ready.")
       } catch (error) {

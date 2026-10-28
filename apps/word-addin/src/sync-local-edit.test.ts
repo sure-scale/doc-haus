@@ -123,6 +123,22 @@ test("lost begin with unavailable read never dispatches or saves", async () => {
   expect(f.events).not.toContain("native-save"); expect(f.events).not.toContain("upload")
 })
 
+test("unknown admission with an idle server gives conditional recovery advice", async () => {
+  const f = fixture("owned"), command = f.transport.nativeOperation!
+  f.transport.nativeOperation = async (...args) => {
+    if (args[2].action === "begin" || args[2].action === "read") throw new ConnectionError("Offline", true)
+    return command(...args)
+  }
+  await f.sync.start()
+  let writes = 0
+  await expect(f.sync.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => { writes++ })).rejects.toThrow()
+  expect(writes).toBe(0)
+  expect((await f.transport.lease("inspect", "base-one")).nativeOperation?.state).toBe("idle")
+  expect(f.sync.snapshot().message).toContain("if it shows an unconfirmed Word change")
+  expect(f.sync.snapshot().message).toContain("Check the document status")
+  expect(await f.sync.save()).toBe(false)
+})
+
 test("lost settlement acknowledgement reads terminal status without replay", async () => {
   const f = fixture("owned"), command = f.transport.nativeOperation!, writes: number[] = []
   f.transport.nativeOperation = async (...args) => {
@@ -138,7 +154,11 @@ test("pane reconstruction cannot reapply or save an indeterminate native operati
   const f = fixture("owned")
   await f.sync.start()
   await expect(f.sync.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => { f.bytes = 2; f.saved = true; throw Object.assign(new Error("Lost Word response"), { mutationState: "uncertain" }) })).rejects.toThrow()
+  expect(f.sync.snapshot().message).toContain("Create saved copy")
+  expect(f.sync.snapshot().message).toContain("will not include unsent Word edits")
   const fresh = f.reopen(); await fresh.start(); f.events.length = 0
+  expect(fresh.snapshot().message).toContain("Create saved copy")
+  expect(fresh.snapshot().message).toContain("Keep this Word file")
   await fresh.tick(); expect(await fresh.save()).toBe(false); expect(await fresh.done()).toBe(false)
   let writes = 0
   await expect(fresh.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => { writes++ })).rejects.toThrow()

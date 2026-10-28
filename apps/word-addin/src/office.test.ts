@@ -631,13 +631,17 @@ test("Load latest keeps the old base and fences saving when Word's imported docu
         return { operation, connection: connection(base) }
       },
       save: async () => { throw new Error("unexpected upload") },
-      heartbeat: async () => { throw new Error("unexpected heartbeat") },
+      heartbeat: async (base) => connection(base),
       done: async () => { throw new Error("unexpected done") },
     }
     let cleared = false
     const sync = new WordSync("v1", host, transport, { read: () => null, write: () => {}, clear: () => { cleared = true } }, () => {}, documentFingerprint, async () => {}, () => 50_000)
     expect(await sync.loadLatest(async () => ({ version: { id: "v2", number: 2 }, bytes: latest }), () => true)).toBe(false)
     expect(sync.snapshot().message).toContain("could not verify its contents")
+    expect(sync.snapshot().message).toContain("Create saved copy")
+    await sync.tick()
+    expect(sync.snapshot().message).toContain("could not verify its contents")
+    expect(sync.snapshot().message).toContain("Create saved copy")
     expect(sync.snapshot().canSave).toBe(false)
     expect(cleared).toBe(false)
     expect(operation.state).toBe("pending")
@@ -646,6 +650,10 @@ test("Load latest keeps the old base and fences saving when Word's imported docu
     expect(f.events).not.toContain("settings-set")
     expect(await sync.loadLatest(async () => ({ version: { id: "v2", number: 2 }, bytes: latest }), () => true)).toBe(false)
     expect(f.events.filter(event => event === "document-replace")).toHaveLength(1)
+    operation = { sequence: operation.sequence + 1, operationId: "different", state: "pending" }
+    await sync.tick()
+    expect(sync.snapshot().message).not.toContain("could not verify its contents")
+    expect(sync.snapshot().message).toContain("Create saved copy")
   } finally {
     if (previous) Object.defineProperty(globalThis, "window", previous)
     else delete (globalThis as { window?: unknown }).window
