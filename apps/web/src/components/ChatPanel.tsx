@@ -459,7 +459,12 @@ export default function ChatPanel({
           {attachment.name}
           <button type="button" aria-label={`Remove ${attachment.name}`} disabled={busy || attaching} onClick={() => void removeAttachment(attachment)}>×</button>
         </span>)}
-        <button type="button" className="icon-btn" disabled={busy || attaching} onClick={() => attachmentInput.current?.click()}>{attaching ? "Attaching…" : "Attach"}</button>
+        <button type="button" className="workflow-btn" disabled={busy || attaching} onClick={() => attachmentInput.current?.click()}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.19 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+          </svg>
+          <span>{attaching ? "Attaching…" : "Attach"}</span>
+        </button>
       </div>}
       hasAttachments={attachments.length > 0}
       draftingUpdate={updatingRun}

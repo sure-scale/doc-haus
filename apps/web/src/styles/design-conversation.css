@@ -258,7 +258,8 @@
 /* Assistant choices remain quiet, but keep comfortable targets and a clear
    selected state for the document drawer. */
 .design-conversation .composer-tools .assistant-trigger,
-.design-conversation .composer-tools .workflow-btn {
+.design-conversation .composer-tools .workflow-btn,
+.design-conversation .library-attachments > .workflow-btn {
   height: 36px;
   min-height: 36px;
   padding: 0 10px;
@@ -270,7 +271,8 @@
 }
 
 .design-conversation .composer-tools .assistant-trigger:hover:not(:disabled),
-.design-conversation .composer-tools .workflow-btn:hover:not(:disabled) {
+.design-conversation .composer-tools .workflow-btn:hover:not(:disabled),
+.design-conversation .library-attachments > .workflow-btn:hover:not(:disabled) {
   border-color: transparent;
   background: var(--md-sys-color-surface-container-high);
   color: var(--text);
