@@ -3,7 +3,7 @@ import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { applyDocxParagraphEdits, createDocxRevision, type DocxParagraphEdit } from "./docx-amendments"
 import { docxodus } from "./docxodus"
-import { wordChatApplyPlan, type WordChatParagraphFormat } from "./word-chat-amendment-contract"
+import { validWordChatFormatting, wordChatApplyPlan, type WordChatParagraphFormat } from "./word-chat-amendment-contract"
 import type { WordChatAuthoredAmendment, WordChatTarget } from "./word-chat-amendment-contract"
 import { reviewedWordChatParagraphFormatting, wordChatParagraphFormatChanged } from "./word-chat-formatting-ooxml"
 import { assertLayeredRoundTrip } from "./redline-round-trip"
@@ -300,7 +300,10 @@ export async function authorWordChatTarget(ooxml: string, target: WordChatTarget
   const source = packageFromFlatOpc(ooxml), doc = parse(strFromU8(source.parts[MAIN]!)), { body, paragraphs } = bodyParagraphs(doc, true, Boolean(formatting))
   const texts = paragraphs.map(paragraphText), proposed = replacement.split("\r")
   require(JSON.stringify(texts) === JSON.stringify(target.paragraphs.map(p => p.text)), "word_snapshot_changed")
-  const plan = wordChatApplyPlan(target, replacement, formatting)
+  // Authoring supports every valid paragraph operation. The native host/UI
+  // separately gate transport limitations, including the final paragraph mark.
+  if (formatting !== undefined) require(replacement === target.text && validWordChatFormatting(target, formatting))
+  const plan = wordChatApplyPlan(target, replacement)
   require(plan.supported)
   require(Number.isSafeInteger(target.startOffset) && Number.isSafeInteger(target.endOffset) && target.startOffset >= 0 && target.endOffset >= 0 &&
     target.startOffset <= texts[0]!.length && target.endOffset <= texts.at(-1)!.length && (texts.length > 1 || target.endOffset >= target.startOffset), "word_snapshot_changed")

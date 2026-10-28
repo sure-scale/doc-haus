@@ -65,7 +65,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     <textarea data-chat="message" aria-label="Message doc.haus" placeholder="Ask doc.haus…" rows="2"></textarea>
     <div class="chat-composer-actions">
       <button data-chat="attach" class="chat-subtle" type="button" aria-expanded="false">＋ Attach</button>
-      <div data-chat="mode" class="chat-mode"><button data-chat="mode-toggle" class="chat-subtle" type="button" aria-label="Response mode: Auto" aria-haspopup="menu" aria-expanded="false" aria-controls="chat-mode-picker"><span data-chat="mode-label">Auto</span> <span aria-hidden="true">⌄</span></button>
+      <div data-chat="mode" class="chat-mode"><button data-chat="mode-toggle" class="chat-subtle chat-mode-toggle" type="button" aria-label="Response mode: Auto" aria-haspopup="menu" aria-expanded="false" aria-controls="chat-mode-picker"><span data-chat="mode-label">Auto</span><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6"/></svg></button>
         <div data-chat="mode-picker" id="chat-mode-picker" class="chat-mode-picker" role="menu" aria-label="Response mode" hidden>
           <button data-chat="mode-auto" type="button" role="menuitemradio" aria-checked="true" tabindex="0"><span>Auto</span><small>Choose for this request</small></button>
           <button data-chat="mode-qa" type="button" role="menuitemradio" aria-checked="false" tabindex="-1"><span>Q&amp;A</span><small>Ask about the document</small></button>

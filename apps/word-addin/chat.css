@@ -63,6 +63,8 @@
 .chat-composer textarea { border: 0; border-radius: 5px; padding: 5px; background: transparent; }
 .chat-composer-actions { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; padding-top: 5px; }
 .chat-mode { position: relative; min-width: 0; }
+.chat-mode-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 5px; }
+.chat-mode-toggle svg { display: block; flex: 0 0 12px; width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .chat-mode-picker { position: absolute; z-index: 8; bottom: calc(100% + 6px); left: -40px; width: 235px; max-width: calc(100vw - 56px); padding: 4px; border: 1px solid #d4ded4; border-radius: 10px; background: #fff; box-shadow: 0 4px 16px #263a2e1a; }
 .chat-mode-picker button { position: relative; display: flex; flex-direction: column; align-items: start; gap: 2px; width: 100%; padding: 8px 25px 8px 9px; text-align: left; color: #303e35; background: transparent; }
 .chat-mode-picker button:hover, .chat-mode-picker button:focus-visible { background: #edf4ee; }

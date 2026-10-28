@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { WordChatHost, WordChatHostError, type WordChatContext, type WordChatWord, type WordChatApplyInput } from "./word-chat-host"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
-import type { WordChatAuthoredAmendment, WordChatParagraphFormat, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { validWordChatFormatting, type WordChatAuthoredAmendment, type WordChatParagraphFormat, type WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { wordChanges } from "../../../dochaus/lib/word-changes"
 
 // This integration uses the real Bun/shared writer without pulling its server
@@ -359,16 +359,17 @@ test("structural import still refuses a formatting race before native mutation",
 })
 
 function formattedOffice() {
-  const texts = ["Unsaved preceding clause.", "The obligation is ten days.", "Retained qualification.", "Unrelated BLUE FERN."]
+  const texts = ["Unsaved preceding clause.", "The obligation is ten days.", "Retained qualification.", "Unchanged selected boundary paragraph.", "Unrelated BLUE FERN."]
   const fixture = office(texts), { state } = fixture
   const start = texts[0]!.length + 1, revision = start + "The obligation is ".length
-  state.selection = [start, texts.slice(0, 3).join("\r").length]
+  state.selection = [start, texts.slice(0, 4).join("\r").length]
   state.tracking = "TrackAll"
   const paragraph = (text: string, properties: string, run: string) => `<w:p><w:pPr>${properties}</w:pPr><w:r><w:rPr>${run}</w:rPr><w:t>${escapeXml(text)}</w:t></w:r></w:p>`
   state.paragraphXml.set("paragraph-0", paragraph(texts[0]!, '<w:spacing w:before="40"/>', '<w:i/>'))
   state.paragraphXml.set("paragraph-1", '<w:p><w:pPr><w:spacing w:after="120"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>The obligation is </w:t></w:r><w:del w:id="42" w:author="Earlier reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:delText>five</w:delText></w:r></w:del><w:ins w:id="43" w:author="Earlier reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:t>ten</w:t></w:r></w:ins><w:r><w:t> days.</w:t></w:r></w:p>')
   state.paragraphXml.set("paragraph-2", paragraph(texts[2]!, '<w:keepNext/>', '<w:i/>'))
-  state.paragraphXml.set("paragraph-3", paragraph(texts[3]!, '<w:spacing w:after="180"/>', '<w:b/><w:i/>'))
+  state.paragraphXml.set("paragraph-3", paragraph(texts[3]!, '<w:spacing w:after="100"/>', '<w:i/>'))
+  state.paragraphXml.set("paragraph-4", paragraph(texts[4]!, '<w:spacing w:after="180"/>', '<w:b/><w:i/>'))
   state.nativeRevisions = [
     { start: revision, end: revision, author: "Earlier reviewer", type: "Deleted", text: "five" },
     { start: revision, end: revision + 3, author: "Earlier reviewer", type: "Added", text: "ten" },
@@ -379,19 +380,19 @@ function formattedOffice() {
   return { ...fixture, texts, formatting }
 }
 
-test("real shared paragraph formatting owns the final mark and preserves prior text revisions and adjacent unsaved formatting", async () => {
+test("real shared paragraph formatting preserves an unchanged final paragraph, prior text revisions and adjacent unsaved formatting", async () => {
   for (const emptyText of [false, true]) {
     const { state, host, text, texts, formatting } = formattedOffice()
     state.formattedTextEmpty = emptyText
-    const target = (await host.selection())!, outside = [state.paragraphXml.get("paragraph-0"), state.paragraphXml.get("paragraph-3")]
+    const target = (await host.selection())!, outside = [state.paragraphXml.get("paragraph-0"), state.paragraphXml.get("paragraph-4")]
     state.duringAuthor = () => { state.selection = [0, 4] }
     const input = { proposalId: `format-${emptyText}`, target, replacement: target.text, formatting }
     expect((await host.apply(input)).status).toBe("applied")
     expect(state.writes).toHaveLength(1)
-    expect(state.writes[0]).toMatchObject({ before: target.text + "\r", text: target.text + "\r", start: texts[0]!.length + 1, end: texts.slice(0, 3).join("\r").length + 1, tracking: "Off" })
+    expect(state.writes[0]).toMatchObject({ before: target.text + "\r", text: target.text + "\r", start: texts[0]!.length + 1, end: texts.slice(0, 4).join("\r").length + 1, tracking: "Off" })
     expect(text()).toBe(texts.join("\r"))
-    expect(state.paragraphs.map(p => p.id)).toEqual(["paragraph-0", "paragraph-1", "paragraph-2", "paragraph-3"])
-    expect([state.paragraphXml.get("paragraph-0"), state.paragraphXml.get("paragraph-3")]).toEqual(outside)
+    expect(state.paragraphs.map(p => p.id)).toEqual(["paragraph-0", "paragraph-1", "paragraph-2", "paragraph-3", "paragraph-4"])
+    expect([state.paragraphXml.get("paragraph-0"), state.paragraphXml.get("paragraph-4")]).toEqual(outside)
     expect(state.nativeRevisions.filter(r => r.author === "Earlier reviewer").map(({ author, type, text }) => ({ author, type, text }))).toEqual([
       { author: "Earlier reviewer", type: "Deleted", text: "five" }, { author: "Earlier reviewer", type: "Added", text: "ten" },
     ])
@@ -399,6 +400,9 @@ test("real shared paragraph formatting owns the final mark and preserves prior t
     const last = new DOMParser().parseFromString(state.paragraphXml.get("paragraph-2")!, "application/xml")
     expect(last.getElementsByTagNameNS(WORD_XML, "spacing")[0]!.getAttributeNS(WORD_XML, "after")).toBe("120")
     expect(last.getElementsByTagNameNS(WORD_XML, "keepNext")).toHaveLength(2) // current and original properties
+    const boundary = new DOMParser().parseFromString(state.paragraphXml.get("paragraph-3")!, "application/xml")
+    expect(boundary.getElementsByTagNameNS(WORD_XML, "spacing")[0]!.getAttributeNS(WORD_XML, "after")).toBe("100")
+    expect(boundary.getElementsByTagNameNS(WORD_XML, "pPrChange")).toHaveLength(0)
     expect(state.tracking).toBe("TrackAll")
     expect(state.saved).toBe(false)
     await host.apply(input)
@@ -423,10 +427,26 @@ test("paragraph formatting refuses a target race before mutation and fences unce
   }
 })
 
+test("formatting the final selected paragraph refuses before authoring while an explicitly unchanged tail permits import", async () => {
+  const { state, host, formatting, text, texts } = formattedOffice()
+  const target = (await host.selection())!, unsupported = [...formatting, { paragraph: target.paragraphs.length - 1, spacingAfter: 6 }]
+  expect(validWordChatFormatting(target, unsupported)).toBe(true)
+  await expect(host.apply({ proposalId: "final-paragraph-format", target, replacement: target.text, formatting: unsupported })).rejects.toMatchObject({
+    mutationState: "unchanged", message: expect.stringContaining("Word cannot import formatting for the last paragraph"),
+  })
+  expect(state.authorCalls).toBe(0)
+  expect(state.writes).toHaveLength(0)
+  expect(state.modeChanges).toHaveLength(0)
+  expect((await host.apply({ proposalId: "unchanged-final-paragraph", target, replacement: target.text, formatting })).status).toBe("applied")
+  expect(state.authorCalls).toBe(1)
+  expect(state.writes).toHaveLength(1)
+  expect(text()).toBe(texts.join("\r"))
+})
+
 test("formatting captures and verifies Content XML when Whole export adds a synthetic final paragraph", async () => {
   const { state, host, word, formatting, texts, text } = formattedOffice()
   state.wholeOoxmlTrailingParagraph = true
-  const target = (await host.selection())!, outside = [state.paragraphXml.get("paragraph-0"), state.paragraphXml.get("paragraph-3")]
+  const target = (await host.selection())!, outside = [state.paragraphXml.get("paragraph-0"), state.paragraphXml.get("paragraph-4")]
   const counts = await word.run(async context => {
     const first = context.document.getParagraphByUniqueLocalId(target.paragraphs[0]!.id), last = context.document.getParagraphByUniqueLocalId(target.paragraphs.at(-1)!.id)
     return ["Content", "Whole"].map(location => {
@@ -434,15 +454,15 @@ test("formatting captures and verifies Content XML when Whole export adds a synt
       return new DOMParser().parseFromString(xml, "application/xml").getElementsByTagNameNS(WORD_XML, "body")[0]!.getElementsByTagNameNS(WORD_XML, "p").length
     })
   })
-  expect(counts).toEqual([2, 3])
+  expect(counts).toEqual([3, 4])
   expect((await host.apply({ proposalId: "whole-export-final-paragraph", target, replacement: target.text, formatting })).status).toBe("applied")
   expect(state.authorCalls).toBe(1)
   expect(state.writes).toHaveLength(1)
   expect(state.writes[0]!.before).toBe(target.text + "\r")
-  expect(state.writes[0]!.end).toBe(texts.slice(0, 3).join("\r").length + 1)
-  expect(state.paragraphs.map(p => p.id)).toEqual(["paragraph-0", "paragraph-1", "paragraph-2", "paragraph-3"])
+  expect(state.writes[0]!.end).toBe(texts.slice(0, 4).join("\r").length + 1)
+  expect(state.paragraphs.map(p => p.id)).toEqual(["paragraph-0", "paragraph-1", "paragraph-2", "paragraph-3", "paragraph-4"])
   expect(text()).toBe(texts.join("\r"))
-  expect([state.paragraphXml.get("paragraph-0"), state.paragraphXml.get("paragraph-3")]).toEqual(outside)
+  expect([state.paragraphXml.get("paragraph-0"), state.paragraphXml.get("paragraph-4")]).toEqual(outside)
   expect(state.nativeRevisions.filter(r => r.author === "Earlier reviewer")).toHaveLength(2)
   expect(state.nativeRevisions.filter(r => r.type === "Formatted")).toHaveLength(2)
   expect(state.tracking).toBe("TrackAll")
@@ -461,7 +481,7 @@ test("paragraph formatting refuses an adjacent insertion between neighbour disco
         // Emulate Word's reloaded collection after a coauthor inserts the new
         // following paragraph, after the earlier neighbours were selected.
         if (++loads === 2 && !inserted) {
-          state.paragraphs.splice(3, 0, { id: "new-adjacent", text: "A coauthor’s unsaved paragraph." })
+          state.paragraphs.splice(4, 0, { id: "new-adjacent", text: "A coauthor’s unsaved paragraph." })
           inserted = true
         }
         items = original.call(body).items
@@ -473,16 +493,16 @@ test("paragraph formatting refuses an adjacent insertion between neighbour disco
   expect(state.authorCalls).toBe(0)
   expect(state.writes).toHaveLength(0)
   expect(state.modeChanges).toHaveLength(0)
-  expect(state.paragraphs[3]!.text).toBe("A coauthor’s unsaved paragraph.")
+  expect(state.paragraphs[4]!.text).toBe("A coauthor’s unsaved paragraph.")
 })
 
 test("formatting capture distinguishes an extra exported paragraph from different exported tracked text before authoring", async () => {
   for (const extraParagraph of [true, false]) {
     const { state, host, formatting } = formattedOffice()
     const target = (await host.selection())!
-    const body = state.paragraphXml.get("paragraph-1")! + state.paragraphXml.get("paragraph-2")!
+    const body = state.paragraphXml.get("paragraph-1")! + state.paragraphXml.get("paragraph-2")! + state.paragraphXml.get("paragraph-3")!
     state.xml = flatOpc(extraParagraph ? body + "<w:p/>" : body.replace("The obligation is ", "The commitment is "), state.extraParts)
-    await expect(host.apply({ proposalId: `capture-diagnostic-${extraParagraph}`, target, replacement: target.text, formatting })).rejects.toThrow(extraParagraph ? "Word exported 3 paragraphs for this 2-paragraph review" : "exported text differs at reviewed paragraph 1")
+    await expect(host.apply({ proposalId: `capture-diagnostic-${extraParagraph}`, target, replacement: target.text, formatting })).rejects.toThrow(extraParagraph ? "Word exported 4 paragraphs for this 3-paragraph review" : "exported text differs at reviewed paragraph 1")
     expect(state.authorCalls).toBe(0)
     expect(state.writes).toHaveLength(0)
     expect(state.modeChanges).toHaveLength(0)

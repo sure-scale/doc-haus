@@ -81,9 +81,16 @@ export type WordChatApplyPlan = { supported: true; paragraphs: string[];
  * that paragraph intact for structural changes; otherwise rejecting a revision
  * could join the clause to unrelated text after the approved passage. */
 export function wordChatApplyPlan(target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[]): WordChatApplyPlan {
-  if (formatting !== undefined) return replacement === target.text && validWordChatFormatting(target, formatting)
-    ? { supported: true, paragraphs: target.paragraphs.map(p => p.text) }
-    : { supported: false, reason: "Select complete paragraphs and prepare a formatting-only change. Wording must stay unchanged." }
+  if (formatting !== undefined) {
+    if (replacement !== target.text || !validWordChatFormatting(target, formatting))
+      return { supported: false, reason: "Select complete paragraphs and prepare a formatting-only change. Wording must stay unchanged." }
+    // Native range import retains the destination's last paragraph properties,
+    // even for Whole replacement. The shared writer can author this change,
+    // but Apply must never silently lose the last reviewed property revision.
+    if (formatting.some(op => op.paragraph === target.paragraphs.length - 1))
+      return { supported: false, reason: "Word cannot import formatting for the last paragraph of this selection. Include an unchanged following paragraph, or format the last paragraph directly in Word." }
+    return { supported: true, paragraphs: target.paragraphs.map(p => p.text) }
+  }
   const unsupported = { supported: false as const, reason: "This change needs paragraph restructuring. Refine it into smaller changes, or make it directly in Word." }
   if (/\n/.test(replacement) || !target.paragraphs.length) return unsupported
   const before = target.paragraphs.map(p => p.text)

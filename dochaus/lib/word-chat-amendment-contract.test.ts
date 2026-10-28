@@ -7,6 +7,8 @@ const snapshot = (): WordChatSnapshot => ({text: "Pay within thirty days.\rPay w
 
 test("a formatting review keeps its wording and whole-paragraph authority", () => {
   const value = snapshot()
+  value.paragraphs.push({ id: "unchanged-tail", text: "An unchanged following paragraph." })
+  value.text = value.paragraphs.map(p => p.text).join("\r")
   const target = targetWordChatAmendment(value, value.text)!
   const formatting = [{ paragraph: 0, style: "Heading1" as const, spacingBefore: 12, spacingAfter: 6 }, { paragraph: 1, lineSpacing: 1.15 }]
   expect(validWordChatFormatting(target, formatting)).toBe(true)
@@ -15,6 +17,18 @@ test("a formatting review keeps its wording and whole-paragraph authority", () =
   const partial = { ...target, startOffset: 4, text: target.text.slice(4) }
   expect(wordChatApplyPlan(partial, partial.text, formatting).supported).toBe(false)
   expect(validWordChatFormatting({ ...target, endOffset: target.endOffset - 1, text: target.text.slice(0, -1) }, formatting)).toBe(false)
+})
+
+test("native formatting eligibility requires an explicitly included unchanged final paragraph", () => {
+  const value = snapshot(), target = targetWordChatAmendment(value, value.text)!
+  const formatting = [{ paragraph: 0, spacingAfter: 6 }, { paragraph: 1, spacingAfter: 6 }]
+  expect(validWordChatFormatting(target, formatting)).toBe(true)
+  expect(wordChatApplyPlan(target, target.text, formatting)).toEqual({ supported: false,
+    reason: "Word cannot import formatting for the last paragraph of this selection. Include an unchanged following paragraph, or format the last paragraph directly in Word." })
+  expect(wordChatApplyPlan(target, target.text, formatting.slice(0, 1))).toEqual({ supported: true, paragraphs: target.paragraphs.map(p => p.text) })
+  const one = { ...target, text: target.paragraphs[0]!.text, paragraphs: target.paragraphs.slice(0, 1) }
+  expect(validWordChatFormatting(one, formatting.slice(0, 1))).toBe(true)
+  expect(wordChatApplyPlan(one, one.text, formatting.slice(0, 1)).supported).toBe(false)
 })
 
 test("formatting operations cannot smuggle edits or conflicting paragraph properties", () => {

@@ -619,10 +619,12 @@ test("response mode picker supports keyboard selection, freezes lost requests an
 })
 
 test("formatting review shows one inspectable wording target and exact paragraph changes; Refine and Apply retain its original plan", async () => {
-  const formatted: WordChatProposal = { ...proposal, before: passage.text, after: passage.text, formatting: [{ paragraph: 0, style: "Heading1", spacingBefore: 0, spacingAfter: 6, lineSpacing: 1.15 }] }
+  const following = { id: "unchanged-following-paragraph", text: "This separate clause stays unchanged." }
+  const target: WordChatTarget = { ...passage, text: `${passage.text}\r${following.text}`, paragraphs: [...passage.paragraphs, following], endOffset: following.text.length }
+  const formatted: WordChatProposal = { ...proposal, before: target.text, after: target.text, target, formatting: [{ paragraph: 0, style: "Heading1", spacingBefore: 0, spacingAfter: 6, lineSpacing: 1.15 }] }
   const original = JSON.stringify(formatted)
   const applied: WordChatProposal[] = []
-  const f = fixture({ turns: [turn({ kind: "formatting", proposal: formatted })], host: { apply: async value => { applied.push(value) } },
+  const f = fixture({ turns: [turn({ kind: "formatting", proposal: formatted })], host: { capture: async () => ({ ...context, text: target.text, paragraphs: target.paragraphs }), apply: async value => { applied.push(value) } },
     request: async action => action === "send" ? { turn: turn({ kind: "formatting", proposal: formatted }) } : undefined })
   try {
     await f.chat.ready
@@ -630,7 +632,7 @@ test("formatting review shows one inspectable wording target and exact paragraph
     expect(card().querySelector("h3")!.textContent).toBe("Review formatting")
     expect(card().textContent).toContain("Wording unchanged"); expect(card().querySelector(".chat-before")).toBeNull(); expect(card().querySelector(".chat-after")).toBeNull()
     expect(card().querySelectorAll("pre")).toHaveLength(1)
-    expect(card().querySelector(".chat-format-target pre")!.textContent).toBe(passage.text)
+    expect(card().querySelector(".chat-format-target pre")!.textContent).toBe(target.text.replace(/\r/g, "\n"))
     expect(card().querySelector(".chat-format-plan")!.textContent).toContain("Heading 1 · 0 pt before · 6 pt after · 1.15× line spacing")
     const action = (label: string) => [...card().querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(button => button.textContent === label)!
     action("Refine").click(); f.click("mode-toggle"); f.click("mode-qa"); await f.send("Use more space after the heading")
@@ -642,7 +644,7 @@ test("formatting review shows one inspectable wording target and exact paragraph
 })
 
 test("formatting review groups adjacent identical operations while preserving unique headings and every original Apply operation", async () => {
-  const paragraphs = Array.from({ length: 9 }, (_, index) => ({ id: `synthetic-paragraph-${index}`, text: index === 0 ? "Services agreement" : `Synthetic paragraph ${index + 1} wording.` }))
+  const paragraphs = Array.from({ length: 10 }, (_, index) => ({ id: `synthetic-paragraph-${index}`, text: index === 0 ? "Services agreement" : index === 9 ? "This following clause stays unchanged." : `Synthetic paragraph ${index + 1} wording.` }))
   const text = paragraphs.map(paragraph => paragraph.text).join("\r")
   const target: WordChatTarget = { ...passage, text, paragraphs, endOffset: paragraphs.at(-1)!.text.length }
   const formatting: NonNullable<WordChatProposal["formatting"]> = [
@@ -697,4 +699,21 @@ test("Apply uncertainty hides every action and affected context, while pre-impor
       }
     } finally { f.restore() }
   }
+})
+
+test("formatting the final selected paragraph remains reviewable with guidance but no Apply action", async () => {
+  const formatted: WordChatProposal = { ...proposal, before: passage.text, after: passage.text, formatting: [{ paragraph: 0, spacingAfter: 6 }] }
+  const original = JSON.stringify(formatted)
+  let writes = 0
+  const f = fixture({ turns: [turn({ kind: "formatting", proposal: formatted })], host: { apply: async () => { writes++ } } })
+  try {
+    await f.chat.ready
+    const card = f.root.querySelector(".chat-proposal")!
+    expect(card.querySelector("h3")!.textContent).toBe("Review formatting")
+    expect(card.querySelector(".chat-format-plan")!.textContent).toContain("6 pt after")
+    expect(card.querySelector(".chat-proposal-limit")!.textContent).toContain("Include an unchanged following paragraph")
+    expect([...card.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].map(button => button.textContent)).toEqual(["Refine", "Decline"])
+    expect(card.querySelector(".chat-format-target pre")!.textContent).toBe(passage.text)
+    expect(writes).toBe(0); expect(JSON.stringify(formatted)).toBe(original)
+  } finally { f.restore() }
 })
