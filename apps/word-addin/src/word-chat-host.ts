@@ -6,7 +6,7 @@ import { DOMParser } from "@xmldom/xmldom"
 type ClientResult<T> = { value: T }
 type Collection<T> = { items: T[]; load(properties: string): void }
 type TrackedChange = { author: string; type: string; text: string }
-type Paragraph = { text: string; uniqueLocalId: string; styleBuiltIn: string; spaceBefore: number; spaceAfter: number; lineSpacing: number; load(properties: string): void; getRange(location?: string): WordChatRange }
+type Paragraph = { text: string; uniqueLocalId: string; tableNestingLevel: number; styleBuiltIn: string; spaceBefore: number; spaceAfter: number; lineSpacing: number; load(properties: string): void; getRange(location?: string): WordChatRange }
 type WordChatRange = {
   text: string
   paragraphs: Collection<Paragraph>
@@ -212,8 +212,13 @@ export class WordChatHost {
   private async resolve(context: WordChatContext, target: WordChatTarget): Promise<{ range: WordChatRange; paragraphs: Paragraph[] }> {
     validate(target)
     const paragraphs = target.paragraphs.map((p) => context.document.getParagraphByUniqueLocalId(p.id))
-    for (const paragraph of paragraphs) paragraph.load("text,uniqueLocalId")
+    for (const paragraph of paragraphs) paragraph.load("text,uniqueLocalId,tableNestingLevel")
     await context.sync()
+    // Word can alter list numbering outside a table when importing a scoped
+    // paragraph fragment into a cell. Until that transport is proven safe,
+    // refuse before authoring or mutation, including after the freshness read.
+    if (paragraphs.some(paragraph => paragraph.tableNestingLevel !== 0))
+      throw new WordChatHostError("Amendments in Word tables are not supported safely yet. Make this change directly in Word; your document is unchanged.")
     const changed = paragraphs.findIndex((p, i) => p.uniqueLocalId !== target.paragraphs[i]!.id || p.text !== target.paragraphs[i]!.text)
     if (changed >= 0)
       throw captureMismatch(`Word could not match reviewed paragraph ${changed + 1} (${paragraphs[changed]!.text.length} Word characters; ${target.paragraphs[changed]!.text.length} reviewed).`)

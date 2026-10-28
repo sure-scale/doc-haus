@@ -758,6 +758,21 @@ test("complete paragraph delivery keeps revision authority inside the exact sele
   expect(state.nativeRevisions.map(change => change.text)).toEqual(["clear", "specific"])
 })
 
+test("table paragraphs refuse before authoring or native mutation, including a move into a cell during authoring", async () => {
+  for (const moveDuringAuthor of [false, true]) {
+    const { state, host } = office(["A fee of 100 applies.", "An adjacent numbered paragraph."])
+    state.selection = [0, state.paragraphs[0]!.text.length]
+    const target = (await host.selection())!
+    if (moveDuringAuthor) state.duringAuthor = () => { state.paragraphs[0]!.inTable = true }
+    else state.paragraphs[0]!.inTable = true
+    await expect(host.apply({ proposalId: `table-${moveDuringAuthor}`, target, replacement: "A fee of 150 applies." })).rejects.toThrow("Word tables")
+    expect(state.authorCalls).toBe(moveDuringAuthor ? 1 : 0)
+    expect(state.writes).toHaveLength(0)
+    expect(state.modeChanges).toEqual([])
+    expect(state.paragraphs.map(p => p.text)).toEqual(["A fee of 100 applies.", "An adjacent numbered paragraph."])
+  }
+})
+
 test("verified imported scope returns new IDs and exact selected offsets without following an adjacent cursor", async () => {
   for (const multiline of [false, true]) {
     const paragraphs = multiline ? ["Prefix clear.", "clear suffix.", "An unrelated adjacent clause."] : ["Prefix clear suffix.", "Prefix clear suffix."]

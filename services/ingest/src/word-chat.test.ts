@@ -685,6 +685,21 @@ test("a misplaced formatting array cannot silently become a wording-only proposa
   } finally { routerAgent = "qa"; modelRawOutput = undefined }
 })
 
+test("reviewer issues are framed as a rejected proposal even if they use applied tense", async () => {
+  const id = await newConversation()
+  routerAgent = "redliner"; amend = true
+  modelProposal = { before: context.text, after: context.text.replace("Tuesday", "Wednesday") }
+  reviewerRawOutput = JSON.stringify({ approved: false, issues: ["The change applied to the wrong passage."] })
+  try {
+    const turn = (await (await send(id, "document", "Revise the passage")).json() as { turn: WordChatTurn }).turn
+    expect(turn.proposal).toBeUndefined()
+    expect(turn.answer).toBe("The reviewer found these issues in the proposed change:\nThe change applied to the wrong passage.")
+    expect(turn.error).toContain("No change was applied.")
+    const reviewer = [...sessions.values()].find(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")!
+    expect(sessionContext(reviewer.id)).toContain("hypothetical effects of the proposed change")
+  } finally { routerAgent = "qa"; amend = false; modelProposal = undefined; reviewerRawOutput = undefined }
+})
+
 test("a completion claim without a proposal is not shown as an applied change", async () => {
   const id = await newConversation()
   routerAgent = "redliner"
