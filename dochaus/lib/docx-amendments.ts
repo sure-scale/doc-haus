@@ -27,6 +27,18 @@ export type DocxParagraphEdit = z.infer<typeof paragraphEditSchema>
 type Session = ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"]>
 type Match = ReturnType<Session["grep"]>[number]
 type Opened = Awaited<ReturnType<typeof openRevision>>
+export type DocxTableContext = {
+  table: number
+  row: number | null
+  column: number | null
+  /** Legacy context in physical cell order, not logical column indices. */
+  row_context: string[]
+  row_span?: number
+  column_span?: number
+  vertical_merge?: "none" | "restart" | "continue"
+  row_cells?: { column: number; column_span: number; row_span: number; vertical_merge: "none" | "restart" | "continue"; text: string }[]
+  unavailable_reason?: "pending_table_structure" | "unsupported_table_geometry"
+}
 type Binding = { handle: string; amendment: DocxAmendment; match: Match; ordinal: number }
 type Limits = { maxCandidates?: number; maxContextCharacters?: number }
 export type DocxLocalizationLimits = Limits
@@ -773,6 +785,116 @@ function pendingAuthors(listed: Set<string> | undefined, paragraph: Element) {
   return [...new Set([...listed ?? [], ...marked.map(node => node.getAttributeNS(W, "author") ?? "")])]
 }
 
+// Coordinates are model context, never edit authority. SDK metadata owns the
+// logical grid; source ancestry verifies its exact nearest table and cell.
+function paragraphTableContexts(session: Session, paragraphs: { match: Match; node: Element; part: string }[],
+  tables: { token: string; xml: string }[], documents: Record<string, Document>) {
+  type Metadata = NonNullable<ReturnType<Session["getTableMetadata"]>["metadata"]>
+  type Row = Metadata["rows"][number]
+  type Cell = Row["cells"][number]
+  type RowCells = NonNullable<DocxTableContext["row_cells"]>
+  type Placement = { token: string; canonical: string; metadata: Metadata; cellCount: number; row: Row; cell: Cell }
+  const placements = new Map<string, Placement[]>()
+  for (const table of tables) {
+    try {
+      const result = session.getTableMetadata(table.token)
+      if (!result.success || !result.metadata) continue
+      const common = { token: table.token, canonical: canonical(parse(table.xml).documentElement),
+        metadata: result.metadata, cellCount: result.metadata.rows.reduce((n, row) => n + row.cells.length, 0) }
+      for (const row of result.metadata.rows) for (const cell of row.cells) for (const paragraph of cell.paragraphAnchors) {
+        const values = placements.get(paragraph.id) ?? []
+        values.push({ ...common, row, cell })
+        placements.set(paragraph.id, values)
+      }
+    } catch { /* Unsupported SDK geometry stays explicit uncertainty below. */ }
+  }
+  const cellText = new Map<Element, string[]>()
+  for (const paragraph of paragraphs) {
+    const cell = closest(paragraph.node, "tc")
+    if (cell) {
+      const text = cellText.get(cell) ?? []
+      text.push(paragraph.match.text)
+      cellText.set(cell, text)
+    }
+  }
+  // All caches live within this immutable source/session read. DOM nodes and SDK
+  // metadata objects are safe identity keys; nothing is retained for later Apply.
+  const pendingTables = new Map<Element, boolean>()
+  const pendingOwn = (table: Element) => {
+    if (!pendingTables.has(table)) pendingTables.set(table, ["tblPr", "tblGrid", "trPr", "tcPr"].some(name =>
+      elements(table, name).filter(node => closest(node, "tbl") === table).some(properties =>
+        [...REVISION_ELEMENTS, "cellIns", "cellDel", "cellMerge"].some(name => elements(properties, name).length))))
+    return pendingTables.get(table)!
+  }
+  const tableNumbers = new Map(Object.entries(documents).map(([part, doc]) => [part,
+    new Map(elements(doc, "tbl").map((table, index) => [table, index + 1]))]))
+  const tableInfo = new Map<Element, { number: number; canonical: string; rows: Element[]; rowCount: number; cellCount: number; legacy: boolean; pending: boolean }>()
+  const rowInfo = new Map<Row, { source: Element; sources: Map<Cell, Element>; cells: RowCells } | null>()
+  const sourceCanonical = new Map<Element, string>()
+  const nativeCanonical = new Map<Cell, string | null>()
+  const contexts = new Map<string, DocxTableContext>()
+  for (const paragraph of paragraphs) {
+    const table = closest(paragraph.node, "tbl")
+    if (!table) continue
+    if (!tableInfo.has(table)) {
+      const belongs = (name: string) => elements(table, name).filter(node => closest(node, "tbl") === table)
+      tableInfo.set(table, { number: tableNumbers.get(paragraph.part)?.get(table) ?? 0,
+        canonical: canonical(table), rows: children(table, "tr"), rowCount: belongs("tr").length,
+        cellCount: belongs("tc").length, legacy: belongs("hMerge").length > 0,
+        pending: governingTables(table).some(pendingOwn) })
+    }
+    const info = tableInfo.get(table)!
+    if (info.number < 1) throw new Error("unsupported_docx_projection_mapping")
+    const unavailable = (reason: NonNullable<DocxTableContext["unavailable_reason"]>): DocxTableContext => ({
+      table: info.number, row: null, column: null, row_context: [], unavailable_reason: reason,
+    })
+    if (info.pending) { contexts.set(paragraph.match.enclosingAnchor.id, unavailable("pending_table_structure")); continue }
+    contexts.set(paragraph.match.enclosingAnchor.id, unavailable("unsupported_table_geometry"))
+    const candidates = placements.get(paragraph.match.enclosingAnchor.id) ?? []
+    const sourceRow = closest(paragraph.node, "tr"), sourceCell = closest(paragraph.node, "tc")
+    const candidate = candidates.length === 1 ? candidates[0] : undefined
+    if (!candidate || !sourceRow || !sourceCell) continue
+    const { metadata, row, cell } = candidate
+    if (info.canonical !== candidate.canonical || metadata.anchor.id !== candidate.token
+      || metadata.rows.length !== info.rowCount || metadata.rows.length !== info.rows.length
+      || candidate.cellCount !== info.cellCount || info.legacy
+      || !Number.isSafeInteger(row.rowIndex) || row.rowIndex < 0 || info.rows[row.rowIndex] !== sourceRow
+      || row.tableAnchorId !== candidate.token || cell.tableAnchorId !== candidate.token
+      || cell.rowAnchorId !== row.anchor.id || cell.rowIndex !== row.rowIndex || cell.verticalMerge === "continue") continue
+    if (!rowInfo.has(row)) {
+      const sources = children(sourceRow, "tc")
+      const valid = sources.length === row.cells.length && row.cells.every(cell =>
+        Number.isSafeInteger(cell.columnIndex) && cell.columnIndex >= 0
+        && Number.isSafeInteger(cell.columnSpan) && cell.columnSpan > 0
+        && Number.isSafeInteger(cell.rowSpan) && (cell.verticalMerge === "continue" ? cell.rowSpan === 0 : cell.rowSpan > 0)
+        && cell.columnIndex + cell.columnSpan <= metadata.columns.length)
+      rowInfo.set(row, !valid ? null : { source: sourceRow, sources: new Map(row.cells.map((cell, i) => [cell, sources[i]])),
+        cells: row.cells.map((cell, i) => ({ column: cell.columnIndex + 1, column_span: cell.columnSpan,
+          row_span: cell.rowSpan, vertical_merge: cell.verticalMerge, text: (cellText.get(sources[i]) ?? []).join("\n") })) })
+    }
+    const rowView = rowInfo.get(row)
+    if (!rowView || rowView.source !== sourceRow || rowView.sources.get(cell) !== sourceCell) continue
+    if (!sourceCanonical.has(sourceCell)) sourceCanonical.set(sourceCell, canonical(sourceCell))
+    if (!nativeCanonical.has(cell)) {
+      try { nativeCanonical.set(cell, canonical(parse(session.raw.getXml(cell.anchor.id)).documentElement)) }
+      catch { nativeCanonical.set(cell, null) }
+    }
+    if (sourceCanonical.get(sourceCell) !== nativeCanonical.get(cell)) continue
+    contexts.set(paragraph.match.enclosingAnchor.id, {
+      table: info.number, row: row.rowIndex + 1, column: cell.columnIndex + 1,
+      row_span: cell.rowSpan, column_span: cell.columnSpan, vertical_merge: cell.verticalMerge,
+      row_context: rowView.cells.map(cell => cell.text), row_cells: rowView.cells,
+    })
+  }
+  return contexts
+}
+
+function governingTables(table: Element) {
+  const tables = [table]
+  for (let parent = closest(table, "tbl"); parent; parent = closest(parent, "tbl")) tables.push(parent)
+  return tables
+}
+
 export async function openRevision(source: Uint8Array, options: DocxRevisionOptions = {}) {
   const parts = unzipSync(source)
   const documents = xmlParts(parts)
@@ -788,7 +910,7 @@ export async function openRevision(source: Uint8Array, options: DocxRevisionOpti
     const listed = layer ? listedRevisions(session) : undefined
     const projection = session.project()
     const tables = Object.entries(projection.anchorIndex).filter(([, anchor]) => anchor.kind === "tbl")
-      .map(([token, anchor]) => ({ ...anchor, xml: session.raw.getXml(token) }))
+      .map(([token, anchor]) => ({ ...anchor, token, xml: session.raw.getXml(token) }))
     const counts = new Map<string, number>()
     const paragraphs = session.grep("^[\\s\\S]*$", { scope: 63, whitespace: 0 }).map(match => {
       const owner = projection.anchorIndex[match.enclosingAnchor.id]
@@ -811,6 +933,7 @@ export async function openRevision(source: Uint8Array, options: DocxRevisionOpti
     })
     if ([...counts].some(([part, count]) => elements(documents[part], "p").slice(count).some(node => !emptyParagraph(node))))
       throw new Error("incomplete_docx_projection")
+    const tableViews = paragraphTableContexts(session, paragraphs, tables, documents)
     const source_sha256 = digest(source)
     const headingsByScope = new Map<string, { level: number; text: string }[]>()
     const views = paragraphs.map((paragraph, ordinal) => {
@@ -825,17 +948,7 @@ export async function openRevision(source: Uint8Array, options: DocxRevisionOpti
         while (headingStack.length && headingStack.at(-1)!.level >= level) headingStack.pop()
         headingStack.push({ level, text: shownText({ text: paragraph.match.text, label }) })
       }
-      const ancestors = [] as Element[]
-      for (let node = paragraph.node.parentNode; node && node.nodeType === 1; node = node.parentNode) ancestors.unshift(node as Element)
-      const table = ancestors.find(node => node.namespaceURI === W && node.localName === "tbl")
-      const row = ancestors.findLast(node => node.namespaceURI === W && node.localName === "tr")
-      const cell = ancestors.findLast(node => node.namespaceURI === W && node.localName === "tc")
-      const tableContext = table && row && cell ? {
-        table: elements(documents[paragraph.part], "tbl").indexOf(table) + 1,
-        row: children(table, "tr").indexOf(row) + 1,
-        column: children(row, "tc").indexOf(cell) + 1,
-        row_context: children(row, "tc").map(node => elements(node, "t").map(t => t.textContent).join("")),
-      } : null
+      const tableContext = tableViews.get(paragraph.match.enclosingAnchor.id) ?? null
       return { paragraph_handle: `paragraph-${digest(JSON.stringify([source_sha256, ordinal])).slice(0, 24)}`,
         scope,
         text: paragraph.match.text,
@@ -855,7 +968,10 @@ export async function openRevision(source: Uint8Array, options: DocxRevisionOpti
     const markdown = views.map((view, ordinal) => {
       const part = view.scope !== (views[ordinal - 1]?.scope ?? "body") ? `[${partLabel(view.scope)}]\n\n` : ""
       const prefix = paragraphs[ordinal].match.enclosingAnchor.kind === "h" ? `${"#".repeat(view.headings.at(-1)!.level)} ` : ""
-      const context = view.table ? `> Table ${view.table.table}, row ${view.table.row}, column ${view.table.column}\n\n` : ""
+      const context = !view.table ? "" : view.table.row === null || view.table.column === null
+        ? `> Table ${view.table.table}, row and column unavailable (${view.table.unavailable_reason === "pending_table_structure" ? "pending table structure" : "unsupported table geometry"})\n\n`
+        : `> Table ${view.table.table}, row ${view.table.row}, column ${view.table.column}`
+          + (view.table.row_span! > 1 || view.table.column_span! > 1 ? ` (spans ${view.table.row_span} row(s), ${view.table.column_span} column(s))` : "") + "\n\n"
       const moved = view.moved_here ? `[${MOVED_HERE}]\n\n` : ""
       const escape = (text: string) => text.replace(/[\\`*_{}[\]<>|]/g, "\\$&")
       // A word's character: neither white space nor punctuation, as CommonMark has it.
