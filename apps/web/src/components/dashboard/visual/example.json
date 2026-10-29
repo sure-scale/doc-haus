@@ -1,0 +1,38 @@
+{
+  "sources": {
+    "practice-live": {
+      "spend": {
+        "total": 62.22,
+        "points": [
+          { "key": "studio", "label": "Example Studio", "value": 40 },
+          { "key": "bakery", "label": "Example Bakery", "value": 22.22 }
+        ]
+      },
+      "tabs": [
+        { "id": "overview", "label": "Overview", "badge": { "value": 3, "label": "3 items need you" } },
+        { "id": "setup", "label": "Setup", "badge": { "value": 1, "total": 5 } }
+      ],
+      "activeTab": "overview"
+    }
+  },
+  "components": [
+    {
+      "id": "tabs",
+      "kind": "tabs",
+      "bindings": {
+        "items": { "source": "practice-live", "path": "/tabs" },
+        "activeId": { "source": "practice-live", "path": "/activeTab" }
+      }
+    },
+    {
+      "id": "client-spend",
+      "kind": "chart",
+      "frame": { "title": "Spend by client", "icon": "spend", "size": "wide" },
+      "props": { "form": "bars", "label": "Client spend", "format": "money", "currency": "USD", "showShares": true, "period": "This month", "basis": "Estimated AI spend" },
+      "bindings": {
+        "points": { "source": "practice-live", "path": "/spend/points" },
+        "total": { "source": "practice-live", "path": "/spend/total" }
+      }
+    }
+  ]
+}

@@ -40,6 +40,7 @@ import {
 } from "./data"
 import { icons, ShapeIcon, SHAPES, type IconName, type ShapeName } from "./icons"
 import type { Stage, WidgetId } from "./layout"
+import { AttentionRows, LibraryCards, MatterRows, SamplePreview, StatCard as Stat, type AttentionRowData } from "./visual/WidgetCards"
 
 // `onPreferences` takes settings a widget saved, so the page shows them at once.
 export type WidgetContext = { data: DashboardData; setup: SetupProgress | null; summary: Summary; period: Period; now: number; onPreferences?: (preferences: DraftingPreferences) => void; onRetry: () => void }
@@ -107,23 +108,14 @@ function Empty({ icon, title, children, action }: { icon: IconName; title: strin
   )
 }
 
-function Stat({ value, caption, note, children }: { value: string; caption: ReactNode; note?: string; children?: ReactNode }) {
-  return (
-    <div className="dash-stat">
-      <p className="dash-stat-value">{value}</p>
-      <p className="dash-stat-caption">{caption}</p>
-      {note && <p className="dash-stat-note">{note}</p>}
-      <div className="dash-stat-chart">{children}</div>
-    </div>
-  )
-}
-
 function SpendTile({ data, summary, period, now }: WidgetContext) {
   const range = periodRange(period, now)
   return (
     <Stat
       value={formatCost(summary.spend)}
-      caption={<><span>{plural(summary.conversations, "conversation")}</span><Before label={BEFORE[period]} value={summary.previous} /></>}
+      caption={plural(summary.conversations, "conversation")}
+      tag={summary.previous !== undefined && BEFORE[period] ? `vs ${formatCost(summary.previous)} prior` : undefined}
+      tagTitle={summary.previous !== undefined && BEFORE[period] ? `${BEFORE[period]}: ${formatCost(summary.previous)}` : undefined}
       note={summary.unpriced ? "Estimate: some AI use has no price on record, so the total may be low." : undefined}
     >
       <Sparkline values={bucketed(costEntries(data.matters), chartStart(data.matters, range), range.end, 12)} label={`Spend, ${lower(period)}`} />
@@ -134,9 +126,10 @@ function SpendTile({ data, summary, period, now }: WidgetContext) {
 function MatterCostTile({ data }: WidgetContext) {
   const average = averageMatterCost(data.matters)
   if (!average) return <Stat value="—" caption="Shows once a matter has spend" />
+  const costs = costByMatter(data.matters, ALL_TIME).map((row) => row.cost)
   return (
-    <Stat value={formatCost(average.average)} caption={`Across ${plural(average.matters, "matter")}`}>
-      <SpreadBars values={costByMatter(data.matters, ALL_TIME).map((row) => row.cost)} average={average.average} format={money} label="Spend per matter; the line marks the average" />
+    <Stat value={formatCost(average.average)} caption={`Across ${plural(average.matters, "matter")}`} tag={`${formatCost(Math.min(...costs))}–${formatCost(Math.max(...costs))} range`}>
+      <SpreadBars values={costs} average={average.average} format={money} label="Spend per matter; the line marks the average" />
     </Stat>
   )
 }
@@ -145,7 +138,7 @@ function DraftCostTile({ data }: WidgetContext) {
   const average = averageDraftCost(data.matters)
   if (!average) return <Stat value="—" caption="Shows once a draft is finished" />
   return (
-    <Stat value={formatCost(average.average)} caption={`${plural(average.documents, "document")} from ${plural(average.runs, "run")}`}>
+    <Stat value={formatCost(average.average)} caption={`${plural(average.documents, "document")} from ${plural(average.runs, "run")}`} tag={`${plural(average.runs, "run")} · ${plural(average.documents, "doc")}`}>
       <SpreadBars values={drafts(data.matters).map((draft) => draft.cost / draft.titles.length)} average={average.average} format={money} label="Cost per document in each run; the line marks the average" />
     </Stat>
   )
@@ -168,7 +161,7 @@ function WeekWidget({ data, now }: WidgetContext) {
   return (
     <div className="dash-week-body">
       <div className="dash-week-head">
-        <p className="dash-hero">{formatCost(total)}</p>
+        <div className="dash-stat-line"><p className="dash-hero">{formatCost(total)}</p><span className="dash-stat-tag" aria-label={`Change from the week before: ${money(total - before)}`}>{total >= before ? "+" : "−"}{formatCost(Math.abs(total - before))}</span></div>
         <p className="dash-hero-caption">spent in the last seven days</p>
         <Before label="Week before" value={before} />
       </div>
@@ -192,6 +185,8 @@ function MatterSpend({ data, period, now }: WidgetContext) {
   const shown = rows.slice(0, 6)
   const rest = rows.slice(6)
   const max = shown[0].cost
+  const total = rows.reduce((sum, row) => sum + row.cost, 0)
+  const share = (cost: number) => `${Math.round(cost / total * 100)}%`
   function download() {
     const url = URL.createObjectURL(new Blob(["\uFEFF", spendCsv(rows)], { type: "text/csv;charset=utf-8" }))
     Object.assign(document.createElement("a"), { href: url, download: `spend-${period}-${dateStamp(now)}.csv` }).click()
@@ -209,12 +204,12 @@ function MatterSpend({ data, period, now }: WidgetContext) {
             <span className="dash-hbar-track" aria-hidden="true">
               <span className="dash-hbar-fill" style={{ width: `max(2px, ${(row.cost / max) * 100}%)` }} />
             </span>
-            <span className="dash-hbar-value">{formatCost(row.cost)}</span>
+            <span className="dash-hbar-amount"><span className="dash-hbar-value">{formatCost(row.cost)}</span><span className="dash-hbar-share">{share(row.cost)}</span></span>
           </li>
         ))}
       </ol>
       <div className="dash-card-foot">
-        {rest.length > 0 && <p className="dash-footnote">{plural(rest.length, "other matter")} · {formatCost(rest.reduce((sum, row) => sum + row.cost, 0))}</p>}
+        {rest.length > 0 && <p className="dash-footnote">{plural(rest.length, "other matter")} · {formatCost(rest.reduce((sum, row) => sum + row.cost, 0))} ({share(rest.reduce((sum, row) => sum + row.cost, 0))})</p>}
         <button type="button" className="dash-text-button" onClick={download}>{icons.download}Export CSV</button>
       </div>
     </div>
@@ -241,28 +236,21 @@ function NeedsYou({ data, onRetry }: WidgetContext) {
       ? <Empty icon="warning" title={`Couldn't check ${plural(unread, "matter")}`} action={<button type="button" className="dash-text-button" onClick={onRetry}>Retry</button>}>Anything waiting there shows once they load.</Empty>
       : <Empty icon="check" title="Nothing needs you">Questions and stopped drafts show up here.</Empty>
   }
-  return (
-    <div className="dash-attention-body">
-      <ul className="dash-attention">
-        {items.slice(0, 6).map((item) => {
-          const look = ATTENTION[item.kind]
-          return (
-            <li key={item.matter.id} className={`tone-${look.tone}`}>
-              <span className="dash-attention-icon">{icons[look.icon]}</span>
-              <span className="dash-attention-text">
-                <strong>{look.text(item.count)}</strong>
-                <span title={item.matter.title}>{item.matter.title}</span>
-              </span>
-              {item.kind === "provider"
-                ? <button type="button" className="dash-row-action" onClick={() => openSettings("ai")}>Reconnect</button>
-                : <Link className="dash-row-action" to={`/matter/${item.matter.id}?session=${encodeURIComponent(item.session)}`}>Open<span className="sr-only"> {item.matter.title}</span></Link>}
-            </li>
-          )
-        })}
-      </ul>
-      {items.length > 6 && <p className="dash-footnote">{plural(items.length - 6, "more matter")} waiting</p>}
-    </div>
-  )
+  const rows: AttentionRowData[] = items.slice(0, 6).map((item) => ({
+    id: item.matter.id,
+    title: ATTENTION[item.kind].text(item.count),
+    detail: item.matter.title,
+    icon: ATTENTION[item.kind].icon,
+    tone: ATTENTION[item.kind].tone,
+    action: item.kind === "provider" ? { label: "Reconnect" } : {
+      label: item.kind === "questions" ? "Answer" : ["stalled", "paused"].includes(item.kind) ? "Resume" : "Open",
+      href: `/matter/${item.matter.id}?session=${encodeURIComponent(item.session)}`,
+    },
+  }))
+  return <div className="dash-attention-body">
+    <AttentionRows rows={rows} onAction={() => openSettings("ai")} />
+    {items.length > 6 && <p className="dash-footnote">{plural(items.length - 6, "more matter")} waiting</p>}
+  </div>
 }
 
 const DRAFT_STATES: Record<DraftState, { icon: IconName; tone: string; label: (findings?: number) => string }> = {
@@ -301,9 +289,19 @@ function Activity({ data, now }: WidgetContext) {
   const first = addDays(today, -(52 * 7 + weekday))
   const counts = dailyConversations(data.matters, first, 52 * 7 + weekday + 1)
   const total = counts.reduce((sum, count) => sum + count, 0)
+  const activeDays = counts.filter(Boolean).length
+  const months = new Map<string, { label: string; count: number }>()
+  counts.forEach((count, index) => {
+    const date = new Date(addDays(first, index))
+    const key = `${date.getFullYear()}-${date.getMonth()}`
+    const row = months.get(key) ?? { label: date.toLocaleDateString("en-GB", { month: "short" }), count: 0 }
+    row.count += count
+    months.set(key, row)
+  })
+  const busiest = [...months.values()].sort((a, b) => b.count - a.count)[0]
   return (
     <div className="dash-activity">
-      <p className="dash-activity-total">{total ? `${plural(total, "conversation")} in the last year` : "Each day you start a conversation fills a square."}</p>
+      <div className="dash-activity-summary"><p className={`dash-activity-total${total ? " dash-pill tone-good" : ""}`}>{total ? `${plural(total, "conversation")} in the last year` : "Each day you start a conversation fills a square."}</p>{total > 0 && <><span className="dash-pill">{plural(activeDays, "active day")}</span>{busiest && <span className="dash-pill">Busiest: {busiest.label} ({busiest.count})</span>}</>}</div>
       <ActivityCalendar
         counts={counts}
         first={first}
@@ -323,32 +321,24 @@ const STATUS = {
 function Recent({ data, now }: WidgetContext) {
   const rows = recentMatters(data.matters)
   if (!rows.length) return <Empty icon="matter" title="No matters yet"><Link to="/?new=1">Open your first matter</Link> to start.</Empty>
-  return (
-    <ul className="dash-rows">
-      {rows.map((row) => {
-        const status = row.status && STATUS[row.status]
-        return (
-          <li key={row.matter.id}>
-            <Link to={`/matter/${row.matter.id}`} className="dash-row-main" title={row.matter.title}>
-              <strong>{row.matter.title}</strong>
-              <span>{[row.matter.client, row.matter.reference].filter(Boolean).join(" · ") || (row.matter.sample ? "Sample matter" : "No client recorded")}</span>
-            </Link>
-            <span className="dash-row-meta">
-              <span>{formatAgo(row.last, now)}</span>
-              <span>{formatCost(row.cost)}</span>
-            </span>
-            {status && <span className={`dash-pill tone-${status.tone}`}>{icons[status.icon]}{status.label}</span>}
-          </li>
-        )
-      })}
-    </ul>
-  )
+  return <MatterRows rows={rows.map((row) => ({
+    id: row.matter.id,
+    title: row.matter.title,
+    detail: [row.matter.client, row.matter.reference].filter(Boolean).join(" · ") || (row.matter.sample ? "Sample matter" : "No client recorded"),
+    href: `/matter/${row.matter.id}`,
+    updated: formatAgo(row.last, now),
+    spend: formatCost(row.cost),
+    status: row.status ? STATUS[row.status] : undefined,
+  }))} />
 }
 
 function Tokens({ summary, period }: WidgetContext) {
   const { input, cached, output, reasoning } = summary.tokens
   if (!input && !cached && !output && !reasoning) return <Empty icon="tokens" title="No tokens used in this period" />
+  const total = input + cached + output + reasoning
   return (
+    <div className="dash-token-body">
+    <div className="dash-token-summary"><div><strong>{compact(total)}</strong><span>total tokens processed</span></div>{cached > 0 && <span className="dash-pill tone-good">{Math.round(cached / total * 100)}% cached input</span>}</div>
     <StackedBar
       label={`Tokens, ${lower(period)}`}
       segments={[
@@ -358,6 +348,7 @@ function Tokens({ summary, period }: WidgetContext) {
         { key: "reasoning", label: "Reasoning", value: reasoning, display: compact(reasoning) },
       ]}
     />
+    </div>
   )
 }
 
@@ -373,7 +364,9 @@ function Trend({ data, period, now }: WidgetContext) {
       })
     : daily.map((row) => ({ time: row.day, value: row.cost, label: new Date(row.day).toLocaleDateString("en-GB", { day: "numeric", month: "short" }) }))
   if (!points.some((row) => row.value > 0)) return <Empty icon="trend" title="No spend in this period" />
-  return <AreaChart points={points} format={axisMoney} detail={money} label={`${weekly ? "Weekly" : "Daily"} spend, ${lower(period)}`} />
+  const total = daily.reduce((sum, row) => sum + row.cost, 0)
+  const active = daily.filter((row) => row.cost > 0).length
+  return <div className="dash-trend-body"><div className="dash-trend-summary"><p><strong>{formatCost(total)}</strong><span>estimated spend</span></p><span className="dash-pill">Avg {formatCost(total / active)} / active day</span></div><AreaChart points={points} format={axisMoney} detail={money} label={`${weekly ? "Weekly" : "Daily"} spend, ${lower(period)}`} /></div>
 }
 
 // Adds the sample matter (an existing one is returned as is) and opens it at
@@ -445,28 +438,17 @@ function Ideas({ data }: WidgetContext) {
 }
 
 function Library({ data }: WidgetContext) {
-  const tiles: { icon: IconName; label: string; count?: number; first: string; to: string }[] = [
-    { icon: "matter", label: "Matters", count: data.error ? undefined : data.matters.length, first: "Open your first", to: "/?new=1" },
-    { icon: "template", label: "Templates", count: data.templates, first: "Add your first", to: "/templates" },
-    { icon: "playbook", label: "Playbooks", count: data.playbooks, first: "Add your first", to: "/playbooks" },
-    { icon: "client", label: "Clients", count: data.clients, first: "Add your first", to: "/clients" },
+  const tiles: { icon: IconName; label: string; count?: number; detail: string; first: string; to: string }[] = [
+    { icon: "matter", label: "Matters", count: data.error ? undefined : data.matters.length, detail: "Engagements & documents", first: "Open your first", to: "/?new=1" },
+    { icon: "template", label: "Templates", count: data.templates, detail: "Firm precedents", first: "Add your first", to: "/templates" },
+    { icon: "playbook", label: "Playbooks", count: data.playbooks, detail: "Review checklists", first: "Add your first", to: "/playbooks" },
+    { icon: "client", label: "Clients", count: data.clients, detail: "Party records", first: "Add your first", to: "/clients" },
   ]
-  return (
-    <ul className="dash-library">
-      {tiles.map((tile, index) => (
-        <li key={tile.label} className={tile.count === 0 ? "is-zero" : undefined}>
-          <Link to={tile.count === 0 || tile.label !== "Matters" ? tile.to : "/"}>
-            <ShapeIcon icon={tile.icon} shape={SHAPE_ORDER[index]} />
-            <span className="dash-library-text">
-              <span>{tile.label}</span>
-              {tile.count === 0 && <span className="dash-library-first">{tile.first}{icons.arrowRight}</span>}
-            </span>
-            <strong>{tile.count ?? "—"}</strong>
-          </Link>
-        </li>
-      ))}
-    </ul>
-  )
+  return <LibraryCards cards={tiles.map((tile) => ({
+    id: tile.label, icon: tile.icon, label: tile.label, count: tile.count ?? null,
+    detail: tile.detail, emptyLabel: tile.first,
+    href: tile.count === 0 || tile.label !== "Matters" ? tile.to : "/",
+  }))} />
 }
 
 type Step = { title: string; detail: string; done: boolean; note: string; action?: { label: string; to: string } }
@@ -530,6 +512,11 @@ function SampleMatter({ data }: WidgetContext) {
   const added = data.matters.find((row) => row.matter.sample)?.matter
   return (
     <div className="dash-sample">
+      <SamplePreview items={[
+        { id: "sources", icon: "documents", title: "Source files", detail: "Engagement letter & rider" },
+        { id: "answers", icon: "question", title: "Cited Q&A", detail: "Answers linked to sources" },
+        { id: "review", icon: "review", title: "Review table", detail: "A playbook check to explore" },
+      ]} />
       <p className="dash-sample-text">A fictional engagement letter, with cited answers and a legal review ready to look through.</p>
       {added
         ? <Link className="dash-text-button" to={`/matter/${added.id}${ASK}`}>Open the sample matter{icons.arrowRight}</Link>

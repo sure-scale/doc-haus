@@ -118,10 +118,9 @@ export function Sparkline({ values, label }: { values: number[]; label: string }
   )
 }
 
-// Spread behind an average: one thin bar per item, the average as a rule.
-// Every item is drawn; bars thin out as the count grows (`--bars` lets the
-// styles narrow the gaps). Each bar's slot is its hit target, so a zero still
-// has a tooltip.
+// Spread behind an average: each item shares the available width, with its
+// average shown as a labelled reference rule. Every item is drawn; bars thin
+// out as the count grows. Each slot is a hit target even when its value is zero.
 export function SpreadBars({ values, average, label, format }: { values: number[]; average: number; label: string; format: (value: number) => string }) {
   const { box, show, hide, leave, view } = useTip()
   const mark = useRoving(values.length, 0)
@@ -146,7 +145,7 @@ export function SpreadBars({ values, average, label, format }: { values: number[
           </span>
         )
       })}
-      <span className="dash-spread-average" style={{ bottom: `${(average / max) * 100}%` }} aria-hidden="true" />
+      <span className="dash-spread-average" style={{ bottom: `${(average / max) * 100}%` }} aria-hidden="true"><span className="dash-spread-average-label">avg {format(average)}</span></span>
       {view}
     </div>
   )
@@ -272,12 +271,14 @@ export function ActivityCalendar({ counts, first, describe, label }: { counts: n
           </svg>
         </div>
       </div>
-      <div className="dash-calendar-key" aria-hidden="true">
-        <span>Less</span>
-        {[0, 1, 2, 3, 4].map((step) => <span key={step} className={`dash-key-cell level-${step}`} />)}
-        <span>More</span>
+      <div className="dash-calendar-footer">
+        <p className="dash-calendar-hint">{weeks * pitch > room ? "Scroll horizontally to see earlier weeks · " : ""}Select a square to inspect its day.</p>
+        <div className="dash-calendar-key" aria-hidden="true">
+          <span>Less</span>
+          {[0, 1, 2, 3, 4].map((step) => <span key={step} className={`dash-key-cell level-${step}`} />)}
+          <span>More</span>
+        </div>
       </div>
-      {weeks * pitch > room && <p className="dash-calendar-hint">Scroll to see earlier weeks.</p>}
       {view}
     </div>
   )
@@ -323,18 +324,28 @@ export type Segment = { key: string; label: string; value: number; display: stri
 // Parts of a whole on one bar, 2px apart, each named in the legend below.
 // Segments are categorical, so each takes its own series class.
 export function StackedBar({ segments, label }: { segments: Segment[]; label: string }) {
-  const { box, show, leave, view } = useTip()
+  const { box, show, hide, leave, view } = useTip()
+  const positive = segments.filter((row) => row.value > 0)
+  const mark = useRoving(positive.length, 0)
   const total = segments.reduce((sum, row) => sum + row.value, 0)
   const percent = (value: number) => (total ? `${Math.round((value / total) * 100)}%` : "0%")
+  const color = (row: Segment) => {
+    const semantic = ["input", "cached", "output", "reasoning"].indexOf(row.key)
+    return `var(--dash-series-${(semantic < 0 ? segments.indexOf(row) % 4 : semantic) + 1})`
+  }
   return (
     <div className="dash-stack" ref={box} onPointerLeave={leave}>
-      <div className="dash-stack-bar" role="img" aria-label={`${label}: ${segments.map((row) => `${row.label} ${percent(row.value)}`).join(", ")}`}>
+      <div className="dash-stack-bar" role="group" aria-label={`${label}: ${segments.map((row) => `${row.label} ${percent(row.value)}`).join(", ")}`}>
         {total > 0
-          ? segments.filter((row) => row.value > 0).map((row) => (
+          ? positive.map((row, index) => (
               <span
                 key={row.key}
                 className={`dash-stack-part series-${row.key}`}
-                style={{ flexGrow: row.value }}
+                style={{ flexGrow: row.value, background: color(row) }}
+                role="img"
+                aria-label={`${row.label}: ${row.display} (${percent(row.value)})`}
+                {...mark(index, (element) => show(element.getBoundingClientRect(), `${row.label}: ${row.display} (${percent(row.value)})`))}
+                onBlur={hide}
                 onPointerEnter={(event) => show(event, `${row.label}: ${row.display} (${percent(row.value)})`)}
                 onPointerDown={(event) => show(event, `${row.label}: ${row.display} (${percent(row.value)})`)}
               />
@@ -344,7 +355,7 @@ export function StackedBar({ segments, label }: { segments: Segment[]; label: st
       <ul className="dash-legend">
         {segments.map((row) => (
           <li key={row.key}>
-            <span className={`dash-swatch series-${row.key}`} aria-hidden="true" />
+            <span className={`dash-swatch series-${row.key}`} style={{ background: color(row) }} aria-hidden="true" />
             <span className="dash-legend-label">{row.label}</span>
             <span className="dash-legend-value">{row.display}</span>
             <span className="dash-legend-share">{percent(row.value)}</span>
@@ -360,7 +371,7 @@ export function StackedBar({ segments, label }: { segments: Segment[]; label: st
 // crosshair that follows the pointer and names the day under it. Each day also
 // has a focusable column, so the arrow keys move the same crosshair. `format`
 // writes the axis; `detail`, the exact value in the tooltip.
-export function AreaChart({ points, format, detail = format, label, integer = false }: { points: { time: number; value: number; label: string }[]; format: (value: number) => string; detail?: (value: number) => string; label: string; integer?: boolean }) {
+export function AreaChart({ points, format, detail = format, label, integer = false }: { points: { time: number; value: number; label: string; detail?: string }[]; format: (value: number) => string; detail?: (value: number) => string; label: string; integer?: boolean }) {
   const [ref, { width, height }] = useSize<HTMLDivElement>()
   const [active, setActive] = useState<number>()
   useDismiss(ref, active !== undefined, () => setActive(undefined))
@@ -393,7 +404,7 @@ export function AreaChart({ points, format, detail = format, label, integer = fa
               </g>
             ))}
             {points.map((row, index) => index % labelEvery === 0 && (
-              <text key={row.time} x={x(index)} y={height - 8} textAnchor="middle" className="dash-axis">{row.label}</text>
+              <text key={`${row.time}-${index}`} x={x(index)} y={height - 8} textAnchor="middle" className="dash-axis">{row.label}</text>
             ))}
             {points.length > 1 && <path d={`${line} L${x(points.length - 1)} ${y(0)} L${x(0)} ${y(0)} Z`} className="dash-area-fill" fill="currentColor" fillOpacity=".1" />}
             <path d={line} fill="none" className="dash-area-line" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
@@ -408,7 +419,7 @@ export function AreaChart({ points, format, detail = format, label, integer = fa
             const from = Math.max(left, x(index) - step / 2), to = Math.min(left + plot, x(index) + step / 2)
             return (
               <rect
-                key={row.time}
+                key={`${row.time}-${index}`}
                 className="dash-area-hit"
                 x={from}
                 y={top}
@@ -416,7 +427,7 @@ export function AreaChart({ points, format, detail = format, label, integer = fa
                 height={Math.max(0, y(0) - top)}
                 fill="transparent"
                 role="img"
-                aria-label={`${row.label}: ${detail(row.value)}`}
+                aria-label={`${row.label}: ${detail(row.value)}${row.detail ? `. ${row.detail}` : ""}`}
                 {...mark(index, () => setActive(index))}
                 onBlur={() => setActive(undefined)}
               />
@@ -427,6 +438,7 @@ export function AreaChart({ points, format, detail = format, label, integer = fa
       {current && active !== undefined && (
         <TipBox x={x(active)} y={y(current.value)}>
           <strong>{detail(current.value)}</strong> {current.label}
+          {current.detail && <span className="dash-tip-detail">{current.detail}</span>}
         </TipBox>
       )}
     </div>

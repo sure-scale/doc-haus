@@ -9,6 +9,8 @@
 .dash {
   container: dash / inline-size;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: var(--space-5);
   --dash-chart: #1a8a68;
   /* The token bar's four categories, in fixed order. */

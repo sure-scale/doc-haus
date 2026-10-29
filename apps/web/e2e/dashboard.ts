@@ -522,7 +522,7 @@ try {
         await expect(needs.locator("strong")).toHaveText(["Drafting run failed", "2 questions waiting", "Drafting stalled, press Continue"])
         for (const [index, id] of ["m-tidewater", "m-marlowe", "m-copperleaf"].entries()) {
           const owner = (state.drafting[id] as { owner_session_id: string }).owner_session_id
-          await expect(needs.nth(index).getByRole("link", { name: `Open ${titleOf(id)}`, exact: true })).toHaveAttribute("href", `/matter/${id}?session=${encodeURIComponent(owner)}`)
+          await expect(needs.nth(index).getByRole("link", { name: `${["Open", "Answer", "Resume"][index]} ${titleOf(id)}`, exact: true })).toHaveAttribute("href", `/matter/${id}?session=${encodeURIComponent(owner)}`)
         }
         // Newest first, each with what it needs next.
         const drafts = card(page, "Recent drafts").locator(".dash-rows > li")
@@ -534,13 +534,13 @@ try {
         await expect(week.getByText("Week before $11.80", { exact: true })).toBeVisible()
         const total = card(page, "Total spend")
         await expect(total.locator(".dash-stat-value")).toHaveText(money(monthSpend(state, 9)))
-        await expect(total.getByText(`Last month ${money(monthSpend(state, 8))}`, { exact: true })).toBeVisible()
+        await expect(total.getByTitle(`Last month: ${money(monthSpend(state, 8))}`, { exact: true })).toBeVisible()
         const spend = octoberByMatter(state)
         const bars = card(page, "Spend by matter").locator(".dash-hbars li")
         await expect(bars.locator(".dash-hbar-name")).toHaveText(spend.slice(0, 6).map((row) => row.title))
         await expect(bars.locator(".dash-hbar-value")).toHaveText(spend.slice(0, 6).map((row) => money(row.cost)))
         const rest = spend.slice(6)
-        await expect(card(page, "Spend by matter").locator(".dash-footnote")).toHaveText(`${rest.length} other matter${rest.length === 1 ? "" : "s"} · ${money(rest.reduce((sum, row) => sum + row.cost, 0))}`)
+        await expect(card(page, "Spend by matter").locator(".dash-footnote")).toHaveText(`${rest.length} other matter${rest.length === 1 ? "" : "s"} · ${money(rest.reduce((sum, row) => sum + row.cost, 0))} (${Math.round(rest.reduce((sum, row) => sum + row.cost, 0) / spend.reduce((sum, row) => sum + row.cost, 0) * 100)}%)`)
         const conversations = own(state).filter((row) => !row.parentID).length
         await expect(card(page, "Activity").getByText(`${conversations} conversations in the last year`, { exact: true })).toBeVisible()
         // Each matter's sessions were read with its own folder.
@@ -1039,7 +1039,7 @@ try {
       await expect(period(page).getByRole("button", { name: "Last month", exact: true })).toHaveAttribute("aria-pressed", "true")
       await expect(total.getByText("Last month", { exact: true })).toBeVisible()
       await expect(total.locator(".dash-stat-value")).toHaveText(money(monthSpend(state, 8)))
-      await expect(total.getByText(`Month before ${money(monthSpend(state, 7))}`, { exact: true })).toBeVisible()
+      await expect(total.getByTitle(`Month before: ${money(monthSpend(state, 7))}`, { exact: true })).toBeVisible()
       await expect(card(page, "Spend by matter").getByText("Last month", { exact: true })).toBeVisible()
       await capture(page, "practice-period-last-month-1440x1000")
       await period(page).getByRole("button", { name: "All time", exact: true }).click()
