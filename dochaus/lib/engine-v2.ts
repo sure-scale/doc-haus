@@ -33,7 +33,8 @@ export function engineV2Fetch(transport: typeof fetch = fetch): typeof fetch {
     }
     const allMessages = Boolean(messageRoute && !messageRoute[2] && !url.searchParams.has("limit"))
     if (messageRoute && !messageRoute[2]) {
-      url.searchParams.set("order", "desc")
+      if (url.searchParams.has("cursor")) url.searchParams.delete("order")
+      else url.searchParams.set("order", "desc")
       if (!url.searchParams.has("limit")) url.searchParams.set("limit", "200")
     }
     // Native session routes address global IDs. The directory header selects a

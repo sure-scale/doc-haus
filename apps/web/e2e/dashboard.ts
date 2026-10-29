@@ -671,6 +671,17 @@ try {
         await dashboard(page)
         expect(await order(page)).toEqual(EVERY)
         await expect(card(page, "Spend over time").locator(".dash-area svg")).toBeVisible()
+        if (width === 1440) {
+          const metrics = await Promise.all(["Total spend", "Average matter cost", "Average draft cost", "This week"].map((title) => card(page, title).boundingBox()))
+          expect(metrics.every(Boolean)).toBe(true)
+          for (const box of metrics.slice(1)) {
+            expect(Math.abs(box!.y - metrics[0]!.y)).toBeLessThanOrEqual(1)
+            expect(Math.abs(box!.height - metrics[0]!.height)).toBeLessThanOrEqual(1)
+          }
+          const recent = await card(page, "Recent matters").boundingBox()
+          const spend = await card(page, "Spend by matter").boundingBox()
+          expect(Math.abs(recent!.y - spend!.y)).toBeLessThanOrEqual(1)
+        }
         await capture(page, `practice-every-widget-${size}`)
         clean(state)
       } finally { await context.close() }

@@ -29,6 +29,8 @@ test("local source reads current matters, coalesces concurrent reads, and reject
     const inventory = await dashboardInventory("all", "UTC")
     expect(inventory.metrics.matters.total).toBe(2)
     expect(inventory.metrics.spend.status).toBe("empty")
+    expect(inventory.metrics.documents.periods.month.status).toBe("unavailable")
+    expect(inventory.metrics.drafts.periods.quarter.status).toBe("unavailable")
     expect(inventory.filters.matters).toContain("One")
     const checks = await validateDashboardSources({ widgets: [chart, { ...chart, title: "Unknown", matter: "Missing" }, { type: "actions" }], period: "all", timeZone: "UTC" })
     expect(checks.results.map(result => result.usable)).toEqual([true, false, true])
@@ -57,8 +59,10 @@ test("native paginated sessions and messages use per-message spend, with failed 
     if (url.pathname === "/api/session/one" || url.pathname === "/api/session/two") return Response.json({ data: session(url.pathname.endsWith("one") ? "one" : "two", url.pathname.endsWith("one") ? 3 : 1) })
     if (url.pathname.endsWith("/message")) {
       if (failMessages) return new Response("failed", { status: 503 })
+      if (cursor && url.searchParams.has("order")) return new Response("cursor cannot have order", { status: 400 })
+      if (cursor) return Response.json({ data: [], cursor: {} })
       const one = url.pathname.includes("/one/")
-      return Response.json({ data: [{ id: one ? "m1" : "m2", type: "assistant", time: { created: one ? first : second }, cost: one ? 3 : 1, content: [] }], cursor: {} })
+      return Response.json({ data: [{ id: one ? "m1" : "m2", type: "assistant", time: { created: one ? first : second }, cost: one ? 3 : 1, content: [] }], cursor: { next: "next-message" } })
     }
     return new Response("missing", { status: 404 })
   }, { preconnect: originalFetch.preconnect }) as typeof fetch
@@ -66,6 +70,7 @@ test("native paginated sessions and messages use per-message spend, with failed 
   try {
     const result = await dashboardChartSource(JSON.stringify(chart), "all", "UTC")
     expect(result.data.total).toBe(4)
+    expect(result.data.basis).not.toContain("partial")
     const docs = { ...chart, title: "Documents", metric: "documents", groupBy: "matter", form: "bars" }
     const tokens = { ...chart, title: "Tokens", metric: "tokens", groupBy: "none", form: "stat" }
     expect((await dashboardChartSource(JSON.stringify(docs), "all", "UTC")).data.total).toBe(1)
