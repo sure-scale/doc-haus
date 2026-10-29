@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { paragraphSpacingExclusiveReason, paragraphSpacingProposalMarker } from "./paragraph-spacing-proposal"
+import { paragraphInsertionExclusiveReason, paragraphInsertionProposalMarker } from "./paragraph-insertion-proposal"
 
 // A structural proposal binds the complete uploaded source. Display strings or
 // coordinates never locate the write; only the verified source/target pair does.
@@ -46,12 +47,12 @@ const legacyClauseExclusiveReason = "Review or reject the pending changes before
 export const tableRowExclusiveReason = "Review or reject the pending changes before preparing a table row change. A table row change must be reviewed on its own."
 export class RedlineProposalConflictError extends Error {}
 export function exclusiveRedlineProposalMarker(row: { scope: string; target_json?: string | null }) {
-  return tableRowProposalMarker(row) || paragraphSpacingProposalMarker(row)
+  return tableRowProposalMarker(row) || paragraphSpacingProposalMarker(row) || paragraphInsertionProposalMarker(row)
 }
 export function assertExclusiveRedlineSingleton(rows: readonly { scope: string; target_json?: string | null }[]) {
   if (rows.some(legacyClauseProposalMarker) && rows.length !== 1) throw new RedlineProposalConflictError(legacyClauseExclusiveReason)
   if (rows.some(exclusiveRedlineProposalMarker) && rows.length !== 1)
-    throw new RedlineProposalConflictError(rows.some(paragraphSpacingProposalMarker) ? paragraphSpacingExclusiveReason : tableRowExclusiveReason)
+    throw new RedlineProposalConflictError(rows.some(paragraphInsertionProposalMarker) ? paragraphInsertionExclusiveReason : rows.some(paragraphSpacingProposalMarker) ? paragraphSpacingExclusiveReason : tableRowExclusiveReason)
 }
 /** Call inside each recorder's immediate transaction, before supersession. */
 export function assertRedlineProposalCompatibility(
@@ -61,5 +62,5 @@ export function assertRedlineProposalCompatibility(
     throw new RedlineProposalConflictError(legacyClauseExclusiveReason)
   if ((pending.some(exclusiveRedlineProposalMarker) && incoming.length) ||
       (incoming.some(exclusiveRedlineProposalMarker) && (pending.length || incoming.length !== 1)))
-    throw new RedlineProposalConflictError([...pending, ...incoming].some(paragraphSpacingProposalMarker) ? paragraphSpacingExclusiveReason : tableRowExclusiveReason)
+    throw new RedlineProposalConflictError([...pending, ...incoming].some(paragraphInsertionProposalMarker) ? paragraphInsertionExclusiveReason : [...pending, ...incoming].some(paragraphSpacingProposalMarker) ? paragraphSpacingExclusiveReason : tableRowExclusiveReason)
 }

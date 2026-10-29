@@ -411,7 +411,7 @@ export type RedlineRow = {
   id: number
   doc_path: string
   doc_name: string
-  scope: "phrase" | "clause" | "table_row" | "paragraph_spacing"
+  scope: "phrase" | "clause" | "table_row" | "paragraph_spacing" | "paragraph_insert"
   find_text: string
   old_text: string
   new_text: string

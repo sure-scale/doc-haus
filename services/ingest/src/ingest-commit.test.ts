@@ -14,6 +14,8 @@ import { recoverDocumentMutations } from "./document-mutation"
 import { MODEL } from "./embed"
 import * as identifierExtraction from "./identifiers"
 import { ingestDocument } from "./ingest"
+import { checkParagraphInsertionAuthority } from "./paragraph-insertion-proposals"
+import { getRedline } from "./db"
 import * as lineage from "./lineage"
 import { stampIngestLineage } from "./lineage"
 import { healSourceArtifacts, sourceArtifactsMatchRegistry, writeSourceArtifacts } from "./source-artifacts"
@@ -683,3 +685,38 @@ test("source publication checks registry authority inside the transaction before
     } finally { db.close() }
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
+
+test("paragraph insertion authority survives staging only for the same source and pending proposal", async () => {
+  for (const race of ["none", "removed", "role", "replaced", "proposal"] as const) {
+    const directory=realpathSync(mkdtempSync(path.join(tmpdir(),"paragraph-authority-")))
+    try {
+      const name="Authority.docx",file=path.join(directory,name),original=await docx(["Reference."]),revised=await docx(["Reference.","New paragraph."])
+      await ingestDocument(directory,name,original)
+      const db=openDb(directory)
+      const document=db.query("SELECT id FROM documents WHERE doc_path=?").get(file) as {id:number}
+      const binding={version:5,kind:"paragraph_insert",prepared_role:"source",source_sha256:createHash("sha256").update(original).digest("hex"),source_document_id:document.id,target_handle:"test",reference_text:"Reference.",position:"after",text:"New paragraph.",location:{headings:[],previous_paragraph:null,next_paragraph:null,body_paragraph_number:1}}
+      const id=Number(db.run("INSERT INTO redlines (doc_path,doc_name,scope,find_text,old_text,new_text,author,review_comment,target_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",[file,name,"paragraph_insert","Reference.","","New paragraph.","Counsel","Reason.",JSON.stringify(binding),Date.now()]).lastInsertRowid)
+      const row=getRedline(db,id)!;db.close()
+      const write=atomicWrite.commitDocumentWriteAsync
+      const spy=spyOn(atomicWrite,"commitDocumentWriteAsync").mockImplementation(async (...args)=>{
+        const registry=openDb(directory)
+        try {
+          if(race==="removed"||race==="replaced")registry.run("DELETE FROM documents WHERE doc_path=?",[file])
+          if(race==="role")registry.run("UPDATE documents SET role='deliverable' WHERE doc_path=?",[file])
+          if(race==="replaced")registry.run("INSERT INTO documents (doc_path,name,created_at,role) VALUES (?,?,?, 'source')",[file,name,Date.now()])
+          if(race==="proposal")registry.run("UPDATE redlines SET status='rejected' WHERE id=?",[id])
+        } finally {registry.close()}
+        return write(...args)
+      })
+      try {
+        const operation=ingestDocument(directory,name,revised,{existing:"replace",requireExistingSource:true,beforeRegistryUpdate:registry=>checkParagraphInsertionAuthority(registry,[row],file),updateRegistry:registry=>registry.run("UPDATE redlines SET status='accepted' WHERE id=?",[id])})
+        if(race==="none")await operation
+        else await expect(operation).rejects.toThrow("earlier Word file")
+      } finally {spy.mockRestore()}
+      expect(readFileSync(file)).toEqual(race==="none"?revised:original)
+      const after=openDb(directory)
+      try {expect(getRedline(after,id)?.status).toBe(race==="none"?"accepted":race==="proposal"?"rejected":"pending")}
+      finally {after.close()}
+    } finally {rmSync(directory,{recursive:true,force:true})}
+  }
+},120000)

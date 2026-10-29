@@ -180,10 +180,11 @@ test("on a clean document the preview of prepared and older proposals together i
 })
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-type Candidate = {amendment_id:string;target_handle:string;previous_paragraph?:string|null;table?:number;row?:number;cells?:string[];previous_row?:string[]|null;next_row?:string[]|null;
+type Candidate = {amendment_id:string;target_handle:string;previous_paragraph?:string|null;next_paragraph?:string|null;table?:number;row?:number;cells?:string[];previous_row?:string[]|null;next_row?:string[]|null;
   paragraph_text?:string;scope?:string;paragraph?:{text:string;table?:{table:number;row:number|null;column:number|null;row_span?:number;column_span?:number;row_cells?:{column:number;column_span:number;text:string}[];unavailable_reason?:string}|null};
   table_context?:Awaited<ReturnType<typeof inspectExactParagraphSpacing>>["matches"][number]["tableContext"];direct_after?:unknown;eligibility?:{eligible:boolean;reason?:string}}
 type LegalPass = {amendments:Array<{before_quote:string;replacement:string;target_context:string;reason:string}>;open_items:string[];
+  paragraph_insertions?:Array<{reference_text:string;position:"before"|"after";text:string;target_context:string;reason:string}>;
   table_rows?:Array<{reference_cells:string[];position:"before"|"after";cells:string[];target_context:string;reason:string}>;
   table_row_deletions?:Array<{reference_cells:string[];target_context:string;reason:string}>;
   paragraph_formats?:Array<{kind:"paragraph_spacing_after";paragraph_text:string;spacing_after_points:number;target_context:string;reason:string}|{kind:"unsupported_formatting";request:string;reason:string}>}
@@ -3684,4 +3685,109 @@ test("Prepare isolates unsupported paragraph changes while safe numbered-documen
       expect(unzipSync(accepted)["word/numbering.xml"]).toEqual(unzipSync(before)["word/numbering.xml"])
     }
   } finally { await ingest.stop(); engine.server.stop(true); await rm(temporary, {recursive:true,force:true}) }
+},120000)
+
+test("paragraph insertion Prepare selects the intended duplicate and supports preview and acceptance",async()=>{
+  const temporary=await mkdtemp(path.join(tmpdir(),"dochaus-paragraph-insertion-http-"))
+  let insertion={reference_text:"Same reference.",position:"before" as "before"|"after",text:"A literal *new* [term].",target_context:"the paragraph before Authorized context",reason:"Explain the new term."}
+  const engine=syntheticEngine(()=>({amendments:[],paragraph_insertions:[insertion],open_items:["Confirm the separate filing instruction."]}),candidates=>{
+    expect(candidates).toHaveLength(2)
+    const chosen=candidates.find(candidate=>candidate.next_paragraph==="Authorized context.")!
+    expect(chosen).toBeTruthy();return [{amendment_id:"paragraph-1",target_handle:chosen.target_handle}]
+  })
+  const ingest=await isolatedIngest(temporary,engine.server)
+  try{
+    await ingest.start("paragraph-insertion")
+    const source=(await renderMarkdownToDocx("Intro A.\n\nSame reference.\n\nDifferent context.\n\nIntro B.\n\nSame reference.\n\nAuthorized context.")).bytes
+    for(const position of ["before","after"] as const){
+      insertion={...insertion,position}
+      const matter=await ingest.matter(`Paragraph ${position}`),file=await registeredSource(matter.dir,source),before=await Bun.file(file).bytes()
+      const response=await matter.prepare(`Insert the standalone paragraph ${position} the Same reference paragraph followed by Authorized context.`)
+      expect(response.status).toBe(200)
+      const prepared=await response.json() as {proposed:number;redline_ids:number[];open_items:string[]}
+      expect(prepared.proposed).toBe(1);expect(prepared.redline_ids).toHaveLength(1);expect(prepared.open_items).toContain("Confirm the separate filing instruction.")
+      expect(await Bun.file(file).bytes()).toEqual(before)
+      const rows=await (await ingest.request(`${matter.route}/redlines?name=working.docx`)).json() as Array<{id:number;stale?:boolean;paragraph_insert?:unknown}>
+      expect(rows).toHaveLength(1);expect(rows[0]!.stale).toBeUndefined();expect(rows[0]!.paragraph_insert).toEqual({kind:"paragraph_insert",reference_text:insertion.reference_text,position,text:insertion.text,location:{headings:[],previous_paragraph:"Intro B.",next_paragraph:"Authorized context.",body_paragraph_number:5}})
+      const db=openDb(matter.dir),id=prepared.redline_ids[0]!,stored=getRedline(db,id)!.target_json!
+      const tampered=JSON.parse(stored);tampered.location.previous_paragraph="Intro A."
+      db.run("UPDATE redlines SET target_json=? WHERE id=?",[JSON.stringify(tampered),id]);db.close()
+      const changedRows=await (await ingest.request(`${matter.route}/redlines?name=working.docx`)).json() as Array<{stale?:boolean}>
+      expect(changedRows[0]!.stale).toBe(true)
+      const restore=openDb(matter.dir);try{restore.run("UPDATE redlines SET target_json=? WHERE id=?",[stored,id])}finally{restore.close()}
+      const calls=engine.prompts.length,blocked=await matter.prepare("Change unrelated wording.")
+      expect(blocked.status).toBe(409);expect(engine.prompts).toHaveLength(calls)
+      const preview=await ingest.request(`${matter.route}/documents/redlined?name=working.docx`);expect(preview.status).toBe(200)
+      const previewBytes=new Uint8Array(await preview.arrayBuffer()),view=await createDocxRevision(previewBytes,{pendingRevisions:"layer"})
+      const texts=view.paragraphs.map(p=>p.text),authorized=texts.indexOf("Authorized context."),secondReference=texts.lastIndexOf("Same reference.")
+      expect(texts.indexOf(insertion.text)).toBe(secondReference+(position==="before"?-1:1));expect(authorized).toBeGreaterThan(secondReference)
+      expect(readDocxComments(previewBytes).some(c=>c.text===insertion.reason)).toBe(true)
+      expect(await Bun.file(file).bytes()).toEqual(before)
+      expect(await matter.accept(prepared.redline_ids[0]!)).toBe(200)
+      const saved=await Bun.file(file).bytes(),accepted=await createDocxRevision(saved)
+      expect(accepted.paragraphs.some(p=>p.text===insertion.text)).toBe(true);expect(readDocxComments(saved).some(c=>c.text===insertion.reason)).toBe(true)
+    }
+  }finally{await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})}
+},120000)
+
+test("paragraph insertion Prepare refuses mixed, unsupported and ambiguous requests without partial proposals",async()=>{
+  const source=(await renderMarkdownToDocx("Intro.\n\nSame reference.\n\nAfter.\n\n# Same reference.\n\nEnd.")).bytes
+  const {directory,file,state}=await rowPrepareMatter(source)
+  const good={reference_text:"Same reference.",position:"after" as const,text:"New obligation.",target_context:"the body reference",reason:"Insert the requested paragraph."}
+  let output:LegalPass={amendments:[],paragraph_insertions:[good],open_items:[]}
+  const engine=syntheticEngine(()=>output,()=>{throw new Error("Unsupported work must not localize")})
+  try{
+    await withPreparation(directory,engine,async prepare=>{
+      for(const value of [
+        {amendments:[{before_quote:"Intro.",replacement:"Revised.",target_context:"introduction",reason:"Update."}],paragraph_insertions:[good],open_items:[]},
+        {amendments:[],paragraph_insertions:[good,good],open_items:[]},
+        {amendments:[],paragraph_insertions:[{...good,text:"First\nSecond"}],open_items:[]},
+        {amendments:[],paragraph_insertions:[good],open_items:[]},
+      ]){
+        output=value;const response=await prepare("Insert a new paragraph near the intended reference.")
+        expect(response.status).toBe(200);expect(await response.json()).toMatchObject({proposed:0,open_items:[expect.any(String)]});expect(state().rows).toEqual([])
+      }
+      expect(engine.prompts).toHaveLength(4)
+    })
+    expect(await Bun.file(file).bytes()).toEqual(source)
+  }finally{engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("paragraph insertion locator cannot rewrite or invent placement and preserves an unresolved item",async()=>{
+  const source=(await renderMarkdownToDocx("Before.\n\nSame reference.\n\nAfter.")).bytes
+  const {directory,file,state}=await rowPrepareMatter(source)
+  const insertion={reference_text:"Same reference.",position:"after" as const,text:"A new paragraph.",target_context:"between the existing reference and After",reason:"Insert the requested text."}
+  let mode:"unresolved"|"rewrite"="unresolved"
+  const engine=syntheticEngine(()=>({amendments:[],paragraph_insertions:[insertion],open_items:["Confirm governing law."]}),candidates=>{
+    expect(candidates).toHaveLength(1)
+    return mode==="unresolved"?[{amendment_id:"paragraph-1",unresolved_reason:"The client has not identified the location."}]
+      :[{amendment_id:"paragraph-1",target_handle:candidates[0]!.target_handle,text:"Invented replacement."}]
+  })
+  try{
+    await withPreparation(directory,engine,async prepare=>{
+      const unresolved=await prepare("Insert a standalone paragraph, if the location is clear.")
+      expect(unresolved.status).toBe(200);expect(await unresolved.json()).toMatchObject({proposed:0,open_items:["Confirm governing law.",expect.stringContaining("could not be placed")]})
+      mode="rewrite";const altered=await prepare("Insert a standalone paragraph after the reference.")
+      expect(altered.status).toBe(409);expect(state().rows).toEqual([])
+    })
+    expect(await Bun.file(file).bytes()).toEqual(source)
+  }finally{engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("paragraph insertion becomes stale after the source changes and cannot be accepted",async()=>{
+  const temporary=await mkdtemp(path.join(tmpdir(),"dochaus-paragraph-stale-"))
+  const insertion={reference_text:"Reference paragraph.",position:"after" as const,text:"New paragraph.",target_context:"after the reference",reason:"Insert the requested paragraph."}
+  const engine=syntheticEngine(()=>({amendments:[],paragraph_insertions:[insertion],open_items:[]}),firstCandidate),ingest=await isolatedIngest(temporary,engine.server)
+  try{
+    await ingest.start("paragraph-stale");const matter=await ingest.matter("Stale paragraph")
+    const source=(await renderMarkdownToDocx("Before.\n\nReference paragraph.\n\nAfter.")).bytes,file=await registeredSource(matter.dir,source)
+    const response=await matter.prepare("Insert the requested new paragraph after the reference.")
+    expect(response.status).toBe(200);const prepared=await response.json() as {proposed:number;redline_ids:number[]};expect(prepared.proposed).toBe(1)
+    const changed=(await renderMarkdownToDocx("Before changed.\n\nReference paragraph.\n\nAfter.")).bytes;await Bun.write(file,changed)
+    const rows=await (await ingest.request(`${matter.route}/redlines?name=working.docx`)).json() as Array<{stale?:boolean;stale_reason?:string;paragraph_insert?:unknown}>
+    expect(rows).toHaveLength(1);expect(rows[0]!.stale).toBe(true);expect(rows[0]!.stale_reason).toContain("earlier Word file")
+    expect(rows[0]!.paragraph_insert).toEqual({kind:"paragraph_insert",reference_text:insertion.reference_text,position:"after",text:insertion.text,location:{headings:[],previous_paragraph:"Before.",next_paragraph:"After.",body_paragraph_number:2}})
+    expect(await matter.accept(prepared.redline_ids[0]!)).toBe(409);expect(await Bun.file(file).bytes()).toEqual(changed)
+    expect(matter.status(prepared.redline_ids[0]!)).toBe("pending")
+  }finally{await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})}
 },120000)

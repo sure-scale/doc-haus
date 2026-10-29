@@ -142,7 +142,9 @@ test("HTTP redline decisions preserve rejected bytes and publish an accepted, re
       previewDb.run("UPDATE redlines SET find_text = ? WHERE id = ?", ["Missing exact proposal target", rejectedID])
       const conflict = await request(`/matters/${matter.id}/documents/redlined?name=${name}`)
       expect(conflict.status).toBe(409)
-      expect((await conflict.json() as { error: string }).error).toContain("missing or ambiguous")
+      const message = (await conflict.json() as { error: string }).error
+      expect(message).toContain("Missing exact proposal target")
+      expect(message).toContain("Reject it")
       previewDb.run("UPDATE redlines SET find_text = ? WHERE id = ?", ["Second marker", rejectedID])
     } finally { previewDb.close() }
     expect(hash(await Bun.file(documentPath).bytes())).toBe(hash(original))

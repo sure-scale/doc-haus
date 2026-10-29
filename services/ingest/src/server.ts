@@ -81,6 +81,8 @@ import { compareVersions } from "../../../dochaus/lib/version-compare"
 import { pendingRedlinesForDoc } from "../../../dochaus/lib/redlines"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
 import { assertExclusiveRedlineSingleton, exclusiveRedlineProposalMarker, frozenTableRowView, tableRowProposalMarker, legacyClauseProposalMarker, type TableRowProposalView } from "../../../dochaus/lib/table-row-proposal"
+import { frozenParagraphInsertionView, paragraphInsertionProposalMarker, paragraphInsertionExclusiveReason, type ParagraphInsertionProposalView } from "../../../dochaus/lib/paragraph-insertion-proposal"
+import { paragraphInsertionBinding, checkedParagraphInsertionOperation, checkParagraphInsertionAuthority, sourceDocumentId, insertionChanged } from "./paragraph-insertion-proposals"
 import { frozenParagraphSpacingView, paragraphSpacingExclusiveReason, paragraphSpacingProposalMarker, type ParagraphSpacingProposalView } from "../../../dochaus/lib/paragraph-spacing-proposal"
 import { paragraphSpacingBinding, paragraphSpacingView, spacingChanged } from "./paragraph-spacing-proposals"
 import { rowChanged, rowMixed, tableRowBinding, tableRowView } from "./table-row-proposals"
@@ -1122,12 +1124,18 @@ app.get("/matters/:id/redlines", async (c) => {
       const state = await redlineState(bytes,rows,proposalRevisionOptions(dir,target.docPath),getDocumentRole(db,target.docPath),target.docPath)
       const protectedWord = Boolean(readWorkingDocx(dir,target.docPath))
       const mixed = rows.some(exclusiveRedlineProposalMarker) && rows.length !== 1
-      const mixedReason = rows.some(paragraphSpacingProposalMarker) ? paragraphSpacingExclusiveReason : rowMixed
+      const mixedReason = rows.some(paragraphInsertionProposalMarker) ? paragraphInsertionExclusiveReason : rows.some(paragraphSpacingProposalMarker) ? paragraphSpacingExclusiveReason : rowMixed
       return c.json(await Promise.all(rows.map(async (row) => {
-        let stale_reason = mixed ? mixedReason : paragraphSpacingProposalMarker(row) && row.doc_path !== target.docPath ? spacingChanged : redlineStaleReason(row,state,protectedWord)
+        let stale_reason = mixed ? mixedReason : paragraphInsertionProposalMarker(row) && row.doc_path !== target.docPath ? insertionChanged : paragraphSpacingProposalMarker(row) && row.doc_path !== target.docPath ? spacingChanged : redlineStaleReason(row,state,protectedWord)
         let table_row: TableRowProposalView | undefined
         let paragraph_spacing: ParagraphSpacingProposalView | undefined
-        if (paragraphSpacingProposalMarker(row)) try {
+        let paragraph_insert: ParagraphInsertionProposalView | undefined
+        if (paragraphInsertionProposalMarker(row)) try {
+          const value=paragraphInsertionBinding(row);paragraph_insert=frozenParagraphInsertionView(value)
+          if(sourceDocumentId(db,target.docPath)!==value.source_document_id)stale_reason ??= insertionChanged
+          if(!stale_reason)paragraph_insert=(await checkedParagraphInsertionOperation(bytes,row)).view
+        } catch {stale_reason ??= "This paragraph insertion cannot be displayed safely. Reject it and prepare a fresh change list."}
+        else if (paragraphSpacingProposalMarker(row)) try {
           const value = paragraphSpacingBinding(row)
           paragraph_spacing = frozenParagraphSpacingView(value)
           if (!stale_reason) paragraph_spacing = await paragraphSpacingView(bytes,row)
@@ -1137,7 +1145,7 @@ app.get("/matters/:id/redlines", async (c) => {
           table_row = frozenTableRowView(value)
           if (!stale_reason) table_row = await tableRowView(bytes,row)
         } catch { stale_reason ??= "This row change cannot be displayed safely. Reject it and prepare a fresh change list." }
-        return {...row,...(table_row ? {table_row} : {}),...(paragraph_spacing ? {paragraph_spacing} : {}),...(stale_reason ? {stale:true,stale_reason} : {})}
+        return {...row,...(table_row ? {table_row} : {}),...(paragraph_spacing ? {paragraph_spacing} : {}),...(paragraph_insert ? {paragraph_insert} : {}),...(stale_reason ? {stale:true,stale_reason} : {})}
       })))
     } finally {
       db.close()
@@ -1173,7 +1181,7 @@ app.get("/matters/:id/documents/redlined", async (c) => {
     const options = pending.length ? proposalRevisionOptions(dir, target.docPath) : {}
     try { assertExclusiveRedlineSingleton(pending) } catch (error) { return c.json({error:error instanceof Error ? error.message : "The mixed change list cannot be previewed."},409) }
     const state = await redlineState(original, pending, options,proposalDocumentRole(dir,target.docPath),target.docPath)
-    const rows = pending.filter((row) => !(paragraphSpacingProposalMarker(row) && row.doc_path !== target.docPath) && !redlineStaleReason(row, state, protectedWord))
+    const rows = pending.filter((row) => !((paragraphSpacingProposalMarker(row) || paragraphInsertionProposalMarker(row)) && row.doc_path !== target.docPath) && !redlineStaleReason(row, state, protectedWord))
     try {
       const bytes = await buildRedlined(original, rows, state, options)
       const disclosure = rows.length && !layeredRedline(rows, options) ? await sourceRevisionDisclosure(original) : undefined
@@ -1353,7 +1361,7 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
       if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
       const accepted = await bake(original,[current],state,options)
       assertClauseAuthority(dir,[current],current.doc_path)
-      if (exact && proposalDocumentRole(dir,current.doc_path) !== "source") throw new RedlineAcceptConflictError(paragraphSpacingProposalMarker(current) ? spacingChanged : rowChanged)
+      if (exact && proposalDocumentRole(dir,current.doc_path) !== "source") throw new RedlineAcceptConflictError(paragraphInsertionProposalMarker(current) ? insertionChanged : paragraphSpacingProposalMarker(current) ? spacingChanged : rowChanged)
       assertSpacingSourceCurrent(dir,[current],prior)
       const baked = documentRevisionBytes(dir,current.doc_name,Buffer.from(accepted),exact).bytes
       redline = await prepareDeliveredRedline(dir,current.doc_path,baked)
@@ -1433,7 +1441,7 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
         return c.json({error:stale.length ? staleBatchReason(stale) : "The working Word revision is inconsistent. Refresh it through the revision API."},409)
       const accepted = await bake(original,rows,state,options)
       assertClauseAuthority(dir,rows,file)
-      if (exact && proposalDocumentRole(dir,file) !== "source") throw new RedlineAcceptConflictError(rows.some(paragraphSpacingProposalMarker) ? spacingChanged : rowChanged)
+      if (exact && proposalDocumentRole(dir,file) !== "source") throw new RedlineAcceptConflictError(rows.some(paragraphInsertionProposalMarker) ? insertionChanged : rows.some(paragraphSpacingProposalMarker) ? spacingChanged : rowChanged)
       assertSpacingSourceCurrent(dir,rows,prior)
       const baked = documentRevisionBytes(dir,name,Buffer.from(accepted),exact).bytes
       redline = await prepareDeliveredRedline(dir,file,baked)
@@ -1519,7 +1527,10 @@ async function writeDocumentRevision(
       if (!(error instanceof DocxTrackedRevisionsError) || !options.keepTracked || boundAcceptance) throw error
     }
   }
-  const beforeRegistryUpdate = (registry: ReturnType<typeof openDb>) => checkClauseAuthority(registry,options.clauseRows ?? [],path.join(directory,name))
+  const beforeRegistryUpdate = (registry: ReturnType<typeof openDb>) => {
+    checkClauseAuthority(registry,options.clauseRows ?? [],path.join(directory,name))
+    checkParagraphInsertionAuthority(registry,options.clauseRows ?? [],resolveMatterDocumentTarget(directory,name).docPath)
+  }
   const updateRegistry = (registry: ReturnType<typeof openDb>) => {
     acceptedRedlineIDs.forEach((id) => setRedlineStatus(registry,id,"accepted"))
   }
@@ -1570,6 +1581,13 @@ function proposalDocumentRole(directory: string, docPath: string) {
   try { return getDocumentRole(db,docPath) } finally { db.close() }
 }
 function assertSpacingSourceCurrent(directory: string, rows: readonly RedlineRow[], sha256: string) {
+  for (const row of rows) if (paragraphInsertionProposalMarker(row)) {
+    const target=readDocumentTarget(directory,row.doc_name)
+    const db=openDb(directory)
+    const id=(()=>{try{return sourceDocumentId(db,row.doc_path)}finally{db.close()}})()
+    if(target?.docPath!==row.doc_path||id!==paragraphInsertionBinding(row).source_document_id||
+      createHash("sha256").update(readFileSync(row.doc_path)).digest("hex")!==sha256)throw new RedlineAcceptConflictError(insertionChanged)
+  }
   for (const row of rows) if (paragraphSpacingProposalMarker(row)) {
     const target = readDocumentTarget(directory,row.doc_name)
     if (target?.docPath !== row.doc_path || proposalDocumentRole(directory,row.doc_path) !== "source" ||

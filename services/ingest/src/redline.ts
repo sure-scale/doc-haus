@@ -13,6 +13,9 @@ import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphPosit
 import { assertLayeredRoundTrip, assertRedlineRoundTrip } from "../../../dochaus/lib/redline-round-trip"
 import { discloseSourceRevisions } from "../../../dochaus/lib/docx-revision-views"
 import { docxProtectionMessage } from "./docx-protection-message"
+import { paragraphInsertionProposalMarker } from "../../../dochaus/lib/paragraph-insertion-proposal"
+import { authorParagraphInsertionReview, resolveParagraphInsertionReview } from "../../../dochaus/lib/docx-paragraph-insertion-review"
+import { checkedParagraphInsertionOperation, paragraphInsertionBinding, ParagraphInsertionProposalError, insertionChanged, insertionSourceOnly, insertionUnsupported } from "./paragraph-insertion-proposals"
 import { assertExclusiveRedlineSingleton, exclusiveRedlineProposalMarker, RedlineProposalConflictError, tableRowProposalMarker, legacyClauseProposalMarker } from "../../../dochaus/lib/table-row-proposal"
 import { paragraphSpacingProposalMarker } from "../../../dochaus/lib/paragraph-spacing-proposal"
 import { authorExactParagraphSpacing, resolveExactParagraphSpacing } from "../../../dochaus/lib/docx-exact-spacing"
@@ -105,6 +108,10 @@ function applyProposal(session: Session, row: RedlineRow): { ok: true } | { ok: 
 // `options` is how the document is read.
 export async function buildRedlined(original: Uint8Array, rows: RedlineRow[], state?: RedlineState, options: DocxRevisionOptions = {}): Promise<Uint8Array> {
   if (!rows.length) return original
+  if (rows.some(paragraphInsertionProposalMarker)) {
+    try {const row=await checkedInsertion(original,rows,state),operation=await checkedParagraphInsertionOperation(original,row);return (await authorParagraphInsertionReview(original,operation.request,row.review_comment)).bytes}
+    catch(error){throw new RedlinePreviewConflictError(insertionFailure(error))}
+  }
   if (rows.some(paragraphSpacingProposalMarker)) {
     try {
       const row = await checkedSpacing(original, rows, state), operation = await checkedParagraphSpacingOperation(original, row)
@@ -292,6 +299,10 @@ function previewAuthor(rows: RedlineRow[]) {
 // rejecting only those gives the document as it was, and accepting them the
 // same edits untracked.
 export async function bake(original: Uint8Array, rows: RedlineRow[], state?: RedlineState, options: DocxRevisionOptions = {}): Promise<Uint8Array> {
+  if (rows.some(paragraphInsertionProposalMarker)) {
+    try {const row=await checkedInsertion(original,rows,state),operation=await checkedParagraphInsertionOperation(original,row),authored=await authorParagraphInsertionReview(original,operation.request,row.review_comment);return await resolveParagraphInsertionReview(original,authored.bytes,operation.request,row.review_comment,"accept")}
+    catch(error){throw new RedlineAcceptConflictError(insertionFailure(error))}
+  }
   if (rows.some(paragraphSpacingProposalMarker)) {
     try {
       const row = await checkedSpacing(original, rows, state), operation = await checkedParagraphSpacingOperation(original, row)
@@ -434,7 +445,7 @@ type RevisionBinding = { version:1; source_sha256:string; amendment_id:string; t
 type ParagraphBinding = { version:2; amendment_id:string; paragraph_sha256:string; occurrence:number; base_sha256:string } & ({ pid:string } | { para_id:string })
 export function binding(row:RedlineRow):RevisionBinding|ParagraphBinding {
   if (paragraphSpacingProposalMarker(row)) throw new Error("A spacing proposal requires its exact formatting writer.")
-  if (tableRowProposalMarker(row)) throw new Error("A row insertion requires its structural writer.")
+  if (tableRowProposalMarker(row) || paragraphInsertionProposalMarker(row)) throw new Error("A structural proposal requires its structural writer.")
   if (!row.target_json) throw new Error("The proposal has no exact Word revision binding.")
   // Bound proposals use the wording writer; it cannot apply stored formatting.
   if (row.formatting_json != null) throw new Error("Formatting cannot be combined with a Word revision binding. Prepare a fresh change list.")
@@ -500,6 +511,10 @@ function boundParagraph(value:ParagraphBinding,targets:ParagraphTarget[]) {
   return target?.sha256 === value.paragraph_sha256 ? target : undefined
 }
 export function redlineStaleReason(row:RedlineRow,state:RedlineState,protectedWord:boolean) {
+  if(paragraphInsertionProposalMarker(row)) {
+    try {const value=paragraphInsertionBinding(row);return state.registeredRole!==value.prepared_role?insertionChanged:state.tracked?insertionSourceOnly:value.source_sha256!==state.sha256?insertionChanged:undefined}
+    catch(error){return insertionFailure(error)}
+  }
   if (paragraphSpacingProposalMarker(row)) {
     try {
       const value = paragraphSpacingBinding(row)
@@ -539,6 +554,17 @@ async function checkedTableRow(original: Uint8Array, rows: RedlineRow[], state?:
   if (await tableRowSourceHasRevisions(original)) throw new RedlineAcceptConflictError(rowSourceOnly)
   if (createHash("sha256").update(original).digest("hex") !== value.source_sha256) throw new RedlineAcceptConflictError(rowChanged)
   return row
+}
+async function checkedInsertion(original:Uint8Array,rows:RedlineRow[],state?:RedlineState) {
+  assertExclusiveRedlineSingleton(rows)
+  const row=rows[0]!,value=paragraphInsertionBinding(row)
+  if(state?.registeredRole!==value.prepared_role)throw new RedlineAcceptConflictError(insertionChanged)
+  if(await tableRowSourceHasRevisions(original))throw new RedlineAcceptConflictError(insertionSourceOnly)
+  if(createHash("sha256").update(original).digest("hex")!==value.source_sha256)throw new RedlineAcceptConflictError(insertionChanged)
+  return row
+}
+function insertionFailure(error:unknown) {
+  return error instanceof ParagraphInsertionProposalError||error instanceof RedlineAcceptConflictError||error instanceof RedlineProposalConflictError?error.message:insertionUnsupported
 }
 async function checkedSpacing(original: Uint8Array, rows: RedlineRow[], state?: RedlineState) {
   assertExclusiveRedlineSingleton(rows)
