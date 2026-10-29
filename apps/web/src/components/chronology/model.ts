@@ -6,6 +6,11 @@ import {
 } from "../../api/ingest/chronology"
 export function dateLabel(date: ChronologyDate) {
   const text = date.original || date.start || "Undated"
+  const qualifierWords = date.qualifier?.trim()
+  const qualified =
+    qualifierWords && !new RegExp(`\\b${qualifierWords.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text)
+      ? `${qualifierWords} ${text}`
+      : text
   const qualifier =
     date.precision === "approximate"
       ? "approximate"
@@ -14,7 +19,7 @@ export function dateLabel(date: ChronologyDate) {
         : date.precision === "relative"
           ? "relative date"
           : ""
-  return `${text}${qualifier && !text.toLowerCase().includes(qualifier) ? ` (${qualifier})` : ""}${date.time ? ` · ${date.time}` : ""}${date.timezone ? ` ${date.timezone}` : ""}`
+  return `${qualified}${qualifier && !text.toLowerCase().includes(qualifier) ? ` (${qualifier})` : ""}${date.time ? ` · ${date.time}` : ""}${date.timezone ? ` ${date.timezone}` : ""}`
 }
 export function eventEvidence(event: ChronologyEvent) {
   return event.accounts.flatMap((account) => account.evidence)

@@ -54,6 +54,14 @@ const event: ChronologyEvent = {
   previousIds: [],
 }
 describe("chronology lawyer view", () => {
+  test("date labels retain deadline qualifiers stored separately from the original date words", () => {
+    expect(dateLabel({ original: "12 May 2026", precision: "exact", start: "2026-05-12", qualifier: "before" })).toBe(
+      "before 12 May 2026",
+    )
+    expect(dateLabel({ original: "by 12 May 2026", precision: "exact", start: "2026-05-12", qualifier: "by" })).toBe(
+      "by 12 May 2026",
+    )
+  })
   test("person filters join only supported current aliases and keep ambiguous identities separate", () => {
     const named = {
       ...event,
