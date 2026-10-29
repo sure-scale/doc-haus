@@ -1,10 +1,11 @@
-import { useLayoutEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef } from "react"
 import type { Chart } from "../../../../../dochaus/lib/dashboard-plan"
 import { chartData } from "./chart-data"
 import type { DashboardData, Period } from "./data"
 import { formatChartValue } from "./visual/ChartCards"
 import { LiveComponent, type ComponentDefinition } from "./visual/LiveComponents"
-import { createDashboardSource, type JsonValue } from "./visual/source"
+import type { JsonValue } from "./visual/source"
+import { chartSourceURL, createChartEndpointSource } from "../../api/ingest/dashboard"
 
 // Only the computed view is published, never the underlying matter records or
 // preferences. Both the source and its registration survive data refreshes.
@@ -31,10 +32,15 @@ export function chartProjection(chart: Chart, data: DashboardData, period: Perio
 }
 
 export function ChartWidget({ chart, data, period }: { chart: Chart; data: DashboardData; period: Period }) {
-  const projection = useMemo(() => chartProjection(chart, data, period), [chart, data, period])
-  const [source] = useState(() => createDashboardSource(projection))
-  const [sources] = useState(() => ({ chart: source }))
-  useLayoutEffect(() => { source.publish(projection) }, [source, projection])
+  const url = chartSourceURL(chart, period, Intl.DateTimeFormat().resolvedOptions().timeZone)
+  const source = useMemo(() => createChartEndpointSource(url), [url])
+  const sources = useMemo(() => ({ chart: source }), [source])
+  // The shared dashboard reader invalidates endpoint snapshots after a manual,
+  // setup or matter refresh without copying its private data into the source.
+  const previous = useRef(data)
+  useEffect(() => {
+    if (previous.current !== data) { previous.current = data; source.refresh?.() }
+  }, [data, source])
   const definition: ComponentDefinition = {
     id: "chart", kind: "chart",
     props: { form: chart.form, label: chart.title, format: chart.metric === "spend" ? "money" : "count", showShares: chart.groupBy === "client" || chart.groupBy === "matter" },

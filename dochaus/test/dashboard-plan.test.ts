@@ -30,3 +30,14 @@ test("unsupported and conflicting filters do not enter an accepted plan", () => 
   expect(checkPlan({ widgets: [{ type: "revenue" }] }).errors?.join(" ")).toContain("type must be")
   expect(checkPlan({ widgets: [], unsupported: ["No data"] }).errors?.join(" ")).toContain("at least one")
 })
+
+
+test("chart sources preserve old plans and reject unapproved mappings", () => {
+  const old = checkPlan({ widgets: [chart] })
+  expect(old.plan?.widgets[0]).toEqual(chart)
+  const source = { kind: "local-query", query: "practice-chart", version: 1 }
+  expect(checkPlan({ widgets: [{ ...chart, source }] }).plan?.widgets[0]).toEqual({ ...chart, source })
+  for (const source of [{ kind: "local-query", query: "other", version: 1 }, { kind: "local-query", query: "practice-chart", version: 2 }, { kind: "local-query", query: "practice-chart", version: 1, url: "/other" }]) {
+    expect(checkPlan({ widgets: [{ ...chart, source }] }).errors).toBeDefined()
+  }
+})

@@ -67,3 +67,11 @@ test("rank limits preserve the full total and missing activity never looks like 
   const repeated = chartData(chart({ matter: "a", groupBy: "none", form: "stat" }), data(row("a"), row("b", { matter: { ...row("b").matter, title: "a" } })), "month", now)
   expect(repeated.unavailable).toBe(true)
 })
+
+test("calendar buckets follow the requested time zone across daylight saving", () => {
+  const view = chartData(chart({ metric: "matters", groupBy: "day", form: "line", period: "month" }), data(row("dst", { matter: { ...row("dst").matter, created_at: Date.parse("2026-03-29T23:30:00Z") } })), "month", Date.parse("2026-03-31T12:00:00Z"), "Europe/London")
+  expect(view.points.find(point => point.label === "30 Mar")?.value).toBe(1)
+  const before = view.points.find(point => point.label === "29 Mar")!
+  const after = view.points.find(point => point.label === "30 Mar")!
+  expect(after.time! - before.time!).toBe(23 * 60 * 60 * 1000)
+})

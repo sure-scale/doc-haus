@@ -2,8 +2,9 @@
 
 Reusable dashboard components based on the refined Overview, AI composer,
 Setup and widget-catalog designs. The Dashboard page uses the live component
-renderer for AI-configured charts, with an app-registered source containing only
-the computed chart view. `e2e/dashboard-components.html` is a standalone fixture.
+renderer for AI-configured charts, with an app-registered source polling an
+app-owned endpoint for the computed chart view. The validated plan persists the
+local query mapping; the endpoint recalculates deterministic figures on demand. `e2e/dashboard-components.html` is a standalone fixture.
 
 ## Feed JSON and a live source
 

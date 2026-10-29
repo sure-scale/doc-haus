@@ -251,6 +251,7 @@ function fixture(kind: Kind, options: { layout?: unknown; data?: Data; preferenc
       { type: "chart", title: "Spend by client", metric: "spend", groupBy: "client", form: "bars", period: "dashboard" },
       { type: "chart", title: "Conversations over time", metric: "conversations", groupBy: "week", form: "line", period: "quarter" },
     ], unsupported: ["Time per fee earner is not tracked."] } as unknown,
+    chartExtra: 0, chartRequests: 0,
     aiFailure: false, aiDelay: 0, aiSession: "", aiCreated: [] as Record<string, unknown>[], aiPrompts: [] as Record<string, unknown>[], aiDeleted: [] as string[],
     // Folders whose session list the engine fails to return.
     failSessions: new Set<string>(),
@@ -303,6 +304,31 @@ async function open(state: State, width: number, height: number, timezoneId = "E
     if (method === "OPTIONS") return route.fulfill({ status: 204, headers })
     state.requests.push({ method, path: pathname })
     const reply = (body: unknown, status = 200) => route.fulfill({ status, headers, contentType: "application/json", body: JSON.stringify(body) })
+    if (pathname === "/dashboard/sources/chart" && method === "GET") {
+      state.chartRequests++
+      const chart = JSON.parse(url.searchParams.get("chart") ?? "{}") as { metric: string; groupBy: string; period: string; form: string }
+      const selectedPeriod = chart.period === "dashboard" ? url.searchParams.get("period") : chart.period
+      const start = selectedPeriod === "month" ? Date.UTC(2026, 9, 1) : selectedPeriod === "last-month" ? Date.UTC(2026, 8, 1) : selectedPeriod === "quarter" ? Date.UTC(2026, 6, 1) : -Infinity
+      const end = selectedPeriod === "last-month" ? Date.UTC(2026, 9, 1) : NOW + DAY
+      const matters = state.matters.filter((matter) => !matter.sample)
+      const values = chart.metric === "matters" ? matters.map((matter) => ({ matter, time: matter.created_at, value: 1 })) : state.sessions.filter((session) => !session.parentID || chart.metric === "spend").flatMap((session) => {
+        const matter = matters.find((item) => item.id === session.matter)
+        return matter ? [{ matter, time: session.time.created, value: chart.metric === "spend" ? session.cost : 1 }] : []
+      })
+      const inRange = values.filter((value) => value.time >= start && value.time < end)
+      const groups = new Map<string, { label: string; value: number; time?: number }>()
+      for (const item of inRange) {
+        const time = chart.groupBy === "week" ? item.time - ((new Date(item.time).getUTCDay() + 6) % 7) * DAY : item.time
+        const key = chart.groupBy === "client" ? item.matter.client ?? "No client recorded" : chart.groupBy === "matter" ? item.matter.title : iso(time).slice(0, 10)
+        const point = groups.get(key) ?? { label: key, value: 0, ...(["day", "week", "month"].includes(chart.groupBy) ? { time } : {}) }
+        point.value += item.value
+        groups.set(key, point)
+      }
+      const points = [...groups.values()].sort((a, b) => chart.groupBy === "client" || chart.groupBy === "matter" ? b.value - a.value : (a.time ?? 0) - (b.time ?? 0))
+      if (state.chartExtra && chart.metric === "spend" && points[0]) points[0].value += state.chartExtra
+      const total = inRange.reduce((sum, item) => sum + item.value, 0) + (chart.metric === "spend" ? state.chartExtra : 0)
+      return reply({ data: { points, total, basis: chart.metric === "spend" ? "Estimated spend · USD" : chart.metric === "matters" ? "Matters opened" : "Conversations started", period: selectedPeriod === "quarter" ? "This quarter" : selectedPeriod === "month" ? "This month" : "All time", badge: "", unavailable: false, notes: [], empty: "Nothing recorded for this view yet." }, updatedAt: NOW })
+    }
     if (pathname === "/dashboard/tabs") {
       if (method === "GET") return reply({ state: state.dashboardState, revision: state.dashboardRevision })
       if (method === "PUT") {
@@ -1024,6 +1050,26 @@ try {
       await expect(activity.getByRole("tooltip")).toBeVisible()
       await page.getByRole("tab", { name: "Saved work", exact: true }).tap()
       await expect(activity.getByRole("tooltip")).toHaveCount(0)
+      clean(state)
+    } finally { await context.close() }
+  })
+
+  await scenario("Chart endpoint refresh updates figures without another AI request", async () => {
+    const state = fixture("populated"); const { page, context } = await open(state, 1440, 1000)
+    try {
+      await dashboard(page)
+      await askButton(page).click()
+      await page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true }).fill("Show spend by client")
+      await page.getByRole("button", { name: "Update dashboard", exact: true }).click()
+      const total = card(page, "Spend by client").locator(".dash-chart-total")
+      await expect(total).toHaveText(money(monthSpend(state, 9)))
+      const requests = state.chartRequests
+      state.chartExtra = 10
+      await openOptions(page)
+      await page.getByRole("button", { name: "Refresh", exact: true }).click()
+      await expect(total).toHaveText(money(monthSpend(state, 9) + 10))
+      expect(state.chartRequests).toBeGreaterThan(requests)
+      expect(state.aiPrompts).toHaveLength(1)
       clean(state)
     } finally { await context.close() }
   })

@@ -1,4 +1,5 @@
 import { Hono } from "hono"
+import { dashboardChartSource } from "./dashboard-source"
 import path from "node:path"
 import { mkdirSync } from "node:fs"
 import { workspaceRoot } from "./matter"
@@ -8,6 +9,11 @@ import { DASHBOARD_STATE_MAX_BYTES, DashboardStateError, parseDashboardState, re
 // Ingest owns the directory; the browser uses it to scope the native client.
 export function dashboardRoutes() {
   const app = new Hono()
+  app.get("/dashboard/sources/chart", async (c) => {
+    c.header("Cache-Control", "no-store")
+    try { return c.json(await dashboardChartSource(c.req.query("chart"), c.req.query("period"), c.req.query("timeZone"))) }
+    catch (error) { return c.json({ error: error instanceof Error && error.message === "Invalid dashboard source" ? "Invalid dashboard source." : "Could not load dashboard data." }, error instanceof Error && error.message === "Invalid dashboard source" ? 400 : 503) }
+  })
   app.get("/dashboard/directory", (c) => {
     const dir = path.join(workspaceRoot(), ".dashboard")
     mkdirSync(dir, { recursive: true })

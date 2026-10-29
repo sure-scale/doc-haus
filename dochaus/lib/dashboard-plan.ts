@@ -63,6 +63,7 @@ export type ChartPeriod = (typeof CHART_PERIODS)[number]
 
 export type Chart = {
   type: "chart"
+  source?: { kind: "local-query"; query: "practice-chart"; version: 1 }
   title: string
   metric: Metric
   groupBy: Grouping
@@ -101,6 +102,11 @@ const quoted = (values: readonly string[]) => values.map((value) => `"${value}"`
 // Why one chart cannot be drawn, or nothing when it can.
 function chartErrors(chart: Record<string, unknown>, at: string) {
   const errors: string[] = []
+  if (chart.source !== undefined) {
+    const source = chart.source
+    if (!source || typeof source !== "object" || Array.isArray(source) || Object.keys(source).length !== 3 || (source as Record<string, unknown>).kind !== "local-query" || (source as Record<string, unknown>).query !== "practice-chart" || (source as Record<string, unknown>).version !== 1)
+      errors.push(`${at}: source must be the supported local practice-chart query, version 1.`)
+  }
   if (typeof chart.title !== "string" || !chart.title.trim()) errors.push(`${at}: give the chart a title.`)
   else if (chart.title.trim().length > MAX_TITLE) errors.push(`${at}: shorten the title to ${MAX_TITLE} characters or fewer.`)
   if (!has(METRICS, chart.metric)) errors.push(`${at}: metric must be one of ${quoted(Object.keys(METRICS))}.`)
@@ -162,6 +168,7 @@ export function checkPlan(input: unknown): { plan: Plan; errors?: undefined } | 
       const chart = widget as unknown as Chart
       next = {
         type: "chart",
+        ...(chart.source ? { source: { kind: "local-query" as const, query: "practice-chart" as const, version: 1 as const } } : {}),
         title: chart.title.trim(),
         metric: chart.metric,
         groupBy: chart.groupBy,
@@ -190,7 +197,7 @@ export function describeCatalog() {
     "Ready-made widgets (type: what it shows):",
     ...Object.entries(TEMPLATES).map(([id, template]) => `- ${id}: ${template.title}. ${template.shows}`),
     "",
-    `Charts (type "chart") take a title of up to ${MAX_TITLE} characters, a metric, a groupBy, a form and a period, and may narrow to one client or one matter by exact name.`,
+    `Charts (type "chart") map to source {"kind":"local-query","query":"practice-chart","version":1}; take a title of up to ${MAX_TITLE} characters, a metric, a groupBy, a form and a period, and may narrow to one client or one matter by exact name.`,
     "Metrics:",
     ...lines(METRICS),
     "Groupings (groupBy):",

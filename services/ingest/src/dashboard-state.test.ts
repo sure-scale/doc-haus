@@ -112,3 +112,22 @@ test("dashboard descriptions persist with their view and reject malformed edits 
   }
   expect(await (await app.request("/dashboard/tabs")).json()).toEqual({ state: saved, revision: 1 })
 })
+
+test("saved chart source mappings survive reopening and unsupported mappings cannot replace them", async () => {
+  workspace(); const app = dashboardRoutes(), original = state()
+  const mapped = structuredClone(original)
+  Object.assign(mapped.workspace.dashboards[1]!.widgets![0]!.widget, { source: { kind: "local-query", query: "practice-chart", version: 1 } })
+  expect((await put(app, mapped, 0)).status).toBe(200)
+  expect(await (await dashboardRoutes().request("/dashboard/tabs")).json()).toEqual({ state: mapped, revision: 1 })
+  for (const source of [
+    { kind: "local-query", query: "practice-chart", version: 2 },
+    { kind: "local-query", query: "missing-query", version: 1 },
+    { kind: "local-query", query: "practice-chart", version: 1, url: "https://example.com/data" },
+    { kind: "script", code: "return 42" },
+  ]) {
+    const invalid = structuredClone(mapped)
+    Object.assign(invalid.workspace.dashboards[1]!.widgets![0]!.widget, { source })
+    expect((await put(app, invalid, 1)).status).toBe(400)
+  }
+  expect(await (await app.request("/dashboard/tabs")).json()).toEqual({ state: mapped, revision: 1 })
+})

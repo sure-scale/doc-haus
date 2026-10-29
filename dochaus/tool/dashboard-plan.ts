@@ -6,7 +6,7 @@ import { checkPlan } from "../lib/dashboard-plan"
 export default tool({
   description: "Submit a dashboard plan of ready-made widgets and chart settings. The app computes all figures. Returns specific errors for invalid settings; fix those before submitting again.",
   args: {
-    widgets: tool.schema.array(tool.schema.object({}).passthrough()).describe("The complete ordered widget list. Each item has type (a ready-made widget id or chart); charts also need title, metric, groupBy, form and period."),
+    widgets: tool.schema.array(tool.schema.object({}).passthrough()).describe("The complete ordered widget list. Each item has type (a ready-made widget id or chart); charts also need title, metric, groupBy, form, period and the supported local-query source mapping."),
     name: tool.schema.string().optional().describe("Optional short tab name."),
     unsupported: tool.schema.array(tool.schema.string()).optional().describe("Short plain sentences explaining requested data or charts that are unavailable."),
   },

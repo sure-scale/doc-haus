@@ -45,7 +45,7 @@ function widgetList(value: unknown): Widget[] {
     if (!object(item)) throw new DashboardStateError("Choose valid dashboard widgets.")
     fields(item, ["key", "widget", "pinned"])
     if (typeof item.pinned !== "boolean" || !object(item.widget)) throw new DashboardStateError("Choose valid dashboard widgets.")
-    fields(item.widget, item.widget.type === "chart" ? ["type", "title", "metric", "groupBy", "form", "period", "client", "matter", "limit"] : ["type"])
+    fields(item.widget, item.widget.type === "chart" ? ["type", "title", "metric", "groupBy", "form", "period", "client", "matter", "limit", "source"] : ["type"])
     const checked = checkPlan({ widgets: [item.widget] })
     if (!checked.plan) throw new DashboardStateError("One of the saved dashboard widgets cannot be displayed.")
     const widget = checked.plan.widgets[0]!
@@ -61,8 +61,9 @@ function templateList(value: unknown): string[] {
   return value as string[]
 }
 
-// The server accepts only presentation state, never executable sources or model
-// instructions. Widgets use the same chart contract as dashboard-plan.
+// Saved charts can map to a registered read-only local query. The shared plan
+// checker validates that mapping; executable code and model instructions are
+// never dashboard settings.
 export function parseDashboardState(value: unknown): DashboardState {
   if (!object(value) || !json(value)) throw new DashboardStateError("Choose valid dashboard settings.")
   fields(value, ["version", "workspace", "setupHidden", "view"])

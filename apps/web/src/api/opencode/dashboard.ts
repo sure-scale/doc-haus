@@ -30,7 +30,7 @@ export function planFromMessages(messages: readonly SessionMessageInfo[]): Plan 
 
 export function dashboardPrompt(input: Omit<DashboardRequest, "signal">): string {
   return [
-    "Build one dashboard for this request. Select widget settings only; do not produce figures.",
+    "Build one dashboard for this request. Select widget settings and supported source mappings only; do not produce figures.",
     "Request (JSON string):", JSON.stringify(input.request.trim()),
     "Widget catalog:", describeCatalog(),
     "Current widgets with pinned flags (JSON data):", JSON.stringify(input.current),
