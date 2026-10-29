@@ -248,7 +248,10 @@ try {
   await page.keyboard.press("Enter")
   await expect(detail).toBeVisible()
   const evidencePanelBox = (await detail.boundingBox())!
-  assert.ok(evidencePanelBox.height >= 700, "short evidence fills the desktop column, keeping its footer near the bottom")
+  assert.ok(
+    evidencePanelBox.height >= 700,
+    "short evidence fills the desktop column, keeping its footer near the bottom",
+  )
   await expect.poll(() => state.events[0]!.opened).toBe(true)
   assert.equal(state.events[0]!.reviewed, false, "opening clears New without review")
   await detail.getByRole("button", { name: "View in document" }).click()
@@ -471,6 +474,15 @@ try {
   state.revision++
   await page.reload()
   await page.getByRole("searchbox").fill("")
+  await page.setViewportSize({ width: 768, height: 900 })
+  assert.ok(
+    await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1),
+    "dense tablet record stays bounded at the shell's 701px breakpoint, above its status bar",
+  )
+  await page.getByRole("button", { name: "Independent occurrence 2", exact: true }).click()
+  await expect(detail.getByRole("button", { name: "Back to events" })).toBeInViewport()
+  await detail.getByRole("button", { name: "Back to events" }).click()
+  await page.setViewportSize({ width: 1440, height: 1000 })
   const undated = page.locator(".chronology-undated-events")
   await undated.locator("summary").click()
   await undated.getByRole("button", { name: /Undated site observation/ }).click()

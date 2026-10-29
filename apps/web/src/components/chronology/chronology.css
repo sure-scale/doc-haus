@@ -983,9 +983,9 @@
 .chronology-table-qualifications .is-conflict {
   color: #b13b3e;
 }
-/* A long record scrolls inside the desktop workbench, keeping the shell's
+/* A long record scrolls inside the bounded desktop/tablet workbench, keeping the shell's
    header/status bar and the evidence column in their own viewport. */
-@media (min-width: 801px) and (min-height: 600px) {
+@media (min-width: 701px) and (min-height: 600px) {
   .matter-container > .matter-body:has(> .chronology-workbench) {
     display: flex;
     flex-direction: column;
