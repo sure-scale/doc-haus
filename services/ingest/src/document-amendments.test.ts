@@ -9,6 +9,8 @@ import { AlignmentType, Document, Footer, Header, LevelFormat, Packer, Paragraph
 import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
 import { paragraphTargets, withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import { openDb, deleteDocument, getDocumentRole, getPreparedChanges, getRedline, listDocuments, listSourceDocuments, upsertDocument } from "./db"
+import { docxTableRowInsertionTargets } from "../../../dochaus/lib/docx-table-row-insertion"
+import { recordTableRowProposal } from "./table-row-proposals"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { createDocxLocalization, createDocxRevision, openRevision, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
@@ -171,21 +173,22 @@ test("on a clean document the preview of prepared and older proposals together i
 })
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-type Candidate = {amendment_id:string;target_handle:string;previous_paragraph?:string|null}
-type LegalPass = {amendments:Array<{before_quote:string;replacement:string;target_context:string;reason:string}>;open_items:string[]}
+type Candidate = {amendment_id:string;target_handle:string;previous_paragraph?:string|null;table?:number;row?:number;cells?:string[];previous_row?:string[]|null;next_row?:string[]|null}
+type LegalPass = {amendments:Array<{before_quote:string;replacement:string;target_context:string;reason:string}>;open_items:string[];
+  table_rows?:Array<{reference_cells:string[];position:"before"|"after";cells:string[];target_context:string;reason:string}>}
 
 // Protocol fixture only: a local stand-in for the engine's generate route. The
 // first pass returns frozen legal proposals; the second returns locator rows,
 // or, when locate returns anything but an array, that value as the whole reply.
-function syntheticEngine(legal:() => LegalPass,locate:(candidates:Candidate[]) => unknown, recovery?:(prompt:string) => unknown) {
+function syntheticEngine(legal:() => LegalPass|Promise<LegalPass>,locate:(candidates:Candidate[]) => unknown, recovery?:(prompt:string) => unknown) {
   const prompts:string[] = []
   const server = Bun.serve({port:0,fetch:async (request) => {
     const {prompt} = await request.json() as {prompt:string}
     prompts.push(prompt)
     const isCorrection = prompt.includes("One proposed amendment was refused")
     const isReview = prompt.includes("Independently review this corrected single proposed amendment")
-    const located = prompt.includes("<draft_view") || isCorrection || isReview ? undefined : locate(JSON.parse(prompt.match(/<candidates>([\s\S]*)<\/candidates>/)![1]) as Candidate[])
-    const text = isCorrection || isReview ? JSON.stringify(await recovery?.(prompt) ?? { unresolved: "Not safely repairable" }) : prompt.includes("<draft_view") ? JSON.stringify(legal())
+    const located = prompt.includes("<draft_view") || isCorrection || isReview ? undefined : await locate(JSON.parse(prompt.match(/<candidates>([\s\S]*)<\/candidates>/)![1]) as Candidate[])
+    const text = isCorrection || isReview ? JSON.stringify(await recovery?.(prompt) ?? { unresolved: "Not safely repairable" }) : prompt.includes("<draft_view") ? JSON.stringify(await legal())
       : JSON.stringify(Array.isArray(located) ? {selections:located} : located)
     return Response.json({data:{text,model:{providerID:"fixture",id:"isolated"},elapsed_ms:1,usage:null}})
   }})
@@ -210,6 +213,178 @@ async function withPreparation<T>(directory:string,engine:ReturnType<typeof synt
     engine.server.stop(true)
   }
 }
+
+function rowPrepareDocx(contexts = ["Other context", "Authorized context"], matchingRows = 1) {
+  const O = "http://schemas.openxmlformats.org/officeDocument/2006/relationships", R = "http://schemas.openxmlformats.org/package/2006/relationships"
+  const p = (text:string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`
+  const row = (left:string,right:string) => `<w:tr><w:trPr/>${[left,right].map(text => `<w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/></w:tcPr>${p(text)}</w:tc>`).join("")}</w:tr>`
+  const tables = contexts.map((context,index) => p(`Schedule ${index+1}`) + `<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid>${row("Same","Right").repeat(matchingRows)}${row(context,"Stable")}</w:tbl>`).join("")
+  return zipSync({
+    "[Content_Types].xml":strToU8(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>`),
+    "_rels/.rels":strToU8(`<Relationships xmlns="${R}"><Relationship Id="main" Type="${O}/officeDocument" Target="word/document.xml"/></Relationships>`),
+    "word/_rels/document.xml.rels":strToU8(`<Relationships xmlns="${R}"><Relationship Id="styles" Type="${O}/styles" Target="styles.xml"/><Relationship Id="settings" Type="${O}/settings" Target="settings.xml"/></Relationships>`),
+    "word/styles.xml":strToU8(`<w:styles xmlns:w="${W}"><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style></w:styles>`),
+    "word/settings.xml":strToU8(`<w:settings xmlns:w="${W}"/>`),
+    "word/document.xml":strToU8(`<w:document xmlns:w="${W}" xmlns:r="${O}"><w:body>${p("Delivery within five days.")}${tables}${p("After") }<w:sectPr/></w:body></w:document>`),
+  },{mtime:new Date(1980,0,1)})
+}
+const legalRow = {reference_cells:["Same","Right"],position:"after" as const,cells:["Literal **Fee**","https://example.test?a=1&b=2"],target_context:"the table whose next row is Authorized context",reason:"Records the requested row."}
+async function rowPrepareMatter(bytes = rowPrepareDocx()) {
+  const directory = realpathSync(await mkdtemp(path.join(tmpdir(),"dochaus-row-prepare-"))), file = path.join(directory,"working.docx")
+  await Bun.write(file,bytes)
+  const db = openDb(directory)
+  try {upsertDocument(db,file,"working.docx",Date.now(),null)} finally {db.close()}
+  const state = () => {const db=openDb(directory);try {return {rows:db.query("SELECT * FROM redlines ORDER BY id").all() as Array<{id:number;scope:string;target_json:string;status:string}>,prepared:getPreparedChanges(db,file)}} finally {db.close()}}
+  return {directory,file,state}
+}
+
+test("row Prepare freezes literal cells and selects duplicate rows by offered source context, retaining the row's metadata on another Prepare", async () => {
+  const matter = await rowPrepareMatter(), {directory,file,state} = matter
+  const engine = syntheticEngine(() => ({amendments:[],table_rows:[legalRow],open_items:["Confirm the separate filing instruction."]}),candidates => {
+    expect(candidates).toHaveLength(2)
+    expect(candidates.map(candidate => candidate.cells)).toEqual([["Same","Right"],["Same","Right"]])
+    const chosen = candidates.find(candidate => candidate.next_row?.[0] === "Authorized context")!
+    return [{amendment_id:"row-1",target_handle:chosen.target_handle}]
+  })
+  try {
+    await withPreparation(directory,engine,async prepare => {
+      // Same reference cells in identical table positions; only their next-row context changes.
+      for (const [contexts,table] of [[["Other context","Authorized context"],2],[["Authorized context","Other context"],1]] as const) {
+        const bytes = rowPrepareDocx([...contexts]); await Bun.write(file,bytes)
+        const response = await prepare("Insert the given literal cells after Same | Right in the table whose next row is Authorized context. Preserve all other text.")
+        expect(response.status).toBe(200)
+        const result = await response.json() as {proposed:number;redline_ids:number[]}
+        expect(result.proposed).toBe(1)
+        const stored = state(), binding = JSON.parse(stored.rows.at(-1)!.target_json)
+        const targets = await docxTableRowInsertionTargets(bytes)
+        expect(binding).toEqual({version:3,kind:"table_row_insert",prepared_role:"source",source_sha256:sha256(bytes),target_handle:targets.targets.find(target => target.table === table && target.row === 1)!.target_handle,position:"after",cells:legalRow.cells})
+        expect(stored.prepared).toEqual({redline_ids:result.redline_ids,open_items:["Confirm the separate filing instruction."]})
+        const prompt = engine.prompts.at(-1)!
+        expect(prompt).toContain("Preserve all other text.")
+        expect(JSON.parse(prompt.match(/<frozen_amendments>([\s\S]*)<\/frozen_amendments>/)![1])).toEqual([{amendment_id:"row-1",...legalRow}])
+        const calls = engine.prompts.length, blocked = await prepare("Explain an unrelated wording edit.")
+        expect(blocked.status).toBe(409)
+        expect((await blocked.json() as {error:string}).error).toContain("reviewed on its own")
+        expect(engine.prompts).toHaveLength(calls)
+        expect(state().prepared).toEqual(stored.prepared)
+        expect(await Bun.file(file).bytes()).toEqual(bytes)
+        const db = openDb(directory);try {db.run("UPDATE redlines SET status='rejected' WHERE status='pending'")} finally {db.close()}
+      }
+    })
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("row Prepare refuses mixed, multiple and malformed author output without dropping textual legal work", async () => {
+  const {directory,file,state} = await rowPrepareMatter()
+  const text = {before_quote:"Absent legal words",replacement:"Changed legal words",target_context:"operative clause",reason:"Requested wording change."}
+  let output:LegalPass = {amendments:[],table_rows:[legalRow],open_items:[]}
+  const engine = syntheticEngine(() => output,() => {throw new Error("No locator may run")})
+  try {
+    await withPreparation(directory,engine,async prepare => {
+      for (const value of [
+        {amendments:[text],table_rows:[legalRow],open_items:[]},
+        {amendments:[],table_rows:[legalRow,legalRow],open_items:[]},
+        {amendments:[],table_rows:null,open_items:[]},
+        {amendments:[],table_rows:[{...legalRow,cells:[" trimmed by force ","Right"]}],open_items:[]},
+      ]) {
+        output = value as unknown as LegalPass
+        const response = await prepare("Prepare the requested legal wording and rows.")
+        expect(response.status).toBe(value.table_rows === null || value.table_rows?.[0]?.cells[0] === " trimmed by force " ? 409 : 200)
+        expect(state().rows).toEqual([])
+      }
+      expect(engine.prompts).toHaveLength(4)
+    })
+    expect(await Bun.file(file).bytes()).toEqual(rowPrepareDocx())
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("row Prepare refuses candidate overflow without truncating duplicate reference rows or calling the locator", async () => {
+  const bytes = rowPrepareDocx(["Authorized context"],33), {directory,file,state} = await rowPrepareMatter(bytes)
+  const engine = syntheticEngine(() => ({amendments:[],table_rows:[legalRow],open_items:[]}),() => {throw new Error("Overflow must not localize")})
+  try {
+    await withPreparation(directory,engine,async prepare => {
+      const response = await prepare("Insert after the intended matching row.")
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject({proposed:0,open_items:[expect.stringContaining("Too many reference rows")]})
+    })
+    expect(engine.prompts).toHaveLength(1);expect(state().rows).toEqual([])
+    expect(await Bun.file(file).bytes()).toEqual(bytes)
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("row Prepare refuses oversized complete context within the candidate-count limit without another locator or proposal", async () => {
+  const {directory,file,state} = await rowPrepareMatter(rowPrepareDocx(["Authorized context"]))
+  const engine = syntheticEngine(() => ({amendments:[],table_rows:[legalRow],open_items:[]}),candidates => {
+    expect(candidates).toHaveLength(1)
+    return firstCandidate(candidates)
+  })
+  try {
+    await withPreparation(directory,engine,async prepare => {
+      const instruction = "Insert the literal cells after Same | Right beside the Authorized context row."
+      const admitted = await prepare(instruction)
+      expect(admitted.status).toBe(200)
+      expect(await admitted.json()).toMatchObject({proposed:1})
+      expect(engine.prompts).toHaveLength(2)
+      const db = openDb(directory);try {db.run("UPDATE redlines SET status='rejected' WHERE status='pending'")} finally {db.close()}
+      const priorRows = state().rows.length
+      // Only the complete neighbouring source context grows; the reference
+      // cells, new cells, instruction and sole candidate stay the same.
+      const oversized = rowPrepareDocx([`Authorized context ${"x".repeat(64*1024)}`])
+      await Bun.write(file,oversized)
+      const refused = await prepare(instruction)
+      expect(refused.status).toBe(200)
+      expect(await refused.json()).toMatchObject({proposed:0,open_items:[expect.stringContaining("context is too large")]})
+      expect(engine.prompts).toHaveLength(3)
+      expect(state().rows).toHaveLength(priorRows)
+      expect(state().rows.every(row => row.status === "rejected")).toBe(true)
+      expect(state().prepared?.redline_ids).toEqual([])
+      expect(await Bun.file(file).bytes()).toEqual(oversized)
+    })
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("row Prepare refuses a changed source or role after its frozen locator request", async () => {
+  for (const mutation of ["source","role","locator"] as const) {
+    const bytes = rowPrepareDocx(), {directory,file,state} = await rowPrepareMatter(bytes)
+    const engine = syntheticEngine(() => ({amendments:[],table_rows:[legalRow],open_items:[]}),async candidates => {
+      if (mutation === "source") await Bun.write(file,rowPrepareDocx(["Changed context","Authorized context"]))
+      if (mutation === "role") {const db=openDb(directory);try {db.run("UPDATE documents SET role='deliverable'")} finally {db.close()}}
+      return [{amendment_id:"row-1",target_handle:candidates[0]!.target_handle,...(mutation === "locator" ? {cells:["Unauthorized","rewrite"]} : {})}]
+    })
+    try {
+      await withPreparation(directory,engine,async prepare => {expect((await prepare("Insert the authorized row.")).status).toBe(409)})
+      expect(state().rows).toEqual([]);expect(engine.prompts).toHaveLength(2)
+      if (mutation !== "source") expect(await Bun.file(file).bytes()).toEqual(bytes)
+    } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+  }
+})
+
+test("row Prepare stays visible when an older empty or textual Prepare finishes after row admission", async () => {
+  for (const textChange of [false,true]) {
+    const bytes = rowPrepareDocx(), {directory,file,state} = await rowPrepareMatter(bytes)
+    let began!:()=>void, release!:()=>void
+    const started = new Promise<void>(resolve => {began=resolve}), held = new Promise<void>(resolve => {release=resolve})
+    const engine = syntheticEngine(async () => {began();await held;return {amendments:textChange ? [{before_quote:"five days",replacement:"seven days",target_context:"delivery period",reason:"Requested delivery update."}] : [],open_items:["Old text request item."]}},firstCandidate)
+    try {
+      await withPreparation(directory,engine,async prepare => {
+        const pending = prepare("Prepare the focused delivery wording change.")
+        await started
+        const packet = await docxTableRowInsertionTargets(bytes), target = packet.targets[0]!
+        const result = await recordTableRowProposal(directory,"working.docx",{version:3,kind:"table_row_insert",prepared_role:"source",source_sha256:packet.source_sha256,target_handle:target.target_handle,position:"after",cells:legalRow.cells},
+          {author:"Review Editor",reason:legalRow.reason,openItems:["New row request item."],preparedPath:file})
+        const prepared = state().prepared
+        expect(prepared).toEqual({redline_ids:[result.id],open_items:["New row request item."]})
+        release()
+        const response = await pending
+        expect(response.status).toBe(409)
+        expect((await response.json() as {error:string}).error).toContain("reviewed on its own")
+        expect(state().prepared).toEqual(prepared)
+        expect(state().rows.map(row => [row.scope,row.status])).toEqual([["table_row","pending"]])
+      })
+      expect(await Bun.file(file).bytes()).toEqual(bytes)
+    } finally {release();engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+  }
+})
 
 // Isolated ingest child processes sharing one workspace. Each start gets a fresh
 // port and log, so a restart holds no in-memory carry-over.

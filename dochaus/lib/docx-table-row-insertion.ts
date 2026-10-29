@@ -111,7 +111,7 @@ function deliver(source: Package, saved: Uint8Array, tracked: boolean) {
     }
     require(source.docs[name] ? same(source.docs[name]!, candidate.docs[name]!) : hash(source.parts[name]!) === hash(candidate.parts[name]!), `unrelated_part_changed:${name}`)
   }
-  const parts = { ...source.parts, [BODY]: candidate.parts[BODY]! }
+  const parts: Record<string, Uint8Array> = { ...source.parts, [BODY]: candidate.parts[BODY]! }
   if (tracked) {
     const marks = all(candidate.settings, "trackRevisions")
     require(marks.length === 1 && !marks[0]!.childNodes.length && Array.from(marks[0]!.attributes).every(a => a.namespaceURI === W && a.localName === "val" && ["1", "true", "on"].includes(a.value)), "tracking_not_enabled")
@@ -124,7 +124,7 @@ function locate(source: Package, session: Session, digest: string): Located[] {
   require(!Object.values(source.docs).some(doc => Array.from(doc.getElementsByTagName("*")).some(el => Array.from(el.attributes).some(a => a.namespaceURI === PT || a.value === PT))), "persisted_sdk_identity_unsupported")
   require(!all(source.settings, "documentProtection").length, "protected_document")
   const styles = source.docs["word/styles.xml"]
-  require(!styles || !["tblStylePr", "numPr"].some(name => all(styles, name).length) && !all(styles, "style").some(s => s.getAttributeNS(W, "type") === "table" && ["1", "true", "on"].includes(s.getAttributeNS(W, "default"))), "conditional_or_numbered_style_unsupported")
+  require(!styles || !["tblStylePr", "numPr"].some(name => all(styles, name).length) && !all(styles, "style").some(s => s.getAttributeNS(W, "type") === "table" && ["1", "true", "on"].includes(s.getAttributeNS(W, "default") ?? "")), "conditional_or_numbered_style_unsupported")
   const root = source.body.documentElement!, body = children(root, "body")
   require(body.length === 1, "invalid_body")
   const tables = children(body[0]!, "tbl")
@@ -233,7 +233,7 @@ function carriers(row: Element, input: DocxTableRowInsertion): Carrier[] {
   const found: Carrier[] = []
   const add = (el: Element, kind: Carrier["kind"], paragraph?: number) => {
     const id = el.getAttributeNS(W, "id")
-    require(/^(0|[1-9]\d*)$/.test(id) && el.getAttributeNS(W, "author") === input.author && !!el.getAttributeNS(W, "date") &&
+    require(typeof id === "string" && /^(0|[1-9]\d*)$/.test(id) && el.getAttributeNS(W, "author") === input.author && !!el.getAttributeNS(W, "date") &&
       Array.from(el.attributes).every(a => a.namespaceURI === W && ["id", "author", "date"].includes(a.localName)), "invalid_revision_carrier")
     found.push({ key: `kind=${kind}:${W}:ins:${id}`, id, element: el, kind, paragraph })
   }
@@ -272,7 +272,12 @@ function carriers(row: Element, input: DocxTableRowInsertion): Carrier[] {
   return found
 }
 function membership(source: Package, output: Package, row: Element, remainder: Document, at: number, located: Located, before: Revision[], session: Session, input: DocxTableRowInsertion) {
-  const physical = carriers(row, input), sourceIds = new Set(all(source.body, "*").flatMap(el => el.hasAttributeNS(W, "id") ? [el.getAttributeNS(W, "id").replace(/^\+?0+(?=\d)/, "")] : []))
+  const physical = carriers(row, input), sourceIds = new Set(all(source.body, "*").flatMap(el => {
+    if (!el.hasAttributeNS(W, "id")) return []
+    const id = el.getAttributeNS(W, "id")
+    require(typeof id === "string", "source_revision_id_unavailable")
+    return [id.replace(/^\+?0+(?=\d)/, "")]
+  }))
   require(physical.every(c => !sourceIds.has(c.id)), "source_revision_id_collision")
   const current = session.listRevisions(), old = new Set(before.map(r => r.id)), added = current.filter(r => !old.has(r.id))
   const oldNow = current.filter(r => old.has(r.id))

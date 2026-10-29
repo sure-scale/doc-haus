@@ -80,6 +80,8 @@ import { DocxTrackedRevisionsError, type DocxRevisionOptions } from "../../../do
 import { compareVersions } from "../../../dochaus/lib/version-compare"
 import { pendingRedlinesForDoc } from "../../../dochaus/lib/redlines"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
+import { tableRowProposalMarker, type TableRowProposalView } from "../../../dochaus/lib/table-row-proposal"
+import { assertTableRowSingleton, rowChanged, tableRowBinding, tableRowView } from "./table-row-proposals"
 import { containerAttachmentsPending, ingestEmailDocument, isContainerName, isEmailName, reingestLegacyEmails, removeMatterDocument, withEmailLinks } from "./email-attachments"
 import { ingestZipDocument, ZipFormatError, ZipTooLargeError } from "./zip-archive"
 import { MsgFormatError } from "../../../dochaus/lib/msg"
@@ -1114,12 +1116,20 @@ app.get("/matters/:id/redlines", async (c) => {
     const db = openDb(dir)
     try {
       const rows = listPendingRedlines(db, target.docPath)
-      const state = await redlineState(await Bun.file(target.docPath).bytes(),rows,proposalRevisionOptions(dir,target.docPath))
+      const bytes = await Bun.file(target.docPath).bytes()
+      const state = await redlineState(bytes,rows,proposalRevisionOptions(dir,target.docPath),getDocumentRole(db,target.docPath))
       const protectedWord = Boolean(readWorkingDocx(dir,target.docPath))
-      return c.json(rows.map((row) => {
-        const stale_reason = redlineStaleReason(row,state,protectedWord)
-        return {...row,...(stale_reason ? {stale:true,stale_reason} : {})}
-      }))
+      const mixed = rows.some(tableRowProposalMarker) && rows.length !== 1
+      return c.json(await Promise.all(rows.map(async (row) => {
+        let stale_reason = mixed ? "A row insertion must be reviewed on its own. Reject the mixed change list and prepare separate requests." : redlineStaleReason(row,state,protectedWord)
+        let table_row: TableRowProposalView | undefined
+        if (tableRowProposalMarker(row)) try {
+          const value = tableRowBinding(row)
+          table_row = {kind:"table_row_insert",position:value.position,cells:value.cells}
+          if (!stale_reason) table_row = await tableRowView(bytes,row)
+        } catch { stale_reason ??= "This row insertion cannot be displayed safely. Reject it and prepare a fresh change list." }
+        return {...row,...(table_row ? {table_row} : {}),...(stale_reason ? {stale:true,stale_reason} : {})}
+      })))
     } finally {
       db.close()
     }
@@ -1152,7 +1162,8 @@ app.get("/matters/:id/documents/redlined", async (c) => {
       }
     })()
     const options = pending.length ? proposalRevisionOptions(dir, target.docPath) : {}
-    const state = await redlineState(original, pending, options)
+    try { assertTableRowSingleton(pending) } catch (error) { return c.json({error:error instanceof Error ? error.message : "The mixed change list cannot be previewed."},409) }
+    const state = await redlineState(original, pending, options,proposalDocumentRole(dir,target.docPath))
     const rows = pending.filter((row) => !redlineStaleReason(row, state, protectedWord))
     try {
       const bytes = await buildRedlined(original, rows, state, options)
@@ -1315,9 +1326,11 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
     assertWordEditAllowed(dir, row.doc_path)
     const db = openDb(dir)
     const current = getRedline(db, row.id)
+    const pending = listPendingRedlines(db,row.doc_path)
     db.close()
     if (!current || current.status !== "pending")
       return c.json({ error: "Redline not found or already resolved" }, 404)
+    try { assertTableRowSingleton(pending) } catch (error) { return c.json({error:error instanceof Error ? error.message : "The mixed change list cannot be accepted."},409) }
     const combined = await prepareCombinedFile(dir, current.doc_path)
     let redline: PreparedRedline
     try {
@@ -1325,13 +1338,17 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
       const prior = createHash("sha256").update(original).digest("hex")
       const working = readWorkingDocx(dir,current.doc_path)
       const options = proposalRevisionOptions(dir,current.doc_path)
-      const state = await redlineState(original,[current],options)
+      const structural = tableRowProposalMarker(current)
+      const state = await redlineState(original,[current],options,proposalDocumentRole(dir,current.doc_path))
       const stale = redlineStaleReason(current,state,Boolean(working))
       if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
-      const baked = documentRevisionBytes(dir,current.doc_name,Buffer.from(await bake(original,[current],state,options))).bytes
+      const accepted = await bake(original,[current],state,options)
+      if (structural && proposalDocumentRole(dir,current.doc_path) !== "source") throw new RedlineAcceptConflictError(rowChanged)
+      const baked = documentRevisionBytes(dir,current.doc_name,Buffer.from(accepted),structural).bytes
       redline = await prepareDeliveredRedline(dir,current.doc_path,baked)
-      await writeDocumentRevision(dir,current.doc_name,baked,[current.id],prior,current.target_json != null,{version:acceptVersion(c,[current.id])})
+      await writeDocumentRevision(dir,current.doc_name,baked,[current.id],prior,current.target_json != null,{version:acceptVersion(c,[current.id]),exact:structural})
     } catch (error) {
+      if (error instanceof RedlineAcceptConflictError) return c.json({error:error.message},409)
       if (error instanceof RedlineReplayError) return c.json({error:error.refusal},409)
       console.warn("[redline] acceptance refused",diagnosticErrorMetadata(error))
       return c.json({error:docxProtectionMessage(error) ?? "Acceptance could not be confirmed. Refresh the document and change list before trying again."},409)
@@ -1389,6 +1406,7 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
     const rows = listPendingRedlines(db, file)
     db.close()
     if (!rows.length) return c.json({ ok: true, accepted: 0 })
+    try { assertTableRowSingleton(rows) } catch (error) { return c.json({error:error instanceof Error ? error.message : "The mixed change list cannot be accepted."},409) }
     const combined = await prepareCombinedFile(dir, file)
     let redline: PreparedRedline
     try {
@@ -1396,13 +1414,16 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
       const prior = createHash("sha256").update(original).digest("hex")
       const working = readWorkingDocx(dir,file)
       const options = proposalRevisionOptions(dir,file)
-      const state = await redlineState(original,rows,options)
+      const structural = rows.some(tableRowProposalMarker)
+      const state = await redlineState(original,rows,options,proposalDocumentRole(dir,file))
       const stale = rows.flatMap((row) => {const reason = redlineStaleReason(row,state,Boolean(working));return reason ? [{row,reason}] : []})
       if (stale.length || working && working.source_sha256 !== prior)
         return c.json({error:stale.length ? staleBatchReason(stale) : "The working Word revision is inconsistent. Refresh it through the revision API."},409)
-      const baked = documentRevisionBytes(dir,name,Buffer.from(await bake(original,rows,state,options))).bytes
+      const accepted = await bake(original,rows,state,options)
+      if (structural && proposalDocumentRole(dir,file) !== "source") throw new RedlineAcceptConflictError(rowChanged)
+      const baked = documentRevisionBytes(dir,name,Buffer.from(accepted),structural).bytes
       redline = await prepareDeliveredRedline(dir,file,baked)
-      await writeDocumentRevision(dir,name,baked,rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null),{version:acceptVersion(c,rows.map((row) => row.id))})
+      await writeDocumentRevision(dir,name,baked,rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null),{version:acceptVersion(c,rows.map((row) => row.id)),exact:structural})
     } catch (error) {
       if (error instanceof RedlineAcceptConflictError) return c.json({error:error.message},409)
       if (error instanceof RedlineReplayError) return c.json({error:error.refusal},409)
@@ -1515,6 +1536,10 @@ function documentRevisionBytes(directory: string, name: string, input: Buffer, e
 function proposalRevisionOptions(directory: string, docPath: string): DocxRevisionOptions {
   const db = openDb(directory)
   try { return getDocumentRole(db, docPath) === "source" ? { pendingRevisions: "layer" } : {} } finally { db.close() }
+}
+function proposalDocumentRole(directory: string, docPath: string) {
+  const db = openDb(directory)
+  try { return getDocumentRole(db,docPath) } finally { db.close() }
 }
 
 // Changes accepted into the body of a completed lean run are appended to that

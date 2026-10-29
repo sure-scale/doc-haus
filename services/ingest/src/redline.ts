@@ -13,6 +13,10 @@ import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphPosit
 import { assertLayeredRoundTrip, assertRedlineRoundTrip } from "../../../dochaus/lib/redline-round-trip"
 import { discloseSourceRevisions } from "../../../dochaus/lib/docx-revision-views"
 import { docxProtectionMessage } from "./docx-protection-message"
+import { tableRowProposalMarker } from "../../../dochaus/lib/table-row-proposal"
+import { authorDocxTableRowInsertion, resolveDocxTableRowInsertion } from "../../../dochaus/lib/docx-table-row-insertion"
+import { authorDocxTableRowReview } from "../../../dochaus/lib/docx-table-row-review"
+import { assertTableRowSingleton, rowChanged, rowSourceOnly, rowUnsupported, tableRowBinding, tableRowRequest, tableRowSourceHasRevisions, TableRowProposalError } from "./table-row-proposals"
 
 // Replay and bake pending redline proposals against a .docx.
 //
@@ -95,6 +99,12 @@ function applyProposal(session: Session, row: RedlineRow): { ok: true } | { ok: 
 // `options` is how the document is read.
 export async function buildRedlined(original: Uint8Array, rows: RedlineRow[], state?: RedlineState, options: DocxRevisionOptions = {}): Promise<Uint8Array> {
   if (!rows.length) return original
+  if (rows.some(tableRowProposalMarker)) {
+    try {
+      const row = await checkedTableRow(original, rows, state)
+      return (await authorDocxTableRowReview(original, tableRowRequest(tableRowBinding(row), row.author), row.review_comment)).bytes
+    } catch (error) { throw new RedlinePreviewConflictError(rowFailure(error)) }
+  }
   const annotated = rows.some(row => row.review_comment.trim())
   // Paragraph comments cannot safely follow a structural replay by ordinal.
   if (annotated && rows.some(row => /[\r\n\t]/.test(row.find_text + row.new_text)))
@@ -270,6 +280,13 @@ function previewAuthor(rows: RedlineRow[]) {
 // rejecting only those gives the document as it was, and accepting them the
 // same edits untracked.
 export async function bake(original: Uint8Array, rows: RedlineRow[], state?: RedlineState, options: DocxRevisionOptions = {}): Promise<Uint8Array> {
+  if (rows.some(tableRowProposalMarker)) {
+    try {
+      const row = await checkedTableRow(original, rows, state), request = tableRowRequest(tableRowBinding(row), row.author)
+      const authored = await authorDocxTableRowInsertion(original, request)
+      return await resolveDocxTableRowInsertion(original, authored.bytes, request, "accept")
+    } catch (error) { throw new RedlineAcceptConflictError(rowFailure(error)) }
+  }
   try {
     if (options.pendingRevisions !== "layer" || !(await (await docxodus()).getRevisions(original)).length)
       return (await writeProposals(original,rows,state,options)).bytes
@@ -375,6 +392,7 @@ async function bakeOlder(original: Uint8Array, rows: RedlineRow[], tracked = fal
 type RevisionBinding = { version:1; source_sha256:string; amendment_id:string; target_handle:string }
 type ParagraphBinding = { version:2; amendment_id:string; paragraph_sha256:string; occurrence:number; base_sha256:string } & ({ pid:string } | { para_id:string })
 export function binding(row:RedlineRow):RevisionBinding|ParagraphBinding {
+  if (tableRowProposalMarker(row)) throw new Error("A row insertion requires its structural writer.")
   if (!row.target_json) throw new Error("The proposal has no exact Word revision binding.")
   const parsed:unknown = JSON.parse(row.target_json)
   const value = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string,unknown> : {}
@@ -392,13 +410,14 @@ export function binding(row:RedlineRow):RevisionBinding|ParagraphBinding {
 const paragraphChanged = "The paragraph this change targets has changed since it was prepared. Prepare a fresh change list."
 const trackedChanges = "This Word file contains tracked changes. Accept or reject them in Word before changes can be applied."
 const unreadableRevision = "This Word revision cannot be read paragraph by paragraph. Prepare a fresh change list."
-export type RedlineState = { sha256:string; targets:ParagraphTarget[]|null; tracked?:true }
+export type RedlineState = { sha256:string; targets:ParagraphTarget[]|null; tracked?:true; registeredRole?: "source" | "deliverable" | null }
 // Read once per request from the bytes being reviewed. Paragraph targets are
 // read only when a paragraph-bound proposal needs them, or to explain why a
 // whole-revision proposal is stale; an unreadable revision leaves those
 // proposals stale rather than failing the whole change list.
-export async function redlineState(bytes:Uint8Array,rows:RedlineRow[],options:DocxRevisionOptions = {}):Promise<RedlineState> {
+export async function redlineState(bytes:Uint8Array,rows:RedlineRow[],options:DocxRevisionOptions = {},registeredRole?: "source" | "deliverable" | null):Promise<RedlineState> {
   const sha256 = createHash("sha256").update(bytes).digest("hex")
+  if (rows.some(tableRowProposalMarker)) return { sha256, targets: [], registeredRole, ...(await tableRowSourceHasRevisions(bytes) ? { tracked: true } : {}) }
   // An older proposal is baked untracked: beside tracked changes, only on an
   // uploaded source; any other Word file with them refuses it, as Prepare does.
   if (options.pendingRevisions !== "layer" && rows.some((row) => row.target_json == null) && hasTrackedRevisions(bytes))
@@ -418,6 +437,12 @@ function boundParagraph(value:ParagraphBinding,targets:ParagraphTarget[]) {
   return target?.sha256 === value.paragraph_sha256 ? target : undefined
 }
 export function redlineStaleReason(row:RedlineRow,state:RedlineState,protectedWord:boolean) {
+  if (tableRowProposalMarker(row)) {
+    try {
+      const value = tableRowBinding(row)
+      return state.registeredRole !== value.prepared_role ? rowChanged : state.tracked ? rowSourceOnly : value.source_sha256 !== state.sha256 ? rowChanged : undefined
+    } catch (error) { return rowFailure(error) }
+  }
   if (row.target_json == null) return protectedWord ? "Prepare this older proposal against the current Word revision." : state.tracked ? trackedChanges : undefined
   let value:ReturnType<typeof binding>
   try {value = binding(row)} catch {return "This proposal has an invalid Word revision binding. Prepare a fresh change list."}
@@ -433,6 +458,18 @@ export function redlineStaleReason(row:RedlineRow,state:RedlineState,protectedWo
   // the paragraph, one that leaves its text as it was (a formatting change) included.
   const others = target.pending.length ? othersPending(target.pending,ours([row.author])) : []
   return others.length ? heldParagraph(row.find_text,others) : undefined
+}
+async function checkedTableRow(original: Uint8Array, rows: RedlineRow[], state?: RedlineState) {
+  assertTableRowSingleton(rows)
+  const row = rows[0]!, value = tableRowBinding(row)
+  if (state?.registeredRole !== value.prepared_role) throw new RedlineAcceptConflictError(rowChanged)
+  if (await tableRowSourceHasRevisions(original)) throw new RedlineAcceptConflictError(rowSourceOnly)
+  if (createHash("sha256").update(original).digest("hex") !== value.source_sha256) throw new RedlineAcceptConflictError(rowChanged)
+  return row
+}
+function rowFailure(error: unknown) {
+  if (error instanceof TableRowProposalError || error instanceof RedlineAcceptConflictError) return error.message
+  return rowUnsupported
 }
 /** Accept all's refusal for its stale proposals, in list order: the first by
  * its quote and reason, and how many others are stale too. */

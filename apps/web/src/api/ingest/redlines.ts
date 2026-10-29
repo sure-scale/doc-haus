@@ -1,10 +1,13 @@
 import { INGEST_URL } from "../../config"
+import type { TableRowProposalView } from "../../../../../dochaus/lib/table-row-proposal"
 
 // A pending redline proposal: one tracked change awaiting accept/reject.
 export type Redline = {
   id: number
   doc_name: string
-  scope: "phrase" | "clause"
+  scope: "phrase" | "clause" | "table_row"
+  table_row?: TableRowProposalView
+  target_json?: string | null
   find_text: string
   old_text: string
   new_text: string

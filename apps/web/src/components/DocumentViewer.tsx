@@ -37,7 +37,7 @@ import { useToast } from "./Toast"
 import useModalFocus from "./useModalFocus"
 import backdropClose from "./backdropClose"
 import { withSafeStyleValues } from "./docx-style-values"
-import { ProposalRedline } from "./redline"
+import { ordinaryProposal, ProposalPreview, reviewableProposal } from "./TableRowProposal"
 import { useDocumentNavigation } from "./DocumentNavigation"
 import { WordBadge, WordOpenControl, WordWarning, useWordRefresh, useWordEditingLocked } from "./WordDocuments"
 
@@ -833,65 +833,52 @@ function WordDocumentViewer({
           {!narrow && versionsPanel}
           {!narrow && markupPanel}
           {!versionsPanel && !markupPanel && !shown && redlines.length > 0 && (
-            <aside className="changes-panel">
-              <div className="changes-head">
-                <span className="changes-count">
-                  <strong>{redlines.length}</strong> proposal{redlines.length === 1 ? "" : "s"} to review
-                </span>
-                <div className="changes-actions">
-                  <button
-                    className="btn-accept"
-                    disabled={wordLocked || busy !== undefined || redlines.some((row) => row.stale)}
-                    onClick={() => resolve(() => acceptAllRedlines(matterId, name), "all")}
-                  >
-                    Accept all
-                  </button>
-                  <button
-                    className="btn-reject"
-                    disabled={wordLocked || busy !== undefined}
-                    onClick={() => resolve(() => rejectAllRedlines(matterId, name), "all")}
-                  >
-                    Reject all
-                  </button>
-                </div>
-              </div>
-              {acceptedHint && <p className="changes-hint muted">{acceptedHint}</p>}
-              {redlines.map((r) => (
-                <div
-                  className={`change-card${r.id === focusId ? " focused" : ""}`}
-                  key={r.id}
-                  ref={r.id === focusId ? focusRef : undefined}
-                >
-                  <div className="change-author">{r.author}</div>
-                  <ProposalRedline before={r.old_text} after={r.new_text} />
-                  {r.formatting_json && <div className="change-comment">{formattingDescription(parseFormatting(r.formatting_json))}</div>}
-                  {r.review_comment && <div className="change-comment">{r.review_comment}</div>}
-                  {r.stale_reason && <div className="change-comment">{r.stale_reason}</div>}
-                  <div className="change-buttons">
-                    <button
-                      className="btn-accept"
-                      disabled={wordLocked || busy !== undefined || r.stale}
-                      onClick={() => resolve(() => acceptRedline(matterId, r.id), r.id)}
-                    >
-                      {busy === r.id ? "..." : "Accept"}
-                    </button>
-                    <button
-                      className="btn-reject"
-                      disabled={wordLocked || busy !== undefined}
-                      onClick={() => resolve(() => rejectRedline(matterId, r.id), r.id)}
-                    >
-                      Reject
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </aside>
+            <DocumentProposalReview redlines={redlines} wordLocked={wordLocked} busy={busy} focusId={focusId} focusRef={focusRef} acceptedHint={acceptedHint}
+              onAccept={id => { void resolve(() => acceptRedline(matterId, id), id) }} onReject={id => { void resolve(() => rejectRedline(matterId, id), id) }}
+              onAcceptAll={() => { void resolve(() => acceptAllRedlines(matterId, name), "all") }} onRejectAll={() => { void resolve(() => rejectAllRedlines(matterId, name), "all") }} />
           )}
           </div>
         </div>
       </div>
     </div>
   )
+}
+
+/** The existing proposal list, isolated from document rendering so every action
+ * uses the same readable-preview rule without changing publication endpoints. */
+export function DocumentProposalReview({ redlines, wordLocked, busy, focusId, focusRef, acceptedHint, onAccept, onReject, onAcceptAll, onRejectAll }: {
+  redlines: Redline[]
+  wordLocked: boolean
+  busy?: number | "all" | "prepare"
+  focusId?: number
+  focusRef?: Ref<HTMLDivElement>
+  acceptedHint?: string
+  onAccept: (id: number) => void
+  onReject: (id: number) => void
+  onAcceptAll: () => void
+  onRejectAll: () => void
+}) {
+  return <aside className="changes-panel">
+    <div className="changes-head">
+      <span className="changes-count"><strong>{redlines.length}</strong> proposal{redlines.length === 1 ? "" : "s"} to review</span>
+      <div className="changes-actions">
+        <button className="btn-accept" disabled={wordLocked || busy !== undefined || redlines.some(row => !reviewableProposal(row))} onClick={onAcceptAll}>Accept all</button>
+        <button className="btn-reject" disabled={wordLocked || busy !== undefined} onClick={onRejectAll}>Reject all</button>
+      </div>
+    </div>
+    {acceptedHint && <p className="changes-hint muted">{acceptedHint}</p>}
+    {redlines.map(r => <div className={`change-card${r.id === focusId ? " focused" : ""}`} key={r.id} ref={r.id === focusId ? focusRef : undefined}>
+      <div className="change-author">{r.author}</div>
+      <ProposalPreview proposal={r} />
+      {ordinaryProposal(r) && r.formatting_json && <div className="change-comment">{formattingDescription(parseFormatting(r.formatting_json))}</div>}
+      {r.review_comment && <div className="change-comment">{r.review_comment}</div>}
+      {r.stale_reason && <div className="change-comment">{r.stale_reason}</div>}
+      <div className="change-buttons">
+        <button className="btn-accept" disabled={wordLocked || busy !== undefined || !reviewableProposal(r)} onClick={() => onAccept(r.id)}>{busy === r.id ? "..." : "Accept"}</button>
+        <button className="btn-reject" disabled={wordLocked || busy !== undefined} onClick={() => onReject(r.id)}>Reject</button>
+      </div>
+    </div>)}
+  </aside>
 }
 
 // Where a citation landed in the open document, said in the status line.

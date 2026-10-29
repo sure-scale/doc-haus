@@ -1,6 +1,8 @@
 import { Database } from "bun:sqlite"
 import { existsSync, realpathSync } from "node:fs"
 import path from "node:path"
+import { assertRedlineProposalCompatibility } from "./table-row-proposal"
+export { assertRedlineProposalCompatibility, RedlineProposalConflictError } from "./table-row-proposal"
 import { openLegalDbForWrite, prepared } from "./legal-db"
 import {
   canonicalArtifactIdentity,
@@ -34,7 +36,10 @@ export function recordRedline(
   const normalized = { ...row, docPath: canonicalRedlinePath(matterDir, row.docPath) }
   const db = openRedlineDb(matterDir)
   try {
-    return db.transaction(() => insertRedline(db, normalized)).immediate()
+    return db.transaction(() => {
+      assertRedlineProposalCompatibility(pendingRedlines(db, matterDir, normalized.docPath), [normalized])
+      return insertRedline(db, normalized)
+    }).immediate()
   } finally {
     db.close()
   }
@@ -46,12 +51,13 @@ export function recordRedline(
 // same paragraph and the replay would collide.
 export type PendingRedline = {
   id: number
-  scope: "phrase" | "clause"
+  scope: "phrase" | "clause" | "table_row"
   find_text: string
   new_text: string
   author: string
   review_comment: string
   anchor_id: string | null
+  target_json?: string | null
 }
 
 export function pendingRedlinesForDoc(matterDir: string, docPath: string): PendingRedline[] {
@@ -90,7 +96,9 @@ export function recordRedlineProposal(
   const db = openRedlineDb(matterDir)
   try {
     return db.transaction(() => {
-      const superseded = conflictingRedlines(pendingRedlines(db, matterDir, normalized.docPath), normalized)
+      const pending = pendingRedlines(db, matterDir, normalized.docPath)
+      assertRedlineProposalCompatibility(pending, [normalized])
+      const superseded = conflictingRedlines(pending, normalized)
       const id = insertRedline(db, normalized)
       supersedeRedlineRows(db, superseded.map((candidate) => candidate.id))
       return { id, superseded }
@@ -172,6 +180,8 @@ function openRedlineDb(matterDir: string) {
       db.run("ALTER TABLE redlines ADD COLUMN formatting_json TEXT")
     if (!hasColumn(db, "redlines", "review_comment"))
       db.run("ALTER TABLE redlines ADD COLUMN review_comment TEXT NOT NULL DEFAULT ''")
+    if (!hasColumn(db, "redlines", "target_json"))
+      db.run("ALTER TABLE redlines ADD COLUMN target_json TEXT")
   })
 }
 
@@ -179,7 +189,7 @@ function pendingRedlines(db: Database, matterDir: string, docPath: string) {
   const identity = canonicalArtifactIdentity(matterDir, docPath)
   return (db
     .query(
-      "SELECT id, doc_path, scope, find_text, new_text, author, review_comment, anchor_id FROM redlines WHERE status = 'pending' ORDER BY created_at, id",
+      "SELECT id, doc_path, scope, find_text, new_text, author, review_comment, anchor_id, target_json FROM redlines WHERE status = 'pending' ORDER BY created_at, id",
     )
     .all() as Array<PendingRedline & { doc_path: string }>).filter(
       (row) => canonicalArtifactIdentity(matterDir, row.doc_path) === identity,

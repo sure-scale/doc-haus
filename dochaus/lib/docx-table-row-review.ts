@@ -61,7 +61,7 @@ function info(pkg: Package) {
   require(ids.length === new Set(ids.map(id => numericId(id))).size, "ambiguous_comment_id")
   return { rels, links, comments, part }
 }
-function numericId(id: string) { require(/^[+-]?\d+$/.test(id), "invalid_comment_id"); return BigInt(id).toString() }
+function numericId(id: string | null) { require(typeof id === "string" && /^[+-]?\d+$/.test(id), "invalid_comment_id"); return BigInt(id).toString() }
 function create(doc: Document, ns: string, name: string, attrs: Record<string, string> = {}) {
   const el = doc.createElementNS(ns, name)
   for (const [key, value] of Object.entries(attrs)) el.setAttributeNS(key.startsWith("w:") ? W : key.startsWith("xml:") ? XML : null, key, value)
@@ -86,7 +86,7 @@ function peel(source: Package, bytes: Uint8Array, author: string, reason: string
   const added = all(comments, W, "comment").filter(el => !oldIds.has(numericId(el.getAttributeNS(W, "id"))))
   require(removedId ? added.length === 0 : added.length === 1, "unexpected_review_comments")
   const id = removedId ?? added[0]!.getAttributeNS(W, "id")
-  require(/^(0|[1-9]\d*)$/.test(id), "invalid_owned_comment_id")
+  require(typeof id === "string" && /^(0|[1-9]\d*)$/.test(id), "invalid_owned_comment_id")
   for (const doc of Object.values(source.docs)) for (const name of ["comment", "commentRangeStart", "commentRangeEnd", "commentReference"])
     require(all(doc, W, name).every(el => numericId(el.getAttributeNS(W, "id")) !== id), "owned_comment_id_collision")
   const expectedComments = before.comments.cloneNode(true) as Document
@@ -122,7 +122,7 @@ function peel(source: Package, bytes: Uint8Array, author: string, reason: string
     require(paragraphIndex >= 0, "owned_comment_paragraph_unavailable")
     paragraph.removeChild(start); paragraph.removeChild(end); paragraph.removeChild(run)
   }
-  const core = { ...output.parts, [BODY]: strToU8(xml(body)) }
+  const core: Record<string, Uint8Array> = { ...output.parts, [BODY]: strToU8(xml(body)) }
   // SDK Save may add an XML declaration or reserialize empty tags. Only after
   // exact XML-tree/binary equality above, retain the original untouched bytes.
   for (const [name, part] of Object.entries(source.parts)) if (![BODY, SETTINGS, before.part, RELS, TYPES].includes(name)) core[name] = part
