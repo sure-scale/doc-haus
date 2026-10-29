@@ -33,21 +33,21 @@ export function SetupItem({ item, onAction, children }: { item: SetupCardItem; o
   </li>
 }
 
-export function SetupChecklist({ config, onAction, renderContent, accordion }: { config: SetupChecklistConfig; onAction?: (action: string) => void; renderContent?: (id: string) => ReactNode; accordion?: { expanded: string; onToggle: (id: string) => void } }) {
-  if (accordion) return <section className="dash-setup-accordion" aria-label={config.title}>
+export function SetupChecklist({ config, onAction, renderContent, accordion, onOpen }: { config: SetupChecklistConfig; onAction?: (action: string) => void; renderContent?: (id: string) => ReactNode; accordion?: { expanded: string; onToggle: (id: string) => void }; onOpen?: (id: string) => void }) {
+  if (accordion || onOpen) return <section className="dash-setup-accordion" aria-label={config.title}>
     <ol className="dash-setup-list">{config.items.map((item, index) => {
-      const expanded = accordion.expanded === item.id
+      const expanded = !onOpen && accordion?.expanded === item.id
       return <li key={item.id} className={`dash-setup-accordion-item${item.done ? " is-done" : ""}${expanded ? " is-expanded" : ""}`}>
-        <h3 className="dash-setup-accordion-heading"><button type="button" id={`dash-setup-toggle-${item.id}`} className="dash-setup-toggle" aria-expanded={expanded} aria-controls={`dash-setup-panel-${item.id}`} onClick={() => accordion.onToggle(expanded ? "" : item.id)}>
+        <h3 className="dash-setup-accordion-heading"><button type="button" id={`dash-setup-toggle-${item.id}`} className="dash-setup-toggle" aria-haspopup={onOpen ? "dialog" : undefined} aria-expanded={onOpen ? undefined : expanded} aria-controls={onOpen ? undefined : `dash-setup-panel-${item.id}`} onClick={() => onOpen ? onOpen(item.id) : accordion?.onToggle(expanded ? "" : item.id)}>
           <span className="dash-setup-number" aria-hidden="true">{index + 1}</span>
           <span className="dash-setup-row-text"><span id={`dash-setup-${item.id}`} className="dash-setup-row-title">{item.title}{item.done && <span className="sr-only">, complete</span>}</span><span className="dash-setup-row-detail">{item.detail}</span></span>
           {item.done ? <span className="dash-setup-completed" aria-hidden="true">{icons.check}</span> : <span className={`dash-setup-row-action${config.items.find(row => !row.done)?.id === item.id ? " is-next" : ""}`} aria-hidden="true">Set up</span>}
           <span className="dash-setup-chevron" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="m5 9 7 7 7-7" /></svg></span>
         </button></h3>
-        <div id={`dash-setup-panel-${item.id}`} className="dash-setup-panel" role="region" aria-labelledby={`dash-setup-${item.id}`} hidden={!expanded}>
+        {!onOpen && <div id={`dash-setup-panel-${item.id}`} className="dash-setup-panel" role="region" aria-labelledby={`dash-setup-${item.id}`} hidden={!expanded}>
           {renderContent?.(item.id)}
           {item.action && <button type="button" className="dash-setup-outline" disabled={!onAction} onClick={() => onAction?.(item.action!.id)}>{item.action.label}{icons.arrowRight}</button>}
-        </div>
+        </div>}
       </li>
     })}</ol>
   </section>

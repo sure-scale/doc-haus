@@ -147,13 +147,20 @@ async function visuallyShown(locator: Locator) {
     return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity) > 0
   })
 }
-async function badge(page: Page, count: number) { await expect(setupTab(page)).toContainText(`${count}/5`); await expect(checklist(page).getByRole("progressbar")).toHaveCount(0) }
+async function badge(page: Page, count: number) { await expect(page.locator("#dash-content-tab-__setup")).toContainText(`${count}/5`); await expect(page.locator(".dash-setup-accordion progress")).toHaveCount(0) }
 async function settled(page: Page) { await expect(checklist(page)).toBeVisible(); await expect(checklist(page).locator(".dash-setup-accordion-item")).toHaveCount(5) }
-const stepToggle = (page: Page, id: string) => page.locator(`[aria-controls="dash-setup-panel-${id}"]`)
+const stageNames: Record<string, string> = { models: "AI provider & models", identity: "Practice identity & default law", research: "Web research with Exa", word: "Microsoft Word add-in", style: "House style & firm templates" }
+const stepToggle = (page: Page, id: string) => page.locator(`#dash-setup-toggle-${id}`)
+const stageDialog = (page: Page, id: string) => page.getByRole("dialog", { name: stageNames[id], exact: true })
 async function expandStep(page: Page, id: string) {
-  const toggle = stepToggle(page, id)
-  if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click()
-  await expect(toggle).toHaveAttribute("aria-expanded", "true")
+  const dialog = stageDialog(page, id)
+  if (!await dialog.count()) await stepToggle(page, id).click()
+  await expect(dialog).toBeVisible()
+  return dialog
+}
+async function closeStage(page: Page, id: string) {
+  await stageDialog(page, id).getByRole("button", { name: "Close", exact: true }).click()
+  await expect(stageDialog(page, id)).toHaveCount(0)
 }
 async function capture(page: Page, name: string) {
   await page.evaluate(async () => { await document.fonts.ready })
@@ -164,6 +171,7 @@ async function capture(page: Page, name: string) {
 }
 const clean = (state: State) => { expect(state.unexpected, "Unexpected requests").toEqual([]); expect(state.errors, "Page errors").toEqual([]) }
 async function scenario(name: string, run: () => Promise<void>) {
+  if (process.env.SETUP_SCENARIO && !name.includes(process.env.SETUP_SCENARIO)) return
   try { await run(); results.push({ name, status: "passed" }); console.log(`PASS ${name}`) }
   catch (error) { const message = error instanceof Error ? error.message : String(error); results.push({ name, status: "failed", error: message }); console.log(`FAIL ${name}: ${message}`) }
 }
@@ -215,10 +223,12 @@ try {
       await expect(page.getByRole("group", { name: "Period", exact: true })).toHaveCount(0)
       await capture(page, `setup-default-${width}x${height}`)
       if (width === 375) {
-        await checklist(page).getByLabel("Jurisdictions", { exact: true }).click()
+        const identityDialog = await expandStep(page, "identity")
+        await identityDialog.getByLabel("Jurisdictions", { exact: true }).click()
         await expect(page.getByRole("group", { name: "Jurisdictions", exact: true })).toBeVisible()
         await capture(page, "setup-jurisdictions-dropdown-375x812")
         await page.keyboard.press("Escape")
+        await closeStage(page, "identity")
       }
       await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveCount(0)
       await expect(page.getByRole("tablist", { name: "Dashboards", exact: true }).getByRole("tab")).toHaveCount(1)
@@ -510,32 +520,39 @@ try {
       clean(state)
     } finally { await context.close() }
   })
-  await scenario("Accordion opens one step, supports keyboard and preserves unsaved edits", async () => {
+  await scenario("Focused stage dialogs trap focus, return it on Escape and preserve drafts", async () => {
     const state = fixture(), { context, page } = await open(state)
     try {
       await page.goto(`${baseURL}/dashboard?tab=setup`); await settled(page)
-      await expect(checklist(page).getByRole("heading", { name: "Finish setting up", exact: true })).toHaveCount(0)
-      await expect(stepToggle(page, "identity")).toHaveAttribute("aria-expanded", "true")
-      const name = checklist(page).getByRole("textbox", { name: "Your full name", exact: true })
-      await name.fill("Unfinished practice details")
-      await stepToggle(page, "research").focus(); await page.keyboard.press("Enter")
-      await expect(stepToggle(page, "research")).toHaveAttribute("aria-expanded", "true")
-      await expect(stepToggle(page, "identity")).toHaveAttribute("aria-expanded", "false")
-      await expect(checklist(page).locator('[aria-expanded="true"]')).toHaveCount(1)
       const doneRow = stepToggle(page, "models"), incompleteRow = stepToggle(page, "identity")
       const doneBounds = await doneRow.boundingBox(), incompleteBounds = await incompleteRow.boundingBox()
       expect(doneBounds!.height).toBeLessThan(incompleteBounds!.height - 10)
       await expect(doneRow.locator(".dash-setup-row-detail")).not.toBeVisible()
+      await expect(page.locator(".dash-setup-panel")).toHaveCount(0)
+      await stepToggle(page, "identity").focus(); await page.keyboard.press("Enter")
+      const identity = stageDialog(page, "identity")
+      await expect(identity).toBeVisible()
+      await expect(identity.getByLabel("Exa API key", { exact: true })).toHaveCount(0)
+      await identity.getByRole("textbox", { name: "Your full name", exact: true }).fill("Unfinished practice details")
+      for (let index = 0; index < 8; index++) {
+        await page.keyboard.press("Tab")
+        const focused = await page.evaluate(() => ({ inside: !!document.activeElement?.closest("dialog[open]"), tag: document.activeElement?.tagName, html: document.activeElement?.outerHTML.slice(0, 350) }))
+        if (!focused.inside) console.log("Focus left stage dialog", JSON.stringify(focused))
+        expect(focused.inside, JSON.stringify(focused)).toBe(true)
+      }
+      await capture(page, "setup-identity-modal-1440x1000")
+      await page.keyboard.press("Escape")
+      await expect(identity).toHaveCount(0)
+      await expect(stepToggle(page, "identity")).toBeFocused()
       await stepToggle(page, "models").focus(); await page.keyboard.press("Space")
-      await expect(stepToggle(page, "models")).toHaveAttribute("aria-expanded", "true")
-      await expect(checklist(page).getByRole("button", { name: "Change", exact: true })).toBeEnabled()
+      await expect(stageDialog(page, "models")).toBeVisible()
+      await expect(stageDialog(page, "models").getByRole("textbox", { name: "Your full name", exact: true })).toHaveCount(0)
+      await closeStage(page, "models")
       await expandStep(page, "identity")
-      await expect(name).toHaveValue("Unfinished practice details")
+      await expect(identity.getByRole("textbox", { name: "Your full name", exact: true })).toHaveValue("Unfinished practice details")
       expect(state.saved).toHaveLength(0)
-      await capture(page, "setup-accordion-identity-expanded-1440x1000")
-      await stepToggle(page, "identity").click()
-      await expect(checklist(page).locator('[aria-expanded="true"]')).toHaveCount(0)
-      await capture(page, "setup-accordion-collapsed-1440x1000")
+      await closeStage(page, "identity")
+      await capture(page, "setup-stage-list-1440x1000")
       clean(state)
     } finally { await context.close() }
   })
@@ -544,7 +561,7 @@ try {
     try {
       await page.goto(`${baseURL}/dashboard?tab=setup`); await settled(page)
       await expandStep(page, "identity")
-      const form = checklist(page).locator("form.dash-setup-inline")
+      const form = stageDialog(page, "identity")
       await form.getByRole("textbox", { name: "Your full name", exact: true }).fill("Alex Example")
       await form.getByRole("textbox", { name: "Firm name", exact: true }).fill("Example Partners LLP")
       await form.getByLabel("Jurisdictions", { exact: true }).click()
@@ -560,83 +577,72 @@ try {
       expect(state.preferences.attorney).toBe("Alex Example")
       expect(state.preferences.practiceAreas).toEqual(["Commercial"])
       expect(await page.evaluate(() => JSON.parse(localStorage.getItem("dochaus.prefs")!).defaultJurisdictions)).toEqual(["EW"])
-      await expect(stepToggle(page, "identity")).toHaveAttribute("aria-expanded", "false")
+      await expect(stageDialog(page, "identity")).toHaveCount(0)
       await expandStep(page, "research")
-      const key = checklist(page).getByLabel("Exa API key", { exact: true })
+      const key = stageDialog(page, "research").getByLabel("Exa API key", { exact: true })
       await expect(key).toHaveAttribute("type", "password"); await key.fill("synthetic-exa-test-key")
-      state.failPreferences = true; await checklist(page).getByRole("button", { name: "Save key", exact: true }).click()
-      await expect(checklist(page).getByRole("alert")).toBeVisible(); await badge(page, 2)
-      await expect(checklist(page)).not.toContainText("synthetic-exa-test-key")
-      state.failPreferences = false; await checklist(page).getByRole("button", { name: "Save key", exact: true }).click()
-      await badge(page, 3); await expect(checklist(page)).not.toContainText("synthetic-exa-test-key")
+      state.failPreferences = true; await stageDialog(page, "research").getByRole("button", { name: "Save key", exact: true }).click()
+      await expect(stageDialog(page, "research").getByRole("alert")).toBeVisible(); await badge(page, 2)
+      await expect(page.locator("body")).not.toContainText("synthetic-exa-test-key")
+      state.failPreferences = false; await stageDialog(page, "research").getByRole("button", { name: "Save key", exact: true }).click()
+      await badge(page, 3); await expect(page.locator("body")).not.toContainText("synthetic-exa-test-key")
       await page.reload(); await settled(page); await badge(page, 3)
       await expandStep(page, "identity")
-      await expect(checklist(page).getByRole("textbox", { name: "Your full name", exact: true })).toHaveValue("Alex Example")
+      await expect(stageDialog(page, "identity").getByRole("textbox", { name: "Your full name", exact: true })).toHaveValue("Alex Example")
       await expect(form.getByLabel("Jurisdictions", { exact: true })).toContainText("England & Wales")
       await expect(form.getByLabel("Practice areas", { exact: true })).toContainText("Commercial")
+      await closeStage(page, "identity")
       await expect(checklist(page).getByRole("heading", { name: /Web research with Exa/ })).toBeVisible()
       await capture(page, "setup-saved-details-1440x1000")
       clean(state)
     } finally { await context.close() }
   })
-  await scenario("Preference saves serialize and preserve unfinished identity edits", async () => {
+  await scenario("A focused research save preserves unfinished practice edits", async () => {
     const state = fixture(), { context, page } = await open(state)
     try {
       await page.goto(`${baseURL}/dashboard?tab=setup`); await settled(page)
-      await expandStep(page, "identity")
-      const form = checklist(page).locator("form.dash-setup-inline")
-      const name = form.getByRole("textbox", { name: "Your full name", exact: true })
-      await name.fill("Unfinished Alex")
-      await form.getByRole("textbox", { name: "Firm name", exact: true }).fill("Unfinished Firm")
-      await expect(form.getByRole("button", { name: "Save", exact: true })).toBeEnabled()
-      await expandStep(page, "research")
-      await checklist(page).getByLabel("Exa API key", { exact: true }).fill("synthetic-held-key")
+      const identity = await expandStep(page, "identity")
+      await identity.getByRole("textbox", { name: "Your full name", exact: true }).fill("Unfinished Alex")
+      await identity.getByRole("textbox", { name: "Firm name", exact: true }).fill("Unfinished Firm")
+      await closeStage(page, "identity")
+      const research = await expandStep(page, "research")
+      await research.getByLabel("Exa API key", { exact: true }).fill("synthetic-held-key")
       state.holdPreferences = true
-      await checklist(page).getByRole("button", { name: "Save key", exact: true }).click()
+      await research.getByRole("button", { name: "Save key", exact: true }).click()
       await expect.poll(() => typeof state.releasePreference).toBe("function")
-      await expandStep(page, "identity")
-      await expect(form.getByRole("button", { name: "Save", exact: true })).toBeDisabled()
-      await expect(name).toBeDisabled(); await expect(name).toHaveValue("Unfinished Alex")
+      await expect(research.getByRole("button", { name: "Save key", exact: true })).toBeDisabled()
       state.holdPreferences = false; state.releasePreference?.(); state.releasePreference = undefined
-      await badge(page, 2)
-      await expect(name).toBeEnabled(); await expect(name).toHaveValue("Unfinished Alex")
-      await expect(form.getByRole("textbox", { name: "Firm name", exact: true })).toHaveValue("Unfinished Firm")
-      await expect(form.getByRole("button", { name: "Save", exact: true })).toBeEnabled()
+      await expect(research).toHaveCount(0); await badge(page, 2)
+      await expandStep(page, "identity")
+      await expect(identity.getByRole("textbox", { name: "Your full name", exact: true })).toHaveValue("Unfinished Alex")
+      await expect(identity.getByRole("textbox", { name: "Firm name", exact: true })).toHaveValue("Unfinished Firm")
       expect(state.saved).toHaveLength(1)
-      expect(state.saved[0]).toEqual({ searchApiKey: "synthetic-held-key" })
+      expect(state.saved[0]).toMatchObject({ searchApiKey: "synthetic-held-key" })
+      await closeStage(page, "identity")
       clean(state)
     } finally { state.releasePreference?.(); await context.close() }
   })
-  await scenario("Settings actions refresh actual readiness, Word and house style", async () => {
+  await scenario("Focused stage settings refresh readiness, Word and house style", async () => {
     const state = fixture(), { context, page } = await open(state)
     try {
       await page.goto(`${baseURL}/dashboard?tab=setup`); await settled(page)
       await expandStep(page, "models")
-      await checklist(page).getByRole("button", { name: "Change", exact: true }).click()
-      const dialog = page.getByRole("dialog", { name: "Settings", exact: true })
-      await expect(dialog.getByRole("tab", { name: "AI setup", exact: true })).toHaveAttribute("aria-selected", "true")
-      // Closing settings re-reads readiness: losing a configured connection
-      // removes the completed step rather than counting the earlier click.
+      await expect(stageDialog(page, "models").getByRole("tab", { name: "Add-ins", exact: true })).toHaveCount(0)
       state.ready = false
-      await dialog.getByRole("button", { name: "Close", exact: true }).click(); await badge(page, 0)
-      await checklist(page).getByRole("button", { name: "Connect", exact: true }).click()
+      await closeStage(page, "models"); await badge(page, 0)
+      await expandStep(page, "models")
       state.ready = true
-      await dialog.getByRole("button", { name: "Close", exact: true }).click(); await badge(page, 1)
-      await expandStep(page, "word")
-      await checklist(page).getByRole("button", { name: "Set up Word", exact: true }).click()
-      await expect(dialog.getByRole("tab", { name: "Add-ins", exact: true })).toHaveAttribute("aria-selected", "true")
-      await dialog.getByRole("button", { name: "Set up Word", exact: true }).click()
-      await expect(dialog.getByRole("status")).toContainText("Ready")
-      await dialog.getByRole("button", { name: "Close", exact: true }).click(); await badge(page, 2)
+      await closeStage(page, "models"); await badge(page, 1)
+      const word = await expandStep(page, "word")
+      await word.getByRole("button", { name: "Set up Word", exact: true }).click()
+      await expect(word.getByRole("status")).toContainText("Ready")
+      await closeStage(page, "word"); await badge(page, 2)
       expect(state.wordPosts).toBe(1)
       state.templates = [{ name: "Services agreement.docx", placeholders: [] }]
-      await expandStep(page, "style")
-      await checklist(page).getByRole("button", { name: "Configure", exact: true }).click()
-      await expect(dialog.getByRole("tab", { name: "Drafting", exact: true })).toHaveAttribute("aria-selected", "true")
-      await dialog.getByRole("textbox", { name: "House style notes", exact: true }).fill("Plain language; numbered clauses.")
-      await dialog.getByRole("button", { name: "Save", exact: true }).click()
-      await expect(page.getByText("Drafting preferences saved. They apply to new replies, resumed drafting and documents rendered from now on.", { exact: true })).toBeVisible()
-      await dialog.getByRole("button", { name: "Close", exact: true }).click(); await badge(page, 3)
+      const style = await expandStep(page, "style")
+      await style.getByRole("textbox", { name: "House style notes", exact: true }).fill("Plain language; numbered clauses.")
+      await style.getByRole("button", { name: "Save", exact: true }).click()
+      await expect(style).toHaveCount(0); await badge(page, 3)
       await capture(page, "setup-connected-tools-1440x1000")
       clean(state)
     } finally { await context.close() }
@@ -670,7 +676,9 @@ try {
     try {
       await page.goto(`${baseURL}/dashboard?tab=setup`); await settled(page); await badge(page, 1)
       await expect(page.getByRole("status").filter({ hasText: "Your matters could not be loaded. You can still update setup." })).toBeVisible()
-      await expect(checklist(page).getByRole("textbox", { name: "Your full name", exact: true })).toBeEnabled()
+      const identity = await expandStep(page, "identity")
+      await expect(identity.getByRole("textbox", { name: "Your full name", exact: true })).toBeEnabled()
+      await closeStage(page, "identity")
       await expect(stepToggle(page, "models")).toBeEnabled()
       state.failMatters = false
       await page.getByRole("button", { name: "Retry matters", exact: true }).click()

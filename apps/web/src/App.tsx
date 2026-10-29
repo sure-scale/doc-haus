@@ -106,7 +106,7 @@ export default function App() {
           <div className={`container route-fade${location.pathname.startsWith("/matter/") ? " matter-container" : ""}`} key={location.pathname}>
             <Routes>
               <Route path="/" element={<Matters refresh={mattersVersion} />} />
-              <Route path="/dashboard" element={<Dashboard setup={setup} refresh={mattersVersion} onSampleAdded={() => setMattersVersion((v) => v + 1)} />} />
+              <Route path="/dashboard" element={<Dashboard setup={setup} onSetupRefresh={() => { void refreshSetup() }} refresh={mattersVersion} onSampleAdded={() => setMattersVersion((v) => v + 1)} />} />
               <Route path="/clients" element={<Clients />} />
               <Route path="/templates" element={<Templates />} />
               <Route path="/playbooks" element={<Playbooks />} />

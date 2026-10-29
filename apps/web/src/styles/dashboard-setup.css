@@ -148,3 +148,14 @@
 .dash-setup-defaults .jx-select, .dash-setup-defaults .jx-trigger { width: 100%; }
 @container dash (max-width: 600px) { .dash-setup-defaults { grid-template-columns: minmax(0, 1fr); } }
 .dash-setup-field-hint { margin: 6px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+
+/* Setup stages share the Settings dialog, without category navigation. */
+.settings-focused-panel { width: min(760px, calc(100vw - 32px)); height: auto; max-height: calc(var(--viewport-block, 100dvh) - 32px); }
+.settings-focused-panel .settings-content { padding: 24px; }
+.settings-focused-panel .dash-setup-inline, .settings-focused-panel .dash-setup-exa, .settings-focused-panel .dash-setup-style-links { margin: 0; }
+.settings-focused-panel .dash-setup-input-row { grid-template-columns: minmax(0, 1fr); }
+.settings-focused-panel .dash-setup-input-row > button { justify-self: end; }
+@media (max-width: 700px) {
+  .settings-panel.settings-focused-panel { height: auto; max-height: calc(var(--viewport-block, 100dvh) - 24px); }
+  .settings-focused-panel .settings-content { padding: 16px; }
+}
