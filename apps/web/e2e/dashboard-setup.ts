@@ -18,10 +18,15 @@ const NOW = Date.UTC(2026, 9, 29, 10)
 const SAMPLE = { id: "setup-sample", title: "Kestrel Books · Engagement letter", sample: true, jurisdictions: ["EW"], dir: "/fixture/matters/sample", created_at: NOW }
 const wordDefault = { available: false, origin: null, manifestUrl: null, platform: "macos", wordInstalled: true, canSetup: true, configured: false, registered: false, trusted: false, running: false, status: "not_configured" }
 const packs = [{ code: "EW", name: "England & Wales", citationStyle: "fixture" }, { code: "SCT", name: "Scotland", citationStyle: "fixture" }, { code: "IE", name: "Ireland", citationStyle: "fixture" }]
-function fixture() {
-  return { ready: false, jurisdictions: [] as string[], preferences: { ...DEFAULT_DRAFTING }, failPreferences: false, holdPreferences: false, releasePreference: undefined as (() => void) | undefined, failMatters: false, word: { ...wordDefault }, templates: [] as { name: string; placeholders: unknown[] }[], matters: [] as (typeof SAMPLE)[], saved: [] as Record<string, unknown>[], samplePosts: 0, wordPosts: 0, unexpected: [] as string[], errors: [] as string[] }
+function fixture(fresh = false) {
+  return { ready: !fresh, completed: fresh ? [] as string[] : ["models"], skipped: fresh ? [] as string[] : ["research", "details"], setupWrites: [] as { step: string; status: string }[], candidateInputs: [] as Record<string, unknown>[], tested: [] as { modelID: string; ok: boolean }[], failCandidateTest: false, providerSaves: 0, jurisdictions: [] as string[], preferences: { ...DEFAULT_DRAFTING }, failPreferences: false, holdPreferences: false, releasePreference: undefined as (() => void) | undefined, failMatters: false, word: { ...wordDefault }, templates: [] as { name: string; placeholders: unknown[] }[], matters: [] as (typeof SAMPLE)[], saved: [] as Record<string, unknown>[], samplePosts: 0, wordPosts: 0, unexpected: [] as string[], errors: [] as string[] }
 }
 type State = ReturnType<typeof fixture>
+function progress(state: State) {
+  const completed = state.completed.filter(step => step !== "models" || state.ready)
+  const skipped = state.skipped.filter(step => step !== "models" && !completed.includes(step))
+  return { version: 1, ready: state.ready, completed, skipped, next: ["models", "research", "details"].find(step => !completed.includes(step) && !skipped.includes(step)) ?? "done" }
+}
 async function open(state: State, width = 1440, height = 1000) {
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: width <= 768, reducedMotion: "reduce", locale: "en-GB" })
   await context.clock.setFixedTime(new Date(NOW))
@@ -57,14 +62,33 @@ async function open(state: State, width = 1440, height = 1000) {
       state.wordPosts++; state.word = { ...state.word, status: "ready", available: true, configured: true, registered: true, trusted: true }
       return reply(state.word)
     }
-    if (pathname === "/setup" && method === "PATCH") return reply({ version: 1, ready: state.ready, completed: state.ready ? ["models"] : [], skipped: [], next: state.ready ? "research" : "models" })
-    if (pathname === "/api/dochaus/provider-candidate/session" && method === "POST") return reply({ sessionID: "synthetic-candidate" })
+    if (pathname === "/setup" && method === "PATCH") {
+      const change = request.postDataJSON() as { step: string; status: string }
+      if (change.step === "models" && (!state.ready || change.status !== "completed")) return reply({ error: "Test and save both models first." }, 400)
+      if (change.step !== "models" && !state.completed.includes("models")) return reply({ error: "Complete model setup first." }, 400)
+      state.setupWrites.push(change)
+      state.completed = state.completed.filter(step => step !== change.step)
+      state.skipped = state.skipped.filter(step => step !== change.step)
+      ;(change.status === "completed" ? state.completed : state.skipped).push(change.step)
+      return reply(progress(state))
+    }
+    if (pathname === "/api/dochaus/provider-candidate/session" && method === "POST") { state.candidateInputs.push(request.postDataJSON()); return reply({ sessionID: "synthetic-candidate" }) }
     if (pathname === "/api/dochaus/provider-candidate/session" && method === "DELETE") return route.fulfill({ status: 204, headers })
-    if (pathname === "/api/dochaus/provider-candidate/models" && method === "POST") return reply({ data: [], customModels: false })
+    if (pathname === "/api/dochaus/provider-candidate/models" && method === "POST") return reply({ data: ["primary", "fast"].map(id => ({ id, providerID: "fixture", name: id, capabilities: { input: ["text"], output: ["text"], tools: true } })), customModels: false })
+    if (pathname === "/api/dochaus/provider-candidate/test" && method === "POST") {
+      const input = request.postDataJSON() as { modelID: string }
+      state.tested.push({ modelID: input.modelID, ok: !state.failCandidateTest })
+      return reply(state.failCandidateTest ? { ok: false, kind: "unavailable", error: "Synthetic model connection unavailable." } : { ok: true })
+    }
+    if (pathname === "/engine/provider-setup" && method === "POST") {
+      const pair = request.postDataJSON() as { primary: string; fast: string }
+      if (![pair.primary, pair.fast].every(modelID => state.tested.some(test => test.modelID === modelID && test.ok))) return reply({ code: "untested", error: "Test both selected models first." }, 400)
+      state.ready = true; state.providerSaves++; return reply({ ok: true })
+    }
     if (pathname === "/api/dochaus/provider-test" && method === "POST") return reply({ ok: true })
     if (method !== "GET") { state.unexpected.push(`${method} ${pathname}`); return route.abort() }
     if (pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
-    if (pathname === "/setup") return reply({ version: 1, ready: state.ready, completed: state.ready ? ["models"] : [], skipped: [], next: state.ready ? "research" : "models" })
+    if (pathname === "/setup") return reply(progress(state))
     if (pathname === "/preferences") return reply(state.preferences)
     if (pathname === "/matters") return state.failMatters ? reply({ error: "Matter list unavailable" }, 503) : reply(state.matters)
     if (/^\/matters\/[^/]+\/drafting-status$/.test(pathname)) return reply(null)
@@ -110,20 +134,51 @@ async function scenario(name: string, run: () => Promise<void>) {
 }
 try {
   for (const [width, height] of [[320, 640], [375, 812], [1440, 1000]]) await scenario(`Fresh setup dashboard ${width}x${height}`, async () => {
-    const state = fixture(), { context, page } = await open(state, width, height)
+    const state = fixture(true), { context, page } = await open(state, width, height)
     try {
-      await page.goto(`${baseURL}/`); await settled(page)
+      await page.goto(`${baseURL}/`)
+      const onboarding = page.getByRole("dialog", { name: "Let's get you set up", exact: true })
+      await expect(onboarding).toBeVisible()
+      await expect(onboarding.getByRole("button", { name: "Continue to connection", exact: true })).toBeDisabled()
+      await expect(onboarding.getByRole("button", { name: "Step 2: Connection", exact: true })).toBeDisabled()
+      await expect(onboarding.getByRole("button", { name: "Step 3: Models", exact: true })).toBeDisabled()
+      await expect(onboarding.getByRole("button", { name: "Step 4: Test", exact: true })).toBeDisabled()
+      await page.keyboard.press("Escape"); await expect(onboarding).toBeVisible()
+      await capture(page, `setup-required-provider-${width}x${height}`)
+      await onboarding.getByRole("combobox", { name: "Provider", exact: true }).selectOption("fixture")
+      await onboarding.getByRole("button", { name: "Continue to connection", exact: true }).click()
+      await expect(onboarding.getByRole("combobox", { name: "Connection method", exact: true })).toHaveValue("credential:fixture-account")
+      await onboarding.getByRole("button", { name: "Continue to models", exact: true }).click()
+      await expect(onboarding.getByRole("button", { name: "Continue to test", exact: true })).toBeDisabled()
+      await onboarding.getByRole("combobox", { name: "Primary model", exact: true }).selectOption("fixture/primary")
+      await onboarding.getByRole("combobox", { name: "Fast model", exact: true }).selectOption("fixture/fast")
+      await onboarding.getByRole("button", { name: "Continue to test", exact: true }).click()
+      expect(state.providerSaves).toBe(0); expect(state.setupWrites).toEqual([])
+      state.failCandidateTest = true
+      await onboarding.getByRole("button", { name: "Test and continue", exact: true }).click()
+      await expect(onboarding.getByText("Synthetic model connection unavailable.").first()).toBeVisible()
+      expect(state.providerSaves).toBe(0); expect(state.setupWrites).toEqual([])
+      state.failCandidateTest = false
+      await onboarding.getByRole("button", { name: "Test and continue", exact: true }).click()
+      await expect(onboarding.getByRole("heading", { name: "Set up legal research", exact: true })).toBeVisible()
+      expect(state.providerSaves).toBe(1)
+      expect(state.candidateInputs[0]).toMatchObject({ providerID: "fixture", connection: { type: "credential", id: "fixture-account" } })
+      expect(state.tested.filter(test => test.ok).map(test => test.modelID)).toEqual(["primary", "fast"])
+      await onboarding.getByRole("button", { name: "Save and continue", exact: true }).click()
+      await expect(onboarding.getByRole("heading", { name: "Make doc.haus yours", exact: true })).toBeVisible()
+      await onboarding.getByRole("button", { name: /^Save and finish/ }).click()
+      await expect(onboarding).toHaveCount(0); await settled(page)
       await expect(page).toHaveURL(/\/dashboard\?tab=setup$/)
-      await expect(setupTab(page)).toHaveAttribute("aria-selected", "true"); await badge(page, 0)
+      await expect(setupTab(page)).toHaveAttribute("aria-selected", "true"); await badge(page, 1)
+      expect(state.setupWrites).toEqual([{ step: "models", status: "completed" }, { step: "research", status: "completed" }, { step: "details", status: "completed" }])
       await expect(page.locator("dialog[open]")).toHaveCount(0)
       await expect(page.getByRole("button", { name: "Ask AI", exact: true })).toHaveCount(0)
       await expect(page.getByRole("group", { name: "Period", exact: true })).toHaveCount(0)
-      await expect(page.getByRole("button", { name: /Options for .* dashboard/ })).toHaveCount(0)
       await capture(page, `setup-default-${width}x${height}`)
       await page.getByRole("tab", { name: "Overview", exact: true }).click()
       await expect(setupTab(page)).toHaveAttribute("aria-selected", "false")
-      await expect(page.getByRole("button", { name: "Ask AI", exact: true })).toBeDisabled()
-      await page.getByRole("button", { name: "Connect AI in Setup", exact: true }).click(); await settled(page)
+      await expect(page.getByRole("button", { name: "Ask AI", exact: true })).toBeEnabled()
+      await setupTab(page).click(); await settled(page)
       await setupTab(page).focus(); await page.keyboard.press("Home")
       await expect(page.getByRole("tab", { name: "Overview", exact: true })).toBeFocused()
       await page.keyboard.press("End"); await expect(setupTab(page)).toBeFocused()
@@ -140,19 +195,19 @@ try {
       await form.getByRole("button", { name: "England & Wales", exact: true }).click()
       await form.getByRole("button", { name: "Commercial", exact: true }).click()
       state.failPreferences = true; await form.getByRole("button", { name: "Save", exact: true }).click()
-      await expect(form.getByRole("alert")).toBeVisible(); await badge(page, 0)
+      await expect(form.getByRole("alert")).toBeVisible(); await badge(page, 1)
       state.failPreferences = false; await form.getByRole("button", { name: "Save", exact: true }).click()
-      await badge(page, 1)
+      await badge(page, 2)
       expect(state.preferences.attorney).toBe("Alex Example")
       expect(await page.evaluate(() => JSON.parse(localStorage.getItem("dochaus.prefs")!).defaultJurisdictions)).toEqual(["EW"])
       const key = checklist(page).getByLabel("Exa API key", { exact: true })
       await expect(key).toHaveAttribute("type", "password"); await key.fill("synthetic-exa-test-key")
       state.failPreferences = true; await checklist(page).getByRole("button", { name: "Save key", exact: true }).click()
-      await expect(checklist(page).getByRole("alert")).toBeVisible(); await badge(page, 1)
+      await expect(checklist(page).getByRole("alert")).toBeVisible(); await badge(page, 2)
       await expect(checklist(page)).not.toContainText("synthetic-exa-test-key")
       state.failPreferences = false; await checklist(page).getByRole("button", { name: "Save key", exact: true }).click()
-      await badge(page, 2); await expect(checklist(page)).not.toContainText("synthetic-exa-test-key")
-      await page.reload(); await settled(page); await badge(page, 2)
+      await badge(page, 3); await expect(checklist(page)).not.toContainText("synthetic-exa-test-key")
+      await page.reload(); await settled(page); await badge(page, 3)
       await expect(checklist(page).getByRole("textbox", { name: "Your full name", exact: true })).toHaveValue("Alex Example")
       await expect(checklist(page).getByRole("heading", { name: /Exa web research configured/ })).toBeVisible()
       await capture(page, "setup-saved-details-1440x1000")
@@ -175,7 +230,7 @@ try {
       await expect(form.getByRole("button", { name: "Save", exact: true })).toBeDisabled()
       await expect(name).toBeDisabled(); await expect(name).toHaveValue("Unfinished Alex")
       state.holdPreferences = false; state.releasePreference?.(); state.releasePreference = undefined
-      await badge(page, 1)
+      await badge(page, 2)
       await expect(name).toBeEnabled(); await expect(name).toHaveValue("Unfinished Alex")
       await expect(form.getByRole("textbox", { name: "Firm name", exact: true })).toHaveValue("Unfinished Firm")
       await expect(form.getByRole("button", { name: "Save", exact: true })).toBeEnabled()
@@ -188,11 +243,12 @@ try {
     const state = fixture(), { context, page } = await open(state)
     try {
       await page.goto(`${baseURL}/dashboard?tab=setup`); await settled(page)
-      await checklist(page).getByRole("button", { name: "Connect", exact: true }).click()
+      await checklist(page).locator(".dash-setup-item").filter({ has: page.getByRole("heading", { name: /AI provider & models connected/ }) }).getByRole("button", { name: "Change", exact: true }).click()
       const dialog = page.getByRole("dialog", { name: "Settings", exact: true })
       await expect(dialog.getByRole("tab", { name: "AI setup", exact: true })).toHaveAttribute("aria-selected", "true")
-      // Simulate a successful supported provider save outside this scenario's
-      // scope; closing Settings must re-read readiness, not mark a click done.
+      // Closing settings re-reads readiness: losing a configured connection
+      // removes the completed step rather than counting the earlier click.
+      state.ready = false
       await dialog.getByRole("button", { name: "Close", exact: true }).click(); await badge(page, 0)
       await checklist(page).getByRole("button", { name: "Connect", exact: true }).click()
       state.ready = true
@@ -234,14 +290,14 @@ try {
     const state = fixture(); state.failMatters = true
     const { context, page } = await open(state)
     try {
-      await page.goto(`${baseURL}/dashboard?tab=setup`); await settled(page); await badge(page, 0)
+      await page.goto(`${baseURL}/dashboard?tab=setup`); await settled(page); await badge(page, 1)
       await expect(page.getByRole("status").filter({ hasText: "Your matters could not be loaded. You can still update setup." })).toBeVisible()
       await expect(checklist(page).getByRole("textbox", { name: "Your full name", exact: true })).toBeEnabled()
-      await expect(checklist(page).getByRole("button", { name: "Connect", exact: true })).toBeEnabled()
+      await expect(checklist(page).getByRole("button", { name: "Change", exact: true })).toBeEnabled()
       state.failMatters = false
       await page.getByRole("button", { name: "Retry matters", exact: true }).click()
       await expect(page.getByRole("status").filter({ hasText: "Your matters could not be loaded. You can still update setup." })).toHaveCount(0)
-      await settled(page); await badge(page, 0)
+      await settled(page); await badge(page, 1)
       clean(state)
     } finally { await context.close() }
   })

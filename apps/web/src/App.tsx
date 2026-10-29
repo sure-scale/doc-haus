@@ -11,6 +11,7 @@ import Agents from "./pages/Agents"
 import MatterDetail from "./pages/MatterDetail"
 import NotFound from "./pages/NotFound"
 import Settings from "./components/settings/Settings"
+import Onboarding from "./components/onboarding/Onboarding"
 import Sidebar from "./components/Sidebar"
 import BootScreen from "./components/BootScreen"
 import ConnectionBanner from "./components/ConnectionBanner"
@@ -39,6 +40,7 @@ export default function App() {
   const openRecovery = useCallback((providerID: string) => {
     setReconnectProvider(providerID); setSettingsTab("ai"); setRecoveryRequired(true); setSettings(true)
   }, [])
+  const [onboarding, setOnboarding] = useState(false)
   const [setup, setSetup] = useState<SetupProgress | null>(null)
   const [engineReady, setEngineReady] = useState(false)
   const [ingestReady, setIngestReady] = useState(false)
@@ -57,10 +59,7 @@ export default function App() {
           setEngineReady(true)
           const progress = await getSetup()
           if (controller.signal.aborted) return
-          setSetup(progress); setIngestReady(true)
-          // First-run setup lives in the dashboard. Keep a deliberately opened
-          // page, and do not redirect again when Settings refreshes progress.
-          if (!progress.ready && window.location.pathname === "/") navigate("/dashboard?tab=setup", { replace: true })
+          setSetup(progress); setIngestReady(true); setOnboarding(progress.next !== "done")
           return
         } catch {
           if (controller.signal.aborted) return
@@ -71,7 +70,7 @@ export default function App() {
     void boot()
     return () => controller.abort()
   }, [acknowledged, bootRetry])
-  const updates = useUpdates(acknowledged && setup?.ready === true)
+  const updates = useUpdates(acknowledged && setup?.next === "done")
   const booted = engineReady && ingestReady && setup !== null
   async function refreshSetup() {
     try {
@@ -102,7 +101,7 @@ export default function App() {
         <div id="matter-drawer-slot" className="matter-drawer-slot" />
         <main id="main-content" className="content" tabIndex={-1}>
           <ConnectionBanner />
-          <ProviderConnectionBanner enabled={setup?.ready === true && !recoveryRequired} onOpenSettings={openRecovery} />
+          <ProviderConnectionBanner enabled={setup?.next === "done" && !onboarding && !recoveryRequired} onOpenSettings={openRecovery} />
           {/* Keyed on the path so each page settles in with a short fade. */}
           <div className={`container route-fade${location.pathname.startsWith("/matter/") ? " matter-container" : ""}`} key={location.pathname}>
             <Routes>
@@ -116,17 +115,29 @@ export default function App() {
               <Route path="/agents" element={<Agents />} />
               <Route
                 path="/matter/:id"
-                element={setup?.ready ? <MatterDetail onSessionsChanged={() => setSessionsVersion((v) => v + 1)} /> : <p className="settings-notice">Connect an AI provider and save your primary and fast models to start working in this matter. <button onClick={() => { setSettingsTab("ai"); setReconnectProvider(undefined); setSettings(true) }}>Set up AI</button></p>}
+                element={setup?.ready && setup.next === "done" ? <MatterDetail onSessionsChanged={() => setSessionsVersion((v) => v + 1)} /> : <p className="settings-notice">Finish setup before opening assistant work. Optional steps can be skipped. <button onClick={() => setOnboarding(true)}>Set up models</button><button onClick={() => setSettings(true)}>Open settings</button></p>}
               />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </div>
         </main>
-        <Exit when={updates.open && setup?.ready && !settingsShown}>{() => <UpdateModal updates={updates} />}</Exit>
+        <Exit when={updates.open && setup?.next === "done" && !onboarding && !settingsShown}>{() => <UpdateModal updates={updates} />}</Exit>
+        <Exit when={onboarding}>{() => (
+          <Onboarding
+            onClose={() => {
+              setOnboarding(false)
+              // A lawyer who has just finished setup on the matters list lands on
+              // dashboard Setup tab; one who opened another page stays.
+              void refreshSetup().then((progress) => {
+                if (progress?.next === "done" && window.location.pathname === "/") navigate("/dashboard?tab=setup", { replace: true })
+              })
+            }}
+            onSampleAdded={() => setMattersVersion((v) => v + 1)}
+          />
+        )}</Exit>
         {settingsShown && (
           <Settings
             closing={settingsClosing}
-            firstRun={!setup.ready}
             recoveryRequired={recoveryRequired}
             initialTab={reconnectProvider !== undefined ? "ai" : settingsTab}
             reconnectProvider={reconnectProvider}
