@@ -845,8 +845,7 @@ export function chronologyMatchCandidates(account: ChronologyAccount, events: Ch
       return { event, titles, context }
     })
   const frequency = new Map<string, number>()
-  for (const row of rows)
-    for (const word of row.context) frequency.set(word, (frequency.get(word) ?? 0) + 1)
+  for (const row of rows) for (const word of row.context) frequency.set(word, (frequency.get(word) ?? 0) + 1)
   const weight = (word: string) => 1 + Math.log((rows.length + 1) / ((frequency.get(word) ?? 0) + 1))
   const similarity = (left: Set<string>, right: Set<string>) => {
     const mass = (set: Set<string>) => [...set].reduce((total, word) => total + weight(word), 0)
@@ -970,9 +969,19 @@ function stageProposal(
         updatedAt: now(),
       }
     : accountEvent(account)
-  const id = `proposal-${hash(event ? [event.id, chronologyEventHash(event)].join("\0") : account.id).slice(0, 24)}`
-  const pending = state.proposals.find((p) => p.id === id && (p.status === "pending" || p.status === "deferred"))
+  const eventHash = event && chronologyEventHash(event)
+  const sameBase = (proposal: ChronologyProposal) =>
+    event &&
+    proposal.id.startsWith("proposal-") &&
+    proposal.origin === "refresh" &&
+    (proposal.kind === "amendment" || proposal.kind === "conflict") &&
+    proposal.targetIds.length === 1 &&
+    proposal.targetIds[0] === event.id &&
+    proposal.baseEventHashes[event.id] === eventHash
+  const additionId = `proposal-${hash(account.id).slice(0, 24)}`
+  const pending = state.proposals.find((p) => sameBase(p) && (p.status === "pending" || p.status === "deferred"))
   if (pending && event) {
+    const before = JSON.stringify({ events: pending.events, kind: pending.kind })
     const proposed = pending.events[0]!
     if (!proposed.accounts.some((a) => a.id === account.id)) proposed.accounts.push(account)
     const dateConflict = proposed.accounts.some(
@@ -982,10 +991,35 @@ function stageProposal(
     if (proposed.disputed) proposed.date = structuredClone(event.date)
     else proposed.date = proposedResolvedDate(event, account) ?? proposed.date
     pending.kind = proposed.disputed ? "conflict" : "amendment"
-    pending.status = "pending"
+    if (JSON.stringify({ events: pending.events, kind: pending.kind }) !== before) pending.status = "pending"
     return
   }
-  if (state.proposals.some((p) => p.id === id)) return
+  if (
+    state.proposals.some((p) =>
+      event
+        ? sameBase(p) &&
+          p.events[0]?.accounts.some((a) => a.id === account.id) &&
+          (!resolvedDate || JSON.stringify(p.events[0].date) === JSON.stringify(resolvedDate))
+        : p.id === additionId,
+    )
+  )
+    return
+  // A grouped conflict can change the header originally proposed by this
+  // account. A later, different repair needs its own identity; an equivalent
+  // decided proposal above still suppresses unchanged retries.
+  const id = event
+    ? `proposal-${hash(
+        [
+          event.id,
+          eventHash,
+          account.id,
+          JSON.stringify(next.date),
+          ...state.proposals
+            .filter((p) => sameBase(p) && p.events[0]?.accounts.some((a) => a.id === account.id))
+            .map((p) => p.id),
+        ].join("\0"),
+      ).slice(0, 24)}`
+    : additionId
   const proposal: ChronologyProposal = {
     id,
     kind: !event ? "addition" : conflict ? "conflict" : "amendment",

@@ -1342,6 +1342,17 @@ test("a changed supporting quotation stages the same explicit date correction an
   const proposal = state.proposals[0]!
   expect(proposal.events[0]!.accounts).toHaveLength(stranded[0]!.accounts.length)
   expect(proposal.events[0]!.date.start).toBe("2038-04-17")
+  state = decideChronologyProposal(dir, state.revision, proposal.id, "defer")
+  await startChronologyRun(
+    dir,
+    { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" },
+    fake(() => {
+      throw new Error("Completed section should be reused")
+    }),
+  )
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.proposals[0]!.status).toBe("deferred")
   state = decideChronologyProposal(dir, state.revision, proposal.id, "accept")
   expect(state.events[0]!.date.start).toBe("2038-04-17")
   expect(state.events[0]!.reviewed).toBe(true)
@@ -1423,4 +1434,134 @@ test("cached date repair cannot infer unknown originals, numeric order, periods 
     expect(state.events).toEqual(before)
     expect(state.proposals).toHaveLength(0)
   }
+})
+
+test("keeping an update does not suppress later new evidence about the unchanged saved event", async () => {
+  const dir = matter(),
+    first = "The laboratory received the sealed case on 8 June 2035.",
+    second = "A receipt log records the sealed case arrival on 8 June 2035.",
+    third = "The courier confirms that the sealed case arrived on 8 June 2035 with a damaged hinge."
+  const date = { original: "8 June 2035", precision: "exact", start: "2035-06-08" }
+  source(dir, "Initial note.md", first)
+  const deps = fake((input) => {
+    if (input.agent === "chronology-match") return matchFirst(input.text)
+    const body = sectionText(input.text)
+    return complete([
+      event("Sealed case received", body.includes(third) ? third : body.includes(second) ? second : first, { date }),
+    ])
+  })
+  await startChronologyRun(dir, { expectedRevision: 0, privilege: "mixed", mode: "initial" }, deps)
+  await awaitChronologyRun(dir)
+  source(dir, "Receipt log.md", second)
+  let state = readChronology(dir)
+  await startChronologyRun(dir, { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" }, deps)
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  const original = structuredClone(state.events),
+    oldProposal = state.proposals[0]!
+  state = decideChronologyProposal(dir, state.revision, oldProposal.id, "keep")
+  source(dir, "Courier report.md", third)
+  await startChronologyRun(dir, { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" }, deps)
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.events).toEqual(original)
+  expect(state.proposals.find((p) => p.id === oldProposal.id)?.status).toBe("kept")
+  const pending = state.proposals.filter((p) => p.status === "pending")
+  expect(pending).toHaveLength(1)
+  expect(pending[0]!.id).not.toBe(oldProposal.id)
+  expect(pending[0]!.events[0]!.accounts.some((a) => a.evidence.some((e) => e.excerpt === third))).toBe(true)
+  state = decideChronologyProposal(dir, state.revision, pending[0]!.id, "keep")
+  await startChronologyRun(
+    dir,
+    { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" },
+    fake(() => {
+      throw new Error("Completed sources must not replay")
+    }),
+  )
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.events).toEqual(original)
+  expect(state.proposals).toHaveLength(2)
+  expect(state.proposals.every((p) => p.status === "kept")).toBe(true)
+})
+
+test("new source accounts stay separate from a pending provenance-only correction", async () => {
+  const dir = matter(),
+    first = "The technician collected the instrument on 6 May 2025.",
+    second = "The carrier confirms instrument collection on 6 May 2025."
+  source(dir, "Technician note.md", first)
+  const deps = fake((input) =>
+    input.agent === "chronology-match"
+      ? matchFirst(input.text)
+      : complete([event("Instrument collected", sectionText(input.text).includes(second) ? second : first)]),
+  )
+  await startChronologyRun(dir, { expectedRevision: 0, privilege: "mixed", mode: "initial" }, deps)
+  await awaitChronologyRun(dir)
+  let state = readChronology(dir)
+  state = mutateChronology(dir, state.revision, "legacy classification", (current) => {
+    current.events[0]!.accounts[0]!.evidence[0]!.provenance = "supplied-chronology"
+  })
+  const original = structuredClone(state.events)
+  source(dir, "Carrier note.md", second)
+  await startChronologyRun(dir, { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" }, deps)
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.events).toEqual(original)
+  expect(state.proposals).toHaveLength(2)
+  expect(state.proposals.find((p) => p.id.startsWith("provenance-"))!.events[0]!.accounts).toHaveLength(1)
+  expect(state.proposals.find((p) => p.id.startsWith("proposal-"))!.events[0]!.accounts).toHaveLength(2)
+})
+
+test("keeping a grouped conflict does not suppress a different supported date repair", async () => {
+  const dir = matter(),
+    original = "The calibration case arrived on 16 September 2036.",
+    conflicting = "The carrier reports the case arrival on 17 September 2036."
+  source(dir, "Receiving record.md", original)
+  const deps = fake((input) => {
+    if (input.agent === "chronology-match") return matchFirst(input.text, "conflict")
+    const later = sectionText(input.text).includes(conflicting)
+    return complete([
+      event("Calibration case arrived", later ? conflicting : original, {
+        date: {
+          original: later ? "17 September 2036" : "16 September 2036",
+          precision: "exact",
+          start: later ? "2036-09-17" : "2036-09-16",
+        },
+      }),
+    ])
+  })
+  await startChronologyRun(dir, { expectedRevision: 0, privilege: "mixed", mode: "initial" }, deps)
+  await awaitChronologyRun(dir)
+  let state = readChronology(dir)
+  state = mutateChronology(dir, state.revision, "legacy unresolved header", (current) => {
+    current.events[0]!.date = { original: "16 September 2036", precision: "ambiguous" }
+  })
+  const saved = structuredClone(state.events)
+  source(dir, "Carrier record.md", conflicting)
+  await startChronologyRun(dir, { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" }, deps)
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.proposals).toHaveLength(1)
+  const grouped = state.proposals[0]!
+  expect(grouped.kind).toBe("conflict")
+  expect(grouped.events[0]!.date).toEqual(saved[0]!.date)
+  state = decideChronologyProposal(dir, state.revision, grouped.id, "keep")
+  const cached = fake(() => {
+    throw new Error("Completed sources must not replay")
+  })
+  await startChronologyRun(dir, { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" }, cached)
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.events).toEqual(saved)
+  const repair = state.proposals.find((proposal) => proposal.status === "pending")
+  expect(repair).toBeDefined()
+  expect(repair!.id).not.toBe(grouped.id)
+  expect(repair!.events[0]!.date.start).toBe("2036-09-16")
+  expect(repair!.events[0]!.disputed).toBe(false)
+  state = decideChronologyProposal(dir, state.revision, repair!.id, "keep")
+  await startChronologyRun(dir, { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" }, cached)
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.proposals).toHaveLength(2)
+  expect(state.proposals.every((proposal) => proposal.status === "kept")).toBe(true)
 })
