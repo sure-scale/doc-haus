@@ -5,7 +5,7 @@ import { renderMarkdownToDocx } from "./render"
 import { createDocxRevision, applyDocxParagraphEdits } from "./docx-amendments"
 import { exportDocxComments, readDocxComments } from "./docx-comments"
 import { docxodus } from "./docxodus"
-import { authorExactParagraphSpacing } from "./docx-exact-spacing"
+import { authorExactParagraphSpacing, inspectExactParagraphSpacing } from "./docx-exact-spacing"
 const sha = (bytes:Uint8Array) => createHash("sha256").update(bytes).digest("hex")
 test("original generated source and irrelevant-style variant preserve paired bookmarks in either duplicate cell", async () => {
   const raw=(await renderMarkdownToDocx("| Label | Value |\n| --- | --- |\n| A | Same |\n| B | Same |" )).bytes
@@ -228,4 +228,85 @@ test("OPC authoritative part bindings and style references fail closed", async (
     const digest=sha(duplicate); await expect(authorExactParagraphSpacing(duplicate,{...request,sourceSha256:digest})).rejects.toThrow("docx_exact_spacing:duplicate_part")
     expect(setter).toHaveBeenCalledTimes(0); expect(sha(duplicate)).toBe(digest)
   } finally {setter.mockRestore()}
+})
+
+test("inspector preserves duplicate targets, proves every story, and never mutates", async () => {
+  const raw=(await renderMarkdownToDocx("Same\n\n| A | B |\n| --- | --- |\n| X | Same |")).bytes, parts=unzipSync(raw)
+  const w='http://schemas.openxmlformats.org/wordprocessingml/2006/main', o='http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+  const para='<w:p><w:r><w:t>Same</w:t></w:r></w:p>'
+  const stories:[string,string,string][]=[['header1','header',`<w:hdr xmlns:w="${w}">${para}</w:hdr>`],['footer1','footer',`<w:ftr xmlns:w="${w}">${para}</w:ftr>`],['footnotes','footnotes',`<w:footnotes xmlns:w="${w}"><w:footnote w:id="1">${para}</w:footnote></w:footnotes>`],['endnotes','endnotes',`<w:endnotes xmlns:w="${w}"><w:endnote w:id="1">${para}</w:endnote></w:endnotes>`],['comments','comments',`<w:comments xmlns:w="${w}"><w:comment w:id="1" w:author="Reviewer">${para}</w:comment></w:comments>`]]
+  let rels=strFromU8(parts['word/_rels/document.xml.rels']!), types=strFromU8(parts['[Content_Types].xml']!), body=strFromU8(parts['word/document.xml']!)
+  for(const [file,type,xml] of stories) {parts[`word/${file}.xml`]=strToU8(xml);rels=rels.replace('</Relationships>',`<Relationship Id="story-${file}" Type="${o}/${type}" Target="${file}.xml"/></Relationships>`);types=types.replace('</Types>',`<Override PartName="/word/${file}.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.${type}+xml"/></Types>`)}
+  body=body.replace('<w:sectPr>',`<w:sectPr><w:headerReference xmlns:r="${o}" w:type="default" r:id="story-header1"/><w:footerReference xmlns:r="${o}" w:type="default" r:id="story-footer1"/>`)
+  body=body.replace('</w:body>',`<w:p><w:r><w:footnoteReference w:id="1"/><w:endnoteReference w:id="1"/></w:r><w:commentRangeStart w:id="1"/><w:commentRangeEnd w:id="1"/><w:r><w:commentReference w:id="1"/></w:r></w:p></w:body>`)
+  parts['word/document.xml']=strToU8(body);parts['word/_rels/document.xml.rels']=strToU8(rels);parts['[Content_Types].xml']=strToU8(types)
+  const source=zipSync(parts), digest=sha(source), dx=await docxodus(), session=dx.openDocxSession(source,{}), proto=Object.getPrototypeOf(session);session.close()
+  const setter=spyOn(proto,'setParagraphFormat'), save=spyOn(proto,'save')
+  try {
+    const result=await inspectExactParagraphSpacing(source,'Same')
+    expect(result.sourceSha256).toBe(digest); expect(result.matches.length).toBe(7)
+    expect(result.matches.filter(m=>m.eligibility.eligible)).toHaveLength(1)
+    expect(result.matches.filter(m=>!m.eligibility.eligible && m.eligibility.reason === "unsupported_empty_properties")).toHaveLength(1)
+    expect(new Set(result.matches.filter(m=>!m.eligibility.eligible && m.eligibility.reason === "unsupported_target").map(m=>m.scope)).size).toBe(5)
+    expect(setter).toHaveBeenCalledTimes(0);expect(save).toHaveBeenCalledTimes(0);expect(sha(source)).toBe(digest)
+    for (const content of ['<w:sym w:font="Symbol" w:char="F020"/>','<w:tab/>','<w:br/>','<w:cr/>','<w:contentPart/>','<w:fldChar w:fldCharType="begin"/>','<w:instrText>FIELD</w:instrText>']) {
+      const changed=stories[0]![2].replace('</w:hdr>',`<w:p><w:r>${content}</w:r></w:p></w:hdr>`)
+      expect(changed).not.toBe(stories[0]![2])
+      const altered=zipSync({...parts,'word/header1.xml':strToU8(changed)}), h=sha(altered)
+      await expect(inspectExactParagraphSpacing(altered,'Same')).rejects.toThrow('docx_exact_spacing:unsupported_story')
+      expect(setter).toHaveBeenCalledTimes(0);expect(save).toHaveBeenCalledTimes(0);expect(sha(altered)).toBe(h)
+    }
+    let removed=0, bodyRetained=0, headerRetained=0
+    const original=proto.grep, grep=spyOn(proto,'grep').mockImplementation(function(this:unknown,...args:unknown[]){
+      const found=original.apply(this,args), kept=found.filter((m:{enclosingAnchor:{scope:string}})=>m.enclosingAnchor.scope !== 'hdr1')
+      removed+=found.length-kept.length
+      bodyRetained+=kept.filter((m:{enclosingAnchor:{scope:string}})=>m.enclosingAnchor.scope === 'body').length
+      headerRetained+=kept.filter((m:{enclosingAnchor:{scope:string}})=>m.enclosingAnchor.scope === 'hdr1').length
+      return kept
+    })
+    try {await expect(inspectExactParagraphSpacing(source,'Same')).rejects.toThrow('docx_exact_spacing:incomplete_story')}
+    finally {grep.mockRestore()}
+    expect(removed).toBe(1);expect(bodyRetained).toBeGreaterThan(0);expect(headerRetained).toBe(0)
+    let altered=0
+    const partial=spyOn(proto,'grep').mockImplementation(function(this:unknown,...args:unknown[]){
+      const found=original.apply(this,args)
+      return found.map((m:{text:string;enclosingAnchor:{scope:string}}) => {
+        if (m.enclosingAnchor.scope === 'body' && m.text === 'Same' && altered === 0) {altered++;return {...m,text:'Sam'}}
+        return m
+      })
+    })
+    try {await expect(inspectExactParagraphSpacing(source,'Same')).rejects.toThrow('docx_exact_spacing:incomplete_story')}
+    finally {partial.mockRestore()}
+    expect(altered).toBe(1)
+    expect(setter).toHaveBeenCalledTimes(0);expect(save).toHaveBeenCalledTimes(0);expect(sha(source)).toBe(digest)
+  } finally {setter.mockRestore();save.mockRestore()}
+})
+
+test("inspector preserves raw direct values and author refuses semantic no-ops", async () => {
+  const raw=(await renderMarkdownToDocx("| A | B |\n| --- | --- |\n| X | Same |")).bytes, parts=unzipSync(raw), doc=strFromU8(parts['word/document.xml']!)
+  const target=[...doc.matchAll(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g)].find(m=>m[0].includes('>Same</w:t>'))![0]
+  const mutate=(value:string|null)=>zipSync({...parts,'word/document.xml':strToU8(doc.replace(target,target.replace('w:after="80"',value===null?'':`w:after="${value}"`)))})
+  const source=mutate('0080'), digest=sha(source), session=(await docxodus()).openDocxSession(source,{}), proto=Object.getPrototypeOf(session);session.close(); const setter=spyOn(proto,'setParagraphFormat'),save=spyOn(proto,'save')
+  try {
+    const inspected=await inspectExactParagraphSpacing(source,'Same'), row=inspected.matches[0]!
+    expect(row.directAfter).toEqual({kind:'twips',raw:'0080',normalized:'80'});expect(row.eligibility).toEqual({eligible:true})
+    await expect(authorExactParagraphSpacing(source,{sourceSha256:digest,paragraphHandle:row.paragraphHandle,paragraphText:row.text,tableContext:row.tableContext,spacingAfterPoints:4,author:'Synthetic Counsel'})).rejects.toThrow('docx_exact_spacing:no_change')
+    const absent=await inspectExactParagraphSpacing(mutate(null),'Same');expect(absent.matches[0]!.directAfter).toEqual({kind:'absent'})
+    const bad=await inspectExactParagraphSpacing(mutate('80x'),'Same');expect(bad.matches[0]!.directAfter).toEqual({kind:'unavailable'});expect(bad.matches[0]!.eligibility).toEqual({eligible:false,reason:'unsupported_spacing'})
+    expect((await inspectExactParagraphSpacing(source,'not present')).matches).toEqual([])
+    await expect(inspectExactParagraphSpacing(source,'')).rejects.toThrow('docx_exact_spacing:invalid_query')
+    expect(setter).toHaveBeenCalledTimes(0);expect(save).toHaveBeenCalledTimes(0);expect(sha(source)).toBe(digest)
+  } finally {setter.mockRestore();save.mockRestore()}
+})
+
+test("inspector refuses excessive duplicates and excludes proven deleted-only text", async () => {
+  const large=(await renderMarkdownToDocx(Array(65).fill('Same').join('\n\n'))).bytes, largeHash=sha(large)
+  await expect(inspectExactParagraphSpacing(large,'Same')).rejects.toThrow('docx_exact_spacing:match_limit')
+  expect(sha(large)).toBe(largeHash)
+  const raw=(await renderMarkdownToDocx('Keep\n\nLost')).bytes, parts=unzipSync(raw), doc=strFromU8(parts['word/document.xml']!)
+  const changed=doc.replace('<w:r><w:t xml:space="preserve">Lost</w:t></w:r>','<w:del w:id="901" w:author="Reviewer" w:date="2026-10-29T00:00:00Z"><w:r><w:delText xml:space="preserve">Lost</w:delText></w:r></w:del>')
+  expect(changed).not.toBe(doc);const source=zipSync({...parts,'word/document.xml':strToU8(changed)}), digest=sha(source)
+  expect((await inspectExactParagraphSpacing(source,'Keep')).matches).toHaveLength(1)
+  expect((await inspectExactParagraphSpacing(source,'Lost')).matches).toHaveLength(0)
+  expect(sha(source)).toBe(digest)
 })

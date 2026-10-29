@@ -215,6 +215,100 @@ function safeSpacingClosure(pkg: Package, para: Element, inTable: boolean) {
     id=bases[0]!.getAttributeNS(W,"val"); requireProof(!!id,"unresolved_spacing")
   }
 }
+type Opened = Awaited<ReturnType<typeof openRevision>>
+function sourceTarget(pkg: Package, opened: Opened, index: number) {
+  const view=opened.revision.paragraphs[index]!, target=opened.paragraphs[index]!
+  requireProof(target.part === BODY && !target.pending && (!view.table || !view.table.unavailable_reason && view.table.row_span === 1 && view.table.column_span === 1 && view.table.vertical_merge === "none"),"unsupported_target")
+  const ordinal=all(opened.documents[BODY]!,"p").indexOf(target.node), para=all(pkg.body,"p")[ordinal]
+  requireProof(ordinal>=0 && para,"target_missing"); protect(pkg.body,para); safeSpacingClosure(pkg,para,!!view.table)
+  const table=para.parentNode?.parentNode?.parentNode as Element | undefined
+  if (view.table) requireProof(table?.namespaceURI === W && table.localName === "tbl" && !all(table,"tblStyle").length && !all(table,"tblStylePr").length,"unsupported_table")
+  const old=ppr(para), sp=spacing(para)
+  requireProof(old && sp,"unsupported_empty_properties")
+  return {ordinal,old,sp}
+}
+function directAfter(sp: Element): {kind:"absent"}|{kind:"twips";raw:string;normalized:string} {
+  if (!sp.hasAttributeNS(W,"after")) return {kind:"absent"}
+  const value=sp.getAttributeNS(W,"after")
+  requireProof(/^\d{1,32}$/.test(value),"unsupported_spacing")
+  return {kind:"twips",raw:value,normalized:BigInt(value).toString()}
+}
+// Only classify content we can account for as current literal text. This is
+// not a claim about Word's visually empty or rendered layout.
+function currentLiteral(paragraph: Element) {
+  for (let n=paragraph.parentNode; n && n.nodeType!==9; n=n.parentNode)
+    requireProof(!(n.nodeType===1 && (n as Element).namespaceURI===W && ["del","moveFrom","ins","moveTo"].includes((n as Element).localName)),"unsupported_story")
+  let text=""
+  const refs=new Set(["footnoteReference","endnoteReference","commentReference","bookmarkStart","bookmarkEnd","commentRangeStart","commentRangeEnd","permStart","permEnd"])
+  function visit(node: Node, removed: boolean, parent: string) {
+    if (node.nodeType===3 || node.nodeType===4) { requireProof(!node.nodeValue?.trim(),"unsupported_story"); return }
+    if (node.nodeType===7 || node.nodeType===8) return
+    requireProof(node.nodeType===1,"unsupported_story")
+    const e=node as Element; requireProof(e.namespaceURI===W,"unsupported_story")
+    const name=e.localName
+    if (name === "pPr" || name === "rPr") {
+      requireProof((name === "pPr" && parent === "p") || (name === "rPr" && parent === "r"),"unsupported_story")
+      for (const unsafe of ["p","tbl","r","t","delText","txbxContent","altChunk","object","drawing","pict"]) requireProof(!all(e,unsafe).length,"unsupported_story")
+      requireProof(!e.getElementsByTagNameNS(MC,"AlternateContent").length,"unsupported_story"); return
+    }
+    if (name === "t" || name === "delText") {
+      requireProof(parent === "r" && (name !== "delText" || removed) && Array.from(e.childNodes ?? []).every(c => c.nodeType===3 || c.nodeType===4),"unsupported_story")
+      if (name === "t" && !removed) text+=e.textContent ?? ""
+      return
+    }
+    if (refs.has(name)) {
+      requireProof((parent === "p" || parent === "r") && !e.childNodes?.length && /^\d+$/.test(e.getAttributeNS(W,"id")),"unsupported_story"); return
+    }
+    const wrappers=["p","r","hyperlink","ins","del","moveTo","moveFrom"]
+    requireProof(wrappers.includes(name),"unsupported_story")
+    requireProof(name === "p" ? parent === "" : name === "r" ? ["p","hyperlink","ins","del","moveTo","moveFrom"].includes(parent) : parent === "p" || parent === "hyperlink","unsupported_story")
+    const next=removed || name === "del" || name === "moveFrom"
+    for (const c of Array.from(e.childNodes ?? [])) visit(c,next,name)
+  }
+  visit(paragraph,false,""); return text
+}
+// Treat every Word XML paragraph as potentially visible unless confidently
+// excluded; unknown or unmapped sources cannot yield an incomplete result.
+function completeProjection(pkg: Package, opened: Opened) {
+  const supportedRoots=new Set(["document","hdr","ftr","footnotes","endnotes","comments"])
+  for (const [part,doc] of Object.entries(pkg.docs)) {
+    for (const name of ["txbxContent","altChunk","object","drawing","pict"]) requireProof(!all(doc,name).length,"unsupported_story")
+    requireProof(!Array.from(doc.getElementsByTagNameNS(MC,"AlternateContent")).length,"unsupported_story")
+    const paras=all(doc,"p")
+    if (!paras.length) continue
+    requireProof(doc.documentElement.namespaceURI === W && supportedRoots.has(doc.documentElement.localName),"unsupported_story")
+    const mapped=opened.paragraphs.flatMap((p,index) => p.part === part ? [{p,index}] : [])
+    const current=paras.map(node => ({node,text:currentLiteral(node)})).filter(row => row.text.length > 0)
+    requireProof(current.length === mapped.length && current.every((row,i) => {
+      const mappedRow=mapped[i]!
+      return mappedRow.p.node === all(opened.documents[part]!,"p")[paras.indexOf(row.node)] &&
+        mappedRow.p.match.text === row.text && opened.revision.paragraphs[mappedRow.index]!.text === row.text
+    }),"incomplete_story")
+  }
+}
+export async function inspectExactParagraphSpacing(input:Uint8Array, exactText:string) {
+  requireProof(typeof exactText === "string" && exactText.length > 0 && exactText.length <= 8192,"invalid_query")
+  const source=new Uint8Array(input), pkg=unpack(source), opened=await openRevision(source,{pendingRevisions:"layer"})
+  try {
+    completeProjection(pkg,opened)
+    const matches=opened.revision.paragraphs.flatMap((view,index) => view.text === exactText ? [{view,index}] : [])
+    requireProof(matches.length <= 64,"match_limit")
+    return {sourceSha256:hash(source),matches:matches.map(({view,index}) => {
+      const target=opened.paragraphs[index]!, para=target.node, sp=spacing(para)
+      let direct:ReturnType<typeof directAfter>|{kind:"unavailable"}=sp ? {kind:"unavailable"} : {kind:"absent"}
+      let eligibility:{eligible:true}|{eligible:false;reason:string}
+      try {
+        requireProof(!all(pkg.docs["word/settings.xml"]!,"documentProtection").length,"protected_document")
+        const checked=sourceTarget(pkg,opened,index); direct=directAfter(checked.sp); eligibility={eligible:true}
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.startsWith("docx_exact_spacing:")) throw error
+        eligibility={eligible:false,reason:error.message.slice("docx_exact_spacing:".length)}
+        if (sp) { try {direct=directAfter(sp)} catch {} }
+      }
+      return {paragraphHandle:view.paragraph_handle,text:view.text,scope:view.scope,tableContext:view.table ? JSON.parse(JSON.stringify(view.table)) as DocxTableContext : null,directAfter:direct,eligibility}
+    })}
+  } finally {opened.session.close()}
+}
 export type ExactSpacingRequest = { sourceSha256: string; paragraphHandle: string; paragraphText: string; tableContext: DocxTableContext | null; spacingAfterPoints: number; author: string }
 export async function authorExactParagraphSpacing(input: Uint8Array, request: ExactSpacingRequest) {
   const source = new Uint8Array(input), pkg=unpack(source)
@@ -227,15 +321,9 @@ export async function authorExactParagraphSpacing(input: Uint8Array, request: Ex
     requireProof(indices.length === 1,"unknown_handle")
     const index=indices[0]!, view=opened.revision.paragraphs[index]!, target=opened.paragraphs[index]!
     requireProof(view.text === request.paragraphText && JSON.stringify(view.table) === JSON.stringify(request.tableContext),"target_changed")
-    requireProof(target.part === BODY && !target.pending && (!view.table || !view.table.unavailable_reason && view.table.row_span === 1 && view.table.column_span === 1 && view.table.vertical_merge === "none"),"unsupported_target")
-    const ordinal=all(opened.documents[BODY]!,"p").indexOf(target.node), para=all(pkg.body,"p")[ordinal]
-    requireProof(ordinal>=0 && para,"target_missing"); protect(pkg.body,para); safeSpacingClosure(pkg,para,!!view.table)
-    const table=para.parentNode?.parentNode?.parentNode as Element | undefined
-    if (view.table) requireProof(table?.namespaceURI === W && table.localName === "tbl" && !all(table,"tblStyle").length && !all(table,"tblStylePr").length,"unsupported_table")
-    const old=ppr(para), before=spacing(para)?.getAttributeNS(W,"after") ?? null
-    requireProof(old && spacing(para),"unsupported_empty_properties")
+    const {ordinal,old,sp}=sourceTarget(pkg,opened,index), direct=directAfter(sp)
     const desired=request.spacingAfterPoints*20
-    requireProof(before !== String(desired),"no_change")
+    requireProof(direct.kind !== "twips" || BigInt(direct.normalized) !== BigInt(desired),"no_change")
     const prior=opened.session.listRevisions(), priorIds=new Set(prior.map(x=>x.id)); requireProof(priorIds.size === prior.length,"ambiguous_revisions")
     const set=opened.session.setParagraphFormat(target.match.enclosingAnchor.id,{spacingAfter:desired}); requireProof(set.success,"sdk_refused")
     const bakedCandidate=unpack(opened.session.save()); samePackage(pkg,bakedCandidate); verifyBody(pkg.body,bakedCandidate.body,ordinal,desired)
@@ -258,6 +346,6 @@ export async function authorExactParagraphSpacing(input: Uint8Array, request: Ex
         const rows=session.listRevisions(); const clean=(rs:typeof rows)=>rs.map(({anchorId:_a,affectedAnchors:_b,...r})=>r).sort((a,b)=>a.id.localeCompare(b.id)); requireProof(JSON.stringify(clean(prior))===JSON.stringify(clean(rows)),"prior_revision_changed")
       } finally {session.close()}
     }
-    return {trackedBytes:tracked,bakedBytes:baked,revisionId,beforeDirect:before,afterDirect:String(desired)}
+    return {trackedBytes:tracked,bakedBytes:baked,revisionId,beforeDirect:direct.kind === "twips" ? direct.raw : null,afterDirect:String(desired)}
   } finally {opened.session.close()}
 }
