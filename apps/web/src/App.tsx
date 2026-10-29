@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { Route, Routes, useLocation } from "react-router-dom"
 import Matters from "./pages/Matters"
+import Dashboard from "./pages/Dashboard"
 import Clients from "./pages/Clients"
 import Templates from "./pages/Templates"
 import Playbooks from "./pages/Playbooks"
@@ -104,6 +105,7 @@ export default function App() {
           <div className={`container route-fade${location.pathname.startsWith("/matter/") ? " matter-container" : ""}`} key={location.pathname}>
             <Routes>
               <Route path="/" element={<Matters refresh={mattersVersion} />} />
+              <Route path="/dashboard" element={<Dashboard setup={setup} refresh={mattersVersion} />} />
               <Route path="/clients" element={<Clients />} />
               <Route path="/templates" element={<Templates />} />
               <Route path="/playbooks" element={<Playbooks />} />

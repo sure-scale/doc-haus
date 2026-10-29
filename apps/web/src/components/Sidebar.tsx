@@ -155,6 +155,15 @@ export default function Sidebar({
         <div id="application-navigation" className="sidebar-global-navigation">
           <nav className="sidebar-nav sidebar-primary" aria-label="Main navigation">
             <NavLink
+              to="/dashboard"
+              className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
+              title="Dashboard"
+              aria-label="Dashboard"
+            >
+              <IconDashboard />
+              <span>Dashboard</span>
+            </NavLink>
+            <NavLink
               to="/"
               end
               className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
@@ -382,6 +391,17 @@ function IconDocsNav() {
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
       <polyline points="14 2 14 8 20 8" />
+    </svg>
+  )
+}
+
+function IconDashboard() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+      <rect x="3" y="3" width="7.5" height="9" rx="2" />
+      <rect x="13.5" y="3" width="7.5" height="5" rx="2" />
+      <rect x="13.5" y="11" width="7.5" height="10" rx="2" />
+      <rect x="3" y="15" width="7.5" height="6" rx="2" />
     </svg>
   )
 }
