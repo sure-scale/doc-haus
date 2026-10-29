@@ -651,12 +651,13 @@ try {
   const reviewSurface = page.getByRole("dialog", { name: "Review chronology updates", exact: true })
   for (const purpose of ["Update this event", "Review a competing account", "Hide this event"]) {
     await expect(reviewSurface.getByRole("heading", { name: purpose, exact: true })).toBeVisible()
+    await reviewSurface.getByText("See full comparison", { exact: true }).click()
     await expect(reviewSurface.getByRole("region", { name: "Current saved entry", exact: true })).toContainText(
       "Equipment collected",
     )
     if (purpose === "Hide this event") {
       await expect(reviewSurface.getByRole("region", { name: "Proposed result", exact: true })).toHaveCount(0)
-      await expect(reviewSurface).toContainText("This does not delete the record")
+      await expect(reviewSurface).toContainText("This does not establish that the event did not happen")
     } else await expect(reviewSurface.getByRole("region", { name: "Proposed result", exact: true })).toBeVisible()
     await reviewSurface.getByRole("button", { name: "Keep current", exact: true }).click()
   }

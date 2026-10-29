@@ -1,51 +1,77 @@
-/* This reviewer lives inside the shared Updates surface, which owns its title,
-   close control, focus boundary and pale frosted backdrop. */
+/* Updates has a scroll body and a separate layout footer, inside the shared
+   modal Surface. Decisions never cover the comparison. */
+.chronology-surface-panel:has(> .chronology-surface-body > .update-review) {
+  height: min(820px, calc(var(--viewport-block, 100dvh) - 48px));
+}
+.chronology-surface-body:has(> .update-review) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+.chronology-surface-body:has(> .update-review) > .chronology-error {
+  flex: none;
+}
 .chronology-proposal-review.update-review {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
   border: 0;
   padding: 0;
   color: var(--chronology-ink, #172236);
+  overflow: hidden;
+}
+.update-review-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 18px 24px 24px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scroll-padding: 16px;
 }
 .update-review p {
   line-height: 1.55;
   overflow-wrap: anywhere;
 }
+.update-review-intro {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 16px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
 .update-review-intro > p {
-  margin: 0 0 7px;
-  color: #657084;
-  font-size: 13px;
+  margin: 0;
+  color: #697587;
+  font-size: 12px;
 }
 .update-review-intro .update-review-progress {
-  color: #28374b;
-  font-size: 13px;
-  font-weight: 600;
+  color: #344359;
+  font-weight: 500;
 }
 .update-review-navigation {
   display: flex;
-  align-items: end;
-  gap: 10px;
-  margin: 20px 0 12px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
 }
 .update-review-picker {
   min-width: 0;
   flex: 1;
-}
-.update-review-field-label {
-  display: block;
-  margin-bottom: 7px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #526075;
 }
 .update-review-picker .jx-trigger-bare {
   display: flex;
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  min-height: 48px;
-  gap: 14px;
-  padding: 9px 13px;
+  min-height: 54px;
+  gap: 12px;
+  padding: 8px 12px;
   border: 1px solid #dce2e9;
-  border-radius: 8px;
+  border-radius: 7px;
   background: #fff;
   text-align: left;
 }
@@ -55,111 +81,114 @@
 .update-review-picker .jx-trigger-bare small {
   display: block;
   color: #7a8493;
-  font-size: 11px;
-  margin-bottom: 2px;
+  font-size: 10px;
+  margin-bottom: 1px;
 }
 .update-review-picker .jx-trigger-bare strong {
   display: block;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
   overflow-wrap: anywhere;
 }
 .update-review-step-buttons {
   display: flex;
-  gap: 6px;
-  padding-bottom: 1px;
+  gap: 4px;
+}
+.update-review-step-buttons button,
+.update-review-more > summary {
+  box-sizing: border-box;
+  width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 5px;
 }
 .update-review-step-buttons button {
-  width: 44px;
-  min-height: 44px;
-  padding: 0;
-  font-size: 24px;
+  font-size: 20px;
   font-weight: 400;
 }
-.update-review-secondary-actions {
+.update-review-more {
+  position: relative;
+  flex: none;
+}
+.update-review-more > summary {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
   align-items: center;
-  margin-bottom: 20px;
+  justify-content: center;
+  list-style: none;
+  cursor: pointer;
+  border: 1px solid #e1e5eb;
+  background: #fff;
+  color: #657084;
+  font-size: 11px;
+  letter-spacing: 1px;
 }
-.update-review .update-review-secondary-actions > button,
-.update-review .update-review-assistance > button {
-  border: 0;
-  background: transparent;
+.update-review-more > summary::-webkit-details-marker {
+  display: none;
+}
+.update-review-more > div {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  width: min(310px, calc(100vw - 64px));
+  padding: 5px;
+  border: 1px solid #e1e5eb;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 24px #1822381c;
+}
+.update-review .update-review-more button {
+  display: grid;
+  gap: 3px;
+  width: 100%;
   min-height: 44px;
-  padding: 5px 0;
-  color: #314d70;
+  padding: 12px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  text-align: left;
   font-size: 12px;
-  font-weight: 500;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  box-shadow: none;
+  line-height: 1.5;
 }
-.update-review .update-review-secondary-actions .update-review-discard {
-  color: #717b8a;
-  margin-left: auto;
+.update-review .update-review-more button:hover {
+  background: #f0f4fa;
 }
 .update-review-purpose {
-  padding: 17px 0 8px;
-  border-top: 1px solid #e6e9ed;
-}
-.update-review-purpose .update-review-eyebrow {
-  margin: 0 0 6px;
-  font-size: 11px;
-  font-weight: 600;
-  color: #6e7a8b;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  margin-bottom: 12px;
 }
 .update-review-purpose h3 {
-  margin: 0 0 8px;
-  font-size: 21px;
-  font-weight: 500;
-  letter-spacing: -0.025em;
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
   outline: none;
 }
-.update-review-purpose > p:last-child {
-  max-width: 76ch;
+.update-review-purpose > p {
+  flex-basis: 100%;
   margin: 0;
-  font-size: 13px;
-  color: #606c7d;
+  font-size: 12px;
+  color: #657084;
 }
-.update-review-comparison {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 16px;
-  margin: 18px 0;
-  align-items: start;
+.update-review-later {
+  font-size: 11px;
+  color: #966523;
 }
-.update-review-comparison.is-single {
-  grid-template-columns: minmax(0, 1fr);
-}
-.update-review-comparison > section {
-  min-width: 0;
-  border: 1px solid #e1e5eb;
-  border-radius: 10px;
+.update-review-delta {
   padding: 16px;
-  background: #fff;
-}
-.update-review-comparison > .update-review-proposed {
-  border-color: #d2dfee;
+  border: 1px solid #d8e2ef;
+  border-radius: 9px;
   background: #f8faff;
 }
-.update-review-comparison h4 {
-  margin: 0 0 15px;
-  font-size: 11px;
-  font-weight: 600;
-  color: #63738a;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.update-review-entry {
-  font-size: 13px;
-  padding-bottom: 0;
-}
-.update-review-entry + .update-review-entry {
-  border-top: 1px solid #dce2ea;
-  margin-top: 18px;
-  padding-top: 18px;
+.update-review-overview-event + .update-review-overview-event {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #e0e6ef;
 }
 .update-review-event-title {
   display: block;
@@ -168,39 +197,49 @@
   font-weight: 600;
   overflow-wrap: anywhere;
 }
-.update-review-entry .update-review-event-date {
+.update-review-event-date {
   color: #526075;
   font-size: 12px;
-  margin: 6px 0 12px;
+  margin: 5px 0 10px;
 }
-.update-review-entry .update-review-qualifications {
+.update-review-overview-event > p:not(.update-review-event-date) {
+  font-size: 13px;
+  margin: 7px 0;
+}
+.update-review .update-review-qualifications,
+.update-review .update-review-lawyer-edit {
   color: #966523;
-  font-size: 12px;
+  font-size: 11px;
+  margin: 6px 0;
 }
-.update-review-entry details {
-  margin-top: 14px;
-  border-top: 1px solid #e2e7ee;
-  padding-top: 8px;
+.update-review .update-review-lawyer-edit {
+  color: #758091;
 }
-.update-review-entry summary {
-  min-height: 36px;
-  padding: 5px 0;
+.update-review-unchanged {
+  color: #50725e;
+  font-size: 11px;
+  margin: 8px 0 16px;
+}
+.update-review-unchanged span {
+  margin-right: 4px;
+}
+.update-review-delta-label {
+  margin: 16px 0 8px;
+  padding-top: 12px;
+  border-top: 1px solid #dce5f1;
+  color: #315e88;
   font-size: 12px;
   font-weight: 600;
-  cursor: pointer;
 }
-.update-review-accounts > div {
-  border-left: 2px solid #d9e0ea;
-  margin: 10px 0;
-  padding-left: 12px;
-  font-size: 12px;
+.update-review-delta-label > span:last-child {
+  font-weight: 400;
 }
 .update-review-source {
-  margin: 8px 0 14px;
-  padding-top: 8px;
-}
-.update-review-source + .update-review-source {
-  border-top: 1px solid #e2e7ee;
+  border: 1px solid #e0e5ec;
+  border-radius: 7px;
+  margin: 9px 0;
+  padding: 12px;
+  background: #fff;
 }
 .update-review-source > strong {
   display: block;
@@ -209,7 +248,7 @@
 }
 .update-review-source blockquote {
   border-left: 2px solid #ced9e8;
-  margin: 9px 0;
+  margin: 10px 0;
   padding: 0 0 0 11px;
   color: #42516a;
   font-size: 12px;
@@ -217,72 +256,181 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.update-review-source-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+.update-review-source-status > p,
 .update-review-source > p {
   font-size: 11px;
   color: #6c7989;
-}
-.update-review-source button {
-  min-height: 36px;
-  padding: 6px 11px;
-  font-size: 12px;
-}
-.update-review-reason {
-  padding: 14px 16px;
-  border-radius: 9px;
-  background: #f6f7f9;
-}
-.update-review-reason h4 {
-  font-size: 12px;
-  margin: 0 0 4px;
-  font-weight: 600;
-}
-.update-review-reason p {
-  font-size: 12px;
-  color: #5c6879;
   margin: 0;
 }
-.update-review-reason h4:not(:first-child) {
-  margin-top: 13px;
+.update-review .update-review-source button,
+.update-review .update-review-ask {
+  min-height: 36px;
+  padding: 4px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #365780;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  font-size: 12px;
+  box-shadow: none;
 }
-.update-review-evidence-note {
-  color: #7c8592;
+.update-review-account-summary > p {
   font-size: 11px;
-  margin: 12px 0 14px;
+  color: #657084;
+  margin: 10px 0 0;
+}
+.update-review summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  min-height: 36px;
+  padding: 8px 0;
+  box-sizing: border-box;
+}
+.update-review-field-changes {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+.update-review-field-changes > div {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px 14px;
+}
+.update-review-field-changes h4 {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #526075;
+  font-size: 11px;
+  font-weight: 600;
+}
+.update-review-field-changes > div > div {
+  min-width: 0;
+  padding: 9px 10px;
+  border-left: 2px solid #d4deeb;
+  background: #fff;
+}
+.update-review-field-changes > div > div:last-child {
+  border-color: #8dafda;
+}
+.update-review-field-changes span {
+  color: #788496;
+  font-size: 10px;
+}
+.update-review-field-changes p {
+  font-size: 12px;
+  margin: 3px 0 0;
+}
+.update-review-full-comparison {
+  margin-top: 14px;
+  border-top: 1px solid #e6e9ef;
+}
+.update-review-comparison {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  margin: 8px 0 16px;
+  align-items: start;
+}
+.update-review-comparison.is-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+.update-review-comparison > section {
+  min-width: 0;
+  border: 1px solid #e1e5eb;
+  border-radius: 8px;
+  padding: 14px;
+  background: #fff;
+}
+.update-review-comparison > .update-review-proposed {
+  border-color: #d2dfee;
+  background: #f8faff;
+}
+.update-review-comparison h4 {
+  margin: 0 0 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #63738a;
+}
+.update-review-entry {
+  font-size: 12px;
+  padding-bottom: 0;
+}
+.update-review-entry + .update-review-entry {
+  border-top: 1px solid #dce2ea;
+  margin-top: 14px;
+  padding-top: 14px;
+}
+.update-review-entry details {
+  margin-top: 10px;
+  border-top: 1px solid #e2e7ee;
+}
+.update-review-account {
+  border-left: 2px solid #d9e0ea;
+  margin: 10px 0;
+  padding-left: 12px;
+  font-size: 12px;
+}
+.update-review-account p {
+  margin: 5px 0;
+}
+.update-review-reason {
+  border-top: 1px solid #e6e9ef;
+  font-size: 12px;
+}
+.update-review-reason h4 {
+  margin: 12px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.update-review-reason > p {
+  margin: 6px 0 10px;
+  color: #657084;
+}
+.update-review-reason .update-review-evidence-note {
+  font-size: 11px;
 }
 .update-review-hide-note,
+.update-review-conflict-note,
+.update-review-structure-note,
 .update-review-notice,
 .update-review-batch {
-  background: #f7f8fa;
   border: 1px solid #e1e5eb;
-  border-radius: 9px;
-  padding: 15px 16px;
-  margin: 14px 0;
-  font-size: 13px;
+  border-radius: 7px;
+  padding: 12px;
+  margin: 12px 0;
+  font-size: 12px;
+  background: #f7f8fa;
 }
-.update-review-hide-note strong,
-.update-review-notice strong {
-  font-size: 13px;
+.update-review-conflict-note {
+  background: #fffaf0;
+  border-color: #ebdfc6;
 }
-.update-review-hide-note p,
-.update-review-notice p {
+.update-review-conflict-note > p,
+.update-review-notice > p,
+.update-review-batch > p {
+  margin: 5px 0;
   color: #657084;
   font-size: 12px;
-  margin: 6px 0 0;
 }
 .update-review-inline {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  margin-top: 14px;
+  margin-top: 12px;
 }
 .update-review-batch h3 {
   font-size: 17px;
   font-weight: 600;
   margin: 0 0 8px;
-}
-.update-review-batch > p {
-  font-size: 12px;
-  color: #617086;
 }
 .update-review-batch-list {
   display: grid;
@@ -306,20 +454,29 @@
   margin-top: 2px;
 }
 .update-review-decision-area {
-  position: sticky;
-  bottom: 0;
-  z-index: 2;
-  margin-top: 15px;
-  padding: 16px 0 10px;
+  flex: none;
+  padding: 10px 24px 16px;
   border-top: 1px solid #e3e7ed;
   background: #fff;
+}
+.update-review-footer-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.update-review-footer-top > p {
+  margin: 0;
+  color: #6d798b;
+  font-size: 11px;
 }
 .update-review-decisions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
-.update-review-decisions button {
+.update-review-decisions button,
+.update-review-inline button {
   min-height: 42px;
   padding: 9px 15px;
   font-size: 12px;
@@ -330,31 +487,6 @@
   background: #182338;
   color: #fff;
   box-shadow: none;
-}
-.update-review-decision-area > p {
-  color: #717e8d;
-  font-size: 11px;
-  line-height: 1.5;
-  margin: 10px 0 0;
-}
-.update-review-decision-area > p > strong {
-  font-weight: 600;
-  color: #526176;
-}
-.update-review-footer {
-  margin-top: 12px;
-  padding-top: 14px;
-  border-top: 1px solid #edf0f3;
-}
-.update-review .update-review-footer > button {
-  min-height: 44px;
-  font-size: 12px;
-  padding: 7px 0;
-  border: 0;
-  background: transparent;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  color: #647387;
 }
 .update-review-empty {
   text-align: center;
@@ -377,22 +509,52 @@
   outline: 2px solid #426fa5;
   outline-offset: 3px;
 }
+@media (max-width: 800px) {
+  .chronology-surface-panel:has(> .chronology-surface-body > .update-review) {
+    height: calc(var(--viewport-block, 100dvh) - 24px);
+  }
+}
 @media (max-width: 720px) {
+  .update-review-scroll {
+    padding: 14px 16px 20px;
+  }
   .update-review-comparison {
     grid-template-columns: minmax(0, 1fr);
   }
   .update-review-navigation {
-    align-items: end;
-    gap: 7px;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 16px;
+  }
+  .update-review-picker {
+    flex-basis: calc(100% - 50px);
+  }
+  .update-review-more {
+    order: 1;
   }
   .update-review-step-buttons {
-    gap: 4px;
+    order: 2;
+    margin-left: auto;
   }
-  .update-review-picker .jx-trigger-bare {
-    padding: 9px 10px;
+  .update-review-step-buttons button,
+  .update-review-more > summary {
+    width: 44px;
+    min-height: 44px;
   }
-  .update-review-comparison > section {
-    padding: 13px;
+  .update-review-purpose h3 {
+    font-size: 16px;
+  }
+  .update-review-delta {
+    padding: 12px;
+  }
+  .update-review-field-changes > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .update-review-field-changes h4 {
+    grid-column: auto;
+  }
+  .update-review-decision-area {
+    padding: 8px 16px 12px;
   }
   .update-review-decisions {
     display: grid;
@@ -402,20 +564,61 @@
     grid-column: 1 / -1;
   }
   .update-review-decisions button,
-  .update-review-source button,
-  .update-review-secondary-actions > button,
-  .update-review-footer > button {
+  .update-review .update-review-source button,
+  .update-review .update-review-ask,
+  .update-review summary {
     min-height: 44px;
-  }
-  .update-review .update-review-secondary-actions .update-review-discard {
-    margin-left: 0;
-  }
-  .update-review-decision-area {
-    padding-top: 12px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .update-review * {
     scroll-behavior: auto;
   }
+}
+.update-review-conflict-accounts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  margin-top: 12px;
+}
+.update-review-conflict-accounts h4 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: #657084;
+}
+.update-review-account-summary-item {
+  padding: 8px 0;
+  border-top: 1px solid #e6dfd1;
+  font-size: 12px;
+}
+.update-review-account-summary-item p {
+  margin: 4px 0;
+  font-size: 11px;
+}
+.update-review-date-change > p:not(:first-child) {
+  color: #657084;
+  font-size: 11px;
+}
+@media (max-width: 720px) {
+  .update-review-conflict-accounts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.update-review-more button + button {
+  border-top: 1px solid #e8ebf0;
+}
+.update-review-more button strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.update-review-more button small {
+  color: #728095;
+  font-size: 11px;
+  font-weight: 400;
+}
+.update-review-retained-note {
+  color: #758194;
+  font-size: 11px;
+  margin: -4px 0 12px;
 }
