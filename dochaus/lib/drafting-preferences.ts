@@ -14,6 +14,8 @@ export type DraftingPreferences = {
   dateFormat: "month-day-year" | "day-month-year" | "iso"
   numberStyle: "words-and-numerals" | "numerals"
   houseStyle: string
+  // Setup confirmation only. Stored locally and never rendered into model instructions.
+  draftingConfigured?: boolean
   // Firm practice areas provide general context for assistants and library builders.
   practiceAreas: string[]
   // Enforced by the legal plugin's webfetch fence (dochaus/lib/research.ts),
@@ -89,6 +91,7 @@ export const DEFAULT_DRAFTING: DraftingPreferences = {
   dateFormat: "month-day-year",
   numberStyle: "numerals",
   houseStyle: "",
+  draftingConfigured: false,
   practiceAreas: [],
   webResearch: "open",
   searchApiKey: "",
@@ -121,6 +124,7 @@ export function normalizePreferences(value: unknown): DraftingPreferences {
     attorney: typeof input.attorney === "string" ? input.attorney : DEFAULT_DRAFTING.attorney,
     firm: typeof input.firm === "string" ? input.firm : DEFAULT_DRAFTING.firm,
     houseStyle: typeof input.houseStyle === "string" ? input.houseStyle : DEFAULT_DRAFTING.houseStyle,
+    draftingConfigured: input.draftingConfigured === true,
     practiceAreas: normalizePracticeAreas(input.practiceAreas),
     posture: normalizeChoice(input.posture, POSTURE, DEFAULT_DRAFTING.posture),
     formality: normalizeChoice(input.formality, FORMALITY, DEFAULT_DRAFTING.formality),

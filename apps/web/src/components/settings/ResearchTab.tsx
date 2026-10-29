@@ -11,7 +11,11 @@ import "./ResearchTab.css"
 // distinct, service-backed capability — not a drafting style choice.
 type Connection = "exa" | "courtlistener" | "courtlistener-mcp"
 
-export default function ResearchTab({ onSaved, onComplete, showIntro = true, showCourtListener = true, actionLabel = "Save", secondaryActions }: {
+export default function ResearchTab({ onSaved, onComplete, showIntro = true, showCourtListener = true, actionLabel = "Save", secondaryActions, connectionOnly = false, onBusy, exaDraft, onExaDraftChange }: {
+  connectionOnly?: boolean
+  onBusy?: (busy: boolean) => void
+  exaDraft?: string
+  onExaDraftChange?: (value: string) => void
   onSaved?: (text: string) => void
   onComplete?: () => void
   showIntro?: boolean
@@ -31,7 +35,7 @@ export default function ResearchTab({ onSaved, onComplete, showIntro = true, sho
     setError("")
     try {
       const loaded = await getPreferences()
-      setPrefs(loaded)
+      setPrefs(exaDraft === undefined ? loaded : { ...loaded, searchApiKey: exaDraft })
       setSaved(loaded)
     } catch {
       setError("Could not load research settings. Retry.")
@@ -42,10 +46,12 @@ export default function ResearchTab({ onSaved, onComplete, showIntro = true, sho
   useEffect(() => {
     void load()
   }, [])
+  useEffect(() => { onBusy?.(saving || testing !== null) }, [saving, testing, onBusy])
   if (loading) return <><p className="muted" role="status">Loading research preferences...</p>{secondaryActions && <div className="onboarding-actions">{secondaryActions(false)}</div>}</>
   if (!prefs) return <section><p role="alert">{error}</p><button onClick={() => void load()}>Retry</button>{secondaryActions && <div className="onboarding-actions">{secondaryActions(false)}</div>}</section>
   const set = (patch: Partial<DraftingPreferences>) => {
     setPrefs({ ...prefs, ...patch })
+    if (patch.searchApiKey !== undefined) onExaDraftChange?.(patch.searchApiKey)
     setTests({})
     setError("")
   }
@@ -81,6 +87,7 @@ export default function ResearchTab({ onSaved, onComplete, showIntro = true, sho
       {showIntro && <>
         <p className="settings-hint muted">Connect services for live legal research. Keys stay in this installation.</p>
       </>}
+      {!connectionOnly && <>
       <SegRow
         label="Web research"
         hint="Read across the web or limit research to approved sources."
@@ -128,6 +135,7 @@ export default function ResearchTab({ onSaved, onComplete, showIntro = true, sho
             onChange={(e) => set({ approvedSources: e.target.value.split("\n") })}
           />
         </FieldRow>
+      </>}
       </>}
       <FieldRow
         id="research-exa-key"
@@ -187,19 +195,21 @@ export default function ResearchTab({ onSaved, onComplete, showIntro = true, sho
         {secondaryActions?.(saving || testing !== null)}
         <button
           className={`primary${saving ? " btn-loading" : ""}`}
-          disabled={saving || testing !== null}
+          disabled={saving || testing !== null || (connectionOnly && !prefs.searchApiKey.trim())}
           onClick={async () => {
             setSaving(true)
             setError("")
             try {
-              const updated = await savePreferences(researchPreferences(prefs, showCourtListener))
+              const updated = await savePreferences(connectionOnly ? { searchApiKey: prefs.searchApiKey.trim() } : researchPreferences(prefs, showCourtListener))
+              if (connectionOnly && !updated.searchApiKey.trim()) throw new Error("Exa key was not saved")
               setPrefs(updated)
               setSaved(updated)
               setTests({})
+              onExaDraftChange?.(updated.searchApiKey)
               onSaved?.("Research preferences saved.")
               onComplete?.()
             } catch {
-              setError("Could not save research settings. Check additional source hostnames, then retry.")
+              setError(connectionOnly ? "Could not save the Exa key. Your changes are still here. Try again." : "Could not save research settings. Check additional source hostnames, then retry.")
             } finally {
               setSaving(false)
             }

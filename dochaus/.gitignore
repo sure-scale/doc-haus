@@ -18,6 +18,8 @@ agent/*.md
 !agent/chronology.md
 !agent/client-summary.md
 !agent/compare.md
+!agent/dashboard.md
+!agent/dashboard-chart.md
 !agent/document-reviewer.md
 !agent/extract.md
 !agent/lean-advise.md

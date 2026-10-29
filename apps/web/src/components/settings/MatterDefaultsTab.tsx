@@ -7,7 +7,7 @@ import JurisdictionSelect from "../JurisdictionSelect"
 import { FieldRow } from "./controls"
 import { SettingsFooter } from "./SettingsFooter"
 
-const SUGGESTED_PRACTICE_AREAS = [
+export const SUGGESTED_PRACTICE_AREAS = [
   "Banking and finance", "Commercial", "Competition", "Construction", "Corporate",
   "Data protection and privacy", "Dispute resolution", "Employment", "Energy", "Family",
   "Immigration", "Insolvency and restructuring", "Insurance", "Intellectual property",

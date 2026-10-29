@@ -1,0 +1,112 @@
+/* Reusable dashboard navigation, composer, view note and natural-height grid. */
+.dash-view-tabs-row { display: flex; align-items: center; gap: 10px; min-width: 0; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.dash-view-tabs { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; padding: 4px; margin: -4px; scrollbar-width: thin; }
+.dash-view-tab { display: inline-flex; flex: none; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 8px 16px; border: 1px solid transparent; border-radius: var(--radius-pill); background: transparent; color: var(--text-secondary); font: inherit; font-size: 13px; font-weight: 600; white-space: nowrap; }
+.dash-view-tab[aria-selected="true"] { background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); }
+.dash-view-tab:hover:not(:disabled) { background: var(--panel-hover); color: var(--accent); }
+.dash-view-tab-badge { display: inline-grid; place-items: center; min-width: 21px; min-height: 21px; padding: 2px 6px; box-sizing: border-box; border-radius: var(--radius-pill); background: var(--md-sys-color-surface-container-high); color: var(--text-secondary); font-size: 11px; line-height: 1; font-variant-numeric: tabular-nums; }
+.dash-view-tab[aria-selected="true"] .dash-view-tab-badge { background: var(--accent); color: var(--md-sys-color-on-primary); }
+/* Separate sibling controls keep a closable tab valid button markup. The slot
+   reserves Confirm's width so replacing the count never shifts adjacent tabs. */
+.dash-view-tab-plain, .dash-view-tab-shell { position: relative; display: inline-flex; flex: none; min-width: 0; }
+.dash-view-tab-shell > .dash-view-tab { gap: 6px; padding-inline: 12px 6px; }
+.dash-view-tab-slot { display: inline-grid; align-items: center; justify-items: end; width: 64px; min-width: 64px; }
+.dash-view-tab-close { position: absolute; inset: 3px 3px 3px auto; display: inline-grid; place-items: center; width: 28px; min-width: 28px; min-height: 34px; padding: 0; border: 0; border-radius: var(--radius-pill); background: transparent; color: var(--text-secondary); font: inherit; font-size: 11px; font-weight: 650; opacity: 0; pointer-events: none; }
+.dash-view-tab-close svg { width: 15px; height: 15px; }
+.dash-view-tab-shell:hover .dash-view-tab-close, .dash-view-tab-shell:focus-within .dash-view-tab-close, .dash-view-tab-shell.is-confirming .dash-view-tab-close { opacity: 1; pointer-events: auto; }
+.dash-view-tab-shell:hover .dash-view-tab-badge, .dash-view-tab-shell:focus-within .dash-view-tab-badge, .dash-view-tab-shell.is-confirming .dash-view-tab-badge { opacity: 0; }
+.dash-view-tab-shell:has(.dash-view-tab[aria-selected="true"]) .dash-view-tab-close:not(.is-confirming) { color: var(--md-sys-color-on-primary-container); }
+.dash-view-tab-close:hover:not(:disabled) { background: var(--panel-hover); color: var(--md-sys-color-error); }
+.dash-view-tab-close.is-confirming { width: 68px; min-width: 68px; padding: 0 10px; font-size: 12px; color: var(--text-on-accent); background: var(--danger); }
+.dash-view-tab-close.is-confirming:hover:not(:disabled) { color: var(--text-on-accent); background: var(--danger); filter: brightness(1.1); }
+.dash-view-tab-close:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+@media (hover: none) {
+  .dash-view-tab-shell .dash-view-tab-close { opacity: 1; pointer-events: auto; min-height: 40px; }
+  .dash-view-tab-shell .dash-view-tab-badge { opacity: 0; }
+}
+.dash-view-new { display: grid; place-items: center; flex: none; width: 40px; height: 40px; min-height: 40px; padding: 0; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--panel); color: var(--text-secondary); }
+.dash-view-new:hover:not(:disabled) { background: var(--md-sys-color-primary-container); color: var(--accent); border-color: var(--accent); }
+.dash-view-tab:focus-visible, .dash-view-new:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.dash-ai-composer { box-sizing: border-box; width: min(580px, calc(100vw - 32px)); max-width: none; max-height: calc(100dvh - 32px); padding: 24px 26px 22px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--md-sys-shape-corner-extra-large); background: var(--panel); color: var(--text); box-shadow: 0 24px 64px color-mix(in srgb, var(--text) 20%, transparent); }
+.dash-ai-composer::backdrop { background: color-mix(in srgb, var(--text) 34%, transparent); backdrop-filter: blur(4px); }
+.dash-ai-composer form { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 18px; margin: 0; max-height: calc(100dvh - 80px); }
+.dash-ai-composer-body { display: grid; gap: 18px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 3px; margin: -3px; }
+.dash-ai-composer-head { display: flex; align-items: start; gap: 14px; }
+.dash-ai-composer-head > div { min-width: 0; flex: 1; }
+.dash-ai-composer-icon { display: grid; place-items: center; width: 44px; height: 44px; flex: none; border-radius: var(--md-sys-shape-corner-medium); background: var(--accent); color: var(--md-sys-color-on-primary); }
+.dash-ai-composer-head h2 { margin: 0; font-family: var(--font-display); font-size: 20px; line-height: 1.3; font-weight: 650; letter-spacing: -.3px; }
+.dash-ai-composer-head p { margin: 4px 0 0; font-size: 13px; line-height: 1.5; color: var(--text-secondary); }
+.dash-ai-composer-close { display: grid; place-items: center; flex: none; width: 36px; height: 36px; min-height: 36px; padding: 0; border: 0; border-radius: var(--radius-pill); background: var(--md-sys-color-surface-container-low); color: var(--text-secondary); }
+.dash-ai-composer-field { display: grid; gap: 8px; }
+.dash-ai-composer-field label { font-size: 13px; font-weight: 650; }
+.dash-ai-composer-field textarea { box-sizing: border-box; width: 100%; min-width: 0; min-height: 104px; padding: 12px 14px; resize: vertical; border: 1px solid var(--accent); border-radius: var(--md-sys-shape-corner-large); background: var(--md-sys-color-surface-container-low); color: var(--text); font: inherit; font-size: 14px; line-height: 1.5; }
+.dash-ai-composer-field textarea:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 14%, transparent); outline-offset: 1px; }
+.dash-ai-composer-ideas { display: grid; gap: 8px; }
+.dash-ai-composer-ideas > span { font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .5px; color: var(--text-secondary); }
+.dash-ai-composer-ideas > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.dash-ai-composer-ideas button { min-height: 32px; padding: 5px 12px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--md-sys-color-surface-container-low); color: var(--text-secondary); font-size: 12px; line-height: 1.4; text-align: left; }
+.dash-ai-composer-foot { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 12px; padding-top: 14px; border-top: 1px solid var(--border); }
+.dash-ai-composer-foot p { flex: 1; min-width: 140px; margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.dash-ai-composer-foot > div { display: flex; gap: 8px; align-items: center; }
+.dash-ai-composer-cancel, .dash-ai-composer-generate { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 8px 16px; border-radius: var(--radius-pill); font-size: 13px; font-weight: 600; }
+.dash-ai-composer-cancel { border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+.dash-ai-composer-generate { border: 1px solid var(--md-sys-color-primary); background: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary); }
+.dash-ai-composer-generate:hover:not(:disabled) { border-color: var(--md-sys-color-primary); background: color-mix(in srgb, var(--md-sys-color-primary) 90%, var(--md-sys-color-on-primary)); color: var(--md-sys-color-on-primary); }
+.dash-ai-composer-generate svg { width: 16px; height: 16px; }
+.dash-ai-composer-status, .dash-ai-composer-error { margin: 0; padding: 10px 12px; border-radius: var(--md-sys-shape-corner-small); font-size: 13px; line-height: 1.5; }
+.dash-ai-composer-status { background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); }
+.dash-ai-composer-error { background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container); }
+.dash-adaptive-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 1px; column-gap: 16px; row-gap: 0; align-items: start; min-width: 0; }
+.dash-adaptive-item { grid-row-end: span var(--dash-item-height, 1); min-width: 0; }
+.dash-adaptive-grid.is-practice { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.dash-adaptive-grid.is-practice > .size-wide { grid-column: span 2; }
+.dash-adaptive-item.size-full { grid-column: 1 / -1; }
+.dash-adaptive-natural { min-width: 0; display: flow-root; }
+.dash-adaptive-grid.is-catalog { grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: auto; row-gap: 16px; align-items: stretch; }
+.dash-adaptive-grid.is-catalog > .dash-adaptive-item { grid-row-end: auto; }
+.dash-adaptive-grid.is-catalog .dash-adaptive-natural { height: 100%; }
+.dash-adaptive-grid.is-catalog .dash-adaptive-natural > .dash-card { height: 100%; box-sizing: border-box; }
+.dash-adaptive-grid.is-catalog > .size-wide { grid-column: span 2; }
+.dash-about-view { display: flex; align-items: center; gap: 10px; padding: 9px 14px; border: 1px solid var(--border); border-radius: var(--md-sys-shape-corner-medium); background: var(--md-sys-color-surface-container-low); color: var(--text-secondary); font-size: 12.5px; }
+.dash-about-details { padding: 10px 14px; color: var(--text-secondary); font-size: 12.5px; line-height: 1.5; }
+.dash-about-details p { margin: 0 0 6px; }
+.dash-about-details ul { margin: 0; padding-left: 20px; }
+.dash-about-view-icon { display: flex; color: var(--accent); flex: none; }
+.dash-about-view p { margin: 0; flex: 1; min-width: 0; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-about-view strong { font-weight: 650; color: var(--text); }
+.dash-about-view button { flex: none; min-height: 32px; padding: 4px 6px; border: 0; background: transparent; color: var(--accent); font-size: 12.5px; font-weight: 650; white-space: nowrap; }
+@container dash (max-width: 1000px) { .dash-adaptive-grid.is-catalog, .dash-adaptive-grid.is-practice { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container dash (max-width: 560px) {
+  .dash-adaptive-grid, .dash-adaptive-grid.is-catalog, .dash-adaptive-grid.is-practice { grid-template-columns: minmax(0, 1fr); }
+  .dash-adaptive-grid.is-catalog > .size-wide, .dash-adaptive-grid.is-practice > .size-wide { grid-column: span 1; }
+  .dash-view-tab { padding-inline: 12px; }
+  .dash-about-view { gap: 6px; }
+  .dash-about-view button { white-space: nowrap; }
+}
+@media (max-width: 560px) {
+  .dash-ai-composer { padding: 20px 16px; }
+  .dash-ai-composer form { max-height: calc(100dvh - 74px); }
+  .dash-ai-composer-head { gap: 10px; }
+  .dash-ai-composer-icon { width: 36px; height: 36px; }
+  .dash-ai-composer-field textarea { font-size: 16px; }
+  .dash-ai-composer-foot > div { width: 100%; }
+  .dash-ai-composer-generate { flex: 1; }
+}
+@media (forced-colors: active) { .dash-view-tab[aria-selected="true"] { border-color: Highlight; } .dash-view-tab-badge, .dash-about-view, .dash-ai-composer { border: 1px solid CanvasText; } }
+
+/* Native-size targets on touch devices without changing desktop density. */
+@media (pointer: coarse) {
+  .dash-view-tab, .dash-view-new, .dash-ai-composer-close, .dash-ai-composer-ideas button,
+  .dash-ai-composer-cancel, .dash-ai-composer-generate, .dash-about-view button { min-height: 44px; }
+  .dash-view-new, .dash-ai-composer-close { width: 44px; height: 44px; }
+}
+.dash-ai-composer-head h2, .dash-ai-composer-head p, .dash-about-view p { overflow-wrap: anywhere; }
+
+/* On exceptionally short viewports the whole dialog remains scrollable. */
+@media (max-height: 360px) {
+  .dash-ai-composer { overflow-y: auto; }
+  .dash-ai-composer form { max-height: none; }
+}
+
+/* The dashboard options sit beside the reusable tab strip. */
+.dash-tabs-row > .dash-view-tabs-row { flex: 1; border-bottom: 0; padding-bottom: 0; }

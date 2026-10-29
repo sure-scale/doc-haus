@@ -13,6 +13,8 @@ export type DraftingPreferences = {
   dateFormat: "month-day-year" | "day-month-year" | "iso"
   numberStyle: "words-and-numerals" | "numerals"
   houseStyle: string
+  // True after an explicit Drafting settings save; never sent to the model.
+  draftingConfigured?: boolean
   practiceAreas: string[]
   webResearch: "official" | "open"
   searchApiKey: string

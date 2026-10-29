@@ -143,6 +143,7 @@ async function fixture(name: string, width: number, onboarding = false, cloud = 
     ] })
     if (pathname === "/matters" || pathname === "/clients") return reply([])
     if (pathname === "/templates") return reply({ dir: "/fixture/templates", templates: [] })
+    if (pathname === "/playbooks/library") return reply({ dir: "/fixture/playbooks", playbooks: [] })
     if (pathname === "/jurisdictions") return reply([{ code: "england-wales", name: "England and Wales" }])
     if (pathname === "/updates") return reply({ current: { version: 1, name: "Fixture", notes: "" }, available: false })
     if (pathname === "/api/event") return route.fulfill({ status: 200, headers, contentType: "text/event-stream", body: "" })
@@ -334,6 +335,8 @@ try {
       await expect(dialog.getByText("Microsoft Word", { exact: true })).toHaveCount(0)
       await dialog.getByRole("button", { name: /^Save and finish/ }).click()
       await expect(dialog).toHaveCount(0)
+      // Finishing setup from the matters list lands on the dashboard.
+      await expect(f.page).toHaveURL(/\/dashboard$/)
       expect(f.state.completed).toEqual(["models", "research", "details"])
       expect(f.state.preferences).toMatchObject({ attorney: "Fixture Counsel", firm: "Fixture Practice" })
     } finally { await f.context.close() }

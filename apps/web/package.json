@@ -10,8 +10,9 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.checks.json"
   },
   "dependencies": {
-    "@opencode/client": "workspace:*",
     "@fontsource/space-grotesk": "^5.2.10",
+    "@opencode/client": "workspace:*",
+    "country-flag-icons": "1.6.20",
     "docx": "9.7.1",
     "docxodus": "^13.0.0",
     "fflate": "0.8.3",

@@ -317,3 +317,19 @@ uploads and a file without versions, and the upload prompt's Save as new
 version, duplicate (with Restore, failed then made) and tracked-changes
 messages. Version bytes, restore, compare and upload answers are fixtures;
 every other request is refused.
+
+Run the dashboard regression with the same preview environment:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:5189 \
+DOCHAUS_EVIDENCE_DIR=/tmp/doc-haus-dashboard-evidence \
+bun apps/web/e2e/dashboard.ts
+```
+
+At 375×812, 768×1024 and 1440×1000 (plus 1180×900) it captures a new install,
+a busy synthetic practice, a load error, an empty layout and every widget at
+once. It checks the week total and bars across a clock change in UTC and
+Europe/London, hiding, adding back, moving and reloading widgets, widget menus
+above neighbouring cards, the Add widgets dialog, each period, and the chart
+and calendar tooltips. The clock is fixed, engine and ingest reads are answered
+from in-memory fixtures, and every other request is refused.

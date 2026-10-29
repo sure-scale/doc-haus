@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom"
+import JurisdictionFlag from "../JurisdictionFlag"
 import JurisdictionSelect from "../JurisdictionSelect"
 import type { Jurisdiction, MatterDetail as Detail } from "../../api/ingest/matters"
 import { conflictsChip } from "../../api/ingest/conflicts"
@@ -216,6 +217,7 @@ export default function MatterHeader({
                 <span className="matter-jx-badges">
                   {matter.jurisdictions?.map((code) => (
                     <span key={code} className="matter-badge">
+                      <JurisdictionFlag code={code} />
                       {jurisdictions.find((j) => j.code === code)?.name ?? code}
                     </span>
                   ))}

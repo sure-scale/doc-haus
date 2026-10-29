@@ -2,7 +2,7 @@ import { afterAll, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { readFirmDraftingPreferences } from "../../../dochaus/lib/drafting-preferences"
+import { normalizePreferences, readFirmDraftingPreferences } from "../../../dochaus/lib/drafting-preferences"
 
 const previous = process.env.WORKSPACE_ROOT
 const root = mkdtempSync(path.join(tmpdir(), "dochaus-research-preferences-"))
@@ -144,4 +144,23 @@ test("malformed saved credentials are never echoed and cannot be overwritten by 
   } finally {
     writeFileSync(file, previous)
   }
+})
+
+
+test("explicit drafting confirmation persists independently of optional style fields and stays off-model", () => {
+  const baseline = writeDraftingPreferences({ ...DEFAULT_DRAFTING })
+  expect(baseline.draftingConfigured).toBe(false)
+  expect(baseline.houseStyle).toBe("")
+  expect(baseline.styleTemplate).toBe("")
+  const instructions = readFirmDraftingPreferences()
+  const saved = writeDraftingPreferences({ draftingConfigured: true })
+  expect(saved.draftingConfigured).toBe(true)
+  expect(readDraftingPreferences().draftingConfigured).toBe(true)
+  expect(JSON.parse(readFileSync(path.join(root, ".preferences/preferences.json"), "utf8")).draftingConfigured).toBe(true)
+  expect(readFirmDraftingPreferences()).toBe(instructions)
+  expect(instructions).not.toContain("draftingConfigured")
+  expect(writeDraftingPreferences({ searchApiKey: "synthetic-exa-key" }).draftingConfigured).toBe(true)
+  expect(readDraftingPreferences().draftingConfigured).toBe(true)
+  for (const value of [undefined, false, "true", 1, {}, []]) expect(normalizePreferences({ draftingConfigured: value }).draftingConfigured).toBe(false)
+  expect(normalizePreferences({ draftingConfigured: true }).draftingConfigured).toBe(true)
 })
