@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { DashboardTabConflict, getDashboardTabs, putDashboardTabs, type DashboardTabSnapshot, type DashboardTabState } from "../../api/ingest/dashboard-tabs"
-import { readBrowserValue } from "../../browser-storage"
-import { loadDashboards, readDashboards } from "./layout"
+import { readDashboards } from "./layout"
 
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 function normalized(state: DashboardTabState): DashboardTabState {
@@ -10,14 +9,14 @@ function normalized(state: DashboardTabState): DashboardTabState {
   const active = state.workspace.active === "overview" && custom[0] ? custom[0].id : state.workspace.active
   return { ...state, workspace: { ...state.workspace, active }, view: state.view ?? (!state.setupHidden && !custom.some(tab => tab.id === active) ? "setup" : "dashboard") }
 }
-function legacy(): DashboardTabState {
-  return normalized({ version: 1, workspace: loadDashboards(), setupHidden: readBrowserValue("dh.dashboard.setup-hidden.v1") === "true" })
+function defaults(): DashboardTabState {
+  return normalized({ version: 1, workspace: readDashboards(null), setupHidden: false, view: "setup" })
 }
 
-// The database owns presentation state. Legacy browser values only seed an empty
-// database; revision checks and a single writer keep queued edits in order.
+// The database owns presentation state. Empty installations start with product
+// defaults; revision checks and a single writer keep queued edits in order.
 export function useDashboardTabs() {
-  const [state, setState] = useState<DashboardTabState>(legacy)
+  const [state, setState] = useState<DashboardTabState>(defaults)
   const current = useRef(state)
   const [ready, setReady] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -52,7 +51,7 @@ export function useDashboardTabs() {
         try { saved = await putDashboardTabs(current.current, 0) }
         catch (failure) {
           if (!(failure instanceof DashboardTabConflict)) throw failure
-          // Another browser seeded first. It wins over this browser's legacy data.
+          // Another browser saved first. Load its state instead of reseeding.
           saved = await getDashboardTabs()
         }
       }

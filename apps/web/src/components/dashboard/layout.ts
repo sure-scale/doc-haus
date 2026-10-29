@@ -1,5 +1,4 @@
 import { chartKey, checkPlan, MAX_WIDGETS, type Plan, type PlanWidget } from "../../../../../dochaus/lib/dashboard-plan"
-import { readBrowserJSON, writeBrowserValue } from "../../browser-storage"
 import { PERIODS, type Period } from "./data"
 
 // tile: one column; wide: two columns; full: the whole row. Rows are as tall
@@ -86,9 +85,6 @@ export function visibleWidgets(stage: Stage, setupDone: boolean, arrangement?: A
   return result
 }
 
-// Per browser, like the sidebar's collapsed state.
-const KEY = "dh.dashboard.v3"
-
 const ids = (value: unknown) =>
   Array.isArray(value) ? [...new Set(value.filter((id): id is WidgetId => typeof id === "string" && Object.hasOwn(WIDGETS, id)))] : undefined
 
@@ -97,22 +93,6 @@ function arrangement(value: unknown): Arrangement | undefined {
   const saved = value as Record<string, unknown>
   return { order: ids(saved.order), hidden: ids(saved.hidden) ?? [], added: ids(saved.added) ?? [] }
 }
-
-export function loadLayout(): Layout {
-  const saved = readBrowserJSON(KEY)
-  if (typeof saved !== "object" || saved === null || Array.isArray(saved)) return DEFAULT_LAYOUT
-  const value = saved as Record<string, unknown>
-  const period = PERIODS.includes(value.period as Period) ? (value.period as Period) : DEFAULT_LAYOUT.period
-  const arranged = typeof value.stages === "object" && value.stages !== null ? (value.stages as Record<string, unknown>) : {}
-  const stages = Object.fromEntries(STAGES.flatMap((stage) => { const entry = arrangement(arranged[stage]); return entry ? [[stage, entry]] : [] }))
-  const stage = STAGES.includes(value.stage as Stage) ? (value.stage as Stage) : undefined
-  return { stages, period, stage, shown: ids(value.shown) }
-}
-
-export function saveLayout(layout: Layout) {
-  writeBrowserValue(KEY, JSON.stringify(layout))
-}
-
 
 export type WidgetInstance = { key: string; widget: PlanWidget; pinned: boolean }
 export type DashboardTab = {
@@ -128,7 +108,6 @@ export type DashboardTab = {
   legacy?: Partial<Record<Stage, Arrangement>>
 }
 export type Dashboards = { active: string; dashboards: DashboardTab[] }
-export const DASHBOARDS_KEY = "dh.dashboard.v4"
 
 export function instance(widget: PlanWidget, pinned = false): WidgetInstance {
   return { key: widget.type === "chart" ? chartKey(widget) : widget.type, widget, pinned }
@@ -193,12 +172,4 @@ export function readDashboards(saved: unknown, legacy: Layout = DEFAULT_LAYOUT):
     }
   }
   return { active: "overview", dashboards: [{ id: "overview", name: "Overview", period: legacy.period, stages: {}, legacy: legacy.stages }] }
-}
-
-export function loadDashboards(): Dashboards {
-  return readDashboards(readBrowserJSON(DASHBOARDS_KEY), loadLayout())
-}
-
-export function saveDashboards(dashboards: Dashboards) {
-  return writeBrowserValue(DASHBOARDS_KEY, JSON.stringify(dashboards))
 }

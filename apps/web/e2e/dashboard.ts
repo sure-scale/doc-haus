@@ -236,9 +236,17 @@ type Preferences = typeof DEFAULT_DRAFTING
 const PROFILE: Partial<Preferences> = { attorney: "Alex Example", firm: "Example Partners LLP" }
 function fixture(kind: Kind, options: { layout?: unknown; data?: Data; preferences?: Partial<Preferences>; jurisdictions?: string[] } = {}) {
   const data = options.data ?? (kind === "populated" ? populated() : { matters: [], sessions: [], messages: {}, drafting: {}, documents: {} })
+  // Preserve the prior profile widget as an explicit legacy arrangement.
+  // New default Setup composition is covered separately in dashboard-setup.ts.
+  const prior = (options.layout ?? { period: "month", stages: {} }) as { period?: string; stages?: Record<string, { hidden?: string[]; added?: string[]; order?: string[] }> }
+  const orders = { starting: ["journey", "setup"], practice: ["attention", "drafts", "setup", "spend", "matter-cost", "draft-cost", "week", "recent", "matter-spend", "activity"] }
+  for (const stage of ["starting", "practice"] as const) {
+    const arrangement = prior.stages?.[stage] ?? { hidden: [], added: [] }
+    prior.stages = { ...prior.stages, [stage]: { ...arrangement, order: arrangement.order ?? orders[stage], added: [...(arrangement.added ?? []), "setup"] } }
+  }
   return {
     kind, layout: options.layout, ...data, samplePosts: 0, failPreferences: false,
-    dashboardState: null as DashboardTabState | null, dashboardRevision: 0,
+    dashboardState: { version: 1, setupHidden: false, view: "dashboard", workspace: { active: "saved-work", dashboards: [{ id: "saved-work", name: "Saved work", period: prior.period ?? "month", stages: {}, legacy: prior.stages }] } } as DashboardTabState | null, dashboardRevision: 1,
     aiPlan: { name: "Practice costs", widgets: [
       { type: "chart", title: "Spend by client", metric: "spend", groupBy: "client", form: "bars", period: "dashboard" },
       { type: "chart", title: "Conversations over time", metric: "conversations", groupBy: "week", form: "line", period: "quarter" },
@@ -275,25 +283,14 @@ async function open(state: State, width: number, height: number, timezoneId = "E
   allStates.push(state)
   const context = await browser.newContext({ viewport: { width, height }, hasTouch: width <= 768, reducedMotion: "reduce", timezoneId, locale: "en-GB", acceptDownloads: true })
   await context.clock.setFixedTime(new Date(NOW))
-  await context.addInitScript(({ layout, jurisdiction }) => {
+  await context.addInitScript(({ jurisdiction }) => {
     localStorage.setItem("dh.launch-notice.v1", new Date().toDateString())
     localStorage.setItem("dh.sidebar", innerWidth > 960 ? "0" : "1")
-    // Seed the saved layout and jurisdictions once; a reload keeps what the page saved.
+    // Seed browser law defaults once; dashboard layouts come from the database.
     if (sessionStorage.getItem("dashboard-fixture-seeded")) return
     if (jurisdiction) localStorage.setItem("dochaus.prefs", JSON.stringify({ defaultJurisdictions: jurisdiction }))
-    // Preserve the prior profile widget as an explicit legacy arrangement.
-    // New default Setup composition is covered separately in dashboard-setup.ts.
-    const prior = (layout ?? { period: "month", stages: {} }) as { period?: string; stages?: Record<string, { hidden?: string[]; added?: string[]; order?: string[] }> }
-    const orders = { starting: ["journey", "setup"], practice: ["attention", "drafts", "setup", "spend", "matter-cost", "draft-cost", "week", "recent", "matter-spend", "activity"] }
-    for (const stage of ["starting", "practice"] as const) {
-      const arrangement = prior.stages?.[stage] ?? { hidden: [], added: [] }
-      prior.stages = { ...prior.stages, [stage]: { ...arrangement, order: arrangement.order ?? orders[stage], added: [...(arrangement.added ?? []), "setup"] } }
-    }
-    localStorage.setItem("dh.dashboard.v3", JSON.stringify(prior))
-    // Exercise saved custom layouts while the default Overview is deferred.
-    localStorage.setItem("dh.dashboard.v4", JSON.stringify({ active: "saved-work", dashboards: [{ id: "saved-work", name: "Saved work", period: prior.period, stages: {}, legacy: prior.stages }] }))
     sessionStorage.setItem("dashboard-fixture-seeded", "1")
-  }, { layout: state.layout ?? null, jurisdiction: state.jurisdictions ?? null })
+  }, { jurisdiction: state.jurisdictions ?? null })
   await context.route("**/*", async (route: Route) => {
     const request = route.request()
     const url = new URL(request.url())

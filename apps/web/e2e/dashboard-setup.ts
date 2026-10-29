@@ -353,32 +353,34 @@ try {
       clean(state)
     } finally { await context.close() }
   })
-  await scenario("Browser migration seeds only an empty local database; another browser uses saved tabs", async () => {
-    const state = fixture(), first = await open(state)
-    const legacy = { active: "costs", dashboards: [
+  await scenario("Empty and populated local databases both ignore stale browser tab storage", async () => {
+    const state = fixture(), first = await open(state), second = await open(state)
+    const saved = { active: "costs", dashboards: [
       { id: "overview", name: "Overview", period: "month", stages: {}, widgets: [] },
       { id: "costs", name: "Costs", period: "month", stages: {}, widgets: [{ key: "spend", widget: { type: "spend" }, pinned: true }] },
     ] }
-    const second = await open(state)
     try {
-      await first.context.addInitScript(value => {
-        localStorage.setItem("dh.dashboard.v4", JSON.stringify(value))
+      await first.context.addInitScript(() => {
+        localStorage.setItem("dh.dashboard.v4", JSON.stringify({ active: "stale", dashboards: [{ id: "stale", name: "Stale browser view", period: "all", stages: {}, widgets: [] }] }))
         localStorage.setItem("dh.dashboard.setup-hidden.v1", "true")
-      }, legacy)
+      })
       await first.page.goto(`${baseURL}/dashboard`)
-      await expect(first.page.getByRole("tab", { name: "Costs", exact: true })).toHaveAttribute("aria-selected", "true")
-      await expect(setupTab(first.page)).toHaveCount(0)
-      await tabsSaved(state, stored => stored.setupHidden && stored.workspace.active === "costs")
-      expect(state.dashboard.state!.workspace).toMatchObject(legacy)
+      await settled(first.page)
+      await expect(setupTab(first.page)).toHaveAttribute("aria-selected", "true")
+      await expect(first.page.getByRole("tab", { name: "Stale browser view", exact: true })).toHaveCount(0)
+      await tabsSaved(state, stored => !stored.setupHidden && !stored.workspace.dashboards.some(tab => tab.id === "stale"))
+      expect(state.tabWrites).toHaveLength(1)
+      // Existing tabs come only from the local database, including in a second
+      // browser which still has unrelated values in its old browser storage.
+      seedTabs(state, saved, true)
       const writes = state.tabWrites.length
-      // A clean context has no dashboard browser state; a stale legacy value
-      // must not replace a database which is already populated.
-      await second.context.addInitScript(() => localStorage.setItem("dh.dashboard.v4", JSON.stringify({ active: "stale", dashboards: [{ id: "stale", name: "Stale browser view", period: "all", stages: {}, widgets: [] }] })))
+      await second.context.addInitScript(() => localStorage.setItem("dh.dashboard.v4", JSON.stringify({ active: "other-stale", dashboards: [{ id: "other-stale", name: "Another stale view", period: "all", stages: {}, widgets: [] }] })))
       await second.page.goto(`${baseURL}/dashboard`)
       await expect(second.page.getByRole("tab", { name: "Costs", exact: true })).toHaveAttribute("aria-selected", "true")
-      await expect(second.page.getByRole("tab", { name: "Stale browser view", exact: true })).toHaveCount(0)
+      await expect(second.page.getByRole("tab", { name: "Another stale view", exact: true })).toHaveCount(0)
       await expect(second.page.getByRole("button", { name: "Unpin Total spend", exact: true })).toBeVisible()
       await expect(setupTab(second.page)).toHaveCount(0)
+      expect(state.dashboard.state!.workspace).toMatchObject(saved)
       expect(state.tabWrites.length).toBe(writes)
       await capture(second.page, "dashboard-tabs-from-local-database-1440x1000")
       clean(state)
