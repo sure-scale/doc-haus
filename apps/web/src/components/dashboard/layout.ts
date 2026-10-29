@@ -1,3 +1,4 @@
+import { chartKey, checkPlan, MAX_WIDGETS, type Plan, type PlanWidget } from "../../../../../dochaus/lib/dashboard-plan"
 import { readBrowserJSON, writeBrowserValue } from "../../browser-storage"
 import { PERIODS, type Period } from "./data"
 
@@ -110,4 +111,90 @@ export function loadLayout(): Layout {
 
 export function saveLayout(layout: Layout) {
   writeBrowserValue(KEY, JSON.stringify(layout))
+}
+
+
+export type WidgetInstance = { key: string; widget: PlanWidget; pinned: boolean }
+export type DashboardTab = {
+  id: string
+  name: string
+  period: Period
+  // Overview keeps a separate arrangement for each first-run stage until AI
+  // replaces it with an explicit plan.
+  stages: Partial<Record<Stage, WidgetInstance[]>>
+  widgets?: WidgetInstance[]
+  legacy?: Partial<Record<Stage, Arrangement>>
+}
+export type Dashboards = { active: string; dashboards: DashboardTab[] }
+export const DASHBOARDS_KEY = "dh.dashboard.v4"
+
+export function instance(widget: PlanWidget, pinned = false): WidgetInstance {
+  return { key: widget.type === "chart" ? chartKey(widget) : widget.type, widget, pinned }
+}
+
+export function tabWidgets(tab: DashboardTab, stage: Stage, setupDone: boolean): WidgetInstance[] {
+  const widgets = tab.widgets ?? tab.stages[stage]
+  if (widgets) return widgets.filter(({ widget }) => widget.type === "chart" || available(stage, setupDone).includes(widget.type))
+  return visibleWidgets(stage, setupDone, tab.legacy?.[stage]).map((type) => instance({ type }))
+}
+
+// The AI controls unpinned widgets. Pins keep their original chart settings,
+// identity and position even if the proposed plan omits or changes them.
+export function applyPlan(current: WidgetInstance[], plan: Plan): WidgetInstance[] {
+  const pins = current.map((widget, index) => ({ widget, index })).filter(({ widget }) => widget.pinned)
+  const pinned = new Set(pins.map(({ widget }) => widget.key))
+  const result = plan.widgets.map((widget) => instance(widget)).filter((widget) => !pinned.has(widget.key)).slice(0, Math.max(0, MAX_WIDGETS - pins.length))
+  for (const { widget, index } of pins) result.splice(Math.min(index, result.length), 0, widget)
+  return result
+}
+
+function savedInstances(value: unknown): WidgetInstance[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  if (!value.length) return []
+  const result: WidgetInstance[] = []
+  const seen = new Set<string>()
+  // Validate one persisted widget at a time: the older catalog allowed all 17
+  // templates, while new model plans are capped at 16. Keep those saved views.
+  for (const entry of value.slice(0, 32)) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue
+    const saved = entry as Record<string, unknown>
+    const checked = checkPlan({ widgets: [saved.widget] })
+    if (!checked.plan) continue
+    const next = instance(checked.plan.widgets[0]!, saved.pinned === true)
+    if (seen.has(next.key)) continue
+    seen.add(next.key)
+    result.push(next)
+  }
+  return result.length ? result : undefined
+}
+
+export function readDashboards(saved: unknown, legacy: Layout = DEFAULT_LAYOUT): Dashboards {
+  if (typeof saved === "object" && saved !== null && !Array.isArray(saved)) {
+    const value = saved as Record<string, unknown>
+    if (Array.isArray(value.dashboards)) {
+      const seen = new Set<string>()
+      const dashboards = value.dashboards.flatMap((entry): DashboardTab[] => {
+        if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return []
+        const tab = entry as Record<string, unknown>
+        if (typeof tab.id !== "string" || !tab.id || seen.has(tab.id) || typeof tab.name !== "string" || !tab.name.trim()) return []
+        seen.add(tab.id)
+        const stages = typeof tab.stages === "object" && tab.stages !== null ? tab.stages as Record<string, unknown> : {}
+        const legacyStages = typeof tab.legacy === "object" && tab.legacy !== null ? tab.legacy as Record<string, unknown> : {}
+        return [{ id: tab.id, name: tab.name.trim().slice(0, 30), period: PERIODS.includes(tab.period as Period) ? tab.period as Period : "month", widgets: savedInstances(tab.widgets),
+          stages: Object.fromEntries(STAGES.flatMap((stage) => { const widgets = savedInstances(stages[stage]); return widgets ? [[stage, widgets]] : [] })),
+          legacy: Object.fromEntries(STAGES.flatMap((stage) => { const entry = arrangement(legacyStages[stage]); return entry ? [[stage, entry]] : [] })),
+        }]
+      }).slice(0, 12)
+      if (dashboards.length) return { active: dashboards.some((tab) => tab.id === value.active) ? value.active as string : dashboards[0]!.id, dashboards }
+    }
+  }
+  return { active: "overview", dashboards: [{ id: "overview", name: "Overview", period: legacy.period, stages: {}, legacy: legacy.stages }] }
+}
+
+export function loadDashboards(): Dashboards {
+  return readDashboards(readBrowserJSON(DASHBOARDS_KEY), loadLayout())
+}
+
+export function saveDashboards(dashboards: Dashboards) {
+  return writeBrowserValue(DASHBOARDS_KEY, JSON.stringify(dashboards))
 }

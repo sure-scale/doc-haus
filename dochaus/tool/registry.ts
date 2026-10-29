@@ -12,6 +12,7 @@ export const legalTools = [
   ["create-template", () => import("./create-template")],
   ["create-workflow", () => import("./create-workflow")],
   ["current-section", () => import("./current-section")],
+  ["dashboard-plan", () => import("./dashboard-plan")],
   ["define", () => import("./define")],
   ["delete-agent", () => import("./delete-agent")],
   ["delete-playbook", () => import("./delete-playbook")],

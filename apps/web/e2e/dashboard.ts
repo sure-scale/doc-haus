@@ -237,6 +237,11 @@ function fixture(kind: Kind, options: { layout?: unknown; data?: Data; preferenc
   const data = options.data ?? (kind === "populated" ? populated() : { matters: [], sessions: [], messages: {}, drafting: {}, documents: {} })
   return {
     kind, layout: options.layout, ...data, samplePosts: 0, failPreferences: false,
+    aiPlan: { name: "Practice costs", widgets: [
+      { type: "chart", title: "Spend by client", metric: "spend", groupBy: "client", form: "bars", period: "dashboard" },
+      { type: "chart", title: "Conversations over time", metric: "conversations", groupBy: "week", form: "line", period: "quarter" },
+    ], unsupported: ["Time per fee earner is not tracked."] } as unknown,
+    aiFailure: false, aiDelay: 0, aiSession: "", aiCreated: [] as Record<string, unknown>[], aiPrompts: [] as Record<string, unknown>[], aiDeleted: [] as string[],
     // Folders whose session list the engine fails to return.
     failSessions: new Set<string>(),
     jurisdictions: options.jurisdictions ?? (kind === "populated" ? ["EW"] : undefined),
@@ -304,6 +309,27 @@ async function open(state: State, width: number, height: number, timezoneId = "E
     if (pathname === "/api/dochaus/provider-candidate/session" && method === "POST") return reply({ sessionID: "synthetic-candidate" })
     if (pathname === "/api/dochaus/provider-candidate/models" && method === "POST") return reply({ data: [], customModels: false })
     if (pathname === "/api/dochaus/provider-candidate/session" && method === "DELETE") return route.fulfill({ status: 204, headers })
+    // The AI boundary is native OpenCode session/tool output; values still
+    // come from the synthetic matters. Every other network call is refused.
+    if (pathname === "/dashboard/directory") return reply({ dir: "/fixture/.dashboard" })
+    if (pathname === "/api/session" && method === "POST") {
+      const input = request.postDataJSON() as Record<string, unknown>
+      state.aiCreated.push(input)
+      state.aiSession = String(input.id)
+      return reply({ data: { id: state.aiSession, projectID: "fixture-project", title: "doc.haus dashboard", agent: "dashboard", model: { providerID: "fixture", id: "fast" }, location: { directory: "/fixture/.dashboard" }, metadata: { dochaus_role: "dashboard" }, cost: 0, tokens: tokensFor(0, rng(1)), time: { created: NOW, updated: NOW } } })
+    }
+    if (pathname === `/api/session/${state.aiSession}/prompt` && method === "POST") {
+      state.aiPrompts.push(request.postDataJSON() as Record<string, unknown>)
+      if (state.aiDelay) await new Promise(resolve => setTimeout(resolve, state.aiDelay))
+      return reply({ data: { id: "inbox_dashboard", type: "user", text: "Please update the dashboard.", time: { created: NOW } } })
+    }
+    if (pathname === `/api/experimental/session/${state.aiSession}/wait` && method === "POST") return route.fulfill({ status: 204, headers })
+    if (pathname === `/api/session/${state.aiSession}/interrupt` && method === "POST") return reply({ interrupted: false })
+    if (pathname === `/api/session/${state.aiSession}` && method === "DELETE") { state.aiDeleted.push(state.aiSession); return route.fulfill({ status: 204, headers }) }
+    if (pathname === `/api/session/${state.aiSession}/message`) return reply({ data: [
+      { id: "msg_dashboard_plan", type: "assistant", agent: "dashboard", model: { providerID: "fixture", id: "fast" }, time: { created: NOW, completed: NOW + 1 }, cost: 0, tokens: tokensFor(0, rng(1)), content: state.aiFailure ? [] : [{ type: "tool", id: "call_dashboard_plan", name: "dashboard-plan", time: { created: NOW, completed: NOW + 1 }, state: { status: "completed", input: {}, content: [{ type: "text", text: "Dashboard plan accepted." }], metadata: { plan: state.aiPlan } } }] },
+      { id: "msg_dashboard_idle", type: "idle", outcome: state.aiFailure ? "failed" : "succeeded", time: { created: NOW + 2 } },
+    ], cursor: { previous: null, next: null } })
     if (method !== "GET") { state.unexpected.push(`${method} ${pathname}`); return route.abort() }
     const populatedState = state.kind === "populated"
     if (pathname === "/auth/reuse") return reply({ sources: [] })
@@ -376,39 +402,16 @@ async function scenario(name: string, run: () => Promise<void>) {
 }
 const clean = (state: State) => { expect(state.unexpected, "unexpected requests").toEqual([]); expect(state.errors, "page errors").toEqual([]) }
 const card = (page: Page, title: string) => page.locator("section.dash-card").filter({ has: page.getByRole("heading", { name: title, exact: true, level: 2 }) })
-// The widget menu opener is a <summary>, which has no ARIA button role.
-const menuButton = (page: Page, title: string) => page.locator(`summary[aria-label="Options for ${title}"]`)
-// What a pointer at the centre of a menu item would hit, recorded for the
-// stacking check; the action itself is taken from the keyboard so the flow
-// still runs when card content paints over the open menu.
-const menuHits: { title: string; action: string; covered: string | null }[] = []
-async function menuAction(page: Page, title: string, action: string) {
-  const button = card(page, title).getByRole("button", { name: action, exact: true })
-  await expect(button).toBeVisible()
-  menuHits.push({ title, action, covered: await coveredBy(button) })
-  await button.focus()
-  await page.keyboard.press("Enter")
-}
-async function coveredBy(button: Locator) {
-  return button.evaluate((node) => {
-    const box = node.getBoundingClientRect()
-    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
-    return !hit || node.contains(hit) ? null : `${hit.tagName.toLowerCase()}.${[...hit.classList].join(".")} "${(hit.textContent ?? "").trim().slice(0, 40)}"`
-  })
-}
+const askButton = (page: Page) => page.getByRole("button", { name: "Ask AI", exact: true })
+const menuHits: unknown[] = []
 async function hideWidget(page: Page, title: string) {
-  await menuButton(page, title).click()
-  await menuAction(page, title, "Hide widget")
+  await card(page, title).hover()
+  await page.getByRole("button", { name: `Remove ${title}`, exact: true }).click()
   await expect(card(page, title)).toHaveCount(0)
 }
 const order = (page: Page) => page.locator(".dash-grid > section.dash-card h2").allTextContents()
 const greeting = (page: Page, text: string) => expect(page.locator(".page-bar").getByText(`${text}. What needs you, your drafts and what your matters cost.`, { exact: true })).toBeVisible()
 const period = (page: Page) => page.getByRole("group", { name: "Period", exact: true })
-const editButton = (page: Page) => page.locator(".dash-toolbar").getByRole("button", { name: "Edit dashboard", exact: true })
-const editDialog = (page: Page) => page.getByRole("dialog", { name: "Edit dashboard", exact: true })
-// The snackbar is visual; screen readers hear the page's one status line instead.
-const snackbar = (page: Page, title: string) => page.locator(".dash-snackbar").filter({ hasText: `${title} hidden` })
-const announced = (page: Page, text: string) => expect(page.getByRole("status").filter({ hasText: new RegExp(`^${text}$`) })).toHaveCount(1)
 // Settled: the page bar shown, no skeletons left and the refresh control idle.
 async function dashboard(page: Page, expectGrid = true, reload = false) {
   if (reload) await page.reload()
@@ -573,14 +576,11 @@ try {
       const state = fixture("populated", { layout: { stages: { practice: { hidden: PRACTICE_DEFAULTS, added: [] } }, period: "month" } }); const { page, context } = await open(state, width, height)
       try {
         await dashboard(page, false)
-        await expect(page.getByText("Your dashboard is empty", { exact: true })).toBeVisible()
+        await expect(page.getByText("A dashboard for the way you work", { exact: true })).toBeVisible()
         await expect(page.locator(".dash-grid")).toHaveCount(0)
         await capture(page, `practice-empty-layout-${size}`)
-        await page.getByRole("button", { name: "Reset to default", exact: true }).click()
-        await expect.poll(() => order(page)).toEqual(PRACTICE)
-        // The button went with the empty state; focus lands on Edit dashboard.
-        await expect(editButton(page)).toBeFocused()
-        await announced(page, "Dashboard reset to the default")
+        await page.getByRole("button", { name: "Ask AI to build it", exact: true }).click()
+        await expect(page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true })).toBeFocused()
         clean(state)
       } finally { await context.close() }
     })
@@ -591,13 +591,6 @@ try {
         expect(await order(page)).toEqual(EVERY)
         await expect(card(page, "Spend over time").locator(".dash-area svg")).toBeVisible()
         await capture(page, `practice-every-widget-${size}`)
-        if (width === 1440) {
-          await editButton(page).click()
-          await expect(editDialog(page).getByText("Every widget is on your dashboard.", { exact: true })).toBeVisible()
-          await expect(editDialog(page).getByRole("button", { name: "Reset to default", exact: true })).toBeEnabled()
-          await page.keyboard.press("Escape")
-          await expect(editDialog(page)).toHaveCount(0)
-        }
         clean(state)
       } finally { await context.close() }
     })
@@ -748,39 +741,6 @@ try {
     } finally { await context.close() }
   })
 
-  await scenario("Arranging each stage on its own (1440x1000)", async () => {
-    const state = fixture("new", { data: early({ first: 3 }) }); const { page, context } = await open(state, 1440, 1000)
-    try {
-      await dashboard(page)
-      await hideWidget(page, "Your practice")
-      await dashboard(page, true, true)
-      expect(await order(page)).toEqual(["First steps"])
-      // The first draft finishes: practice opens on its own default, profile card included.
-      state.sessions.push({ ...chat(FIRST, "ses_first_run", at(0, 9), "Drafting run", 0.9), metadata: { dochaus_role: "lean-drafting-owner" } })
-      state.drafting[FIRST.id] = run({ status: "completed", owner: "ses_first_run", stages: ["ses_first_run_1"], started: at(0, 9), updated: at(0, 9, 40), documents: [{ title: "Supplier terms" }] })
-      await dashboard(page, true, true)
-      const practice = await order(page)
-      expect(practice).toEqual(["Needs you", "Recent drafts", "Your practice", ...PRACTICE.slice(2)])
-      await expect(card(page, "Recent drafts").getByText("Supplier terms", { exact: true })).toBeVisible()
-      // Reset brings back that default after the lawyer arranges practice too.
-      await hideWidget(page, "Total spend")
-      await editButton(page).click()
-      const dialog = editDialog(page)
-      await expect(dialog.getByRole("button", { name: "Add Total spend", exact: true })).toBeVisible()
-      await dialog.getByRole("button", { name: "Reset to default", exact: true }).click()
-      await expect(dialog.getByRole("button", { name: "Reset to default", exact: true })).toBeDisabled()
-      // Reset disables itself, so focus moves on to Done.
-      await expect(dialog.getByRole("button", { name: "Done", exact: true })).toBeFocused()
-      await expect(dialog.getByRole("button", { name: "Add Total spend", exact: true })).toHaveCount(0)
-      await page.keyboard.press("Escape")
-      await expect(dialog).toHaveCount(0)
-      expect(await order(page)).toEqual(practice)
-      await dashboard(page, true, true)
-      expect(await order(page)).toEqual(practice)
-      clean(state)
-    } finally { await context.close() }
-  })
-
   // The fixture's last seven days (Fri 23 to Thu 29 October). London's clocks
   // went back on Sunday 25 October; UTC is the control with no clock change.
   for (const timezone of ["UTC", "Europe/London"]) await scenario(`Week total and bars across the clock change (${timezone}, 1440x1000)`, async () => {
@@ -800,150 +760,100 @@ try {
     } finally { await context.close() }
   })
 
-  await scenario("Hide, undo, edit dashboard, move and reload (1440x1000)", async () => {
+  for (const [width, height] of SIZES) await scenario(`AI update keeps pins and supports Undo (${width}x${height})`, async () => {
+    const state = fixture("populated"); const { page, context } = await open(state, width, height)
+    try {
+      await dashboard(page)
+      const before = await order(page)
+      await card(page, "Needs you").hover()
+      await page.getByRole("button", { name: "Pin Needs you", exact: true }).click()
+      await expect(page.getByRole("button", { name: "Unpin Needs you", exact: true })).toHaveAttribute("aria-pressed", "true")
+      await askButton(page).click()
+      const input = page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true })
+      await expect(input).toBeFocused()
+      await input.fill("Show spend by client and weekly conversations, and time per fee earner")
+      await capture(page, `ai-prompt-open-${width}x${height}`, { fullPage: false })
+      await page.getByRole("button", { name: "Update dashboard", exact: true }).click()
+      await expect.poll(() => order(page)).toEqual(["Needs you", "Spend by client", "Conversations over time"])
+      await expect(page.getByText("Time per fee earner is not tracked.", { exact: true })).toBeVisible()
+      await expect(card(page, "Spend by client").locator(".dash-chart-total")).toHaveText(money(monthSpend(state, 9)))
+      await expect(card(page, "Conversations over time").locator(".dash-area svg")).toBeVisible()
+      expect(state.aiCreated).toHaveLength(1)
+      expect(state.aiCreated[0]).toMatchObject({ agent: "dashboard", model: { providerID: "fixture", id: "fast" }, metadata: { dochaus_role: "dashboard" }, location: { directory: "/fixture/.dashboard" } })
+      expect(state.aiPrompts).toHaveLength(1)
+      expect(String(state.aiPrompts[0]?.text)).toContain('"pinned":true')
+      await expect.poll(() => state.aiDeleted.length).toBe(1)
+      await capture(page, `ai-updated-pinned-${width}x${height}`)
+      await page.locator(".dash-snackbar").getByRole("button", { name: "Undo", exact: true }).click()
+      expect(await order(page)).toEqual(before)
+      await expect(page.getByRole("button", { name: "Unpin Needs you", exact: true })).toHaveAttribute("aria-pressed", "true")
+      await dashboard(page, true, true)
+      expect(await order(page)).toEqual(before)
+      clean(state)
+    } finally { await context.close() }
+  })
+
+  await scenario("Named tabs, keyboard navigation, rename, delete and Undo (1440x1000)", async () => {
     const state = fixture("populated"); const { page, context } = await open(state, 1440, 1000)
     try {
       await dashboard(page)
-      const start = await order(page)
-      // Hide from the widget's own menu; focus moves on to the next card.
-      await hideWidget(page, "Spend by matter")
-      await expect(snackbar(page, "Spend by matter")).toBeVisible()
-      await announced(page, "Spend by matter hidden")
-      await expect(menuButton(page, "Activity")).toBeFocused()
-      await capture(page, "practice-undo-snackbar-1440x1000", { fullPage: false })
-      // Undo puts it back where it was, with focus on it.
-      await snackbar(page, "Spend by matter").getByRole("button", { name: "Undo", exact: true }).click()
-      await expect(snackbar(page, "Spend by matter")).toHaveCount(0)
-      expect(await order(page)).toEqual(start)
-      await expect(menuButton(page, "Spend by matter")).toBeFocused()
-      await announced(page, "Spend by matter restored")
-      // Undo reverses only the hide: a move made meanwhile stays.
-      await hideWidget(page, "Spend by matter")
-      await menuButton(page, "Total spend").click()
-      await menuAction(page, "Total spend", "Move earlier")
-      const moved = [start[0], start[2], start[1], ...start.slice(3)]
-      await snackbar(page, "Spend by matter").getByRole("button", { name: "Undo", exact: true }).click()
-      expect(await order(page)).toEqual(moved)
-      await menuButton(page, "Total spend").click()
-      await menuAction(page, "Total spend", "Move later")
-      expect(await order(page)).toEqual(start)
-
-      // Edit dashboard offers what is hidden; Add puts it back in its place and closes.
-      await hideWidget(page, "Spend by matter")
-      await editButton(page).click()
-      const dialog = editDialog(page)
-      await expect(dialog.getByRole("button", { name: "Add Spend by matter", exact: true })).toBeVisible()
-      await expect(dialog.getByRole("button", { name: "Add Where tokens go", exact: true })).toBeVisible()
-      await capture(page, "practice-edit-dashboard-1440x1000")
-      await dialog.getByRole("button", { name: "Add Spend by matter", exact: true }).click()
-      await expect(dialog).toHaveCount(0)
-      expect(await order(page)).toEqual(start)
-      await expect(menuButton(page, "Spend by matter")).toBeFocused()
-      // An extra joins at the end.
-      await editButton(page).click()
-      await expect(dialog.getByRole("button", { name: "Add Spend by matter", exact: true })).toHaveCount(0)
-      await dialog.getByRole("button", { name: "Add Where tokens go", exact: true }).click()
-      await expect(dialog).toHaveCount(0)
-      expect(await order(page)).toEqual([...start, "Where tokens go"])
-      await expect(menuButton(page, "Where tokens go")).toBeFocused()
-      // Done closes and focus returns to its opener.
-      await editButton(page).click()
-      await dialog.getByRole("button", { name: "Done", exact: true }).click()
-      await expect(dialog).toHaveCount(0)
-      await expect(editButton(page)).toBeFocused()
-
-      // Move earlier, then later, swaps with the neighbour.
-      const before = await order(page)
-      const third = before[2]!
-      await menuButton(page, third).click()
-      await capture(page, "practice-menu-open-1440x1000")
-      const menu = await card(page, third).locator(".viewer-more-menu").boundingBox()
-      expect(menu, "menu box").not.toBeNull()
-      expect(menu!.x + menu!.width).toBeLessThanOrEqual(1440)
-      await menuAction(page, third, "Move earlier")
-      expect((await order(page)).slice(0, 3)).toEqual([before[0], before[2], before[1]])
-      await expect(menuButton(page, third)).toBeFocused()
-      await menuButton(page, third).click()
-      await menuAction(page, third, "Move later")
-      expect(await order(page)).toEqual(before)
-      await menuButton(page, third).click()
-      await menuAction(page, third, "Move earlier")
-      // The layout survives a reload.
-      const saved = await order(page)
+      await page.getByRole("button", { name: "New dashboard", exact: true }).click()
+      await expect(page.getByRole("tab", { name: "New dashboard", exact: true })).toHaveAttribute("aria-selected", "true")
+      await page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true }).fill("A dashboard about client spend")
+      await page.getByRole("button", { name: "Update dashboard", exact: true }).click()
+      await expect(page.getByRole("tab", { name: "Practice costs", exact: true })).toHaveAttribute("aria-selected", "true")
+      await capture(page, "ai-named-tabs-1440x1000")
+      await page.getByRole("tab", { name: "Practice costs", exact: true }).focus()
+      await page.keyboard.press("Home")
+      await expect(page.getByRole("tab", { name: "Overview", exact: true })).toBeFocused()
+      expect(await order(page)).toEqual(PRACTICE)
+      await page.keyboard.press("End")
+      await expect(page.getByRole("tab", { name: "Practice costs", exact: true })).toBeFocused()
+      expect(await order(page)).toEqual(["Spend by client", "Conversations over time"])
+      await page.locator('summary[aria-label="Options for Practice costs dashboard"]').click()
+      await page.getByRole("button", { name: "Rename", exact: true }).click()
+      await page.getByRole("textbox", { name: "Dashboard name", exact: true }).fill("Client work")
+      await page.getByRole("button", { name: "Save", exact: true }).click()
+      await expect(page.getByRole("tab", { name: "Client work", exact: true })).toBeVisible()
       await dashboard(page, true, true)
-      expect(await order(page)).toEqual(saved)
+      await expect(page.getByRole("tab", { name: "Client work", exact: true })).toHaveAttribute("aria-selected", "true")
+      await page.locator('summary[aria-label="Options for Client work dashboard"]').click()
+      await page.getByRole("button", { name: "Delete dashboard", exact: true }).click()
+      await page.getByRole("group", { name: "Delete dashboard", exact: true }).getByRole("button", { name: "Delete dashboard", exact: true }).click()
+      await expect(page.getByRole("tab", { name: "Client work", exact: true })).toHaveCount(0)
+      await page.locator(".dash-snackbar").getByRole("button", { name: "Undo", exact: true }).click()
+      await expect(page.getByRole("tab", { name: "Client work", exact: true })).toHaveAttribute("aria-selected", "true")
       clean(state)
     } finally { await context.close() }
   })
 
-  // Every widget's open menu must be on top of its own card's content.
-  for (const [width, height] of [[1440, 1000], [375, 812]] as const) await scenario(`Open widget menus are on top (${width}x${height})`, async () => {
-    const state = fixture("populated", { layout: { stages: { practice: { hidden: [], added: ALL_WIDGETS } }, period: "month" } }); const { page, context } = await open(state, width, height)
+  for (const mode of ["failed", "invalid"] as const) await scenario(`AI ${mode} response leaves the layout and cleans its session`, async () => {
+    const state = fixture("populated"); state.aiFailure = mode === "failed"
+    if (mode === "invalid") state.aiPlan = { widgets: [{ type: "chart", title: "Undated drafts", metric: "drafts", groupBy: "day", form: "line" }] }
+    const { page, context } = await open(state, 1440, 1000)
     try {
       await dashboard(page)
-      const covered: string[] = []
-      for (const title of await order(page)) {
-        await menuButton(page, title).click()
-        const hide = card(page, title).getByRole("button", { name: "Hide widget", exact: true })
-        await expect(hide).toBeVisible()
-        const hit = await coveredBy(hide)
-        if (hit) {
-          covered.push(`${title}: Hide widget covered by ${hit}`)
-          if (covered.length === 1) await capture(page, `practice-menu-covered-${width}x${height}`, { fullPage: false })
-        }
-        await page.keyboard.press("Escape")
-        await expect(card(page, title).locator(".dash-menu[open]")).toHaveCount(0)
-      }
-      screens.push({ name: `menu-stacking-${width}x${height}`, covered })
-      expect(covered).toEqual([])
+      await askButton(page).click()
+      await page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true }).fill("Please update the dashboard")
+      await page.getByRole("button", { name: "Update dashboard", exact: true }).click()
+      await expect(page.locator(".dash-ai-error")).toBeVisible()
+      expect(await order(page)).toEqual(PRACTICE)
+      await expect.poll(() => state.aiDeleted.length).toBe(1)
+      await capture(page, `ai-${mode}-1440x1000`, { fullPage: false })
       clean(state)
     } finally { await context.close() }
   })
 
-  await scenario("Hide and edit dashboard (375x812)", async () => {
+  await scenario("Remove and Undo on a phone (375x812)", async () => {
     const state = fixture("populated"); const { page, context } = await open(state, 375, 812)
     try {
       await dashboard(page)
-      await hideWidget(page, "Spend by matter")
-      const bar = snackbar(page, "Spend by matter")
-      await expect(bar.getByRole("button", { name: "Undo", exact: true })).toBeVisible()
-      const box = await bar.boundingBox()
-      expect(box, "snackbar box").not.toBeNull()
-      expect(box!.x).toBeGreaterThanOrEqual(0)
-      expect(box!.x + box!.width).toBeLessThanOrEqual(375)
-      expect(box!.y + box!.height).toBeLessThanOrEqual(812)
-      await capture(page, "practice-undo-snackbar-375x812", { fullPage: false })
-      // Dismissed from the keyboard, focus goes to Edit dashboard rather than nowhere.
-      await bar.getByRole("button", { name: "Dismiss", exact: true }).focus()
-      await page.keyboard.press("Enter")
-      await expect(bar).toHaveCount(0)
-      await expect(editButton(page)).toBeFocused()
-      await expect(card(page, "Spend by matter")).toHaveCount(0)
-      await editButton(page).click()
-      const dialog = editDialog(page)
-      await expect(dialog.getByRole("button", { name: "Add Spend by matter", exact: true })).toBeVisible()
-      await capture(page, "practice-edit-dashboard-375x812")
-      await dialog.getByRole("button", { name: "Add Spend by matter", exact: true }).click()
-      await expect(dialog).toHaveCount(0)
+      await page.getByRole("button", { name: "Remove Needs you", exact: true }).click()
+      await expect(card(page, "Needs you")).toHaveCount(0)
+      await expect(page.getByRole("button", { name: "Pin Recent drafts", exact: true })).toBeFocused()
+      await capture(page, "ai-remove-undo-375x812", { fullPage: false })
+      await page.locator(".dash-snackbar").getByRole("button", { name: "Undo", exact: true }).click()
       expect(await order(page)).toEqual(PRACTICE)
-      await expect(menuButton(page, "Spend by matter")).toBeFocused()
-      clean(state)
-    } finally { await context.close() }
-  })
-
-  await scenario("Undo waits while the pointer is on it (1440x1000)", async () => {
-    const state = fixture("populated"); const { page, context } = await open(state, 1440, 1000)
-    try {
-      await dashboard(page)
-      await hideWidget(page, "Recent matters")
-      const bar = snackbar(page, "Recent matters")
-      await bar.hover()
-      // Past the eight seconds it would otherwise stay.
-      await page.waitForTimeout(9000)
-      await expect(bar).toBeVisible()
-      await page.mouse.move(5, 5)
-      await expect(bar).toHaveCount(0, { timeout: 12000 })
-      await expect(card(page, "Recent matters")).toHaveCount(0)
       clean(state)
     } finally { await context.close() }
   })

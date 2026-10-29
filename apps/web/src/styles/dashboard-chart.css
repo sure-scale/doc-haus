@@ -1,0 +1,22 @@
+/* AI-selected charts use the dashboard's existing surface and series tokens. */
+.dash-chart-widget { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: var(--space-3); }
+.dash-chart-summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-2) var(--space-3); }
+.dash-chart-total { color: var(--text); font-size: 32px; line-height: 1.1; font-weight: 650; letter-spacing: -1px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.dash-chart-summary > span, .dash-chart-period { color: var(--text-secondary); font-size: 12px; }
+.dash-chart-period { margin: 0; overflow-wrap: anywhere; }
+.dash-chart-widget .dash-area { min-height: 210px; flex: 1; color: var(--dash-chart); }
+.dash-chart-widget .dash-calendar { color: var(--dash-chart); }
+.dash-chart-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-3); max-height: 340px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.dash-chart-rows li { min-width: 0; padding-block: 2px; }
+.dash-chart-row-values { display: flex; gap: var(--space-3); align-items: baseline; justify-content: space-between; font-size: 13px; }
+.dash-chart-row-values > span { min-width: 0; overflow-wrap: anywhere; }
+.dash-chart-row-values > strong { flex: none; font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.dash-chart-track { display: block; height: 8px; margin-top: 7px; overflow: hidden; background: var(--md-sys-color-surface-container-high); border-radius: var(--radius-pill); }
+.dash-chart-track > span { display: block; width: var(--chart-share); height: 100%; background: var(--dash-chart); border-radius: inherit; }
+.dash-chart-empty { margin: var(--space-3) 0; color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
+.dash-chart-notes { margin: auto 0 0; padding: var(--space-3) 0 0; display: grid; gap: var(--space-2); list-style: none; color: var(--text-secondary); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.dash-chart-notes li { padding-left: var(--space-3); border-left: 2px solid var(--border); }
+@container dash (max-width: 560px) {
+  .dash-chart-total { font-size: 30px; }
+  .dash-chart-widget .dash-area { min-height: 190px; }
+}

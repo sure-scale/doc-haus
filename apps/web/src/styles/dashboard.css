@@ -557,3 +557,81 @@ dialog.dash-add-panel:not([open]) { display: none; }
   .dash-profile-tile { border-color: CanvasText; }
   :is(.dash-profile-flags, .dash-profile-areas) [aria-pressed="true"] { outline: 2px solid Highlight; outline-offset: 1px; }
 }
+
+/* Named views and the AI prompt use the same rounded surfaces as the cards. */
+.dash-tabs-row { display: flex; align-items: center; gap: var(--space-2); min-width: 0; border-bottom: 1px solid var(--border); padding-bottom: var(--space-3); }
+.dash-tabs { display: flex; align-items: center; flex: 1; min-width: 0; gap: 6px; overflow-x: auto; scrollbar-width: thin; padding: 2px; }
+.dash-tabs > button { flex: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-height: 40px; border: 1px solid transparent; border-radius: var(--radius-pill); background: none; color: var(--text-secondary); padding: 0 16px; font-size: 13.5px; font-weight: 600; }
+.dash-tabs > button[aria-selected="true"] { color: var(--md-sys-color-on-primary-container); background: var(--md-sys-color-primary-container); }
+.dash-tabs > button:hover { background: var(--panel-hover); }
+.dash-tabs > button[aria-selected="true"]:hover { background: var(--md-sys-color-primary-container); }
+.dash-new { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: var(--radius-pill); padding: 0; background: none; border: 1px solid var(--border); }
+.dash-tab-menu { flex: none; }
+.dash-tab-menu > summary { width: 40px; height: 40px; border-radius: var(--radius-pill); }
+.dash-tab-menu .viewer-more-menu { min-width: 170px; }
+.dash-tab-menu .viewer-more-menu button { width: 100%; text-align: left; min-height: 40px; border: 0; background: transparent; padding: 6px 12px; color: var(--text); }
+.dash-tab-menu .viewer-more-menu button:hover:not(:disabled) { background: var(--panel-hover); }
+.dash-tab-form, .dash-delete-confirm { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3) var(--space-4); background: var(--panel); border: 1px solid var(--border); border-radius: var(--md-sys-shape-corner-large); }
+.dash-tab-form label { font-size: 13px; font-weight: 600; }
+.dash-tab-form input { flex: 1; min-width: 120px; }
+.dash-tab-form button, .dash-delete-confirm button { border-radius: var(--radius-pill); }
+.dash-delete-confirm p { flex: 1 1 200px; margin: 0; font-size: 13px; }
+button.dash-ask { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 18px 0 14px; border-radius: var(--radius-pill); background: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary); border-color: transparent; font-weight: 650; }
+button.dash-ask:hover:not(:disabled) { background: var(--md-sys-color-primary); filter: brightness(.95); }
+button.dash-ask.is-open { background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); }
+button.dash-ask.is-open:hover:not(:disabled) { background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); }
+.dash-ai-panel { display: grid; gap: var(--space-3); min-width: 0; padding: var(--space-5); background: var(--md-sys-color-surface-container-low, var(--panel)); border: 1px solid var(--md-sys-color-outline-variant, var(--border)); border-radius: var(--md-sys-shape-corner-extra-large); animation: dash-rise var(--spring-spatial-slow-ms) var(--spring-spatial-slow) both; }
+.dash-ai-heading { display: flex; align-items: center; gap: var(--space-3); }
+.dash-ai-mark { display: grid; place-items: center; flex: none; width: 40px; height: 40px; border-radius: var(--md-sys-shape-corner-large); color: var(--md-sys-color-on-primary-container); background: var(--md-sys-color-primary-container); }
+.dash-ai-heading label { display: block; font-size: 15px; font-weight: 650; line-height: 1.4; }
+.dash-ai-heading p { margin: 3px 0 0; color: var(--text-secondary); font-size: 12.5px; line-height: 1.45; }
+.dash-ai-entry { display: flex; align-items: flex-end; gap: var(--space-3); min-width: 0; }
+.dash-ai-entry textarea { display: block; flex: 1; min-width: 0; width: 100%; resize: vertical; min-height: 80px; max-height: 240px; padding: 12px 14px; font: inherit; font-size: 14px; line-height: 1.5; background: var(--panel); color: var(--text); border: 1px solid var(--md-sys-color-outline, var(--border)); border-radius: var(--md-sys-shape-corner-large); }
+.dash-ai-submit { display: inline-flex; flex: none; justify-content: center; align-items: center; gap: 8px; min-height: 44px; border-radius: var(--radius-pill); padding: 0 18px; background: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary); border-color: transparent; font-size: 13px; font-weight: 650; }
+.dash-ai-submit:hover:not(:disabled) { background: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary); border-color: transparent; filter: brightness(.95); }
+.dash-ai-suggestions { display: flex; flex-wrap: wrap; gap: 6px; }
+.dash-ai-suggestions button { min-height: 32px; padding: 5px 12px; border: 1px solid var(--md-sys-color-outline-variant, var(--border)); border-radius: var(--radius-pill); background: var(--panel); color: var(--text-secondary); font-size: 12px; line-height: 1.35; text-align: left; }
+.dash-ai-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: var(--space-2); }
+.dash-ai-foot p { margin: 0; font-size: 12px; color: var(--text-secondary); }
+.dash-ai-working { margin: 0; font-size: 13px; color: var(--md-sys-color-primary); }
+.dash-ai-error { margin: 0; font-size: 13px; line-height: 1.5; color: var(--md-sys-color-error); overflow-wrap: anywhere; }
+.dash-ai-notes { padding: var(--space-3) var(--space-4); border-radius: var(--md-sys-shape-corner-large); background: var(--md-sys-color-surface-container, var(--panel)); font-size: 13px; line-height: 1.5; }
+.dash-ai-notes strong { font-weight: 650; }
+.dash-ai-notes ul { margin: 4px 0 0; padding-left: 18px; color: var(--text-secondary); }
+#dash-content { min-width: 0; border-radius: var(--md-sys-shape-corner-large); }
+#dash-content:focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: 4px; }
+.dash-widget-actions { display: inline-flex; flex: none; gap: 0; margin: -6px -8px -6px 0; }
+.dash-widget-actions button { display: inline-flex; justify-content: center; align-items: center; width: 34px; height: 34px; min-height: 34px; border-radius: var(--radius-pill); padding: 0; border: 0; background: transparent; color: inherit; }
+.dash-widget-actions button:hover { background: var(--md-sys-state-hover); }
+.dash-widget-actions .dash-pin[aria-pressed="true"] { color: var(--md-sys-color-primary); background: var(--md-sys-color-primary-container); }
+.dash-widget-actions .dash-pin[aria-pressed="true"] svg { fill: currentColor; }
+.dash-widget-actions .dash-remove svg { width: 16px; height: 16px; }
+.dash-card:is(.is-bold, .tone-ink) .dash-widget-actions .dash-pin[aria-pressed="true"] { color: inherit; background: rgb(255 255 255 / .16); }
+.dash-card:is(.is-bold, .tone-ink) .dash-widget-actions button:hover { background: rgb(255 255 255 / .16); }
+@media (hover: hover) and (pointer: fine) {
+  .dash-widget-actions { opacity: 0; transition: opacity 120ms ease; }
+  .dash-card:hover .dash-widget-actions, .dash-card:focus-within .dash-widget-actions, .dash-card.is-pinned .dash-widget-actions { opacity: 1; }
+}
+@container dash (min-width: 1001px) {
+  .dash-card.size-tile .dash-widget-actions { grid-column: 2; grid-row: 1; }
+}
+@container dash (max-width: 560px) {
+  .dash-ai-panel { padding: var(--space-4); }
+  .dash-ai-entry { flex-direction: column; align-items: stretch; }
+  .dash-ai-submit { align-self: flex-end; }
+  .dash-ai-suggestions button { flex: 1 1 auto; }
+  .dash-ai-heading { align-items: flex-start; }
+  .dash-ai-heading label { font-size: 14px; }
+  .dash-card-head { gap: var(--space-2); }
+  .dash-widget-actions { margin-right: -10px; }
+  .dash-tabs > button { max-width: 180px; padding-inline: 12px; }
+}
+@media (pointer: coarse) {
+  .dash-new, .dash-tab-menu > summary { width: 44px; height: 44px; }
+  .dash-tabs > button, .dash-ai-suggestions button, button.dash-ask { min-height: 44px; }
+  .dash-widget-actions button { width: 44px; height: 44px; min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dash-ai-panel { animation: none; }
+  .dash-widget-actions { transition: none; }
+}

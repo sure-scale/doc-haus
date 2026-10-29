@@ -188,7 +188,7 @@ const GRID: Record<string, number> = { ArrowLeft: -7, ArrowRight: 7, ArrowUp: -1
 // cell per day, darker for busier days. Cells grow to fill a wide card and
 // keep a readable size on a narrow one, which scrolls instead. Keyboard focus
 // starts on today.
-export function ActivityCalendar({ counts, first, describe }: { counts: number[]; first: number; describe: (day: number, count: number) => string }) {
+export function ActivityCalendar({ counts, first, describe, label }: { counts: number[]; first: number; describe: (day: number, count: number) => string; label?: string }) {
   const { box, show, hide, view } = useTip()
   const mark = useRoving(counts.length, counts.length - 1, GRID)
   const [scroller, { width: room }] = useSize<HTMLDivElement>()
@@ -226,7 +226,7 @@ export function ActivityCalendar({ counts, first, describe }: { counts: number[]
           ))}
         </svg>
         <div className="dash-calendar-scroll" ref={scroller}>
-          <svg width={weeks * pitch} height={height} role="group" aria-label={`Conversations started each day; busiest day had ${max}.`}>
+          <svg width={weeks * pitch} height={height} role="group" aria-label={label ?? `Conversations started each day; busiest day had ${max}.`}>
             <g aria-hidden="true">
               {months.map((month) => (
                 <text key={month.x} x={month.x} y={11} className="dash-calendar-axis">{month.label}</text>
