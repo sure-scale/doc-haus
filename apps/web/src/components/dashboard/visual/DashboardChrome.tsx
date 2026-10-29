@@ -7,9 +7,10 @@ export type DashboardTabItem = {
   label: string
   badge?: { value: number; total?: number; label?: string }
   disabled?: boolean
+  closable?: boolean
 }
 
-export function DashboardTabs({ items, activeId, onSelect, onNew, newDisabled = false, label = "Dashboards", panelId }: {
+export function DashboardTabs({ items, activeId, onSelect, onNew, newDisabled = false, label = "Dashboards", panelId, onClose }: {
   items: DashboardTabItem[]
   activeId: string
   onSelect: (id: string) => void
@@ -17,8 +18,22 @@ export function DashboardTabs({ items, activeId, onSelect, onNew, newDisabled = 
   newDisabled?: boolean
   label?: string
   panelId?: string
+  onClose?: (id: string) => void
 }) {
   const list = useRef<HTMLDivElement>(null)
+  const newButton = useRef<HTMLButtonElement>(null)
+  const descriptionId = useId()
+  const [confirming, setConfirming] = useState<string>()
+  useEffect(() => { setConfirming(undefined) }, [activeId])
+  useEffect(() => {
+    if (!confirming) return
+    const outside = (event: PointerEvent) => {
+      const owner = Array.from(list.current?.querySelectorAll<HTMLElement>("[data-close-tab]") ?? []).find(node => node.dataset.closeTab === confirming)
+      if (!owner?.contains(event.target as Node)) setConfirming(undefined)
+    }
+    document.addEventListener("pointerdown", outside)
+    return () => document.removeEventListener("pointerdown", outside)
+  }, [confirming])
   useEffect(() => {
     list.current?.querySelector<HTMLButtonElement>('[aria-selected="true"]')?.scrollIntoView({ inline: "nearest", block: "nearest" })
   }, [activeId])
@@ -30,14 +45,35 @@ export function DashboardTabs({ items, activeId, onSelect, onNew, newDisabled = 
       const focused = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-tab-id]")?.dataset.tabId ?? activeId
       const index = Math.max(0, enabled.findIndex((item) => item.id === focused))
       const target = event.key === "Home" ? enabled[0]! : event.key === "End" ? enabled.at(-1)! : enabled[(index + (event.key === "ArrowRight" ? 1 : -1) + enabled.length) % enabled.length]!
+      setConfirming(undefined)
       onSelect(target.id)
       Array.from(list.current?.querySelectorAll<HTMLButtonElement>("button[data-tab-id]") ?? []).find((button) => button.dataset.tabId === target.id)?.focus()
     }}>
-      {items.map((item) => <button key={item.id} type="button" role="tab" id={panelId ? `${panelId}-tab-${item.id}` : undefined} aria-controls={panelId} data-tab-id={item.id} className="dash-view-tab" disabled={item.disabled} aria-selected={item.id === activeId} tabIndex={item.id === activeId || !enabled.some((tab) => tab.id === activeId) && enabled[0]?.id === item.id ? 0 : -1} onClick={() => onSelect(item.id)}>
-        <span>{item.label}</span>{item.badge && <span className="dash-view-tab-badge" aria-label={item.badge.label ?? `${item.badge.value}${item.badge.total === undefined ? "" : ` of ${item.badge.total}`}`}>{item.badge.value}{item.badge.total === undefined ? "" : `/${item.badge.total}`}</span>}
-      </button>)}
+      {items.map((item, index) => {
+        const closable = item.closable && !!onClose
+        const badge = item.badge && <span id={closable ? `${descriptionId}-${index}` : undefined} className="dash-view-tab-badge" aria-label={item.badge.label ?? `${item.badge.value}${item.badge.total === undefined ? "" : ` of ${item.badge.total}`}`}>{item.badge.value}{item.badge.total === undefined ? "" : `/${item.badge.total}`}</span>
+        const tab = <button type="button" role="tab" id={panelId ? `${panelId}-tab-${item.id}` : undefined} aria-controls={panelId} aria-label={closable ? item.label : undefined} aria-describedby={closable && item.badge ? `${descriptionId}-${index}` : undefined} data-tab-id={item.id} className="dash-view-tab" disabled={item.disabled} aria-selected={item.id === activeId} tabIndex={item.id === activeId || !enabled.some((tab) => tab.id === activeId) && enabled[0]?.id === item.id ? 0 : -1} onClick={() => { setConfirming(undefined); onSelect(item.id) }}>
+          <span>{item.label}</span>{closable ? <span className="dash-view-tab-slot">{badge}</span> : badge}
+        </button>
+        if (!closable) return <div key={item.id} className="dash-view-tab-plain" role="presentation">{tab}</div>
+        return <div key={item.id} className={`dash-view-tab-shell${confirming === item.id ? " is-confirming" : ""}`} data-close-tab={item.id} role="presentation" onBlur={(event) => { if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) setConfirming(undefined) }} onKeyDown={(event) => {
+          if (event.key !== "Escape" || confirming !== item.id) return
+          event.preventDefault(); event.stopPropagation(); setConfirming(undefined)
+          event.currentTarget.querySelector<HTMLButtonElement>('[role="tab"]')?.focus()
+        }}>
+          {tab}
+          <button type="button" className={`dash-view-tab-close${confirming === item.id ? " is-confirming" : ""}`} aria-label={`${confirming === item.id ? "Confirm close" : "Close"} ${item.label} tab`} title={confirming === item.id ? "Confirm close" : `Close ${item.label} tab`} disabled={item.disabled} tabIndex={item.id === activeId || confirming === item.id ? 0 : -1} onClick={() => {
+            if (confirming !== item.id) { setConfirming(item.id); return }
+            setConfirming(undefined); onClose?.(item.id)
+            requestAnimationFrame(() => {
+              const selected = list.current?.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')
+              ;(selected ?? list.current?.querySelector<HTMLButtonElement>('[role="tab"]:not(:disabled)') ?? newButton.current)?.focus()
+            })
+          }}>{confirming === item.id ? "Confirm" : icons.close}</button>
+        </div>
+      })}
     </div>
-    <button type="button" className="dash-view-new" onClick={onNew} disabled={newDisabled} aria-label="New dashboard" title="New dashboard">{icons.plus}</button>
+    <button ref={newButton} type="button" className="dash-view-new" onClick={() => { setConfirming(undefined); onNew() }} disabled={newDisabled} aria-label="New dashboard" title="New dashboard">{icons.plus}</button>
   </div>
 }
 

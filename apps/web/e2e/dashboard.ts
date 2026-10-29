@@ -288,6 +288,8 @@ async function open(state: State, width: number, height: number, timezoneId = "E
       prior.stages = { ...prior.stages, [stage]: { ...arrangement, order: arrangement.order ?? orders[stage], added: [...(arrangement.added ?? []), "setup"] } }
     }
     localStorage.setItem("dh.dashboard.v3", JSON.stringify(prior))
+    // Exercise saved custom layouts while the default Overview is deferred.
+    localStorage.setItem("dh.dashboard.v4", JSON.stringify({ active: "saved-work", dashboards: [{ id: "saved-work", name: "Saved work", period: prior.period, stages: {}, legacy: prior.stages }] }))
     sessionStorage.setItem("dashboard-fixture-seeded", "1")
   }, { layout: state.layout ?? null, jurisdiction: state.jurisdictions ?? null })
   await context.route("**/*", async (route: Route) => {
@@ -814,7 +816,7 @@ try {
       await capture(page, "ai-named-tabs-1440x1000")
       await page.getByRole("tab", { name: "Practice costs", exact: true }).focus()
       await page.keyboard.press("Home")
-      await expect(page.getByRole("tab", { name: "Overview", exact: true })).toBeFocused()
+      await expect(page.getByRole("tab", { name: "Saved work", exact: true })).toBeFocused()
       expect(await order(page)).toEqual(PRACTICE)
       await page.keyboard.press("End")
       await expect(page.getByRole("tab", { name: /^Setup/ })).toBeFocused()
@@ -851,15 +853,15 @@ try {
       await expect(note).toBeVisible()
       await page.getByRole("button", { name: "New dashboard", exact: true }).click()
       await expect(note).toHaveCount(0)
-      await page.getByRole("tab", { name: "Overview", exact: true }).click()
+      await page.getByRole("tab", { name: "Saved work", exact: true }).click()
       await expect(note).toBeVisible()
-      await page.locator('summary[aria-label="Options for Overview dashboard"]').click()
+      await page.locator('summary[aria-label="Options for Saved work dashboard"]').click()
       await page.getByRole("button", { name: "Delete dashboard", exact: true }).click()
       await page.getByRole("group", { name: "Delete dashboard", exact: true }).getByRole("button", { name: "Delete dashboard", exact: true }).click()
       await expect(note).toHaveCount(0)
       await page.locator(".dash-snackbar").getByRole("button", { name: "Undo", exact: true }).click()
       await expect(note).toBeVisible()
-      await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveAttribute("aria-selected", "true")
+      await expect(page.getByRole("tab", { name: "Saved work", exact: true })).toHaveAttribute("aria-selected", "true")
       await capture(page, "frontend-tab-notes-375x812", { fullPage: false })
       clean(state)
     } finally { await context.close() }
@@ -874,10 +876,10 @@ try {
       await page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true }).fill("Show spend by client")
       await page.getByRole("button", { name: "Update dashboard", exact: true }).click()
       await expect.poll(() => state.aiPrompts.length).toBe(1)
-      await page.getByRole("tab", { name: "Overview", exact: true }).click()
+      await page.getByRole("tab", { name: "Saved work", exact: true }).click()
       await expect(page.getByRole("button", { name: "Building dashboard…", exact: true })).toBeVisible()
       await expect.poll(() => order(page)).toEqual(["Spend by client", "Conversations over time"])
-      await page.getByRole("tab", { name: "Overview", exact: true }).click()
+      await page.getByRole("tab", { name: "Saved work", exact: true }).click()
       await expect(page.locator(".dash-snackbar").getByRole("button", { name: "Undo", exact: true })).toBeVisible()
       await expect.poll(() => state.aiDeleted.length).toBe(1)
       clean(state)
@@ -908,7 +910,7 @@ try {
         await page.getByRole("button", { name: "New dashboard", exact: true }).click()
         await expect(page.getByRole("tab", { name: "New dashboard", exact: true })).toHaveAttribute("aria-selected", "true")
         await expect(page.locator(".dash-grid")).toHaveCount(0)
-        await page.getByRole("tab", { name: "Overview", exact: true }).click()
+        await page.getByRole("tab", { name: "Saved work", exact: true }).click()
       }
       await expect(page.getByRole("button", { name: "Building dashboard…", exact: true })).toHaveCount(0)
       await expect.poll(() => state.aiDeleted.length).toBe(1)

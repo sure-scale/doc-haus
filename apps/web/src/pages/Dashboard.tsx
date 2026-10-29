@@ -4,6 +4,7 @@ import type { DraftingPreferences } from "../api/ingest/preferences"
 import type { SetupProgress } from "../api/ingest/setup"
 import { askDashboard } from "../api/opencode/dashboard"
 import PageBar from "../components/PageBar"
+import { readBrowserValue, writeBrowserValue } from "../browser-storage"
 import { SetupTab, setupTabProgress } from "../components/dashboard/SetupTab"
 import { DashboardTabs } from "../components/dashboard/visual/DashboardChrome"
 import { addDays, attention, PERIOD_LABELS, PERIODS, startOfDay, summarize, useDashboardData, type DashboardData, type Period } from "../components/dashboard/data"
@@ -22,11 +23,21 @@ const pin = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="
 const suggestions = ["Show my spend by client", "Give me a weekly overview", "Focus on drafts that need me"]
 const titleOf = ({ widget }: WidgetInstance) => widget.type === "chart" ? widget.title : WIDGETS[widget.type].title
 
+const SETUP_HIDDEN_KEY = "dh.dashboard.setup-hidden.v1"
+
 // Setup is re-read by App whenever Settings or onboarding closes.
 export default function Dashboard({ setup, refresh = 0, onSampleAdded }: { setup: SetupProgress | null; refresh?: number; onSampleAdded?: () => void }) {
-  const [showSetup, setShowSetup] = useState(() => new URLSearchParams(window.location.search).get("tab") === "setup" || !setup?.ready)
   const { data, loading, reload } = useDashboardData(setup, refresh)
-  const [workspace, setWorkspace] = useState<Dashboards>(loadDashboards)
+  const [workspace, setWorkspace] = useState<Dashboards>(() => {
+    const saved = loadDashboards()
+    const firstCustom = saved.dashboards.find((tab) => tab.id !== "overview")
+    return saved.active === "overview" && firstCustom ? { ...saved, active: firstCustom.id } : saved
+  })
+  // Keep Overview's saved arrangement for later design work, out of the tab strip.
+  const customTabs = workspace.dashboards.filter((tab) => tab.id !== "overview")
+  const [setupHidden, setSetupHidden] = useState(() => readBrowserValue(SETUP_HIDDEN_KEY) === "true" && new URLSearchParams(window.location.search).get("tab") !== "setup")
+  const [showSetup, setShowSetup] = useState(() => !setupHidden && (new URLSearchParams(window.location.search).get("tab") === "setup" || !customTabs.some((tab) => tab.id === workspace.active)))
+  const empty = !showSetup && customTabs.length === 0
   const [promptOpen, setPromptOpen] = useState(false)
   const [request, setRequest] = useState("")
   const [working, setWorking] = useState(false)
@@ -43,7 +54,7 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded }: { setup
   const controller = useRef<AbortController>(null)
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
-  const active = workspace.dashboards.find((tab) => tab.id === workspace.active) ?? workspace.dashboards[0]!
+  const active = customTabs.find((tab) => tab.id === workspace.active) ?? customTabs[0] ?? workspace.dashboards[0]!
   const notes = active.notes ?? []
   const now = useMemo(() => Date.now(), [data])
   useEffect(() => {
@@ -88,6 +99,7 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded }: { setup
   function select(id: string) {
     const isSetup = id === "__setup"
     if (isSetup === showSetup && (isSetup || id === active.id)) return
+    if (isSetup) { setSetupHidden(false); setStorageFailed(!writeBrowserValue(SETUP_HIDDEN_KEY, "false")) }
     setShowSetup(isSetup)
     setPromptOpen(false)
     controller.current?.abort()
@@ -100,6 +112,19 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded }: { setup
     else url.searchParams.delete("tab")
     window.history.replaceState(window.history.state, "", url)
     if (!isSetup) update({ ...workspace, active: id })
+  }
+  function closeSetup() {
+    setSetupHidden(true)
+    setStorageFailed(!writeBrowserValue(SETUP_HIDDEN_KEY, "true"))
+    if (showSetup) {
+      setShowSetup(false)
+      const url = new URL(window.location.href)
+      url.searchParams.delete("tab")
+      window.history.replaceState(window.history.state, "", url)
+      if (customTabs.length) update({ ...workspace, active: active.id })
+    }
+    setAnnouncement("Setup tab closed. Your settings are saved.")
+    requestAnimationFrame(() => (document.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]') ?? document.querySelector<HTMLButtonElement>('[aria-label="New dashboard"]'))?.focus())
   }
   function create() {
     setShowSetup(false)
@@ -141,7 +166,14 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded }: { setup
     if (!undoState) return
     controller.current?.abort()
     setWorking(false)
-    update(undoState.value)
+    const restored = undoState.value
+    update(restored)
+    if (restored.dashboards.some((tab) => tab.id === restored.active && tab.id !== "overview")) {
+      setShowSetup(false)
+      const url = new URL(window.location.href)
+      url.searchParams.delete("tab")
+      window.history.replaceState(window.history.state, "", url)
+    }
     setUndoState(undefined)
     setAnnouncement("Dashboard change undone")
     requestAnimationFrame(() => askButton.current?.focus())
@@ -150,9 +182,12 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded }: { setup
     const dashboards = workspace.dashboards.filter((tab) => tab.id !== active.id)
     controller.current?.abort()
     setWorking(false)
-    update({ active: dashboards[0]!.id, dashboards })
+    const remaining = dashboards.filter((tab) => tab.id !== "overview")
+    update({ active: remaining[0]?.id ?? dashboards[0]!.id, dashboards })
+    if (!remaining.length) setShowSetup(!setupHidden)
     setUndoState({ text: `${active.name} deleted`, value: workspace })
     setDeleting(false)
+    setPromptOpen(false)
     setError("")
     setAnnouncement("Dashboard deleted")
     requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')?.focus())
@@ -193,8 +228,9 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded }: { setup
     <PageBar title="Dashboard" description={`${greeting(now)}${name ? `, ${name}` : ""}. What needs you, your drafts and what your matters cost.`} />
     <div className="dash">
       <div className="dash-tabs-row">
-        <DashboardTabs items={[...workspace.dashboards.map((tab) => ({ id: tab.id, label: tab.name })), { id: "__setup", label: "Setup", ...(setupProgress ? { badge: { value: setupProgress.done, total: setupProgress.total, label: `${setupProgress.done} of ${setupProgress.total} setup steps complete` } } : {}) }]} activeId={showSetup ? "__setup" : active.id} onSelect={select} onNew={create} newDisabled={workspace.dashboards.length >= 12} panelId="dash-content" />
-        {!showSetup && <details ref={tabMenu} className="viewer-more-actions dash-tab-menu" key={active.id} onKeyDown={(event) => {
+        <DashboardTabs items={[...customTabs.map((tab) => ({ id: tab.id, label: tab.name })), ...(!setupHidden ? [{ id: "__setup", label: "Setup", closable: true, ...(setupProgress ? { badge: { value: setupProgress.done, total: setupProgress.total, label: `${setupProgress.done} of ${setupProgress.total} setup steps complete` } } : {}) }] : [])]} activeId={showSetup ? "__setup" : empty ? "" : active.id} onSelect={select} onNew={create} onClose={closeSetup} newDisabled={workspace.dashboards.length >= 12} panelId="dash-content" />
+        {setupHidden && customTabs.length > 0 && <button type="button" className="dash-text-button" onClick={() => select("__setup")}>Show setup</button>}
+        {!showSetup && !empty && <details ref={tabMenu} className="viewer-more-actions dash-tab-menu" key={active.id} onKeyDown={(event) => {
           if (event.key === "Escape" && event.currentTarget.open) { event.preventDefault(); event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus() }
         }} onBlur={(event) => { if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) event.currentTarget.open = false }}>
           <summary aria-label={`Options for ${active.name} dashboard`} title="Dashboard options">{icons.edit}</summary>
@@ -211,7 +247,7 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded }: { setup
       {deleting && <div className="dash-delete-confirm" role="group" aria-label="Delete dashboard">
         <p>Delete “{active.name}”? Your matters stay as they are.</p><button type="button" onClick={deleteTab}>Delete dashboard</button><button type="button" className="ghost" onClick={() => { setDeleting(false); requestAnimationFrame(() => tabMenu.current?.querySelector("summary")?.focus()) }}>Cancel</button>
       </div>}
-      {!showSetup && <div className="dash-toolbar">
+      {!showSetup && !empty && <div className="dash-toolbar">
         {periodic && <div className="settings-seg dash-period" role="group" aria-label="Period">{PERIODS.map((period: Period) => <button key={period} type="button" aria-pressed={active.period === period} className={active.period === period ? "active" : ""} onClick={() => changeTab({ ...active, period })}>
           {active.period === period && <svg className="settings-seg-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>}{PERIOD_LABELS[period]}
         </button>)}</div>}
@@ -220,8 +256,8 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded }: { setup
           <button ref={askButton} type="button" className={`dash-ask${promptOpen ? " is-open" : ""}`} onClick={() => { if (promptOpen && working) { controller.current?.abort(); setWorking(false); setAnnouncement("Dashboard update stopped") } setPromptOpen(!promptOpen) }} disabled={!canGenerate} aria-expanded={promptOpen} aria-controls="dash-ai-panel">{sparkle}Ask AI</button>
         </div>
       </div>}
-      {!showSetup && !setup?.ready && <p className="dash-ai-error" role="status">Connect your AI provider and models to build a dashboard. <button type="button" onClick={() => select("__setup")}>Connect AI in Setup</button></p>}
-      {promptOpen && !showSetup && <form id="dash-ai-panel" className="dash-ai-panel" onSubmit={generate} onKeyDown={(event) => {
+      {!showSetup && !empty && !setup?.ready && <p className="dash-ai-error" role="status">Connect your AI provider and models to build a dashboard. <button type="button" onClick={() => select("__setup")}>Connect AI in Setup</button></p>}
+      {promptOpen && !showSetup && !empty && <form id="dash-ai-panel" className="dash-ai-panel" onSubmit={generate} onKeyDown={(event) => {
         if (event.key !== "Escape") return
         event.preventDefault()
         controller.current?.abort()
@@ -237,11 +273,11 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded }: { setup
         {working && <p role="status" className="dash-ai-working">Your AI is choosing widgets and chart settings…</p>}
         {error && <p role="alert" className="dash-ai-error">{error}</p>}
       </form>}
-      {!showSetup && notes.length > 0 && <div className="dash-ai-notes" role="status"><strong>About this dashboard</strong><ul>{notes.map((note) => <li key={note}>{note}</li>)}</ul></div>}
+      {!showSetup && !empty && notes.length > 0 && <div className="dash-ai-notes" role="status"><strong>About this dashboard</strong><ul>{notes.map((note) => <li key={note}>{note}</li>)}</ul></div>}
       {storageFailed && <p className="dash-ai-error" role="status">Your browser could not save this layout. It will last while this page stays open.</p>}
-      {!showSetup && unread > 0 && <div className="dash-banner" role="status">{icons.warning}<p>Some matters could not be read, so their spend and drafts are missing here.</p><button type="button" className="btn-sm" onClick={reload} disabled={loading}>Retry</button></div>}
-      <div id="dash-content" role="tabpanel" aria-labelledby={`dash-content-tab-${showSetup ? "__setup" : active.id}`} tabIndex={0}>
-        {showSetup ? context ? <>{data?.error && <p className="dash-ai-error" role="status">Your matters could not be loaded. You can still update setup. <button type="button" onClick={reload} disabled={loading}>Retry matters</button></p>}<SetupTab context={context} onSampleAdded={onSampleAdded} /></> : <div className="dash-error" role={data?.error ? "alert" : "status"}><ShapeIcon icon="setup" shape="sunny" /><div><p className="dash-error-title">{data?.error ? "Could not load setup" : "Loading your setup…"}</p>{data?.error && <p>Your saved settings will show when the services are available.</p>}</div>{data?.error && <button type="button" onClick={reload} disabled={loading}>Retry</button>}</div> : data?.error ? <div className="dash-error" role="alert"><ShapeIcon icon="warning" shape="flower" /><div><p className="dash-error-title">Could not load your matters</p><p>Your figures will show once the matter list loads.</p></div><button type="button" onClick={reload} disabled={loading}>Retry</button></div>
+      {!showSetup && !empty && unread > 0 && <div className="dash-banner" role="status">{icons.warning}<p>Some matters could not be read, so their spend and drafts are missing here.</p><button type="button" className="btn-sm" onClick={reload} disabled={loading}>Retry</button></div>}
+      <div id="dash-content" role={empty ? "region" : "tabpanel"} aria-label={empty ? "Dashboard" : undefined} aria-labelledby={empty ? undefined : `dash-content-tab-${showSetup ? "__setup" : active.id}`} tabIndex={0}>
+        {empty ? <div className="dash-blank"><ShapeIcon icon="plus" shape="sunny" className="dash-blank-badge" /><p className="dash-blank-title">A dashboard for the way you work</p><p>Create a dashboard, or return to your setup checklist.</p><div className="dash-blank-actions"><button type="button" onClick={create}>{icons.plus}New dashboard</button><button type="button" className="ghost" onClick={() => select("__setup")}>Show setup</button></div></div> : showSetup ? context ? <>{data?.error && <p className="dash-ai-error" role="status">Your matters could not be loaded. You can still update setup. <button type="button" onClick={reload} disabled={loading}>Retry matters</button></p>}<SetupTab context={context} onSampleAdded={onSampleAdded} /></> : <div className="dash-error" role={data?.error ? "alert" : "status"}><ShapeIcon icon="setup" shape="sunny" /><div><p className="dash-error-title">{data?.error ? "Could not load setup" : "Loading your setup…"}</p>{data?.error && <p>Your saved settings will show when the services are available.</p>}</div>{data?.error && <button type="button" onClick={reload} disabled={loading}>Retry</button>}</div> : data?.error ? <div className="dash-error" role="alert"><ShapeIcon icon="warning" shape="flower" /><div><p className="dash-error-title">Could not load your matters</p><p>Your figures will show once the matter list loads.</p></div><button type="button" onClick={reload} disabled={loading}>Retry</button></div>
           : widgets.length === 0 ? <div className="dash-blank"><ShapeIcon icon="plus" shape="sunny" className="dash-blank-badge" /><p className="dash-blank-title">A dashboard for the way you work</p><p>Tell your AI what you want to keep an eye on.</p><button type="button" disabled={!canGenerate} onClick={() => { setPromptOpen(true); requestAnimationFrame(() => prompt.current?.focus()) }}>{sparkle}Ask AI to build it</button></div>
             : <div className="dash-grid" aria-busy={!context}>{widgets.map((item) => <Widget key={item.key} item={item} context={context} period={active.period} bold={item.widget.type === bold} onPin={() => togglePin(item.key)} onRemove={() => remove(item.key)} />)}</div>}
       </div>

@@ -7,6 +7,7 @@ import { DEFAULT_DRAFTING } from "../../../dochaus/lib/drafting-preferences"
 const { chromium, expect } = await import("@playwright/test")
 type Page = import("@playwright/test").Page
 type Route = import("@playwright/test").Route
+type Locator = import("@playwright/test").Locator
 const baseURL = process.env.PLAYWRIGHT_BASE_URL
 const evidence = process.env.DOCHAUS_EVIDENCE_DIR
 if (!baseURL || !evidence) throw new Error("Set PLAYWRIGHT_BASE_URL and DOCHAUS_EVIDENCE_DIR")
@@ -118,6 +119,15 @@ async function open(state: State, width = 1440, height = 1000) {
 }
 const setupTab = (page: Page) => page.getByRole("tab", { name: /^Setup/ })
 const checklist = (page: Page) => page.getByRole("region", { name: "Finish setting up", exact: true })
+const closeSetup = (page: Page) => page.getByRole("button", { name: "Close Setup tab", exact: true })
+const confirmCloseSetup = (page: Page) => page.getByRole("button", { name: "Confirm close Setup tab", exact: true })
+const tabBadge = (page: Page) => setupTab(page).locator(".dash-view-tab-badge")
+async function visuallyShown(locator: Locator) {
+  return locator.evaluate(node => {
+    const style = getComputedStyle(node)
+    return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity) > 0
+  })
+}
 async function badge(page: Page, count: number) { await expect(setupTab(page)).toContainText(`${count}/5`); await expect(checklist(page).getByRole("progressbar")).toHaveAttribute("value", String(count)) }
 async function settled(page: Page) { await expect(checklist(page)).toBeVisible(); await expect(checklist(page).getByRole("textbox", { name: "Your full name", exact: true })).toBeEnabled() }
 async function capture(page: Page, name: string) {
@@ -175,13 +185,142 @@ try {
       await expect(page.getByRole("button", { name: "Ask AI", exact: true })).toHaveCount(0)
       await expect(page.getByRole("group", { name: "Period", exact: true })).toHaveCount(0)
       await capture(page, `setup-default-${width}x${height}`)
-      await page.getByRole("tab", { name: "Overview", exact: true }).click()
-      await expect(setupTab(page)).toHaveAttribute("aria-selected", "false")
-      await expect(page.getByRole("button", { name: "Ask AI", exact: true })).toBeEnabled()
-      await setupTab(page).click(); await settled(page)
+      await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveCount(0)
+      await expect(page.getByRole("tablist", { name: "Dashboards", exact: true }).getByRole("tab")).toHaveCount(1)
       await setupTab(page).focus(); await page.keyboard.press("Home")
-      await expect(page.getByRole("tab", { name: "Overview", exact: true })).toBeFocused()
+      await expect(setupTab(page)).toBeFocused()
       await page.keyboard.press("End"); await expect(setupTab(page)).toBeFocused()
+      clean(state)
+    } finally { await context.close() }
+  })
+  await scenario("Setup hover close confirms inline, cancels safely and persists only visibility", async () => {
+    const state = fixture(), { context, page } = await open(state)
+    try {
+      await page.goto(`${baseURL}/dashboard`); await settled(page); await badge(page, 1)
+      await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveCount(0)
+      await page.mouse.move(0, 0)
+      await expect.poll(() => visuallyShown(tabBadge(page))).toBe(true)
+      const before = await setupTab(page).boundingBox()
+      await capture(page, "setup-tab-normal-1440x1000")
+      await setupTab(page).locator("span").first().hover()
+      await expect.poll(() => visuallyShown(closeSetup(page))).toBe(true)
+      await expect.poll(() => visuallyShown(tabBadge(page))).toBe(false)
+      const closeBox = await closeSetup(page).boundingBox()
+      await capture(page, "setup-tab-hover-close-1440x1000")
+      await closeSetup(page).click()
+      await expect(confirmCloseSetup(page)).toHaveText("Confirm")
+      await expect(setupTab(page)).toHaveAttribute("aria-selected", "true")
+      await expect(checklist(page)).toBeVisible()
+      const confirmBox = await confirmCloseSetup(page).boundingBox()
+      const confirming = await setupTab(page).boundingBox()
+      expect(Math.abs((confirmBox!.x + confirmBox!.width / 2) - (closeBox!.x + closeBox!.width / 2))).toBeLessThanOrEqual(1)
+      expect(Math.abs(confirming!.width - before!.width)).toBeLessThanOrEqual(1)
+      await capture(page, "setup-tab-inline-confirm-1440x1000")
+      await page.keyboard.press("Escape")
+      await expect(confirmCloseSetup(page)).toHaveCount(0)
+      await expect(setupTab(page)).toBeFocused()
+      await page.getByRole("heading", { name: "Dashboard", exact: true }).click()
+      await page.mouse.move(0, 0)
+      await expect.poll(() => visuallyShown(tabBadge(page))).toBe(true)
+      await setupTab(page).locator("span").first().hover(); await closeSetup(page).click()
+      await page.getByRole("heading", { name: "Dashboard", exact: true }).click()
+      await expect(confirmCloseSetup(page)).toHaveCount(0)
+      await setupTab(page).focus(); await page.keyboard.press("Tab")
+      await expect(closeSetup(page)).toBeFocused()
+      await page.keyboard.press("Enter")
+      await expect(confirmCloseSetup(page)).toBeFocused()
+      await page.keyboard.press("Enter")
+      await expect(setupTab(page)).toHaveCount(0); await expect(checklist(page)).toHaveCount(0)
+      await expect(page.getByRole("button", { name: "Show setup", exact: true })).toBeVisible()
+      await expect(page.getByRole("button", { name: "New dashboard", exact: true }).first()).toBeEnabled()
+      await capture(page, "setup-tab-closed-1440x1000")
+      await page.reload()
+      await expect(setupTab(page)).toHaveCount(0)
+      await page.getByRole("button", { name: "Show setup", exact: true }).click()
+      await settled(page); await badge(page, 1)
+      await page.reload(); await settled(page); await badge(page, 1)
+      expect(state.saved).toEqual([]); expect(state.setupWrites).toEqual([])
+      clean(state)
+    } finally { await context.close() }
+  })
+  await scenario("Setup close is available on touch without hovering", async () => {
+    const state = fixture(), { context, page } = await open(state, 375, 812)
+    try {
+      await page.goto(`${baseURL}/dashboard`); await settled(page)
+      await expect.poll(() => visuallyShown(closeSetup(page))).toBe(true)
+      await closeSetup(page).tap()
+      await expect(confirmCloseSetup(page)).toBeVisible()
+      await expect(checklist(page)).toBeVisible()
+      await capture(page, "setup-tab-inline-confirm-375x812")
+      await confirmCloseSetup(page).tap()
+      await expect(setupTab(page)).toHaveCount(0)
+      await page.getByRole("button", { name: "Show setup", exact: true }).tap()
+      await settled(page); await badge(page, 1)
+      clean(state)
+    } finally { await context.close() }
+  })
+  await scenario("Closing inactive Setup preserves custom dashboard and saved Overview", async () => {
+    const state = fixture(), { context, page } = await open(state)
+    try {
+      await page.goto(`${baseURL}/dashboard`); await settled(page)
+      const saved = { active: "costs", dashboards: [
+        { id: "overview", name: "Overview", period: "month", stages: {}, widgets: [] },
+        { id: "drafts", name: "Drafts", period: "month", stages: {}, widgets: [] },
+        { id: "costs", name: "Costs", period: "month", stages: {}, widgets: [] },
+      ] }
+      await page.evaluate(value => localStorage.setItem("dh.dashboard.v4", JSON.stringify(value)), saved)
+      await page.reload()
+      const costs = page.getByRole("tab", { name: "Costs", exact: true })
+      await expect(costs).toHaveAttribute("aria-selected", "true")
+      await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveCount(0)
+      await setupTab(page).locator("span").first().hover(); await closeSetup(page).click()
+      await expect(costs).toHaveAttribute("aria-selected", "true")
+      await expect(setupTab(page)).toHaveAttribute("aria-selected", "false")
+      await confirmCloseSetup(page).click()
+      await expect(costs).toHaveAttribute("aria-selected", "true")
+      await expect(costs).toBeFocused()
+      expect(await page.evaluate(() => JSON.parse(localStorage.getItem("dh.dashboard.v4")!))).toEqual(saved)
+      await page.reload()
+      await expect(costs).toHaveAttribute("aria-selected", "true")
+      await expect(setupTab(page)).toHaveCount(0)
+      await page.getByRole("button", { name: "Show setup", exact: true }).click()
+      await settled(page)
+      await expect(setupTab(page)).toHaveAttribute("aria-selected", "true")
+      await setupTab(page).locator("span").first().hover()
+      await closeSetup(page).click(); await confirmCloseSetup(page).click()
+      await expect(costs).toHaveAttribute("aria-selected", "true")
+      await expect(page.getByRole("tab", { name: "Drafts", exact: true })).toHaveAttribute("aria-selected", "false")
+      expect(await page.evaluate(() => JSON.parse(localStorage.getItem("dh.dashboard.v4")!))).toMatchObject(saved)
+      clean(state)
+    } finally { await context.close() }
+  })
+  await scenario("Undo deleting the last custom dashboard restores its selected view", async () => {
+    const state = fixture(), { context, page } = await open(state)
+    try {
+      await page.goto(`${baseURL}/dashboard`); await settled(page)
+      const saved = { active: "costs", dashboards: [
+        { id: "overview", name: "Overview", period: "month", stages: {}, widgets: [] },
+        { id: "costs", name: "Costs", period: "month", stages: {}, widgets: [] },
+      ] }
+      await page.evaluate(value => localStorage.setItem("dh.dashboard.v4", JSON.stringify(value)), saved)
+      await page.reload()
+      const costs = page.getByRole("tab", { name: "Costs", exact: true })
+      await expect(costs).toHaveAttribute("aria-selected", "true")
+      await page.getByRole("button", { name: "Ask AI", exact: true }).click()
+      await expect(page.locator("#dash-ai-panel")).toBeVisible()
+      await page.locator('summary[aria-label="Options for Costs dashboard"]').click()
+      await page.getByRole("button", { name: "Delete dashboard", exact: true }).click()
+      await page.getByRole("group", { name: "Delete dashboard", exact: true }).getByRole("button", { name: "Delete dashboard", exact: true }).click()
+      await expect(costs).toHaveCount(0)
+      await expect(setupTab(page)).toHaveAttribute("aria-selected", "true")
+      await expect(page.locator("#dash-ai-panel")).toHaveCount(0)
+      await page.getByRole("button", { name: "Undo", exact: true }).click()
+      await expect(costs).toHaveAttribute("aria-selected", "true")
+      await expect(setupTab(page)).toHaveAttribute("aria-selected", "false")
+      await expect(checklist(page)).toHaveCount(0)
+      await expect(page.locator("#dash-ai-panel")).toHaveCount(0)
+      expect(await page.evaluate(() => JSON.parse(localStorage.getItem("dh.dashboard.v4")!))).toMatchObject(saved)
+      await capture(page, "setup-tab-undo-restores-custom-1440x1000")
       clean(state)
     } finally { await context.close() }
   })

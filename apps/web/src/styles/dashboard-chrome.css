@@ -6,6 +6,22 @@
 .dash-view-tab:hover:not(:disabled) { background: var(--panel-hover); color: var(--accent); }
 .dash-view-tab-badge { display: inline-grid; place-items: center; min-width: 21px; min-height: 21px; padding: 2px 6px; box-sizing: border-box; border-radius: var(--radius-pill); background: var(--md-sys-color-surface-container-high); color: var(--text-secondary); font-size: 11px; line-height: 1; font-variant-numeric: tabular-nums; }
 .dash-view-tab[aria-selected="true"] .dash-view-tab-badge { background: var(--accent); color: var(--md-sys-color-on-primary); }
+/* Separate sibling controls keep a closable tab valid button markup. The slot
+   reserves Confirm's width so replacing the count never shifts adjacent tabs. */
+.dash-view-tab-plain, .dash-view-tab-shell { position: relative; display: inline-flex; flex: none; min-width: 0; }
+.dash-view-tab-slot { display: inline-grid; place-items: center; width: 50px; min-width: 50px; }
+.dash-view-tab-close { position: absolute; inset: 1px 16px 1px auto; display: inline-grid; place-items: center; width: 50px; min-width: 50px; min-height: 38px; padding: 0 3px; border: 0; border-radius: var(--radius-pill); background: transparent; color: var(--text-secondary); font: inherit; font-size: 11px; font-weight: 650; opacity: 0; pointer-events: none; }
+.dash-view-tab-close svg { width: 15px; height: 15px; }
+.dash-view-tab-shell:hover .dash-view-tab-close, .dash-view-tab-shell:focus-within .dash-view-tab-close, .dash-view-tab-shell.is-confirming .dash-view-tab-close { opacity: 1; pointer-events: auto; }
+.dash-view-tab-shell:hover .dash-view-tab-badge, .dash-view-tab-shell:focus-within .dash-view-tab-badge, .dash-view-tab-shell.is-confirming .dash-view-tab-badge { opacity: 0; }
+.dash-view-tab-shell:has(.dash-view-tab[aria-selected="true"]) .dash-view-tab-close:not(.is-confirming) { color: var(--md-sys-color-on-primary-container); }
+.dash-view-tab-close:hover:not(:disabled) { background: var(--panel-hover); color: var(--md-sys-color-error); }
+.dash-view-tab-close.is-confirming { color: var(--md-sys-color-error); background: var(--md-sys-color-error-container); }
+.dash-view-tab-close:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+@media (hover: none) {
+  .dash-view-tab-shell .dash-view-tab-close { opacity: 1; pointer-events: auto; min-height: 40px; }
+  .dash-view-tab-shell .dash-view-tab-badge { opacity: 0; }
+}
 .dash-view-new { display: grid; place-items: center; flex: none; width: 40px; height: 40px; min-height: 40px; padding: 0; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--panel); color: var(--text-secondary); }
 .dash-view-new:hover:not(:disabled) { background: var(--md-sys-color-primary-container); color: var(--accent); border-color: var(--accent); }
 .dash-view-tab:focus-visible, .dash-view-new:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
