@@ -44,7 +44,7 @@ const MATTERS: Omit<Matter, "dir" | "created_at">[] = [
   { id: "m-alder", title: "Alder House · Studio lease renewal", reference: "AH-2026-014", client: "Alder House Studio", jurisdictions: ["EW"] },
   { id: "m-northbank", title: "Northbank Works · Supply agreement", reference: "NB-2026-008", client: "Northbank Works", jurisdictions: ["EW"] },
   { id: "m-fernlea", title: "Fernlea Bakery · Shareholders' agreement", reference: "FB-2026-003", client: "Fernlea Bakery Co.", jurisdictions: ["EW"] },
-  { id: "m-quarry", title: "Quarry Lane Cycles · Franchise terms", reference: "QL-2026-021", client: "Quarry Lane Cycles", jurisdictions: ["SC"] },
+  { id: "m-quarry", title: "Quarry Lane Cycles · Franchise terms", reference: "QL-2026-021", client: "Quarry Lane Cycles", jurisdictions: ["SCT"] },
   { id: "m-marlowe", title: "Marlowe & Pike Design · Master services agreement and statement of work", reference: "MP-2026-011", client: "Marlowe & Pike Design", jurisdictions: ["EW"] },
   { id: "m-tidewater", title: "Tidewater Robotics · Mutual NDA set", reference: "TR-2026-030", client: "Tidewater Robotics", jurisdictions: ["EW"] },
   { id: "m-copperleaf", title: "Copperleaf Gardens · Employment contracts", jurisdictions: ["EW"] },
@@ -205,13 +205,17 @@ type Kind = "new" | "populated" | "error"
 type Data = ReturnType<typeof populated>
 function fixture(kind: Kind, layout?: unknown, data: Data = kind === "populated" ? populated() : { matters: [], sessions: [], drafting: {}, documents: {} }) {
   return {
-    kind, layout, ...data, samplePosts: 0,
+    kind, layout, ...data, samplePosts: 0, failPreferences: false,
+    preferences: kind === "populated" ? { ...DEFAULT_DRAFTING, attorney: "Alex Example", firm: "Example Partners LLP", practiceAreas: ["Commercial contracts", "Property"], houseStyle: "Arial 11pt, numbered clauses.", searchApiKey: "fixture-exa-key" } : { ...DEFAULT_DRAFTING },
+    saved: [] as Record<string, unknown>[],
     unexpected: [] as string[], errors: [] as string[], sessionDirs: [] as string[], requests: [] as { method: string; path: string }[],
   }
 }
 type State = ReturnType<typeof fixture>
 
-const jurisdictions = [{ code: "EW", name: "England and Wales", citationStyle: "oscola" }, { code: "SC", name: "Scotland", citationStyle: "scotland" }]
+// A slice of the shipped packs, so a browser in Britain is offered its three.
+const jurisdictions = [["AU", "Australia (Federal)"], ["CA-ON", "Ontario"], ["DE", "Germany"], ["EU", "European Union"], ["EW", "England & Wales"], ["IE", "Ireland"], ["NIR", "Northern Ireland"], ["SCT", "Scotland"], ["SG", "Singapore"], ["US", "United States (Federal)"], ["US-DE", "Delaware"], ["US-NY", "New York"]]
+  .map(([code, name]) => ({ code, name, citationStyle: "fixture" }))
 const templates = [
   { name: "Consulting agreement.docx", description: "A starting point for professional services engagements.", placeholders: [{ text: "Client name", kind: "text" }] },
   { name: "Mutual confidentiality agreement.docx", description: "Two-way confidentiality terms for early discussions.", placeholders: [] },
@@ -249,6 +253,17 @@ async function open(state: State, width: number, height: number, timezoneId = "E
     const reply = (body: unknown, status = 200) => route.fulfill({ status, headers, contentType: "application/json", body: JSON.stringify(body) })
     if (method === "POST" && pathname === "/api/dochaus/provider-test") return reply({ ok: true })
     if (method === "POST" && pathname === "/sample-matter") { state.samplePosts++; return reply({ matter: SAMPLE }) }
+    // Ingest merges the top-level keys it is sent.
+    if (method === "PUT" && pathname === "/preferences") {
+      if (state.failPreferences) return reply({ error: "Could not write settings." }, 500)
+      const patch = request.postDataJSON() as Record<string, unknown>
+      state.saved.push(patch)
+      state.preferences = { ...state.preferences, ...patch }
+      return reply(state.preferences)
+    }
+    // Settings opens a provider candidate session on open, on every tab.
+    if (pathname === "/api/dochaus/provider-candidate/session" && method === "POST") return reply({ sessionID: "synthetic-candidate" })
+    if (pathname === "/api/dochaus/provider-candidate/session" && method === "DELETE") return route.fulfill({ status: 204, headers })
     if (method !== "GET") { state.unexpected.push(`${method} ${pathname}`); return route.abort() }
     const populatedState = state.kind === "populated"
     if (pathname === "/auth/reuse") return reply({ sources: [] })
@@ -256,7 +271,7 @@ async function open(state: State, width: number, height: number, timezoneId = "E
     // A new install finished onboarding with only the model step: details and
     // research were skipped, so the app opens normally and nothing else is set.
     if (pathname === "/setup") return reply(populatedState ? { version: 1, ready: true, completed: ["models", "research", "details"], skipped: [], next: "done" } : { version: 1, ready: true, completed: ["models"], skipped: ["details", "research"], next: "done" })
-    if (pathname === "/preferences") return reply(populatedState ? { ...DEFAULT_DRAFTING, attorney: "Alex Example", firm: "Example Partners LLP", practiceAreas: ["Commercial contracts", "Property"], houseStyle: "Arial 11pt, numbered clauses." } : DEFAULT_DRAFTING)
+    if (pathname === "/preferences") return reply(state.preferences)
     if (pathname === "/matters") return state.kind === "error" ? reply({ error: "The document service is temporarily unavailable." }, 503) : reply(state.matters)
     const draftingMatch = pathname.match(/^\/matters\/([^/]+)\/drafting-status$/)
     if (draftingMatch) return reply(state.drafting[draftingMatch[1]!] ?? null)
@@ -347,7 +362,7 @@ async function dashboard(page: Page, expectGrid = true, reload = false) {
 
 const SIZES = [[375, 812], [768, 1024], [1440, 1000]] as const
 const ALL_WIDGETS = ["journey", "setup", "spend", "matter-cost", "draft-cost", "documents", "week", "matter-spend", "attention", "activity", "recent", "tokens", "trend", "actions", "library", "sample", "ideas"]
-const STARTING = ["First steps", "Finish setting up", "Sample matter", "Your library", "Things to try"]
+const STARTING = ["First steps", "Your practice", "Sample matter", "Your library", "Things to try"]
 const journey = (page: Page) => card(page, "First steps").locator(".dash-journey > li")
 const doneSteps = (page: Page) => card(page, "First steps").locator(".dash-journey > li.is-done strong").allTextContents()
 
@@ -365,10 +380,12 @@ try {
         await expect(journey(page).nth(0)).toHaveAttribute("aria-current", "step")
         await expect(journey(page).nth(0).getByRole("link", { name: "New matter", exact: true })).toHaveAttribute("href", "/")
         await expect(card(page, "First steps").locator(".dash-step-action")).toHaveCount(1)
-        const setup = card(page, "Finish setting up")
-        await expect(setup.getByText("4 essentials left", { exact: true })).toBeVisible()
-        await expect(setup.getByRole("img", { name: "1 of 9 done", exact: true })).toBeVisible()
-        await expect(setup.locator(".dash-setup-items > li")).toHaveCount(6)
+        const setup = card(page, "Your practice")
+        await expect(setup.getByText("5 details to go", { exact: true })).toBeVisible()
+        await expect(setup.getByRole("img", { name: "0 of 5 done", exact: true })).toBeVisible()
+        await expect(setup.locator(".dash-profile-tile")).toHaveCount(4)
+        await expect(setup.locator(".dash-profile-tile.is-done")).toHaveCount(0)
+        await expect(setup.locator(".dash-profile-extras button")).toHaveCount(3)
         await expect(card(page, "Sample matter").getByRole("button", { name: "Add the sample matter", exact: true })).toBeVisible()
         await expect(card(page, "Your library").locator(".dash-library .is-zero")).toHaveCount(4)
         await expect(card(page, "Things to try").locator(".dash-actions > li")).toHaveCount(4)
@@ -383,7 +400,7 @@ try {
         await dashboard(page)
         await expect(page.getByRole("heading", { name: "Good morning, Alex Example", exact: true })).toBeVisible()
         // Essentials done and documents drafted: figures only, no onboarding cards.
-        await expect(card(page, "Finish setting up")).toHaveCount(0)
+        await expect(card(page, "Your practice")).toHaveCount(0)
         await expect(card(page, "First steps")).toHaveCount(0)
         await expect(card(page, "Documents drafted").locator(".dash-stat-value")).toHaveText("4")
         await expect(card(page, "Needs you").locator(".dash-attention > li")).toHaveCount(2)
@@ -485,6 +502,70 @@ try {
     } finally { await context.close() }
   })
 
+  // Each detail fills in where it shows, and the card stays put until reload.
+  for (const [width, height] of [[1440, 1000], [375, 812]] as const) await scenario(`Fill in the practice profile (${width}x${height})`, async () => {
+    const state = fixture("new"); const { page, context } = await open(state, width, height)
+    try {
+      await dashboard(page)
+      const setup = card(page, "Your practice")
+      const ring = (done: number) => expect(setup.getByRole("img", { name: `${done} of 5 done`, exact: true })).toBeVisible()
+      // A browser set to en-GB is offered the three UK jurisdictions first.
+      const places = setup.locator("section", { has: page.getByRole("heading", { name: "Jurisdictions", exact: true }) })
+      expect(await places.locator(".dash-profile-flags button").allTextContents()).toEqual(["England & Wales", "Northern Ireland", "Scotland"])
+      await places.getByRole("button", { name: "England & Wales", exact: true }).click()
+      await expect(places.getByRole("button", { name: "England & Wales", exact: true })).toHaveAttribute("aria-pressed", "true")
+      expect(await page.evaluate(() => JSON.parse(localStorage.getItem("dochaus.prefs") ?? "{}").defaultJurisdictions)).toEqual(["EW"])
+      await ring(1)
+
+      const areas = setup.locator("section", { has: page.getByRole("heading", { name: "Practice areas", exact: true }) })
+      await areas.getByRole("button", { name: "Commercial", exact: true }).click()
+      await expect.poll(() => state.preferences.practiceAreas).toEqual(["Commercial"])
+      await ring(2)
+
+      const signed = setup.locator("section", { has: page.getByRole("heading", { name: "Name and firm", exact: true }) })
+      await signed.getByLabel("Your name", { exact: true }).fill("Alex Example")
+      await signed.getByLabel("Firm", { exact: true }).fill("Example Partners LLP")
+      await signed.getByRole("button", { name: "Save", exact: true }).click()
+      await expect(signed.locator(".dash-profile-letterhead")).toContainText("Alex Example")
+      expect(state.saved.at(-1)).toEqual({ attorney: "Alex Example", firm: "Example Partners LLP" })
+      await expect(page.getByRole("heading", { name: "Good morning, Alex Example", exact: true })).toBeVisible()
+      // Name and firm are two of the five details.
+      await ring(4)
+      await expect(setup.getByText("1 detail to go", { exact: true })).toBeVisible()
+      await setup.scrollIntoViewIfNeeded()
+      await expect(signed.getByRole("button", { name: "Edit", exact: true })).toBeFocused()
+      await capture(page, `practice-profile-filled-${width}x${height}`, { fullPage: width === 375 })
+      if (width === 1440) {
+        // A failed save says so and puts the chip back.
+        state.failPreferences = true
+        await areas.getByRole("button", { name: "Corporate", exact: true }).click()
+        await expect(page.getByText("Could not save your practice areas. Try again.", { exact: true })).toBeVisible()
+        await expect(areas.getByRole("button", { name: "Corporate", exact: true })).toHaveAttribute("aria-pressed", "false")
+        state.failPreferences = false
+        // The full picker carries the same flags.
+        await places.getByRole("button", { name: /All 12 jurisdictions/ }).click()
+        const picker = page.getByRole("group", { name: "Jurisdictions", exact: true })
+        await expect(picker.locator(".jx-option .jx-flag svg")).toHaveCount(12)
+        await capture(page, "practice-profile-picker-1440x1000", { fullPage: false })
+        await page.keyboard.press("Escape")
+        await expect(picker).toHaveCount(0)
+      }
+
+      // The Exa key lives in Settings; the tile opens the right tab.
+      await setup.getByRole("button", { name: "Add an Exa key", exact: true }).click()
+      await expect(page.getByRole("tab", { name: "Research", exact: true })).toHaveAttribute("aria-selected", "true")
+      await page.keyboard.press("Escape")
+
+      // Next time, the choices show as they are, with a way to change them.
+      await dashboard(page, true, true)
+      await expect(places.locator(".dash-profile-flag")).toHaveText(["England & Wales"])
+      await expect(places.getByRole("button", { name: "Change", exact: true })).toBeVisible()
+      await expect(areas.locator(".dash-profile-areas li")).toHaveText(["Commercial"])
+      await expect(setup.locator(".dash-profile-tile.is-done")).toHaveCount(3)
+      clean(state)
+    } finally { await context.close() }
+  })
+
   for (const [width, height] of [[1440, 1000], [375, 812]] as const) await scenario(`First conversation, drafting now (${width}x${height})`, async () => {
     const state = fixture("new", undefined, early({ first: 3, sample: true, conversations: 2, drafting: true })); const { page, context } = await open(state, width, height)
     try {
@@ -492,7 +573,7 @@ try {
       // Work has begun: figures come in, first steps stay until the first draft.
       // The drafting run is a conversation of its own, as in the sidebar.
       const titles = await order(page)
-      expect(titles.slice(0, 3)).toEqual(["First steps", "Finish setting up", "Total spend"])
+      expect(titles.slice(0, 3)).toEqual(["First steps", "Your practice", "Total spend"])
       expect(titles).not.toContain("Sample matter")
       await expect(page.getByRole("group", { name: "Period", exact: true })).toBeVisible()
       expect(await doneSteps(page)).toEqual(["Open a matter", "Add documents", "Ask a question"])
@@ -515,7 +596,7 @@ try {
       state.sessions.push(chat(FIRST, "ses_first_1", at(0, 9), "What are the key points in these materials?"))
       await dashboard(page, true, true)
       const practice = await order(page)
-      expect(practice.slice(0, 3)).toEqual(["First steps", "Finish setting up", "Total spend"])
+      expect(practice.slice(0, 3)).toEqual(["First steps", "Your practice", "Total spend"])
       // Reset brings back that default after the lawyer arranges practice too.
       await menuButton(page, "Total spend").click()
       await menuAction(page, "Total spend", "Hide widget")

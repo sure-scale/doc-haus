@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { getMatter, listMatters, type Matter } from "../../api/ingest/matters"
+import { getMatter, listJurisdictions, listMatters, type Jurisdiction, type Matter } from "../../api/ingest/matters"
 import { getDraftingStatus } from "../../api/ingest/drafting-status"
 import { leanStageSessions, type LeanDraftingStatus } from "../../api/ingest/lean"
 import { getPreferences, type DraftingPreferences } from "../../api/ingest/preferences"
@@ -23,6 +23,7 @@ export type DashboardData = {
   templates?: number
   playbooks?: number
   clients?: number
+  jurisdictions?: Jurisdiction[]
   // Set when the matter list itself could not be read, so an unreachable
   // service is never shown as an empty practice.
   error?: string
@@ -65,20 +66,21 @@ async function loadMatter(matter: Matter, withDocuments: boolean): Promise<Matte
 }
 
 export async function loadDashboard(): Promise<DashboardData> {
-  const [matters, preferences, word, templates, playbooks, clients] = await Promise.all([
+  const [matters, preferences, word, templates, playbooks, clients, jurisdictions] = await Promise.all([
     listMatters().then((list) => ({ list }), (error: unknown) => ({ list: [] as Matter[], error: error instanceof Error ? error.message : "Could not load matters" })),
     settled(getPreferences()),
     settled(fetchWordSetup()),
     settled(listTemplates().then((result) => result.templates.length)),
     settled(listPlaybookLibrary().then((result) => result.playbooks.length)),
     settled(listClients().then((result) => result.length)),
+    settled(listJurisdictions()),
   ])
   // First steps only ask whether documents were added, so the file lists of
   // the newest few own matters are enough.
   const newest = new Set(matters.list.filter((matter) => !matter.sample).sort((a, b) => b.created_at - a.created_at).slice(0, 3).map((matter) => matter.id))
   return {
     matters: await mapLimited(matters.list, 4, (matter) => loadMatter(matter, newest.has(matter.id))),
-    preferences, word, templates, playbooks, clients,
+    preferences, word, templates, playbooks, clients, jurisdictions,
     ...("error" in matters ? { error: matters.error } : {}),
   }
 }

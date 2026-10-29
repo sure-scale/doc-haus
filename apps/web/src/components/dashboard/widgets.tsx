@@ -1,9 +1,13 @@
-import { useState, type ReactNode } from "react"
+import { useRef, useState, type FormEvent, type ReactNode } from "react"
 import { Link, useNavigate } from "react-router-dom"
-import { addSampleMatter } from "../../api/ingest/matters"
+import { addSampleMatter, type Jurisdiction } from "../../api/ingest/matters"
+import { savePreferences, type DraftingPreferences } from "../../api/ingest/preferences"
 import type { SetupProgress } from "../../api/ingest/setup"
 import { formatAgo, formatCost, formatDate } from "../../lib/format"
-import { loadPrefs } from "../../prefs"
+import { loadPrefs, savePrefs } from "../../prefs"
+import JurisdictionFlag, { countryOf } from "../JurisdictionFlag"
+import JurisdictionSelect from "../JurisdictionSelect"
+import { SUGGESTED_PRACTICE_AREAS } from "../settings/MatterDefaultsTab"
 import { useOpenSettings } from "../settings/navigation"
 import type { Tab } from "../settings/types"
 import { STARTERS } from "../ChatPanel"
@@ -32,7 +36,8 @@ import {
 import { icons, ShapeIcon, SHAPES, type IconName, type ShapeName } from "./icons"
 import { PRACTICE_WIDGETS, STARTING_WIDGETS, type Stage, type WidgetId } from "./layout"
 
-export type WidgetContext = { data: DashboardData; setup: SetupProgress | null; summary: Summary; period: Period; now: number }
+// `onPreferences` takes settings a widget saved, so the page shows them at once.
+export type WidgetContext = { data: DashboardData; setup: SetupProgress | null; summary: Summary; period: Period; now: number; onPreferences?: (preferences: DraftingPreferences) => void }
 
 // How each widget looks: its badge icon and shape, and its tone. Bold tones
 // are full-colour blocks with light text; the rest stay on white.
@@ -497,77 +502,255 @@ function SampleMatter({ data }: WidgetContext) {
   )
 }
 
-type SetupItem = { id: string; icon: IconName; title: string; detail: string; done: boolean; optional?: boolean; tab?: Tab; to?: string }
+type SetupItem = { id: string; icon: IconName; title: string; detail?: string; done: boolean; optional?: boolean; tab?: Tab; to?: string }
 
-// What the firm has not set up yet, from saved settings and the library.
-// Optional items say so; document legends are the firm's choice and absent by
-// design, so they are never listed here. A first matter and the sample have
-// their own widgets.
-export function setupItems({ data, setup }: Pick<WidgetContext, "data" | "setup">): SetupItem[] {
+// What the lawyer has not told doc.haus yet, from saved settings and the
+// library. The essentials shape every draft and answer; extras say so. The AI
+// model is never listed (onboarding cannot finish without one), nor are
+// document legends, which are the firm's choice and absent by design. A first
+// matter and the sample have their own widgets.
+// Jurisdictions live in this browser, so the profile card passes its own copy.
+export function setupItems({ data }: Pick<WidgetContext, "data">, jurisdictions = loadPrefs().defaultJurisdictions): SetupItem[] {
   const preferences = data.preferences
   const items: (SetupItem | false)[] = [
-    { id: "models", icon: "model", title: "Connect an AI model", detail: "Drafting, review and research run on it.", done: !!setup?.ready, tab: "ai" },
-    !!preferences && { id: "name", icon: "person", title: "Add your name", detail: "It signs your comments and tracked changes.", done: !!preferences.attorney.trim(), tab: "drafting" },
-    !!preferences && { id: "firm", icon: "firm", title: "Add your firm", detail: "Used in letters, drafts and document headers.", done: !!preferences.firm.trim(), tab: "drafting" },
-    !!preferences && { id: "practice", icon: "practice", title: "Choose practice areas", detail: "Steers drafting toward your kind of work.", done: preferences.practiceAreas.length > 0, tab: "drafting" },
-    { id: "jurisdiction", icon: "globe", title: "Set a default jurisdiction", detail: "Prefilled on every new matter.", done: loadPrefs().defaultJurisdictions.length > 0, tab: "matters" },
-    !!preferences && { id: "research", icon: "search", title: "Connect legal research", detail: "Web and case-law search for cited answers.", done: !!(preferences.searchApiKey || preferences.caseLawApiKey || preferences.courtlistenerMcpEnabled), optional: true, tab: "research" },
+    !!preferences && { id: "name", icon: "person", title: "Your name", done: !!preferences.attorney.trim(), tab: "drafting" },
+    !!preferences && { id: "firm", icon: "firm", title: "Your firm", done: !!preferences.firm.trim(), tab: "drafting" },
+    { id: "jurisdiction", icon: "globe", title: "Jurisdictions", done: jurisdictions.length > 0, tab: "matters" },
+    !!preferences && { id: "practice", icon: "practice", title: "Practice areas", done: preferences.practiceAreas.length > 0, tab: "matters" },
+    !!preferences && { id: "research", icon: "search", title: "Web research", done: !!preferences.searchApiKey.trim(), tab: "research" },
     // Listed only where this installation can set it up or it is managed elsewhere.
-    !!data.word && (data.word.canSetup || ["ready", "external"].includes(data.word.status)) && !["unsupported", "word_missing"].includes(data.word.status) && { id: "word", icon: "word", title: "Set up the Word add-in", detail: "Review and redline without leaving Word.", done: data.word.status === "ready" || (data.word.status === "external" && data.word.available), optional: true, tab: "addins" },
-    !!preferences && { id: "style", icon: "style", title: "Add house style notes", detail: "Standing instructions for every draft and edit.", done: !!preferences.houseStyle.trim(), optional: true, tab: "drafting" },
-    data.templates !== undefined && { id: "template", icon: "template", title: "Add a template", detail: "Draft from the firm's own precedents.", done: data.templates > 0, optional: true, to: "/templates" },
+    !!data.word && (data.word.canSetup || ["ready", "external"].includes(data.word.status)) && !["unsupported", "word_missing"].includes(data.word.status) && { id: "word", icon: "word", title: "Word add-in", detail: "Review and redline without leaving Word.", done: data.word.status === "ready" || (data.word.status === "external" && data.word.available), optional: true, tab: "addins" },
+    !!preferences && { id: "style", icon: "style", title: "House style notes", detail: "Standing instructions for every draft and edit.", done: !!preferences.houseStyle.trim(), optional: true, tab: "drafting" },
+    data.templates !== undefined && { id: "template", icon: "template", title: "A template", detail: "Draft from the firm's own precedents.", done: data.templates > 0, optional: true, to: "/templates" },
   ]
   return items.filter((item): item is SetupItem => !!item)
 }
 
-function SetupChecklist(context: WidgetContext) {
-  const openSettings = useOpenSettings()
-  const navigate = useNavigate()
-  const items = setupItems(context)
-  const done = items.filter((item) => item.done)
-  const open = items.filter((item) => !item.done).sort((a, b) => Number(!!a.optional) - Number(!!b.optional))
-  const essentials = open.filter((item) => !item.optional).length
-  function act(item: SetupItem) {
-    if (item.tab) openSettings(item.tab)
-    else if (item.to) navigate(item.to)
-  }
-  if (!open.length)
-    return (
-      <div className="dash-setup is-done">
-        <ShapeIcon icon="party" shape="sunny" className="dash-setup-party" />
-        <div>
-          <p className="dash-setup-title">You're all set</p>
-          <p className="dash-setup-text">Everything is in place. You can hide this card from its menu.</p>
-        </div>
-      </div>
-    )
+const unique = (values: string[]) => values.filter((value, index) => values.indexOf(value) === index)
+const toggled = (values: string[], value: string) => (values.includes(value) ? values.filter((other) => other !== value) : [...values, value])
+
+// Packs in the browser's own region, country-wide first: en-GB offers England
+// and Wales, Scotland and Northern Ireland.
+function nearby(all: Jurisdiction[]) {
+  const regions = new Set(navigator.languages.flatMap((tag) => {
+    try { return new Intl.Locale(tag).region ?? [] } catch { return [] }
+  }))
+  return all.filter((pack) => regions.has(countryOf(pack.code)))
+    .sort((a, b) => Number(a.code.includes("-")) - Number(b.code.includes("-")))
+    .slice(0, 3).map((pack) => pack.code)
+}
+
+// A few common areas to tap; the picker holds the full list and the lawyer's own.
+const PRACTICE_PICKS = ["Commercial", "Corporate", "Employment", "Litigation", "Real estate", "Private client"]
+
+type Save = (patch: Partial<DraftingPreferences>, failed: string) => Promise<boolean>
+
+function ProfileTile({ id, icon, shape, hue, title, done, children }: { id: string; icon: IconName; shape: ShapeName; hue: number; title: string; done: boolean; children: ReactNode }) {
   return (
-    <div className="dash-setup">
-      <div className="dash-setup-progress">
-        <Ring done={done.length} total={items.length} />
-        <div>
-          <p className="dash-setup-title">{essentials ? `${plural(essentials, "essential")} left` : "Essentials done"}</p>
-          <p className="dash-setup-text">{essentials ? "Each takes a minute. Optional extras follow." : "A few optional extras remain."}</p>
-        </div>
+    <section className={`dash-profile-tile hue-${hue}${done ? " is-done" : ""}`} aria-labelledby={`dash-profile-${id}`}>
+      <div className="dash-profile-tile-head">
+        <ShapeIcon icon={icon} shape={shape} />
+        <h4 id={`dash-profile-${id}`}>{title}</h4>
+        {done && <span className="dash-profile-check">{icons.check}<span className="sr-only">Done</span></span>}
       </div>
-      <ul className="dash-setup-items">
-        {open.slice(0, 6).map((item, index) => (
-          <li key={item.id} className={`hue-${index % 4}`}>
-            <ShapeIcon icon={item.icon} shape={SHAPE_ORDER[index % 4]} />
-            <span className="dash-setup-item-text">
-              <strong>{item.title}{item.optional && <span className="dash-optional">Optional</span>}</strong>
-              <span>{item.detail}</span>
+      {children}
+    </section>
+  )
+}
+
+// Name and firm, filled in where they show: as who prepared the draft.
+function SignedAs({ preferences, save }: { preferences: DraftingPreferences; save: Save }) {
+  const complete = !!preferences.attorney.trim() && !!preferences.firm.trim()
+  const [editing, setEditing] = useState(!complete)
+  const [name, setName] = useState(preferences.attorney)
+  const [firm, setFirm] = useState(preferences.firm)
+  const [saving, setSaving] = useState(false)
+  const editButton = useRef<HTMLButtonElement>(null)
+  const changed = name.trim() !== preferences.attorney.trim() || firm.trim() !== preferences.firm.trim()
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    setSaving(true)
+    const saved = await save({ attorney: name.trim(), firm: firm.trim() }, "Could not save your name and firm. Try again.")
+    setSaving(false)
+    if (!saved || !name.trim() || !firm.trim()) return
+    setEditing(false)
+    // The form gives way to the letterhead; keep focus in the tile.
+    requestAnimationFrame(() => editButton.current?.focus())
+  }
+  return (
+    <ProfileTile id="signed" icon="person" shape="cookie" hue={0} title="Name and firm" done={complete}>
+      {editing ? (
+        <form className="dash-profile-form" onSubmit={submit}>
+          <p className="dash-profile-detail">Signs your comments and tracked changes, and names who prepared each draft.</p>
+          <label><span>Your name</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Jane Doe" autoComplete="name" disabled={saving} /></label>
+          <label><span>Firm</span><input value={firm} onChange={(event) => setFirm(event.target.value)} placeholder="Doe & Partners LLP" autoComplete="organization" disabled={saving} /></label>
+          <button type="submit" className="btn-sm primary" disabled={saving || !changed} aria-busy={saving}>{saving ? "Saving…" : "Save"}</button>
+        </form>
+      ) : (
+        <>
+          <p className="dash-profile-letterhead">
+            <span>Prepared by</span>
+            <strong>{preferences.attorney}</strong>
+            <span>{preferences.firm}</span>
+          </p>
+          <button ref={editButton} type="button" className="dash-profile-link" onClick={() => setEditing(true)}>Edit</button>
+        </>
+      )}
+    </ProfileTile>
+  )
+}
+
+function Jurisdictions({ all, codes, setCodes }: { all: Jurisdiction[]; codes: string[]; setCodes: (codes: string[]) => void }) {
+  const notify = useToast()
+  // Offered to tap until the card is next opened; after that the choice shows.
+  const [offer] = useState(() => codes.length === 0)
+  const shown = offer ? unique([...nearby(all), ...codes]) : codes
+  const name = (code: string) => all.find((pack) => pack.code === code)?.name ?? code
+  const others = unique(all.map((pack) => countryOf(pack.code))).filter((country) => !shown.some((code) => countryOf(code) === country)).slice(0, 4)
+  function change(next: string[]) {
+    try {
+      savePrefs({ defaultJurisdictions: next }, { requireStorage: true })
+      setCodes(next)
+    } catch {
+      notify("error", "Could not save your jurisdictions in this browser. Try again.")
+    }
+  }
+  return (
+    <ProfileTile id="jurisdictions" icon="globe" shape="clover" hue={1} title="Jurisdictions" done={codes.length > 0}>
+      <p className="dash-profile-detail">{codes.length ? "Preselected on every new matter." : "Where do you practice? Your picks are preselected on every new matter."}</p>
+      {shown.length > 0 && (
+        <ul className="dash-profile-flags">
+          {shown.map((code) => (
+            <li key={code}>
+              {offer ? (
+                <button type="button" aria-pressed={codes.includes(code)} onClick={() => change(toggled(codes, code))}>
+                  <JurisdictionFlag code={code} region />
+                  <span>{name(code)}</span>
+                  <span className="dash-profile-toggle" aria-hidden="true">{codes.includes(code) ? icons.check : icons.plus}</span>
+                </button>
+              ) : (
+                <span className="dash-profile-flag"><JurisdictionFlag code={code} region /><span>{name(code)}</span></span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {all.length > 0 && (
+        <JurisdictionSelect
+          jurisdictions={all}
+          selected={codes}
+          onChange={change}
+          trigger={
+            <span className="dash-profile-more">
+              {others.length > 0 && <span className="dash-flag-stack">{others.map((country) => <JurisdictionFlag key={country} code={all.find((pack) => countryOf(pack.code) === country)!.code} />)}</span>}
+              {offer ? `All ${all.length} jurisdictions` : "Change"}
             </span>
-            <button type="button" className={`btn-sm${index === 0 ? " primary" : ""}`} onClick={() => act(item)}>
-              {item.tab ? "Set up" : "Open"}
-            </button>
+          }
+        />
+      )}
+    </ProfileTile>
+  )
+}
+
+function PracticeAreas({ preferences, save }: { preferences: DraftingPreferences; save: Save }) {
+  const [areas, setAreas] = useState(preferences.practiceAreas)
+  const [offer] = useState(() => preferences.practiceAreas.length === 0)
+  const shown = offer ? unique([...PRACTICE_PICKS, ...areas]) : areas
+  function change(next: string[]) {
+    const before = areas
+    setAreas(next)
+    void save({ practiceAreas: next }, "Could not save your practice areas. Try again.").then((saved) => { if (!saved) setAreas(before) })
+  }
+  const options = unique([...areas, ...SUGGESTED_PRACTICE_AREAS]).map((area) => ({ code: area, name: area }))
+  return (
+    <ProfileTile id="practice" icon="practice" shape="flower" hue={2} title="Practice areas" done={areas.length > 0}>
+      <p className="dash-profile-detail">{areas.length ? "Steers drafting and research toward your work." : "What kind of work do you do? It steers drafting and research toward it."}</p>
+      <ul className="dash-profile-areas">
+        {shown.map((area) => (
+          <li key={area}>
+            {offer
+              ? <button type="button" aria-pressed={areas.includes(area)} onClick={() => change(toggled(areas, area))}>{areas.includes(area) && icons.check}{area}</button>
+              : <span>{area}</span>}
           </li>
         ))}
       </ul>
-      {done.length > 0 && (
-        <ul className="dash-setup-done" aria-label="Done">
-          {done.map((item) => <li key={item.id}><span aria-hidden="true">{icons.check}</span>{item.title}</li>)}
-        </ul>
+      <JurisdictionSelect practiceAreas jurisdictions={options} selected={areas} onChange={change} trigger={<span className="dash-profile-more">{offer ? "More areas, or add your own" : "Change"}</span>} />
+    </ProfileTile>
+  )
+}
+
+function WebResearch({ preferences }: { preferences: DraftingPreferences }) {
+  const openSettings = useOpenSettings()
+  const connected = !!preferences.searchApiKey.trim()
+  return (
+    <ProfileTile id="research" icon="search" shape="sunny" hue={3} title="Web research" done={connected}>
+      <p className="dash-profile-detail">
+        {connected
+          ? `Exa connected, searching ${preferences.webResearch === "official" ? "approved sources only" : "the entire web"}.`
+          : "Search runs on limited keyless access. A free Exa key adds full results and the source text behind each citation."}
+      </p>
+      <button type="button" className={connected ? "dash-profile-link" : "btn-sm primary"} onClick={() => openSettings("research")}>
+        {connected ? "Settings" : "Add an Exa key"}
+      </button>
+    </ProfileTile>
+  )
+}
+
+function PracticeProfile(context: WidgetContext) {
+  const { data, onPreferences } = context
+  const openSettings = useOpenSettings()
+  const navigate = useNavigate()
+  const notify = useToast()
+  const [codes, setCodes] = useState(() => loadPrefs().defaultJurisdictions)
+  const items = setupItems(context, codes)
+  const essentials = items.filter((item) => !item.optional)
+  const extras = items.filter((item) => item.optional)
+  const left = essentials.filter((item) => !item.done).length
+  // One save at a time, in order, so the last change is the one kept.
+  const queue = useRef(Promise.resolve(true))
+  const save: Save = (patch, failed) => {
+    queue.current = queue.current.then(() => savePreferences(patch)).then((saved) => {
+      onPreferences?.(saved)
+      return true
+    }, () => {
+      notify("error", failed)
+      return false
+    })
+    return queue.current
+  }
+  const preferences = data.preferences
+  return (
+    <div className="dash-profile">
+      <div className="dash-setup-progress">
+        <Ring done={essentials.length - left} total={essentials.length} size={96} />
+        <div>
+          <p className="dash-setup-title">{left ? `${plural(left, "detail")} to go` : "Your practice is set up"}</p>
+          <p className="dash-setup-text">
+            {left ? "Fill them in right here. Every draft then starts with your name, your law and your kind of work." : "Every draft starts with your name, your law and your kind of work."}
+          </p>
+        </div>
+      </div>
+      <div className="dash-profile-tiles">
+        {preferences && <SignedAs preferences={preferences} save={save} />}
+        <Jurisdictions all={data.jurisdictions ?? []} codes={codes} setCodes={setCodes} />
+        {preferences && <PracticeAreas preferences={preferences} save={save} />}
+        {preferences && <WebResearch preferences={preferences} />}
+      </div>
+      {extras.length > 0 && (
+        <div className="dash-profile-extras">
+          <span className="dash-profile-extras-label">Extras</span>
+          <ul>
+            {extras.map((item) => (
+              <li key={item.id}>
+                <button type="button" className={item.done ? "is-done" : undefined} title={item.detail} onClick={() => (item.tab ? openSettings(item.tab) : item.to && navigate(item.to))}>
+                  {item.done ? icons.check : icons[item.icon]}
+                  {item.title}
+                  {item.done && <span className="sr-only">, done</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   )
@@ -576,14 +759,14 @@ function SetupChecklist(context: WidgetContext) {
 export const stageOf = (context: Pick<WidgetContext, "data">): Stage => (progress(context.data.matters).conversations ? "practice" : "starting")
 
 // The dashboard shown until the lawyer arranges their own: see layout.ts.
-export function defaultWidgets(context: Pick<WidgetContext, "data" | "setup">): WidgetId[] {
+export function defaultWidgets(context: Pick<WidgetContext, "data">): WidgetId[] {
   const open = setupItems(context).filter((item) => !item.done)
   if (stageOf(context) === "starting") return ["journey", ...(open.length ? ["setup" as const] : []), ...STARTING_WIDGETS]
   return [...(progress(context.data.matters).drafted ? [] : ["journey" as const]), ...(open.some((item) => !item.optional) ? ["setup" as const] : []), ...PRACTICE_WIDGETS]
 }
 
 export const RENDER: Record<WidgetId, (context: WidgetContext) => ReactNode> = {
-  setup: (context) => <SetupChecklist {...context} />,
+  setup: (context) => <PracticeProfile {...context} />,
   spend: (context) => <SpendTile {...context} />,
   "matter-cost": (context) => <MatterCostTile {...context} />,
   "draft-cost": (context) => <DraftCostTile {...context} />,

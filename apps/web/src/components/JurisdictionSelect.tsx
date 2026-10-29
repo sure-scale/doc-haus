@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import type { Jurisdiction } from "../api/ingest/matters"
+import JurisdictionFlag from "./JurisdictionFlag"
 
 // A matter can be governed by more than one jurisdiction (a cross-border deal
 // touches each party's law), so the picker is a multi-select: a trigger that
@@ -182,6 +183,7 @@ export default function JurisdictionSelect({
                 visible.map((j) => (
                   <label key={j.code} className={`jx-option${selected.includes(j.code) ? " selected" : ""}`}>
                     <input type="checkbox" checked={selected.includes(j.code)} disabled={practiceAreas && selected.length >= 50 && !selected.includes(j.code)} onChange={() => toggle(j.code)} />
+                    {!practiceAreas && <JurisdictionFlag code={j.code} />}
                     <span className="jx-name">{j.name}</span>
                     {!practiceAreas && <span className="jx-code">{j.code}</span>}
                   </label>

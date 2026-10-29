@@ -1,11 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type SyntheticEvent } from "react"
+import type { DraftingPreferences } from "../api/ingest/preferences"
 import type { SetupProgress } from "../api/ingest/setup"
 import PageBar from "../components/PageBar"
 import ModalHeader from "../components/ModalHeader"
 import backdropClose from "../components/backdropClose"
 import useExit from "../components/useExit"
 import { useToast } from "../components/Toast"
-import { addDays, startOfDay, summarize, useDashboardData, type Period } from "../components/dashboard/data"
+import { addDays, startOfDay, summarize, useDashboardData, type DashboardData, type Period } from "../components/dashboard/data"
 import { icons, ShapeIcon, SHAPES } from "../components/dashboard/icons"
 import { loadLayout, PERIODIC, saveLayout, STARTING_WIDGETS, WIDGETS, type Layout, type WidgetId } from "../components/dashboard/layout"
 import { caption, defaultWidgets, LOOKS, RENDER, stageOf, type WidgetContext } from "../components/dashboard/widgets"
@@ -40,13 +41,18 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
     return () => clearTimeout(timer)
   }, [now])
 
-  const context: WidgetContext | undefined = data && !data.error
-    ? { data, setup, period: layout.period, now, summary: summarize(data.matters, layout.period, now) }
+  // Settings saved from a widget show at once, until the next load reads them.
+  const [saved, setSaved] = useState<{ data?: DashboardData; preferences?: DraftingPreferences }>({})
+  const shownData = data && saved.data === data ? { ...data, preferences: saved.preferences } : data
+  const context: WidgetContext | undefined = shownData && !shownData.error
+    ? { data: shownData, setup, period: layout.period, now, summary: summarize(shownData.matters, layout.period, now), onPreferences: (preferences) => setSaved({ data, preferences }) }
     : undefined
-  // Until the lawyer arranges their own, the default follows the data; while
-  // it loads, the widgets last shown hold the places.
-  const stage = context ? stageOf(context) : layout.stage ?? "starting"
-  const widgets = layout.widgets?.[stage] ?? (context ? defaultWidgets(context) : layout.shown ?? ["journey", ...STARTING_WIDGETS])
+  // Until the lawyer arranges their own, the default follows the data as
+  // loaded, so a card being filled in stays put; while it loads, the widgets
+  // last shown hold the places.
+  const defaults = useMemo(() => (data && !data.error ? defaultWidgets({ data }) : undefined), [data])
+  const stage = data && !data.error ? stageOf({ data }) : layout.stage ?? "starting"
+  const widgets = layout.widgets?.[stage] ?? defaults ?? layout.shown ?? ["journey", ...STARTING_WIDGETS]
   const shown = context && `${stage}:${widgets.join()}`
   useEffect(() => {
     if (shown && shown !== `${layout.stage}:${layout.shown?.join()}`) update({ ...layout, stage, shown: widgets })
@@ -78,7 +84,7 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
     })
   }
 
-  const name = data?.preferences?.attorney.trim()
+  const name = shownData?.preferences?.attorney.trim()
   // The period is offered only while a widget on the dashboard follows it.
   const periodic = !data?.error && widgets.some((id) => PERIODIC.has(id))
 

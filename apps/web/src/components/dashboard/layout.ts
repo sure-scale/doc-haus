@@ -6,7 +6,7 @@ import type { Period } from "./data"
 export type WidgetSize = "tile" | "tall" | "wide" | "full"
 
 export const WIDGETS = {
-  setup: { title: "Finish setting up", description: "What is left to set up, with a shortcut to each setting.", size: "full" },
+  setup: { title: "Your practice", description: "Your name, firm, jurisdictions, practice areas and web research, filled in right here.", size: "full" },
   spend: { title: "Total spend", description: "Model spend across every matter in the period.", size: "tile" },
   "matter-cost": { title: "Average matter cost", description: "Spend per matter that had work in the period.", size: "tile" },
   "draft-cost": { title: "Average draft cost", description: "Spend per drafted document, including review.", size: "tile" },

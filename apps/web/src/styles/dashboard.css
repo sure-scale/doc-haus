@@ -425,29 +425,94 @@ button.dash-add { display: inline-flex; align-items: center; gap: var(--space-2)
 .dash-sample-tags li { padding: 3px 10px; border-radius: var(--radius-pill); background: rgb(255 255 255 / .16); font-size: 11.5px; font-weight: 600; }
 .dash-card .dash-sample-action { margin-top: auto; }
 
-/* ---------- Setup ---------- */
-.dash-setup { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); grid-template-areas: "progress items" "done done"; gap: var(--space-4) var(--space-6); align-items: center; }
+/* ---------- Practice profile ----------
+   Each detail is a tile filled in where it sits: an open one is a white card
+   with a dashed edge in its colour, and a filled one turns solid. */
+.dash-profile { display: grid; grid-template-columns: minmax(180px, 230px) minmax(0, 1fr); grid-template-areas: "progress tiles" "extras tiles"; grid-template-rows: auto minmax(0, 1fr); gap: var(--space-4) var(--space-6); align-items: start; }
+.dash-profile .dash-setup-progress { flex-direction: column; align-items: flex-start; }
 .dash-setup-progress { grid-area: progress; display: flex; align-items: center; gap: var(--space-4); }
 .dash-setup-title { margin: 0; font-family: var(--font-display); font-size: 19px; font-weight: 650; line-height: 1.3; }
 .dash-setup-text { margin: 2px 0 0; color: var(--text-secondary); font-size: 12.5px; line-height: 1.45; }
-.dash-setup-items { grid-area: items; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
-.dash-setup-items li { display: flex; align-items: center; gap: var(--space-3); padding: 10px 12px; border-radius: var(--radius-lg); background: rgb(255 255 255 / .82); box-shadow: 0 1px 2px rgb(24 35 28 / .05); }
-.dash-setup-items .dash-shape { width: 36px; height: 36px; }
-.dash-setup-items .dash-shape-icon svg { width: 18px; height: 18px; }
-.dash-setup-item-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.dash-setup-item-text strong { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13.5px; font-weight: 600; }
-.dash-setup-item-text > span { color: var(--text-secondary); font-size: 12px; line-height: 1.4; }
-.dash-optional { padding: 0 7px; border-radius: var(--radius-pill); background: var(--md-sys-color-surface-container-high); color: var(--text-secondary); font-size: 10.5px; font-weight: 600; letter-spacing: .2px; }
-.dash-setup-items button { flex: none; border-radius: var(--radius-pill); }
-.dash-setup-done { grid-area: done; display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.dash-setup-done li { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px 3px 5px; border-radius: var(--radius-pill); background: rgb(255 255 255 / .6); color: var(--text-secondary); font-size: 12px; text-decoration: line-through; text-decoration-color: rgb(82 96 87 / .4); }
-.dash-setup-done li > span { display: inline-flex; color: #17634f; }
-.dash-setup-done svg { width: 16px; height: 16px; }
-.dash-setup.is-done { display: flex; align-items: center; gap: var(--space-4); }
-.dash-setup-party { width: 56px; height: 56px; --shape-bg: var(--hue-3-bg); --shape-fg: var(--hue-3-fg); }
+.dash-profile-tiles { grid-area: tiles; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+
+.dash-profile-tile { --tile-bg: rgb(255 255 255 / .94); display: flex; flex-direction: column; align-items: flex-start; gap: 10px; min-width: 0; padding: 14px 16px 16px; border: 1.5px dashed color-mix(in srgb, var(--ink) 48%, transparent); border-radius: var(--md-sys-shape-corner-large); background: var(--tile-bg); transition: background-color 300ms var(--spring-spatial-default, ease), border-color 300ms ease, color 300ms ease; }
+.dash-profile-tile.is-done { --tile-bg: var(--ink); border-style: solid; border-color: var(--ink); color: #fff; --shape-bg: rgb(255 255 255 / .2); --shape-fg: #fff; }
+.dash-profile-tile-head { align-self: stretch; display: flex; align-items: center; gap: 10px; }
+.dash-profile-tile-head .dash-shape { width: 36px; height: 36px; }
+.dash-profile-tile-head .dash-shape-icon svg { width: 18px; height: 18px; }
+.dash-profile-tile-head h4 { flex: 1; min-width: 0; margin: 0; font-size: 14.5px; font-weight: 650; }
+.dash-profile-check { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: #fff; color: var(--ink); }
+.dash-profile-check svg { width: 16px; height: 16px; }
+.dash-profile-detail { margin: 0; color: var(--text-secondary); font-size: 12.5px; line-height: 1.45; }
+.is-done .dash-profile-detail { color: rgb(255 255 255 / .86); }
+.dash-profile-tile > :last-child { margin-top: auto; }
+.dash-profile-tile :focus-visible { outline-color: var(--ink); }
+.dash-profile-tile.is-done :focus-visible { outline-color: #fff; }
+.dash-profile-tile .btn-sm.primary { border-color: var(--ink); border-radius: var(--radius-pill); background: var(--ink); color: #fff; }
+
+.dash-profile-form { align-self: stretch; display: grid; gap: 8px; }
+.dash-profile-form label { display: grid; gap: 3px; }
+.dash-profile-form label > span { color: var(--text-secondary); font-size: 11.5px; font-weight: 600; }
+.dash-profile-form input { min-width: 0; height: 36px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius-md); background: #fff; color: var(--text); font: inherit; font-size: 13.5px; }
+.dash-profile-form input:focus-visible { outline: 2px solid var(--ink); outline-offset: 0; border-color: var(--ink); }
+.dash-profile-form button { justify-self: start; margin-top: 2px; }
+
+.dash-profile-letterhead { display: flex; flex-direction: column; margin: 0; padding: 2px 0 2px 12px; border-left: 3px solid rgb(255 255 255 / .55); }
+.dash-profile-letterhead span:first-child { color: rgb(255 255 255 / .8); font-size: 10.5px; font-weight: 650; letter-spacing: .6px; text-transform: uppercase; }
+.dash-profile-letterhead strong { font-family: var(--font-display); font-size: 18px; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere; }
+.dash-profile-letterhead span:last-child { font-size: 13px; overflow-wrap: anywhere; }
+
+.dash-profile-link { padding: 2px 0; border: 0; background: none; color: inherit; font: inherit; font-size: 12.5px; font-weight: 650; text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 3px; cursor: pointer; }
+.dash-profile-tile:not(.is-done) .dash-profile-link { color: var(--ink); }
+
+.dash-profile-flags, .dash-profile-areas { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.dash-profile-flags .jx-flag { font-size: 20px; }
+.dash-profile-flags .jx-flag-region { font-size: 8.5px; }
+.dash-profile-flags button, .dash-profile-areas button { display: inline-flex; align-items: center; gap: 8px; min-height: 34px; padding: 4px 8px 4px 6px; border: 1px solid color-mix(in srgb, var(--ink) 30%, transparent); border-radius: var(--radius-pill); background: #fff; color: var(--text); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease; }
+.dash-profile-areas button { gap: 4px; padding-inline: 12px; }
+.dash-profile-flags button:hover, .dash-profile-areas button:hover { border-color: var(--ink); background: var(--tint); }
+.dash-profile-flags button[aria-pressed="true"], .dash-profile-areas button[aria-pressed="true"] { border-color: var(--ink); background: var(--ink); color: #fff; }
+.dash-profile-areas button[aria-pressed="true"] { padding-left: 8px; }
+.dash-profile-areas button svg { width: 16px; height: 16px; }
+/* On a filled tile the picks flip: chosen ones white, the rest outlined. */
+.is-done :is(.dash-profile-flags, .dash-profile-areas) button { border-color: rgb(255 255 255 / .5); background: transparent; color: #fff; }
+.is-done :is(.dash-profile-flags, .dash-profile-areas) button:hover { border-color: #fff; background: rgb(255 255 255 / .12); }
+.is-done :is(.dash-profile-flags, .dash-profile-areas) button[aria-pressed="true"] { border-color: #fff; background: #fff; color: var(--ink); }
+.is-done .dash-profile-toggle { background: rgb(255 255 255 / .2); color: #fff; }
+.is-done [aria-pressed="true"] .dash-profile-toggle { background: var(--ink); color: #fff; }
+.dash-profile-toggle { display: inline-grid; place-items: center; width: 20px; height: 20px; margin-left: 2px; border-radius: 50%; background: var(--tint); color: var(--ink); }
+[aria-pressed="true"] .dash-profile-toggle { background: #fff; }
+.dash-profile-toggle svg { width: 14px; height: 14px; }
+.dash-profile-flag, .dash-profile-areas li > span { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px 4px 5px; border-radius: var(--radius-pill); background: rgb(255 255 255 / .16); font-size: 13px; font-weight: 600; }
+.dash-profile-areas li > span { padding-left: 12px; }
+.dash-profile-flags li:has(.jx-flag-region) .dash-profile-flag, .dash-profile-flags li:has(.jx-flag-region) button { padding-left: 6px; }
+.dash-profile-flags .jx-flag:has(.jx-flag-region) { margin-right: 8px; }
+
+.dash-profile-tile .jx-select { align-self: flex-start; }
+.dash-profile-tile .jx-trigger-bare { margin: 0; padding: 2px 0; border-radius: var(--radius-pill); color: inherit; font: inherit; }
+.dash-profile-tile .jx-trigger-bare:hover { background: none; }
+.dash-profile-more { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 650; text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
+.dash-profile-tile:not(.is-done) .dash-profile-more { color: var(--ink); }
+.dash-flag-stack { display: inline-flex; padding-left: 5px; }
+.dash-flag-stack .jx-flag { margin-left: -5px; font-size: 17px; }
+.dash-flag-stack .jx-flag-disc { box-shadow: 0 0 0 2px var(--tile-bg); }
+
+.dash-profile-extras { grid-area: extras; display: flex; flex-direction: column; gap: 8px; }
+.dash-profile-extras-label { color: var(--text-secondary); font-size: 11px; font-weight: 650; letter-spacing: .6px; text-transform: uppercase; }
+.dash-profile-extras ul { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.dash-profile-extras button { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 4px 12px 4px 9px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: rgb(255 255 255 / .72); color: var(--text); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.dash-profile-extras button:hover { background: #fff; }
+.dash-profile-extras button svg { width: 16px; height: 16px; color: var(--text-secondary); }
+.dash-profile-extras button.is-done { color: var(--text-secondary); }
+.dash-profile-extras button.is-done svg { color: #17634f; }
 
 @container dash (max-width: 1000px) {
-  .dash-setup { grid-template-columns: minmax(0, 1fr); grid-template-areas: "progress" "items" "done"; }
+  .dash-profile { grid-template-columns: minmax(0, 1fr); grid-template-areas: "progress" "tiles" "extras"; grid-template-rows: none; }
+  .dash-profile .dash-setup-progress { flex-direction: row; align-items: center; }
+  .dash-profile-extras { flex-direction: row; flex-wrap: wrap; align-items: center; }
+}
+@container dash (max-width: 560px) {
+  .dash-profile-tiles { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ---------- States ---------- */
@@ -521,7 +586,7 @@ dialog.dash-add-panel:not([open]) { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .dash-card, .dash-spread-bar, .dash-week-fill, .dash-hbar-fill, .dash-stack-part, .dash-skeleton span, .dash-spin, .is-current .dash-step-node > svg { animation: none; }
-  .dash-card-deco, .dash-shape-fill, .dash-actions :is(a, button), .dash-library a, .dash-ring-value, .dash-sample-page, .dash-sample-comment, .dash-card :is(.dash-step-action, .dash-sample-action) { transition: none; }
+  .dash-card-deco, .dash-shape-fill, .dash-actions :is(a, button), .dash-library a, .dash-ring-value, .dash-sample-page, .dash-sample-comment, .dash-card :is(.dash-step-action, .dash-sample-action), .dash-profile-tile, .dash-profile-flags button, .dash-profile-areas button { transition: none; }
   .dash-card:hover .dash-card-deco, .dash-card:hover .dash-card-badge .dash-shape-fill, .dash-actions :is(a, button):hover .dash-shape-fill, .dash-library a:hover .dash-shape-fill { transform: none; }
   .dash-actions :is(a, button):hover:not(:disabled), .dash-library a:hover, .dash-card:hover .dash-sample-page, .dash-card:hover .dash-sample-comment, .dash-card :is(.dash-step-action, .dash-sample-action):hover:not(:disabled) { transform: none; }
 }
@@ -534,4 +599,6 @@ dialog.dash-add-panel:not([open]) { display: none; }
   .dash-journey li::after { background: GrayText; }
   .dash-journey li.is-done::after { background: CanvasText; }
   .dash-card :is(.dash-step-action, .dash-sample-action) { border: 1px solid ButtonText; }
+  .dash-profile-tile { border-color: CanvasText; }
+  :is(.dash-profile-flags, .dash-profile-areas) [aria-pressed="true"] { outline: 2px solid Highlight; outline-offset: 1px; }
 }
