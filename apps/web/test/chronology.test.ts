@@ -54,6 +54,35 @@ const event: ChronologyEvent = {
   previousIds: [],
 }
 describe("chronology lawyer view", () => {
+  test("date labels show a supplied time once while retaining separate clock and zone information", () => {
+    expect(
+      dateLabel({
+        original: "9 September 2036 at 11:25",
+        precision: "exact",
+        start: "2036-09-09",
+        time: "11:25",
+        timezone: "Europe/London",
+      }),
+    ).toBe("9 September 2036 at 11:25 Europe/London")
+    expect(
+      dateLabel({
+        original: "9 September 2036",
+        precision: "exact",
+        start: "2036-09-09",
+        time: "11:25",
+        timezone: "Europe/London",
+      }),
+    ).toBe("9 September 2036 · 11:25 Europe/London")
+    expect(
+      dateLabel({
+        original: "2036-09-09T11:25:00Z",
+        precision: "exact",
+        start: "2036-09-09",
+        time: "11:25:00Z",
+        timezone: "UTC",
+      }),
+    ).toBe("2036-09-09T11:25:00Z UTC")
+  })
   test("date labels retain deadline qualifiers stored separately from the original date words", () => {
     expect(dateLabel({ original: "12 May 2026", precision: "exact", start: "2026-05-12", qualifier: "before" })).toBe(
       "before 12 May 2026",

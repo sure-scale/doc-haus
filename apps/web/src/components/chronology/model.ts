@@ -19,7 +19,9 @@ export function dateLabel(date: ChronologyDate) {
         : date.precision === "relative"
           ? "relative date"
           : ""
-  return `${qualified}${qualifier && !text.toLowerCase().includes(qualifier) ? ` (${qualifier})` : ""}${date.time ? ` · ${date.time}` : ""}${date.timezone ? ` ${date.timezone}` : ""}`
+  const time = date.time && !text.includes(date.time) ? ` · ${date.time}` : ""
+  const timezone = date.timezone && !text.toLowerCase().includes(date.timezone.toLowerCase()) ? ` ${date.timezone}` : ""
+  return `${qualified}${qualifier && !text.toLowerCase().includes(qualifier) ? ` (${qualifier})` : ""}${time}${timezone}`
 }
 export function eventEvidence(event: ChronologyEvent) {
   return event.accounts.flatMap((account) => account.evidence)
