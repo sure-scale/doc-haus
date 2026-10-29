@@ -1,8 +1,10 @@
 /* The chronology stays inside the matter shell; table density and source text take priority. */
 .chronology-workbench {
-  --chronology-line: var(--md-sys-color-outline-variant, #dce4dc);
-  color: var(--md-sys-color-on-surface, #242c28);
-  background: #fff;
+  --chronology-line: #e6e5e7;
+  --chronology-ink: #182238;
+  --chronology-muted: #6b7180;
+  color: var(--chronology-ink);
+  background: #fdfcfb;
   padding: 20px clamp(16px, 2.4vw, 36px) 28px;
   min-width: 0;
   min-height: 0;
@@ -12,7 +14,10 @@
   line-height: 1.55;
 }
 .chronology-workbench h1 {
-  font: 500 clamp(26px, 2.7vw, 36px) / 1.2 var(--font-display, Georgia, serif);
+  font:
+    400 clamp(32px, 3vw, 42px) / 1.2 Georgia,
+    "Times New Roman",
+    serif;
   letter-spacing: -0.9px;
   margin: 6px 0;
 }
@@ -47,12 +52,12 @@
 }
 .chronology-workbench button:hover,
 .chronology-dialog button:hover {
-  background: var(--md-sys-state-hover, #f2f6f2);
+  background: #f2f4f8;
 }
 .chronology-workbench button.primary,
 .chronology-dialog button.primary {
-  background: var(--md-sys-color-primary, #17634f);
-  border-color: var(--md-sys-color-primary, #17634f);
+  background: #182238;
+  border-color: #182238;
   color: white;
 }
 .chronology-workbench button:disabled,
@@ -62,7 +67,7 @@
 }
 .chronology-workbench :focus-visible,
 .chronology-dialog :focus-visible {
-  outline: 2px solid var(--md-sys-color-primary, #17634f);
+  outline: 2px solid #182238;
   outline-offset: 3px;
 }
 .chronology-inline {
@@ -82,11 +87,11 @@
   border: 0;
   padding: 0;
   min-height: 28px;
-  color: var(--md-sys-color-on-surface-variant, #526057);
+  color: var(--chronology-muted, #6b7180);
   background: transparent;
 }
 .chronology-muted {
-  color: var(--md-sys-color-on-surface-variant, #526057);
+  color: var(--chronology-muted, #6b7180);
   font-size: 12px;
 }
 .chronology-counters {
@@ -104,10 +109,10 @@
   min-height: 30px;
   border: 0;
   background: transparent;
-  color: var(--md-sys-color-on-surface-variant, #526057);
+  color: var(--chronology-muted, #6b7180);
 }
 .chronology-counters button[aria-expanded="true"] {
-  color: var(--md-sys-color-primary, #17634f);
+  color: #182238;
   font-weight: 650;
 }
 .chronology-content {
@@ -121,148 +126,6 @@
 .chronology-workbench.has-selection .chronology-content {
   grid-template-columns: minmax(0, 1fr) minmax(290px, 35%);
   gap: 24px;
-}
-.chronology-timeline {
-  margin-bottom: 22px;
-  border-bottom: 1px solid var(--chronology-line);
-  padding-bottom: 12px;
-}
-.chronology-timeline-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  color: var(--md-sys-color-on-surface-variant, #526057);
-  font-size: 12px;
-}
-.chronology-timeline-heading small {
-  font-weight: 400;
-  font-size: 11px;
-}
-.chronology-timeline-heading button {
-  padding: 2px 10px;
-  min-height: 30px;
-}
-.chronology-timeline-scroll {
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-}
-.chronology-timeline-canvas {
-  position: relative;
-  height: 102px;
-  min-width: 100%;
-  background-image: linear-gradient(to right, transparent calc(100% - 1px), #eef1ee 1px);
-  background-size: 16.66% 65%;
-  background-repeat: repeat-x;
-  background-position: 0 28px;
-}
-.chronology-axis-labels {
-  position: absolute;
-  inset: 8px 3% auto;
-  display: flex;
-  justify-content: space-between;
-  color: var(--md-sys-color-on-surface-variant, #526057);
-  font-size: 11px;
-  gap: 20px;
-}
-.chronology-axis-labels span {
-  max-width: 45%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.chronology-timeline-axis {
-  position: absolute;
-  left: 3%;
-  right: 3%;
-  top: 63px;
-  height: 1px;
-  background: #dbe4dc;
-}
-.chronology-workbench button.chronology-timeline-point {
-  position: absolute;
-  top: 49px;
-  transform: translateX(-50%);
-  width: 29px;
-  height: 29px;
-  min-height: 0;
-  padding: 0;
-  border-radius: 50%;
-  color: #fff;
-  border: 1px solid #17634f;
-  background: #378a72;
-  z-index: 2;
-  font-size: 11px;
-  box-shadow: 0 0 0 4px #fff;
-}
-.chronology-workbench button.chronology-timeline-point.is-uncertain {
-  border: 2px dashed #17634f;
-  background: #fff;
-  color: #17634f;
-}
-.chronology-workbench button.chronology-timeline-point.is-scheduled {
-  border-radius: 4px;
-}
-.chronology-workbench button.chronology-timeline-point.is-selected {
-  box-shadow:
-    0 0 0 4px #d4eade,
-    0 0 0 5px #17634f;
-}
-.chronology-period {
-  display: block;
-  position: absolute;
-  top: 59px;
-  height: 9px;
-  background: #b6dbce;
-  z-index: 1;
-}
-.chronology-period.is-uncertainty {
-  top: 77px;
-  height: 4px;
-  background: transparent;
-  border-block: 1px dashed #777865;
-}
-.chronology-timeline-key {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 16px;
-  font-size: 10px;
-  color: var(--md-sys-color-on-surface-variant, #526057);
-}
-.chronology-timeline-key > span {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.chronology-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: #378a72;
-  display: inline-block;
-}
-.chronology-dot.is-uncertain {
-  border: 1px dashed #17634f;
-  background: #fff;
-}
-.chronology-duration-key {
-  display: inline-block;
-  width: 20px;
-  height: 7px;
-  background: #b6dbce;
-}
-.chronology-uncertainty-key {
-  display: inline-block;
-  width: 20px;
-  border-top: 1px dashed #777865;
-}
-.chronology-timeline-list,
-.chronology-timeline-cluster {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  padding-top: 8px;
 }
 .chronology-search-row {
   display: flex;
@@ -330,21 +193,21 @@
 .chronology-workbench table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 13px;
   table-layout: fixed;
 }
 .chronology-workbench th {
   text-align: left;
-  font-size: 11px;
-  font-weight: 650;
-  color: #526057;
+  font-size: 12px;
+  font-weight: 550;
+  color: #182238;
   padding: 9px 10px;
   border-bottom: 1px solid var(--chronology-line);
 }
 .chronology-workbench td {
-  padding: 12px 10px;
+  padding: 11px 10px;
   vertical-align: top;
-  border-bottom: 1px solid #edf0ed;
+  border-bottom: 1px solid #ecebed;
   overflow-wrap: anywhere;
 }
 .chronology-event-table th:nth-child(1) {
@@ -360,7 +223,7 @@
   width: 17%;
 }
 .chronology-event-table tr.is-selected td {
-  background: #edf4ee;
+  background: #eaf0fa;
 }
 .chronology-event-table tr.is-hidden td {
   color: #69716b;
@@ -368,7 +231,7 @@
 }
 .chronology-workbench button.chronology-event-title {
   text-align: left;
-  font-weight: 550;
+  font-weight: 400;
   padding: 0;
   border: 0;
   background: transparent;
@@ -380,15 +243,15 @@
   display: flex;
   gap: 2px 8px;
   flex-wrap: wrap;
-  font-size: 10px;
-  color: #805311;
+  font-size: 11px;
+  color: #946119;
   margin-top: 3px;
 }
 .chronology-table-qualification {
   display: block;
   margin-top: 4px;
-  font-size: 10px;
-  color: #805311;
+  font-size: 11px;
+  color: #946119;
 }
 .chronology-review-state {
   white-space: normal;
@@ -408,49 +271,19 @@
   border-radius: 3px;
 }
 .chronology-source-name {
-  display: block;
-  font-size: 11px;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12px;
   margin-bottom: 3px;
-  color: #526057;
+  color: #535b6c;
+}
+.chronology-source-name svg {
+  flex: none;
+  margin-top: 2px;
 }
 .chronology-table-foot {
   margin-top: 12px;
-}
-.chronology-detail {
-  border-left: 1px solid var(--chronology-line);
-  padding-left: 24px;
-  min-width: 0;
-  max-height: calc(100dvh - 250px);
-  overflow-y: auto;
-  scrollbar-gutter: stable;
-  padding-right: 6px;
-}
-.chronology-detail-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 16px;
-}
-.chronology-detail h2 {
-  font: 550 24px/1.3 var(--font-display, Georgia, serif);
-  overflow-wrap: anywhere;
-}
-.chronology-detail h2:focus,
-.chronology-section-head h2:focus {
-  outline: none;
-}
-.chronology-detail section {
-  margin-top: 23px;
-}
-.chronology-detail details {
-  border-top: 1px solid var(--chronology-line);
-  margin-top: 20px;
-  padding-top: 13px;
-}
-.chronology-detail .chronology-star {
-  font-size: 20px;
-  padding: 0 8px;
 }
 .chronology-tags {
   display: flex;
@@ -468,7 +301,7 @@
 }
 .chronology-tag.is-reviewed {
   color: #17634f;
-  background: #edf4ee;
+  background: #eaf0fa;
 }
 .chronology-tag.is-pending,
 .chronology-tag.is-alert {
@@ -584,7 +417,7 @@
   margin: 4px 0 0;
 }
 .chronology-run.is-running {
-  background: #edf4ee;
+  background: #eaf0fa;
 }
 .chronology-run.is-complete {
   background: #fff;
@@ -727,7 +560,7 @@
 }
 .chronology-included-sources li {
   padding: 7px 0;
-  border-bottom: 1px solid #edf0ed;
+  border-bottom: 1px solid #ecebed;
 }
 .chronology-invitation-dot {
   display: inline-block;
@@ -771,9 +604,6 @@
     grid-template-columns: minmax(0, 1fr) minmax(275px, 43%);
     gap: 16px;
   }
-  .chronology-detail {
-    padding-left: 16px;
-  }
   .chronology-event-table th:nth-child(3),
   .chronology-event-table td:nth-child(3) {
     width: 17%;
@@ -797,12 +627,6 @@
   }
   .chronology-workbench.has-selection .chronology-main {
     display: none;
-  }
-  .chronology-detail {
-    border-left: 0;
-    padding: 0;
-    max-height: none;
-    overflow: visible;
   }
   .chronology-event-table th:nth-child(1) {
     width: 20%;
@@ -931,12 +755,6 @@
   .chronology-workbench button.chronology-event-title {
     min-height: 44px;
   }
-  .chronology-workbench button.chronology-timeline-point {
-    width: 36px;
-    height: 36px;
-    min-height: 36px;
-    top: 46px;
-  }
   .matter-chronology-actions > summary {
     min-height: 44px;
     display: flex;
@@ -955,5 +773,181 @@
     scrollbar-width: thin;
     scroll-padding-inline: 4px;
     padding-block: 3px;
+  }
+}
+
+/* Editorial chronology surface, bounded by the existing matter shell. */
+.chronology-head {
+  align-items: flex-end;
+  margin-bottom: 4px;
+}
+.chronology-head h1 {
+  margin: 9px 0 3px;
+}
+.chronology-head > .chronology-inline {
+  padding-bottom: 6px;
+}
+.chronology-counters {
+  border-bottom: 0;
+  gap: 3px 13px;
+  padding-bottom: 0;
+  margin: 0 0 21px;
+  color: #6b7180;
+}
+.chronology-counters > span {
+  color: #6b7180;
+}
+.chronology-counters button {
+  font-size: 12px;
+  min-height: 30px;
+}
+.chronology-counters button:hover {
+  color: #284e8a;
+  background: transparent;
+  text-decoration: underline;
+}
+.chronology-search-row {
+  margin: 12px 0 14px;
+}
+.chronology-sort {
+  flex: 0 0 158px;
+}
+.chronology-workbench .chronology-sort select {
+  font-size: 12px;
+}
+.chronology-workbench input[type="search"] {
+  padding-left: 30px;
+  background: #fff
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='15' height='15' fill='none' stroke='%23636f81' stroke-width='1.4'%3E%3Ccircle cx='6' cy='6' r='4.5'/%3E%3Cpath d='m9.5 9.5 4 4'/%3E%3C/svg%3E")
+    no-repeat 10px center;
+}
+.chronology-event-table th:nth-child(1) {
+  width: 17%;
+}
+.chronology-event-table th:nth-child(2) {
+  width: 39%;
+}
+.chronology-event-table th:nth-child(3) {
+  width: 27%;
+}
+.chronology-event-table th:nth-child(4) {
+  width: 17%;
+}
+.chronology-event-table tr.is-selected td {
+  background: #eaf0fa;
+}
+.chronology-event-table tr.is-selected td:first-child {
+  box-shadow: inset 2px 0 #7dacf4;
+}
+.chronology-table-qualifications:empty {
+  display: none;
+}
+.chronology-review-state {
+  font-size: 12px;
+  color: #af7419;
+}
+.chronology-review-state.is-reviewed {
+  color: #418279;
+}
+.chronology-new {
+  margin-left: 4px;
+  color: #536b92;
+  background: #edf1f8;
+}
+.chronology-workbench .chronology-table-foot {
+  color: #7a7e88;
+  font-size: 11px;
+  margin-top: 26px;
+}
+.chronology-filters {
+  background: #f6f6f8;
+}
+/* The saved evidence column starts beside the heading, as in the reference,
+   rather than being pushed below the toolbar and processing information. */
+@media (min-width: 801px) {
+  .chronology-workbench.has-selection {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(310px, 32%);
+    column-gap: 24px;
+    align-content: start;
+    padding-right: 18px;
+  }
+  .chronology-workbench.has-selection > * {
+    grid-column: 1;
+  }
+  .chronology-workbench.has-selection .chronology-content {
+    display: contents;
+  }
+  .chronology-workbench.has-selection .chronology-main {
+    grid-column: 1;
+  }
+  .chronology-workbench.has-selection .chronology-detail {
+    grid-column: 2;
+    grid-row: 1 / span 20;
+  }
+}
+/* Keep the existing matter controls, with a quieter title strip for this view. */
+.matter-container:has(.chronology-workbench) > .matter-page-head {
+  min-height: 72px;
+  padding: 12px 30px;
+  background: #fdfcfb;
+}
+.matter-container:has(.chronology-workbench) > .matter-page-head h1 {
+  font-size: 14px;
+  font-weight: 450;
+  letter-spacing: 0;
+}
+.matter-container:has(.chronology-workbench) > .matter-page-head .matter-meta {
+  font-size: 11px;
+}
+.shell-matter:has(.chronology-workbench) .sidebar {
+  background: #f8f7f6;
+  border-color: #e6e5e7;
+}
+.shell-matter:has(.chronology-workbench) .sidebar-surfaces .nav-item[aria-current="page"] {
+  color: #244782;
+  background: #e9eef8;
+  border-radius: 5px;
+  font-weight: 500;
+  box-shadow: inset 2px 0 #3668bc;
+}
+@media (max-width: 1100px) and (min-width: 801px) {
+  .chronology-workbench.has-selection {
+    grid-template-columns: minmax(0, 1fr) 310px;
+    column-gap: 16px;
+    padding-left: 20px;
+  }
+  .chronology-workbench.has-selection .chronology-head {
+    display: block;
+  }
+  .chronology-workbench.has-selection .chronology-head > .chronology-inline {
+    margin-top: 10px;
+  }
+  .chronology-workbench.has-selection .chronology-sort {
+    flex-basis: 132px;
+  }
+  .chronology-workbench.has-selection .chronology-event-table {
+    min-width: 580px;
+  }
+}
+@media (max-width: 800px) {
+  .chronology-workbench.has-selection .chronology-head,
+  .chronology-workbench.has-selection .chronology-counters {
+    display: none;
+  }
+  .chronology-sort {
+    flex-basis: 140px;
+  }
+  .chronology-search-row {
+    flex-wrap: wrap;
+  }
+  .chronology-search {
+    flex-basis: 100%;
+  }
+  .chronology-counters {
+    margin-bottom: 14px;
+  }
+  .matter-container:has(.chronology-workbench) > .matter-page-head {
+    padding: 12px 20px;
   }
 }

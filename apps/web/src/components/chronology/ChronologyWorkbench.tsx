@@ -26,6 +26,7 @@ import EventDetail from "./EventDetail"
 import EventForm from "./EventForm"
 import ProposalReview from "./ProposalReview"
 import ChronologyTimeline from "./Timeline"
+import SourceIcon from "./SourceIcon"
 import {
   chronologyChatContext,
   chronologyPeople,
@@ -63,6 +64,7 @@ export default function ChronologyWorkbench({
   const [state, setState] = useState(chronology)
   const [selectedId, setSelectedId] = useState<string | undefined>(initialEvent)
   const [search, setSearch] = useState("")
+  const [sort, setSort] = useState("oldest")
   const [filters, setFilters] = useState<ChronologyFilters>(emptyFilters)
   const [filterOpen, setFilterOpen] = useState(false)
   const [error, setError] = useState("")
@@ -242,7 +244,12 @@ export default function ChronologyWorkbench({
   const events = (state?.events ?? [])
     .filter((event) => !event.supersededBy?.length)
     .filter((event) => matchesChronology(event, search, filters, people.canonical))
-    .sort((a, b) => (a.date.start ?? "~~~~").localeCompare(b.date.start ?? "~~~~") || a.createdAt - b.createdAt)
+    .sort((a, b) => {
+      if (!a.date.start) return b.date.start ? 1 : a.createdAt - b.createdAt
+      if (!b.date.start) return -1
+      const order = a.date.start.localeCompare(b.date.start) || a.createdAt - b.createdAt
+      return sort === "newest" ? -order : order
+    })
   const activeFilterCount = Object.entries(filters).filter(([key, value]) =>
     key === "hidden" ? value !== "exclude" : !!value,
   ).length
@@ -260,22 +267,19 @@ export default function ChronologyWorkbench({
             ← Conversation
           </button>
           <h1>Fact chronology</h1>
-          <p className="chronology-muted">
-            {title}
-            {client ? ` · Acting for ${client}` : " · Client framing not recorded; a neutral account is used."}
-          </p>
+          {!client && <p className="chronology-muted">Client framing not recorded; a neutral account is used.</p>}
         </div>
         <div className="chronology-inline">
-          <button type="button" disabled={!state || busy} onClick={() => setEditing({ mode: "add" })}>
+          <button
+            type="button"
+            className="primary"
+            disabled={!state || busy}
+            onClick={() => setEditing({ mode: "add" })}
+          >
             + Add event
           </button>
           {state?.created && (
-            <button
-              type="button"
-              className="primary"
-              disabled={busy || running}
-              onClick={() => void prepare("refresh")}
-            >
+            <button type="button" disabled={busy || running} onClick={() => void prepare("refresh")}>
               Refresh from sources
             </button>
           )}
@@ -388,7 +392,7 @@ export default function ChronologyWorkbench({
               </div>
             </div>
           )}
-          {state.run && (
+          {state.run && (sourcesOpen || state.run.status !== "complete" || state.run.errors.length > 0) && (
             <div className={`chronology-run is-${state.run.status}`} role="status">
               <div>
                 <strong>
@@ -555,6 +559,13 @@ export default function ChronologyWorkbench({
                       value={search}
                       onChange={(change) => setSearch(change.target.value)}
                     />
+                  </label>
+                  <label className="chronology-sort">
+                    <span className="chronology-sr-only">Sort events</span>
+                    <select value={sort} onChange={(change) => setSort(change.target.value)}>
+                      <option value="oldest">Date (oldest first)</option>
+                      <option value="newest">Date (newest first)</option>
+                    </select>
                   </label>
                   <button
                     type="button"
@@ -728,7 +739,14 @@ export default function ChronologyWorkbench({
                               .slice(0, 2)
                               .map((name) => (
                                 <span key={name} className="chronology-source-name">
-                                  {name}
+                                  <SourceIcon
+                                    name={name}
+                                    kind={
+                                      eventEvidence(event).find((evidence) => evidence.documentName === name)
+                                        ?.sourceKind
+                                    }
+                                  />
+                                  <span>{name}</span>
                                 </span>
                               ))}
                             {new Set(eventEvidence(event).map((evidence) => evidence.documentName)).size > 2 && (

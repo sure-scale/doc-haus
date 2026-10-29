@@ -239,6 +239,10 @@ try {
   const detail = page.getByRole("complementary", { name: "Event and evidence" })
   await expect(page.getByRole("heading", { name: "Fact chronology", exact: true })).toBeVisible()
   await expect(detail).toHaveCount(0)
+  await page.getByRole("combobox", { name: "Sort events", exact: true }).selectOption("newest")
+  await expect(page.locator(".chronology-event-table tbody tr").first()).toHaveAttribute("data-event-id", "arrival")
+  await page.getByRole("combobox", { name: "Sort events", exact: true }).selectOption("oldest")
+  await expect(page.locator(".chronology-event-table tbody tr").first()).toHaveAttribute("data-event-id", "collection")
   await page.getByRole("searchbox", { name: "Search events and quotations" }).fill("sealed equipment")
   await page.getByRole("button", { name: "Equipment collected", exact: true }).focus()
   await page.keyboard.press("Enter")
@@ -254,6 +258,7 @@ try {
   await expect(detail.getByRole("button", { name: "View in document" })).toBeFocused()
   await expect(page.getByRole("searchbox")).toHaveValue("sealed equipment")
   await detail.getByRole("button", { name: "Mark reviewed", exact: true }).click()
+  await detail.locator(".chronology-more-actions > summary").click()
   await detail.getByRole("textbox", { name: "Optional review note" }).fill("Confirm the carrier name with the client.")
   await detail.getByRole("button", { name: "Save note" }).click()
   await detail.getByRole("button", { name: "Mark as key event" }).click()
@@ -271,6 +276,7 @@ try {
   await page.getByRole("button", { name: /^Filter/ }).click()
   await page.getByRole("combobox", { name: /^Visibility/ }).selectOption("only")
   await page.locator('[data-event-id="collection"] .chronology-event-title').click()
+  await detail.locator(".chronology-more-actions > summary").click()
   await detail.getByRole("button", { name: "Restore event", exact: true }).click()
   await detail.getByRole("button", { name: "Edit / correct date" }).click()
   const edit = page.getByRole("dialog", { name: "Edit event", exact: true })
@@ -286,6 +292,7 @@ try {
   await page.getByRole("button", { name: "Clear", exact: true }).click()
   await page.reload()
   await page.locator('[data-event-id="collection"] .chronology-event-title').click()
+  await detail.locator(".chronology-more-actions > summary").click()
   await expect(detail.getByRole("textbox", { name: "Optional review note" })).toHaveValue(
     "Confirm the carrier name with the client.",
   )
@@ -373,6 +380,23 @@ try {
       )
     }
   }
+  // A narrow evidence column must keep the complete review popup reachable.
+  await page.setViewportSize({ width: 1050, height: 900 })
+  await page.locator('[data-event-id="arrival"] .chronology-event-title').click()
+  await detail.locator(".chronology-more-actions > summary").click()
+  const panelBounds = await detail.boundingBox()
+  const popupBounds = await detail.locator(".chronology-more-actions-content").boundingBox()
+  assert.ok(
+    panelBounds &&
+      popupBounds &&
+      popupBounds.x >= panelBounds.x &&
+      popupBounds.x + popupBounds.width <= panelBounds.x + panelBounds.width + 1,
+    "review popup stays inside evidence column",
+  )
+  await detail.getByRole("textbox", { name: "Optional review note" }).focus()
+  await expect(detail.getByRole("textbox", { name: "Optional review note" })).toBeFocused()
+  await detail.locator(".chronology-more-actions > summary").click()
+  await detail.getByRole("button", { name: "Back to events" }).click()
   await page.emulateMedia({ reducedMotion: "reduce" })
   assert.deepEqual(errors, [])
   console.log(
