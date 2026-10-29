@@ -317,6 +317,20 @@ async function inspect(sourceBytes: Uint8Array, bytes: Uint8Array, input: DocxTa
   } catch (error) { session.close(); throw error }
   finally { baseline.close() }
 }
+/** Read-only proof of actual carriers and result paragraphs in these bytes. */
+export async function verifyDocxTableRowInsertion(sourceBytes: Uint8Array, authored: Uint8Array, value: DocxTableRowInsertion) {
+  const source = new Uint8Array(sourceBytes), input = request(value, source), checked = await inspect(source, new Uint8Array(authored), input)
+  try {
+    const table = children(children(checked.output.body.documentElement!, "body")[0]!, "tbl")[checked.located.view.table - 1]!
+    const row = children(table, "tr")[checked.located.row + Number(input.position === "after")]!
+    const paragraphs = all(checked.output.body, "p")
+    return { revisions: checked.revisions, paragraphs: children(row, "tc").map((cell, index) => {
+      const paragraph = children(cell, "p")[0]!, xml_paragraph_index = paragraphs.indexOf(paragraph)
+      require(xml_paragraph_index >= 0, "new_paragraph_identity_unavailable")
+      return { cell: index, xml_paragraph_index, text: input.cells[index]! }
+    }) }
+  } finally { checked.session.close() }
+}
 /** Rebuild membership from carriers and the registry; caller-supplied IDs are never trusted. */
 export async function resolveDocxTableRowInsertion(sourceBytes: Uint8Array, authored: Uint8Array, value: DocxTableRowInsertion, decision: "accept" | "reject") {
   const source = new Uint8Array(sourceBytes), input = request(value, source)
