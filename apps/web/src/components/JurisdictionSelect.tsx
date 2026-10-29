@@ -268,6 +268,11 @@ export default function JurisdictionSelect({
                       name={multiple ? undefined : popoverId}
                       checked={selected.includes(j.code)}
                       disabled={practiceAreas && selected.length >= 50 && !selected.includes(j.code)}
+                      onClick={() => {
+                        // A checked radio does not emit change, but choosing it
+                        // again should still dismiss a single-choice picker.
+                        if (!multiple && selected.includes(j.code)) toggle(j.code)
+                      }}
                       onChange={() => toggle(j.code)}
                     />
                     <span className="jx-name">{j.name}</span>

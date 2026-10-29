@@ -329,6 +329,16 @@ try {
   )
   assert.ok(filterColumns[0]!.x < filterColumns[1]!.x && filterColumns[1]!.x < filterColumns[2]!.x)
   const documentFilter = page.getByRole("button", { name: "Document", exact: true })
+  const filterControls = await Promise.all([
+    documentFilter.boundingBox(),
+    page.getByRole("button", { name: "Person / organisation", exact: true }).boundingBox(),
+    page.getByRole("textbox", { name: "From date", exact: true }).boundingBox(),
+    page.getByRole("textbox", { name: "To date", exact: true }).boundingBox(),
+  ])
+  assert.ok(
+    filterControls.every((box) => box && Math.abs(box.y - filterControls[0]!.y) < 2),
+    "filter controls share a baseline",
+  )
   await documentFilter.click()
   const documentPicker = page.getByRole("group", { name: "Document", exact: true })
   await expect(documentPicker.getByRole("textbox", { name: "Search documents" })).toBeFocused()
@@ -537,6 +547,7 @@ try {
   await updatePicker.getByRole("textbox", { name: "Search updates", exact: true }).fill("receipt")
   await expect(updatePicker.getByRole("radio")).toHaveCount(1)
   await updatePicker.getByRole("radio").click()
+  await expect(updatePicker).toHaveCount(0)
   forceConflict = true
   await page.getByRole("button", { name: "Skip for later", exact: true }).click()
   const updatesDialog = page.getByRole("dialog", { name: "Review chronology updates", exact: true })
