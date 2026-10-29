@@ -133,3 +133,18 @@
 
 .dash-setup-demo-row .dash-setup-demo-primary { color: var(--text-on-accent); background: var(--accent); border: 1px solid var(--accent); }
 .dash-setup-demo-row .dash-setup-demo-primary:hover:not(:disabled) { background: var(--accent); color: var(--text-on-accent); filter: brightness(1.1); }
+
+/* Completed steps keep a small, editable summary until opened again. */
+.dash-setup-accordion-item.is-done:not(.is-expanded) .dash-setup-toggle { min-height: 68px; padding-block: 12px; flex-wrap: nowrap; }
+.dash-setup-accordion-item.is-done:not(.is-expanded) .dash-setup-row-detail { display: none; }
+.dash-setup-accordion-item.is-done:not(.is-expanded) .dash-setup-row-text { flex-basis: auto; }
+.dash-setup-accordion-item.is-done:not(.is-expanded) .dash-setup-number { width: 32px; height: 32px; font-size: 15px; }
+.dash-setup-accordion-item.is-done:not(.is-expanded) .dash-setup-completed { width: 24px; height: 24px; margin-left: 0; }
+.dash-setup-accordion-item.is-done:not(.is-expanded) .dash-setup-completed svg { width: 17px; height: 17px; }
+.dash-setup-accordion-item.is-done:not(.is-expanded) .dash-setup-chevron { margin-left: 0; }
+.dash-setup-defaults { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.dash-setup-defaults > div { min-width: 0; }
+.dash-setup-defaults label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 550; }
+.dash-setup-defaults .jx-select, .dash-setup-defaults .jx-trigger { width: 100%; }
+@container dash (max-width: 600px) { .dash-setup-defaults { grid-template-columns: minmax(0, 1fr); } }
+.dash-setup-field-hint { margin: 6px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }

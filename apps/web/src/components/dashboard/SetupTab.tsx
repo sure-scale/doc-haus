@@ -4,7 +4,6 @@ import { addSampleMatter, type Matter } from "../../api/ingest/matters"
 import { savePreferences } from "../../api/ingest/preferences"
 import type { SetupProgress } from "../../api/ingest/setup"
 import { loadPrefs, savePrefs } from "../../prefs"
-import JurisdictionFlag from "../JurisdictionFlag"
 import JurisdictionSelect from "../JurisdictionSelect"
 import { SUGGESTED_PRACTICE_AREAS } from "../settings/MatterDefaultsTab"
 import { useOpenSettings } from "../settings/navigation"
@@ -71,9 +70,6 @@ export function SetupTab({ context, onSampleAdded, onHideSetup }: { context: Wid
   const changed = attorney.trim() !== prefs?.attorney.trim() || firm.trim() !== prefs?.firm.trim()
     || JSON.stringify(areas) !== JSON.stringify(prefs?.practiceAreas) || JSON.stringify(jurisdictions) !== JSON.stringify(loadPrefs().defaultJurisdictions)
   const packs = data.jurisdictions ?? []
-  // Show saved choices and a small useful selection; the searchable picker has all packs.
-  const shownPacks = [...new Set([...jurisdictions, ...packs.slice(0, 3).map((pack) => pack.code)])].slice(0, Math.max(jurisdictions.length, 3))
-  const shownAreas = [...new Set([...areas, "Commercial", "Corporate", "Employment"])].slice(0, Math.max(areas.length, 3))
   const areaOptions = [...areas, ...SUGGESTED_PRACTICE_AREAS].filter((area, index, all) => all.findIndex((other) => other.toLocaleLowerCase() === area.toLocaleLowerCase()) === index).map((name) => ({ code: name, name }))
   async function saveIdentity(event: FormEvent) {
     event.preventDefault()
@@ -126,7 +122,6 @@ export function SetupTab({ context, onSampleAdded, onHideSetup }: { context: Wid
     catch { setDemoError("Could not add the sample matter. Try again.") }
     finally { setAdding(false) }
   }
-  const toggle = (values: string[], value: string) => values.includes(value) ? values.filter((other) => other !== value) : [...values, value]
   const config: SetupChecklistConfig = {
     title: "Finish setting up",
     description: "Connect your tools and defaults so every draft and search is ready.",
@@ -141,8 +136,10 @@ export function SetupTab({ context, onSampleAdded, onHideSetup }: { context: Wid
   function content(id: string): ReactNode {
     if (id === "identity") return prefs ? <form className="dash-setup-inline" onSubmit={saveIdentity} aria-labelledby="dash-setup-identity">
       <div className="dash-setup-input-row"><label><span className="sr-only">Your full name</span><input value={attorney} onChange={(event) => { setAttorney(event.target.value); setIdentitySaved("") }} placeholder="Your full name" autoComplete="name" disabled={saving} maxLength={200} required /></label><label><span className="sr-only">Firm name</span><input value={firm} onChange={(event) => { setFirm(event.target.value); setIdentitySaved("") }} placeholder="Firm name" autoComplete="organization" disabled={saving} maxLength={200} required /></label><button type="submit" disabled={saving || !changed} aria-busy={identityBusy}>{identityBusy ? "Saving…" : "Save"}</button></div>
-      <div className="dash-setup-chips" role="group" aria-label="Default jurisdictions">{shownPacks.map((code) => <button type="button" key={code} aria-pressed={jurisdictions.includes(code)} disabled={saving} onClick={() => { setJurisdictions(toggle(jurisdictions, code)); setIdentitySaved("") }}><JurisdictionFlag code={code} region />{packs.find((pack) => pack.code === code)?.name ?? code}{jurisdictions.includes(code) && icons.check}</button>)}<JurisdictionSelect jurisdictions={packs} selected={jurisdictions} onChange={setJurisdictions} disabled={saving || !packs.length} trigger={<span>All jurisdictions…</span>} triggerTitle="Choose default jurisdictions" /></div>
-      <div className="dash-setup-chips" role="group" aria-label="Practice areas">{shownAreas.map((area) => <button type="button" key={area} aria-pressed={areas.includes(area)} disabled={saving} onClick={() => { setAreas(toggle(areas, area)); setIdentitySaved("") }}>{area}{areas.includes(area) && icons.check}</button>)}<JurisdictionSelect jurisdictions={areaOptions} selected={areas} onChange={setAreas} practiceAreas disabled={saving} trigger={<span>More…</span>} triggerTitle="Choose practice areas" /></div>
+      <div className="dash-setup-defaults">
+        <div><label htmlFor="dash-setup-jurisdictions">Jurisdictions</label><JurisdictionSelect id="dash-setup-jurisdictions" aria-describedby="dash-setup-jurisdictions-hint" jurisdictions={packs} selected={jurisdictions} onChange={(values) => { setJurisdictions(values); setIdentitySaved("") }} disabled={saving || !packs.length} /><p id="dash-setup-jurisdictions-hint" className="dash-setup-field-hint">Preselected when you create a new matter.</p></div>
+        <div><label htmlFor="dash-setup-practice-areas">Practice areas</label><JurisdictionSelect id="dash-setup-practice-areas" aria-describedby="dash-setup-practice-areas-hint" jurisdictions={areaOptions} selected={areas} onChange={(values) => { setAreas(values); setIdentitySaved("") }} practiceAreas disabled={saving} /><p id="dash-setup-practice-areas-hint" className="dash-setup-field-hint">Select the areas you work in, or add your own.</p></div>
+      </div>
       {identityError && <p className="dash-setup-error" role="alert">{identityError}</p>}{identitySaved && <p className="dash-setup-saved" role="status">{identitySaved}</p>}
     </form> : <p className="dash-setup-unavailable">Could not load your practice details. <button type="button" className="dash-text-button" onClick={onRetry}>Retry</button></p>
     if (id === "research") return <>
@@ -157,7 +154,7 @@ export function SetupTab({ context, onSampleAdded, onHideSetup }: { context: Wid
   return <div className="dash-setup-flow">
     <div className="dash-setup-demo-row" role="group" aria-label="Demo data">
       <span className="dash-setup-demo-row-icon" aria-hidden="true">{icons.sample}</span>
-      <div className="dash-setup-demo-copy"><p>Want to see doc.haus in action first?</p><span>{sample ? "Explore your sample matter, documents and data." : "Populate your workspace with a sample matter, documents and data."}</span></div>
+      <div className="dash-setup-demo-copy"><p>Want to see doc.haus in action first?</p><span>{sample ? "A sample matter, documents and data are ready to explore." : "Populate your workspace with a sample matter, documents and data."}</span></div>
       <button type="button" className="dash-setup-demo-primary" disabled={adding} aria-busy={adding} onClick={() => { if (sample) navigate(`/matter/${sample.id}?view=chat&agent=ask`); else void populate() }}>{sample ? icons.arrowRight : icons.plus}{adding ? "Adding demo data…" : sample ? "Open sample matter" : "Add sample data"}</button>
       {onHideSetup && <button type="button" className="dash-text-button dash-setup-hide" onClick={onHideSetup}>Hide setup</button>}
       {demoError && <p className="dash-setup-error" role="alert">{demoError}</p>}
