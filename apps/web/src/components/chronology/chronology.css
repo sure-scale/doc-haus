@@ -1032,10 +1032,15 @@
 }
 .chronology-run {
   align-items: center;
+  flex-wrap: wrap;
   padding: 12px 14px;
 }
 .chronology-run > div:first-of-type {
-  flex: 1;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.chronology-run > .chronology-inline {
+  margin-left: auto;
 }
 .chronology-building-spinner {
   width: 17px;

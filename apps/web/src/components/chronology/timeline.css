@@ -63,10 +63,10 @@
   font-size: 12px;
   color: var(--muted, #7b808c);
 }
-.chronology-date-grid:first-child > span {
+.chronology-date-grid.is-first > span {
   transform: translateX(-20%);
 }
-.chronology-date-grid:nth-child(6) > span {
+.chronology-date-grid.is-last > span {
   transform: translateX(-80%);
 }
 .chronology-swimlane-rule {
@@ -298,9 +298,6 @@
   }
   .chronology-date-grid > span {
     font-size: 10px;
-  }
-  .chronology-date-grid:nth-child(even) > span {
-    display: none;
   }
   .chronology-selected-callout {
     max-width: 43%;

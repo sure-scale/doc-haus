@@ -359,6 +359,27 @@ export default function ChronologyTimeline({
     position: inset + ((date - min) / span) * plotWidth,
     label: tickFormat.format(new Date(date)),
   }))
+  // Label density follows the plotted width, including zoom and sidebar space.
+  // Keep every grid line in place; reserve both edge labels before fitting the
+  // intermediate labels, using a generous text-width budget at the 12px type.
+  const labelBounds = ticks.map((tick, index) => {
+    const width = Math.max(36, tick.label.length * 7)
+    const align = index === 0 ? 0.2 : index === ticks.length - 1 ? 0.8 : 0.5
+    const left = (tick.position * canvasWidth) / 100 - width * align
+    return { left, right: left + width }
+  })
+  const labelledTicks = new Set<number>([0])
+  const lastTick = ticks.length - 1
+  const gap = 12
+  const showLast = lastTick > 0 && labelBounds[lastTick]!.left >= labelBounds[0]!.right + gap
+  let labelRight = labelBounds[0]?.right ?? 0
+  for (let index = 1; index < lastTick; index += 1) {
+    const bounds = labelBounds[index]!
+    if (bounds.left < labelRight + gap || !showLast || bounds.right + gap > labelBounds[lastTick]!.left) continue
+    labelledTicks.add(index)
+    labelRight = bounds.right
+  }
+  if (showLast) labelledTicks.add(lastTick)
   return (
     <section
       ref={sectionRef}
@@ -418,8 +439,12 @@ export default function ChronologyTimeline({
               style={{ width: `${100 * zoom}%`, height: `${42 + occupiedLanes.length * 50}px` }}
             >
               {ticks.map((tick, index) => (
-                <div key={index} className="chronology-date-grid" style={{ left: `${tick.position}%` }}>
-                  <span>{tick.label}</span>
+                <div
+                  key={index}
+                  className={`chronology-date-grid${index === 0 ? " is-first" : index === ticks.length - 1 ? " is-last" : ""}`}
+                  style={{ left: `${tick.position}%` }}
+                >
+                  {labelledTicks.has(index) && <span>{tick.label}</span>}
                 </div>
               ))}
               {occupiedLanes.map((lane, index) => (

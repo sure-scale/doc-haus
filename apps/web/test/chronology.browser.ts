@@ -18,6 +18,7 @@ import { createElement } from ${JSON.stringify(fileURLToPath(import.meta.resolve
 import { createRoot } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-dom/client")))}
 import Workbench from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/chronology/ChronologyWorkbench.tsx"))}
 import Sidebar from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/Sidebar.tsx"))}
+import MatterHeader from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/matter/MatterHeader.tsx"))}
 import { setDocumentsCount } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/matter/documents-drawer.ts"))}
 import { MemoryRouter } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-router-dom")))}
 import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles.css"))}
@@ -26,7 +27,15 @@ import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/design-shel
 import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/modal-frost.css"))}
 setDocumentsCount(3)
 const workbench = createElement(Workbench, { matterId: 'fixture', title: 'Harbour equipment matter', documents: [{id: 1,name: 'Carrier note.md',doc_path: '/fixture/Carrier note.md',created_at: 0}], onState: () => {}, onAsk: context => { window.__context = context.text }, onClose: () => {} })
-createRoot(document.getElementById('root')).render(createElement(MemoryRouter, { initialEntries: ['/matter/fixture?view=chronology'] }, createElement('div', { className: 'shell shell-matter' }, createElement(Sidebar, { onOpenSettings: () => {}, sessionsVersion: 0 }), createElement('main', { className: 'content' }, createElement('div', { className: 'container matter-container' }, createElement('div', { className: 'matter-body' }, workbench))))))
+const noop = () => {}, done = async () => {}
+const header = createElement(MatterHeader, {
+  matter: { id: 'fixture', title: 'Harbour equipment matter', dir: '/fixture', created_at: 0 }, jurisdictions: [], compact: true,
+  editingRef: false, setEditingRef: noop, draftRef: '', setDraftRef: noop, commitRef: done,
+  editingClient: false, setEditingClient: noop, draftClient: '', setDraftClient: noop, commitClient: done,
+  renaming: false, setRenaming: noop, draftTitle: '', setDraftTitle: noop, commitRename: done,
+  patch: done, onEditConflicts: noop,
+})
+createRoot(document.getElementById('root')).render(createElement(MemoryRouter, { initialEntries: ['/matter/fixture?view=chronology'] }, createElement('div', { className: 'shell shell-matter' }, createElement(Sidebar, { onOpenSettings: () => {}, sessionsVersion: 0 }), createElement('main', { className: 'content' }, createElement('div', { className: 'container matter-container' }, header, createElement('div', { className: 'matter-body' }, workbench))))))
 `,
 )
 const build = await Bun.build({
@@ -768,6 +777,21 @@ try {
   await page.reload()
   await page.getByRole("searchbox").fill("")
   await page.setViewportSize({ width: 768, height: 900 })
+  const collapse = page.getByRole("button", { name: "Collapse sidebar", exact: true })
+  if (await collapse.isVisible()) await collapse.click()
+  await page.getByRole("button", { name: "Expand sidebar", exact: true }).click()
+  await expect(collapse).toBeVisible()
+  await expect
+    .poll(() =>
+      page.locator(".chronology-date-grid > span").evaluateAll((labels) => {
+        const visible = labels
+          .filter((label) => getComputedStyle(label).display !== "none")
+          .map((label) => label.getBoundingClientRect())
+          .sort((left, right) => left.left - right.left)
+        return visible.length >= 2 && visible.every((box, index) => !index || box.left >= visible[index - 1]!.right + 3)
+      }),
+    )
+    .toBe(true)
   assert.ok(
     await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1),
     "dense tablet record stays bounded at the shell's 701px breakpoint, above its status bar",
@@ -775,6 +799,35 @@ try {
   await page.getByRole("button", { name: "Independent occurrence 2", exact: true }).click()
   await expect(detail.getByRole("button", { name: "Close event evidence" })).toBeInViewport()
   await detail.getByRole("button", { name: "Close event evidence" }).click()
+  state.run = {
+    id: "synthetic-running-preview",
+    mode: "initial",
+    status: "running",
+    privilege: "mixed",
+    startedAt: Date.now(),
+    sourceKeys: ["source-1:v1"],
+    completedKeys: [],
+    errors: [],
+  }
+  state.revision++
+  await page.reload()
+  await expect(page.locator(".chronology-run")).toBeVisible()
+  assert.ok(
+    (await page.locator(".chronology-run > div:first-of-type").boundingBox())!.width >= 200,
+    "tablet progress copy retains a readable line width beside or above its actions",
+  )
+  assert.equal(
+    await page.locator(".chronology-run strong").evaluate((el) => {
+      const range = document.createRange()
+      range.selectNodeContents(el)
+      return range.getClientRects().length
+    }),
+    1,
+    "Building chronology does not become a narrow word column",
+  )
+  delete state.run
+  state.revision++
+  await page.reload()
   await page.setViewportSize({ width: 1440, height: 1000 })
   const undated = page.locator(".chronology-undated-events")
   await undated.locator("summary").click()

@@ -8,7 +8,7 @@
   flex-direction: row;
   background: #fcfbf9;
   border-color: #e9e7e5;
-  z-index: 20;
+  z-index: var(--z-sticky, 10);
 }
 .matter-page-head.is-chronology-compact .matter-head {
   flex: 1;
