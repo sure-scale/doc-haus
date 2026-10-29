@@ -31,7 +31,7 @@ export function setupTabProgress(data: DashboardData, setup: SetupProgress | nul
 }
 
 
-export function SetupTab({ context, onSampleAdded }: { context: WidgetContext; onSampleAdded?: () => void }) {
+export function SetupTab({ context, onSampleAdded, onHideSetup }: { context: WidgetContext; onSampleAdded?: () => void; onHideSetup?: () => void }) {
   const { data, setup, onPreferences, onRetry } = context
   const openSettings = useOpenSettings()
   const navigate = useNavigate()
@@ -52,8 +52,12 @@ export function SetupTab({ context, onSampleAdded }: { context: WidgetContext; o
   const saving = identityBusy || keyBusy
   const [adding, setAdding] = useState(false)
   const [demoError, setDemoError] = useState("")
-  const [demoHidden, setDemoHidden] = useState(false)
   const [added, setAdded] = useState<Matter>()
+  const [expanded, setExpanded] = useState(() => ["models", "identity", "research", "word", "style"][completion(data, setup, loadPrefs().defaultJurisdictions).findIndex(value => !value)] ?? "")
+  function finishStep(id: string) {
+    setExpanded(current => current === id ? "" : current)
+    requestAnimationFrame(() => { if (!document.querySelector('.dash-setup-toggle[aria-expanded="true"]')) document.getElementById(`dash-setup-toggle-${id}`)?.focus() })
+  }
   // Saving an Exa key or refreshing unrelated settings must not discard an
   // unfinished identity form. Synchronize only the saved fields that changed.
   useEffect(() => { setAttorney(prefs?.attorney ?? "") }, [prefs?.attorney])
@@ -88,6 +92,7 @@ export function SetupTab({ context, onSampleAdded }: { context: WidgetContext; o
         // jurisdiction defaults on the very same render as the saved identity.
         onPreferences?.(saved)
         setIdentitySaved("Practice details saved.")
+        finishStep("identity")
         onRetry()
       } catch {
         // The server save succeeded even when this browser could not save law defaults.
@@ -108,6 +113,7 @@ export function SetupTab({ context, onSampleAdded }: { context: WidgetContext; o
       onPreferences?.(saved)
       setKey("")
       setKeySaved("Exa key saved. You can test the connection in Research settings.")
+      finishStep("research")
     } catch {
       // Never echo a service response which could include the submitted key.
       setKeyError("Could not confirm that the Exa key was saved. Try again.")
@@ -143,17 +149,20 @@ export function SetupTab({ context, onSampleAdded }: { context: WidgetContext; o
       {!done[2] && <form className="dash-setup-exa" onSubmit={saveKey} aria-labelledby="dash-setup-research"><label><span className="sr-only">Exa API key</span><input type="password" value={key} onChange={(event) => { setKey(event.target.value); setKeyError("") }} placeholder="Paste Exa API key" autoComplete="off" spellCheck={false} disabled={saving || !prefs} maxLength={4096} required /></label><button type="submit" disabled={saving || !key.trim() || !prefs} aria-busy={keyBusy}>{keyBusy ? "Saving…" : "Save key"}</button></form>}
       {keyError && <p className="dash-setup-error" role="alert">{keyError}</p>}{keySaved && <p className="dash-setup-saved" role="status">{keySaved}</p>}
     </>
+    if (id === "models") return <p className="dash-setup-panel-note">{done[0] ? "Your primary and fast models are connected. Open AI settings to review the connection or change models." : "Choose your provider, connect your account and test your primary and fast models in AI settings."}</p>
+    if (id === "word") return <p className="dash-setup-panel-note">Connect Microsoft Word to review documents and apply tracked changes. Add-in settings will guide you through installation.</p>
     if (id === "style") return <div className="dash-setup-style-links"><span>{prefs?.houseStyle.trim() ? "House style saved" : "House style to add"}</span><Link to="/templates">{data.templates === undefined ? "View templates" : `${data.templates} ${data.templates === 1 ? "template" : "templates"}`}{icons.arrowRight}</Link></div>
     return null
   }
   return <div className="dash-setup-flow">
-    {demoHidden ? <button type="button" className="dash-text-button dash-setup-demo-show" onClick={() => setDemoHidden(false)}>Show demo data</button> : <div className="dash-setup-demo-row" role="group" aria-label="Demo data">
+    <div className="dash-setup-demo-row" role="group" aria-label="Demo data">
       <span className="dash-setup-demo-row-icon" aria-hidden="true">{icons.sample}</span>
-      <p>{sample ? "Your sample matter is ready to explore." : "Explore doc.haus with a fictional sample matter."}</p>
-      <button type="button" className="dash-setup-outline" disabled={adding} aria-busy={adding} onClick={() => { if (sample) navigate(`/matter/${sample.id}?view=chat&agent=ask`); else void populate() }}>{sample ? icons.arrowRight : icons.plus}{adding ? "Adding demo data…" : sample ? "Open sample matter" : "Populate with demo data"}</button>
-      <button type="button" className="dash-text-button" aria-label="Hide demo data" disabled={adding} onClick={() => setDemoHidden(true)}>Hide</button>
+      <div className="dash-setup-demo-copy"><p>{sample ? "Your sample matter is ready to explore" : "Want to see doc.haus in action first?"}</p><span>{sample ? "Open the fictional sample to explore documents and workflows." : "Populate your workspace with a sample matter, documents and data."}</span></div>
+      <button type="button" className="dash-setup-demo-primary" disabled={adding} aria-busy={adding} onClick={() => { if (sample) navigate(`/matter/${sample.id}?view=chat&agent=ask`); else void populate() }}>{sample ? icons.arrowRight : icons.plus}{adding ? "Adding demo data…" : sample ? "Open sample matter" : "Add sample data"}</button>
+      {onHideSetup && <button type="button" className="dash-text-button dash-setup-hide" onClick={onHideSetup}>Hide setup</button>}
       {demoError && <p className="dash-setup-error" role="alert">{demoError}</p>}
-    </div>}
-    <SetupChecklist config={config} onAction={(action) => { if (action === "ai" || action === "research" || action === "addins" || action === "drafting") openSettings(action) }} renderContent={content} />
+    </div>
+    <p className="sr-only" role="status">{[identitySaved, keySaved].filter(Boolean).join(" ")}</p>
+    <SetupChecklist accordion={{ expanded, onToggle: setExpanded }} config={config} onAction={(action) => { if (action === "ai" || action === "research" || action === "addins" || action === "drafting") openSettings(action) }} renderContent={content} />
   </div>
 }
