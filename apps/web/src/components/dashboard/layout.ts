@@ -19,7 +19,7 @@ export const WIDGETS = {
   activity: { title: "Activity", description: "Conversations started each day over the last year.", size: "full" },
   trend: { title: "Spend over time", description: "Daily spend across the period.", size: "wide" },
   tokens: { title: "Where tokens go", description: "Input, cached input, output and reasoning.", size: "wide" },
-  sample: { title: "Sample matter", description: "A fictional matter to explore before your own.", size: "tile" },
+  sample: { title: "Sample matter", description: "A fictional matter to explore before your own.", size: "wide" },
   ideas: { title: "Things to try", description: "Ask, draft, review across documents or run a workflow.", size: "wide" },
   actions: { title: "Quick actions", description: "Start a matter, add a template, client or playbook.", size: "wide" },
   library: { title: "Your library", description: "Templates, playbooks, clients and matters.", size: "wide" },
