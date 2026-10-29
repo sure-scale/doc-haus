@@ -992,6 +992,26 @@ test("calendar normalization preserves qualifiers and resolves only explicit eve
   ).toBe("2036-08-12")
 })
 
+test("a source ISO timestamp retains its calendar date, clock time and recorded zone", () => {
+  expect(
+    parseChronologyDate({
+      original: "2034-11-18T16:45:30.000+01:00",
+      precision: "exact",
+      start: "2034-11-18",
+      time: "16:45:30",
+      timezone: "+01:00",
+    }),
+  ).toMatchObject({
+    original: "2034-11-18T16:45:30.000+01:00",
+    precision: "exact",
+    start: "2034-11-18",
+    time: "16:45:30",
+    timezone: "+01:00",
+  })
+  for (const original of ["2034-11-185", "2034-11-18suffix"])
+    expect(parseChronologyDate({ original, precision: "exact" }).start).toBeUndefined()
+})
+
 test("document dates, mixed-year accounts, rollover and numeric ambiguity cannot invent a calendar year", () => {
   const date = parseChronologyDate({ original: "9 January", precision: "exact", start: "2031-01-09" })
   for (const [source, passage] of [
@@ -1122,6 +1142,85 @@ test("old completed contract reprocesses only affected sections and stages a dis
   expect(replayCalls).toBe(0)
 })
 
+test("a shared quotation cannot assign a response date to a distinct undated request", async () => {
+  const dir = matter(),
+    quote = "The depot requested an explanation on an unknown date; the carrier replied on 18 October 2035."
+  source(dir, "Sequence.md", quote)
+  const request = event("Depot requested explanation", quote, { date: { original: "Undated", precision: "undated" } })
+  await startChronologyRun(
+    dir,
+    { expectedRevision: 0, privilege: "mixed", mode: "initial" },
+    fake(() => complete([request])),
+  )
+  await awaitChronologyRun(dir)
+  let state = readChronology(dir)
+  state = mutateChronology(dir, state.revision, "prior contract", (current) => {
+    current.coverage[0]!.completedKeys = ["old-contract"]
+  })
+  const before = structuredClone(state.events)
+  // Deliberately simulate an imperfect same-event match. Quote identity alone
+  // must not turn a different original date expression into a header correction.
+  await startChronologyRun(
+    dir,
+    { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" },
+    fake((input) =>
+      input.agent === "chronology-match"
+        ? matchFirst(input.text)
+        : complete([
+            event("Carrier replied", quote, {
+              date: { original: "18 October 2035", precision: "exact", start: "2035-10-18" },
+            }),
+          ]),
+    ),
+  )
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.events).toEqual(before)
+  expect(state.proposals).toHaveLength(1)
+  expect(state.proposals[0]!.events[0]!.date).toEqual({ original: "Undated", precision: "undated" })
+  expect(state.proposals[0]!.events[0]!.accounts.at(-1)!.date.start).toBe("2035-10-18")
+})
+
+test("resuming an initial draft stages a corrected saved date instead of stranding it in a second account", async () => {
+  const dir = matter(),
+    quote = "Notice sent at 2037-08-22T10:30:00.000Z."
+  source(dir, "Dispatch log.md", quote)
+  const model = fake((input) =>
+    input.agent === "chronology-match"
+      ? matchFirst(input.text)
+      : complete([
+          event("Notice sent", quote, {
+            date: { original: "2037-08-22T10:30:00.000Z", precision: "exact", start: "2037-08-22" },
+          }),
+        ]),
+  )
+  await startChronologyRun(dir, { expectedRevision: 0, privilege: "mixed", mode: "initial" }, model)
+  await awaitChronologyRun(dir)
+  let state = readChronology(dir)
+  state = mutateChronology(dir, state.revision, "legacy stopped initial draft", (current) => {
+    const event = current.events[0]!
+    event.date = { original: "2037-08-22T10:30:00.000Z", precision: "ambiguous" }
+    event.accounts[0]!.date = structuredClone(event.date)
+    event.accounts[0]!.id = "legacy-timestamp-account"
+    current.coverage[0]!.completedKeys = ["old-date-normalizer"]
+    current.run!.status = "stopped"
+  })
+  const before = structuredClone(state.events)
+  await startChronologyRun(dir, { expectedRevision: state.revision, privilege: "mixed", mode: "resume" }, model)
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.events).toEqual(before)
+  expect(state.proposals).toHaveLength(1)
+  const proposal = state.proposals[0]!
+  expect(proposal.kind).toBe("amendment")
+  expect(proposal.events[0]!.date).toMatchObject({ start: "2037-08-22", precision: "exact" })
+  state = decideChronologyProposal(dir, state.revision, proposal.id, "accept")
+  expect(state.events).toHaveLength(1)
+  expect(state.events[0]!.date.start).toBe("2037-08-22")
+  expect(state.events[0]!.reviewed).toBe(true)
+  expect(state.events[0]!.accounts.some((account) => account.id === "legacy-timestamp-account")).toBe(true)
+})
+
 test("refresh proposes reversible static cleanup without hiding genuine undated background or saved work", async () => {
   const dir = matter(),
     staticQuote = "The facility contains a heat exchanger and two pressure vessels.",
@@ -1165,7 +1264,16 @@ test("refresh proposes reversible static cleanup without hiding genuine undated 
   const removal = state.proposals[0]!,
     staticId = before.find((e) => e.title === "Equipment configuration")!.id
   expect(removal).toMatchObject({ kind: "removal", targetIds: [staticId] })
-  state = decideChronologyProposal(dir, state.revision, removal.id, "accept")
+  state = mutateChronology(dir, state.revision, "pending prior-contract cleanup", (current) => {
+    current.proposals[0]!.id = "previous-contract-removal"
+    current.coverage[0]!.completedKeys = ["previous-contract"]
+  })
+  await startChronologyRun(dir, { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" }, corrected)
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.proposals).toHaveLength(1)
+  expect(state.proposals[0]!.id).toBe("previous-contract-removal")
+  state = decideChronologyProposal(dir, state.revision, state.proposals[0]!.id, "accept")
   expect(state.events.find((e) => e.id === staticId)!.hidden).toBe(true)
   expect(state.events.find((e) => e.title === "Valve opened")).toMatchObject({
     hidden: false,

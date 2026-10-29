@@ -42,7 +42,7 @@ import {
   readChronology,
 } from "./chronology-store"
 
-export const CHRONOLOGY_EXTRACTION_CONTRACT = "chronology-sections-2-events-and-supported-dates"
+export const CHRONOLOGY_EXTRACTION_CONTRACT = "chronology-sections-3-events-and-supported-dates"
 const SECTION_SIZE = 10000
 const OVERLAP = 700
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex")
@@ -372,7 +372,7 @@ const MONTH_PATTERN =
 type WrittenDate = { day: number; month: number; year?: number }
 function writtenDates(value: string): WrittenDate[] {
   const dates: WrittenDate[] = []
-  for (const match of value.matchAll(/\b(\d{4})-(\d{2})-(\d{2})\b/g))
+  for (const match of value.matchAll(/\b(\d{4})-(\d{2})-(\d{2})(?=\b|T\d{2}:\d{2})/g))
     if (validISODate(match[0])) dates.push({ year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) })
   for (const match of value.matchAll(/\b(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})\b/g)) {
     const a = Number(match[1]),
@@ -903,6 +903,8 @@ function proposedResolvedDate(event: ChronologyEvent, account: ChronologyAccount
     !event.accounts.some(
       (old) =>
         old.status === account.status &&
+        old.date.original.trim().replace(/\s+/g, " ").toLowerCase() ===
+          account.date.original.trim().replace(/\s+/g, " ").toLowerCase() &&
         old.evidence.some((evidence) =>
           account.evidence.some(
             (next) =>
@@ -1038,10 +1040,15 @@ async function saveAccount(
         match.relation !== "completion" && match.event
           ? current.events.find((e) => e.id === match.event!.id)
           : undefined
+      // Even an unreviewed saved draft needs confirmation before a later
+      // extraction replaces its displayed date. Otherwise appending a corrected
+      // account strands the old header and duplicate detection hides the repair.
+      const resolvedDate = event && match.relation !== "conflict" && proposedResolvedDate(event, account)
       // A lawyer edit while matching was in flight never becomes an initial
       // extraction amendment. Hidden/reviewed entries always go through review.
       if (
         mode === "refresh" ||
+        resolvedDate ||
         stale ||
         event?.lawyerEdited ||
         event?.reviewed ||
@@ -1460,12 +1467,24 @@ async function stageNonEventProposals(
         )
           continue
         const basis = chronologyEventHash(event),
-          id = `context-${hash([event.id, basis, source.version, CHRONOLOGY_EXTRACTION_CONTRACT].join("\0")).slice(0, 24)}`
-        if (current.proposals.some((p) => p.id === id)) continue
+          id = `context-${hash([event.id, basis, source.version].join("\0")).slice(0, 24)}`,
+          sourceSetKey = chronologySourceSetKey(directory)
+        if (
+          current.proposals.some(
+            (proposal) =>
+              proposal.id === id ||
+              (proposal.kind === "removal" &&
+                proposal.targetIds.length === 1 &&
+                proposal.targetIds[0] === event.id &&
+                proposal.baseEventHashes[event.id] === basis &&
+                proposal.sourceSetKey === sourceSetKey),
+          )
+        )
+          continue
         current.proposals.push({
           id,
           kind: "removal",
-          sourceSetKey: chronologySourceSetKey(directory),
+          sourceSetKey,
           targetIds: [event.id],
           baseEventHashes: { [event.id]: basis },
           events: [],
