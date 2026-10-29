@@ -113,7 +113,7 @@ async function loadMatter(matter: Matter, withDocuments: boolean): Promise<Matte
 
 export async function loadDashboard(): Promise<DashboardData> {
   const [matters, preferences, word, templates, playbooks, clients, jurisdictions] = await Promise.all([
-    listMatters().then((list) => ({ list }), (error: unknown) => ({ list: [] as Matter[], error: error instanceof Error ? error.message : "Could not load matters" })),
+    listMatters().then((list) => ({ list }), () => ({ list: [] as Matter[], error: "Could not load matters" })),
     getPreferences().then((value) => ({ value, failed: false }), () => ({ value: undefined, failed: true })),
     settled(fetchWordSetup()),
     settled(listTemplates().then((result) => result.templates.length)),
@@ -123,9 +123,21 @@ export async function loadDashboard(): Promise<DashboardData> {
   ])
   // First steps only ask whether documents were added, so the file lists of
   // the newest few own matters are enough.
-  const newest = new Set(matters.list.filter((matter) => !matter.sample).sort((a, b) => b.created_at - a.created_at).slice(0, 3).map((matter) => matter.id))
+  const byAge = matters.list.filter((matter) => !matter.sample).sort((a, b) => b.created_at - a.created_at)
+  const newest = new Set(byAge.slice(0, 3).map((matter) => matter.id))
+  const rows = await mapLimited(matters.list, 4, (matter) => loadMatter(matter, newest.has(matter.id)))
+  // Before a first draft, an older matter may hold the only documents: look
+  // further back, one at a time, until one does.
+  if (!rows.some((row) => row.documents || draftedCount(row.drafting))) {
+    for (const matter of byAge.slice(3)) {
+      const row = rows.find((other) => other.matter.id === matter.id)
+      if (!row) continue
+      row.documents = await getMatter(matter.id).then((detail) => detail.documents.length, () => undefined)
+      if (row.documents) break
+    }
+  }
   return {
-    matters: await mapLimited(matters.list, 4, (matter) => loadMatter(matter, newest.has(matter.id))),
+    matters: rows,
     preferences: preferences.value,
     ...(preferences.failed ? { preferencesFailed: true } : {}),
     word, templates, playbooks, clients, jurisdictions,
@@ -144,7 +156,8 @@ export function useDashboardData(setup: unknown, refresh: number) {
   useEffect(() => {
     let live = true
     setLoading(true)
-    void loadDashboard().then((next) => {
+    // A read that throws shows as the error state, never endless placeholders.
+    void loadDashboard().catch((): DashboardData => ({ matters: [], error: "Could not load matters" })).then((next) => {
       if (!live) return
       setData(next)
       setLoading(false)
@@ -325,8 +338,13 @@ export function costByClient(rows: MatterCost[]): ClientCost[] {
   return [...groups.values()].sort((a, b) => b.cost - a.cost)
 }
 
-// RFC 4180: quote a field holding a comma, quote or line break, doubling quotes.
-const csvField = (value: string) => (/[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value)
+// RFC 4180: quote a field holding a comma, quote or line break, doubling
+// quotes. A leading = + - @ or tab is escaped, so a spreadsheet opening the
+// export never reads a matter title as a formula.
+function csvField(value: string) {
+  const text = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+}
 
 // A spend export for billing, grouped by client (none last), largest first.
 export function spendCsv(rows: MatterCost[]) {

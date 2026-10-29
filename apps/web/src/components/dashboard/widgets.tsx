@@ -124,7 +124,7 @@ function SpendTile({ data, summary, period, now }: WidgetContext) {
     <Stat
       value={formatCost(summary.spend)}
       caption={<><span>{plural(summary.conversations, "conversation")}</span><Before label={BEFORE[period]} value={summary.previous} /></>}
-      note={summary.unpriced ? "Estimate: some model use reported no price." : undefined}
+      note={summary.unpriced ? "Estimate: some AI use has no price on record, so the total may be low." : undefined}
     >
       <Sparkline values={bucketed(costEntries(data.matters), chartStart(data.matters, range), range.end, 12)} label={`Spend, ${lower(period)}`} />
     </Stat>
@@ -193,7 +193,7 @@ function MatterSpend({ data, period, now }: WidgetContext) {
   const rest = rows.slice(6)
   const max = shown[0].cost
   function download() {
-    const url = URL.createObjectURL(new Blob([spendCsv(rows)], { type: "text/csv" }))
+    const url = URL.createObjectURL(new Blob(["\uFEFF", spendCsv(rows)], { type: "text/csv;charset=utf-8" }))
     Object.assign(document.createElement("a"), { href: url, download: `spend-${period}-${dateStamp(now)}.csv` }).click()
     setTimeout(() => URL.revokeObjectURL(url))
   }
@@ -592,7 +592,7 @@ function ProfileTile({ id, icon, shape, title, summary, children }: { id: string
     return (
       <section className="dash-profile-row" aria-labelledby={`dash-profile-${id}`}>
         <span className="dash-profile-check" aria-hidden="true">{icons.check}</span>
-        <h4 id={`dash-profile-${id}`}>{title}<span className="sr-only">, done</span></h4>
+        <h3 id={`dash-profile-${id}`}>{title}<span className="sr-only">, done</span></h3>
         {summary}
       </section>
     )
@@ -601,7 +601,7 @@ function ProfileTile({ id, icon, shape, title, summary, children }: { id: string
     <section className="dash-profile-tile" aria-labelledby={`dash-profile-${id}`}>
       <div className="dash-profile-tile-head">
         <ShapeIcon icon={icon} shape={shape} />
-        <h4 id={`dash-profile-${id}`}>{title}</h4>
+        <h3 id={`dash-profile-${id}`}>{title}</h3>
       </div>
       {children}
     </section>
@@ -742,7 +742,6 @@ function PracticeAreas({ preferences, save }: { preferences: DraftingPreferences
 function PracticeProfile(context: WidgetContext) {
   const { data, onPreferences, onRetry } = context
   const openSettings = useOpenSettings()
-  const navigate = useNavigate()
   const notify = useToast()
   const [codes, setCodes] = useState(() => loadPrefs().defaultJurisdictions)
   // A refresh re-reads this browser's choice, which another tab may have changed.
@@ -787,11 +786,19 @@ function PracticeProfile(context: WidgetContext) {
           <ul>
             {extras.map((item) => (
               <li key={item.id}>
-                <button type="button" className={item.done ? "is-done" : undefined} title={item.detail} onClick={() => (item.tab ? openSettings(item.tab) : item.to && navigate(item.to))}>
-                  {item.done ? icons.check : icons[item.icon]}
-                  {item.title}
-                  {item.done && <span className="sr-only">, done</span>}
-                </button>
+                {item.to ? (
+                  <Link to={item.to} className={item.done ? "is-done" : undefined} title={item.detail}>
+                    {item.done ? icons.check : icons[item.icon]}
+                    {item.title}
+                    {item.done && <span className="sr-only">, done</span>}
+                  </Link>
+                ) : (
+                  <button type="button" className={item.done ? "is-done" : undefined} title={item.detail} onClick={() => item.tab && openSettings(item.tab)}>
+                    {item.done ? icons.check : icons[item.icon]}
+                    {item.title}
+                    {item.done && <span className="sr-only">, done</span>}
+                  </button>
+                )}
               </li>
             ))}
           </ul>

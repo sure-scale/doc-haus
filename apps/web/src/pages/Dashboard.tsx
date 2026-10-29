@@ -7,7 +7,7 @@ import backdropClose from "../components/backdropClose"
 import useExit from "../components/useExit"
 import { addDays, attention, PERIOD_LABELS, PERIODS, startOfDay, summarize, useDashboardData, type DashboardData, type Period } from "../components/dashboard/data"
 import { icons, ShapeIcon } from "../components/dashboard/icons"
-import { available, DEFAULT_WIDGETS, loadLayout, PERIODIC, saveLayout, visibleWidgets, WIDGETS, type Arrangement, type Layout, type WidgetId } from "../components/dashboard/layout"
+import { available, DEFAULT_WIDGETS, loadLayout, PERIODIC, saveLayout, visibleWidgets, WIDGETS, type Arrangement, type Layout, type Stage, type WidgetId } from "../components/dashboard/layout"
 import { caption, LOOKS, RENDER, setupComplete, stageOf, type WidgetContext } from "../components/dashboard/widgets"
 
 function greeting(now: number) {
@@ -23,7 +23,7 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
   const { data, loading, reload } = useDashboardData(setup, refresh)
   const [layout, setLayout] = useState<Layout>(loadLayout)
   const [editing, setEditing] = useState(false)
-  const [hidden, setHidden] = useState<{ id: WidgetId; before: Arrangement | undefined }>()
+  const [hidden, setHidden] = useState<{ id: WidgetId; stage: Stage }>()
   const [announcement, setAnnouncement] = useState("")
   const editButton = useRef<HTMLButtonElement>(null)
   const added = useRef<WidgetId>(undefined)
@@ -36,11 +36,14 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
   }, [now])
 
   // Settings saved from a widget show at once, until the next load reads them.
+  // A save that lands after a reload applies to the data now on screen.
   const [saved, setSaved] = useState<{ data?: DashboardData; preferences?: DraftingPreferences }>({})
+  const latest = useRef(data)
+  latest.current = data
   const shownData = data && saved.data === data ? { ...data, preferences: saved.preferences } : data
   const ready = data && !data.error ? data : undefined
   const context: WidgetContext | undefined = shownData && ready
-    ? { data: shownData, setup, period: layout.period, now, summary: summarize(shownData.matters, layout.period, now), onPreferences: (preferences) => setSaved({ data, preferences }), onRetry: reload }
+    ? { data: shownData, setup, period: layout.period, now, summary: summarize(shownData.matters, layout.period, now), onPreferences: (preferences) => setSaved({ data: latest.current, preferences }), onRetry: reload }
     : undefined
   // Setup is judged once per load, so its card stays put while being filled in.
   const setupDone = useMemo(() => !!ready && setupComplete(ready), [ready])
@@ -57,10 +60,10 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
     setLayout(next)
     saveLayout(next)
   }
-  // Arranging changes only this stage's dashboard; none resets the default.
-  function arrange(next: Arrangement | undefined) {
-    const { [stage]: _, ...others } = layout.stages
-    update({ ...layout, stages: next ? { ...others, [stage]: next } : others })
+  // Arranging changes only one stage's dashboard; none resets the default.
+  function arrange(next: Arrangement | undefined, of: Stage = stage) {
+    const { [of]: _, ...others } = layout.stages
+    update({ ...layout, stages: next ? { ...others, [of]: next } : others })
   }
   const focusMenu = (id: WidgetId) => document.querySelector<HTMLElement>(`[aria-labelledby="dash-${id}"] .dash-menu > summary`)
   function move(id: WidgetId, by: -1 | 1) {
@@ -82,16 +85,28 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
       hidden: DEFAULT_WIDGETS[stage].includes(id) ? [...current.hidden.filter((other) => other !== id), id] : current.hidden,
       added: current.added.filter((other) => other !== id),
     })
-    setHidden({ id, before: arrangement })
+    setHidden({ id, stage })
+    setAnnouncement(`${WIDGETS[id].title} hidden`)
     // Focus moves to the next card's menu, or to Edit dashboard once none is left.
     requestAnimationFrame(() => ((neighbour && focusMenu(neighbour)) || editButton.current)?.focus())
   }
+  // Undo reverses only the hide, keeping any move or add made since. The
+  // widget's place in a saved order was kept, so it returns where it was.
   function undo() {
     if (!hidden) return
-    arrange(hidden.before)
+    const { id, stage: of } = hidden
+    const current = layout.stages[of] ?? EMPTY
+    arrange(DEFAULT_WIDGETS[of].includes(id)
+      ? { ...current, hidden: current.hidden.filter((other) => other !== id) }
+      : { ...current, added: [...current.added.filter((other) => other !== id), id] }, of)
     setHidden(undefined)
-    setAnnouncement(`${WIDGETS[hidden.id].title} restored`)
-    requestAnimationFrame(() => focusMenu(hidden.id)?.focus())
+    setAnnouncement(`${WIDGETS[id].title} restored`)
+    requestAnimationFrame(() => focusMenu(id)?.focus())
+  }
+  function dismiss() {
+    // The snackbar is about to go; focus it held moves to Edit dashboard.
+    if (document.activeElement?.closest(".dash-snackbar")) editButton.current?.focus()
+    setHidden(undefined)
   }
   function add(id: WidgetId) {
     const current = arrangement ?? EMPTY
@@ -106,13 +121,16 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
   function reset() {
     arrange(undefined)
     setAnnouncement("Dashboard reset to the default")
+    // From the empty state, whose button goes with it.
+    if (!editing) requestAnimationFrame(() => editButton.current?.focus())
   }
   // Once the dialog has closed and handed focus back, an added widget takes it.
   useEffect(() => {
     if (editing || !added.current) return
     const menu = focusMenu(added.current)
     added.current = undefined
-    menu?.closest("section")?.scrollIntoView({ block: "nearest", behavior: "smooth" })
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    menu?.closest("section")?.scrollIntoView({ block: "nearest", behavior: still ? "auto" : "smooth" })
     menu?.focus({ preventScroll: true })
   }, [editing])
 
@@ -163,7 +181,7 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
             <ShapeIcon icon="warning" shape="flower" />
             <div>
               <p className="dash-error-title">Could not load your matters</p>
-              <p>{data.error}</p>
+              <p>Your figures will show once the matter list loads.</p>
             </div>
             <button type="button" onClick={reload} disabled={loading}>Retry</button>
           </div>
@@ -174,7 +192,7 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
             <p>Add the widgets you want to see, or bring back the defaults.</p>
             <div className="dash-blank-actions">
               <button type="button" onClick={() => setEditing(true)}>{icons.edit}Edit dashboard</button>
-              <button type="button" onClick={reset}>Restore defaults</button>
+              <button type="button" onClick={reset}>Reset to default</button>
             </div>
           </div>
         ) : (
@@ -196,7 +214,7 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
         )}
       </div>
       <p className="sr-only" role="status">{announcement}</p>
-      {hidden && <Snackbar key={hidden.id} text={`${WIDGETS[hidden.id].title} hidden`} onUndo={undo} onDismiss={() => setHidden(undefined)} />}
+      {hidden && <Snackbar key={hidden.id} text={`${WIDGETS[hidden.id].title} hidden`} onUndo={undo} onDismiss={dismiss} />}
       {editing && <EditDashboard offered={offered} arranged={!!arrangement} onAdd={add} onReset={reset} onClose={() => setEditing(false)} />}
     </>
   )
@@ -220,7 +238,7 @@ function Widget({ id, context, period, bold, first, last, onMove, onHide }: {
       <header className="dash-card-head">
         <ShapeIcon icon={look.icon} shape={look.shape} className="dash-card-badge" />
         <div className="dash-card-heading">
-          <h3 id={`dash-${id}`}>{meta.title}</h3>
+          <h2 id={`dash-${id}`}>{meta.title}</h2>
           {note && <p>{note}</p>}
         </div>
         <WidgetMenu title={meta.title} first={first} last={last} onMove={onMove} onHide={onHide} />
@@ -299,7 +317,6 @@ function Snackbar({ text, onUndo, onDismiss }: { text: string; onUndo: () => voi
   return (
     <div
       className="dash-snackbar"
-      role="status"
       onPointerEnter={() => setHeld(true)}
       onPointerLeave={() => setHeld(false)}
       onFocus={() => setHeld(true)}
@@ -316,6 +333,8 @@ function Snackbar({ text, onUndo, onDismiss }: { text: string; onUndo: () => voi
 // added. Reset goes back to the default.
 function EditDashboard({ offered, arranged, onAdd, onReset, onClose }: { offered: WidgetId[]; arranged: boolean; onAdd: (id: WidgetId) => void; onReset: () => void; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null)
+  // Reset disables itself, so focus moves on to Done.
+  const done = useRef<HTMLButtonElement>(null)
   const [open, setOpen] = useState(true)
   const [shown, closing] = useExit(open)
   useLayoutEffect(() => {
@@ -366,10 +385,10 @@ function EditDashboard({ offered, arranged, onAdd, onReset, onClose }: { offered
         )}
       </div>
       <div className="dash-add-foot">
-        <button type="button" className="ghost" disabled={!arranged} onClick={onReset}>
+        <button type="button" className="ghost" disabled={!arranged} onClick={() => { onReset(); done.current?.focus() }}>
           {icons.reset}Reset to default
         </button>
-        <button type="button" className="primary" onClick={() => setOpen(false)}>Done</button>
+        <button ref={done} type="button" className="primary" onClick={() => setOpen(false)}>Done</button>
       </div>
     </dialog>
   )

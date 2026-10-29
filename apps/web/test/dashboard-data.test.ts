@@ -138,14 +138,16 @@ test("a stopped run asks for nothing; a running one nothing is working on asks t
   expect(attention(activity([], { ...base, status: "running", in_flight: false })).map((item) => item.kind)).toEqual(["stalled"])
 })
 
-test("the spend export quotes a matter title holding a comma and a quote", () => {
+test("the spend export quotes commas and quotes and defuses formula cells", () => {
   const titled = { ...matter, title: 'Alder, "Phase 2"', client: "Alder Ltd", reference: "AL-7" } as Matter
   const csv = spendCsv([
     { matter: { ...matter, id: "none", title: "No client" }, cost: 9, conversations: 1 },
     { matter: titled, cost: 1.5, conversations: 2 },
+    { matter: { ...matter, id: "formula", title: "=1+1", client: "@Birch" }, cost: 0.5, conversations: 1 },
   ])
   expect(csv.split("\r\n")).toEqual([
     "Client,Matter,Reference,Conversations,Spend (USD)",
+    "'@Birch,'=1+1,,1,0.50",
     'Alder Ltd,"Alder, ""Phase 2""",AL-7,2,1.50',
     ",No client,,1,9.00",
     "",
