@@ -80,6 +80,7 @@ export default function ChronologyWorkbench({
   const root = useRef<HTMLElement>(null)
   const searchControl = useRef<HTMLInputElement>(null)
   const rowFocus = useRef<HTMLButtonElement | null>(null)
+  const tableScroll = useRef<Array<{ element: HTMLElement; top: number; left: number }>>([])
   const selected = state?.events.find((event) => event.id === selectedId)
   function receive(next: Chronology) {
     setState((current) => (current && current.revision > next.revision ? current : next))
@@ -164,6 +165,13 @@ export default function ChronologyWorkbench({
     }
   }
   function select(event: ChronologyEvent, control?: HTMLButtonElement) {
+    if (!selectedId) {
+      const containers: HTMLElement[] = []
+      for (let element = root.current; element; element = element.parentElement) containers.push(element)
+      const table = root.current?.querySelector<HTMLElement>(".chronology-table-scroll")
+      if (table) containers.push(table)
+      tableScroll.current = containers.map((element) => ({ element, top: element.scrollTop, left: element.scrollLeft }))
+    }
     rowFocus.current =
       control ??
       [...(root.current?.querySelectorAll<HTMLButtonElement>(".chronology-event-title") ?? [])].find(
@@ -176,9 +184,15 @@ export default function ChronologyWorkbench({
   function closeDetail() {
     setSelectedId(undefined)
     requestAnimationFrame(() => {
+      for (const { element, top, left } of tableScroll.current) element.scrollTo({ top, left, behavior: "instant" })
       const target = rowFocus.current
       if (target?.isConnected && target.getClientRects().length) target.focus({ preventScroll: true })
-      else searchControl.current?.focus({ preventScroll: true })
+      else {
+        searchControl.current?.focus({ preventScroll: true })
+        if (!tableScroll.current.length)
+          searchControl.current?.scrollIntoView({ block: "nearest", behavior: "instant" })
+      }
+      tableScroll.current = []
     })
   }
   function inspect(evidence: ChronologyEvidence) {

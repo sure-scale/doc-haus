@@ -36,6 +36,8 @@ export default function EventDetail({
   const priorDispute = useRef(event.dispute ?? "")
   useEffect(() => {
     heading.current?.focus({ preventScroll: true })
+    if (window.matchMedia("(max-width: 800px)").matches)
+      heading.current?.closest("aside")?.scrollIntoView({ block: "start", behavior: "instant" })
   }, [event.id])
   useEffect(() => {
     // A refresh may update the saved record while a lawyer is typing. Keep an

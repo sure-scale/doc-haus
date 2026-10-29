@@ -329,8 +329,18 @@ try {
     await page.screenshot({ path: path.join(evidenceDirectory, "implementation-desktop.png"), fullPage: false })
   for (const width of [768, 375]) {
     await page.setViewportSize({ width, height: 900 })
+    await page.getByRole("button", { name: "Equipment arrived", exact: true }).scrollIntoViewIfNeeded()
+    const scrollPosition = () =>
+      page.evaluate(() => ({
+        page: document.scrollingElement?.scrollTop ?? 0,
+        workbench: document.querySelector(".chronology-workbench")?.scrollTop ?? 0,
+        table: document.querySelector(".chronology-table-scroll")?.scrollLeft ?? 0,
+      }))
+    const beforeSelection = await scrollPosition()
     await page.getByRole("button", { name: "Equipment arrived", exact: true }).click()
     await expect(detail).toBeVisible()
+    await expect(detail.getByRole("button", { name: "Back to events" })).toBeInViewport()
+    await expect(detail.getByRole("button", { name: "Back to events" })).toBeInViewport()
     await expect(page.getByRole("searchbox")).not.toBeVisible()
     assert.ok(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
@@ -340,6 +350,7 @@ try {
       await page.screenshot({ path: path.join(evidenceDirectory, `implementation-${width}.png`), fullPage: false })
     await detail.getByRole("button", { name: "Back to events" }).click()
     await expect(page.getByRole("searchbox")).toBeVisible()
+    await expect.poll(scrollPosition).toEqual(beforeSelection)
     assert.ok(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
       `table is locally scrollable at ${width}px`,
