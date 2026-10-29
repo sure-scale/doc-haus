@@ -6,6 +6,8 @@ steps: 20
 color: info
 tools:
   "*": false
+  read-chronology: true
+  propose-chronology-changes: true
   read: true
   glob: true
   list: true

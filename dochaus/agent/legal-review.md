@@ -5,6 +5,8 @@ temperature: 0.2
 color: primary
 tools:
   "*": false
+  read-chronology: true
+  propose-chronology-changes: true
   read: true
   task: true
   search-document: true

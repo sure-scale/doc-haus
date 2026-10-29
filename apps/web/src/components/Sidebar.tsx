@@ -5,8 +5,9 @@ import { deleteMatterSession, getMatter } from "../api/ingest/matters"
 import { listSessions } from "../api/opencode/sessions"
 import { matterClient } from "../api/opencode/client"
 import logo from "../assets/dochaus-logo.svg"
-import { toggleDocumentsDrawer, useDocumentsDrawer } from "./matter/documents-drawer"
+import { setDocumentsDrawer, toggleDocumentsDrawer, useDocumentsDrawer } from "./matter/documents-drawer"
 import { useToast } from "./Toast"
+import { useChronologyNavigation } from "./chronology/navigation"
 import { Tooltip } from "./Tooltip"
 
 type Convo = { id: string; title: string; updated: number }
@@ -40,6 +41,7 @@ export default function Sidebar({
   const [convos, setConvos] = useState<Convo[]>()
   const [matterTitle, setMatterTitle] = useState("")
   const drawer = useDocumentsDrawer()
+  const chronology = useChronologyNavigation()
   const [matterDir, setMatterDir] = useState("")
   // The conversation whose delete is armed. Clicking the trash slides out an
   // inline Confirm pill instead of blocking on window.confirm; any click
@@ -236,7 +238,13 @@ export default function Sidebar({
           <button
             type="button"
             className={`nav-item${drawer.open ? " active" : ""}`}
-            onClick={toggleDocumentsDrawer}
+            onClick={() => {
+              if (view !== "chronology") { toggleDocumentsDrawer(); return }
+              const next = new URLSearchParams(params)
+              next.delete("view"); next.delete("event"); next.delete("proposal")
+              navigate(`/matter/${matterId}?${next}`)
+              setDocumentsDrawer(true)
+            }}
             title="Documents"
             aria-label={drawer.count !== undefined ? `Documents ${drawer.count}` : "Documents"}
             aria-expanded={drawer.open}
@@ -246,6 +254,18 @@ export default function Sidebar({
             <span>Documents</span>{" "}
             {drawer.count !== undefined && <span className="sidebar-nav-count">{drawer.count}</span>}
           </button>
+          {(chronology.matterId === matterId && chronology.visible || view === "chronology") && <Link
+            to={`/matter/${matterId}?${new URLSearchParams({ ...Object.fromEntries(params), view: "chronology" })}`}
+            className={`nav-item${view === "chronology" ? " active" : ""}`}
+            title="Fact chronology"
+            aria-label={chronology.attention ? "Chronology — suggested for this matter" : `Chronology${chronology.updates ? ` — ${chronology.updates} updates` : ""}`}
+            aria-current={view === "chronology" ? "page" : undefined}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" /><circle cx="8" cy="6" r="2" fill="currentColor" /><circle cx="15" cy="12" r="2" fill="currentColor" /><circle cx="10" cy="18" r="2" fill="currentColor" /></svg>
+            <span>Chronology</span>
+            {chronology.attention && <i className="chronology-invitation-dot" aria-hidden="true" />}
+            {chronology.updates > 0 && <span className="sidebar-nav-count">{chronology.updates}</span>}
+          </Link>}
           <Link
             to={`/matter/${matterId}?${new URLSearchParams({ ...Object.fromEntries(params), view: "review" })}`}
             className={`nav-item${view === "review" ? " active" : ""}`}

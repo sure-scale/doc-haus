@@ -31,6 +31,7 @@ test("a cold matter's inventory lists answer only with its activated legal confi
     const agents = observed[0]!.at(-1)!.ids
     expect(agents[0]).toBe("draft")
     expect(agents.filter((id) => upstream.includes(id))).toEqual([])
+    for (const agent of ["chronology-extract", "chronology-match", "chronology-assess"]) expect(agents).toContain(agent)
     expect(observed[1]!.at(-1)!.ids).toEqual(agents)
     // A shipped skill must survive actual native discovery and Q&A's own
     // permission rules, then load into a matter conversation without a model.
@@ -41,8 +42,11 @@ test("a cold matter's inventory lists answer only with its activated legal confi
     const precedent = inventory.data.find(skill => skill.id === "precedent-search")
     expect(precedent).toBeDefined()
     expect(Skill.available(inventory.data, qa.permissions)).toContainEqual(precedent!)
-    for (const action of ["search-document", "get-section", "define", "cite"])
+    for (const action of ["search-document", "get-section", "define", "cite", "read-chronology", "propose-chronology-changes"])
       expect(Permission.evaluate(action, "*", qa.permissions).effect).toBe("allow")
+    for (const agent of assistants.data.filter(agent => agent.id.startsWith("chronology-")))
+      for (const action of ["read", "write", "edit", "read-chronology", "propose-chronology-changes"])
+        expect(Permission.evaluate(action, "*", agent.permissions).effect).toBe("deny")
     for (const action of ["edit", "redline", "tracked-changes", "draft-document"])
       expect(Permission.evaluate(action, "*", qa.permissions).effect).toBe("deny")
     const headers = { "content-type": "application/json", "x-opencode-directory": matter }

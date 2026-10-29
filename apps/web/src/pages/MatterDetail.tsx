@@ -25,6 +25,9 @@ import { useToast } from "../components/Toast"
 import { WordDocumentsProvider } from "../components/WordDocuments"
 import useExit, { Exit } from "../components/useExit"
 import NotFound from "./NotFound"
+import ChronologyWorkbench from "../components/chronology/ChronologyWorkbench"
+import { assessChronology, getChronology, type Chronology } from "../api/ingest/chronology"
+import { setChronologyNavigation } from "../components/chronology/navigation"
 
 type Agent = { name: string; description?: string; mode?: string; hidden?: boolean }
 
@@ -37,7 +40,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   const navigate = useNavigate()
   // Documents is a drawer beside the rail, not a surface; the old
   // `view=documents` links open it over the chat.
-  const view = params.get("view") === "review" ? "review" : "chat"
+  const view = params.get("view") === "chronology" ? "chronology" : params.get("view") === "review" ? "review" : "chat"
   const drawer = useDocumentsDrawer()
   const [drawerShown, drawerClosing] = useExit(drawer.open)
   // A drawer already open as the matter loads is restored, not opened: it
@@ -56,6 +59,16 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   }, [params])
   const session = params.get("session") ?? undefined
   const [matter, setMatter] = useState<Detail>()
+  const [chronology, setChronology] = useState<Chronology>()
+  const [chronologyContext, setChronologyContext] = useState<string>()
+  const [sourceRefresh, setSourceRefresh] = useState(0)
+  const chronologyMatter = useRef(id)
+  chronologyMatter.current = id
+  const receiveChronology = useCallback((next: Chronology) => {
+    if (chronologyMatter.current !== id) return
+    setChronology(current => current && current.revision > next.revision ? current : next)
+  }, [id])
+  useEffect(() => setChronologyNavigation(id, chronology), [id, chronology])
   // Why the matter could not be loaded: "missing" when ingest has no such matter
   // (deleted, or a mistyped link), otherwise the readable error.
   const [loadError, setLoadError] = useState<string>()
@@ -120,6 +133,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
     getMatter(id)
       .then((next) => {
         setMatter(next)
+        setSourceRefresh(value => value + 1)
         setLoadError(undefined)
       })
       .catch((e) => setLoadError(e instanceof MatterNotFound ? "missing" : humanizeError(e, "Could not load this matter.")))
@@ -144,6 +158,31 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
     setDocumentsCount(documentCount)
   }, [documentCount])
   useEffect(() => () => setDocumentsCount(undefined), [])
+
+  // Reassess only after matter context or a completed upload batch changes.
+  // The server keys its bounded assessment by the actual instructions/sources.
+  const chronologyContextKey = matter ? JSON.stringify([matter.id, matter.title, matter.client, matter.documents.map(document => [document.id, document.name, document.created_at, document.quality])]) : ""
+  useEffect(() => {
+    if (!id || !matter || !chronologyContextKey) return
+    let live = true
+    getChronology(id).then(next => { if (live) receiveChronology(next) }, () => {})
+    assessChronology(id).then(next => { if (live) receiveChronology(next) }, () => {})
+    return () => { live = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, chronologyContextKey, sourceRefresh])
+  useEffect(() => {
+    setChronology(undefined)
+    setChronologyNavigation(id)
+    return () => setChronologyNavigation()
+  }, [id])
+  useEffect(() => {
+    if (!id) return
+    const refreshChronology = () => assessChronology(id).then(receiveChronology, () => getChronology(id).then(receiveChronology, () => {}))
+    window.addEventListener("focus", refreshChronology)
+    if (!chat) refreshChronology()
+    return () => window.removeEventListener("focus", refreshChronology)
+  }, [id, !!chat, receiveChronology])
+  useEffect(() => { if (view === "chronology") setDocumentsDrawer(false) }, [view])
 
   useEffect(() => {
     if (!matter) return
@@ -292,6 +331,11 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
         setDraftTitle={setDraftTitle}
         commitRename={commitRename}
         patch={patch}
+        onOpenChronology={() => {
+          const next = new URLSearchParams(params)
+          next.set("view", "chronology")
+          setParams(next)
+        }}
         onEditConflicts={() => {
           // The attorney name pre-fills "by"; the dialog opens without it if preferences cannot load.
           getPreferences().then((p) => setAttorney(p.attorney.trim() || undefined), () => {}).finally(() => setRecordingConflicts(true))
@@ -299,7 +343,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
       />
 
       <div className="matter-body">
-        <div className="workspace">
+        <div className="workspace" style={view === "chronology" ? { display: "none" } : undefined}>
           <ChatPanel
             key={session ?? "new"}
             directory={matter.dir}
@@ -307,6 +351,8 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
             sessionID={session}
             created={createdRef.current === session}
             initialPrompt={params.get("prompt") ?? undefined}
+            chronologyContext={chronologyContext}
+            onChronologyContextSeated={() => setChronologyContext(undefined)}
             onPromptSeated={() => setParams((current) => {
               const next = new URLSearchParams(current)
               next.delete("prompt")
@@ -349,6 +395,24 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
             feed={drafting}
           />
         </div>
+        {view === "chronology" && <ChronologyWorkbench
+          key={matter.id}
+          matterId={matter.id}
+          title={matter.title}
+          client={matter.client}
+          documents={matter.documents}
+          chronology={chronology}
+          initialEvent={params.get("event") ?? undefined}
+          initialProposal={params.get("proposal") ?? undefined}
+          onState={receiveChronology}
+          onClose={() => { const next = new URLSearchParams(params); next.delete("view"); next.delete("event"); next.delete("proposal"); setParams(next) }}
+          onAsk={(context) => {
+            setChronologyContext(context)
+            const next = new URLSearchParams(params)
+            next.delete("view"); next.delete("event"); next.delete("proposal")
+            setParams(next)
+          }}
+        />}
       </div>
 
       <Exit when={view === "review"}>{() => (

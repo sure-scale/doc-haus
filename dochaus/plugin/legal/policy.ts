@@ -1,5 +1,7 @@
 import type { LegalPolicy, Message, Part } from "./policy-types"
 import path from "node:path"
+import { existsSync } from "node:fs"
+import { canonicalArtifactIdentity } from "../../capabilities/artifacts/mutation-lock"
 import { formatCitations, type DocumentCitation } from "../../lib/citations"
 import { frameUntrustedResearchText } from "../../lib/untrusted"
 import { isOfficialSource, researchScope } from "../../lib/research"
@@ -63,10 +65,13 @@ export const LegalPlugin: LegalPolicy = async (input) => {
       if (draftingPreferences) output.system.push(draftingPreferences)
       // These jobs extract or check a specific item solely against supplied
       // source evidence; firm background is neither relevant nor in their cache keys.
-      if (preferencesMode === "full" && agent !== "lean-checklist-extract" && agent !== "lean-checklist-check") {
+      if (preferencesMode === "full" && agent !== "lean-checklist-extract" && agent !== "lean-checklist-check" && !agent?.startsWith("chronology-")) {
         const practiceAreas = firmPracticeAreaContext()
         if (practiceAreas) output.system.push(practiceAreas)
       }
+      if (!agent?.startsWith("lean-") && !agent?.startsWith("chronology-")) output.system.push(
+        "<chronology-workbench>When the saved chronology is relevant, consult read-chronology. Return its evidence, qualifications, freshness, hidden status and review state together. Use propose-chronology-changes for exact sourced changes; explain them and direct the lawyer to the application's individual confirmation controls. Staging is not acceptance. Never write .dochaus/chronology.json or overwrite chronology.md, and never treat workbench output as independent corroborating evidence. Start or refresh extraction only through the Chronology workbench's fresh privilege choice.</chronology-workbench>",
+      )
       // Untrusted-document guard (issue #17): injected for every agent — built-in
       // and firm-composed alike — so document content is always framed as data.
       // This is the model-side half of the defense; the ingest service detects and
@@ -154,6 +159,14 @@ export const LegalPlugin: LegalPolicy = async (input) => {
     "tool.execute.before": async (input, output) => {
       startToolCall(input.callID)
       try {
+        // The shared reader projects evidence against current matter access.
+        // A raw JSON reader must not resurrect removed cached quotations.
+        const recordPath = input.tool === "read-record" ? output.args.path : input.tool === "read" ? output.args.path ?? output.args.filePath : undefined
+        const chronologyPath = path.join(directory, ".dochaus", "chronology.json")
+        if (typeof recordPath === "string" && canonicalArtifactIdentity(directory, recordPath) === canonicalArtifactIdentity(directory, chronologyPath))
+          throw new Error("Use read-chronology for the saved chronology so evidence freshness and current source access are checked.")
+        if (input.tool === "grep" && existsSync(chronologyPath))
+          throw new Error("Use grep-matter or search-document for current source evidence, and read-chronology for saved chronology. Raw grep can expose cached quotations whose source is no longer available.")
         // Matter isolation (ethical walls): the engine's external_directory
         // permission ASKS when a core file tool reaches outside the session
         // directory — but a sibling matter must be denied outright, never offered
@@ -162,7 +175,7 @@ export const LegalPlugin: LegalPolicy = async (input) => {
         // (the matter's parent directory) but outside this matter; paths outside
         // the workspace fall through to the engine's permission layer untouched,
         // so skill files, temp files, and truncated output stay readable.
-        const pathParam = { read: "filePath", glob: "path", grep: "path", list: "path" }[input.tool]
+        const pathParam = { read: output.args.path !== undefined ? "path" : "filePath", glob: "path", grep: "path", list: "path" }[input.tool]
         if (pathParam !== undefined && output.args[pathParam] !== undefined) {
           const resolved = path.resolve(directory, String(output.args[pathParam]))
           const insideMatter = resolved === directory || resolved.startsWith(directory + path.sep)

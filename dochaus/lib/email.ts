@@ -18,7 +18,7 @@ import { safeFileName } from "./safe-file-name"
 
 // The formats a matter document can take (ingest's MATTER_DOCUMENT_EXTENSIONS).
 // An email or a zip file is a container: its parts become documents of their own.
-export const EMAIL_ATTACHMENT_EXTENSIONS = [".docx", ".pdf", ".xlsx", ".eml", ".msg", ".zip"] as const
+export const EMAIL_ATTACHMENT_EXTENSIONS = [".docx", ".pdf", ".xlsx", ".eml", ".msg", ".zip", ".md", ".markdown"] as const
 
 // The type of each format a matter document can take, for a file whose type is
 // not stated (a zip entry, an Outlook attachment without one).
@@ -29,6 +29,8 @@ export const EXTENSION_TYPE: Record<string, string> = {
   ".eml": "message/rfc822",
   ".msg": "application/vnd.ms-outlook",
   ".zip": "application/zip",
+  ".md": "text/markdown",
+  ".markdown": "text/markdown",
 }
 
 const TYPE_EXTENSION: Record<string, string> = {

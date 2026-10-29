@@ -29,6 +29,7 @@ export default function MatterHeader({
   commitRename,
   patch,
   onEditConflicts,
+  onOpenChronology,
 }: {
   matter: Detail
   jurisdictions: Jurisdiction[]
@@ -49,6 +50,7 @@ export default function MatterHeader({
   commitRename: () => Promise<void>
   patch: (fields: MatterFields) => Promise<void>
   onEditConflicts: () => void
+  onOpenChronology?: () => void
 }) {
   const chip = conflictsChip(matter.conflicts)
   const clientNames = useClientNames(editingClient)
@@ -226,6 +228,7 @@ export default function MatterHeader({
         </div>
       </div>
 
+      {onOpenChronology && <details className="matter-chronology-actions"><summary aria-label="Matter actions">Matter actions</summary><button type="button" onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onOpenChronology() }}>Build / open chronology</button></details>}
     </header>
   )
 }

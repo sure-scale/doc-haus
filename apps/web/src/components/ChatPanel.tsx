@@ -59,6 +59,8 @@ export default function ChatPanel({
   sessionID,
   created,
   initialPrompt,
+  chronologyContext,
+  onChronologyContextSeated,
   onPromptSeated,
   agent,
   available,
@@ -100,6 +102,9 @@ export default function ChatPanel({
   // A prompt to seat the composer with on a fresh chat (no session yet).
   // Prefilled, not auto-sent: the lawyer reviews and sends it.
   initialPrompt?: string
+  // Chronology context is appended to the existing draft, never sent automatically.
+  chronologyContext?: string
+  onChronologyContextSeated?: () => void
   // The surface clears its prompt link once seated. A prompt that arrives while
   // this chat is open is then seated here too, without a remount, when the
   // composer is empty; text the lawyer typed is never overwritten.
@@ -317,6 +322,14 @@ export default function ChatPanel({
     onPromptSeated?.()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialPrompt])
+
+  useEffect(() => {
+    if (!chronologyContext) return
+    setInput(current => current.trim() ? `${current}\n\n${chronologyContext}` : chronologyContext)
+    inputRef.current?.focus({ preventScroll: true })
+    onChronologyContextSeated?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chronologyContext])
 
   // Refocus the composer the moment a turn settles (busy → false). Done in an
   // effect, not inline in finalize(), so it runs after React commits the

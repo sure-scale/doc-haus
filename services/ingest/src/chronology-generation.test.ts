@@ -1,0 +1,592 @@
+import { afterEach, expect, test } from "bun:test"
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
+import {
+  chronologyPreflight,
+  chronologySections,
+  startChronologyRun,
+  stopChronologyRun,
+  awaitChronologyRun,
+  parseChronologyDate,
+  parseChronologyExtraction,
+  resolveRelativeDate,
+  assessChronology,
+  type ChronologyGenerationDeps,
+} from "./chronology-generation"
+import { actOnChronology, decideChronologyProposal, readChronology } from "./chronology-store"
+import { openDb, upsertDocument } from "./db"
+import { liveText } from "../../../dochaus/lib/extract"
+import type { StageSessionPort } from "../../../dochaus/workflows/lean/stages"
+const dirs: string[] = []
+const previous = process.env.DOCHAUS_RUNTIME_DIR
+afterEach(() => {
+  if (previous === undefined) delete process.env.DOCHAUS_RUNTIME_DIR
+  else process.env.DOCHAUS_RUNTIME_DIR = previous
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+function matter() {
+  const dir = mkdtempSync(path.join(tmpdir(), "chronology-generation-"))
+  dirs.push(dir)
+  writeFileSync(
+    path.join(dir, "matter.json"),
+    JSON.stringify({ title: "Disputed instrument calibration", client: "Laboratory owner" }),
+  )
+  const runtime = path.join(dir, "runtime")
+  mkdirSync(path.join(runtime, "config/opencode"), { recursive: true })
+  writeFileSync(path.join(runtime, "config/opencode/opencode.json"), JSON.stringify({ model: "fixture/local" }))
+  process.env.DOCHAUS_RUNTIME_DIR = runtime
+  return dir
+}
+function source(dir: string, name: string, body: string, quality?: string, role = "source") {
+  const file = path.join(dir, name)
+  writeFileSync(file, body)
+  const db = openDb(dir)
+  try {
+    const id = upsertDocument(db, file, name, Date.now(), null, {}, quality ?? null)
+    if (role !== "source") db.run("UPDATE documents SET role='deliverable' WHERE id=?", [id])
+    return id
+  } finally {
+    db.close()
+  }
+}
+function event(title: string, quote: string, extra: Record<string, unknown> = {}) {
+  return {
+    title,
+    detail: `The record reports ${title.toLowerCase()}.`,
+    quote,
+    date: { original: "6 May 2025", precision: "exact", start: "2025-05-06" },
+    people: [],
+    status: "reported",
+    significance: "background",
+    privilege: "uncertain",
+    gaps: [],
+    ...extra,
+  }
+}
+const complete = (events: ReturnType<typeof event>[]) => JSON.stringify({ complete: true, events, gaps: [] })
+function fake(
+  handler: (input: Parameters<StageSessionPort["prompt"]>[0]) => string | Promise<string>,
+): ChronologyGenerationDeps {
+  let id = 0
+  return {
+    sessions: {
+      async createSession(input) {
+        expect(input.permissions).toEqual([{ action: "*", resource: "*", effect: "deny" }])
+        return `job-${++id}`
+      },
+      async prompt(input) {
+        return handler(input)
+      },
+      async interrupt() {},
+    },
+  }
+}
+const sectionText = (prompt: string) =>
+  JSON.parse(prompt.match(/<source-evidence>\n([^]*?)\n<\/source-evidence>/)![1]!) as string
+function matchFirst(prompt: string, relation = "same") {
+  const candidates = JSON.parse(prompt.split("\nCandidates: ")[1]!) as { id: string }[]
+  return JSON.stringify({ eventId: candidates[0]?.id ?? null, relation })
+}
+
+test("every section is read; supplied-only accounts survive and archive/unreadable/failure outcomes stay honest", async () => {
+  const dir = matter(),
+    first = "The instrument was collected on 6 May 2025.",
+    last = "The calibration certificate was signed on 9 May 2025."
+  source(dir, "Long note.md", first + "\n" + "Routine background record. ".repeat(850) + "\n" + last)
+  source(
+    dir,
+    "Unreadable.md",
+    "",
+    JSON.stringify({ status: "no_readable_text", signals: [{ code: "empty", detail: "No text could be extracted" }] }),
+  )
+  source(dir, "Failed.pdf", "bad pdf")
+  source(dir, "Bundle.zip", "not read")
+  source(dir, "Generated.md", "Derived work product", undefined, "deliverable")
+  const supplied = "On 2 May 2025 the inspection was requested; origin not identified."
+  writeFileSync(path.join(dir, "Chronology.md"), supplied)
+  const calls: string[] = []
+  const deps = fake((input) => {
+    if (input.agent === "chronology-match") return JSON.stringify({ eventId: null, relation: "independent" })
+    const body = sectionText(input.text)
+    calls.push(body)
+    return complete([
+      ...(body.includes(first) ? [event("Instrument collected", first)] : []),
+      ...(body.includes(last) ? [event("Certificate signed", last)] : []),
+      ...(body.includes(supplied) ? [event("Inspection requested", supplied)] : []),
+    ])
+  })
+  deps.readText = (file) =>
+    file.endsWith("Failed.pdf") ? Promise.reject(new Error("Unreadable PDF structure")) : liveText(file)
+  expect(chronologyPreflight(dir).sources).toHaveLength(5)
+  await startChronologyRun(dir, { expectedRevision: 0, privilege: "mixed", mode: "initial" }, deps)
+  await awaitChronologyRun(dir)
+  const saved = readChronology(dir)
+  expect(saved.events).toHaveLength(3)
+  expect(saved.events.every((e) => !e.reviewed && !e.opened)).toBe(true)
+  expect(saved.events.find((e) => e.title === "Inspection requested")?.accounts[0]?.evidence[0]?.provenance).toBe(
+    "supplied-chronology",
+  )
+  expect(saved.coverage.find((c) => c.documentName === "Long note.md")).toMatchObject({
+    status: "complete",
+    sections: 3,
+    processedSections: [0, 1, 2],
+  })
+  expect(saved.coverage.find((c) => c.documentName === "Unreadable.md")?.status).toBe("unreadable")
+  expect(saved.coverage.find((c) => c.documentName === "Failed.pdf")?.status).toBe("failed")
+  expect(saved.coverage.find((c) => c.documentName === "Bundle.zip")?.status).toBe("unsupported")
+  expect(calls).toHaveLength(4)
+  expect(readFileSync(path.join(dir, "Chronology.md"), "utf8")).toBe(supplied)
+})
+
+test("failed quote leaves its section retryable; resume preserves usable draft without duplicate accounts", async () => {
+  const dir = matter(),
+    quote = "The instrument was collected on 6 May 2025.",
+    other = "The courier returned an unsigned form."
+  source(dir, "Record.md", `${quote}\n${other}`)
+  await startChronologyRun(
+    dir,
+    { expectedRevision: 0, privilege: "all-cleared", mode: "initial" },
+    fake(() =>
+      complete([
+        event("Instrument collected", quote),
+        event("Form returned", "This sentence never existed in the source."),
+      ]),
+    ),
+  )
+  await awaitChronologyRun(dir)
+  let state = readChronology(dir)
+  expect(state.events).toHaveLength(1)
+  expect(state.coverage[0]?.completedKeys).toHaveLength(0)
+  expect(state.run?.status).toBe("failed")
+  const retry = fake((input) =>
+    input.agent === "chronology-match"
+      ? JSON.stringify({ eventId: null, relation: "independent" })
+      : complete([event("Instrument collected", quote), event("Form returned", other)]),
+  )
+  await startChronologyRun(dir, { expectedRevision: state.revision, privilege: "mixed", mode: "resume" }, retry)
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.events).toHaveLength(2)
+  expect(state.events.reduce((n, e) => n + e.accounts.length, 0)).toBe(2)
+  expect(state.coverage[0]).toMatchObject({ status: "complete", events: 2 })
+  expect(state.run?.privilege).toBe("mixed")
+})
+
+test("refresh groups duplicate new accounts into one proposal and preserves lawyer wording and hidden choices", async () => {
+  const dir = matter(),
+    first = "The instrument was collected on 6 May 2025."
+  source(dir, "Initial.md", first)
+  await startChronologyRun(
+    dir,
+    { expectedRevision: 0, privilege: "mixed", mode: "initial" },
+    fake(() => complete([event("Instrument collected", first)])),
+  )
+  await awaitChronologyRun(dir)
+  let state = readChronology(dir),
+    old = state.events[0]!
+  for (const action of [
+    { type: "edit", eventId: old.id, title: "Lawyer collection wording", detail: "Lawyer account", date: old.date },
+    { type: "note", eventId: old.id, note: "Keep signed envelope" },
+    { type: "key", eventId: old.id, key: true },
+    { type: "hide", eventId: old.id, hidden: true },
+  ] as const)
+    state = actOnChronology(dir, state.revision, action) as typeof state
+  const q1 = "The technician completed calibration on 8 May 2025.",
+    q2 = "Calibration was completed by the technician on 8 May 2025."
+  source(dir, "Technician.md", q1)
+  source(dir, "Manager.md", q2)
+  const refresh = fake((input) =>
+    input.agent === "chronology-match"
+      ? matchFirst(input.text)
+      : complete([event("Calibration completed", sectionText(input.text).includes(q1) ? q1 : q2)]),
+  )
+  await startChronologyRun(
+    dir,
+    { expectedRevision: state.revision, privilege: "all-cleared", mode: "refresh" },
+    refresh,
+  )
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.events).toHaveLength(1)
+  expect(state.events[0]).toMatchObject({
+    title: "Lawyer collection wording",
+    hidden: true,
+    key: true,
+    note: "Keep signed envelope",
+  })
+  expect(state.proposals).toHaveLength(1)
+  expect(state.proposals[0]?.kind).toBe("addition")
+  expect(state.proposals[0]?.events[0]?.accounts).toHaveLength(2)
+  state = decideChronologyProposal(dir, state.revision, state.proposals[0]!.id, "accept")
+  expect(state.events).toHaveLength(2)
+  expect(state.events[1]?.reviewed).toBe(true)
+  expect(state.events[0]?.hidden).toBe(true)
+})
+
+test("a stopped run ignores a late reply and repeating its admitted request does not dispatch twice", async () => {
+  const dir = matter(),
+    quote = "The instrument was collected on 6 May 2025."
+  source(dir, "Record.md", quote)
+  let resolve!: (s: string) => void,
+    entered!: () => void,
+    calls = 0
+  const admitted = new Promise<void>((r) => {
+    entered = r
+  })
+  const deps = fake(async () => {
+    calls++
+    entered()
+    return new Promise<string>((r) => {
+      resolve = r
+    })
+  })
+  const request = {
+    expectedRevision: 0,
+    privilege: "mixed" as const,
+    mode: "initial" as const,
+    requestId: "request-idempotent-001",
+  }
+  await startChronologyRun(dir, request, deps)
+  await admitted
+  expect((await startChronologyRun(dir, request, deps)).run?.id).toBe(request.requestId)
+  expect(calls).toBe(1)
+  stopChronologyRun(dir, readChronology(dir).revision)
+  resolve(complete([event("Instrument collected", quote)]))
+  await awaitChronologyRun(dir)
+  expect(readChronology(dir).events).toHaveLength(0)
+  expect(readChronology(dir).run?.status).toBe("stopped")
+})
+
+test("ambiguous repeated quotation is an issue unless the occurrence is identified", async () => {
+  const dir = matter(),
+    quote = "The instrument was collected on 6 May 2025."
+  source(dir, "Repeated.md", `${quote}\nA different speaker repeats this.\n${quote}`)
+  await startChronologyRun(
+    dir,
+    { expectedRevision: 0, privilege: "mixed", mode: "initial" },
+    fake(() => complete([event("Instrument collected", quote)])),
+  )
+  await awaitChronologyRun(dir)
+  let state = readChronology(dir)
+  expect(state.events).toHaveLength(0)
+  expect(state.coverage[0]?.issues.join(" ")).toContain("ambiguous repeated")
+  const canonical = await liveText(path.join(dir, "Repeated.md")),
+    last = canonical.lastIndexOf(quote)
+  await startChronologyRun(
+    dir,
+    { expectedRevision: state.revision, privilege: "mixed", mode: "resume" },
+    fake(() => complete([event("Instrument collected", quote, { quoteStart: last })])),
+  )
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.events[0]?.accounts[0]?.evidence[0]?.charStart).toBe(last)
+})
+
+test("date precision stays honest; only explicit supported calendar-day formulas calculate", () => {
+  expect(parseChronologyDate({ original: "May 2025", precision: "month", start: "2025-05" }).start).toBe("2025-05")
+  expect(() => parseChronologyDate({ original: "May 2025", precision: "month", start: "2025-05-01" })).toThrow(
+    "invent a day",
+  )
+  expect(() => parseChronologyDate({ original: "03/04/25", precision: "ambiguous", start: "2025-03-04" })).toThrow(
+    "silently resolved",
+  )
+  const date = parseChronologyDate({
+    original: "within 3 calendar days after this note",
+    precision: "relative",
+    relative: {
+      expression: "within 3 calendar days after",
+      anchorDocument: "Note.md",
+      anchorDate: "2025-05-06",
+      offsetDays: 3,
+      interpretation: "document-stated",
+    },
+  })
+  resolveRelativeDate(date, { documentName: "Note.md" }, "2025-05-06", {})
+  expect(date.start).toBe("2025-05-09")
+  const business = structuredClone(date)
+  business.relative!.expression = "within 3 business days after"
+  resolveRelativeDate(business, { documentName: "Note.md" }, "2025-05-06", {})
+  expect(business.start).toBeUndefined()
+  expect(() => parseChronologyExtraction('{"complete":false,"events":[]}')).toThrow("complete section reading")
+})
+
+test("discovery uses actual context, caches assessment and preserves Hide without extracting", async () => {
+  const dir = matter()
+  source(dir, "Note.md", "The instrument arrived late and a dated account would help resolve the dispute.")
+  let calls = 0
+  const deps = fake((input) => {
+    calls++
+    expect(input.agent).toBe("chronology-assess")
+    expect(input.text).not.toContain("practice_areas")
+    return JSON.stringify({ status: "relevant", reason: "The record describes disputed timing." })
+  })
+  let state = await assessChronology(dir, deps)
+  expect(state.suggestion.status).toBe("relevant")
+  expect(state.events).toHaveLength(0)
+  state = await assessChronology(dir, deps)
+  expect(calls).toBe(1)
+  state = actOnChronology(dir, state.revision, { type: "invitation", choice: "hide" }) as typeof state
+  source(dir, "Later.md", "A further dated note.")
+  state = await assessChronology(dir, deps)
+  expect(state.suggestion.status).toBe("hidden")
+  expect(calls).toBe(1)
+})
+
+test("section splitting covers all characters with bounded overlap", () => {
+  const body = "abcdef".repeat(6000),
+    sections = chronologySections(body)
+  expect(sections[0]?.start).toBe(0)
+  expect(sections.at(-1)?.end).toBe(body.length)
+  for (let i = 1; i < sections.length; i++) expect(sections[i]!.start).toBe(sections[i - 1]!.end - 700)
+})
+
+test("scheduled obligation and completion remain separate and linked; conflicting accounts retain both sources", async () => {
+  const dir = matter(),
+    required = "Calibration must be completed by 8 May 2025.",
+    done = "The technician completed calibration on 9 May 2025.",
+    disagree = "The manager says calibration was completed on 10 May 2025."
+  source(dir, "Requirement.md", required)
+  source(dir, "Completion.md", done)
+  source(dir, "Disagreement.md", disagree)
+  const deps = fake((input) => {
+    if (input.agent === "chronology-match") {
+      const candidates = JSON.parse(input.text.split("\nCandidates: ")[1]!) as {
+        id: string
+        accounts: { status: string }[]
+      }[]
+      const reported = candidates.find((c) => c.accounts.some((a) => a.status === "reported"))
+      return JSON.stringify({
+        eventId: reported?.id ?? candidates[0]?.id,
+        relation: reported ? "conflict" : "completion",
+      })
+    }
+    const body = sectionText(input.text)
+    return complete([
+      body.includes(required)
+        ? event("Calibration completed", required, { status: "required" })
+        : body.includes(done)
+          ? event("Calibration completed", done)
+          : event("Calibration completed", disagree),
+    ])
+  })
+  await startChronologyRun(dir, { expectedRevision: 0, privilege: "mixed", mode: "initial" }, deps)
+  await awaitChronologyRun(dir)
+  const state = readChronology(dir)
+  expect(state.events).toHaveLength(2)
+  const obligation = state.events.find((e) => e.accounts[0]?.status === "required")!,
+    completion = state.events.find((e) => e.accounts[0]?.status === "reported")!
+  expect(completion.accounts[0]?.obligationId).toBe(obligation.id)
+  expect(completion.accounts).toHaveLength(2)
+  expect(completion.disputed).toBe(true)
+})
+
+test("withdrawn source creates an individual reversible removal proposal and preserves the saved event", async () => {
+  const dir = matter(),
+    quote = "The instrument was collected on 6 May 2025."
+  source(dir, "Record.md", quote)
+  await startChronologyRun(
+    dir,
+    { expectedRevision: 0, privilege: "mixed", mode: "initial" },
+    fake(() => complete([event("Instrument collected", quote)])),
+  )
+  await awaitChronologyRun(dir)
+  let state = readChronology(dir)
+  rmSync(path.join(dir, "Record.md"))
+  await startChronologyRun(
+    dir,
+    { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" },
+    fake(() => complete([])),
+  )
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.events).toHaveLength(1)
+  expect(state.events[0]?.hidden).toBe(false)
+  expect(state.proposals[0]?.kind).toBe("removal")
+  state = decideChronologyProposal(dir, state.revision, state.proposals[0]!.id, "accept")
+  expect(state.events[0]?.hidden).toBe(true)
+})
+
+test("impossible calendar dates and reversed periods remain failures rather than invented precision", () => {
+  for (const start of ["2025-02-31", "2025-19-01", "2025-00-03"])
+    expect(() => parseChronologyDate({ original: "unclear date", precision: "exact", start })).toThrow("impossible")
+  expect(() =>
+    parseChronologyDate({
+      original: "period",
+      precision: "exact",
+      start: "2025-05-08",
+      end: "2025-05-06",
+      rangeKind: "duration",
+    }),
+  ).toThrow("on or after")
+})
+
+test("source reclassification during extraction rejects the late account before quotation verification", async () => {
+  const dir = matter(),
+    quote = "The instrument was collected on 6 May 2025.",
+    id = source(dir, "Record.md", quote)
+  let entered!: () => void,
+    reply!: (s: string) => void,
+    verifications = 0
+  const admitted = new Promise<void>((r) => {
+    entered = r
+  })
+  const deps = fake(async () => {
+    entered()
+    return new Promise<string>((r) => {
+      reply = r
+    })
+  })
+  deps.verify = async (citation) => {
+    verifications++
+    return { ...citation, verified: true }
+  }
+  await startChronologyRun(dir, { expectedRevision: 0, privilege: "mixed", mode: "initial" }, deps)
+  await admitted
+  const db = openDb(dir)
+  try {
+    db.run("UPDATE documents SET role='deliverable' WHERE id=?", [id])
+  } finally {
+    db.close()
+  }
+  reply(complete([event("Instrument collected", quote)]))
+  await awaitChronologyRun(dir)
+  const state = readChronology(dir)
+  expect(verifications).toBe(0)
+  expect(state.events).toHaveLength(0)
+  expect(state.coverage[0]?.completedKeys).toHaveLength(0)
+  expect(state.coverage[0]?.issues.join(" ")).toContain("no longer authorised")
+})
+
+test("source reclassification during matching cannot save previously verified cached evidence", async () => {
+  const dir = matter(),
+    first = "The instrument was collected on 6 May 2025.",
+    second = "The instrument was collected by the courier on 6 May 2025."
+  source(dir, "One.md", first)
+  const sourceId = source(dir, "Two.md", second)
+  let entered!: () => void,
+    reply!: (s: string) => void,
+    matchPrompt = ""
+  const admitted = new Promise<void>((r) => {
+    entered = r
+  })
+  const deps = fake(async (input) => {
+    if (input.agent === "chronology-match") {
+      matchPrompt = input.text
+      entered()
+      return new Promise<string>((r) => {
+        reply = r
+      })
+    }
+    const body = sectionText(input.text)
+    return complete([event("Instrument collected", body.includes(second) ? second : first)])
+  })
+  await startChronologyRun(dir, { expectedRevision: 0, privilege: "mixed", mode: "initial" }, deps)
+  await admitted
+  const db = openDb(dir)
+  try {
+    db.run("UPDATE documents SET role='deliverable' WHERE id=?", [sourceId])
+  } finally {
+    db.close()
+  }
+  reply(matchFirst(matchPrompt))
+  await awaitChronologyRun(dir)
+  const state = readChronology(dir)
+  expect(state.events).toHaveLength(1)
+  expect(state.events[0]?.accounts).toHaveLength(1)
+  expect(state.proposals).toHaveLength(0)
+  expect(state.coverage.find((c) => c.documentName === "Two.md")?.completedKeys).toHaveLength(0)
+})
+
+test("a source-date correction during a model section controls newly returned relative events", async () => {
+  const dir = matter(),
+    quote = "A response is required within 3 calendar days after this note, dated 2025-05-06."
+  source(dir, "Note.md", quote)
+  let entered!: () => void, reply!: (s: string) => void
+  const admitted = new Promise<void>((r) => {
+    entered = r
+  })
+  const deps = fake(async () => {
+    entered()
+    return new Promise<string>((r) => {
+      reply = r
+    })
+  })
+  await startChronologyRun(dir, { expectedRevision: 0, privilege: "mixed", mode: "initial" }, deps)
+  await admitted
+  actOnChronology(dir, readChronology(dir).revision, {
+    type: "source-date",
+    documentName: "Note.md",
+    date: "2025-05-10",
+  })
+  reply(
+    complete([
+      event("Response required", quote, {
+        status: "required",
+        date: {
+          original: "within 3 calendar days after this note",
+          precision: "relative",
+          relative: {
+            expression: "within 3 calendar days after",
+            anchorDocument: "Note.md",
+            anchorDate: "2025-05-06",
+            offsetDays: 3,
+            interpretation: "document-stated",
+          },
+        },
+      }),
+    ]),
+  )
+  await awaitChronologyRun(dir)
+  const state = readChronology(dir)
+  expect(state.events[0]?.date.start).toBe("2025-05-13")
+  expect(state.events[0]?.accounts[0]?.date.relative?.anchorDate).toBe("2025-05-10")
+  expect(readFileSync(path.join(dir, "Note.md"), "utf8")).toBe(quote)
+})
+
+test("refresh reconciles against the current merged record rather than superseded source records", async () => {
+  const dir = matter(),
+    quote = "The instrument was collected on 6 May 2025."
+  source(dir, "Carrier.md", quote)
+  await startChronologyRun(
+    dir,
+    { expectedRevision: 0, privilege: "all-cleared", mode: "initial" },
+    fake(() => complete([event("Instrument collected", quote)])),
+  )
+  await awaitChronologyRun(dir)
+  let state = readChronology(dir)
+  const previousId = state.events[0]!.id
+  state = actOnChronology(dir, state.revision, {
+    type: "add",
+    title: "Collection context",
+    detail: "Lawyer note",
+    date: state.events[0]!.date,
+  }) as typeof state
+  state = actOnChronology(dir, state.revision, {
+    type: "merge",
+    eventIds: state.events.map((item) => item.id),
+    title: "Instrument collected",
+    detail: "Collection with lawyer context",
+    date: state.events[0]!.date,
+  }) as typeof state
+  const currentId = state.events.find((item) => !item.supersededBy?.length)!.id
+  source(dir, "Depot.md", "The depot confirms that the instrument was collected on 6 May 2025.")
+  let candidateIds: string[] = []
+  await startChronologyRun(
+    dir,
+    { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" },
+    fake((input) => {
+      if (input.agent === "chronology-match") {
+        candidateIds = (JSON.parse(input.text.split("\nCandidates: ")[1]!) as { id: string }[]).map((item) => item.id)
+        return JSON.stringify({ eventId: currentId, relation: "same" })
+      }
+      return complete([
+        event("Instrument collected", "The depot confirms that the instrument was collected on 6 May 2025."),
+      ])
+    }),
+  )
+  await awaitChronologyRun(dir)
+  expect(candidateIds).toContain(currentId)
+  expect(candidateIds).not.toContain(previousId)
+  expect(readChronology(dir).proposals[0]!.targetIds).toEqual([currentId])
+})

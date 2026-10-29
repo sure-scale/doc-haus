@@ -1,10 +1,11 @@
 ---
-description: Build or rebuild the matter chronology with verified citations.
+description: Open the source-linked chronology review workflow.
 agent: chronology
 ---
 
-Build the chronology for this matter: run the privilege-posture gate, sweep
-every document, and write the result to chronology.md as your instructions
-define.
+Consult this matter's saved chronology through read-chronology. For generation
+or refresh, direct me to Chronology in the matter navigation, where I choose a
+fresh privilege posture. Stage requested sourced changes for individual review
+in that workbench; preserve existing chronology.md source files.
 
 Focus: $ARGUMENTS

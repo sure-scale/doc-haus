@@ -6,6 +6,8 @@ steps: 16
 color: success
 tools:
   "*": false
+  read-chronology: true
+  propose-chronology-changes: true
   read: true
   glob: true
   grep: true

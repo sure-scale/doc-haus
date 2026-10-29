@@ -36,7 +36,7 @@ import {
   type ActiveDocumentMutation,
 } from "./document-mutation"
 
-const MATTER_DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml", ".msg", ".zip"])
+const MATTER_DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml", ".msg", ".zip", ".md", ".markdown"])
 
 export class SourceDocumentConflictError extends Error {}
 
@@ -505,6 +505,10 @@ export async function extractDocumentText(fileName: string, buffer: Buffer) {
 
 async function extractRawText(fileName: string, buffer: Buffer): Promise<{ text: string; facts: ExtractionFacts }> {
   const lower = fileName.toLowerCase()
+  // Markdown is evidence, including its markup. Never render HTML or execute
+  // links: every consumer uses this same normalized UTF-8 text and offsets.
+  if (lower.endsWith(".md") || lower.endsWith(".markdown"))
+    return { text: new TextDecoder("utf-8", { fatal: true }).decode(buffer), facts: { format: "markdown" } }
   if (lower.endsWith(".pdf")) {
     const { text, pages } = await readPdf(buffer)
     return { text, facts: { format: "pdf", pages } }
