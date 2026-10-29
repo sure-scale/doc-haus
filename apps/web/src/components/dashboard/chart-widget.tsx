@@ -31,7 +31,7 @@ export function ChartWidget({ chart, data, period }: { chart: Chart; data: Dashb
       {empty ? <p className="dash-chart-empty">{view.empty}</p>
         : chart.form === "stat" ? null
         : chart.form === "line" ? (
-          <AreaChart points={view.points.map((row) => ({ time: row.time!, value: row.value, label: row.label }))} format={chart.metric === "spend" ? axisMoney : count} detail={format} label={chart.title} />
+          <AreaChart points={view.points.map((row) => ({ time: row.time!, value: row.value, label: row.label }))} format={chart.metric === "spend" ? axisMoney : count} detail={format} label={chart.title} integer={chart.metric !== "spend"} />
         ) : chart.form === "calendar" ? (
           <ActivityCalendar label={chart.title} first={monday} counts={[...new Array<number>(padding).fill(0), ...view.points.map((row) => row.value)]} describe={(day, value) => `${new Date(day).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}: ${day < first ? "outside this period" : format(value)}`} />
         ) : (

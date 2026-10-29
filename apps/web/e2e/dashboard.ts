@@ -385,6 +385,7 @@ async function capture(page: Page, name: string, options: { fullPage?: boolean }
   await page.evaluate(async () => { await document.fonts.ready })
   const metrics = await page.evaluate(() => ({
     overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    focused: document.activeElement?.getAttribute("class"),
     dialogs: Array.from(document.querySelectorAll<HTMLElement>('dialog[open], [role="dialog"][aria-modal="true"]')).map(node => { const r = node.getBoundingClientRect(); return { name: node.getAttribute("aria-label") ?? node.getAttribute("aria-labelledby"), left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: innerWidth, height: innerHeight } }),
     // What sticks out past the page's right edge, when something does.
     wide: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1 ? Array.from(document.querySelectorAll<HTMLElement>("body *")).filter(node => node.getBoundingClientRect().right > document.documentElement.clientWidth + 1 && ![...node.children].some(child => child.getBoundingClientRect().right > document.documentElement.clientWidth + 1)).slice(0, 8).map(node => ({ node: `${node.tagName.toLowerCase()}.${[...node.classList].join(".")}`, right: Math.round(node.getBoundingClientRect().right), text: (node.textContent ?? "").trim().slice(0, 60) })) : [],
@@ -827,6 +828,175 @@ try {
     } finally { await context.close() }
   })
 
+  await scenario("Dashboard explanations survive tabs, reload, delete and Undo", async () => {
+    const state = fixture("populated"); const { page, context } = await open(state, 375, 812)
+    try {
+      await dashboard(page)
+      await askButton(page).click()
+      await page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true }).fill("Show spend and time per fee earner")
+      await page.getByRole("button", { name: "Update dashboard", exact: true }).click()
+      const note = page.getByText("Time per fee earner is not tracked.", { exact: true })
+      await expect(note).toBeVisible()
+      await dashboard(page, true, true)
+      await expect(note).toBeVisible()
+      await page.getByRole("button", { name: "New dashboard", exact: true }).click()
+      await expect(note).toHaveCount(0)
+      await page.getByRole("tab", { name: "Overview", exact: true }).click()
+      await expect(note).toBeVisible()
+      await page.locator('summary[aria-label="Options for Overview dashboard"]').click()
+      await page.getByRole("button", { name: "Delete dashboard", exact: true }).click()
+      await page.getByRole("group", { name: "Delete dashboard", exact: true }).getByRole("button", { name: "Delete dashboard", exact: true }).click()
+      await expect(note).toHaveCount(0)
+      await page.locator(".dash-snackbar").getByRole("button", { name: "Undo", exact: true }).click()
+      await expect(note).toBeVisible()
+      await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveAttribute("aria-selected", "true")
+      await capture(page, "frontend-tab-notes-375x812", { fullPage: false })
+      clean(state)
+    } finally { await context.close() }
+  })
+
+  await scenario("Clicking the current tab preserves the AI request and Undo", async () => {
+    const state = fixture("populated"); state.aiDelay = 1000
+    const { page, context } = await open(state, 1440, 1000)
+    try {
+      await dashboard(page)
+      await askButton(page).click()
+      await page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true }).fill("Show spend by client")
+      await page.getByRole("button", { name: "Update dashboard", exact: true }).click()
+      await expect.poll(() => state.aiPrompts.length).toBe(1)
+      await page.getByRole("tab", { name: "Overview", exact: true }).click()
+      await expect(page.getByRole("button", { name: "Building dashboard…", exact: true })).toBeVisible()
+      await expect.poll(() => order(page)).toEqual(["Spend by client", "Conversations over time"])
+      await page.getByRole("tab", { name: "Overview", exact: true }).click()
+      await expect(page.locator(".dash-snackbar").getByRole("button", { name: "Undo", exact: true })).toBeVisible()
+      await expect.poll(() => state.aiDeleted.length).toBe(1)
+      clean(state)
+    } finally { await context.close() }
+  })
+
+  for (const action of ["stop", "escape", "switch"] as const) await scenario(`Pending AI ${action} preserves layout and cleans its session`, async () => {
+    const state = fixture("populated"); state.aiDelay = 1200
+    const { page, context } = await open(state, 375, 812)
+    try {
+      await dashboard(page)
+      const before = await order(page)
+      await askButton(page).click()
+      const input = page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true })
+      await input.fill("Show spend by client")
+      await page.getByRole("button", { name: "Update dashboard", exact: true }).click()
+      await expect.poll(() => state.aiPrompts.length).toBe(1)
+      if (action === "stop") {
+        await capture(page, "frontend-ai-working-375x812", { fullPage: false })
+        await page.getByRole("button", { name: "Stop", exact: true }).click()
+        await expect(input).toBeFocused()
+      } else if (action === "escape") {
+        await page.getByRole("button", { name: "Stop", exact: true }).focus()
+        await page.keyboard.press("Escape")
+        await expect(input).toHaveCount(0)
+        await expect(askButton(page)).toBeFocused()
+      } else {
+        await page.getByRole("button", { name: "New dashboard", exact: true }).click()
+        await expect(page.getByRole("tab", { name: "New dashboard", exact: true })).toHaveAttribute("aria-selected", "true")
+        await expect(page.locator(".dash-grid")).toHaveCount(0)
+        await page.getByRole("tab", { name: "Overview", exact: true }).click()
+      }
+      await expect(page.getByRole("button", { name: "Building dashboard…", exact: true })).toHaveCount(0)
+      await expect.poll(() => state.aiDeleted.length).toBe(1)
+      expect(await order(page)).toEqual(before)
+      await expect(page.locator(".dash-ai-error")).toHaveCount(0)
+      clean(state)
+    } finally { await context.close() }
+  })
+
+  for (const [width, height] of [[320, 640], [768, 1024]] as const) await scenario(`Crowded tabs remain visible with keyboard navigation (${width}x${height})`, async () => {
+    const state = fixture("populated"); const { page, context } = await open(state, width, height)
+    try {
+      await dashboard(page)
+      await page.evaluate(() => localStorage.setItem("dh.dashboard.v4", JSON.stringify({ active: "view-11", dashboards: Array.from({ length: 12 }, (_, index) => ({ id: `view-${index}`, name: `Practice dashboard ${index + 1}`, period: "month", stages: {}, widgets: [] })) })))
+      await dashboard(page, false, true)
+      const first = page.getByRole("tab", { name: "Practice dashboard 1", exact: true })
+      const last = page.getByRole("tab", { name: "Practice dashboard 12", exact: true })
+      await expect(last).toBeInViewport()
+      await expect(page.getByRole("button", { name: "New dashboard", exact: true })).toBeDisabled()
+      await last.focus()
+      await page.keyboard.press("Home")
+      await expect(first).toBeFocused()
+      await expect(first).toBeInViewport()
+      await page.keyboard.press("End")
+      await expect(last).toBeFocused()
+      await expect(last).toBeInViewport()
+      await capture(page, `frontend-crowded-tabs-${width}x${height}`, { fullPage: false })
+      clean(state)
+    } finally { await context.close() }
+  })
+
+  await scenario("Calendar targets, touch selection and keyboard dismissal (375x812)", async () => {
+    const state = fixture("populated"); const { page, context } = await open(state, 375, 812)
+    try {
+      await dashboard(page)
+      const activity = card(page, "Activity")
+      const day = activity.locator(".dash-cell").last()
+      await day.scrollIntoViewIfNeeded()
+      const rect = (await day.boundingBox())!
+      expect(rect.width).toBeGreaterThanOrEqual(24)
+      expect(rect.height).toBeGreaterThanOrEqual(24)
+      await day.tap()
+      await expect(activity.getByRole("tooltip")).toBeVisible()
+      await capture(page, "frontend-calendar-touch-375x812", { fullPage: false })
+      await page.keyboard.press("Escape")
+      await expect(activity.getByRole("tooltip")).toHaveCount(0)
+      await day.focus()
+      await page.keyboard.press("ArrowLeft")
+      const previous = activity.locator(".dash-cell").nth((await activity.locator(".dash-cell").count()) - 8)
+      await expect(previous).toBeFocused()
+      await expect(activity.getByRole("tooltip")).toBeVisible()
+      await page.keyboard.press("Home")
+      await expect(activity.locator(".dash-cell").first()).toBeFocused()
+      await expect(activity.locator(".dash-cell").first()).toBeInViewport()
+      await day.tap()
+      await expect(activity.getByRole("tooltip")).toBeVisible()
+      await page.getByRole("heading", { name: "Dashboard", exact: true, level: 1 }).tap()
+      await expect(activity.getByRole("tooltip")).toHaveCount(0)
+      clean(state)
+    } finally { await context.close() }
+  })
+
+  await scenario("Count chart axes and long titles at narrow width", async () => {
+    const state = fixture("new", { data: early({ first: 3 }) })
+    const title = "Matter".repeat(10)
+    state.aiPlan = { widgets: [{ type: "chart", title, metric: "matters", groupBy: "day", form: "line", period: "all" }] }
+    const { page, context } = await open(state, 320, 640)
+    try {
+      await dashboard(page)
+      await askButton(page).click()
+      await page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true }).fill("Show when I opened matters")
+      await page.getByRole("button", { name: "Update dashboard", exact: true }).click()
+      await expect(card(page, title)).toBeVisible()
+      const labels = await card(page, title).locator(".dash-gridline + .dash-axis").allTextContents()
+      expect(labels).toEqual(["0", "1"])
+      await capture(page, "frontend-count-axis-long-title-320x640")
+      clean(state)
+    } finally { await context.close() }
+  })
+
+  await scenario("AI bars stay visible in forced colors", async () => {
+    const state = fixture("populated"); const { page, context } = await open(state, 1440, 1000)
+    try {
+      await page.emulateMedia({ forcedColors: "active" })
+      await dashboard(page)
+      await askButton(page).click()
+      await page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true }).fill("Show spend by client")
+      await page.getByRole("button", { name: "Update dashboard", exact: true }).click()
+      const bars = card(page, "Spend by client").locator(".dash-chart-track > span")
+      await expect(bars.first()).toBeVisible()
+      const paint = await bars.first().evaluate(node => ({ fill: getComputedStyle(node).backgroundColor, track: getComputedStyle(node.parentElement!).backgroundColor, adjust: getComputedStyle(node).forcedColorAdjust }))
+      expect(paint.adjust).toBe("none")
+      expect(paint.fill).not.toBe(paint.track)
+      await capture(page, "frontend-forced-colors-1440x1000")
+      clean(state)
+    } finally { await context.close() }
+  })
+
   for (const mode of ["failed", "invalid"] as const) await scenario(`AI ${mode} response leaves the layout and cleans its session`, async () => {
     const state = fixture("populated"); state.aiFailure = mode === "failed"
     if (mode === "invalid") state.aiPlan = { widgets: [{ type: "chart", title: "Undated drafts", metric: "drafts", groupBy: "day", form: "line" }] }
@@ -901,7 +1071,7 @@ try {
       }
       // Calendar cell tooltip on one of the busiest days.
       await page.mouse.move(5, 5)
-      const cell = card(page, "Activity").locator("rect.dash-cell.level-4").last()
+      const cell = card(page, "Activity").locator(".dash-cell-fill.level-4 + .dash-cell").last()
       await cell.scrollIntoViewIfNeeded()
       await cell.hover()
       const cellTip = card(page, "Activity").getByRole("tooltip")

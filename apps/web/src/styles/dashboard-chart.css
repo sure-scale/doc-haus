@@ -20,3 +20,7 @@
   .dash-chart-total { font-size: 30px; }
   .dash-chart-widget .dash-area { min-height: 190px; }
 }
+@media (forced-colors: active) {
+  .dash-chart-track { outline: 1px solid CanvasText; }
+  .dash-chart-track > span { background: Highlight; forced-color-adjust: none; }
+}

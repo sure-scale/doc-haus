@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type PointerEvent as ReactPointerEvent } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type PointerEvent as ReactPointerEvent, type RefObject } from "react"
 import { addDays } from "./data"
 
 // The dashboard's chart marks, drawn as inline SVG and HTML. Marks paint in
@@ -10,7 +10,23 @@ import { addDays } from "./data"
 
 type Tip = { x: number; y: number; content: ReactNode }
 
-// One hover tooltip per chart, positioned inside the chart's own box.
+// Touch selection survives pointer leave after the finger lifts. An outside
+// tap or Escape dismisses it without changing the chart's keyboard focus.
+function useDismiss(ref: RefObject<HTMLElement | null>, visible: boolean, dismiss: () => void) {
+  useEffect(() => {
+    if (!visible) return
+    const outside = (event: PointerEvent) => { if (!ref.current?.contains(event.target as Node)) dismiss() }
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") dismiss() }
+    document.addEventListener("pointerdown", outside)
+    document.addEventListener("keydown", escape)
+    return () => {
+      document.removeEventListener("pointerdown", outside)
+      document.removeEventListener("keydown", escape)
+    }
+  }, [ref, visible, dismiss])
+}
+
+// One hover, focus or touch tooltip per chart, inside the chart's own box.
 function useTip() {
   const box = useRef<HTMLDivElement>(null)
   const [tip, setTip] = useState<Tip>()
@@ -21,8 +37,10 @@ function useTip() {
     const y = "clientY" in event ? event.clientY : event.top
     setTip({ x: x - bounds.left, y: y - bounds.top, content })
   }
+  const hide = () => setTip(undefined)
+  useDismiss(box, !!tip, hide)
   const view = tip && <TipBox x={tip.x} y={tip.y}>{tip.content}</TipBox>
-  return { box, show, hide: () => setTip(undefined), view }
+  return { box, show, hide, leave: (event: ReactPointerEvent) => { if (event.pointerType !== "touch") hide() }, view }
 }
 
 // A tooltip centred over its point, shifted in so it stays inside the dashboard.
@@ -105,12 +123,12 @@ export function Sparkline({ values, label }: { values: number[]; label: string }
 // styles narrow the gaps). Each bar's slot is its hit target, so a zero still
 // has a tooltip.
 export function SpreadBars({ values, average, label, format }: { values: number[]; average: number; label: string; format: (value: number) => string }) {
-  const { box, show, hide, view } = useTip()
+  const { box, show, hide, leave, view } = useTip()
   const mark = useRoving(values.length, 0)
   const max = Math.max(...values, average, 0)
   if (!values.length || max <= 0) return <div className="dash-spark is-flat" role="img" aria-label={`${label}: nothing yet`} />
   return (
-    <div className="dash-spread" ref={box} role="group" aria-label={label} style={{ "--bars": values.length } as CSSProperties} onPointerLeave={hide}>
+    <div className="dash-spread" ref={box} role="group" aria-label={label} style={{ "--bars": values.length } as CSSProperties} onPointerLeave={leave}>
       {values.map((value, index) => {
         const text = format(value)
         return (
@@ -122,6 +140,7 @@ export function SpreadBars({ values, average, label, format }: { values: number[
             {...mark(index, (element) => show(element.getBoundingClientRect(), text))}
             onBlur={hide}
             onPointerEnter={(event) => show(event.currentTarget.getBoundingClientRect(), text)}
+            onPointerDown={(event) => show(event.currentTarget.getBoundingClientRect(), text)}
           >
             {value > 0 && <span className="dash-spread-bar" style={{ height: barHeight(value, max) }} />}
           </span>
@@ -138,11 +157,11 @@ export function SpreadBars({ values, average, label, format }: { values: number[
 // tooltip; today's label is emphasised. A day's optional `detail` (say, its
 // top matters) joins the tooltip and the accessible name.
 export function WeekBars({ days, format }: { days: { day: number; cost: number; label: string; today: boolean; detail?: string }[]; format: (value: number) => string }) {
-  const { box, show, hide, view } = useTip()
+  const { box, show, hide, leave, view } = useTip()
   const mark = useRoving(days.length, days.length - 1)
   const max = Math.max(...days.map((row) => row.cost), 0)
   return (
-    <div className="dash-week" ref={box} onPointerLeave={hide}>
+    <div className="dash-week" ref={box} onPointerLeave={leave}>
       <ol className="dash-week-bars" aria-label="Spend on each of the last seven days">
         {days.map((row, index) => {
           const text = `${row.today ? "Today" : row.label}: ${format(row.cost)}`
@@ -156,6 +175,7 @@ export function WeekBars({ days, format }: { days: { day: number; cost: number; 
                 {...mark(index, (element) => show(element.getBoundingClientRect(), tip))}
                 onBlur={hide}
                 onPointerEnter={(event) => show(event.currentTarget.getBoundingClientRect(), tip)}
+                onPointerDown={(event) => show(event.currentTarget.getBoundingClientRect(), tip)}
               >
                 {row.cost > 0 && <span className="dash-week-fill" style={{ height: barHeight(row.cost, max) }} />}
               </span>
@@ -185,16 +205,15 @@ function shades(counts: number[]) {
 const GRID: Record<string, number> = { ArrowLeft: -7, ArrowRight: 7, ArrowUp: -1, ArrowDown: 1 }
 
 // A year of days as a calendar grid: one column per week (Monday first), one
-// cell per day, darker for busier days. Cells grow to fill a wide card and
-// keep a readable size on a narrow one, which scrolls instead. Keyboard focus
-// starts on today.
+// cell per day, darker for busier days. A 24px target surrounds each mark;
+// older weeks scroll out of a narrow card. Keyboard focus starts on today.
 export function ActivityCalendar({ counts, first, describe, label }: { counts: number[]; first: number; describe: (day: number, count: number) => string; label?: string }) {
-  const { box, show, hide, view } = useTip()
+  const { box, show, hide, leave, view } = useTip()
   const mark = useRoving(counts.length, counts.length - 1, GRID)
   const [scroller, { width: room }] = useSize<HTMLDivElement>()
   const top = 18, left = 30
   const weeks = Math.ceil(counts.length / 7)
-  const pitch = Math.min(24, Math.max(13, room / weeks))
+  const pitch = 24
   const cell = pitch * 0.8
   // Start scrolled to today, as the newest weeks matter most on a narrow screen.
   useLayoutEffect(() => {
@@ -217,7 +236,7 @@ export function ActivityCalendar({ counts, first, describe, label }: { counts: n
   }
   if (months.length > 1 && months[1].x - months[0].x < 3 * pitch) months.shift()
   return (
-    <div className="dash-calendar" ref={box} onPointerLeave={hide}>
+    <div className="dash-calendar" ref={box} onPointerLeave={leave}>
       {/* Day names stay in view while the weeks scroll. */}
       <div className="dash-calendar-frame">
         <svg className="dash-calendar-days" width={left} height={height} aria-hidden="true">
@@ -233,20 +252,22 @@ export function ActivityCalendar({ counts, first, describe, label }: { counts: n
               ))}
             </g>
             {days.map((day, index) => (
-              <rect
-                key={index}
-                x={Math.floor(index / 7) * pitch}
-                y={top + (index % 7) * pitch}
-                width={cell}
-                height={cell}
-                rx={cell * 0.3}
-                className={`dash-cell level-${day.level}`}
-                role="img"
-                aria-label={day.text}
-                {...mark(index, (element) => show(element.getBoundingClientRect(), day.text))}
-                onBlur={hide}
-                onPointerEnter={(event) => show(event.currentTarget.getBoundingClientRect(), day.text)}
-              />
+              <g key={index} transform={`translate(${Math.floor(index / 7) * pitch} ${top + (index % 7) * pitch})`}>
+                <rect width={cell} height={cell} rx={cell * 0.3} className={`dash-cell-fill level-${day.level}`} aria-hidden="true" pointerEvents="none" />
+                <rect
+                  width={pitch}
+                  height={pitch}
+                  rx={cell * 0.3}
+                  fill="transparent"
+                  className="dash-cell"
+                  role="img"
+                  aria-label={day.text}
+                  {...mark(index, (element) => show(element.getBoundingClientRect(), day.text))}
+                  onBlur={hide}
+                  onPointerEnter={(event) => show(event.currentTarget.getBoundingClientRect(), day.text)}
+                  onPointerDown={(event) => show(event.currentTarget.getBoundingClientRect(), day.text)}
+                />
+              </g>
             ))}
           </svg>
         </div>
@@ -256,6 +277,7 @@ export function ActivityCalendar({ counts, first, describe, label }: { counts: n
         {[0, 1, 2, 3, 4].map((step) => <span key={step} className={`dash-key-cell level-${step}`} />)}
         <span>More</span>
       </div>
+      {weeks * pitch > room && <p className="dash-calendar-hint">Scroll to see earlier weeks.</p>}
       {view}
     </div>
   )
@@ -301,11 +323,11 @@ export type Segment = { key: string; label: string; value: number; display: stri
 // Parts of a whole on one bar, 2px apart, each named in the legend below.
 // Segments are categorical, so each takes its own series class.
 export function StackedBar({ segments, label }: { segments: Segment[]; label: string }) {
-  const { box, show, hide, view } = useTip()
+  const { box, show, leave, view } = useTip()
   const total = segments.reduce((sum, row) => sum + row.value, 0)
   const percent = (value: number) => (total ? `${Math.round((value / total) * 100)}%` : "0%")
   return (
-    <div className="dash-stack" ref={box} onPointerLeave={hide}>
+    <div className="dash-stack" ref={box} onPointerLeave={leave}>
       <div className="dash-stack-bar" role="img" aria-label={`${label}: ${segments.map((row) => `${row.label} ${percent(row.value)}`).join(", ")}`}>
         {total > 0
           ? segments.filter((row) => row.value > 0).map((row) => (
@@ -314,6 +336,7 @@ export function StackedBar({ segments, label }: { segments: Segment[]; label: st
                 className={`dash-stack-part series-${row.key}`}
                 style={{ flexGrow: row.value }}
                 onPointerEnter={(event) => show(event, `${row.label}: ${row.display} (${percent(row.value)})`)}
+                onPointerDown={(event) => show(event, `${row.label}: ${row.display} (${percent(row.value)})`)}
               />
             ))
           : <span className="dash-stack-part is-empty" />}
@@ -337,19 +360,20 @@ export function StackedBar({ segments, label }: { segments: Segment[]; label: st
 // crosshair that follows the pointer and names the day under it. Each day also
 // has a focusable column, so the arrow keys move the same crosshair. `format`
 // writes the axis; `detail`, the exact value in the tooltip.
-export function AreaChart({ points, format, detail = format, label }: { points: { time: number; value: number; label: string }[]; format: (value: number) => string; detail?: (value: number) => string; label: string }) {
+export function AreaChart({ points, format, detail = format, label, integer = false }: { points: { time: number; value: number; label: string }[]; format: (value: number) => string; detail?: (value: number) => string; label: string; integer?: boolean }) {
   const [ref, { width, height }] = useSize<HTMLDivElement>()
   const [active, setActive] = useState<number>()
+  useDismiss(ref, active !== undefined, () => setActive(undefined))
   const mark = useRoving(points.length, points.length - 1)
   const top = 12, bottom = 26, left = 52, right = 8
   const max = Math.max(...points.map((row) => row.value), 0)
-  const scale = niceMax(max)
+  const scale = integer ? Math.ceil(niceMax(max)) : niceMax(max)
   const plot = Math.max(0, width - left - right)
   const step = points.length > 1 ? plot / (points.length - 1) : plot
   const x = (index: number) => left + (points.length > 1 ? index * step : plot / 2)
   const y = (value: number) => top + (1 - (scale ? value / scale : 0)) * (height - top - bottom)
   const line = points.map((row, index) => `${index ? "L" : "M"}${x(index).toFixed(1)} ${y(row.value).toFixed(1)}`).join(" ")
-  const ticks = [0, scale / 2, scale]
+  const ticks = integer ? [...new Set([0, Math.round(scale / 2), scale])] : [0, scale / 2, scale]
   const labelEvery = Math.max(1, Math.ceil(points.length / Math.max(2, Math.floor(plot / 72))))
   function track(event: ReactPointerEvent<SVGSVGElement>) {
     const bounds = event.currentTarget.getBoundingClientRect()
@@ -360,7 +384,7 @@ export function AreaChart({ points, format, detail = format, label }: { points: 
   return (
     <div className="dash-area" ref={ref}>
       {width > 0 && height > 0 && (
-        <svg width={width} height={height} role="group" aria-label={label} onPointerMove={track} onPointerLeave={() => setActive(undefined)}>
+        <svg width={width} height={height} role="group" aria-label={label} onPointerMove={track} onPointerDown={track} onPointerLeave={(event) => { if (event.pointerType !== "touch") setActive(undefined) }}>
           <g aria-hidden="true">
             {ticks.map((tick) => (
               <g key={tick}>

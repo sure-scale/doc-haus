@@ -123,6 +123,8 @@ export type DashboardTab = {
   // replaces it with an explicit plan.
   stages: Partial<Record<Stage, WidgetInstance[]>>
   widgets?: WidgetInstance[]
+  // Keep the AI's limitations with the view they describe, including on reload.
+  notes?: string[]
   legacy?: Partial<Record<Stage, Arrangement>>
 }
 export type Dashboards = { active: string; dashboards: DashboardTab[] }
@@ -180,7 +182,8 @@ export function readDashboards(saved: unknown, legacy: Layout = DEFAULT_LAYOUT):
         seen.add(tab.id)
         const stages = typeof tab.stages === "object" && tab.stages !== null ? tab.stages as Record<string, unknown> : {}
         const legacyStages = typeof tab.legacy === "object" && tab.legacy !== null ? tab.legacy as Record<string, unknown> : {}
-        return [{ id: tab.id, name: tab.name.trim().slice(0, 30), period: PERIODS.includes(tab.period as Period) ? tab.period as Period : "month", widgets: savedInstances(tab.widgets),
+        const notes = Array.isArray(tab.notes) ? tab.notes.filter((note): note is string => typeof note === "string" && !!note.trim()).slice(0, 5).map((note) => note.trim().slice(0, 160)) : undefined
+        return [{ id: tab.id, name: tab.name.trim().slice(0, 30), period: PERIODS.includes(tab.period as Period) ? tab.period as Period : "month", widgets: savedInstances(tab.widgets), ...(notes ? { notes } : {}),
           stages: Object.fromEntries(STAGES.flatMap((stage) => { const widgets = savedInstances(stages[stage]); return widgets ? [[stage, widgets]] : [] })),
           legacy: Object.fromEntries(STAGES.flatMap((stage) => { const entry = arrangement(legacyStages[stage]); return entry ? [[stage, entry]] : [] })),
         }]

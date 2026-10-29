@@ -43,6 +43,24 @@ test("a stored chart is checked again and retains its pin after reload", () => {
   expect(saved).toMatchObject(current)
 })
 
+test("AI limitations stay with their dashboard after a browser reload", () => {
+  const current = { active: "costs", dashboards: [
+    { id: "costs", name: "Costs", period: "month", widgets: [instance(chart)], stages: {}, notes: ["Time per fee earner is not tracked."] },
+    { id: "work", name: "My work", period: "all", widgets: [instance({ type: "drafts" })], stages: {}, notes: [] },
+  ] }
+  const saved = readDashboards(JSON.parse(JSON.stringify(current)))
+  expect(saved.dashboards[0]!.notes).toEqual(current.dashboards[0]!.notes)
+  expect(saved.dashboards[1]!.notes).toEqual([])
+  const switched = readDashboards(JSON.parse(JSON.stringify({ ...saved, active: "work" })))
+  expect(switched.active).toBe("work")
+  expect(switched.dashboards.find((tab) => tab.id === "costs")!.notes).toEqual(current.dashboards[0]!.notes)
+})
+
+test("stored AI limitations discard invalid entries and keep bounded text", () => {
+  const saved = readDashboards({ active: "work", dashboards: [{ id: "work", name: "Work", stages: {}, notes: [null, 5, " ", "  Not tracked.  ", "x".repeat(500), "a", "b", "c", "d"] }] })
+  expect(saved.dashboards[0]!.notes).toEqual(["Not tracked.", "x".repeat(160), "a", "b", "c"])
+})
+
 test("broken browser state falls back to a usable dashboard", () => {
   const saved = readDashboards({ active: "missing", dashboards: [{ id: "a", name: "Work", period: "yesterday", widgets: [{ widget: { type: "chart", title: "Wrong", metric: "hours" } }], stages: {} }, { id: "a", name: "Duplicate" }] })
   expect(saved.active).toBe("a")

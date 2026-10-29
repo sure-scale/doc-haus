@@ -80,7 +80,7 @@ button.dash-edit { display: inline-flex; align-items: center; gap: var(--space-2
 
 .dash-card-head { position: relative; z-index: 2; display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
 .dash-card-heading { flex: 1; min-width: 0; }
-.dash-card-heading h2 { margin: 0; font-size: 15px; font-weight: 650; line-height: 1.35; letter-spacing: -.1px; }
+.dash-card-heading h2 { margin: 0; font-size: 15px; font-weight: 650; line-height: 1.35; letter-spacing: -.1px; overflow-wrap: anywhere; }
 .dash-card-heading p { margin: 1px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.4; }
 .dash-card-body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
@@ -232,6 +232,7 @@ button.dash-text-button:hover:not(:disabled), a.dash-text-button:hover, .jx-trig
 .dash-key-cell { width: 12px; height: 12px; border-radius: 3px; }
 .dash-calendar-key > span:first-child { margin-right: 2px; }
 .dash-calendar-key > span:last-child { margin-left: 2px; }
+.dash-calendar-hint { margin: var(--space-2) 0 0; color: var(--text-secondary); font-size: 12px; }
 
 /* Progress ring. */
 .dash-ring { flex: none; color: var(--accent); }
@@ -548,7 +549,7 @@ dialog.dash-add-panel:not([open]) { display: none; }
 /* Forced colours: the system paints every surface; keep marks visible. */
 @media (forced-colors: active) {
   .dash-card { border-color: CanvasText; }
-  .dash-week-fill, .dash-hbar-fill, .dash-stack-part, .dash-spread-bar, .dash-swatch, .dash-key-cell, .dash-cell { forced-color-adjust: none; }
+  .dash-week-fill, .dash-hbar-fill, .dash-stack-part, .dash-spread-bar, .dash-swatch, .dash-key-cell, .dash-cell-fill { forced-color-adjust: none; }
   .dash-card:is(.is-bold, .tone-ink) { border-color: CanvasText; }
   .dash-week-track, .dash-hbar-track { outline: 1px solid CanvasText; }
   .dash-journey li::after { background: GrayText; }
@@ -565,6 +566,7 @@ dialog.dash-add-panel:not([open]) { display: none; }
 .dash-tabs > button[aria-selected="true"] { color: var(--md-sys-color-on-primary-container); background: var(--md-sys-color-primary-container); }
 .dash-tabs > button:hover { background: var(--panel-hover); }
 .dash-tabs > button[aria-selected="true"]:hover { background: var(--md-sys-color-primary-container); }
+.dash-tabs > button:focus-visible { outline-offset: -2px; }
 .dash-new { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 40px; height: 40px; border-radius: var(--radius-pill); padding: 0; background: none; border: 1px solid var(--border); }
 .dash-tab-menu { flex: none; }
 .dash-tab-menu > summary { width: 40px; height: 40px; border-radius: var(--radius-pill); }
@@ -608,6 +610,7 @@ button.dash-ask.is-open:hover:not(:disabled) { background: var(--md-sys-color-pr
 .dash-widget-actions .dash-remove svg { width: 16px; height: 16px; }
 .dash-card:is(.is-bold, .tone-ink) .dash-widget-actions .dash-pin[aria-pressed="true"] { color: inherit; background: rgb(255 255 255 / .16); }
 .dash-card:is(.is-bold, .tone-ink) .dash-widget-actions button:hover { background: rgb(255 255 255 / .16); }
+.dash-card:is(.is-bold, .tone-ink) .dash-widget-actions button:focus-visible { outline-color: var(--md-sys-color-on-primary); }
 @media (hover: hover) and (pointer: fine) {
   .dash-widget-actions { opacity: 0; transition: opacity 120ms ease; }
   .dash-card:hover .dash-widget-actions, .dash-card:focus-within .dash-widget-actions, .dash-card.is-pinned .dash-widget-actions { opacity: 1; }
@@ -622,6 +625,7 @@ button.dash-ask.is-open:hover:not(:disabled) { background: var(--md-sys-color-pr
   .dash-ai-suggestions button { flex: 1 1 auto; }
   .dash-ai-heading { align-items: flex-start; }
   .dash-ai-heading label { font-size: 14px; }
+  .dash-ai-entry textarea, .dash-tab-form input { font-size: 16px; }
   .dash-card-head { gap: var(--space-2); }
   .dash-widget-actions { margin-right: -10px; }
   .dash-tabs > button { max-width: 180px; padding-inline: 12px; }

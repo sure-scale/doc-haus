@@ -28,7 +28,6 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
   const [request, setRequest] = useState("")
   const [working, setWorking] = useState(false)
   const [error, setError] = useState("")
-  const [notes, setNotes] = useState<string[]>([])
   const [storageFailed, setStorageFailed] = useState(false)
   const [announcement, setAnnouncement] = useState("")
   const [undoState, setUndoState] = useState<{ text: string; value: Dashboards }>()
@@ -42,6 +41,7 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
   const active = workspace.dashboards.find((tab) => tab.id === workspace.active) ?? workspace.dashboards[0]!
+  const notes = active.notes ?? []
   const now = useMemo(() => Date.now(), [data])
   useEffect(() => {
     const timer = setTimeout(reload, addDays(startOfDay(now), 1) - Date.now() + 1000)
@@ -54,6 +54,9 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
     return () => document.removeEventListener("pointerdown", outside)
   }, [])
   useEffect(() => { if (promptOpen) prompt.current?.focus() }, [promptOpen])
+  useEffect(() => {
+    document.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" })
+  }, [active.id])
 
   const [saved, setSaved] = useState<{ data?: DashboardData; preferences?: DraftingPreferences }>({})
   const latest = useRef(data)
@@ -78,10 +81,10 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
     update({ ...workspace, dashboards: workspace.dashboards.map((tab) => tab.id === next.id ? next : tab) })
   }
   function select(id: string) {
+    if (id === active.id) return
     controller.current?.abort()
     setWorking(false)
     setError("")
-    setNotes([])
     setRenaming(false)
     setDeleting(false)
     update({ ...workspace, active: id })
@@ -94,7 +97,6 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
     setWorking(false)
     setRequest("")
     setError("")
-    setNotes([])
     setRenaming(false)
     setDeleting(false)
     setPromptOpen(true)
@@ -125,7 +127,6 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
     setWorking(false)
     update(undoState.value)
     setUndoState(undefined)
-    setNotes([])
     setAnnouncement("Dashboard change undone")
     requestAnimationFrame(() => askButton.current?.focus())
   }
@@ -136,6 +137,7 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
     update({ active: dashboards[0]!.id, dashboards })
     setUndoState({ text: `${active.name} deleted`, value: workspace })
     setDeleting(false)
+    setError("")
     setAnnouncement("Dashboard deleted")
     requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')?.focus())
   }
@@ -148,7 +150,6 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
     const tabId = active.id
     setWorking(true)
     setError("")
-    setNotes([])
     try {
       const own = ready.matters.filter((row) => !row.matter.sample)
       const plan = await askDashboard({ request: request.trim(), current: widgets.map(({ widget, pinned }) => ({ widget, pinned })), clients: [...new Set(own.flatMap((row) => row.matter.client ? [row.matter.client] : []))], matters: own.map((row) => row.matter.title), signal: abort.signal })
@@ -156,10 +157,9 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
       const current = workspaceRef.current
       const tab = current.dashboards.find((entry) => entry.id === tabId)
       if (!tab) return
-      const next = { ...tab, name: tab.name === "New dashboard" && plan.name ? plan.name : tab.name, widgets: applyPlan(tabWidgets(tab, stage, setupDone), plan) }
+      const next = { ...tab, name: tab.name === "New dashboard" && plan.name ? plan.name : tab.name, widgets: applyPlan(tabWidgets(tab, stage, setupDone), plan), notes: plan.unsupported }
       update({ ...current, dashboards: current.dashboards.map((entry) => entry.id === tabId ? next : entry) })
       setUndoState({ text: "Dashboard updated", value: current })
-      setNotes(plan.unsupported)
       setAnnouncement("Dashboard updated")
     } catch (cause) {
       if (!abort.signal.aborted) setError(cause instanceof Error ? cause.message : "Could not update the dashboard. Try again.")
@@ -214,11 +214,19 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
           <button ref={askButton} type="button" className={`dash-ask${promptOpen ? " is-open" : ""}`} onClick={() => { if (promptOpen && working) { controller.current?.abort(); setWorking(false); setAnnouncement("Dashboard update stopped") } setPromptOpen(!promptOpen) }} disabled={!ready} aria-expanded={promptOpen} aria-controls="dash-ai-panel">{sparkle}Ask AI</button>
         </div>
       </div>
-      {promptOpen && <form id="dash-ai-panel" className="dash-ai-panel" onSubmit={generate}>
+      {promptOpen && <form id="dash-ai-panel" className="dash-ai-panel" onSubmit={generate} onKeyDown={(event) => {
+        if (event.key !== "Escape") return
+        event.preventDefault()
+        controller.current?.abort()
+        setWorking(false)
+        setPromptOpen(false)
+        if (working) setAnnouncement("Dashboard update stopped")
+        requestAnimationFrame(() => askButton.current?.focus())
+      }}>
         <div className="dash-ai-heading"><span className="dash-ai-mark">{sparkle}</span><div><label htmlFor="dash-request">Tell AI what you want from this dashboard</label><p>Your AI arranges the widgets. Your app works out the figures.</p></div></div>
         <div className="dash-ai-entry"><textarea ref={prompt} id="dash-request" value={request} onChange={(event) => setRequest(event.target.value)} placeholder="For example, show my spend by client and the drafts that need me…" rows={2} maxLength={2000} disabled={working} /><button type="submit" className="dash-ai-submit" disabled={!request.trim() || working || !ready}>{sparkle}{working ? "Building dashboard…" : "Update dashboard"}</button></div>
         <div className="dash-ai-suggestions" aria-label="Dashboard ideas">{suggestions.map((suggestion) => <button type="button" key={suggestion} disabled={working} onClick={() => { setRequest(suggestion); prompt.current?.focus() }}>{suggestion}</button>)}</div>
-        <div className="dash-ai-foot"><p>Pinned widgets stay in place. Uses your fast AI model.</p>{working && <button type="button" className="dash-text-button" onClick={() => { controller.current?.abort(); setWorking(false); setAnnouncement("Dashboard update stopped") }}>Stop</button>}</div>
+        <div className="dash-ai-foot"><p>Pinned widgets stay in place. Uses your fast AI model.</p>{working && <button type="button" className="dash-text-button" onClick={() => { controller.current?.abort(); setWorking(false); setAnnouncement("Dashboard update stopped"); requestAnimationFrame(() => prompt.current?.focus()) }}>Stop</button>}</div>
         {working && <p role="status" className="dash-ai-working">Your AI is choosing widgets and chart settings…</p>}
         {error && <p role="alert" className="dash-ai-error">{error}</p>}
       </form>}
@@ -227,7 +235,7 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
       {unread > 0 && <div className="dash-banner" role="status">{icons.warning}<p>Some matters could not be read, so their spend and drafts are missing here.</p><button type="button" className="btn-sm" onClick={reload} disabled={loading}>Retry</button></div>}
       <div id="dash-content" role="tabpanel" aria-labelledby={`dash-tab-${active.id}`} tabIndex={0}>
         {data?.error ? <div className="dash-error" role="alert"><ShapeIcon icon="warning" shape="flower" /><div><p className="dash-error-title">Could not load your matters</p><p>Your figures will show once the matter list loads.</p></div><button type="button" onClick={reload} disabled={loading}>Retry</button></div>
-          : widgets.length === 0 ? <div className="dash-blank"><ShapeIcon icon="plus" shape="sunny" className="dash-blank-badge" /><p className="dash-blank-title">A dashboard for the way you work</p><p>Tell your AI what you want to keep an eye on.</p><button type="button" onClick={() => { setPromptOpen(true); requestAnimationFrame(() => prompt.current?.focus()) }}>{sparkle}Ask AI to build it</button></div>
+          : widgets.length === 0 ? <div className="dash-blank"><ShapeIcon icon="plus" shape="sunny" className="dash-blank-badge" /><p className="dash-blank-title">A dashboard for the way you work</p><p>Tell your AI what you want to keep an eye on.</p><button type="button" disabled={!ready} onClick={() => { setPromptOpen(true); requestAnimationFrame(() => prompt.current?.focus()) }}>{sparkle}Ask AI to build it</button></div>
             : <div className="dash-grid" aria-busy={!context}>{widgets.map((item) => <Widget key={item.key} item={item} context={context} period={active.period} bold={item.widget.type === bold} onPin={() => togglePin(item.key)} onRemove={() => remove(item.key)} />)}</div>}
       </div>
     </div>
