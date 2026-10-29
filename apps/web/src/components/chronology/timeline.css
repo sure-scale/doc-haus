@@ -454,3 +454,9 @@
   color: #697383;
   font-size: 11px;
 }
+
+.chronology-timeline-topbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}

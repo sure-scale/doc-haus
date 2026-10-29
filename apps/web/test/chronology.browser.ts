@@ -220,6 +220,11 @@ try {
       return reply(state)
     }
     if (/\/chronology\/proposals\/.+\/decision$/.test(url.pathname)) {
+      if (forceConflict) {
+        forceConflict = false
+        state.revision++
+        return reply({ error: "The chronology changed elsewhere. Reload and review your change." }, 409)
+      }
       const proposal = state.proposals.find((item) => url.pathname.includes(item.id))!
       decisions++
       if (input.decision === "accept") {
@@ -249,6 +254,13 @@ try {
       tableScroll: document.querySelector(".chronology-table-scroll")!.scrollLeft,
     }))
   await expect(page.getByRole("heading", { name: "Fact chronology", exact: true })).toBeVisible()
+  const zoomBox = await page.locator(".chronology-timeline-controls").boundingBox()
+  const chartBox = await page.locator(".chronology-swimlane-chart").boundingBox()
+  assert.ok(zoomBox && chartBox && zoomBox.y + zoomBox.height <= chartBox.y, "zoom controls sit above the timeline")
+  assert.ok(
+    Math.abs(zoomBox!.x + zoomBox!.width - chartBox!.x - chartBox!.width) < 2,
+    "zoom controls align to its right edge",
+  )
   await expect(detail).toHaveCount(0)
   const timelinePopup = page.getByRole("dialog", { name: "Timeline events", exact: true })
   const collectionPoint = page.getByRole("button", { name: "2026-05-06: Equipment collected", exact: true })
@@ -304,6 +316,18 @@ try {
   await page.reload()
   await expect(page.locator(".chronology-event-table tbody tr")).toHaveCount(3)
   await page.getByRole("button", { name: /^Filter/ }).click()
+  const filterColumns = await page.locator(".chronology-filter-primary > *").evaluateAll((fields) =>
+    fields.map((field) => {
+      const box = field.getBoundingClientRect()
+      return { x: box.x, y: box.y }
+    }),
+  )
+  assert.equal(filterColumns.length, 3)
+  assert.ok(
+    filterColumns.every((field) => Math.abs(field.y - filterColumns[0]!.y) < 20),
+    "desktop filters use one primary row",
+  )
+  assert.ok(filterColumns[0]!.x < filterColumns[1]!.x && filterColumns[1]!.x < filterColumns[2]!.x)
   const documentFilter = page.getByRole("button", { name: "Document", exact: true })
   await documentFilter.click()
   const documentPicker = page.getByRole("group", { name: "Document", exact: true })
@@ -351,9 +375,12 @@ try {
   await sourcesButton.click()
   const sources = page.getByRole("dialog", { name: "Sources and coverage", exact: true })
   await expect(sources).toContainText("Carrier note.md")
-  await expect(sources).toContainText("Uploaded, readable text, and chronology coverage are separate states")
+  await expect(sources.getByText("File", { exact: true })).toBeVisible()
+  await expect(sources.getByText("Text", { exact: true })).toBeVisible()
+  await expect(sources.getByText("Recorded reading", { exact: true })).toBeVisible()
+  await expect(sources).toContainText("2 saved entries")
   await sources.getByText("How source processing works", { exact: true }).click()
-  await expect(sources).toContainText("Display filters change only the events you see")
+  await expect(sources).toContainText("Display filters change only the events shown")
   await page.keyboard.press("Escape")
   await expect(sources).toHaveCount(0)
   await expect(sourcesButton).toBeFocused()
@@ -504,12 +531,53 @@ try {
   await page.reload()
   await page.getByRole("button", { name: "Updates 1", exact: true }).click()
   await expect(page.getByRole("region", { name: "Review chronology updates" })).toContainText("Signed receipt recorded")
+  await expect(page.getByRole("region", { name: "Current saved entry", exact: true })).toHaveCount(0)
+  await page.getByRole("button", { name: "Update to review", exact: true }).click()
+  const updatePicker = page.getByRole("group", { name: "Update to review", exact: true })
+  await updatePicker.getByRole("textbox", { name: "Search updates", exact: true }).fill("receipt")
+  await expect(updatePicker.getByRole("radio")).toHaveCount(1)
+  await updatePicker.getByRole("radio").click()
+  forceConflict = true
+  await page.getByRole("button", { name: "Skip for later", exact: true }).click()
+  const updatesDialog = page.getByRole("dialog", { name: "Review chronology updates", exact: true })
+  await expect(updatesDialog.getByRole("alert")).toContainText("The chronology changed elsewhere")
+  assert.equal(state.proposals[0]!.status, "pending", "conflicting decisions preserve the pending change")
+  assert.equal(decisions, 0, "conflicting decisions are not replayed")
+  await updatesDialog.getByRole("button", { name: "Reload latest", exact: true }).click()
+  await expect(updatesDialog.getByRole("alert")).toHaveCount(0)
   await page.getByRole("button", { name: "Skip for later", exact: true }).click()
   await expect.poll(() => state.proposals[0]!.status).toBe("deferred")
   await page.getByRole("button", { name: "Accept this change", exact: true }).click()
   await expect.poll(() => decisions).toBe(2)
   assert.equal(state.events.find((item) => item.id === "receipt")!.reviewed, true)
   await page.getByRole("button", { name: "Back to saved events" }).click()
+  for (const kind of ["amendment", "conflict", "removal"] as const) {
+    const proposed = event(`fixture-${kind}`, `${kind} collection proposal`, "2026-05-07")
+    state.proposals.push({
+      ...proposal,
+      id: `review-${kind}`,
+      kind,
+      targetIds: ["collection"],
+      events: kind === "removal" ? [] : [proposed],
+      status: "pending",
+    })
+  }
+  state.revision++
+  await page.reload()
+  await page.getByRole("button", { name: "Updates 3", exact: true }).click()
+  const reviewSurface = page.getByRole("dialog", { name: "Review chronology updates", exact: true })
+  for (const purpose of ["Update this event", "Review a competing account", "Hide this event"]) {
+    await expect(reviewSurface.getByRole("heading", { name: purpose, exact: true })).toBeVisible()
+    await expect(reviewSurface.getByRole("region", { name: "Current saved entry", exact: true })).toContainText(
+      "Equipment collected",
+    )
+    if (purpose === "Hide this event") {
+      await expect(reviewSurface.getByRole("region", { name: "Proposed result", exact: true })).toHaveCount(0)
+      await expect(reviewSurface).toContainText("This does not delete the record")
+    } else await expect(reviewSurface.getByRole("region", { name: "Proposed result", exact: true })).toBeVisible()
+    await reviewSurface.getByRole("button", { name: "Keep current", exact: true }).click()
+  }
+  await reviewSurface.getByRole("button", { name: "Back to saved events", exact: true }).click()
   const evidenceDirectory = process.env.CHRONOLOGY_EVIDENCE_DIR
   if (evidenceDirectory)
     await page.screenshot({ path: path.join(evidenceDirectory, "implementation-desktop.png"), fullPage: false })

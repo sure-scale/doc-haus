@@ -31,7 +31,7 @@
   right: 0;
   top: calc(100% + 7px);
   width: min(340px, calc(var(--viewport-inline, 100vw) - 24px));
-  max-height: min(75dvh, 640px);
+  max-height: min(var(--matter-menu-available, 75dvh), 640px);
   overflow: auto;
   padding: 7px;
   border: 1px solid #e2e4e8;
@@ -44,6 +44,10 @@
 .matter-actions-menu-items {
   display: grid;
   gap: 2px;
+}
+.matter-actions-menu-popup[data-side="above"] {
+  top: auto;
+  bottom: calc(100% + 7px);
 }
 .matter-actions-menu .matter-actions-menu-items > button {
   display: block;

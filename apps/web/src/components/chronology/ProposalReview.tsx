@@ -6,7 +6,49 @@ import type {
   ChronologyEvidence,
   ChronologyProposal,
 } from "../../api/ingest/chronology"
+import JurisdictionSelect from "../JurisdictionSelect"
 import { dateLabel, eventEvidence, eventQualifications, simpleAddition } from "./model"
+import "./proposal-review.css"
+
+const purposes: Record<ChronologyProposal["kind"], { title: string; explanation: string; short: string }> = {
+  addition: {
+    title: "Add an event",
+    short: "New event",
+    explanation:
+      "This event is not yet in your saved chronology. Check the proposed entry and its sources before adding it.",
+  },
+  amendment: {
+    title: "Update this event",
+    short: "Update",
+    explanation:
+      "Compare the saved entry with the proposed result. Your saved wording, dates and review stay as they are until you accept.",
+  },
+  conflict: {
+    title: "Review a competing account",
+    short: "Competing account",
+    explanation:
+      "The sources give different accounts. Accepting retains the existing accounts and the disagreement; it does not decide which account is true.",
+  },
+  removal: {
+    title: "Hide this event",
+    short: "Hide event",
+    explanation:
+      "This proposes hiding an entry from the active chronology. The entry, evidence and history are retained, and you can restore it later.",
+  },
+  merge: {
+    title: "Combine these events",
+    short: "Combine events",
+    explanation:
+      "Check that these entries describe the same occurrence. The combined result retains the source accounts and links to the previous records.",
+  },
+  split: {
+    title: "Separate this event",
+    short: "Separate events",
+    explanation:
+      "Check the proposed separate occurrences. Their source accounts and links to the previous entry are retained.",
+  },
+}
+
 export default function ProposalReview({
   chronology,
   busy,
@@ -37,63 +79,143 @@ export default function ProposalReview({
   const [batchIds, setBatchIds] = useState<string[]>([])
   const heading = useRef<HTMLHeadingElement>(null)
   useEffect(() => {
-    heading.current?.focus({ preventScroll: true })
-  }, [])
-  useEffect(() => {
     if (!proposals.some((proposal) => proposal.id === selected))
       setSelected(proposals.find((proposal) => proposal.status === "pending")?.id ?? proposals[0]?.id)
+    setBatchIds((current) =>
+      current.filter((id) => proposals.some((proposal) => proposal.id === id && simpleAddition(proposal))),
+    )
+    // A stored revision changes the available decisions; local navigation does not.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chronology.revision])
   const proposal = proposals.find((item) => item.id === selected)
+  const index = proposals.findIndex((item) => item.id === selected)
   const additions = proposals.filter(simpleAddition)
+  const later = proposals.filter((item) => item.status === "deferred").length
+  const saved = proposal
+    ? proposal.targetIds.flatMap((id) => {
+        const event = chronology.events.find((event) => event.id === id)
+        return event ? [event] : []
+      })
+    : []
+  const eventTitle = (item: ChronologyProposal) =>
+    item.events[0]?.title ??
+    chronology.events.find((event) => item.targetIds.includes(event.id))?.title ??
+    "Previous event unavailable"
+  useEffect(() => {
+    if (!batch && !discard) heading.current?.focus({ preventScroll: true })
+  }, [proposal?.id, batch, discard])
+
   return (
-    <section className="chronology-proposal-review" aria-label="Review chronology updates">
-      <div className="chronology-section-head">
-        <h2 tabIndex={-1} ref={heading}>
-          Review updates <small>{proposals.length}</small>
-        </h2>
-        <button type="button" onClick={onClose}>
-          Back to saved events
-        </button>
+    <section className="chronology-proposal-review update-review" aria-label="Review chronology updates">
+      <div className="update-review-intro">
+        <p className="update-review-progress" role="status">
+          {proposals.length
+            ? `${proposals.length} ${proposals.length === 1 ? "change awaiting" : "changes awaiting"} your decision${later ? ` · ${later} saved for later` : ""}`
+            : "No changes awaiting a decision"}
+        </p>
+        <p>Review one change at a time. Your saved chronology stays unchanged until you accept.</p>
       </div>
-      <p>
-        Saved events stay unchanged until you accept a proposal. Review one change at a time; competing accounts are
-        retained. Individual acceptance marks the resulting event reviewed.
-      </p>
-      <div className="chronology-inline chronology-proposal-controls">
-        <label>
-          Change
-          <select
-            aria-label="Update to review"
-            value={selected ?? ""}
-            onChange={(event) => setSelected(event.target.value)}
-          >
-            {proposals.map((item, index) => (
-              <option key={item.id} value={item.id}>
-                {index + 1}. {item.kind} · {item.events[0]?.title ?? item.reason}
-                {item.status === "deferred" ? " (for later)" : ""}
-              </option>
-            ))}
-          </select>
-        </label>
+      {proposals.length > 0 && (
+        <div className="update-review-navigation">
+          <div className="update-review-picker">
+            <span className="update-review-field-label">Choose a change</span>
+            <JurisdictionSelect
+              jurisdictions={proposals.map((item, at) => ({
+                code: item.id,
+                name: `${at + 1}. ${purposes[item.kind].short} — ${eventTitle(item)}${item.status === "deferred" ? " · For later" : ""}`,
+              }))}
+              selected={selected ? [selected] : []}
+              multiple={false}
+              showCode={false}
+              disabled={busy}
+              label="Update to review"
+              searchLabel="Search updates"
+              emptyLabel="Choose an update"
+              noResultsLabel="No updates match your search."
+              trigger={
+                <>
+                  <span>
+                    <small>
+                      {index + 1} of {proposals.length}
+                    </small>
+                    <strong>{proposal ? eventTitle(proposal) : "Choose an update"}</strong>
+                  </span>
+                  <span aria-hidden="true">⌄</span>
+                </>
+              }
+              onChange={(ids) => {
+                if (ids[0]) {
+                  setSelected(ids[0])
+                  setBatch(false)
+                  setDiscard(false)
+                }
+              }}
+            />
+          </div>
+          <div className="update-review-step-buttons">
+            <button
+              type="button"
+              aria-label="Previous update"
+              title="Previous update"
+              disabled={busy || index <= 0}
+              onClick={() => {
+                setSelected(proposals[index - 1]?.id)
+                setBatch(false)
+                setDiscard(false)
+              }}
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              aria-label="Next update"
+              title="Next update"
+              disabled={busy || index < 0 || index >= proposals.length - 1}
+              onClick={() => {
+                setSelected(proposals[index + 1]?.id)
+                setBatch(false)
+                setDiscard(false)
+              }}
+            >
+              ›
+            </button>
+          </div>
+        </div>
+      )}
+      <div className="update-review-secondary-actions">
         {additions.length > 0 && (
           <button
             type="button"
+            disabled={busy}
+            aria-label={`Batch straightforward additions (${additions.length})`}
             onClick={() => {
               setBatch((value) => !value)
               setBatchIds(additions.map((item) => item.id))
+              setDiscard(false)
             }}
           >
-            Batch straightforward additions ({additions.length})
+            Add straightforward events together ({additions.length})
           </button>
         )}
-        <button type="button" onClick={() => setDiscard((value) => !value)}>
-          Discard pending refresh…
-        </button>
+        {proposals.length > 0 && (
+          <button
+            type="button"
+            className="update-review-discard"
+            disabled={busy}
+            onClick={() => {
+              setDiscard((value) => !value)
+              setBatch(false)
+            }}
+          >
+            Discard pending refresh…
+          </button>
+        )}
       </div>
       {discard && (
-        <div className="chronology-notice">
-          <p>Discard the pending refresh proposals? Saved events, reviews, hidden choices and corrections are kept.</p>
-          <div className="chronology-inline">
+        <div className="update-review-notice" role="note">
+          <strong>Discard the pending refresh proposals?</strong>
+          <p>Your saved events, reviews, notes, hidden choices and corrections are kept.</p>
+          <div className="update-review-inline">
             <button type="button" onClick={() => setDiscard(false)}>
               Keep proposals
             </button>
@@ -110,27 +232,31 @@ export default function ProposalReview({
         </div>
       )}
       {batch && (
-        <div className="chronology-preview" aria-label="Batch addition preview">
-          <h3>Review additions before accepting</h3>
+        <div className="chronology-preview update-review-batch" aria-label="Batch addition preview">
+          <h3>Add new events together</h3>
           <p>
-            Only straightforward additions are eligible. Conflicts, removals and changes to existing events require
-            individual review. Batch additions remain unreviewed.
+            Only straightforward new events are included. They will remain <strong>unreviewed</strong>, ready to check
+            individually in the chronology. Changes to existing events, conflicts and hiding decisions need individual
+            review.
           </p>
-          {additions.map((item) => (
-            <label className="chronology-check" key={item.id}>
-              <input
-                type="checkbox"
-                checked={batchIds.includes(item.id)}
-                onChange={(change) =>
-                  setBatchIds((current) =>
-                    change.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id),
-                  )
-                }
-              />
-              <span>{item.events.map((event) => `${dateLabel(event.date)} · ${event.title}`).join("; ")}</span>
-            </label>
-          ))}
-          <div className="chronology-inline">
+          <div className="update-review-batch-list">
+            {additions.map((item) => (
+              <label className="chronology-check" key={item.id}>
+                <input
+                  type="checkbox"
+                  disabled={busy}
+                  checked={batchIds.includes(item.id)}
+                  onChange={(change) =>
+                    setBatchIds((current) =>
+                      change.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id),
+                    )
+                  }
+                />
+                <span>{item.events.map((event) => `${dateLabel(event.date)} · ${event.title}`).join("; ")}</span>
+              </label>
+            ))}
+          </div>
+          <div className="update-review-inline">
             <button type="button" onClick={() => setBatch(false)}>
               Cancel batch
             </button>
@@ -147,126 +273,196 @@ export default function ProposalReview({
           </div>
         </div>
       )}
-      {proposal ? (
-        <article key={proposal.id} className="chronology-proposal">
-          <div className="chronology-tags">
-            <span className="chronology-tag">{proposal.kind}</span>
-            <span className="chronology-tag">{proposal.origin}</span>
-            {proposal.status === "deferred" && <span className="chronology-tag">For later</span>}
-          </div>
-          <h3>{proposal.reason}</h3>
-          <p>
-            <strong>Recommendation:</strong> {proposal.recommendation}
-          </p>
-          <div className="chronology-proposal-comparison">
-            <div>
-              <h4>Current saved entry</h4>
-              {proposal.targetIds.length ? (
-                proposal.targetIds.map((id) => {
-                  const event = chronology.events.find((item) => item.id === id)
-                  return event ? (
-                    <Preview key={id} event={event} onEvidence={onEvidence} />
-                  ) : (
-                    <p key={id} className="chronology-warning">
-                      The previous event is unavailable. Reload before deciding.
-                    </p>
-                  )
-                })
-              ) : (
-                <p>New entry; no saved event is replaced.</p>
-              )}
-            </div>
-            <div>
-              <h4>Proposed result</h4>
-              {proposal.events.length ? (
-                proposal.events.map((event) => <Preview key={event.id} event={event} onEvidence={onEvidence} />)
-              ) : (
-                <p>The event would be removed from the active chronology; its history is retained.</p>
-              )}
-            </div>
-          </div>
-          <div className="chronology-inline chronology-decision-actions">
-            <button
-              type="button"
-              className="primary"
-              disabled={busy}
-              onClick={() => void onDecision(proposal, "accept")}
-            >
-              Accept this change
-            </button>
-            <button type="button" disabled={busy} onClick={() => void onDecision(proposal, "keep")}>
-              Keep current
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={async () => {
-                if (await onDecision(proposal, "defer")) {
-                  const next = proposals.find((item) => item.id !== proposal.id && item.status === "pending")
-                  if (next) setSelected(next.id)
-                }
-              }}
-            >
-              Skip for later
-            </button>
-            {(proposal.events[0] ?? chronology.events.find((event) => proposal.targetIds.includes(event.id))) && (
-              <button
-                type="button"
-                onClick={() =>
-                  onAsk(
-                    proposal.events[0] ?? chronology.events.find((event) => proposal.targetIds.includes(event.id))!,
-                    proposal,
-                  )
-                }
-              >
-                Ask doc.haus
-              </button>
+      {proposal && !batch && !discard ? (
+        <article key={proposal.id} className="chronology-proposal update-review-change">
+          <header className="update-review-purpose">
+            <p className="update-review-eyebrow">
+              {proposal.status === "deferred" ? "Set aside for later" : "Suggested change"}
+            </p>
+            <h3 ref={heading} tabIndex={-1}>
+              {purposes[proposal.kind].title}
+            </h3>
+            <p>{purposes[proposal.kind].explanation}</p>
+          </header>
+          <div
+            className={`update-review-comparison${proposal.kind === "addition" || proposal.kind === "removal" ? " is-single" : ""}`}
+          >
+            {proposal.kind !== "addition" && (
+              <section className="update-review-saved" aria-label="Current saved entry">
+                <h4>{saved.length > 1 ? "Saved entries now" : "Saved entry now"}</h4>
+                {saved.map((event) => (
+                  <Preview key={event.id} event={event} onEvidence={onEvidence} />
+                ))}
+                {saved.length !== proposal.targetIds.length && (
+                  <p className="chronology-warning">A previous entry is unavailable. Reload before deciding.</p>
+                )}
+              </section>
+            )}
+            {proposal.kind !== "removal" && (
+              <section className="update-review-proposed" aria-label="Proposed result">
+                <h4>{proposal.kind === "addition" ? "New event to add" : "If you accept"}</h4>
+                {proposal.events.map((event) => (
+                  <Preview key={event.id} event={event} proposed onEvidence={onEvidence} />
+                ))}
+              </section>
             )}
           </div>
+          {proposal.kind === "removal" && (
+            <div className="update-review-hide-note">
+              <strong>After accepting: hidden, with its history kept.</strong>
+              <p>
+                This does not delete the record or establish that the event did not happen. You can find and restore it
+                using the hidden-events filter.
+              </p>
+            </div>
+          )}
+          <div className="update-review-reason">
+            <h4>Why this is suggested</h4>
+            <p>{proposal.reason}</p>
+            <h4>What to consider</h4>
+            <p>{proposal.recommendation}</p>
+          </div>
+          <p className="update-review-evidence-note">
+            A verified quotation confirms a text match, not that an account is true.
+          </p>
+          <div className="update-review-decision-area">
+            <div className="update-review-decisions">
+              <button
+                type="button"
+                className="primary"
+                disabled={busy}
+                onClick={() => void onDecision(proposal, "accept")}
+              >
+                Accept this change
+              </button>
+              <button type="button" disabled={busy} onClick={() => void onDecision(proposal, "keep")}>
+                Keep current
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={async () => {
+                  if (await onDecision(proposal, "defer")) {
+                    const next = proposals.find((item) => item.id !== proposal.id && item.status === "pending")
+                    if (next) setSelected(next.id)
+                  }
+                }}
+              >
+                Skip for later
+              </button>
+              {(proposal.events[0] ?? saved[0]) && (
+                <button
+                  type="button"
+                  className="update-review-ask"
+                  disabled={busy}
+                  onClick={() => onAsk(proposal.events[0] ?? saved[0]!, proposal)}
+                >
+                  Ask doc.haus
+                </button>
+              )}
+            </div>
+            <p>
+              <strong>Accept</strong>{" "}
+              {proposal.kind === "removal"
+                ? "hides the entry and keeps its previous review."
+                : "saves the result as reviewed."}{" "}
+              <strong>Keep current</strong> rejects this suggestion
+              {proposal.kind === "addition" ? " without adding the event" : ""}. <strong>Skip</strong> keeps it for a
+              later decision.
+            </p>
+          </div>
         </article>
-      ) : (
-        <p className="chronology-empty">No pending updates. Your saved chronology is unchanged.</p>
-      )}
+      ) : !proposal ? (
+        <div className="update-review-empty">
+          <span aria-hidden="true">✓</span>
+          <h3 ref={heading} tabIndex={-1}>
+            No pending updates
+          </h3>
+          <p>Your saved chronology is ready to return to.</p>
+        </div>
+      ) : null}
+      <footer className="update-review-footer">
+        <button type="button" onClick={onClose}>
+          Back to saved events
+        </button>
+      </footer>
     </section>
   )
 }
+
 function Preview({
   event,
+  proposed = false,
   onEvidence,
 }: {
   event: ChronologyEvent
+  proposed?: boolean
   onEvidence: (evidence: ChronologyEvidence) => void
 }) {
+  const evidence = eventEvidence(event)
+  const qualifications = eventQualifications(event)
   return (
-    <article className="chronology-preview-event">
-      <strong>{event.title}</strong>
-      <p>{dateLabel(event.date)}</p>
+    <article className="chronology-preview-event update-review-entry">
+      <strong className="update-review-event-title">{event.title}</strong>
+      <p className="update-review-event-date">
+        {dateLabel(event.date)}
+        {!proposed ? ` · ${event.reviewed ? "Reviewed" : "Unreviewed"}` : ""}
+      </p>
       <p>{event.detail}</p>
-      <div className="chronology-tags">
-        {eventQualifications(event).map((text) => (
-          <span key={text} className="chronology-tag">
-            {text}
-          </span>
-        ))}
-      </div>
+      {qualifications.length > 0 && <p className="update-review-qualifications">{qualifications.join(" · ")}</p>}
       {event.hidden && (
-        <p className="chronology-warning">This event is hidden. Refresh does not restore it automatically.</p>
+        <p className="chronology-warning">
+          This entry is hidden. Accepting an update does not restore it automatically.
+        </p>
       )}
-      {event.lawyerEdited && <p className="chronology-muted">Contains lawyer corrections.</p>}
-      {eventEvidence(event).map((evidence) => (
-        <div key={evidence.id} className="chronology-evidence">
-          <strong>
-            {evidence.documentName} · {evidence.section}
-          </strong>
-          <blockquote>{evidence.excerpt}</blockquote>
-          <p className="chronology-muted">
-            {evidence.verified ? "Quotation verified" : "Unverified"} · {evidence.freshness}
-          </p>
-          <button type="button" onClick={() => onEvidence(evidence)}>
-            Inspect source
-          </button>
-        </div>
-      ))}
+      {event.lawyerEdited && <p className="chronology-muted">Includes lawyer corrections.</p>}
+      {event.accounts.length > 1 && (
+        <details className="update-review-accounts">
+          <summary>Source accounts ({event.accounts.length})</summary>
+          {event.accounts.map((account) => (
+            <div key={account.id}>
+              <strong>{dateLabel(account.date)}</strong>
+              {account.title !== event.title && <p>{account.title}</p>}
+              {account.detail && account.detail !== event.detail && <p>{account.detail}</p>}
+              {account.attribution && <p className="chronology-muted">Reported by {account.attribution}</p>}
+            </div>
+          ))}
+        </details>
+      )}
+      <details className="update-review-evidence" open>
+        <summary>Supporting evidence ({evidence.length})</summary>
+        {evidence.length ? (
+          evidence.map((source, index) => (
+            <div key={`${source.id}:${index}`} className="update-review-source">
+              <strong>
+                {source.documentName}
+                {source.section ? ` · ${source.section}` : ""}
+              </strong>
+              <blockquote>{source.excerpt || "Source passage unavailable."}</blockquote>
+              <p>
+                {source.verified ? "Quotation verified" : "Quotation unverified"} ·{" "}
+                {source.freshness === "current"
+                  ? "Source unchanged"
+                  : source.freshness === "stale"
+                    ? "Source changed — recheck"
+                    : source.freshness === "unavailable"
+                      ? "Source unavailable"
+                      : "Source not checked"}
+              </p>
+              {source.provenance === "supplied-chronology" && (
+                <p className="chronology-warning">
+                  Supplied chronology — the underlying original source is not independently established by this passage.
+                </p>
+              )}
+              <button type="button" onClick={() => onEvidence(source)}>
+                Inspect source
+              </button>
+            </div>
+          ))
+        ) : (
+          <p className="chronology-warning">No supporting source was supplied.</p>
+        )}
+      </details>
     </article>
   )
 }

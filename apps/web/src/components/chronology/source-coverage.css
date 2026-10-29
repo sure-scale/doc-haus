@@ -1,0 +1,277 @@
+.source-coverage {
+  color: #263348;
+  font-size: 13px;
+  line-height: 1.55;
+  min-width: 0;
+}
+.source-coverage .source-coverage-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.source-coverage .source-coverage-heading h2 {
+  margin: 0 0 4px;
+  font-size: 19px;
+  font-weight: 500;
+}
+.source-coverage .source-coverage-heading p {
+  margin: 0;
+  color: #707987;
+  font-size: 12px;
+}
+.source-coverage .source-coverage-heading > button {
+  flex: none;
+  color: #344d74;
+  border-color: #dfe4eb;
+  font-size: 12px;
+}
+.source-coverage .source-coverage-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+.source-coverage .source-coverage-summary > div {
+  flex: 1 1 130px;
+  border: 1px solid #e6e9ee;
+  background: #f8f9fb;
+  border-radius: 7px;
+  padding: 10px 14px;
+}
+.source-coverage .source-coverage-summary dt {
+  color: #717b89;
+  font-size: 11px;
+}
+.source-coverage .source-coverage-summary dd {
+  margin: 3px 0 0;
+  color: #20324c;
+  font-size: 24px;
+  line-height: 1.2;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.source-coverage .source-coverage-context {
+  border-left: 2px solid #d7dfeb;
+  padding-left: 11px;
+  margin: 14px 0 20px;
+  color: #677386;
+  font-size: 12px;
+}
+.source-coverage .source-coverage-context strong {
+  color: #40577a;
+  font-weight: 500;
+}
+.source-coverage .source-coverage-list {
+  list-style: none;
+  display: grid;
+  gap: 12px;
+  padding: 0;
+  margin: 0;
+}
+.source-coverage .source-coverage-card {
+  padding: 15px 16px;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  background: #fff;
+  min-width: 0;
+}
+.source-coverage .source-coverage-card-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.source-coverage .source-coverage-card-heading .chronology-detail-source-icon {
+  width: 19px;
+  height: 19px;
+  flex: 0 0 19px;
+  color: #667e9d;
+}
+.source-coverage .source-coverage-card-heading h3 {
+  flex: 1;
+  min-width: 100px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.source-coverage .source-coverage-status {
+  flex: none;
+  padding: 3px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.source-coverage .source-coverage-status.is-complete {
+  background: #eef5f3;
+  color: #47766a;
+}
+.source-coverage .source-coverage-status.needs-checking {
+  background: #fbf3e5;
+  color: #996d27;
+}
+.source-coverage .source-coverage-provenance {
+  color: #916c31;
+  background: #fcf8ef;
+  border-radius: 4px;
+  padding: 7px 9px;
+  margin: 11px 0;
+  font-size: 11px;
+}
+.source-coverage .source-coverage-facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1.3fr;
+  gap: 12px;
+  margin: 14px 0 11px;
+}
+.source-coverage .source-coverage-facts dt {
+  color: #818996;
+  font-size: 10px;
+}
+.source-coverage .source-coverage-facts dd {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: #46556b;
+}
+.source-coverage .source-coverage-contribution {
+  margin: 9px 0;
+  color: #677386;
+  font-size: 11px;
+}
+.source-coverage .source-coverage-contribution strong {
+  font-weight: 500;
+  color: #425574;
+}
+.source-coverage .source-coverage-date {
+  margin: 8px 0;
+  color: #677386;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.source-coverage .source-coverage-warning {
+  color: #936726;
+  font-size: 12px;
+  margin: 8px 0;
+}
+.source-coverage .source-coverage-card-issues {
+  margin: 11px 0;
+  padding-left: 18px;
+  color: #936726;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.source-coverage .source-coverage-card-issues > li + li {
+  margin-top: 5px;
+}
+.source-coverage .source-coverage-source-detail {
+  margin-top: 11px;
+  font-size: 11px;
+  color: #737f8f;
+}
+.source-coverage .source-coverage-source-detail summary {
+  color: #536c91;
+  font-size: 11px;
+  cursor: pointer;
+}
+.source-coverage .source-coverage-source-detail p {
+  margin: 9px 0 0;
+}
+.source-coverage .source-coverage-source-detail strong {
+  font-weight: 500;
+}
+.source-coverage .source-coverage-issues,
+.source-coverage .source-coverage-questions {
+  margin: 18px 0;
+  padding: 13px 15px;
+  border: 1px solid #eee0c8;
+  background: #fdf9f0;
+  border-radius: 7px;
+  color: #8b652b;
+}
+.source-coverage .source-coverage-issues h3,
+.source-coverage .source-coverage-questions h3 {
+  color: #805d2b;
+  font-size: 13px;
+  margin: 0 0 7px;
+  font-weight: 500;
+}
+.source-coverage .source-coverage-issues ul,
+.source-coverage .source-coverage-questions ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+.source-coverage .source-coverage-issues li + li,
+.source-coverage .source-coverage-questions li + li {
+  margin-top: 6px;
+}
+.source-coverage .source-coverage-questions > p {
+  font-size: 12px;
+  margin: 5px 0;
+}
+.source-coverage .source-coverage-method {
+  border-top: 1px solid #e7e9ed;
+  padding-top: 16px;
+  margin: 22px 0 0;
+}
+.source-coverage .source-coverage-method summary {
+  font-size: 12px;
+  color: #526985;
+  cursor: pointer;
+}
+.source-coverage .source-coverage-method p {
+  font-size: 12px;
+  color: #6e7888;
+  margin: 11px 0 0;
+}
+.source-coverage .source-coverage-limitations {
+  font-size: 11px;
+  color: #848c98;
+  margin: 17px 0 0;
+}
+.source-coverage .source-coverage-empty {
+  background: #f8f9fb;
+  padding: 20px;
+  border-radius: 7px;
+  border: 1px solid #e5e9ef;
+  margin: 20px 0;
+}
+.source-coverage .source-coverage-empty h3 {
+  font-size: 14px;
+  font-weight: 500;
+  margin: 0 0 7px;
+}
+.source-coverage .source-coverage-empty p {
+  color: #707b8c;
+  margin: 0;
+  font-size: 12px;
+}
+@media (max-width: 600px) {
+  .source-coverage .source-coverage-card {
+    padding: 13px;
+  }
+  .source-coverage .source-coverage-status {
+    margin-left: 27px;
+  }
+  .source-coverage .source-coverage-summary > div {
+    flex-basis: 110px;
+  }
+  .source-coverage .source-coverage-facts {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .source-coverage .source-coverage-facts > div:last-child {
+    grid-column: 1/-1;
+  }
+  .source-coverage .source-coverage-source-detail summary,
+  .source-coverage .source-coverage-method summary,
+  .source-coverage .source-coverage-heading > button {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+}

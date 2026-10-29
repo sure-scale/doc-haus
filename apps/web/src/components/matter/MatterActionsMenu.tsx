@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react"
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import "./matter-actions-menu.css"
 
 export type MatterMenuAction = { id: string; label: string; onSelect: () => void; disabled?: boolean }
@@ -14,6 +14,38 @@ export default function MatterActionsMenu({
   const id = useId()
   const disclosure = useRef<HTMLDetailsElement>(null)
   const [open, setOpen] = useState(false)
+  useLayoutEffect(() => {
+    if (!open) return
+    const menu = disclosure.current
+    const popup = menu?.querySelector<HTMLElement>(".matter-actions-menu-popup")
+    if (!menu || !popup) return
+    const position = () => {
+      const scale = Number.parseFloat(getComputedStyle(document.body).zoom) || 1
+      const viewport = window.visualViewport
+      const top = viewport?.offsetTop ?? 0
+      const bottom = (viewport?.offsetTop ?? 0) + (viewport?.height ?? window.innerHeight)
+      const anchor = menu.querySelector("summary")!.getBoundingClientRect()
+      const above = Math.max(0, (anchor.top - top - 19) / scale)
+      const below = Math.max(0, (bottom - anchor.bottom - 19) / scale)
+      const openAbove = below < Math.min(280, popup.scrollHeight) && above > below
+      popup.dataset.side = openAbove ? "above" : "below"
+      popup.style.setProperty("--matter-menu-available", `${openAbove ? above : below}px`)
+    }
+    position()
+    const observer = new ResizeObserver(position)
+    observer.observe(menu)
+    window.addEventListener("resize", position)
+    window.addEventListener("scroll", position, true)
+    window.visualViewport?.addEventListener("resize", position)
+    window.visualViewport?.addEventListener("scroll", position)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener("resize", position)
+      window.removeEventListener("scroll", position, true)
+      window.visualViewport?.removeEventListener("resize", position)
+      window.visualViewport?.removeEventListener("scroll", position)
+    }
+  }, [open])
   useEffect(() => {
     if (!open) return
     const closeOutside = (event: PointerEvent) => {

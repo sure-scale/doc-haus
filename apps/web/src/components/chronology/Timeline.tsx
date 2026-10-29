@@ -367,6 +367,35 @@ export default function ChronologyTimeline({
       aria-label="Event timeline"
     >
       <h2 className="chronology-sr-only">Timeline of the displayed events</h2>
+      <div className="chronology-timeline-topbar">
+        <div className="chronology-timeline-controls" aria-label="Timeline zoom">
+          <button
+            type="button"
+            aria-label="Zoom out timeline"
+            disabled={zoom === 1}
+            onClick={() => setZoom((value) => Math.max(1, value / 2))}
+          >
+            −
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setZoom(1)
+              setCluster([])
+            }}
+          >
+            Fit
+          </button>
+          <button
+            type="button"
+            aria-label="Zoom in timeline"
+            disabled={zoom === 8}
+            onClick={() => setZoom((value) => Math.min(8, value * 2))}
+          >
+            +
+          </button>
+        </div>
+      </div>
       {dated.length > 0 ? (
         <div className="chronology-swimlane-chart">
           <div className="chronology-swimlane-labels" aria-hidden="true">
@@ -570,33 +599,6 @@ export default function ChronologyTimeline({
             </div>
           </details>
         )}
-        <div className="chronology-timeline-controls" aria-label="Timeline zoom">
-          <button
-            type="button"
-            aria-label="Zoom out timeline"
-            disabled={zoom === 1}
-            onClick={() => setZoom((value) => Math.max(1, value / 2))}
-          >
-            −
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setZoom(1)
-              setCluster([])
-            }}
-          >
-            Fit
-          </button>
-          <button
-            type="button"
-            aria-label="Zoom in timeline"
-            disabled={zoom === 8}
-            onClick={() => setZoom((value) => Math.min(8, value * 2))}
-          >
-            +
-          </button>
-        </div>
       </div>
       {tooltip &&
         tooltipEvents.length > 0 &&

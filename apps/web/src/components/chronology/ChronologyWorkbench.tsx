@@ -23,6 +23,8 @@ import {
 import { type Document } from "../../api/ingest/documents"
 import DocumentViewer from "../DocumentViewer"
 import JurisdictionSelect from "../JurisdictionSelect"
+import ChronologyFiltersPanel from "./ChronologyFiltersPanel"
+import SourceCoveragePanel from "./SourceCoveragePanel"
 import DateInput, { useChronologyDateFormat } from "./DateInput"
 import { type CitationFocus } from "../citation-target"
 import ChronologyDialog from "./Dialog"
@@ -289,7 +291,6 @@ export default function ChronologyWorkbench({
     key === "hidden" ? value !== "exclude" : !!value,
   ).length
   const running = state?.run?.status === "running"
-  const complete = state?.coverage.filter((source) => source.status === "complete").length ?? 0
   const currentEvents = state?.events.filter((event) => !event.hidden && !event.supersededBy?.length) ?? []
   const menuActions: MatterMenuAction[] = [
     ...(running
@@ -349,6 +350,25 @@ export default function ChronologyWorkbench({
   function sortBy(key: typeof sort.key) {
     setSort({ key, direction: sort.key === key && sort.direction === "ascending" ? "descending" : "ascending" })
   }
+  const errorAlert = error && (
+    <div className="chronology-error" role="alert">
+      <span>{error}</span>
+      <button
+        type="button"
+        onClick={() =>
+          void getChronology(matterId).then(
+            (next) => {
+              receive(next)
+              setError("")
+            },
+            (failure) => setError(failure.message),
+          )
+        }
+      >
+        Reload latest
+      </button>
+    </div>
+  )
   return (
     <section
       ref={root}
@@ -372,17 +392,7 @@ export default function ChronologyWorkbench({
           {!onActionsChange && <MatterActionsMenu actions={menuActions} />}
         </div>
       </div>
-      {error && (
-        <div className="chronology-error" role="alert">
-          <span>{error}</span>
-          <button
-            type="button"
-            onClick={() => void getChronology(matterId).then(receive, (failure) => setError(failure.message))}
-          >
-            Reload latest
-          </button>
-        </div>
-      )}
+      {!sourcesOpen && !updatesOpen && errorAlert}
       {!state && <p role="status">Loading saved chronology…</p>}
       {state && (
         <>
@@ -573,108 +583,16 @@ export default function ChronologyWorkbench({
                 )}
               </div>
               {filterOpen && (
-                <div key={filterReset} id="chronology-filters" className="chronology-filters">
-                  <JurisdictionSelect
-                    jurisdictions={[
-                      ...new Set(state.events.flatMap(eventEvidence).map((evidence) => evidence.documentName)),
-                    ]
-                      .sort()
-                      .map((name) => ({ code: name, name }))}
-                    selected={filters.document ? [filters.document] : []}
-                    onChange={(codes) => setFilters({ ...filters, document: codes[0] ?? "" })}
-                    multiple={false}
-                    label="Document"
-                    searchLabel="Search documents"
-                    emptyLabel="All documents"
-                    showCode={false}
-                    allowClear
-                  />
-                  <JurisdictionSelect
-                    jurisdictions={people.options.map((name) => ({ code: name, name }))}
-                    selected={filters.person ? [filters.person] : []}
-                    onChange={(codes) => setFilters({ ...filters, person: codes[0] ?? "" })}
-                    multiple={false}
-                    label="Person / organisation"
-                    searchLabel="Search people and organisations"
-                    emptyLabel="All people"
-                    showCode={false}
-                    allowClear
-                  />
-                  <DateInput
-                    label="From date"
-                    value={filters.from}
-                    format={dateFormat}
-                    onChange={(value) => setFilters({ ...filters, from: value ?? "" })}
-                  />
-                  <DateInput
-                    label="To date"
-                    value={filters.to}
-                    format={dateFormat}
-                    onChange={(value) => setFilters({ ...filters, to: value ?? "" })}
-                  />
-                  <label>
-                    Review
-                    <select
-                      value={filters.review}
-                      onChange={(change) => setFilters({ ...filters, review: change.target.value })}
-                    >
-                      <option value="">All review states</option>
-                      <option value="new">New, not opened</option>
-                      <option value="unreviewed">Unreviewed</option>
-                      <option value="reviewed">Reviewed</option>
-                      <option value="attention">Needs attention</option>
-                    </select>
-                  </label>
-                  <label>
-                    Significance
-                    <select
-                      value={filters.significance}
-                      onChange={(change) => setFilters({ ...filters, significance: change.target.value })}
-                    >
-                      <option value="">All significance</option>
-                      <option value="key">Key (AI assessment)</option>
-                      <option value="relevant">Relevant</option>
-                      <option value="background">Background</option>
-                    </select>
-                  </label>
-                  <label>
-                    Visibility
-                    <select
-                      value={filters.hidden}
-                      onChange={(change) =>
-                        setFilters({ ...filters, hidden: change.target.value as ChronologyFilters["hidden"] })
-                      }
-                    >
-                      <option value="exclude">Visible events</option>
-                      <option value="include">Include hidden</option>
-                      <option value="only">Hidden only</option>
-                    </select>
-                  </label>
-                  <label className="chronology-check">
-                    <input
-                      type="checkbox"
-                      checked={filters.key}
-                      onChange={(change) => setFilters({ ...filters, key: change.target.checked })}
-                    />
-                    Lawyer-starred key events
-                  </label>
-                  <label className="chronology-check">
-                    <input
-                      type="checkbox"
-                      checked={filters.conflict}
-                      onChange={(change) => setFilters({ ...filters, conflict: change.target.checked })}
-                    />
-                    Conflicts / disputes
-                  </label>
-                  <label className="chronology-check">
-                    <input
-                      type="checkbox"
-                      checked={filters.undated}
-                      onChange={(change) => setFilters({ ...filters, undated: change.target.checked })}
-                    />
-                    Undated
-                  </label>
-                </div>
+                <ChronologyFiltersPanel
+                  key={filterReset}
+                  filters={filters}
+                  onChange={setFilters}
+                  documentNames={[
+                    ...new Set(state.events.flatMap(eventEvidence).map((evidence) => evidence.documentName)),
+                  ].sort()}
+                  people={people.options}
+                  dateFormat={dateFormat}
+                />
               )}
               <div className="chronology-table-scroll" tabIndex={0} role="region" aria-label="Chronology events">
                 <table className="chronology-event-table">
@@ -826,126 +744,13 @@ export default function ChronologyWorkbench({
           </div>
           {sourcesOpen && (
             <ChronologySurface title="Sources and coverage" onClose={() => setSourcesOpen(false)}>
-              <section id="chronology-sources" className="chronology-sources">
-                <div className="chronology-section-head">
-                  <h2>
-                    Saved source coverage{" "}
-                    <small>
-                      {complete} of {state.coverage.length} complete
-                    </small>
-                  </h2>
-                  <button type="button" onClick={() => setSourceDate(true)}>
-                    Supply / correct source date
-                  </button>
-                </div>
-                <p>
-                  Uploaded, readable text, and chronology coverage are separate states. Review each source below; an
-                  empty result does not prove that processing is complete.
-                </p>
-                <details className="chronology-scope-explanation">
-                  <summary>How source processing works</summary>
-                  <p>
-                    The first build covers the whole authorised matter. Later checks normally process only new, changed,
-                    or unfinished source sections; unchanged completed sections are reused.
-                  </p>
-                  <p>
-                    Display filters change only the events you see. They never restrict the source set. A fresh
-                    privilege choice is required before each build or update.
-                  </p>
-                  <p>
-                    Initial results are saved as an unreviewed draft. Later proposed changes wait for your review;
-                    completed work and previous source accounts are kept.
-                  </p>
-                </details>
-                <p className="chronology-muted">
-                  Coverage includes completed work retained from earlier runs; these are saved coverage counts, not a
-                  current-run progress estimate.
-                </p>
-                {state.run?.errors.map((issue, index) => (
-                  <p key={index} className="chronology-warning">
-                    {issue}
-                  </p>
-                ))}
-                {state.run && (
-                  <p className="chronology-muted">
-                    Saved coverage:
-                    {state.coverage.reduce((sum, source) => sum + source.processedSections.length, 0)} of{" "}
-                    {state.coverage.reduce((sum, source) => sum + source.sections, 0)} source sections completed.
-                  </p>
-                )}
-                {state.coverage.length === 0 ? (
-                  <p>
-                    No chronology run has enumerated the source set yet. Generate to review the current source list.
-                  </p>
-                ) : (
-                  <div className="chronology-source-scroll">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Source</th>
-                          <th>Uploaded / text</th>
-                          <th>Chronology coverage</th>
-                          <th>Contribution & limitations</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {state.coverage.map((source) => (
-                          <tr key={source.sourceId}>
-                            <td>
-                              <strong>{source.documentName}</strong>
-                              {source.suppliedChronology && <p>Supplied chronology; provenance may be unknown</p>}
-                            </td>
-                            <td>
-                              {source.uploaded ? "Uploaded" : "Unavailable"} ·{" "}
-                              {source.textExtracted ? "Text extracted" : "No readable text"}
-                            </td>
-                            <td>
-                              {source.status}
-                              <p>
-                                {source.processedSections.length}/{source.sections} sections read
-                              </p>
-                              {source.processedSections.length > 0 && (
-                                <details>
-                                  <summary>Sections actually read</summary>
-                                  {source.processedSections.map((section) => section + 1).join(", ")}
-                                </details>
-                              )}
-                            </td>
-                            <td>
-                              {source.events} sourced events
-                              {source.issues.map((issue, index) => (
-                                <p key={index} className="chronology-warning">
-                                  {issue}
-                                </p>
-                              ))}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-                <p className="chronology-muted">
-                  Archives and unreadable material may contain sources that could not be processed. A quiet period
-                  describes the supplied record; it does not prove nothing occurred or that evidence is missing.
-                </p>
-                {state.gaps.length > 0 && (
-                  <div className="chronology-notice">
-                    <h3>Evidence questions to check</h3>
-                    <p className="chronology-muted">
-                      These source-level questions need checking against the whole record. A reference absent from one
-                      section may be supplied elsewhere in the matter.
-                    </p>
-                    {state.gaps.map((gap, index) => (
-                      <p key={index}>{gap}</p>
-                    ))}
-                  </div>
-                )}
-              </section>
+              {errorAlert}
+              <SourceCoveragePanel chronology={state} onSourceDate={() => setSourceDate(true)} />
             </ChronologySurface>
           )}
           {updatesOpen && (
             <ChronologySurface title="Review chronology updates" onClose={() => setUpdatesOpen(false)}>
+              {errorAlert}
               <ProposalReview
                 chronology={state}
                 busy={busy}
@@ -1067,7 +872,9 @@ export default function ChronologyWorkbench({
               <p className="chronology-notice">
                 {generation === "initial"
                   ? "Usable first results are saved directly as an unreviewed draft. You can stop and resume without discarding completed work."
-                  : "AI changes are staged as proposals. Your saved events and lawyer decisions are preserved until you review the changes."}
+                  : generation === "resume" && state?.run?.mode === "initial"
+                    ? "This resumes the first draft. New usable events are saved unreviewed; proposed changes to saved entries wait for review. Completed work is kept."
+                    : "AI changes are staged as proposals. Your saved events and lawyer decisions are preserved until you review the changes."}
               </p>
               <div className="chronology-form-actions">
                 <button type="button" onClick={() => setGeneration(undefined)}>
