@@ -50,6 +50,10 @@ export const icons = {
   pause: <Icon size={18}><circle cx="12" cy="12" r="9" /><path d="M10 9v6M14 9v6" /></Icon>,
   error: <Icon size={18}><circle cx="12" cy="12" r="9" /><path d="m9 9 6 6M15 9l-6 6" /></Icon>,
   plug: <Icon size={18}><path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0zM12 18v4" /></Icon>,
+  flag: <Icon><path d="M5 21V4" /><path d="M5 4h12l-2.5 4.5L17 13H5" /></Icon>,
+  idea: <Icon><path d="M9 18h6M10 21h4" /><path d="M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.3 1.1 2.2h5c0-.9.4-1.6 1.1-2.2A6 6 0 0 0 12 3z" /></Icon>,
+  review: <Icon><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 10h18M9 10v10" /></Icon>,
+  workflow: <Icon><circle cx="6" cy="6" r="2.5" /><circle cx="18" cy="18" r="2.5" /><path d="M8.5 6H15a3 3 0 0 1 0 6H9a3 3 0 0 0 0 6h6.5" /></Icon>,
   party: <Icon><path d="M4 20 8.5 7.5l8 8z" /><path d="M14 4.5c.5 1.5-.5 2.5-2 3M19.5 10c-1.5-.5-2.5.5-3 2M17 3v.01M21 7v.01M20 15v.01" /></Icon>,
 } as const
 

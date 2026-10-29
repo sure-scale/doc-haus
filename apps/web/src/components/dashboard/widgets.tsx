@@ -6,6 +6,7 @@ import { formatAgo, formatCost, formatDate } from "../../lib/format"
 import { loadPrefs } from "../../prefs"
 import { useOpenSettings } from "../settings/navigation"
 import type { Tab } from "../settings/types"
+import { STARTERS } from "../ChatPanel"
 import { useToast } from "../Toast"
 import { ActivityCalendar, AreaChart, Ring, Sparkline, SpreadBars, StackedBar, WeekBars } from "./charts"
 import {
@@ -19,6 +20,7 @@ import {
   draftedRuns,
   periodStart,
   previousSpend,
+  progress,
   recentMatters,
   sessionCosts,
   startOfDay,
@@ -27,8 +29,8 @@ import {
   type Period,
   type Summary,
 } from "./data"
-import { icons, ShapeIcon, type IconName, type ShapeName } from "./icons"
-import type { WidgetId } from "./layout"
+import { icons, ShapeIcon, SHAPES, type IconName, type ShapeName } from "./icons"
+import { PRACTICE_WIDGETS, STARTING_WIDGETS, type Stage, type WidgetId } from "./layout"
 
 export type WidgetContext = { data: DashboardData; setup: SetupProgress | null; summary: Summary; period: Period; now: number }
 
@@ -49,7 +51,12 @@ export const LOOKS: Record<WidgetId, { icon: IconName; shape: ShapeName; tone: s
   trend: { icon: "trend", shape: "flower", tone: "plain" },
   actions: { icon: "actions", shape: "sunny", tone: "plain" },
   library: { icon: "library", shape: "clover", tone: "plain" },
+  journey: { icon: "flag", shape: "sunny", tone: "indigo" },
+  sample: { icon: "sample", shape: "flower", tone: "plum" },
+  ideas: { icon: "idea", shape: "clover", tone: "plain" },
 }
+
+const SHAPE_ORDER = ["cookie", "clover", "flower", "sunny"] as const
 
 
 export function periodLabel(period: Period) {
@@ -272,7 +279,7 @@ function Recent({ data }: WidgetContext) {
     <ul className="dash-recent">
       {rows.map((row, index) => (
         <li key={row.matter.id}>
-          <ShapeIcon icon="matter" shape={(["cookie", "clover", "flower", "sunny"] as const)[index % 4]} className={`dash-recent-badge hue-${index % 4}`} />
+          <ShapeIcon icon="matter" shape={SHAPE_ORDER[index % 4]} className={`dash-recent-badge hue-${index % 4}`} />
           <Link to={`/matter/${row.matter.id}`} className="dash-recent-name">
             <strong>{row.matter.title}</strong>
             <span>{[row.matter.client, row.matter.reference].filter(Boolean).join(" · ") || (row.matter.sample ? "Sample matter" : "No client recorded")}</span>
@@ -320,33 +327,39 @@ function Trend({ data, period, now }: WidgetContext) {
   return <AreaChart points={points} format={axisMoney} detail={money} label={`${weekly ? "Weekly" : "Daily"} spend over ${periodLabel(period)}`} />
 }
 
-function Actions() {
+// Adds the sample matter (an existing one is returned as is) and opens it at
+// `path`, such as a chat with a question waiting.
+function useSampleMatter() {
   const navigate = useNavigate()
   const notify = useToast()
   const [adding, setAdding] = useState(false)
-  const tiles: { icon: IconName; title: string; text: string; hue: number; to?: string; run?: () => void }[] = [
-    { icon: "matter", title: "New matter", text: "Open a folder for an engagement", hue: 0, to: "/" },
-    { icon: "template", title: "Add a template", text: "Draft from your own precedent", hue: 1, to: "/templates" },
-    { icon: "client", title: "Add a client", text: "Keep parties and details on file", hue: 2, to: "/clients" },
-    { icon: "sample", title: "Try the sample", text: "Explore a matter with documents", hue: 3, run: () => {
-      setAdding(true)
-      addSampleMatter().then((matter) => navigate(`/matter/${matter.id}`), (error: unknown) => {
-        setAdding(false)
-        notify("error", error instanceof Error ? error.message : "Could not add the sample matter")
-      })
-    } },
-  ]
+  function open(path = "") {
+    setAdding(true)
+    addSampleMatter().then((matter) => navigate(`/matter/${matter.id}${path}`), (error: unknown) => {
+      setAdding(false)
+      notify("error", error instanceof Error ? error.message : "Could not add the sample matter")
+    })
+  }
+  return { adding, open }
+}
+
+// The chat's first starter, seated in the composer for the lawyer to send.
+const ASK = `?view=chat&prompt=${encodeURIComponent(STARTERS[0])}`
+
+type Tile = { icon: IconName; title: string; text: string; to?: string; run?: () => void }
+
+function Tiles({ tiles, busy }: { tiles: Tile[]; busy?: boolean }) {
   return (
     <ul className="dash-actions">
-      {tiles.map((tile) => {
+      {tiles.map((tile, index) => {
         const body = <>
-          <ShapeIcon icon={tile.icon} shape={(["cookie", "clover", "flower", "sunny"] as const)[tile.hue]} />
+          <ShapeIcon icon={tile.icon} shape={SHAPE_ORDER[index % 4]} />
           <strong>{tile.title}</strong>
           <span>{tile.text}</span>
         </>
         return (
-          <li key={tile.title} className={`hue-${tile.hue}`}>
-            {tile.to ? <Link to={tile.to}>{body}</Link> : <button type="button" onClick={tile.run} disabled={adding} aria-busy={adding}>{body}</button>}
+          <li key={tile.title} className={`hue-${index % 4}`}>
+            {tile.to ? <Link to={tile.to}>{body}</Link> : <button type="button" onClick={tile.run} disabled={busy} aria-busy={busy}>{body}</button>}
           </li>
         )
       })}
@@ -354,21 +367,53 @@ function Actions() {
   )
 }
 
+function Actions() {
+  const sample = useSampleMatter()
+  return (
+    <Tiles busy={sample.adding} tiles={[
+      { icon: "matter", title: "New matter", text: "Open a folder for an engagement", to: "/" },
+      { icon: "template", title: "Add a template", text: "Draft from your own precedent", to: "/templates" },
+      { icon: "client", title: "Add a client", text: "Keep parties and details on file", to: "/clients" },
+      { icon: "sample", title: "Try the sample", text: "Explore a matter with documents", run: () => sample.open() },
+    ]} />
+  )
+}
+
+// Ways in for someone new. Asking and reviewing happen in a matter: the one
+// last worked in, else the sample.
+function Ideas({ data }: WidgetContext) {
+  const sample = useSampleMatter()
+  const own = progress(data.matters).target
+  const matter = own ?? data.matters.find((row) => row.matter.sample)?.matter
+  const inMatter = (path: string) => (matter ? { to: `/matter/${matter.id}${path}` } : { run: () => sample.open(path) })
+  return (
+    <Tiles busy={sample.adding} tiles={[
+      { icon: "documents", title: "Ask about documents", text: own ? `Key points in ${own.title}` : "Key points, deadlines and gaps", ...inMatter(ASK) },
+      { icon: "template", title: "Draft from a template", text: "Start from the firm's own precedent", to: "/templates" },
+      { icon: "review", title: "Review across documents", text: "Ask the same questions of every file", ...inMatter("?view=review") },
+      { icon: "workflow", title: "Run a workflow", text: "A repeatable routine for a matter", to: "/workflows" },
+    ]} />
+  )
+}
+
 function Library({ data }: WidgetContext) {
-  const tiles: { icon: IconName; label: string; count?: number; to: string }[] = [
-    { icon: "matter", label: "Matters", count: data.error ? undefined : data.matters.length, to: "/" },
-    { icon: "template", label: "Templates", count: data.templates, to: "/templates" },
-    { icon: "playbook", label: "Playbooks", count: data.playbooks, to: "/playbooks" },
-    { icon: "client", label: "Clients", count: data.clients, to: "/clients" },
+  const tiles: { icon: IconName; label: string; count?: number; first: string; to: string }[] = [
+    { icon: "matter", label: "Matters", count: data.error ? undefined : data.matters.length, first: "Open your first", to: "/" },
+    { icon: "template", label: "Templates", count: data.templates, first: "Add your first", to: "/templates" },
+    { icon: "playbook", label: "Playbooks", count: data.playbooks, first: "Add your first", to: "/playbooks" },
+    { icon: "client", label: "Clients", count: data.clients, first: "Add your first", to: "/clients" },
   ]
   return (
     <ul className="dash-library">
       {tiles.map((tile, index) => (
-        <li key={tile.label} className={`hue-${index}`}>
+        <li key={tile.label} className={`hue-${index}${tile.count === 0 ? " is-zero" : ""}`}>
           <Link to={tile.to}>
-            <span className="dash-library-icon">{icons[tile.icon]}</span>
+            <ShapeIcon icon={tile.icon} shape={SHAPE_ORDER[index]} />
+            <span className="dash-library-text">
+              <span>{tile.label}</span>
+              {tile.count === 0 && <span className="dash-library-first">{tile.first}{icons.arrowRight}</span>}
+            </span>
             <strong>{tile.count ?? "—"}</strong>
-            <span>{tile.label}</span>
           </Link>
         </li>
       ))}
@@ -376,27 +421,101 @@ function Library({ data }: WidgetContext) {
   )
 }
 
-type SetupItem = { id: string; icon: IconName; title: string; detail: string; done: boolean; optional?: boolean; tab?: Tab; to?: string; sample?: boolean }
+type Step = { title: string; detail: string; done: boolean; note: string; action?: { label: string; to: string } }
+
+// Four milestones from a new matter to a first draft, each a shape on a track;
+// the next one carries its action.
+function FirstSteps({ data }: WidgetContext) {
+  const steps = progress(data.matters)
+  const at = steps.target && `/matter/${steps.target.id}`
+  const list: Step[] = [
+    { title: "Open a matter", detail: "One home for an engagement's documents and chats.", done: steps.matters > 0, note: plural(steps.matters, "matter"), action: { label: "New matter", to: "/" } },
+    { title: "Add documents", detail: "Upload the agreements, emails or notes you work from.", done: steps.documents > 0, note: "Documents added", action: at ? { label: "Add documents", to: `${at}?view=documents` } : undefined },
+    { title: "Ask a question", detail: "Ask about the materials in your own words.", done: steps.conversations > 0, note: plural(steps.conversations, "conversation"), action: at ? { label: "Ask a question", to: `${at}${ASK}` } : undefined },
+    { title: "Draft a document", detail: "Draft from your instructions and the matter's files.", done: steps.drafted > 0, note: `${plural(steps.drafted, "document")} drafted`, action: at ? { label: "Start drafting", to: `${at}?view=chat&agent=draft` } : undefined },
+  ]
+  const current = list.findIndex((step) => !step.done)
+  const run = steps.run
+  return (
+    <div className="dash-journey-body">
+      {current < 0 && (
+        <p className="dash-journey-done"><span aria-hidden="true">{icons.party}</span>First draft delivered. Your figures fill the dashboard as you work.</p>
+      )}
+      <ol className="dash-journey">
+        {list.map((step, index) => {
+          const drafting = index === 3 && !step.done && run
+          return (
+            <li key={step.title} className={step.done ? "is-done" : index === current ? "is-current" : ""} aria-current={index === current ? "step" : undefined}>
+              <span className="dash-step-node" aria-hidden="true">
+                <svg viewBox="-1 -1 2 2"><path d={SHAPES[SHAPE_ORDER[index]]} /></svg>
+                <span>{step.done ? icons.check : index + 1}</span>
+              </span>
+              <span className="dash-step-text">
+                <strong>{step.title}</strong>
+                <span>{step.detail}</span>
+                {step.done ? (
+                  <span className="dash-step-note"><span className="sr-only">Done: </span>{step.note}</span>
+                ) : drafting ? (
+                  <Link className="dash-step-action" to={`/matter/${drafting.matter.id}?session=${encodeURIComponent(drafting.session)}`}>
+                    {drafting.waiting ? "Drafting needs you" : "Drafting now"}{icons.arrowRight}
+                  </Link>
+                ) : index === current && step.action ? (
+                  <Link className="dash-step-action" to={step.action.to}>{step.action.label}{icons.arrowRight}</Link>
+                ) : null}
+              </span>
+            </li>
+          )
+        })}
+      </ol>
+    </div>
+  )
+}
+
+// The fictional sample, with a question already seated when it opens.
+function SampleMatter({ data }: WidgetContext) {
+  const sample = useSampleMatter()
+  const added = data.matters.find((row) => row.matter.sample)?.matter
+  return (
+    <div className="dash-sample">
+      <div className="dash-sample-art" aria-hidden="true">
+        <span className="dash-sample-page">
+          <i /><i /><i className="is-marked" /><i /><i />
+        </span>
+        <span className="dash-sample-comment">{icons.question}</span>
+      </div>
+      <p className="dash-sample-title">{added ? "Pick up where you left off" : "Explore before your own"}</p>
+      <p className="dash-sample-text">A fictional engagement letter, with cited answers and a legal review ready to look through.</p>
+      <ul className="dash-sample-tags">
+        <li>Engagement letter</li>
+        <li>Cited answers</li>
+        <li>Legal review</li>
+      </ul>
+      {added
+        ? <Link className="dash-sample-action" to={`/matter/${added.id}${ASK}`}>Open the sample matter{icons.arrowRight}</Link>
+        : <button type="button" className="dash-sample-action" onClick={() => sample.open(ASK)} disabled={sample.adding} aria-busy={sample.adding}>Add the sample matter{icons.arrowRight}</button>}
+    </div>
+  )
+}
+
+type SetupItem = { id: string; icon: IconName; title: string; detail: string; done: boolean; optional?: boolean; tab?: Tab; to?: string }
 
 // What the firm has not set up yet, from saved settings and the library.
 // Optional items say so; document legends are the firm's choice and absent by
-// design, so they are never listed here.
+// design, so they are never listed here. A first matter and the sample have
+// their own widgets.
 export function setupItems({ data, setup }: Pick<WidgetContext, "data" | "setup">): SetupItem[] {
   const preferences = data.preferences
-  const own = data.matters.filter((row) => !row.matter.sample)
   const items: (SetupItem | false)[] = [
     { id: "models", icon: "model", title: "Connect an AI model", detail: "Drafting, review and research run on it.", done: !!setup?.ready, tab: "ai" },
     !!preferences && { id: "name", icon: "person", title: "Add your name", detail: "It signs your comments and tracked changes.", done: !!preferences.attorney.trim(), tab: "drafting" },
     !!preferences && { id: "firm", icon: "firm", title: "Add your firm", detail: "Used in letters, drafts and document headers.", done: !!preferences.firm.trim(), tab: "drafting" },
     !!preferences && { id: "practice", icon: "practice", title: "Choose practice areas", detail: "Steers drafting toward your kind of work.", done: preferences.practiceAreas.length > 0, tab: "drafting" },
     { id: "jurisdiction", icon: "globe", title: "Set a default jurisdiction", detail: "Prefilled on every new matter.", done: loadPrefs().defaultJurisdictions.length > 0, tab: "matters" },
-    !data.error && { id: "matter", icon: "matter", title: "Open your first matter", detail: "A home for one engagement's documents and chats.", done: own.length > 0, to: "/" },
     !!preferences && { id: "research", icon: "search", title: "Connect legal research", detail: "Web and case-law search for cited answers.", done: !!(preferences.searchApiKey || preferences.caseLawApiKey || preferences.courtlistenerMcpEnabled), optional: true, tab: "research" },
     // Listed only where this installation can set it up or it is managed elsewhere.
     !!data.word && (data.word.canSetup || ["ready", "external"].includes(data.word.status)) && !["unsupported", "word_missing"].includes(data.word.status) && { id: "word", icon: "word", title: "Set up the Word add-in", detail: "Review and redline without leaving Word.", done: data.word.status === "ready" || (data.word.status === "external" && data.word.available), optional: true, tab: "addins" },
     !!preferences && { id: "style", icon: "style", title: "Add house style notes", detail: "Standing instructions for every draft and edit.", done: !!preferences.houseStyle.trim(), optional: true, tab: "drafting" },
     data.templates !== undefined && { id: "template", icon: "template", title: "Add a template", detail: "Draft from the firm's own precedents.", done: data.templates > 0, optional: true, to: "/templates" },
-    !data.error && { id: "sample", icon: "sample", title: "Try the sample matter", detail: "A fictional engagement to explore safely.", done: data.matters.some((row) => row.matter.sample), optional: true, sample: true },
   ]
   return items.filter((item): item is SetupItem => !!item)
 }
@@ -404,20 +523,13 @@ export function setupItems({ data, setup }: Pick<WidgetContext, "data" | "setup"
 function SetupChecklist(context: WidgetContext) {
   const openSettings = useOpenSettings()
   const navigate = useNavigate()
-  const notify = useToast()
-  const [adding, setAdding] = useState(false)
   const items = setupItems(context)
   const done = items.filter((item) => item.done)
   const open = items.filter((item) => !item.done).sort((a, b) => Number(!!a.optional) - Number(!!b.optional))
   const essentials = open.filter((item) => !item.optional).length
   function act(item: SetupItem) {
-    if (item.tab) return openSettings(item.tab)
-    if (item.to) return navigate(item.to)
-    setAdding(true)
-    addSampleMatter().then((matter) => navigate(`/matter/${matter.id}`), (error: unknown) => {
-      setAdding(false)
-      notify("error", error instanceof Error ? error.message : "Could not add the sample matter")
-    })
+    if (item.tab) openSettings(item.tab)
+    else if (item.to) navigate(item.to)
   }
   if (!open.length)
     return (
@@ -441,13 +553,13 @@ function SetupChecklist(context: WidgetContext) {
       <ul className="dash-setup-items">
         {open.slice(0, 6).map((item, index) => (
           <li key={item.id} className={`hue-${index % 4}`}>
-            <ShapeIcon icon={item.icon} shape={(["cookie", "clover", "flower", "sunny"] as const)[index % 4]} />
+            <ShapeIcon icon={item.icon} shape={SHAPE_ORDER[index % 4]} />
             <span className="dash-setup-item-text">
               <strong>{item.title}{item.optional && <span className="dash-optional">Optional</span>}</strong>
               <span>{item.detail}</span>
             </span>
-            <button type="button" className={`btn-sm${index === 0 ? " primary" : ""}`} disabled={item.sample && adding} aria-busy={item.sample && adding} onClick={() => act(item)}>
-              {item.sample ? "Add" : item.tab ? "Set up" : "Open"}
+            <button type="button" className={`btn-sm${index === 0 ? " primary" : ""}`} onClick={() => act(item)}>
+              {item.tab ? "Set up" : "Open"}
             </button>
           </li>
         ))}
@@ -459,6 +571,15 @@ function SetupChecklist(context: WidgetContext) {
       )}
     </div>
   )
+}
+
+export const stageOf = (context: Pick<WidgetContext, "data">): Stage => (progress(context.data.matters).conversations ? "practice" : "starting")
+
+// The dashboard shown until the lawyer arranges their own: see layout.ts.
+export function defaultWidgets(context: Pick<WidgetContext, "data" | "setup">): WidgetId[] {
+  const open = setupItems(context).filter((item) => !item.done)
+  if (stageOf(context) === "starting") return ["journey", ...(open.length ? ["setup" as const] : []), ...STARTING_WIDGETS]
+  return [...(progress(context.data.matters).drafted ? [] : ["journey" as const]), ...(open.some((item) => !item.optional) ? ["setup" as const] : []), ...PRACTICE_WIDGETS]
 }
 
 export const RENDER: Record<WidgetId, (context: WidgetContext) => ReactNode> = {
@@ -476,6 +597,9 @@ export const RENDER: Record<WidgetId, (context: WidgetContext) => ReactNode> = {
   trend: (context) => <Trend {...context} />,
   actions: () => <Actions />,
   library: (context) => <Library {...context} />,
+  journey: (context) => <FirstSteps {...context} />,
+  sample: (context) => <SampleMatter {...context} />,
+  ideas: (context) => <Ideas {...context} />,
 }
 
 // Captions under a widget's title, where the figure needs its basis stated.
@@ -499,6 +623,12 @@ export function caption(id: WidgetId, period: Period) {
       return "Start something new"
     case "library":
       return "Templates, playbooks, clients and matters"
+    case "journey":
+      return "From a new matter to your first draft"
+    case "sample":
+      return "Fictional, safe to explore"
+    case "ideas":
+      return "A few ways to start"
   }
 }
 

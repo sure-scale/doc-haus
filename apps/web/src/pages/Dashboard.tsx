@@ -7,8 +7,8 @@ import useExit from "../components/useExit"
 import { useToast } from "../components/Toast"
 import { addDays, startOfDay, summarize, useDashboardData, type Period } from "../components/dashboard/data"
 import { icons, ShapeIcon, SHAPES } from "../components/dashboard/icons"
-import { DEFAULT_LAYOUT, loadLayout, saveLayout, WIDGETS, type Layout, type WidgetId } from "../components/dashboard/layout"
-import { caption, LOOKS, RENDER, type WidgetContext } from "../components/dashboard/widgets"
+import { loadLayout, PERIODIC, saveLayout, STARTING_WIDGETS, WIDGETS, type Layout, type WidgetId } from "../components/dashboard/layout"
+import { caption, defaultWidgets, LOOKS, RENDER, stageOf, type WidgetContext } from "../components/dashboard/widgets"
 
 const PERIODS: { value: Period; label: string }[] = [
   { value: 7, label: "7 days" },
@@ -40,22 +40,36 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
     return () => clearTimeout(timer)
   }, [now])
 
+  const context: WidgetContext | undefined = data && !data.error
+    ? { data, setup, period: layout.period, now, summary: summarize(data.matters, layout.period, now) }
+    : undefined
+  // Until the lawyer arranges their own, the default follows the data; while
+  // it loads, the widgets last shown hold the places.
+  const stage = context ? stageOf(context) : layout.stage ?? "starting"
+  const widgets = layout.widgets?.[stage] ?? (context ? defaultWidgets(context) : layout.shown ?? ["journey", ...STARTING_WIDGETS])
+  const shown = context && `${stage}:${widgets.join()}`
+  useEffect(() => {
+    if (shown && shown !== `${layout.stage}:${layout.shown?.join()}`) update({ ...layout, stage, shown: widgets })
+  }, [shown])
+
   function update(next: Layout) {
     setLayout(next)
     saveLayout(next)
   }
+  // Arranging changes only this stage's dashboard; none goes back to the default.
+  const arrange = (next?: WidgetId[]) => update({ ...layout, widgets: { ...layout.widgets, [stage]: next } })
   function move(id: WidgetId, by: -1 | 1) {
-    const widgets = [...layout.widgets]
-    const from = widgets.indexOf(id)
+    const next = [...widgets]
+    const from = next.indexOf(id)
     const to = from + by
-    if (from < 0 || to < 0 || to >= widgets.length) return
-    ;[widgets[from], widgets[to]] = [widgets[to], widgets[from]]
-    update({ ...layout, widgets })
+    if (from < 0 || to < 0 || to >= next.length) return
+    ;[next[from], next[to]] = [next[to], next[from]]
+    arrange(next)
   }
   function hide(id: WidgetId) {
-    const index = layout.widgets.indexOf(id)
-    const neighbour = layout.widgets[index + 1] ?? layout.widgets[index - 1]
-    update({ ...layout, widgets: layout.widgets.filter((widget) => widget !== id) })
+    const index = widgets.indexOf(id)
+    const neighbour = widgets[index + 1] ?? widgets[index - 1]
+    arrange(widgets.filter((widget) => widget !== id))
     notify("info", `${WIDGETS[id].title} hidden. Add it back from Add widgets.`)
     // Focus moves to the next card's menu, or to Add widgets once none is left.
     requestAnimationFrame(() => {
@@ -64,11 +78,9 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
     })
   }
 
-  const context: WidgetContext | undefined = data && !data.error
-    ? { data, setup, period: layout.period, now, summary: summarize(data.matters, layout.period, now) }
-    : undefined
   const name = data?.preferences?.attorney.trim()
-  const blank = Boolean(data?.error) || layout.widgets.length === 0
+  // The period is offered only while a widget on the dashboard follows it.
+  const periodic = !data?.error && widgets.some((id) => PERIODIC.has(id))
 
   return (
     <>
@@ -80,7 +92,7 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
             <p>{new Date(now).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" })}</p>
           </div>
           <div className="dash-controls">
-            {!blank && <div className="settings-seg dash-period" role="group" aria-label="Period">
+            {periodic && <div className="settings-seg dash-period" role="group" aria-label="Period">
               {PERIODS.map((option) => (
                 <button key={option.value} type="button" aria-pressed={layout.period === option.value} className={layout.period === option.value ? "active" : ""} onClick={() => update({ ...layout, period: option.value })}>
                   {layout.period === option.value && (
@@ -109,25 +121,25 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
             </div>
             <button type="button" onClick={reload} disabled={loading}>Retry</button>
           </div>
-        ) : layout.widgets.length === 0 ? (
+        ) : widgets.length === 0 ? (
           <div className="dash-blank">
             <ShapeIcon icon="plus" shape="sunny" className="dash-blank-badge" />
             <p className="dash-blank-title">Your dashboard is empty</p>
             <p>Add the widgets you want to see, or bring back the defaults.</p>
             <div className="dash-blank-actions">
-              <button type="button" onClick={() => update({ ...layout, widgets: DEFAULT_LAYOUT.widgets })}>Restore defaults</button>
+              <button type="button" onClick={() => arrange(undefined)}>Restore defaults</button>
             </div>
           </div>
         ) : (
           <div className="dash-grid" aria-busy={!context}>
-            {layout.widgets.map((id, index) => (
+            {widgets.map((id, index) => (
               <Widget
                 key={id}
                 id={id}
                 context={context}
                 period={layout.period}
                 first={index === 0}
-                last={index === layout.widgets.length - 1}
+                last={index === widgets.length - 1}
                 onMove={(by) => move(id, by)}
                 onHide={() => hide(id)}
               />
@@ -135,7 +147,7 @@ export default function Dashboard({ setup, refresh = 0 }: { setup: SetupProgress
           </div>
         )}
       </div>
-      {adding && <AddWidgets layout={layout} onChange={update} onClose={() => setAdding(false)} />}
+      {adding && <AddWidgets widgets={widgets} customised={!!layout.widgets?.[stage]} onChange={arrange} onClose={() => setAdding(false)} />}
     </>
   )
 }
@@ -226,13 +238,12 @@ function WidgetMenu({ title, first, last, onMove, onHide }: { title: string; fir
 }
 
 // Every widget not on the dashboard, each one click from being added (to the
-// end). Reset brings back the default set and order.
-function AddWidgets({ layout, onChange, onClose }: { layout: Layout; onChange: (layout: Layout) => void; onClose: () => void }) {
+// end). Reset goes back to the default, which again follows the data.
+function AddWidgets({ widgets, customised, onChange, onClose }: { widgets: WidgetId[]; customised: boolean; onChange: (widgets?: WidgetId[]) => void; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const [open, setOpen] = useState(true)
   const [shown, closing] = useExit(open)
-  const hidden = (Object.keys(WIDGETS) as WidgetId[]).filter((id) => !layout.widgets.includes(id))
-  const isDefault = layout.widgets.join() === DEFAULT_LAYOUT.widgets.join()
+  const hidden = (Object.keys(WIDGETS) as WidgetId[]).filter((id) => !widgets.includes(id))
   useLayoutEffect(() => {
     const element = dialog.current
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -266,7 +277,7 @@ function AddWidgets({ layout, onChange, onClose }: { layout: Layout; onChange: (
                   <strong>{WIDGETS[id].title}</strong>
                   <span>{WIDGETS[id].description}</span>
                 </span>
-                <button type="button" className="btn-sm" onClick={() => onChange({ ...layout, widgets: [...layout.widgets, id] })} aria-label={`Add ${WIDGETS[id].title}`}>
+                <button type="button" className="btn-sm" onClick={() => onChange([...widgets, id])} aria-label={`Add ${WIDGETS[id].title}`}>
                   {icons.plus}Add
                 </button>
               </li>
@@ -280,7 +291,7 @@ function AddWidgets({ layout, onChange, onClose }: { layout: Layout; onChange: (
         )}
       </div>
       <div className="dash-add-foot">
-        <button type="button" className="ghost" disabled={isDefault} onClick={() => onChange({ ...layout, widgets: DEFAULT_LAYOUT.widgets })}>
+        <button type="button" className="ghost" disabled={!customised} onClick={() => onChange(undefined)}>
           {icons.reset}Reset to default
         </button>
         <button type="button" className="primary" onClick={() => setOpen(false)}>Done</button>

@@ -181,14 +181,31 @@ function populated() {
     "m-tidewater": run({ status: "failed", ...owned("tidewater"), started: created("tidewater"), updated: created("tidewater") + 1_500_000, stop: "The review stage did not produce a valid output after three tries." }),
     "m-copperleaf": run({ status: "running", ...owned("copperleaf"), started: created("copperleaf"), updated: created("copperleaf") + 600_000 }),
   }
-  return { matters, sessions, drafting }
+  const documents: Record<string, number> = { "m-alder": 9, "m-northbank": 6, "m-fernlea": 4, "m-quarry": 5, "m-marlowe": 7, "m-tidewater": 3, "m-copperleaf": 8, "m-sample": 3 }
+  return { matters, sessions, drafting, documents }
+}
+
+// A new lawyer's first days: one matter of their own, the sample, or both.
+const FIRST: Matter = { id: "m-harbour", title: "Harbour Lane Bakery · Supplier terms", client: "Harbour Lane Bakery", jurisdictions: ["EW"], dir: "/fixture/matters/harbour", created_at: at(1, 9) }
+const SAMPLE: Matter = { id: "m-sample", title: "Kestrel Books · Engagement letter", client: "Kestrel Books", jurisdictions: ["EW"], dir: "/fixture/matters/sample", created_at: at(0, 8), sample: true }
+const chat = (matter: Matter, id: string, created: number, title: string, cost = 0.18): Session & { matter: string } =>
+  ({ matter: matter.id, id, projectID: "fixture-project", title, cost, tokens: tokensFor(cost, rng(id.length)), time: { created, updated: created + 12 * 60_000 }, location: { directory: matter.dir }, metadata: {} })
+function early(options: { first?: number; sample?: boolean; conversations?: number; drafting?: boolean }) {
+  const matters = [...(options.first === undefined ? [] : [FIRST]), ...(options.sample ? [SAMPLE] : [])]
+  const sessions = [
+    ...(options.sample ? [chat(SAMPLE, "ses_sample_1", at(0, 8, 10), "What are the key points in these materials?")] : []),
+    ...Array.from({ length: options.conversations ?? 0 }, (_, index) => chat(FIRST, `ses_first_${index + 1}`, at(0, 8, 20 + index * 15), index ? "Which terms favour the supplier?" : "What are the key points in these materials?")),
+    ...(options.drafting ? [{ ...chat(FIRST, "ses_first_run", at(0, 9, 30), "Drafting run", 0.9), metadata: { dochaus_role: "lean-drafting-owner" } }] : []),
+  ]
+  const drafting: Record<string, unknown> = options.drafting ? { [FIRST.id]: run({ status: "running", owner: "ses_first_run", stages: ["ses_first_run_1"], started: at(0, 9, 30), updated: at(0, 9, 40) }) } : {}
+  return { matters, sessions, drafting, documents: { [FIRST.id]: options.first ?? 0, [SAMPLE.id]: 3 } as Record<string, number> }
 }
 
 type Kind = "new" | "populated" | "error"
-function fixture(kind: Kind, layout?: unknown) {
-  const data = kind === "populated" ? populated() : { matters: [] as Matter[], sessions: [] as (Session & { matter: string })[], drafting: {} as Record<string, unknown> }
+type Data = ReturnType<typeof populated>
+function fixture(kind: Kind, layout?: unknown, data: Data = kind === "populated" ? populated() : { matters: [], sessions: [], drafting: {}, documents: {} }) {
   return {
-    kind, layout, ...data,
+    kind, layout, ...data, samplePosts: 0,
     unexpected: [] as string[], errors: [] as string[], sessionDirs: [] as string[], requests: [] as { method: string; path: string }[],
   }
 }
@@ -216,7 +233,7 @@ async function open(state: State, width: number, height: number, timezoneId = "E
     localStorage.setItem("dh.sidebar", innerWidth > 960 ? "0" : "1")
     if (jurisdiction) localStorage.setItem("dochaus.prefs", JSON.stringify({ defaultJurisdictions: ["EW"] }))
     // Seed the saved layout once; a reload keeps what the page saved.
-    if (layout && !sessionStorage.getItem("dashboard-fixture-seeded")) { localStorage.setItem("dh.dashboard.v1", JSON.stringify(layout)); sessionStorage.setItem("dashboard-fixture-seeded", "1") }
+    if (layout && !sessionStorage.getItem("dashboard-fixture-seeded")) { localStorage.setItem("dh.dashboard.v2", JSON.stringify(layout)); sessionStorage.setItem("dashboard-fixture-seeded", "1") }
   }, { layout: state.layout ?? null, jurisdiction: state.kind === "populated" })
   await context.route("**/*", async (route: Route) => {
     const request = route.request()
@@ -231,6 +248,7 @@ async function open(state: State, width: number, height: number, timezoneId = "E
     state.requests.push({ method, path: pathname })
     const reply = (body: unknown, status = 200) => route.fulfill({ status, headers, contentType: "application/json", body: JSON.stringify(body) })
     if (method === "POST" && pathname === "/api/dochaus/provider-test") return reply({ ok: true })
+    if (method === "POST" && pathname === "/sample-matter") { state.samplePosts++; return reply({ matter: SAMPLE }) }
     if (method !== "GET") { state.unexpected.push(`${method} ${pathname}`); return route.abort() }
     const populatedState = state.kind === "populated"
     if (pathname === "/auth/reuse") return reply({ sources: [] })
@@ -242,6 +260,9 @@ async function open(state: State, width: number, height: number, timezoneId = "E
     if (pathname === "/matters") return state.kind === "error" ? reply({ error: "The document service is temporarily unavailable." }, 503) : reply(state.matters)
     const draftingMatch = pathname.match(/^\/matters\/([^/]+)\/drafting-status$/)
     if (draftingMatch) return reply(state.drafting[draftingMatch[1]!] ?? null)
+    const matterMatch = pathname.match(/^\/matters\/([^/]+)$/)
+    const detail = matterMatch && state.matters.find((row) => row.id === matterMatch[1])
+    if (detail) return reply({ ...detail, documents: Array.from({ length: state.documents[detail.id] ?? 0 }, (_, index) => ({ id: `doc-${index + 1}`, name: `Document ${index + 1}.pdf` })) })
     if (pathname === "/word/setup") return reply(word)
     if (pathname === "/templates") return reply({ dir: "/fixture/templates", templates: populatedState ? templates : [] })
     if (pathname === "/playbooks/library") return reply({ dir: "/fixture/playbooks", playbooks: populatedState ? playbooks : [] })
@@ -281,7 +302,7 @@ async function capture(page: Page, name: string, options: { fullPage?: boolean }
     overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth,
     dialogs: Array.from(document.querySelectorAll<HTMLElement>('dialog[open], [role="dialog"][aria-modal="true"]')).map(node => { const r = node.getBoundingClientRect(); return { name: node.getAttribute("aria-label") ?? node.getAttribute("aria-labelledby"), left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: innerWidth, height: innerHeight } }),
     // Text cut off inside a card: an element whose content is wider than its box.
-    clipped: Array.from(document.querySelectorAll<HTMLElement>(".dash-card *")).filter(node => node.children.length === 0 && node.textContent?.trim() && node.scrollWidth > node.clientWidth + 1 && getComputedStyle(node).overflow !== "visible").map(node => ({ text: node.textContent!.trim().slice(0, 80), card: node.closest(".dash-card")?.querySelector("h3")?.textContent })),
+    clipped: Array.from(document.querySelectorAll<HTMLElement>(".dash-card *")).filter(node => node.children.length === 0 && !node.closest(".sr-only") && node.textContent?.trim() && node.scrollWidth > node.clientWidth + 1 && getComputedStyle(node).overflow !== "visible").map(node => ({ text: node.textContent!.trim().slice(0, 80), card: node.closest(".dash-card")?.querySelector("h3")?.textContent })),
   }))
   await page.screenshot({ path: path.join(evidence!, `${name}.png`), fullPage: options.fullPage ?? metrics.dialogs.length === 0 })
   screens.push({ name, ...metrics })
@@ -316,15 +337,19 @@ async function coveredBy(button: import("@playwright/test").Locator) {
 }
 const order = (page: Page) => page.locator(".dash-grid > section.dash-card h3").allTextContents()
 // Settled: no skeletons left and the refresh control idle.
-async function dashboard(page: Page, expectGrid = true) {
-  await page.goto(`${baseURL}/dashboard`)
+async function dashboard(page: Page, expectGrid = true, reload = false) {
+  if (reload) await page.reload()
+  else await page.goto(`${baseURL}/dashboard`)
   await expect(page.getByRole("heading", { name: /^Good (morning|afternoon|evening)/ })).toBeVisible()
   await expect(page.getByRole("button", { name: "Refresh", exact: true })).toBeEnabled()
   if (expectGrid) await expect(page.locator(".dash-skeleton")).toHaveCount(0)
 }
 
 const SIZES = [[375, 812], [768, 1024], [1440, 1000]] as const
-const ALL_WIDGETS = ["setup", "spend", "matter-cost", "draft-cost", "documents", "week", "matter-spend", "attention", "activity", "recent", "tokens", "trend", "actions", "library"]
+const ALL_WIDGETS = ["journey", "setup", "spend", "matter-cost", "draft-cost", "documents", "week", "matter-spend", "attention", "activity", "recent", "tokens", "trend", "actions", "library", "sample", "ideas"]
+const STARTING = ["First steps", "Finish setting up", "Sample matter", "Your library", "Things to try"]
+const journey = (page: Page) => card(page, "First steps").locator(".dash-journey > li")
+const doneSteps = (page: Page) => card(page, "First steps").locator(".dash-journey > li.is-done strong").allTextContents()
 
 try {
   for (const [width, height] of [...SIZES, [1180, 900] as const]) {
@@ -334,15 +359,19 @@ try {
       try {
         await dashboard(page)
         await expect(page.getByRole("heading", { name: "Good morning", exact: true })).toBeVisible()
+        // No figures yet: the dashboard leads with first steps, not empty charts.
+        expect(await order(page)).toEqual(STARTING)
+        await expect(page.getByRole("group", { name: "Period", exact: true })).toHaveCount(0)
+        await expect(journey(page).nth(0)).toHaveAttribute("aria-current", "step")
+        await expect(journey(page).nth(0).getByRole("link", { name: "New matter", exact: true })).toHaveAttribute("href", "/")
+        await expect(card(page, "First steps").locator(".dash-step-action")).toHaveCount(1)
         const setup = card(page, "Finish setting up")
-        await expect(setup.getByText("5 essentials left", { exact: true })).toBeVisible()
-        await expect(setup.getByRole("img", { name: "1 of 11 done", exact: true })).toBeVisible()
+        await expect(setup.getByText("4 essentials left", { exact: true })).toBeVisible()
+        await expect(setup.getByRole("img", { name: "1 of 9 done", exact: true })).toBeVisible()
         await expect(setup.locator(".dash-setup-items > li")).toHaveCount(6)
-        await expect(card(page, "Spend by matter").getByText("No spend yet", { exact: true })).toBeVisible()
-        await expect(card(page, "Needs you").getByText("Nothing needs you", { exact: true })).toBeVisible()
-        await expect(card(page, "Recent matters").getByText("No matters yet", { exact: true })).toBeVisible()
-        await expect(card(page, "Where tokens go").getByText("No tokens used yet", { exact: true })).toBeVisible()
-        await expect(card(page, "Total spend").locator(".dash-stat-value")).toHaveText("$0.00")
+        await expect(card(page, "Sample matter").getByRole("button", { name: "Add the sample matter", exact: true })).toBeVisible()
+        await expect(card(page, "Your library").locator(".dash-library .is-zero")).toHaveCount(4)
+        await expect(card(page, "Things to try").locator(".dash-actions > li")).toHaveCount(4)
         await capture(page, `new-install-overview-${size}`)
         expect(state.requests.filter((row) => row.path === "/api/session")).toEqual([])
         clean(state)
@@ -353,7 +382,9 @@ try {
       try {
         await dashboard(page)
         await expect(page.getByRole("heading", { name: "Good morning, Alex Example", exact: true })).toBeVisible()
-        await expect(card(page, "Finish setting up").getByText("Essentials done", { exact: true })).toBeVisible()
+        // Essentials done and documents drafted: figures only, no onboarding cards.
+        await expect(card(page, "Finish setting up")).toHaveCount(0)
+        await expect(card(page, "First steps")).toHaveCount(0)
         await expect(card(page, "Documents drafted").locator(".dash-stat-value")).toHaveText("4")
         await expect(card(page, "Needs you").locator(".dash-attention > li")).toHaveCount(2)
         await expect(card(page, "Needs you").getByText("Drafting run failed", { exact: true })).toBeVisible()
@@ -386,19 +417,19 @@ try {
       } finally { await context.close() }
     })
     await scenario(`Empty layout (${size})`, async () => {
-      const state = fixture("populated", { widgets: [], period: 30 }); const { page, context } = await open(state, width, height)
+      const state = fixture("populated", { widgets: { practice: [] }, period: 30 }); const { page, context } = await open(state, width, height)
       try {
         await dashboard(page, false)
         await expect(page.getByText("Your dashboard is empty", { exact: true })).toBeVisible()
         await expect(page.locator(".dash-grid")).toHaveCount(0)
         await capture(page, `empty-layout-overview-${size}`)
         await page.getByRole("button", { name: "Restore defaults", exact: true }).click()
-        await expect(page.locator(".dash-grid > section.dash-card")).toHaveCount(11)
+        await expect(page.locator(".dash-grid > section.dash-card")).toHaveCount(10)
         clean(state)
       } finally { await context.close() }
     })
     await scenario(`Every widget (${size})`, async () => {
-      const state = fixture("populated", { widgets: ALL_WIDGETS, period: 30 }); const { page, context } = await open(state, width, height)
+      const state = fixture("populated", { widgets: { practice: ALL_WIDGETS }, period: 30 }); const { page, context } = await open(state, width, height)
       try {
         await dashboard(page)
         await expect(page.locator(".dash-grid > section.dash-card")).toHaveCount(ALL_WIDGETS.length)
@@ -408,6 +439,100 @@ try {
       } finally { await context.close() }
     })
   }
+
+  // A new lawyer's first days, step by step. The sample matter never counts
+  // as their own progress.
+  for (const [width, height] of [[1440, 1000], [375, 812]] as const) await scenario(`First matter with documents (${width}x${height})`, async () => {
+    const state = fixture("new", undefined, early({ first: 3 })); const { page, context } = await open(state, width, height)
+    try {
+      await dashboard(page)
+      expect(await order(page)).toEqual(STARTING)
+      expect(await doneSteps(page)).toEqual(["Open a matter", "Add documents"])
+      const current = journey(page).nth(2)
+      await expect(current).toHaveAttribute("aria-current", "step")
+      await expect(current.getByRole("link", { name: "Ask a question", exact: true })).toHaveAttribute("href", /^\/matter\/m-harbour\?view=chat&prompt=What/)
+      await expect(card(page, "Things to try").getByText(`Key points in ${FIRST.title}`, { exact: true })).toBeVisible()
+      await expect(card(page, "Things to try").getByRole("link", { name: /Review across documents/ })).toHaveAttribute("href", "/matter/m-harbour?view=review")
+      await capture(page, `first-matter-${width}x${height}`)
+      clean(state)
+    } finally { await context.close() }
+  })
+
+  await scenario("Sample explored, no matter of their own (1440x1000)", async () => {
+    const state = fixture("new", undefined, early({ sample: true })); const { page, context } = await open(state, 1440, 1000)
+    try {
+      await dashboard(page)
+      expect(await order(page)).toEqual(STARTING)
+      expect(await doneSteps(page)).toEqual([])
+      await expect(journey(page).nth(0)).toHaveAttribute("aria-current", "step")
+      const sample = card(page, "Sample matter")
+      await expect(sample.getByText("Pick up where you left off", { exact: true })).toBeVisible()
+      await expect(sample.getByRole("link", { name: "Open the sample matter", exact: true })).toHaveAttribute("href", /^\/matter\/m-sample\?view=chat&prompt=/)
+      await capture(page, "sample-explored-1440x1000")
+      clean(state)
+    } finally { await context.close() }
+  })
+
+  await scenario("Add the sample matter (1440x1000)", async () => {
+    const state = fixture("new"); const { page, context } = await open(state, 1440, 1000)
+    try {
+      await dashboard(page)
+      await card(page, "Sample matter").getByRole("button", { name: "Add the sample matter", exact: true }).click()
+      // It opens with a first question seated in the composer.
+      await expect(page).toHaveURL(/\/matter\/m-sample\?view=chat&prompt=What%20are%20the%20key%20points/)
+      expect(state.samplePosts).toBe(1)
+      expect(state.errors, "page errors").toEqual([])
+    } finally { await context.close() }
+  })
+
+  for (const [width, height] of [[1440, 1000], [375, 812]] as const) await scenario(`First conversation, drafting now (${width}x${height})`, async () => {
+    const state = fixture("new", undefined, early({ first: 3, sample: true, conversations: 2, drafting: true })); const { page, context } = await open(state, width, height)
+    try {
+      await dashboard(page)
+      // Work has begun: figures come in, first steps stay until the first draft.
+      // The drafting run is a conversation of its own, as in the sidebar.
+      const titles = await order(page)
+      expect(titles.slice(0, 3)).toEqual(["First steps", "Finish setting up", "Total spend"])
+      expect(titles).not.toContain("Sample matter")
+      await expect(page.getByRole("group", { name: "Period", exact: true })).toBeVisible()
+      expect(await doneSteps(page)).toEqual(["Open a matter", "Add documents", "Ask a question"])
+      await expect(journey(page).nth(2).locator(".dash-step-note")).toHaveText("Done: 3 conversations")
+      await expect(journey(page).nth(3).getByRole("link", { name: "Drafting now", exact: true })).toHaveAttribute("href", "/matter/m-harbour?session=ses_first_run")
+      await capture(page, `first-conversation-${width}x${height}`)
+      clean(state)
+    } finally { await context.close() }
+  })
+
+  await scenario("Arranging first steps never keeps the figures away (1440x1000)", async () => {
+    const state = fixture("new", undefined, early({ first: 3 })); const { page, context } = await open(state, 1440, 1000)
+    try {
+      await dashboard(page)
+      await menuButton(page, "Things to try").click()
+      await menuAction(page, "Things to try", "Hide widget")
+      await dashboard(page, true, true)
+      expect(await order(page)).toEqual(STARTING.filter((title) => title !== "Things to try"))
+      // The first conversation arrives: practice opens on its own default.
+      state.sessions.push(chat(FIRST, "ses_first_1", at(0, 9), "What are the key points in these materials?"))
+      await dashboard(page, true, true)
+      const practice = await order(page)
+      expect(practice.slice(0, 3)).toEqual(["First steps", "Finish setting up", "Total spend"])
+      // Reset brings back that default after the lawyer arranges practice too.
+      await menuButton(page, "Total spend").click()
+      await menuAction(page, "Total spend", "Hide widget")
+      await expect(card(page, "Total spend")).toHaveCount(0)
+      const opener = page.locator(".dash-toolbar").getByRole("button", { name: "Add widgets", exact: true })
+      await opener.click()
+      const dialog = page.getByRole("dialog", { name: "Add widgets", exact: true })
+      await dialog.getByRole("button", { name: "Reset to default", exact: true }).click()
+      await expect(dialog.getByRole("button", { name: "Reset to default", exact: true })).toBeDisabled()
+      await page.keyboard.press("Escape")
+      await expect(dialog).toHaveCount(0)
+      expect(await order(page)).toEqual(practice)
+      await dashboard(page, true, true)
+      expect(await order(page)).toEqual(practice)
+      clean(state)
+    } finally { await context.close() }
+  })
 
   // The fixture's last seven days (Fri 23 to Thu 29 October) cost
   // 4.00 + 0.45 + 0.30 + 11.90 + 5.80 + 9.30 + 1.75 = 33.50. London's clocks
@@ -483,7 +608,7 @@ try {
 
   // Every widget's open menu must be on top of its own card's content.
   for (const [width, height] of [[1440, 1000], [375, 812]] as const) await scenario(`Open widget menus are on top (${width}x${height})`, async () => {
-    const state = fixture("populated", { widgets: ALL_WIDGETS, period: 30 }); const { page, context } = await open(state, width, height)
+    const state = fixture("populated", { widgets: { practice: ALL_WIDGETS }, period: 30 }); const { page, context } = await open(state, width, height)
     try {
       await dashboard(page)
       const covered: string[] = []

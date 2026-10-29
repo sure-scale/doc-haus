@@ -334,8 +334,8 @@ button.dash-add { display: inline-flex; align-items: center; gap: var(--space-2)
 .dash-pill.status-blocked { background: #fff5e3; color: #805311; }
 .dash-pill.status-failed { background: var(--md-sys-color-error-container); color: var(--md-sys-color-error); }
 
-/* Quick actions and library. */
-.dash-actions, .dash-library { flex: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 1fr; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
+/* Action tiles (quick actions, things to try) and the library. */
+.dash-actions { flex: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 1fr; gap: var(--space-3); margin: 0; padding: 0; list-style: none; }
 .dash-actions :is(a, button) {
   display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-end; gap: 4px;
   width: 100%; height: 100%; min-height: 112px; padding: var(--space-4);
@@ -349,12 +349,81 @@ button.dash-add { display: inline-flex; align-items: center; gap: var(--space-2)
 .dash-actions .dash-shape { margin-bottom: auto; }
 .dash-actions strong { color: var(--ink); font-size: 14px; font-weight: 650; }
 .dash-actions span:not(.dash-shape, .dash-shape-icon) { color: var(--text-secondary); font-size: 12.5px; line-height: 1.4; }
-.dash-library a { display: flex; flex-direction: column; justify-content: center; gap: 2px; height: 100%; min-height: 100px; padding: var(--space-4); border-radius: var(--md-sys-shape-corner-large-increased, 20px); background: var(--tint); color: var(--ink); text-decoration: none; transition: transform var(--spring-spatial-fast-ms) var(--spring-spatial-fast); }
+.dash-library { flex: 1; display: grid; grid-auto-rows: 1fr; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.dash-library a { display: flex; align-items: center; gap: var(--space-3); height: 100%; min-height: 64px; padding: 10px 16px 10px 10px; border-radius: var(--md-sys-shape-corner-large-increased, 20px); background: var(--tint); color: var(--ink); text-decoration: none; transition: transform var(--spring-spatial-fast-ms) var(--spring-spatial-fast); }
 .dash-library a:hover { transform: translateY(-2px); }
+.dash-library a:hover .dash-shape-fill { transform: rotate(45deg); }
 .dash-library a:focus-visible { outline: 2px solid var(--md-sys-state-focus); outline-offset: 2px; }
-.dash-library-icon { display: inline-flex; margin-bottom: var(--space-2); }
-.dash-library strong { font-family: var(--font-display); font-size: 30px; font-weight: 650; line-height: 1.1; }
-.dash-library a > span:last-child { color: var(--text-secondary); font-size: 13px; }
+.dash-library-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.dash-library-text > span:first-child { color: var(--text); font-size: 13.5px; font-weight: 600; }
+.dash-library-first { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; font-weight: 600; }
+.dash-library-first svg { width: 14px; height: 14px; }
+.dash-library strong { font-family: var(--font-display); font-size: 28px; font-weight: 650; line-height: 1; font-variant-numeric: tabular-nums; }
+.dash-library .is-zero strong { opacity: .4; }
+
+/* ---------- First steps ---------- */
+.dash-journey-body { display: flex; flex-direction: column; gap: var(--space-4); }
+.dash-journey { --gap: var(--space-5); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-5) var(--gap); margin: 0; padding: 0; list-style: none; }
+.dash-journey li { position: relative; display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+/* The track: a line from each node to the next, solid once the step is done. */
+.dash-journey li:not(:last-child)::after { content: ""; position: absolute; top: 25px; left: 64px; right: calc(12px - var(--gap)); height: 3px; border-radius: 2px; background: rgb(255 255 255 / .22); }
+.dash-journey li.is-done:not(:last-child)::after { background: rgb(255 255 255 / .9); }
+.dash-step-node { position: relative; flex: none; display: inline-grid; place-items: center; width: 52px; height: 52px; color: #fff; font-family: var(--font-display); font-size: 18px; font-weight: 650; }
+.dash-step-node > svg { position: absolute; inset: 0; width: 100%; height: 100%; fill: rgb(255 255 255 / .16); }
+.dash-step-node > span { position: relative; display: inline-flex; }
+.is-done .dash-step-node { color: #2f2d7f; }
+.is-done .dash-step-node > svg { fill: #fff; }
+.is-current .dash-step-node { color: #3d2700; }
+.is-current .dash-step-node > svg { fill: #ffc85c; animation: dash-spin 14s linear infinite; }
+.dash-step-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.dash-step-text strong { font-size: 15px; font-weight: 650; line-height: 1.3; }
+.dash-step-text > span:not(.dash-step-note) { color: var(--soft); font-size: 12.5px; line-height: 1.45; }
+.dash-step-note { margin-top: 4px; font-size: 12.5px; font-weight: 600; }
+.dash-journey-done { align-self: flex-start; display: inline-flex; align-items: center; gap: var(--space-2); margin: 0; padding: 6px 14px 6px 8px; border-radius: var(--radius-pill); background: rgb(255 255 255 / .16); font-size: 13px; font-weight: 600; }
+.dash-journey-done > span { display: inline-flex; }
+
+/* The white pill a bold card leads with. */
+.dash-card :is(.dash-step-action, .dash-sample-action) {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 6px;
+  min-height: 36px; margin-top: var(--space-2); padding: 0 14px 0 16px;
+  border: none; border-radius: var(--radius-pill); background: #fff; color: var(--pill-ink, #2f2d7f);
+  font: inherit; font-size: 13.5px; font-weight: 650; text-decoration: none; white-space: nowrap;
+  box-shadow: 0 2px 6px rgb(0 0 0 / .16);
+  transition: transform var(--spring-spatial-fast-ms) var(--spring-spatial-fast), background var(--spring-effects-fast-ms) var(--spring-effects-fast);
+}
+.dash-card :is(.dash-step-action, .dash-sample-action):hover:not(:disabled) { transform: translateY(-1px); background: #f6f4ff; color: var(--pill-ink, #2f2d7f); }
+.dash-card :is(.dash-step-action, .dash-sample-action):focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+.dash-card :is(.dash-step-action, .dash-sample-action) svg { flex: none; }
+
+@container dash (max-width: 760px) {
+  .dash-journey { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dash-journey li:nth-child(2)::after { display: none; }
+}
+@container dash (max-width: 560px) {
+  .dash-journey { --gap: var(--space-4); grid-template-columns: minmax(0, 1fr); }
+  .dash-journey li { flex-direction: row; }
+  .dash-journey li:nth-child(n)::after { display: block; top: 56px; bottom: calc(4px - var(--gap)); left: 24.5px; right: auto; width: 3px; height: auto; }
+  .dash-journey li:last-child::after { display: none; }
+}
+
+/* ---------- Sample matter ---------- */
+.dash-card.tone-plum { --pill-ink: #7d2457; }
+.dash-sample { flex: 1; display: flex; flex-direction: column; gap: var(--space-2); min-height: 0; }
+.dash-sample-art { position: relative; flex: none; height: 108px; margin-bottom: var(--space-2); }
+.dash-sample-page { position: absolute; top: 6px; left: 4px; display: flex; flex-direction: column; gap: 7px; width: 92px; height: 96px; padding: 14px 12px; border-radius: 14px; background: #fff; box-shadow: 0 10px 22px rgb(60 8 38 / .28); transform: rotate(-5deg); transition: transform var(--spring-spatial-default-ms) var(--spring-spatial-default); }
+.dash-sample-page i { display: block; height: 6px; border-radius: 3px; background: #efdde8; }
+.dash-sample-page i:first-child { width: 58%; height: 8px; background: #9a2f6c; }
+.dash-sample-page i:nth-child(4) { width: 82%; }
+.dash-sample-page i:last-child { width: 48%; }
+.dash-sample-page i.is-marked { background: #ffc85c; }
+.dash-sample-comment { position: absolute; top: 56px; left: 80px; display: inline-grid; place-items: center; width: 40px; height: 40px; border-radius: 16px 16px 16px 4px; background: #ffc85c; color: #4d2a00; box-shadow: 0 6px 14px rgb(60 8 38 / .3); transform: rotate(6deg); transition: transform var(--spring-spatial-default-ms) var(--spring-spatial-default); }
+.dash-card:hover .dash-sample-page { transform: rotate(-2deg) translateY(-2px); }
+.dash-card:hover .dash-sample-comment { transform: rotate(-4deg) scale(1.06); }
+.dash-sample-title { margin: 0; font-family: var(--font-display); font-size: 19px; font-weight: 650; line-height: 1.25; }
+.dash-sample-text { margin: 0; color: var(--soft); font-size: 12.5px; line-height: 1.5; }
+.dash-sample-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: var(--space-1) 0 0; padding: 0; list-style: none; }
+.dash-sample-tags li { padding: 3px 10px; border-radius: var(--radius-pill); background: rgb(255 255 255 / .16); font-size: 11.5px; font-weight: 600; }
+.dash-card .dash-sample-action { margin-top: auto; }
 
 /* ---------- Setup ---------- */
 .dash-setup { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); grid-template-areas: "progress items" "done done"; gap: var(--space-4) var(--space-6); align-items: center; }
@@ -451,10 +520,10 @@ dialog.dash-add-panel:not([open]) { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dash-card, .dash-spread-bar, .dash-week-fill, .dash-hbar-fill, .dash-stack-part, .dash-skeleton span, .dash-spin { animation: none; }
-  .dash-card-deco, .dash-shape-fill, .dash-actions :is(a, button), .dash-library a, .dash-ring-value { transition: none; }
-  .dash-card:hover .dash-card-deco, .dash-card:hover .dash-card-badge .dash-shape-fill, .dash-actions :is(a, button):hover .dash-shape-fill { transform: none; }
-  .dash-actions :is(a, button):hover:not(:disabled), .dash-library a:hover { transform: none; }
+  .dash-card, .dash-spread-bar, .dash-week-fill, .dash-hbar-fill, .dash-stack-part, .dash-skeleton span, .dash-spin, .is-current .dash-step-node > svg { animation: none; }
+  .dash-card-deco, .dash-shape-fill, .dash-actions :is(a, button), .dash-library a, .dash-ring-value, .dash-sample-page, .dash-sample-comment, .dash-card :is(.dash-step-action, .dash-sample-action) { transition: none; }
+  .dash-card:hover .dash-card-deco, .dash-card:hover .dash-card-badge .dash-shape-fill, .dash-actions :is(a, button):hover .dash-shape-fill, .dash-library a:hover .dash-shape-fill { transform: none; }
+  .dash-actions :is(a, button):hover:not(:disabled), .dash-library a:hover, .dash-card:hover .dash-sample-page, .dash-card:hover .dash-sample-comment, .dash-card :is(.dash-step-action, .dash-sample-action):hover:not(:disabled) { transform: none; }
 }
 
 /* Forced colours: the system paints every surface; keep marks visible. */
@@ -462,4 +531,7 @@ dialog.dash-add-panel:not([open]) { display: none; }
   .dash-card { border-color: CanvasText; }
   .dash-card-art { display: none; }
   .dash-week-fill, .dash-hbar-fill, .dash-stack-part, .dash-spread-bar, .dash-swatch, .dash-key-cell { forced-color-adjust: none; }
+  .dash-journey li::after { background: GrayText; }
+  .dash-journey li.is-done::after { background: CanvasText; }
+  .dash-card :is(.dash-step-action, .dash-sample-action) { border: 1px solid ButtonText; }
 }

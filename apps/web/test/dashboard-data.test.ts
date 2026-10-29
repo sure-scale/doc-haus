@@ -2,7 +2,7 @@ process.env.TZ = "Europe/London"
 import { expect, test } from "bun:test"
 import type { Matter } from "../src/api/ingest/matters"
 import type { LeanDraftingStatus } from "../src/api/ingest/lean"
-import { attention, dailyConversations, dailySpend, periodStart, summarize, type MatterActivity, type Session } from "../src/components/dashboard/data"
+import { attention, dailyConversations, dailySpend, periodStart, progress, summarize, type MatterActivity, type Session } from "../src/components/dashboard/data"
 
 const matter = { id: "m1", title: "Alder House · Services agreement", dir: "/fixture/alder", created_at: Date.UTC(2026, 0, 5) } as Matter
 const at = (iso: string) => new Date(iso).getTime()
@@ -55,6 +55,20 @@ test("a drafted document is one delivered body, however many files deliver it", 
   const summary = summarize(activity([session("run", "2026-10-28T09:00:00Z", { cost: 12 })], drafting), 30, now)
   expect(summary.documents).toBe(1)
   expect(summary.averageDocument).toBe(12)
+})
+
+test("first steps count only the lawyer's own matters and point at the newest one with documents", () => {
+  const own = (id: string, created: string) => ({ ...matter, id, title: id, created_at: at(created) }) as Matter
+  const rows: MatterActivity[] = [
+    { matter: { ...own("sample", "2026-10-28T09:00:00Z"), sample: true } as Matter, sessions: [session("s", "2026-10-28T10:00:00Z")], documents: 4, failed: false },
+    { matter: own("older", "2026-10-20T09:00:00Z"), sessions: [session("o", "2026-10-21T09:00:00Z")], documents: 2, failed: false },
+    { matter: own("newer", "2026-10-27T09:00:00Z"), sessions: [], documents: 0, failed: false,
+      drafting: { status: "running", owner_session_id: "run", questions: [{ status: "open" }] } as unknown as LeanDraftingStatus },
+  ]
+  const steps = progress(rows)
+  expect([steps.matters, steps.documents, steps.conversations]).toEqual([2, 2, 1])
+  expect(steps.target?.id).toBe("older")
+  expect(steps.run).toEqual({ matter: rows[2].matter, session: "run", waiting: true })
 })
 
 test("a run the lawyer stopped does not ask for attention", () => {

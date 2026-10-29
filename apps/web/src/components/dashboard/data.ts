@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { listMatters, type Matter } from "../../api/ingest/matters"
+import { getMatter, listMatters, type Matter } from "../../api/ingest/matters"
 import { getDraftingStatus } from "../../api/ingest/drafting-status"
 import { leanStageSessions, type LeanDraftingStatus } from "../../api/ingest/lean"
 import { getPreferences, type DraftingPreferences } from "../../api/ingest/preferences"
@@ -13,7 +13,8 @@ export type Session = Awaited<ReturnType<typeof listSessions>>[number]
 
 // One matter as the dashboard sees it: every engine session in its folder
 // (subagent runs included, each carrying its own cost) and its drafting run.
-export type MatterActivity = { matter: Matter; sessions: Session[]; drafting?: LeanDraftingStatus; failed: boolean }
+// `documents` is read only for the newest few of the lawyer's own matters.
+export type MatterActivity = { matter: Matter; sessions: Session[]; drafting?: LeanDraftingStatus; documents?: number; failed: boolean }
 
 export type DashboardData = {
   matters: MatterActivity[]
@@ -48,12 +49,17 @@ async function mapLimited<T, R>(items: T[], limit: number, work: (item: T) => Pr
 
 const settled = <T,>(promise: Promise<T>) => promise.then((value) => value, () => undefined)
 
-async function loadMatter(matter: Matter): Promise<MatterActivity> {
-  const [sessions, drafting] = await Promise.allSettled([listSessions(matterClient(matter.dir)), getDraftingStatus(matter.id)])
+async function loadMatter(matter: Matter, withDocuments: boolean): Promise<MatterActivity> {
+  const [sessions, drafting, documents] = await Promise.allSettled([
+    listSessions(matterClient(matter.dir)),
+    getDraftingStatus(matter.id),
+    withDocuments ? getMatter(matter.id).then((detail) => detail.documents.length) : Promise.resolve(undefined),
+  ])
   return {
     matter,
     sessions: sessions.status === "fulfilled" ? sessions.value : [],
     drafting: drafting.status === "fulfilled" ? drafting.value : undefined,
+    documents: documents.status === "fulfilled" ? documents.value : undefined,
     failed: sessions.status === "rejected",
   }
 }
@@ -67,8 +73,11 @@ export async function loadDashboard(): Promise<DashboardData> {
     settled(listPlaybookLibrary().then((result) => result.playbooks.length)),
     settled(listClients().then((result) => result.length)),
   ])
+  // First steps only ask whether documents were added, so the file lists of
+  // the newest few own matters are enough.
+  const newest = new Set(matters.list.filter((matter) => !matter.sample).sort((a, b) => b.created_at - a.created_at).slice(0, 3).map((matter) => matter.id))
   return {
-    matters: await mapLimited(matters.list, 4, loadMatter),
+    matters: await mapLimited(matters.list, 4, (matter) => loadMatter(matter, newest.has(matter.id))),
     preferences, word, templates, playbooks, clients,
     ...("error" in matters ? { error: matters.error } : {}),
   }
@@ -125,7 +134,7 @@ const sessionsOf = (matters: MatterActivity[]) => matters.flatMap((row) => row.s
 // run, not a session the runtime owns (drafting stages, the narrator) unless it
 // is a drafting run's own conversation, and not a system-titled one such as a
 // review grid's cell sessions. Their cost still counts towards spend.
-function isConversation(session: Session) {
+export function isConversation(session: Session) {
   if (session.parentID || /^doc\.haus/i.test(session.title ?? "")) return false
   const role = typeof session.metadata === "object" && session.metadata !== null && "dochaus_role" in session.metadata ? session.metadata.dochaus_role : undefined
   return role === undefined || role === "lean-drafting-owner"
@@ -298,17 +307,47 @@ export function attention(matters: MatterActivity[]): AttentionItem[] {
 // Ingest stores some times as epoch seconds.
 const epochMs = (value: number | undefined) => (!value ? 0 : value < 1e11 ? value * 1000 : value)
 
+// When a matter was last worked in: its newest conversation, or its opening.
+const lastActive = ({ matter, sessions }: MatterActivity) => Math.max(epochMs(matter.created_at), ...sessions.map((session) => session.time.updated))
+
 export type RecentMatter = { matter: Matter; last: number; cost: number; documents: number; status?: LeanDraftingStatus["status"] }
 
 export function recentMatters(matters: MatterActivity[], limit = 5): RecentMatter[] {
   return matters
-    .map(({ matter, sessions, drafting }) => ({
-      matter,
-      last: Math.max(epochMs(matter.created_at), ...sessions.map((session) => session.time.updated)),
-      cost: totalCost(sessions),
-      documents: draftedCount(drafting),
-      status: drafting?.status,
+    .map((row) => ({
+      matter: row.matter,
+      last: lastActive(row),
+      cost: totalCost(row.sessions),
+      documents: draftedCount(row.drafting),
+      status: row.drafting?.status,
     }))
     .sort((a, b) => b.last - a.last)
     .slice(0, limit)
+}
+
+export type Progress = {
+  matters: number
+  documents: number
+  conversations: number
+  drafted: number
+  // Where the next step happens: the matter last worked in, preferring one
+  // with documents.
+  target?: Matter
+  // A drafting run still under way or waiting on the lawyer.
+  run?: { matter: Matter; session: string; waiting: boolean }
+}
+
+// How far the lawyer has come in their own matters, for the first-steps track
+// and the starting layout. The sample matter does not count.
+export function progress(matters: MatterActivity[]): Progress {
+  const own = matters.filter((row) => !row.matter.sample).sort((a, b) => lastActive(b) - lastActive(a))
+  const live = own.find(({ drafting }) => drafting && !drafting.stopped && drafting.status !== "completed")
+  return {
+    matters: own.length,
+    documents: own.reduce((sum, row) => sum + (row.documents ?? 0), 0),
+    conversations: own.reduce((sum, row) => sum + row.sessions.filter(isConversation).length, 0),
+    drafted: own.reduce((sum, row) => sum + draftedCount(row.drafting), 0),
+    target: (own.find((row) => row.documents) ?? own[0])?.matter,
+    run: live?.drafting && { matter: live.matter, session: live.drafting.owner_session_id, waiting: live.drafting.status !== "running" || live.drafting.questions.some((question) => question.status === "open") },
+  }
 }
