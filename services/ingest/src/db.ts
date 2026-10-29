@@ -1,3 +1,4 @@
+import { documentRegistryRole } from "../../../dochaus/lib/document-registry-role"
 import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
 import path from "node:path"
@@ -482,10 +483,7 @@ export function listSourceDocuments(db: Database) {
 }
 
 export function getDocumentRole(db: Database, docPath: string): "source" | "deliverable" | null {
-  const roles = [...new Set(matchingDocumentRows(db, docPath).map((row) => row.role))]
-  if (roles.length > 1)
-    throw new Error(`One physical matter document has conflicting source and deliverable registry roles.`)
-  return roles[0] ?? null
+  return documentRegistryRole(db, docPath)
 }
 
 // Drop a document and its chunks from the index. Pairs with removing the source

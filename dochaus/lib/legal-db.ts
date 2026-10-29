@@ -1,3 +1,4 @@
+import { documentRegistryRole } from "./document-registry-role"
 import { Database } from "bun:sqlite"
 import { existsSync, mkdirSync, realpathSync } from "node:fs"
 import path from "node:path"
@@ -48,4 +49,17 @@ export function registeredWordSource(directory: string, document: string) {
     return Boolean(db.query("SELECT 1 FROM documents WHERE name = ? AND role = 'source'").get(document))
   }
   finally { db.close() }
+}
+
+/** Resolve a document's exact registered role using the same physical identity as ingest. */
+export function registeredWordRole(directory: string, file: string) {
+  const dbFile = path.join(directory, ".dochaus", "legal.db")
+  if (!existsSync(dbFile)) return null
+  const relative = path.relative(realpathSync(directory), realpathSync(dbFile))
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null
+  const db = new Database(dbFile, { readonly: true })
+  try {
+    if (!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents'").get()) return null
+    return documentRegistryRole(db, file)
+  } finally { db.close() }
 }

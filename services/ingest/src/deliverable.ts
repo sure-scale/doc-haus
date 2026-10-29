@@ -205,6 +205,7 @@ export async function writeDeliverableRevision(
   fileName: string,
   buffer: Buffer,
   options: {
+    beforeRegistryUpdate?: (db: Database) => void
     updateRegistry?: (db: Database) => void
     priorSha256?: string
     updateWorkingRevision?: (db: Database) => void
@@ -237,6 +238,7 @@ export async function writeDeliverableRevision(
         const captured = await commitDocumentWriteAsync(target.docPath, buffer, async () => {
           db.run("BEGIN IMMEDIATE")
           try {
+            options.beforeRegistryUpdate?.(db)
             refreshDeliverable(db, target.docPath, target.name, Date.now())
             updateSystemDocx(db, matterDir, target.docPath, buffer, options.system)
             options.updateRegistry?.(db)

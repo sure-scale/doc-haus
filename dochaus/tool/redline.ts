@@ -1,13 +1,14 @@
+import { createHash } from "node:crypto"
 import { tool } from "./legacy-definition"
-import { existsSync, lstatSync, realpathSync } from "node:fs"
+import { lstatSync, realpathSync } from "node:fs"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { recordRedlineProposal, withRedlineDocumentLock } from "../lib/redlines"
 import { draftingAttribution, ourAuthors } from "../lib/docx-attribution"
 import { findPastListLabel, withoutListLabel } from "../lib/list-label"
-import { hasTrackedRevisions, pendingRevisionAnchors, pendingRevisionRefusal, trackedRevisionsReason } from "../lib/docx-amendments"
+import { applyLegacyClause, LegacyPhraseRefusal, hasTrackedRevisions, pendingRevisionAnchors, pendingRevisionRefusal, trackedRevisionsReason } from "../lib/docx-amendments"
 import { validWordChatFormatting } from "../lib/word-chat-amendment-contract"
-import { registeredWordSource } from "../lib/legal-db"
+import { registeredWordRole } from "../lib/legal-db"
 
 // doc.haus redline tool. Proposes rewriting a whole clause — the paragraph a
 // search-document citation points at — as a tracked change a reviewer accepts or
@@ -60,7 +61,8 @@ export default tool({
     // As Request edits: a Word file other than an uploaded source is refused
     // while it has tracked changes, beside which an untracked edit would not show.
     const bytes = await Bun.file(file).bytes()
-    if (!registeredWordSource(ctx.directory, path.basename(file)) && hasTrackedRevisions(bytes)) return trackedRevisionsReason
+    const role = registeredWordRole(ctx.directory, file)
+    if (role !== "source" && hasTrackedRevisions(bytes)) return trackedRevisionsReason
     const dx = await docxodus()
     const session = dx.openDocxSession(bytes, {})
 
@@ -84,6 +86,12 @@ export default tool({
     }
     if (located.error) return located.error
     const { find: clause, replace: replacement } = located
+    const options = { pendingRevisions: "layer" as const, ownAuthors: own, revisionAuthor: author }
+    let guarded: Awaited<ReturnType<typeof applyLegacyClause>> | undefined
+    if (!args.formatting) {
+      try { guarded = await applyLegacyClause(bytes, clause, replacement, options, "proposed") }
+      catch (error) { return clauseRefusal(error) }
+    }
 
     // Recording the proposal is gated on the matter owner's approval (permission
     // "redline" in opencode.json) — the redline review queue is itself a work
@@ -94,12 +102,15 @@ export default tool({
       permission: "redline",
       patterns: [file],
       always: [file],
-      metadata: { document: path.basename(file), clause, replacement, comment: args.comment, author, formatting: args.formatting },
+      metadata: { document: path.basename(file), clause: guarded?.before ?? clause, replacement, comment: args.comment, author, formatting: args.formatting },
     })
 
     const proposal = await withRedlineDocumentLock(ctx.directory, file, async () => {
-      if (!existsSync(file)) return { error: `Document not found in this matter: ${args.document}` }
-      const current = dx.openDocxSession(await Bun.file(file).bytes(), {})
+      if (!matterDocument(ctx.directory, file)) return { error: `Document not found in this matter: ${args.document}` }
+      const fresh = await Bun.file(file).bytes()
+      if (registeredWordRole(ctx.directory, file) !== role || (role !== "source" && hasTrackedRevisions(fresh))) return { error: trackedRevisionsReason }
+      if (guarded && createHash("sha256").update(fresh).digest("hex") !== guarded.source_sha256) return { error: "The Word document changed while approval was pending. Prepare a fresh change." }
+      const current = dx.openDocxSession(fresh, {})
       const again = locate(current, args.clause, args.replacement, own)
       const anchored = again.find === clause && !again.error ? again.targets[0] : undefined
       if (!anchored || (args.formatting && (again.targets.length !== 1 || paragraphText(current, anchored) !== args.clause))) {
@@ -111,16 +122,21 @@ export default tool({
       // old text while the document lock still protects the anchor bytes.
       const oldText = current.projectAnchor(anchored.id).markdown.replace(/\{#[^}]*\}/g, "").trim()
       current.close()
+      if (guarded) {
+        try { await applyLegacyClause(fresh, clause, replacement, options, "proposed") }
+        catch (error) { return { error: clauseRefusal(error) } }
+      }
       const recorded = recordRedlineProposal(ctx.directory, {
         docPath: file,
         docName: path.basename(file),
         scope: "clause",
-        findText: clause,
+        findText: guarded?.before ?? clause,
         oldText,
         newText: replacement,
         author,
         reviewComment: args.comment,
         anchorId: anchored.id,
+        ...(guarded ? { targetJson: JSON.stringify({ version: 1, kind: "legacy_clause", source_sha256: guarded.source_sha256, target_handle: guarded.target_handle, amendment_id: "legacy-clause", prepared_role: role, prepared_path: realpathSync(file) }) } : {}),
         formatting: args.formatting,
       })
       return { ...recorded, oldText, anchor: anchored.id }
@@ -165,4 +181,11 @@ function locate(session: ReturnType<Awaited<ReturnType<typeof docxodus>>["openDo
 function paragraphText(session: ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"]>, target: { id: string; autoNumberPrefix?: string }) {
   const shown = session.getAnchorInfo(target.id)?.visibleText
   return shown === undefined ? undefined : withoutListLabel(shown, target.autoNumberPrefix?.trim())
+}
+
+function clauseRefusal(error: unknown) {
+  if (error instanceof LegacyPhraseRefusal) return error.message
+  if (error instanceof Error && /^docx_field_replacement(?::|$)/.test(error.message)) return "This change touches a Word field that could not be safely preserved. Make the change in Word, then prepare a fresh change."
+  if (error instanceof Error && error.message === "unsupported_legacy_clause_markup") return "This clause uses formatting or structure that cannot be safely reproduced. Make the change in Word, or request plain text."
+  return "This clause change cannot be safely prepared. Review the passage in Word and prepare a fresh change."
 }

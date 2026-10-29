@@ -180,7 +180,8 @@ test("on a clean document the preview of prepared and older proposals together i
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 type Candidate = {amendment_id:string;target_handle:string;previous_paragraph?:string|null;table?:number;row?:number;cells?:string[];previous_row?:string[]|null;next_row?:string[]|null;
-  paragraph_text?:string;scope?:string;table_context?:Awaited<ReturnType<typeof inspectExactParagraphSpacing>>["matches"][number]["tableContext"];direct_after?:unknown;eligibility?:{eligible:boolean;reason?:string}}
+  paragraph_text?:string;scope?:string;paragraph?:{text:string;table?:{table:number;row:number|null;column:number|null;row_span?:number;column_span?:number;row_cells?:{column:number;column_span:number;text:string}[];unavailable_reason?:string}|null};
+  table_context?:Awaited<ReturnType<typeof inspectExactParagraphSpacing>>["matches"][number]["tableContext"];direct_after?:unknown;eligibility?:{eligible:boolean;reason?:string}}
 type LegalPass = {amendments:Array<{before_quote:string;replacement:string;target_context:string;reason:string}>;open_items:string[];
   table_rows?:Array<{reference_cells:string[];position:"before"|"after";cells:string[];target_context:string;reason:string}>;
   table_row_deletions?:Array<{reference_cells:string[];target_context:string;reason:string}>;
@@ -810,6 +811,22 @@ async function isolatedIngest(temporary:string,engine:{port?:number},dataRootOnl
   return {start,request,matter,stop}
 }
 const wordForm = (bytes:Uint8Array) => {const body=new FormData();body.append("file",new File([new Uint8Array(bytes)],"working.docx"));return body}
+
+function nestedMergedDuplicateDocx() {
+  const parts = unzipSync(counterpartyMarkupDocx())
+  const document = strFromU8(parts["word/document.xml"]!)
+  const commentPart = strFromU8(parts["word/comments.xml"]!)
+  const commentId = Math.max(0,...[...commentPart.matchAll(/<w:comment\b[^>]*?\bw:id="(\d+)"/g)].map(match => Number(match[1]))) + 1
+  const revisionId = Math.max(0,...[...document.matchAll(/<w:(?:ins|del|moveFrom|moveTo)\b[^>]*?\bw:id="(\d+)"/g)].map(match => Number(match[1]))) + 100
+  const comment = `<w:comment w:id="${commentId}" w:author="Table Reviewer" w:date="2026-10-28T10:00:00Z"><w:p><w:r><w:t>Adjacent table note.</w:t></w:r></w:p></w:comment>`
+  parts["word/comments.xml"] = strToU8(commentPart.replace("</w:comments>",`${comment}</w:comments>`))
+  const paragraph = (text:string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`
+  const commented = `<w:p><w:commentRangeStart w:id="${commentId}"/><w:r><w:t>Comment beside the nested target.</w:t></w:r><w:commentRangeEnd w:id="${commentId}"/><w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="${commentId}"/></w:r></w:p>`
+  const nested = `<w:tbl><w:tblPr><w:tblW w:w="2400" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="2400"/></w:tblGrid><w:tr><w:trPr/><w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/></w:tcPr>${commented}</w:tc></w:tr><w:tr><w:trPr/><w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/></w:tcPr>${paragraph("The Customer shall pay £5,000.")}</w:tc></w:tr></w:tbl>`
+  const outer = `<w:tbl><w:tblPr><w:tblW w:w="7200" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid><w:tr><w:trPr/><w:tc><w:tcPr><w:tcW w:w="4800" w:type="dxa"/><w:gridSpan w:val="2"/></w:tcPr>${paragraph("Decoy: The Customer shall pay £5,000.")}${nested}<w:p/></w:tc><w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/></w:tcPr><w:p><w:ins w:id="${revisionId}" w:author="Previous Counsel" w:date="2026-10-28T10:00:00Z"><w:r><w:t>Prior table wording remains.</w:t></w:r></w:ins></w:p>${paragraph("The Customer shall pay £5,000.")}</w:tc></w:tr></w:tbl>`
+  parts["word/document.xml"] = strToU8(document.replace("<w:sectPr",`${paragraph("Table amendment test")}${outer}<w:sectPr`))
+  return withParaIds(zipSync(parts,{mtime:new Date(1980,0,1)}))
+}
 
 test("standalone ingest uses its data root for amendment practice areas", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-practice-"))
@@ -2272,6 +2289,121 @@ test("accepting paragraph-bound amendments to a numbered list paragraph and a ta
       expect(String(after.documents["word/styles.xml"].documentElement)).toBe(String(before.documents["word/styles.xml"].documentElement))
     } finally {before.session.close();after.session.close()}
   } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("HTTP Prepare localizes duplicate wording in nested and merged table cells, and Accept preserves table structure, comments and prior revisions", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-nested-merged-"))
+  const source = nestedMergedDuplicateDocx()
+  const quote = "The Customer shall pay £5,000."
+  const changes = [
+    {before_quote:quote,replacement:"The Customer shall pay £5,200.",target_context:"the nested schedule's second row",reason:"Update the nested schedule amount."},
+    {before_quote:quote,replacement:"The Customer shall pay £7,500.",target_context:"the merged outer schedule's final cell",reason:"Update the merged schedule amount."},
+  ]
+  const choose = (candidates:Candidate[]) => {
+    const matches = candidates.filter(candidate => candidate.paragraph?.text.includes(quote))
+    expect(matches).toHaveLength(6)
+    const target = (amendment:string,table:number,column:number) => {
+      const found = matches.find(candidate => candidate.amendment_id === amendment && candidate.paragraph?.table?.table === table
+        && candidate.paragraph.table.column === column)
+      expect(found,`expected offered occurrence ${amendment} in table ${table}, column ${column}`).toBeDefined()
+      expect(found!.paragraph!.table).toMatchObject({table,row:table === 2 ? 2 : 1,column})
+      return {amendment_id:amendment,target_handle:found!.target_handle}
+    }
+    expect(matches.filter(candidate => candidate.amendment_id === "amendment-1").map(candidate => candidate.paragraph!.table?.table)).toEqual([1,2,1])
+    const selections = [target("amendment-1",2,1),target("amendment-2",1,3)]
+    return selections
+  }
+  const engine = syntheticEngine(() => ({amendments:changes,open_items:[]}),choose)
+  const ingest = await isolatedIngest(temporary,engine.server)
+  const direct = (element:Element,name:string) => Array.from(element.childNodes)
+    .filter((node):node is Element => node.nodeType === 1 && (node as Element).localName === name)
+  const topology = async (bytes:Uint8Array) => {
+    const opened = await openRevision(bytes,{pendingRevisions:"layer"})
+    try {
+      const tables = Array.from(opened.documents["word/document.xml"]!.getElementsByTagNameNS(W,"tbl"))
+      return tables.map(table => ({
+        tblPr:direct(table,"tblPr").map(String),grid:direct(table,"tblGrid").map(String),
+        rows:direct(table,"tr").map(row => ({trPr:direct(row,"trPr").map(String),cells:direct(row,"tc").map(cell => ({
+          tcPr:direct(cell,"tcPr").map(String),paragraphs:direct(cell,"p").length,nestedTables:direct(cell,"tbl").length,
+        }))})),
+      }))
+    } finally {opened.session.close()}
+  }
+  const commentKey = (bytes:Uint8Array) => readDocxComments(bytes).map(row => ({id:row.comment_id,text:row.text,
+    markers:row.markers.map(marker => marker.accepted_paragraph_text)}))
+  try {
+    await ingest.start("nested-merged")
+    const accepted = await ingest.matter("Synthetic nested and merged table amendment")
+    const rejected = await ingest.matter("Synthetic nested and merged table rejection")
+    for (const matter of [accepted,rejected])
+      expect((await ingest.request(`${matter.route}/documents`,{method:"POST",body:wordForm(source)})).status).toBe(200)
+    const sourceHash = sha256(source), originalRevisions = await listedRevisions(source), originalComments = commentKey(source)
+    const expectedParaIds = (await paragraphTargets(source,{pendingRevisions:"layer"}))
+      .filter(target => target.sha256 === sha256(Buffer.from(quote))).map(target => target.para_id)
+    expect(expectedParaIds).toHaveLength(2)
+    expect(originalRevisions.some(row => row.author === "Previous Counsel" && row.text.includes("Prior table wording remains."))).toBe(true)
+    expect(originalComments.some(row => row.text === "Adjacent table note.")).toBe(true)
+    const originalTopology = await topology(source)
+    expect(originalTopology).toHaveLength(2)
+    expect(originalTopology[0]!.rows[0]!.cells[0]!.tcPr[0]).toContain("gridSpan")
+    expect(originalTopology[0]!.rows[0]!.cells[0]!.nestedTables).toBe(1)
+
+    const prepare = async (matter:Awaited<ReturnType<typeof ingest.matter>>) => {
+      const response = await matter.prepare("Change the nested schedule amount to £5,200 and the merged outer schedule amount to £7,500. Keep the other occurrence unchanged.")
+      expect(response.status).toBe(200)
+      const result = await response.json() as {proposed:number;redline_ids:number[];open_items:string[]}
+      expect(result).toMatchObject({proposed:2,open_items:[]})
+      const bindings = matter.bindings(result.redline_ids)
+      expect(bindings.every(binding => binding.version === 2 && binding.base_sha256 === sourceHash && typeof binding.para_id === "string")).toBe(true)
+      expect(bindings.map(binding => binding.para_id)).toEqual(expectedParaIds)
+      return result.redline_ids
+    }
+    const ids = await prepare(accepted)
+    expect(sha256(await Bun.file(accepted.file).bytes())).toBe(sourceHash)
+    expect(await accepted.pending()).toEqual(ids.map(id => [id,undefined,undefined]))
+
+    const previewResponse = await ingest.request(`${accepted.route}/documents/redlined?name=working.docx`)
+    expect(previewResponse.status).toBe(200)
+    const preview = new Uint8Array(await previewResponse.arrayBuffer())
+    const previewRevision = await createDocxRevision(preview,{pendingRevisions:"layer"})
+    expect(previewRevision.paragraphs.map(row => row.text).filter(text => text.includes("Customer shall pay"))).toEqual([
+      "Decoy: The Customer shall pay £5,000.","The Customer shall pay £5,200.","The Customer shall pay £7,500.",
+    ])
+    expect(await topology(preview)).toEqual(originalTopology)
+    expect(commentKey(preview)).toHaveLength(originalComments.length + 2)
+    expect(commentKey(preview).filter(row => originalComments.some(original => original.id === row.id))).toEqual(originalComments)
+    expect((await listedRevisions(preview)).filter(row => originalRevisions.some(original => original.id === row.id))).toEqual(originalRevisions)
+
+    expect(await accepted.accept(ids[0]!)).toBe(200)
+    expect(await accepted.pending()).toEqual([[ids[1],undefined,undefined]])
+    expect(await accepted.accept(ids[1]!)).toBe(200)
+    expect(accepted.status(ids[0]!)).toBe("accepted");expect(accepted.status(ids[1]!)).toBe("accepted")
+    const after = await Bun.file(accepted.file).bytes()
+    const afterRevision = await createDocxRevision(after,{pendingRevisions:"layer"})
+    expect(afterRevision.paragraphs.map(row => row.text).filter(text => text.includes("Customer shall pay"))).toEqual([
+      "Decoy: The Customer shall pay £5,000.","The Customer shall pay £5,200.","The Customer shall pay £7,500.",
+    ])
+    expect(await topology(after)).toEqual(originalTopology)
+    const afterRevisions = await listedRevisions(after)
+    expect(afterRevisions.filter(row => originalRevisions.some(original => original.id === row.id))).toEqual(originalRevisions)
+    expect(new Set(revisionMarkIds(after)).size).toBe(revisionMarkIds(after).length)
+    expect(revisionMarkIds(after).length).toBeGreaterThanOrEqual(revisionMarkIds(source).length + 4)
+    const revisionText = readDocxRevisionText(after)
+    expect(revisionText.inserted_text.join(" ")).toContain("200")
+    expect(revisionText.inserted_text.join(" ")).toContain("500")
+    expect(revisionText.deleted_text.length).toBeGreaterThan(readDocxRevisionText(source).deleted_text.length)
+    const commentsAfter = commentKey(after)
+    expect(commentsAfter).toEqual(originalComments)
+
+    // A separate identical matter proves Reject leaves the canonical package untouched.
+    const rejectIds = await prepare(rejected)
+    for (const id of rejectIds) expect((await ingest.request(`${rejected.route}/redlines/${id}/reject`,{method:"POST"})).status).toBe(200)
+    expect(rejectIds.map(rejected.status)).toEqual(["rejected","rejected"])
+    expect(sha256(await Bun.file(rejected.file).bytes())).toBe(sourceHash)
+    expect(await topology(await Bun.file(rejected.file).bytes())).toEqual(originalTopology)
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
 })
 test("the draft view shows Word list numbers; a quote and replacement copying a paragraph's own number are placed without it", async () => {
   const directory = await mkdtemp(path.join(tmpdir(),"dochaus-word-labels-"))

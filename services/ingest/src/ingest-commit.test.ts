@@ -647,3 +647,39 @@ function stampedSince(directory: string, before: number) {
     .map(({ artifact, content_sha256, bytes }) => ({ artifact, content_sha256, bytes }))
     .toSorted((left, right) => left.artifact.localeCompare(right.artifact))
 }
+
+test("source publication checks registry authority inside the transaction before it can recreate a deleted row", async () => {
+  const directory = realpathSync(mkdtempSync(path.join(tmpdir(), "dochaus-authority-race-")))
+  try {
+    const name = "Authority.docx", file = path.join(directory, name)
+    const original = await docx(["Original wording."])
+    const revised = await docx(["Revised wording."])
+    await ingestDocument(directory, name, original)
+    const beforeDb = openDb(directory)
+    const versions = beforeDb.query("SELECT COUNT(*) AS n FROM document_versions").get()
+    const id = Number(beforeDb.run("INSERT INTO redlines (doc_path,doc_name,scope,find_text,old_text,new_text,author,review_comment,created_at) VALUES (?,?,?,?,?,?,?,?,?)", [file,name,"clause","Original wording.","Original wording.","Revised wording.","Counsel","Review.",Date.now()]).lastInsertRowid)
+    beforeDb.close()
+    const write = atomicWrite.commitDocumentWriteAsync
+    const spy = spyOn(atomicWrite, "commitDocumentWriteAsync").mockImplementation(async (...args) => {
+      const registry = openDb(directory)
+      try { registry.run("DELETE FROM documents WHERE doc_path = ?", [file]) } finally { registry.close() }
+      return write(...args)
+    })
+    try {
+      await expect(ingestDocument(directory, name, revised, { existing: "replace", requireExistingSource: true,
+        updateRegistry(db) { db.run("UPDATE redlines SET status = 'accepted' WHERE id = ?", [id]) },
+        beforeRegistryUpdate(db) {
+          const row = db.query("SELECT role FROM documents WHERE doc_path = ?").get(file) as { role: string } | null
+          if (row?.role !== "source") throw new Error("authority changed")
+        },
+      })).rejects.toThrow("authority changed")
+    } finally { spy.mockRestore() }
+    expect(readFileSync(file)).toEqual(original)
+    const db = openDb(directory)
+    try {
+      expect(db.query("SELECT role FROM documents WHERE doc_path = ?").get(file)).toBeNull()
+      expect(db.query("SELECT COUNT(*) AS n FROM document_versions").get()).toEqual(versions)
+      expect(db.query("SELECT status FROM redlines WHERE id = ?").get(id)).toEqual({ status: "pending" })
+    } finally { db.close() }
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})

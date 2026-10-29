@@ -77,6 +77,7 @@ export async function ingestDocument(
   options: {
     existing?: ExistingSourceChoice
     requireExistingSource?: boolean
+    beforeRegistryUpdate?: (db: ReturnType<typeof openDb>) => void
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
     // Text the caller already extracted with extractSourceText, with any extra
     // findings it adds, so a document is not read twice.
@@ -139,6 +140,7 @@ async function ingestDocumentLocked(
   options: {
     existing: "refuse" | "replace"
     requireExistingSource?: boolean
+    beforeRegistryUpdate?: (db: ReturnType<typeof openDb>) => void
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
     extracted?: ExtractedSourceText
     links?: DocumentLinks
@@ -247,6 +249,7 @@ async function ingestDocumentLocked(
       injectionReport: findings.length ? JSON.stringify({ findings }) : null,
       extractionQuality: JSON.stringify(quality),
       chunks: preparedChunks,
+      beforeRegistryUpdate: options.beforeRegistryUpdate,
       updateRegistry: options.updateRegistry,
       links: options.links ?? {},
       version,
@@ -355,6 +358,7 @@ async function commitIngestedDocument(
       embedding: Float32Array
       flagged: boolean
     }>
+    beforeRegistryUpdate?: (db: ReturnType<typeof openDb>) => void
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
     links: DocumentLinks
     version: VersionWrite
@@ -376,6 +380,7 @@ async function commitIngestedDocument(
     db.run("BEGIN IMMEDIATE")
     let settled = false
     try {
+      input.beforeRegistryUpdate?.(db)
       const documentId = upsertDocument(
         db,
         input.docPath,

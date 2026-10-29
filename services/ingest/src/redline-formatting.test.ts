@@ -136,3 +136,42 @@ test("legacy phrase replay refuses a live field result atomically and preserves 
   const revision = await (await import("../../../dochaus/lib/docx-amendments")).createDocxRevision(result)
   expect(revision.paragraphs.map(p => p.text)).toEqual(["Five weeks and five weeks.", "Five weeks remain."])
 })
+
+test("legacy clause replay preserves first SDK target and refuses field and Markdown changes", async () => {
+  const source = (await renderMarkdownToDocx("Alpha   term applies.\n\nAlpha term applies.\n\nAlpha term applies.")).bytes
+  const clause = { ...row("Alpha term", "Alpha term changes."), formatting_json: null, review_comment: "" }
+  const result = await bake(source, [clause])
+  const revision = await (await import("../../../dochaus/lib/docx-amendments")).createDocxRevision(result)
+  expect(revision.paragraphs.map(p => p.text)).toEqual(["Alpha   term applies.", "Alpha term changes.", "Alpha term applies."])
+  await expect(bake(source, [{ ...clause, new_text: "Alpha **term** changes." }])).rejects.toThrow()
+  const fields = (await renderMarkdownToDocx(["# Agreement", "## 1. Terms", "1.1 As set out in clause 2.1.", "## 2. Duties", "2.1 Do things."].join("\n\n"), undefined, undefined, { form: "agreement" })).bytes
+  const unsafe = { ...clause, find_text: "As set out in clause", new_text: "As set out in clause 2.2." }
+  await expect(bake(fields, [unsafe])).rejects.toThrow("Word field")
+  await expect(buildRedlined(fields, [unsafe])).rejects.toThrow("Word field")
+})
+
+test("source-bound clause selects one duplicate and goes stale when source changes", async () => {
+  const source = (await renderMarkdownToDocx("Alpha   term applies.\n\nAlpha term applies.\n\nAlpha term applies.")).bytes
+  const { applyLegacyClause, createDocxRevision } = await import("../../../dochaus/lib/docx-amendments")
+  const selected = await applyLegacyClause(source, "Alpha term", "Alpha term changes.")
+  const bound = { ...row(selected.before, "Alpha term changes."), formatting_json: null, review_comment: "",
+    target_json: JSON.stringify({ version: 1, kind: "legacy_clause", source_sha256: selected.source_sha256, target_handle: selected.target_handle, amendment_id: "legacy-clause", prepared_role: "source", prepared_path: "example.docx" }) }
+  const { redlineState, redlineStaleReason } = await import("./redline")
+  const state = await redlineState(source, [bound], {}, "source", "example.docx")
+  const accepted = await bake(source, [bound], state)
+  expect((await createDocxRevision(accepted)).paragraphs.map(p => p.text)).toEqual(["Alpha   term applies.", "Alpha term changes.", "Alpha term applies."])
+  expect((await buildRedlined(source, [bound], state)).length).toBeGreaterThan(0)
+  const roleChanged = await redlineState(source, [bound], {}, "deliverable", "example.docx")
+  expect(redlineStaleReason(bound, roleChanged, false)).toContain("role changed")
+  await expect(bake(source, [bound], roleChanged)).rejects.toThrow("role changed")
+  await expect(buildRedlined(source, [bound], roleChanged)).rejects.toThrow()
+  const malformed = { ...bound, scope: "phrase" as const }
+  await expect(bake(source, [malformed], state)).rejects.toThrow("binding is invalid")
+  const truncated = { ...bound, find_text: "Alpha term" }
+  const truncatedState = await redlineState(source, [truncated], {}, "source", "example.docx")
+  expect(redlineStaleReason(truncated, truncatedState, false)).toContain("invalid Word revision binding")
+  await expect(bake(source, [truncated], truncatedState)).rejects.toThrow()
+  const changed = (await renderMarkdownToDocx("New.\n\nAlpha term applies.")).bytes
+  await expect(bake(changed, [bound], state)).rejects.toThrow("earlier Word revision")
+  await expect(bake(source, [bound, { ...bound, id: 2 }], state)).rejects.toThrow()
+})

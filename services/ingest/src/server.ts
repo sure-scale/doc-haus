@@ -57,7 +57,7 @@ import {
 import { EmbeddingModelUnavailableError, migrateEmbeddings } from "./embed"
 import { migrateSections, migrateStructure } from "./structure"
 import { pdfToDocx } from "./convert"
-import { buildRedlined, bake, layeredRedline, redlineState, redlineStaleReason, RedlineAcceptConflictError, RedlinePreviewConflictError, RedlineReplayError, staleBatchReason } from "./redline"
+import { buildRedlined, bake, layeredRedline, redlineState, redlineStaleReason, RedlineAcceptConflictError, RedlinePreviewConflictError, RedlineReplayError, staleBatchReason, binding } from "./redline"
 import { docxProtectionMessage } from "./docx-protection-message"
 import { listMatters, createMatter, getMatter, renameMatter, deleteMatter, recordConflicts, matterDir, listJurisdictions, listPlaybooks, updatePlaybook, deletePlaybook, PlaybookError, PLAYBOOK_DIR, MatterNotFoundError, MatterValidationError, type Conflicts } from "./matter"
 import { listTemplates, templatePath, setTemplateDescription, removeTemplateDescription, TEMPLATES_DIR } from "./template"
@@ -80,7 +80,7 @@ import { DocxTrackedRevisionsError, type DocxRevisionOptions } from "../../../do
 import { compareVersions } from "../../../dochaus/lib/version-compare"
 import { pendingRedlinesForDoc } from "../../../dochaus/lib/redlines"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { assertExclusiveRedlineSingleton, exclusiveRedlineProposalMarker, frozenTableRowView, tableRowProposalMarker, type TableRowProposalView } from "../../../dochaus/lib/table-row-proposal"
+import { assertExclusiveRedlineSingleton, exclusiveRedlineProposalMarker, frozenTableRowView, tableRowProposalMarker, legacyClauseProposalMarker, type TableRowProposalView } from "../../../dochaus/lib/table-row-proposal"
 import { frozenParagraphSpacingView, paragraphSpacingExclusiveReason, paragraphSpacingProposalMarker, type ParagraphSpacingProposalView } from "../../../dochaus/lib/paragraph-spacing-proposal"
 import { paragraphSpacingBinding, paragraphSpacingView, spacingChanged } from "./paragraph-spacing-proposals"
 import { rowChanged, rowMixed, tableRowBinding, tableRowView } from "./table-row-proposals"
@@ -89,7 +89,7 @@ import { ingestZipDocument, ZipFormatError, ZipTooLargeError } from "./zip-archi
 import { MsgFormatError } from "../../../dochaus/lib/msg"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { safeFileName } from "../../../dochaus/lib/safe-file-name"
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { healSourceArtifacts } from "./source-artifacts"
 import { MatterSessionDeletionConflictError, MatterSessionDeletionError, deleteMatterSession } from "./matter-session"
@@ -1119,7 +1119,7 @@ app.get("/matters/:id/redlines", async (c) => {
     try {
       const rows = listPendingRedlines(db, target.docPath)
       const bytes = await Bun.file(target.docPath).bytes()
-      const state = await redlineState(bytes,rows,proposalRevisionOptions(dir,target.docPath),getDocumentRole(db,target.docPath))
+      const state = await redlineState(bytes,rows,proposalRevisionOptions(dir,target.docPath),getDocumentRole(db,target.docPath),target.docPath)
       const protectedWord = Boolean(readWorkingDocx(dir,target.docPath))
       const mixed = rows.some(exclusiveRedlineProposalMarker) && rows.length !== 1
       const mixedReason = rows.some(paragraphSpacingProposalMarker) ? paragraphSpacingExclusiveReason : rowMixed
@@ -1172,7 +1172,7 @@ app.get("/matters/:id/documents/redlined", async (c) => {
     })()
     const options = pending.length ? proposalRevisionOptions(dir, target.docPath) : {}
     try { assertExclusiveRedlineSingleton(pending) } catch (error) { return c.json({error:error instanceof Error ? error.message : "The mixed change list cannot be previewed."},409) }
-    const state = await redlineState(original, pending, options,proposalDocumentRole(dir,target.docPath))
+    const state = await redlineState(original, pending, options,proposalDocumentRole(dir,target.docPath),target.docPath)
     const rows = pending.filter((row) => !(paragraphSpacingProposalMarker(row) && row.doc_path !== target.docPath) && !redlineStaleReason(row, state, protectedWord))
     try {
       const bytes = await buildRedlined(original, rows, state, options)
@@ -1348,16 +1348,17 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
       const working = readWorkingDocx(dir,current.doc_path)
       const options = proposalRevisionOptions(dir,current.doc_path)
       const exact = exclusiveRedlineProposalMarker(current)
-      const state = await redlineState(original,[current],options,proposalDocumentRole(dir,current.doc_path))
+      const state = await redlineState(original,[current],options,proposalDocumentRole(dir,current.doc_path),current.doc_path)
       const stale = redlineStaleReason(current,state,Boolean(working))
       if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
       const accepted = await bake(original,[current],state,options)
+      assertClauseAuthority(dir,[current],current.doc_path)
       if (exact && proposalDocumentRole(dir,current.doc_path) !== "source") throw new RedlineAcceptConflictError(paragraphSpacingProposalMarker(current) ? spacingChanged : rowChanged)
       assertSpacingSourceCurrent(dir,[current],prior)
       const baked = documentRevisionBytes(dir,current.doc_name,Buffer.from(accepted),exact).bytes
       redline = await prepareDeliveredRedline(dir,current.doc_path,baked)
       assertSpacingSourceCurrent(dir,[current],prior)
-      await writeDocumentRevision(dir,current.doc_name,baked,[current.id],prior,current.target_json != null,{version:acceptVersion(c,[current.id]),exact})
+      await writeDocumentRevision(dir,current.doc_name,baked,[current.id],prior,current.target_json != null,{version:acceptVersion(c,[current.id]),exact, clauseRows: [current]})
     } catch (error) {
       if (error instanceof RedlineAcceptConflictError) return c.json({error:error.message},409)
       if (error instanceof RedlineReplayError) return c.json({error:error.refusal},409)
@@ -1426,17 +1427,18 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
       const working = readWorkingDocx(dir,file)
       const options = proposalRevisionOptions(dir,file)
       const exact = rows.some(exclusiveRedlineProposalMarker)
-      const state = await redlineState(original,rows,options,proposalDocumentRole(dir,file))
+      const state = await redlineState(original,rows,options,proposalDocumentRole(dir,file),file)
       const stale = rows.flatMap((row) => {const reason = redlineStaleReason(row,state,Boolean(working));return reason ? [{row,reason}] : []})
       if (stale.length || working && working.source_sha256 !== prior)
         return c.json({error:stale.length ? staleBatchReason(stale) : "The working Word revision is inconsistent. Refresh it through the revision API."},409)
       const accepted = await bake(original,rows,state,options)
+      assertClauseAuthority(dir,rows,file)
       if (exact && proposalDocumentRole(dir,file) !== "source") throw new RedlineAcceptConflictError(rows.some(paragraphSpacingProposalMarker) ? spacingChanged : rowChanged)
       assertSpacingSourceCurrent(dir,rows,prior)
       const baked = documentRevisionBytes(dir,name,Buffer.from(accepted),exact).bytes
       redline = await prepareDeliveredRedline(dir,file,baked)
       assertSpacingSourceCurrent(dir,rows,prior)
-      await writeDocumentRevision(dir,name,baked,rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null),{version:acceptVersion(c,rows.map((row) => row.id)),exact})
+      await writeDocumentRevision(dir,name,baked,rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null),{version:acceptVersion(c,rows.map((row) => row.id)),exact, clauseRows: rows})
     } catch (error) {
       if (error instanceof RedlineAcceptConflictError) return c.json({error:error.message},409)
       if (error instanceof RedlineReplayError) return c.json({error:error.refusal},409)
@@ -1485,6 +1487,18 @@ app.post("/matters/:id/redlines/reject-all", async (c) => {
  * with pending tracked changes is kept as a version, and an accepted working
  * Word revision keeps its last clean record, so doc.haus edits on top of it are
  * refused until the changes are resolved; any other writer is refused. */
+function checkClauseAuthority(db: ReturnType<typeof openDb>, rows: RedlineRow[], file: string) {
+  for (const row of rows.filter(legacyClauseProposalMarker)) {
+    const value = binding(row)
+    if (value.version !== 1 || value.kind !== "legacy_clause" || value.prepared_path !== file || lstatSync(file).isSymbolicLink() || realpathSync.native(file) !== value.prepared_path || getDocumentRole(db,file) !== value.prepared_role)
+      throw new RedlineAcceptConflictError("The document identity or registered role changed. Prepare a fresh change list.")
+  }
+}
+function assertClauseAuthority(directory: string, rows: RedlineRow[], file: string) {
+  const db = openDb(directory)
+  try { checkClauseAuthority(db,rows,file) } finally { db.close() }
+}
+
 async function writeDocumentRevision(
   directory: string,
   name: string,
@@ -1492,7 +1506,7 @@ async function writeDocumentRevision(
   acceptedRedlineIDs: readonly number[] = [],
   priorSha256: string | undefined,
   boundAcceptance: boolean,
-  options: { version: VersionWrite; exact?: boolean; keepTracked?: boolean } & WordLeaseWriteOptions,
+  options: { version: VersionWrite; exact?: boolean; keepTracked?: boolean; clauseRows?: RedlineRow[] } & WordLeaseWriteOptions,
 ) {
   assertWordEditAllowed(directory, name, options.wordLeaseOwner)
   const { role, bytes } = documentRevisionBytes(directory, name, input, options.exact)
@@ -1505,17 +1519,18 @@ async function writeDocumentRevision(
       if (!(error instanceof DocxTrackedRevisionsError) || !options.keepTracked || boundAcceptance) throw error
     }
   }
+  const beforeRegistryUpdate = (registry: ReturnType<typeof openDb>) => checkClauseAuthority(registry,options.clauseRows ?? [],path.join(directory,name))
   const updateRegistry = (registry: ReturnType<typeof openDb>) => {
     acceptedRedlineIDs.forEach((id) => setRedlineStatus(registry,id,"accepted"))
   }
   const written = role === "deliverable"
     ? await (async () => {
       const written = await writeDeliverableRevision(directory, name, bytes, {
-        updateRegistry, priorSha256, updateWorkingRevision: working, keepWorkingRecord: Boolean(existing) && !working, version: options.version, wordLeaseOwner: options.wordLeaseOwner,
+        beforeRegistryUpdate, updateRegistry, priorSha256, updateWorkingRevision: working, keepWorkingRecord: Boolean(existing) && !working, version: options.version, wordLeaseOwner: options.wordLeaseOwner,
       })
       return { ...written, ...versionNotice(written.name, bytes, written.version) }
     })()
-    : await ingestDocument(directory, name, bytes, { existing: "replace", requireExistingSource: true, updateRegistry, version: options.version, wordLeaseOwner: options.wordLeaseOwner })
+    : await ingestDocument(directory, name, bytes, { existing: "replace", requireExistingSource: true, beforeRegistryUpdate, updateRegistry, version: options.version, wordLeaseOwner: options.wordLeaseOwner })
   return { ...written, ...(options.version.origin === "redaction" ? purgeRedactedVersions(directory, written.version.document_id, path.basename(name)) : {}) }
 }
 

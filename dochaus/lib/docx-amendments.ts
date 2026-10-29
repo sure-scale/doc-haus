@@ -152,6 +152,43 @@ export async function applyLegacyPhrase(bytes: Uint8Array, find: string, replace
   return applyDocxParagraphEdits(bytes, edits, undefined, options)
 }
 
+/** Resolve the legacy first SDK clause target and prove the guarded write has
+ * the same visible text and character formatting as SDK Markdown replacement. */
+export async function applyLegacyClause(bytes: Uint8Array, find: string, replacement: string, options: DocxRevisionOptions = {}, verb: "proposed" | "applied" = "applied") {
+  if (!find || !replacement || /[\r\n\t]/.test(replacement)) throw new Error("unsupported_legacy_clause")
+  const source = new Uint8Array(bytes), opened = await openRevision(source, options)
+  let paragraphHandle: string, before: string, target: string
+  try {
+    const selected = opened.session.findByText(find, { ignoreWhitespace: true })
+    if (!selected) throw new LegacyPhraseRefusal("missing", "Clause no longer found")
+    const matches = opened.paragraphs.flatMap((paragraph, ordinal) => paragraph.match.enclosingAnchor.id === selected.id ? [ordinal] : [])
+    if (matches.length !== 1) throw new Error("unsupported_legacy_clause_target")
+    const ordinal = matches[0]!, paragraph = opened.paragraphs[ordinal]!
+    if (paragraph.part !== "word/document.xml") throw new Error("unsupported_legacy_clause_target")
+    const refusal = pendingRevisionRefusal(opened.session, pendingRevisionAnchors(opened.session), [selected.id], find, verb, options.ownAuthors ?? [], true)
+    if (refusal) throw new LegacyPhraseRefusal("pending", refusal)
+    before = paragraph.match.text
+    if (!before) throw new Error("unsupported_legacy_clause_target")
+    paragraphHandle = opened.revision.paragraphs[ordinal]!.paragraph_handle
+    target = targetHandle(opened.revision.source_sha256, ordinal, paragraph.match)
+  } finally { opened.session.close() }
+  const edit = { id: "legacy-clause", paragraph_handle: paragraphHandle, occurrence: 0, before_quote: before, replacement }
+  const plainOptions = { ...options, revisionAuthor: undefined, amendmentAuthors: undefined }
+  const guarded = await applyDocxParagraphEdits(source, [edit], undefined, plainOptions)
+  const dx = await docxodus(), probe = dx.openDocxSession(source, { persistAnchorIds: false })
+  let sdk: Uint8Array
+  try {
+    const selected = probe.findByText(find, { ignoreWhitespace: true })
+    if (!selected || !probe.replaceText(selected.id, replacement).success) throw new Error("unsupported_legacy_clause_target")
+    sdk = probe.save()
+  } finally { probe.close() }
+  const [expected, actual] = await Promise.all([createDocxRevision(sdk, plainOptions), createDocxRevision(guarded.bytes, plainOptions)])
+  const display = (revision: DocxRevisionPacket) => revision.paragraphs.map(row => ({ text: row.text, formatting: row.formatting.flatMap(fragment => Array.from(fragment.text).map(text => [text, fragment.formatting])) }))
+  if (JSON.stringify(display(expected)) !== JSON.stringify(display(actual))) throw new Error("unsupported_legacy_clause_markup")
+  const result = options.revisionAuthor ? await applyDocxParagraphEdits(source, [edit], undefined, options) : guarded
+  return { ...result, before, target_handle: target, source_sha256: digest(source) }
+}
+
 function selectedBindings(opened: Opened, packet: DocxLocalizationPacket, selected: DocxLocalizationSelection[]) {
   const rebuilt = localize(opened, packet.amendments, packet.limits)
   if (JSON.stringify(rebuilt.packet) !== JSON.stringify(packet)) throw new Error("docx_packet_binding_changed")

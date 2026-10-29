@@ -30,6 +30,7 @@ export function recordRedline(
     author: string
     reviewComment: string
     anchorId: string
+    targetJson?: string
     formatting?: Record<string, unknown>
   },
 ) {
@@ -89,6 +90,7 @@ export function recordRedlineProposal(
     author: string
     reviewComment: string
     anchorId: string
+    targetJson?: string
     formatting?: Record<string, unknown>
   },
 ) {
@@ -97,7 +99,7 @@ export function recordRedlineProposal(
   try {
     return db.transaction(() => {
       const pending = pendingRedlines(db, matterDir, normalized.docPath)
-      assertRedlineProposalCompatibility(pending, [normalized])
+      assertRedlineProposalCompatibility(pending, [{...normalized, target_json: normalized.targetJson}])
       const superseded = conflictingRedlines(pending, normalized)
       const id = insertRedline(db, normalized)
       supersedeRedlineRows(db, superseded.map((candidate) => candidate.id))
@@ -208,12 +210,13 @@ function insertRedline(
     author: string
     reviewComment: string
     anchorId: string
+    targetJson?: string
     formatting?: Record<string, unknown>
   },
 ) {
   return Number(db.run(
-    "INSERT INTO redlines (doc_path, doc_name, scope, find_text, old_text, new_text, author, review_comment, anchor_id, formatting_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [row.docPath, row.docName, row.scope, row.findText, row.oldText, row.newText, row.author, row.reviewComment, row.anchorId, row.formatting ? JSON.stringify(row.formatting) : null, Date.now()],
+    "INSERT INTO redlines (doc_path, doc_name, scope, find_text, old_text, new_text, author, review_comment, anchor_id, formatting_json, target_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [row.docPath, row.docName, row.scope, row.findText, row.oldText, row.newText, row.author, row.reviewComment, row.anchorId, row.formatting ? JSON.stringify(row.formatting) : null, row.targetJson ?? null, Date.now()],
   ).lastInsertRowid)
 }
 

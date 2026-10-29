@@ -4,7 +4,7 @@ import type { WordChatParagraphFormat } from "../../../dochaus/lib/word-chat-ame
 import { compareDocxWithPointers, paragraphTargets, resolveParagraphTarget, withStableRevisionDates, type ParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import type { RedlineRow } from "./db"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { createDocxLocalization, applyDocxParagraphEdits, applyLegacyPhrase, LegacyPhraseRefusal, DocxOverlappingAmendmentsError, DocxTrackedRevisionsError, hasTrackedRevisions, openRevision, othersPending, pendingRevisionAnchors, pendingRevisionRefusal, quoted, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
+import { createDocxLocalization, applyDocxParagraphEdits, applyLegacyPhrase, applyLegacyClause, LegacyPhraseRefusal, DocxOverlappingAmendmentsError, DocxTrackedRevisionsError, hasTrackedRevisions, openRevision, othersPending, pendingRevisionAnchors, pendingRevisionRefusal, quoted, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { createHash } from "node:crypto"
 import { draftingAttribution, ourAuthors } from "../../../dochaus/lib/docx-attribution"
 import { normalizeUntrustedText } from "../../../dochaus/lib/untrusted-text"
@@ -13,7 +13,7 @@ import { exportDocxComments, preserveDocxComments, readDocxCommentParagraphPosit
 import { assertLayeredRoundTrip, assertRedlineRoundTrip } from "../../../dochaus/lib/redline-round-trip"
 import { discloseSourceRevisions } from "../../../dochaus/lib/docx-revision-views"
 import { docxProtectionMessage } from "./docx-protection-message"
-import { assertExclusiveRedlineSingleton, exclusiveRedlineProposalMarker, RedlineProposalConflictError, tableRowProposalMarker } from "../../../dochaus/lib/table-row-proposal"
+import { assertExclusiveRedlineSingleton, exclusiveRedlineProposalMarker, RedlineProposalConflictError, tableRowProposalMarker, legacyClauseProposalMarker } from "../../../dochaus/lib/table-row-proposal"
 import { paragraphSpacingProposalMarker } from "../../../dochaus/lib/paragraph-spacing-proposal"
 import { authorExactParagraphSpacing, resolveExactParagraphSpacing } from "../../../dochaus/lib/docx-exact-spacing"
 import { authorExactParagraphSpacingReview } from "../../../dochaus/lib/docx-exact-spacing-review"
@@ -334,6 +334,7 @@ export async function bake(original: Uint8Array, rows: RedlineRow[], state?: Red
 // elements, for its review comment: an edit keeps every w:p in place.
 async function writeProposals(original: Uint8Array, rows: RedlineRow[], state: RedlineState | undefined, options: DocxRevisionOptions,
   how: { ownAuthors?: readonly string[]; tracked?: boolean; locate?: boolean } = {}) {
+  assertExclusiveRedlineSingleton(rows)
   const bound = rows.filter((row) => row.target_json != null)
   const older = rows.filter((row) => row.target_json == null)
   const written = bound.length ? await bakeBound(original, bound, state,
@@ -408,16 +409,18 @@ async function bakeOlder(original: Uint8Array, rows: RedlineRow[], tracked = fal
       positions.push(before && after && after.length === before.length && changed?.length === 1 ? changed[0]!.xml_paragraph_indexes[0] : undefined)
       continue
     }
-    const session = dx.openDocxSession(bytes, tracked ? { trackedChanges: "render_inline", revisionAuthor: rowAuthor(row) } : {})
+    const before = locate && row.review_comment.trim() ? readDocxCommentParagraphPositions(bytes) : undefined
     try {
-      const before = locate && row.review_comment.trim() ? readDocxCommentParagraphPositions(bytes) : undefined
-      const result = applyProposal(session, row)
-      if (!result.ok) throw new RedlineReplayError(row, result.error, result.error.startsWith("The change to "), result.error.startsWith("Clause no longer found") || result.error.startsWith("The change to "))
-      bytes = session.save()
-      const after = before && readDocxCommentParagraphPositions(bytes)
-      const changed = before && after?.filter((paragraph, index) => paragraph.paragraph_text !== before[index]?.paragraph_text)
-      positions.push(before && after && after.length === before.length && changed?.length === 1 ? changed[0]!.xml_paragraph_indexes[0] : undefined)
-    } finally { session.close() }
+      bytes = (await applyLegacyClause(bytes, row.find_text, row.new_text,
+        { ...options, pendingRevisions: "layer", ownAuthors: ours([rowAuthor(row)]), ...(tracked ? { revisionAuthor: rowAuthor(row) } : {}) })).bytes
+    } catch (error) {
+      const protection = docxProtectionMessage(error)
+      if (error instanceof LegacyPhraseRefusal) throw new RedlineReplayError(row, error.kind === "missing" ? `Clause no longer found for redline #${row.id}: ${JSON.stringify(row.find_text)}` : error.message, error.kind === "pending", true)
+      throw new RedlineReplayError(row, protection ?? "The clause cannot be safely changed. Review it in Word and prepare a fresh change.", true)
+    }
+    const after = before && readDocxCommentParagraphPositions(bytes)
+    const changed = before && after?.filter((paragraph, index) => paragraph.paragraph_text !== before[index]?.paragraph_text)
+    positions.push(before && after && after.length === before.length && changed?.length === 1 ? changed[0]!.xml_paragraph_indexes[0] : undefined)
   }
   return { bytes, positions }
 }
@@ -427,7 +430,7 @@ async function bakeOlder(original: Uint8Array, rows: RedlineRow[], tracked = fal
 // occurrence of its quote inside that paragraph; base_sha256 is diagnostic only.
 // The paragraph is the one its doc.haus pointer names (pid) or, on an uploaded
 // source where it has none, the one Word's own unique w14:paraId names (para_id).
-type RevisionBinding = { version:1; source_sha256:string; amendment_id:string; target_handle:string }
+type RevisionBinding = { version:1; source_sha256:string; amendment_id:string; target_handle:string; kind?: "legacy_clause"; prepared_role?: "source" | "deliverable" | null; prepared_path?: string }
 type ParagraphBinding = { version:2; amendment_id:string; paragraph_sha256:string; occurrence:number; base_sha256:string } & ({ pid:string } | { para_id:string })
 export function binding(row:RedlineRow):RevisionBinding|ParagraphBinding {
   if (paragraphSpacingProposalMarker(row)) throw new Error("A spacing proposal requires its exact formatting writer.")
@@ -439,6 +442,15 @@ export function binding(row:RedlineRow):RevisionBinding|ParagraphBinding {
   const value = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string,unknown> : {}
   const hex = (text:unknown) => typeof text === "string" && /^[a-f0-9]{64}$/.test(text)
   const named = (text:unknown) => typeof text === "string" && text.length > 0
+  if (value.kind === "legacy_clause") {
+    if (row.scope !== "clause" || value.version !== 1 || !hex(value.source_sha256) || !named(value.target_handle) || !named(value.amendment_id) ||
+      !(value.prepared_role === null || value.prepared_role === "source" || value.prepared_role === "deliverable") ||
+      typeof value.prepared_path !== "string" || value.prepared_path !== row.doc_path ||
+      Object.keys(value).some(key => !["version", "kind", "source_sha256", "target_handle", "amendment_id", "prepared_role", "prepared_path"].includes(key)))
+      throw new Error("The proposal's Word revision binding is invalid.")
+    return value as RevisionBinding
+  }
+  if (value.kind !== undefined) throw new Error("The proposal's Word revision binding is invalid.")
   if (value.version === 1 && hex(value.source_sha256) && named(value.target_handle) && named(value.amendment_id))
     return value as RevisionBinding
   if (value.version === 2 && named(value.amendment_id) && (named(value.pid) ? !("para_id" in value) : named(value.para_id) && !("pid" in value)) &&
@@ -451,25 +463,35 @@ export function binding(row:RedlineRow):RevisionBinding|ParagraphBinding {
 const paragraphChanged = "The paragraph this change targets has changed since it was prepared. Prepare a fresh change list."
 const trackedChanges = "This Word file contains tracked changes. Accept or reject them in Word before changes can be applied."
 const unreadableRevision = "This Word revision cannot be read paragraph by paragraph. Prepare a fresh change list."
-export type RedlineState = { sha256:string; targets:ParagraphTarget[]|null; tracked?:true; registeredRole?: "source" | "deliverable" | null }
+export type RedlineState = { sha256:string; targets:ParagraphTarget[]|null; tracked?:true; registeredRole?: "source" | "deliverable" | null; documentPath?: string; invalidClauseIds?: number[] }
 // Read once per request from the bytes being reviewed. Paragraph targets are
 // read only when a paragraph-bound proposal needs them, or to explain why a
 // whole-revision proposal is stale; an unreadable revision leaves those
 // proposals stale rather than failing the whole change list.
-export async function redlineState(bytes:Uint8Array,rows:RedlineRow[],options:DocxRevisionOptions = {},registeredRole?: "source" | "deliverable" | null):Promise<RedlineState> {
+export async function redlineState(bytes:Uint8Array,rows:RedlineRow[],options:DocxRevisionOptions = {},registeredRole?: "source" | "deliverable" | null, documentPath?: string):Promise<RedlineState> {
   const sha256 = createHash("sha256").update(bytes).digest("hex")
-  if (rows.some(exclusiveRedlineProposalMarker)) return { sha256, targets: [], registeredRole, ...(await tableRowSourceHasRevisions(bytes) ? { tracked: true } : {}) }
+  const invalidClauseIds: number[] = []
+  for (const row of rows.filter(legacyClauseProposalMarker)) {
+    try {
+      const value = binding(row)
+      if (value.version === 1 && value.source_sha256 === sha256) {
+        const packet = await createDocxLocalization(bytes, [{ id: String(row.id), before_quote: row.find_text, replacement: row.new_text }], {}, options)
+        requireCompleteClause(packet, row, value.target_handle)
+      }
+    } catch { invalidClauseIds.push(row.id) }
+  }
+  if (rows.some(exclusiveRedlineProposalMarker)) return { sha256, targets: [], registeredRole, documentPath, invalidClauseIds, ...(await tableRowSourceHasRevisions(bytes) ? { tracked: true } : {}) }
   // An older proposal is baked untracked: beside tracked changes, only on an
   // uploaded source; any other Word file with them refuses it, as Prepare does.
   if (options.pendingRevisions !== "layer" && rows.some((row) => row.target_json == null) && hasTrackedRevisions(bytes))
-    return {sha256,targets:null,tracked:true}
+    return {sha256,targets:null,tracked:true,registeredRole,documentPath,invalidClauseIds}
   const bindings = rows.flatMap((row) => {try {return [binding(row)]} catch {return []}})
-  if (!bindings.some((value) => value.version === 2 || value.source_sha256 !== sha256)) return {sha256,targets:[]}
-  try {return {sha256,targets:await paragraphTargets(bytes,options)}}
+  if (!bindings.some((value) => value.version === 2 || value.source_sha256 !== sha256)) return {sha256,targets:[],registeredRole,documentPath,invalidClauseIds}
+  try {return {sha256,targets:await paragraphTargets(bytes,options),registeredRole,documentPath,invalidClauseIds}}
   catch (error) {
-    if (error instanceof DocxTrackedRevisionsError) return {sha256,targets:null,tracked:true}
+    if (error instanceof DocxTrackedRevisionsError) return {sha256,targets:null,tracked:true,registeredRole,documentPath,invalidClauseIds}
     console.warn("[redline] paragraph targets unavailable",diagnosticErrorMetadata(error))
-    return {sha256,targets:null}
+    return {sha256,targets:null,registeredRole,documentPath,invalidClauseIds}
   }
 }
 // A target's para_id is null unless no other body paragraph repeats it.
@@ -495,7 +517,11 @@ export function redlineStaleReason(row:RedlineRow,state:RedlineState,protectedWo
   try {value = binding(row)} catch {return "This proposal has an invalid Word revision binding. Prepare a fresh change list."}
   // No bound proposal applies to this revision, and a fresh change list cannot either.
   if (state.tracked) return trackedChanges
-  if (value.version === 1) return value.source_sha256 === state.sha256 ? undefined : "This proposal targets an earlier Word revision. Prepare a fresh change list."
+  if (value.version === 1) {
+    if (value.kind === "legacy_clause" && state.invalidClauseIds?.includes(row.id)) return "This proposal has an invalid Word revision binding. Prepare a fresh change list."
+    if (value.kind === "legacy_clause" && (value.prepared_role !== state.registeredRole || value.prepared_path !== state.documentPath)) return "The document's registered role changed. Prepare a fresh change list."
+    return value.source_sha256 === state.sha256 ? undefined : "This proposal targets an earlier Word revision. Prepare a fresh change list."
+  }
   if (!state.targets) return unreadableRevision
   // Never rebased: the pointed paragraph must still read exactly as prepared.
   const target = boundParagraph(value,state.targets)
@@ -554,9 +580,16 @@ function heldParagraph(text:string,authors:string[]) {
 // candidate search. Overlapping spans in one paragraph are refused. `options`
 // are the reader's DocxRevisionOptions; with a revisionAuthor the edits are
 // written as tracked changes.
+function requireCompleteClause(packet: Awaited<ReturnType<typeof createDocxLocalization>>, row: RedlineRow, targetHandle: string) {
+  const matches = packet.candidates.filter(candidate => candidate.amendment_id === String(row.id) && candidate.target_handle === targetHandle)
+  if (matches.length !== 1 || matches[0]!.paragraph.text !== row.find_text || matches[0]!.context_before || matches[0]!.context_after)
+    throw new Error("The proposal's Word revision binding is invalid.")
+}
 async function bakeBound(original:Uint8Array,rows:RedlineRow[],state?:RedlineState,options:DocxRevisionOptions = {}) {
   const current = createHash("sha256").update(original).digest("hex")
   const bindings = rows.map(binding)
+  for (const value of bindings) if (value.version === 1 && value.kind === "legacy_clause" && (value.prepared_role !== state?.registeredRole || value.prepared_path !== state?.documentPath))
+    throw new Error("The document's registered role changed. Prepare a fresh change list.")
   if (bindings.some((value) => value.version === 1 && value.source_sha256 !== current)) throw new Error("This proposal targets an earlier Word revision. Prepare changes against the current document.")
   const targets = !bindings.some((value) => value.version === 2) ? []
     : state?.sha256 === current && state.targets?.length ? state.targets : await paragraphTargets(original,options)
@@ -570,6 +603,11 @@ async function bakeBound(original:Uint8Array,rows:RedlineRow[],state?:RedlineSta
     packet:await createDocxLocalization(original,revisionBound.map(({row}) => amendment(row)),{},options),
     selections:revisionBound.map(({row,target_handle}) => ({amendment_id:String(row.id),target_handle})),
   } : undefined
+  if (localized) for (const { row, target_handle } of revisionBound) {
+    const value = binding(row)
+    if (value.version !== 1 || value.kind !== "legacy_clause") continue
+    requireCompleteClause(localized.packet, row, target_handle)
+  }
   const edits = rows.flatMap((row,index) => {
     const value = bindings[index]!
     if (value.version === 1) return []
