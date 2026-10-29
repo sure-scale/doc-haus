@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { Route, Routes, useLocation } from "react-router-dom"
+import { Route, Routes, useLocation, useNavigate } from "react-router-dom"
 import Matters from "./pages/Matters"
 import Dashboard from "./pages/Dashboard"
 import Clients from "./pages/Clients"
@@ -74,7 +74,7 @@ export default function App() {
   const booted = engineReady && ingestReady && setup !== null
   async function refreshSetup() {
     try {
-      const progress = await getSetup(); setSetup(progress)
+      const progress = await getSetup(); setSetup(progress); return progress
     } catch { setBootError("Could not check saved setup. Retry before generating work."); setSetup(null) }
   }
   // Bumped when a matter mints a new conversation, so the sidebar re-lists its
@@ -83,6 +83,7 @@ export default function App() {
   // Bumped when the sample matter is added, so the matters list re-loads.
   const [mattersVersion, setMattersVersion] = useState(0)
   const location = useLocation()
+  const navigate = useNavigate()
   if (!acknowledged) return <LaunchNotice onAccept={() => setAcknowledged(true)} />
   if (!booted)
     return (
@@ -123,7 +124,14 @@ export default function App() {
         <Exit when={updates.open && setup?.next === "done" && !onboarding && !settingsShown}>{() => <UpdateModal updates={updates} />}</Exit>
         <Exit when={onboarding}>{() => (
           <Onboarding
-            onClose={() => { setOnboarding(false); void refreshSetup() }}
+            onClose={() => {
+              setOnboarding(false)
+              // A lawyer who has just finished setup on the matters list lands on
+              // the dashboard's First steps; one who opened another page stays.
+              void refreshSetup().then((progress) => {
+                if (progress?.next === "done" && window.location.pathname === "/") navigate("/dashboard", { replace: true })
+              })
+            }}
             onSampleAdded={() => setMattersVersion((v) => v + 1)}
           />
         )}</Exit>

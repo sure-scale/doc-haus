@@ -1,9 +1,12 @@
-import { useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type PointerEvent as ReactPointerEvent } from "react"
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type PointerEvent as ReactPointerEvent } from "react"
 import { addDays } from "./data"
 
-// The dashboard's chart marks, drawn as inline SVG against the widget's own
-// colour tokens (see styles/dashboard.css). Every chart has an aria-label that
-// states what it shows; hover tooltips add exact values.
+// The dashboard's chart marks, drawn as inline SVG and HTML. Marks paint in
+// currentColor, so one colour set on each chart's root tints them all (see
+// styles/dashboard.css); text keeps the text tokens. Sizes are proportional to
+// the data: a zero draws nothing and a non-zero value gets at most a 2px floor,
+// so small values never look substantial. Every chart has an accessible name,
+// and keyboard focus shows the same exact values as hover.
 
 type Tip = { x: number; y: number; content: ReactNode }
 
@@ -38,79 +41,110 @@ function useSize<T extends HTMLElement>() {
   return [ref, size] as const
 }
 
-// A stat tile's trend: a 2px line over a soft area, its last point marked.
+// One tab stop per chart: the arrow keys (plus Home and End) move focus
+// between its marks, so a long series doesn't flood the tab order. `moves`
+// maps a key to an index step.
+const ALONG: Record<string, number> = { ArrowLeft: -1, ArrowRight: 1 }
+function useRoving(count: number, initial: number, moves = ALONG) {
+  const marks = useRef<(HTMLElement | SVGElement | null)[]>([])
+  const [current, setCurrent] = useState<number>()
+  const at = Math.max(0, Math.min(count - 1, current ?? initial))
+  function keyDown(event: ReactKeyboardEvent) {
+    const next = event.key === "Home" ? 0 : event.key === "End" ? count - 1 : event.key in moves ? at + moves[event.key] : undefined
+    if (next === undefined) return
+    event.preventDefault()
+    marks.current[Math.max(0, Math.min(count - 1, next))]?.focus()
+  }
+  return (index: number, onFocus: (element: Element) => void) => ({
+    ref: (element: HTMLElement | SVGElement | null) => { marks.current[index] = element },
+    tabIndex: index === at ? 0 : -1,
+    onKeyDown: keyDown,
+    onFocus: (event: ReactFocusEvent) => { setCurrent(index); onFocus(event.currentTarget) },
+  })
+}
+
+// A bar's height as its share of the chart's maximum, with a 2px floor so a
+// small non-zero value stays visible. Callers draw no bar for a zero.
+const barHeight = (value: number, max: number) => `max(2px, ${(value / max) * 100}%)`
+
+// A stat tile's trend: a 2px line over a faint flat area down to zero, its
+// latest point marked.
 export function Sparkline({ values, label }: { values: number[]; label: string }) {
-  const gradient = useId()
   const max = Math.max(...values, 0)
   if (values.length < 2 || max <= 0) return <div className="dash-spark is-flat" role="img" aria-label={`${label}: no activity yet`} />
-  const width = 120, height = 40, step = width / (values.length - 1)
-  const points = values.map((value, index) => [index * step, height - 3 - (value / max) * (height - 8)] as const)
+  const width = 120, height = 40, base = height - 3, step = width / (values.length - 1)
+  const points = values.map((value, index) => [index * step, base - (value / max) * (base - 5)] as const)
   const line = points.map(([x, y], index) => `${index ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`).join(" ")
   const [lastX, lastY] = points[points.length - 1]
   return (
     <svg className="dash-spark" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label={label}>
-      <defs>
-        <linearGradient id={gradient} x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0" stopColor="currentColor" stopOpacity=".32" />
-          <stop offset="1" stopColor="currentColor" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <path d={`${line} L${width} ${height} L0 ${height} Z`} fill={`url(#${gradient})`} />
-      <path d={line} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-      <circle cx={lastX} cy={lastY} r="3.5" fill="currentColor" className="dash-spark-dot" vectorEffect="non-scaling-stroke" />
+      <path className="dash-spark-area" d={`${line} L${width} ${base} L0 ${base} Z`} fill="currentColor" fillOpacity=".1" />
+      <path className="dash-spark-line" d={line} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+      {/* A near-zero-length round-capped stroke: it stays a circle where the
+          stretched viewBox would squash a <circle> into an oval. */}
+      <path className="dash-spark-end" d={`M${lastX.toFixed(1)} ${lastY.toFixed(1)}h0.01`} fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
     </svg>
   )
 }
 
 // Spread behind an average: one thin bar per item, the average as a rule.
+// Every item is drawn; bars thin out as the count grows (`--bars` lets the
+// styles narrow the gaps). Each bar's slot is its hit target, so a zero still
+// has a tooltip.
 export function SpreadBars({ values, average, label, format }: { values: number[]; average: number; label: string; format: (value: number) => string }) {
   const { box, show, hide, view } = useTip()
+  const mark = useRoving(values.length, 0)
   const max = Math.max(...values, average, 0)
   if (!values.length || max <= 0) return <div className="dash-spark is-flat" role="img" aria-label={`${label}: nothing yet`} />
-  const shown = values.slice(0, 16)
   return (
-    <div className="dash-spread" ref={box} role="img" aria-label={label} onPointerLeave={hide}>
-      {shown.map((value, index) => (
-        <span
-          key={index}
-          className="dash-spread-bar"
-          style={{ height: `${Math.max(6, (value / max) * 100)}%` }}
-          onPointerEnter={(event) => show(event.currentTarget.getBoundingClientRect(), format(value))}
-        />
-      ))}
+    <div className="dash-spread" ref={box} role="group" aria-label={label} style={{ "--bars": values.length } as CSSProperties} onPointerLeave={hide}>
+      {values.map((value, index) => {
+        const text = format(value)
+        return (
+          <span
+            key={index}
+            className={`dash-spread-slot${value > 0 ? "" : " is-zero"}`}
+            role="img"
+            aria-label={`${text}, ${index + 1} of ${values.length}`}
+            {...mark(index, (element) => show(element.getBoundingClientRect(), text))}
+            onBlur={hide}
+            onPointerEnter={(event) => show(event.currentTarget.getBoundingClientRect(), text)}
+          >
+            {value > 0 && <span className="dash-spread-bar" style={{ height: barHeight(value, max) }} />}
+          </span>
+        )
+      })}
       <span className="dash-spread-average" style={{ bottom: `${(average / max) * 100}%` }} aria-hidden="true" />
       {view}
     </div>
   )
 }
 
-// The week view: a pill per day on a full-height track, a dot capping each
-// fill. Each fill shows the slice of one track-high gradient up to its top, so
-// a bar's colour follows its height; today's label is emphasised.
-export function WeekBars({ days, format }: { days: { day: number; cost: number; label: string; today: boolean }[]; format: (value: number) => string }) {
+// The week view: a bar per day on a full-height track, as tall as its share
+// of the busiest day. The track is the hit target, so a zero day still has a
+// tooltip; today's label is emphasised. A day's optional `detail` (say, its
+// top matters) joins the tooltip and the accessible name.
+export function WeekBars({ days, format }: { days: { day: number; cost: number; label: string; today: boolean; detail?: string }[]; format: (value: number) => string }) {
   const { box, show, hide, view } = useTip()
+  const mark = useRoving(days.length, days.length - 1)
   const max = Math.max(...days.map((row) => row.cost), 0)
   return (
     <div className="dash-week" ref={box} onPointerLeave={hide}>
       <ol className="dash-week-bars" aria-label="Spend on each of the last seven days">
-        {days.map((row) => {
-          const share = max > 0 ? row.cost / max : 0
+        {days.map((row, index) => {
           const text = `${row.today ? "Today" : row.label}: ${format(row.cost)}`
+          const tip = row.detail ? <>{text}<span className="dash-tip-detail">{row.detail}</span></> : text
           return (
             <li key={row.day} className={`dash-week-day${row.today ? " is-today" : ""}`}>
               <span
                 className="dash-week-track"
-                tabIndex={0}
-                aria-label={text}
-                onPointerEnter={(event) => show(event.currentTarget.getBoundingClientRect(), text)}
-                onFocus={(event) => show(event.currentTarget.getBoundingClientRect(), text)}
+                role="img"
+                aria-label={row.detail ? `${text}. ${row.detail}` : text}
+                {...mark(index, (element) => show(element.getBoundingClientRect(), tip))}
                 onBlur={hide}
+                onPointerEnter={(event) => show(event.currentTarget.getBoundingClientRect(), tip)}
               >
-                {share > 0 && (
-                  <span className="dash-week-fill" style={{ height: `max(22px, ${share * 100}%)`, "--share": share } as CSSProperties}>
-                    <span className="dash-week-dot" />
-                  </span>
-                )}
+                {row.cost > 0 && <span className="dash-week-fill" style={{ height: barHeight(row.cost, max) }} />}
               </span>
               <span className="dash-week-label" aria-hidden="true">{row.today ? "Today" : row.label}</span>
             </li>
@@ -122,11 +156,28 @@ export function WeekBars({ days, format }: { days: { day: number; cost: number; 
   )
 }
 
+// Shades for the calendar: 0 is no work; 1–4 rank a day among the days with
+// any work (cut at the quartiles of their counts), so one very busy day
+// doesn't wash every other day out to the palest step. The busiest day is
+// always the darkest.
+function shades(counts: number[]) {
+  const busy = counts.filter((count) => count > 0).sort((a, b) => a - b)
+  const max = busy[busy.length - 1] ?? 0
+  const cuts = [0.25, 0.5, 0.75].map((share) => busy[Math.max(0, Math.ceil(share * busy.length) - 1)] ?? 0)
+  return (count: number) => (count <= 0 ? 0 : count >= max ? 4 : 1 + cuts.filter((cut) => count > cut).length)
+}
+
+// Calendar keys: a column is a week, so left and right step a week and up
+// and down a day.
+const GRID: Record<string, number> = { ArrowLeft: -7, ArrowRight: 7, ArrowUp: -1, ArrowDown: 1 }
+
 // A year of days as a calendar grid: one column per week (Monday first), one
 // cell per day, darker for busier days. Cells grow to fill a wide card and
-// keep a readable size on a narrow one, which scrolls instead.
+// keep a readable size on a narrow one, which scrolls instead. Keyboard focus
+// starts on today.
 export function ActivityCalendar({ counts, first, describe }: { counts: number[]; first: number; describe: (day: number, count: number) => string }) {
   const { box, show, hide, view } = useTip()
+  const mark = useRoving(counts.length, counts.length - 1, GRID)
   const [scroller, { width: room }] = useSize<HTMLDivElement>()
   const top = 18, left = 30
   const weeks = Math.ceil(counts.length / 7)
@@ -137,8 +188,13 @@ export function ActivityCalendar({ counts, first, describe }: { counts: number[]
     const element = scroller.current
     if (element) element.scrollLeft = element.scrollWidth
   }, [counts.length, pitch])
+  // Labels and shades are worked out once per data change, not on every
+  // tooltip move.
+  const days = useMemo(() => {
+    const shade = shades(counts)
+    return counts.map((count, index) => ({ level: shade(count), text: describe(addDays(first, index), count) }))
+  }, [counts, first, describe])
   const max = Math.max(...counts, 0)
-  const level = (count: number) => (count <= 0 || max <= 0 ? 0 : Math.min(4, Math.ceil((count / max) * 4)))
   const height = top + 7 * pitch
   const months: { x: number; label: string }[] = []
   for (let week = 0; week < weeks; week++) {
@@ -157,25 +213,28 @@ export function ActivityCalendar({ counts, first, describe }: { counts: number[]
           ))}
         </svg>
         <div className="dash-calendar-scroll" ref={scroller}>
-          <svg width={weeks * pitch} height={height} role="img" aria-label={`Conversations started each day; busiest day had ${max}.`}>
-            {months.map((month) => (
-              <text key={month.x} x={month.x} y={11} className="dash-calendar-axis">{month.label}</text>
+          <svg width={weeks * pitch} height={height} role="group" aria-label={`Conversations started each day; busiest day had ${max}.`}>
+            <g aria-hidden="true">
+              {months.map((month) => (
+                <text key={month.x} x={month.x} y={11} className="dash-calendar-axis">{month.label}</text>
+              ))}
+            </g>
+            {days.map((day, index) => (
+              <rect
+                key={index}
+                x={Math.floor(index / 7) * pitch}
+                y={top + (index % 7) * pitch}
+                width={cell}
+                height={cell}
+                rx={cell * 0.3}
+                className={`dash-cell level-${day.level}`}
+                role="img"
+                aria-label={day.text}
+                {...mark(index, (element) => show(element.getBoundingClientRect(), day.text))}
+                onBlur={hide}
+                onPointerEnter={(event) => show(event.currentTarget.getBoundingClientRect(), day.text)}
+              />
             ))}
-            {counts.map((count, index) => {
-              const day = addDays(first, index)
-              return (
-                <rect
-                  key={index}
-                  x={Math.floor(index / 7) * pitch}
-                  y={top + (index % 7) * pitch}
-                  width={cell}
-                  height={cell}
-                  rx={cell * 0.3}
-                  className={`dash-cell level-${level(count)}`}
-                  onPointerEnter={(event) => show(event.currentTarget.getBoundingClientRect(), describe(day, count))}
-                />
-              )
-            })}
           </svg>
         </div>
       </div>
@@ -189,26 +248,34 @@ export function ActivityCalendar({ counts, first, describe }: { counts: number[]
   )
 }
 
-// Progress as a ring: the done share in the strong tone, the rest as track.
+// Progress as a ring: the done share as an arc from twelve o'clock (the
+// -90° turn only moves the circle's start there), the rest as track. Each
+// round cap reaches half a stroke past its dash, so the dash is one stroke
+// shorter and starts half a stroke in: the painted arc is exactly the done
+// share. Nothing is drawn when none is done.
 export function Ring({ done, total, size = 112 }: { done: number; total: number; size?: number }) {
   const stroke = 12
   const radius = (size - stroke) / 2
   const length = 2 * Math.PI * radius
-  const share = total ? done / total : 0
+  const share = total > 0 ? Math.min(1, Math.max(0, done / total)) : 0
   return (
     <svg className="dash-ring" width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={`${done} of ${total} done`}>
-      <circle cx={size / 2} cy={size / 2} r={radius} className="dash-ring-track" strokeWidth={stroke} fill="none" />
-      <circle
-        cx={size / 2}
-        cy={size / 2}
-        r={radius}
-        className="dash-ring-value"
-        strokeWidth={stroke}
-        fill="none"
-        strokeLinecap="round"
-        strokeDasharray={`${Math.max(share > 0 ? 0.001 : 0, share) * length} ${length}`}
-        transform={`rotate(-90 ${size / 2} ${size / 2})`}
-      />
+      <circle cx={size / 2} cy={size / 2} r={radius} className="dash-ring-track" stroke="currentColor" strokeOpacity=".14" strokeWidth={stroke} fill="none" />
+      {share > 0 && (
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          className="dash-ring-value"
+          stroke="currentColor"
+          strokeWidth={stroke}
+          fill="none"
+          strokeLinecap="round"
+          strokeDasharray={`${Math.max(0, share * length - stroke)} ${length}`}
+          strokeDashoffset={-stroke / 2}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      )}
       <text x="50%" y="50%" dominantBaseline="central" textAnchor="middle" className="dash-ring-text">
         {done}<tspan className="dash-ring-total">/{total}</tspan>
       </text>
@@ -219,6 +286,7 @@ export function Ring({ done, total, size = 112 }: { done: number; total: number;
 export type Segment = { key: string; label: string; value: number; display: string }
 
 // Parts of a whole on one bar, 2px apart, each named in the legend below.
+// Segments are categorical, so each takes its own series class.
 export function StackedBar({ segments, label }: { segments: Segment[]; label: string }) {
   const { box, show, hide, view } = useTip()
   const total = segments.reduce((sum, row) => sum + row.value, 0)
@@ -252,18 +320,20 @@ export function StackedBar({ segments, label }: { segments: Segment[]; label: st
   )
 }
 
-// Daily values over the window as an area with a crosshair that follows the
-// pointer and names the day under it. `format` writes the axis; `detail`, the
-// exact value in the tooltip.
+// Daily values over the window as a line over a faint flat area, with a
+// crosshair that follows the pointer and names the day under it. Each day also
+// has a focusable column, so the arrow keys move the same crosshair. `format`
+// writes the axis; `detail`, the exact value in the tooltip.
 export function AreaChart({ points, format, detail = format, label }: { points: { time: number; value: number; label: string }[]; format: (value: number) => string; detail?: (value: number) => string; label: string }) {
-  const gradient = useId()
   const [ref, { width, height }] = useSize<HTMLDivElement>()
   const [active, setActive] = useState<number>()
+  const mark = useRoving(points.length, points.length - 1)
   const top = 12, bottom = 26, left = 52, right = 8
   const max = Math.max(...points.map((row) => row.value), 0)
   const scale = niceMax(max)
   const plot = Math.max(0, width - left - right)
-  const x = (index: number) => left + (points.length > 1 ? (index / (points.length - 1)) * plot : plot / 2)
+  const step = points.length > 1 ? plot / (points.length - 1) : plot
+  const x = (index: number) => left + (points.length > 1 ? index * step : plot / 2)
   const y = (value: number) => top + (1 - (scale ? value / scale : 0)) * (height - top - bottom)
   const line = points.map((row, index) => `${index ? "L" : "M"}${x(index).toFixed(1)} ${y(row.value).toFixed(1)}`).join(" ")
   const ticks = [0, scale / 2, scale]
@@ -277,30 +347,44 @@ export function AreaChart({ points, format, detail = format, label }: { points: 
   return (
     <div className="dash-area" ref={ref}>
       {width > 0 && height > 0 && (
-        <svg width={width} height={height} role="img" aria-label={label} onPointerMove={track} onPointerLeave={() => setActive(undefined)}>
-          <defs>
-            <linearGradient id={gradient} x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0" stopColor="var(--dash-series-1)" stopOpacity=".28" />
-              <stop offset="1" stopColor="var(--dash-series-1)" stopOpacity="0" />
-            </linearGradient>
-          </defs>
-          {ticks.map((tick) => (
-            <g key={tick}>
-              <line x1={left} x2={width - right} y1={y(tick)} y2={y(tick)} className="dash-gridline" />
-              <text x={left - 8} y={y(tick)} dominantBaseline="central" textAnchor="end" className="dash-axis">{format(tick)}</text>
-            </g>
-          ))}
-          {points.map((row, index) => index % labelEvery === 0 && (
-            <text key={row.time} x={x(index)} y={height - 8} textAnchor="middle" className="dash-axis">{row.label}</text>
-          ))}
-          {points.length > 1 && <path d={`${line} L${x(points.length - 1)} ${y(0)} L${x(0)} ${y(0)} Z`} fill={`url(#${gradient})`} />}
-          <path d={line} fill="none" className="dash-area-line" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-          {current && active !== undefined && (
-            <g>
-              <line x1={x(active)} x2={x(active)} y1={top} y2={y(0)} className="dash-crosshair" />
-              <circle cx={x(active)} cy={y(current.value)} r="5" className="dash-area-dot" />
-            </g>
-          )}
+        <svg width={width} height={height} role="group" aria-label={label} onPointerMove={track} onPointerLeave={() => setActive(undefined)}>
+          <g aria-hidden="true">
+            {ticks.map((tick) => (
+              <g key={tick}>
+                <line x1={left} x2={width - right} y1={y(tick)} y2={y(tick)} className="dash-gridline" />
+                <text x={left - 8} y={y(tick)} dominantBaseline="central" textAnchor="end" className="dash-axis">{format(tick)}</text>
+              </g>
+            ))}
+            {points.map((row, index) => index % labelEvery === 0 && (
+              <text key={row.time} x={x(index)} y={height - 8} textAnchor="middle" className="dash-axis">{row.label}</text>
+            ))}
+            {points.length > 1 && <path d={`${line} L${x(points.length - 1)} ${y(0)} L${x(0)} ${y(0)} Z`} className="dash-area-fill" fill="currentColor" fillOpacity=".1" />}
+            <path d={line} fill="none" className="dash-area-line" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+            {current && active !== undefined && (
+              <g>
+                <line x1={x(active)} x2={x(active)} y1={top} y2={y(0)} className="dash-crosshair" />
+                <circle cx={x(active)} cy={y(current.value)} r="5" className="dash-area-dot" fill="currentColor" />
+              </g>
+            )}
+          </g>
+          {points.map((row, index) => {
+            const from = Math.max(left, x(index) - step / 2), to = Math.min(left + plot, x(index) + step / 2)
+            return (
+              <rect
+                key={row.time}
+                className="dash-area-hit"
+                x={from}
+                y={top}
+                width={Math.max(0, to - from)}
+                height={Math.max(0, y(0) - top)}
+                fill="transparent"
+                role="img"
+                aria-label={`${row.label}: ${detail(row.value)}`}
+                {...mark(index, () => setActive(index))}
+                onBlur={() => setActive(undefined)}
+              />
+            )
+          })}
         </svg>
       )}
       {current && active !== undefined && (

@@ -13,6 +13,7 @@ export default function JurisdictionSelect({
   onChange,
   align = "left",
   trigger,
+  triggerTitle = "Click to edit jurisdiction",
   id,
   practiceAreas = false,
   disabled = false,
@@ -25,6 +26,8 @@ export default function JurisdictionSelect({
   // When given, replaces the default dropdown trigger with custom content (e.g.
   // jurisdiction badges) wrapped in a bare button that still opens the popover.
   trigger?: ReactNode
+  // The custom trigger's tooltip.
+  triggerTitle?: string
   id?: string
   // Reuse the same accessible popover for user-defined practice areas.
   practiceAreas?: boolean
@@ -141,7 +144,7 @@ export default function JurisdictionSelect({
   return (
     <div className="jx-select" ref={ref}>
       {trigger ? (
-        <button id={id} disabled={disabled} aria-describedby={ariaDescribedBy} aria-expanded={open} aria-controls={open ? popoverId : undefined} type="button" className="jx-trigger-bare" onClick={toggleOpen} title="Click to edit jurisdiction">
+        <button id={id} disabled={disabled} aria-describedby={ariaDescribedBy} aria-expanded={open} aria-controls={open ? popoverId : undefined} type="button" className="jx-trigger-bare" onClick={toggleOpen} title={triggerTitle}>
           {trigger}
         </button>
       ) : (
