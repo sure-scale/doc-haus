@@ -5,6 +5,7 @@ import { conflictsChip } from "../../api/ingest/conflicts"
 import { POSTURES, type Posture } from "../../api/ingest/preferences"
 import ClientCombobox from "../ClientCombobox"
 import { useClientNames } from "../../lib/clients"
+import "./chronology-matter-header.css"
 
 /** The title-area fields one save changes; "" clears the matter's Posture. */
 export type MatterFields = Partial<Pick<Detail, "title" | "reference" | "jurisdictions" | "playbook" | "client">> & { posture?: Posture | "" }
@@ -30,6 +31,7 @@ export default function MatterHeader({
   patch,
   onEditConflicts,
   onOpenChronology,
+  compact = false,
 }: {
   matter: Detail
   jurisdictions: Jurisdiction[]
@@ -51,6 +53,7 @@ export default function MatterHeader({
   patch: (fields: MatterFields) => Promise<void>
   onEditConflicts: () => void
   onOpenChronology?: () => void
+  compact?: boolean
 }) {
   const chip = conflictsChip(matter.conflicts)
   const clientNames = useClientNames(editingClient)
@@ -132,11 +135,58 @@ export default function MatterHeader({
     </select>
   )
 
+  const metadata = (
+    <div className="matter-meta">
+      {refField}
+      <span className="matter-meta-sep" aria-hidden>
+        ·
+      </span>
+      {clientField}
+      <span className="matter-meta-sep" aria-hidden>
+        ·
+      </span>
+      {postureField}
+      <span className="matter-meta-sep" aria-hidden>
+        ·
+      </span>
+      <button
+        type="button"
+        className={`matter-conflicts is-${chip.tone}`}
+        title="Record the conflicts check"
+        aria-label={`${chip.text}. Record the conflicts check`}
+        onClick={onEditConflicts}
+      >
+        {chip.text}
+      </button>
+      <span className="matter-meta-sep" aria-hidden>
+        ·
+      </span>
+      <JurisdictionSelect
+        jurisdictions={jurisdictions}
+        selected={matter.jurisdictions ?? []}
+        onChange={(codes) => patch({ jurisdictions: codes })}
+        trigger={
+          (matter.jurisdictions?.length ?? 0) === 0 ? (
+            <span className="matter-meta-add">+ Jurisdiction</span>
+          ) : (
+            <span className="matter-jx-badges">
+              {matter.jurisdictions?.map((code) => (
+                <span key={code} className="matter-badge">
+                  {jurisdictions.find((j) => j.code === code)?.name ?? code}
+                </span>
+              ))}
+            </span>
+          )
+        }
+      />
+    </div>
+  )
+
   // A permanent route back to the matter list, then one quiet line of facts: the matter number, the
   // client, the Posture and the jurisdictions, each a ghost "+ …" button (the Posture its firm
   // default) until set, then its chip.
   return (
-    <header className="page-head matter-page-head">
+    <header className={`page-head matter-page-head${compact ? " is-chronology-compact" : ""}`}>
       <div className="matter-head">
         <nav className="matter-breadcrumb" aria-label="Breadcrumb">
           <ol>
@@ -182,51 +232,37 @@ export default function MatterHeader({
           </ol>
         </nav>
 
-        <div className="matter-meta">
-          {refField}
-          <span className="matter-meta-sep" aria-hidden>
-            ·
-          </span>
-          {clientField}
-          <span className="matter-meta-sep" aria-hidden>
-            ·
-          </span>
-          {postureField}
-          <span className="matter-meta-sep" aria-hidden>
-            ·
-          </span>
-          <button
-            type="button"
-            className={`matter-conflicts is-${chip.tone}`}
-            title="Record the conflicts check"
-            aria-label={`${chip.text}. Record the conflicts check`}
-            onClick={onEditConflicts}
-          >
-            {chip.text}
-          </button>
-          <span className="matter-meta-sep" aria-hidden>
-            ·
-          </span>
-          <JurisdictionSelect
-            jurisdictions={jurisdictions}
-            selected={matter.jurisdictions ?? []}
-            onChange={(codes) => patch({ jurisdictions: codes })}
-            trigger={
-              (matter.jurisdictions?.length ?? 0) === 0 ? (
-                <span className="matter-meta-add">+ Jurisdiction</span>
-              ) : (
-                <span className="matter-jx-badges">
-                  {matter.jurisdictions?.map((code) => (
-                    <span key={code} className="matter-badge">
-                      {jurisdictions.find((j) => j.code === code)?.name ?? code}
-                    </span>
-                  ))}
-                </span>
-              )
-            }
-          />
-        </div>
+        {!compact && metadata}
       </div>
+
+      {compact && (
+        <details
+          className="chronology-matter-details"
+          onKeyDown={(event) => {
+            if (event.key !== "Escape" || event.defaultPrevented) return
+            event.preventDefault()
+            const details = event.currentTarget
+            // Let a field's Escape cancellation unmount its input before focus
+            // moves; synchronously blurring it would save the canceled draft.
+            requestAnimationFrame(() => {
+              if (!details.isConnected) return
+              details.open = false
+              details.querySelector("summary")?.focus({ preventScroll: true })
+            })
+          }}
+        >
+          <summary>
+            Matter details
+            {chip.tone !== "ok" && (
+              <span className="chronology-matter-conflicts-status">
+                · {chip.tone === "pending" ? "Conflicts pending" : chip.tone === "bypassed" ? "Conflicts bypassed" : "Conflicts not recorded"}
+              </span>
+            )}
+            <span className="chronology-matter-details-caret" aria-hidden="true">⌄</span>
+          </summary>
+          <div className="chronology-matter-details-popup">{metadata}</div>
+        </details>
+      )}
 
       {onOpenChronology && <details className="matter-chronology-actions"><summary aria-label="Matter actions">Matter actions</summary><button type="button" onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onOpenChronology() }}>Build / open chronology</button></details>}
     </header>

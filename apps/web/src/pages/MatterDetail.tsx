@@ -313,6 +313,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   return (
     <WordDocumentsProvider matterId={matter.id} onChanged={refresh}>
       <MatterHeader
+        compact={view === "chronology"}
         matter={matter}
         jurisdictions={jurisdictions}
         editingRef={editingRef}

@@ -423,6 +423,14 @@ try {
   await page.reload()
   const clusterPoint = page.getByRole("button", { name: /clustered events near/ }).first()
   await expect(clusterPoint).toBeVisible()
+  assert.ok(
+    await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1),
+    "dense desktop record stays inside the application viewport",
+  )
+  assert.ok(
+    await page.locator(".chronology-workbench").evaluate((element) => element.scrollHeight > element.clientHeight),
+    "long desktop record scrolls inside the workbench",
+  )
   await clusterPoint.click()
   const cluster = page.getByRole("group", { name: "Clustered events", exact: true })
   await expect(cluster.getByRole("button").first()).toBeFocused()

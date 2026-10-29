@@ -1,0 +1,205 @@
+/* A chronology needs the matter identity once, with editable context close at hand. */
+.matter-container:has(.chronology-workbench) > .matter-page-head.is-chronology-compact {
+  position: relative;
+  min-height: 64px;
+  padding: 8px 30px;
+  gap: 12px;
+  align-items: center;
+  flex-direction: row;
+  background: #fcfbf9;
+  border-color: #e9e7e5;
+  z-index: 20;
+}
+.matter-page-head.is-chronology-compact .matter-head {
+  flex: 1;
+  gap: 0;
+}
+.matter-page-head.is-chronology-compact .matter-breadcrumb {
+  width: 100%;
+}
+.matter-page-head.is-chronology-compact .matter-breadcrumb ol,
+.matter-page-head.is-chronology-compact .matter-breadcrumb-current {
+  gap: 9px;
+  align-items: center;
+}
+.matter-page-head.is-chronology-compact .matter-breadcrumb a {
+  min-height: 32px;
+  color: #687181;
+  font-size: 12px;
+  font-weight: 400;
+}
+.matter-page-head.is-chronology-compact .matter-breadcrumb-current > svg {
+  width: 12px;
+  height: 12px;
+  color: #8b929c;
+}
+.matter-container:has(.chronology-workbench) > .matter-page-head.is-chronology-compact h1 {
+  font: 400 13px/1.45 var(--font-sans, sans-serif);
+  letter-spacing: 0;
+}
+.matter-page-head.is-chronology-compact .matter-title {
+  min-height: 32px;
+  color: #505d71;
+}
+.matter-page-head.is-chronology-compact .matter-title-input {
+  font-size: 13px;
+  min-height: 32px;
+}
+.matter-page-head.is-chronology-compact .matter-title-pencil {
+  width: 12px;
+  height: 12px;
+}
+.matter-page-head.is-chronology-compact .chronology-matter-details {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+.matter-page-head.is-chronology-compact .chronology-matter-details > summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 3px;
+  list-style: none;
+  cursor: pointer;
+  padding: 5px 7px;
+  min-height: 36px;
+  color: #626d7e;
+  font-size: 11px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+}
+.matter-page-head.is-chronology-compact .chronology-matter-details > summary::-webkit-details-marker {
+  display: none;
+}
+.matter-page-head.is-chronology-compact .chronology-matter-details > summary:hover,
+.matter-page-head.is-chronology-compact .chronology-matter-details[open] > summary {
+  background: #f0f1f4;
+}
+.matter-page-head.is-chronology-compact .chronology-matter-conflicts-status {
+  color: #99701f;
+  font-size: 10px;
+}
+.matter-page-head.is-chronology-compact .chronology-matter-details-caret {
+  padding-left: 4px;
+}
+.matter-page-head.is-chronology-compact .chronology-matter-details-popup {
+  position: absolute;
+  top: calc(100% - 3px);
+  right: 30px;
+  width: min(520px, calc(100% - 60px));
+  max-height: min(65dvh, 520px);
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 16px;
+  border: 1px solid #e2e4e8;
+  border-radius: 7px;
+  background: #fffefd;
+  box-shadow: 0 8px 28px #1b24331c;
+  z-index: 25;
+}
+.matter-page-head.is-chronology-compact .chronology-matter-details-popup .matter-meta {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  font-size: 12px;
+}
+.matter-page-head.is-chronology-compact .chronology-matter-details-popup .matter-meta-sep {
+  display: none;
+}
+.matter-page-head.is-chronology-compact .chronology-matter-details-popup .matter-meta > button,
+.matter-page-head.is-chronology-compact .chronology-matter-details-popup .matter-meta > input,
+.matter-page-head.is-chronology-compact .chronology-matter-details-popup .matter-meta > select,
+.matter-page-head.is-chronology-compact .chronology-matter-details-popup .jx-trigger-bare {
+  min-height: 36px;
+  text-align: left;
+  width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.matter-page-head.is-chronology-compact .chronology-matter-details-popup .matter-conflicts {
+  padding: 5px 8px;
+  border-radius: 5px;
+}
+.matter-page-head.is-chronology-compact .matter-chronology-actions {
+  margin-left: 0;
+  flex: none;
+}
+.matter-page-head.is-chronology-compact .matter-chronology-actions > summary {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  background: transparent;
+  border-color: #e4e5e7;
+  font-size: 11px;
+  color: #596476;
+}
+.matter-page-head.is-chronology-compact .matter-chronology-actions > button {
+  z-index: 26;
+  max-width: calc(100vw - 32px);
+  white-space: normal;
+}
+.matter-page-head.is-chronology-compact :focus-visible {
+  outline: 2px solid #3979e8;
+  outline-offset: 2px;
+}
+@media (max-width: 1000px) {
+  .matter-container:has(.chronology-workbench) > .matter-page-head.is-chronology-compact {
+    gap: 8px;
+    padding-inline: 20px;
+  }
+  .matter-page-head.is-chronology-compact .chronology-matter-details > summary {
+    max-width: 140px;
+  }
+  .matter-page-head.is-chronology-compact .chronology-matter-details-popup {
+    right: 20px;
+    width: calc(100% - 40px);
+  }
+}
+@media (max-width: 800px), (pointer: coarse) {
+  .matter-page-head.is-chronology-compact .matter-breadcrumb a,
+  .matter-page-head.is-chronology-compact .matter-title,
+  .matter-page-head.is-chronology-compact .matter-title-input,
+  .matter-page-head.is-chronology-compact .chronology-matter-details > summary,
+  .matter-page-head.is-chronology-compact .matter-chronology-actions > summary,
+  .matter-page-head.is-chronology-compact .matter-chronology-actions > button,
+  .matter-page-head.is-chronology-compact .chronology-matter-details-popup .matter-meta > button,
+  .matter-page-head.is-chronology-compact .chronology-matter-details-popup .matter-meta > input,
+  .matter-page-head.is-chronology-compact .chronology-matter-details-popup .matter-meta > select,
+  .matter-page-head.is-chronology-compact .chronology-matter-details-popup .jx-trigger-bare {
+    min-height: 44px;
+  }
+}
+@media (max-width: 700px) {
+  .matter-container:has(.chronology-workbench) > .matter-page-head.is-chronology-compact {
+    flex-wrap: wrap;
+    gap: 0 8px;
+    padding: 6px 16px;
+  }
+  .matter-page-head.is-chronology-compact .matter-head {
+    flex-basis: 100%;
+  }
+  .matter-page-head.is-chronology-compact .chronology-matter-details {
+    margin-left: 0;
+    flex: 1;
+  }
+  .matter-page-head.is-chronology-compact .chronology-matter-details > summary {
+    justify-content: flex-start;
+    max-width: none;
+    width: fit-content;
+  }
+  .matter-page-head.is-chronology-compact .chronology-matter-details-popup {
+    right: 12px;
+    width: calc(100% - 24px);
+    max-height: 55dvh;
+    padding: 12px;
+  }
+  .matter-page-head.is-chronology-compact .matter-chronology-actions > summary {
+    font-size: 0;
+  }
+  .matter-page-head.is-chronology-compact .matter-chronology-actions > summary::after {
+    content: "···";
+    font-size: 18px;
+  }
+}

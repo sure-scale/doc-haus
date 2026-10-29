@@ -344,6 +344,37 @@ export default function ChronologyTimeline({
             <i className="chronology-scheduled-key" /> Scheduled / required
           </span>
         </div>
+        {undated.length > 0 && (
+          <details
+            className="chronology-undated-events"
+            onToggle={(toggle) => {
+              if (toggle.currentTarget.open) setCluster([])
+            }}
+            onKeyDown={(key) => {
+              if (key.key === "Escape") {
+                key.preventDefault()
+                key.currentTarget.open = false
+                key.currentTarget.querySelector("summary")?.focus({ preventScroll: true })
+              }
+            }}
+          >
+            <summary>{undated.length} undated / ambiguous</summary>
+            <div className="chronology-timeline-list">
+              {undated.map((event) => (
+                <button
+                  key={event.id}
+                  type="button"
+                  onClick={(click) => {
+                    click.currentTarget.closest("details")?.removeAttribute("open")
+                    onSelect(event)
+                  }}
+                >
+                  {event.title} · {dateLabel(event.date)}
+                </button>
+              ))}
+            </div>
+          </details>
+        )}
         <div className="chronology-timeline-controls" aria-label="Timeline zoom">
           <button
             type="button"
@@ -372,18 +403,6 @@ export default function ChronologyTimeline({
           </button>
         </div>
       </div>
-      {undated.length > 0 && (
-        <details className="chronology-undated-events">
-          <summary>{undated.length} undated / ambiguous</summary>
-          <div className="chronology-timeline-list">
-            {undated.map((event) => (
-              <button key={event.id} type="button" onClick={() => onSelect(event)}>
-                {event.title} · {dateLabel(event.date)}
-              </button>
-            ))}
-          </div>
-        </details>
-      )}
       {clusterEvents.length > 0 && (
         <div
           ref={clusterListRef}

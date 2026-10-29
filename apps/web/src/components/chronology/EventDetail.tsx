@@ -112,7 +112,7 @@ export default function EventDetail({
               <article key={account.id} className="chronology-conflict-card">
                 <strong>{dateLabel(account.date)}</strong>
                 {account.title !== event.title && <p>{account.title}</p>}
-                {account.detail && <p>{account.detail}</p>}
+                {account.detail && account.detail !== event.detail && <p>{account.detail}</p>}
                 <span className="chronology-muted">
                   {account.evidence.map((evidence) => evidence.documentName).join(" · ") || "Source not supplied"}
                 </span>

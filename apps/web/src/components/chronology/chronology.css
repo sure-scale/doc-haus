@@ -886,20 +886,6 @@
     grid-row: 1 / span 20;
   }
 }
-/* Keep the existing matter controls, with a quieter title strip for this view. */
-.matter-container:has(.chronology-workbench) > .matter-page-head {
-  min-height: 72px;
-  padding: 12px 30px;
-  background: #fdfcfb;
-}
-.matter-container:has(.chronology-workbench) > .matter-page-head h1 {
-  font-size: 14px;
-  font-weight: 450;
-  letter-spacing: 0;
-}
-.matter-container:has(.chronology-workbench) > .matter-page-head .matter-meta {
-  font-size: 11px;
-}
 .shell-matter:has(.chronology-workbench) .sidebar {
   background: #f8f7f6;
   border-color: #e6e5e7;
@@ -946,9 +932,6 @@
   }
   .chronology-counters {
     margin-bottom: 14px;
-  }
-  .matter-container:has(.chronology-workbench) > .matter-page-head {
-    padding: 12px 20px;
   }
 }
 
@@ -999,4 +982,18 @@
 }
 .chronology-table-qualifications .is-conflict {
   color: #b13b3e;
+}
+/* A long record scrolls inside the desktop workbench, keeping the shell's
+   header/status bar and the evidence column in their own viewport. */
+@media (min-width: 801px) and (min-height: 600px) {
+  .matter-container > .matter-body:has(> .chronology-workbench) {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .matter-body > .chronology-workbench {
+    flex: 1;
+    align-self: stretch;
+  }
 }

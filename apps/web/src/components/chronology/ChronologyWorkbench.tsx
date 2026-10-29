@@ -263,9 +263,6 @@ export default function ChronologyWorkbench({
     >
       <div className="chronology-head">
         <div>
-          <button type="button" className="chronology-back" onClick={onClose}>
-            ← Conversation
-          </button>
           <h1>Fact chronology</h1>
           {!client && <p className="chronology-muted">Client framing not recorded; a neutral account is used.</p>}
         </div>
@@ -278,12 +275,12 @@ export default function ChronologyWorkbench({
           >
             + Add event
           </button>
-          {state?.created && (
-            <details className="chronology-workbench-menu">
-              <summary aria-label="Chronology actions" title="Chronology actions">
-                ···
-              </summary>
-              <div>
+          <details className="chronology-workbench-menu">
+            <summary aria-label="Chronology actions" title="Chronology actions">
+              ···
+            </summary>
+            <div>
+              {state?.created && (
                 <button
                   type="button"
                   disabled={busy || running}
@@ -294,9 +291,12 @@ export default function ChronologyWorkbench({
                 >
                   Refresh from sources
                 </button>
-              </div>
-            </details>
-          )}
+              )}
+              <button type="button" onClick={onClose}>
+                Return to conversation
+              </button>
+            </div>
+          </details>
         </div>
       </div>
       {error && (
@@ -797,7 +797,8 @@ export default function ChronologyWorkbench({
                   )}
                 </div>
                 <p className="chronology-muted chronology-table-foot">
-                  {events.length} displayed · Filters affect this view; extraction covers the whole authorised matter.
+                  Showing {events.length} of {state.events.filter((event) => !event.supersededBy?.length).length} events
+                  · Display filters do not limit whole-matter extraction.
                 </p>
               </div>
               {selected && (
