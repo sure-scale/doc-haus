@@ -12,6 +12,7 @@ import { openChatAttachments } from "./chat-attachments"
 import { preferRoomyPane } from "./feature-tabs"
 import type { WordChatAuthoredAmendment } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { createReplaceConfirmation } from "./replace-confirmation"
+import { applyWordChatIfEligible, wordChatApplyEligibility } from "./word-chat-apply"
 
 const element = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
 const badge = element("status")
@@ -77,12 +78,15 @@ async function main(): Promise<void> {
       watchSelection: watchWordChatSelection,
       openAttachments: options => openChatAttachments(chat, options),
       sourceUrl: source => source.provenance === "saved-version" ? `${link.origin}/matter/${encodeURIComponent(link.matter)}?view=documents` : undefined,
+      applyEligibility: proposal => wordChatApplyEligibility(proposal.target, proposal.after, proposal.formatting),
       async apply(proposal, request) {
-        if (sync.snapshot().busy) throw new Error("Wait for the current Save to finish, then Apply.")
-        return sync.localEdit({ conversationId: request.conversationId, turnId: request.turnId }, async identity => {
-          localEditIdentity = identity
-          try { return await applyReviewedProposal(proposal, ({ ooxml }) => chat.request<WordChatAuthoredAmendment>("prepare", { ...request, ooxml }), () => !sync.isDisposed()) }
-          finally { localEditIdentity = undefined }
+        return applyWordChatIfEligible(proposal, async () => {
+          if (sync.snapshot().busy) throw new Error("Wait for the current Save to finish, then Apply.")
+          return sync.localEdit({ conversationId: request.conversationId, turnId: request.turnId }, async identity => {
+            localEditIdentity = identity
+            try { return await applyReviewedProposal(proposal, ({ ooxml }) => chat.request<WordChatAuthoredAmendment>("prepare", { ...request, ooxml }), () => !sync.isDisposed()) }
+            finally { localEditIdentity = undefined }
+          })
         })
       },
     })

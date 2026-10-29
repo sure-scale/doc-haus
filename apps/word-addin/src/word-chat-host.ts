@@ -2,6 +2,7 @@ import type { WordChatAuthoredAmendment, WordChatParagraphFormat, WordChatSnapsh
 import { validWordChatFormatting, wordChatApplyPlan } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, verifiedNativeWordChatFormatting } from "./word-chat-host-ooxml"
 import { DOMParser } from "@xmldom/xmldom"
+import { wordChatApplyEligibility } from "./word-chat-apply"
 
 type ClientResult<T> = { value: T }
 type Collection<T> = { items: T[]; load(properties: string): void }
@@ -321,13 +322,12 @@ export class WordChatHost {
 
   private async applyOnce(input: WordChatApplyInput, identity: string, wordingImport = false): Promise<WordChatApplyResult> {
     try {
-      const nativeFinalFormatting = input.formatting !== undefined && input.replacement === input.target.text &&
-        validWordChatFormatting(input.target, input.formatting) && input.formatting.some(op => op.paragraph === input.target.paragraphs.length - 1)
+      const eligibility = wordChatApplyEligibility(input.target, input.replacement, input.formatting)
       // Scoped OOXML imports may change numbering elsewhere in Word, even
       // outside the reviewed range. Stop before any authoring or mutation
       // until the import's document-wide effects have been established.
-      if (!nativeFinalFormatting)
-        throw new WordChatHostError("Word cannot safely apply this amendment yet because it may change numbering elsewhere in the document. Make the change directly in Word; your document is unchanged.")
+      if (!eligibility.supported) throw new WordChatHostError(eligibility.reason)
+      const nativeFinalFormatting = eligibility.supported
       const mixed = input.formatting !== undefined && input.replacement !== input.target.text
       const afterParts = input.replacement.split("\r"), plan = wordChatApplyPlan(input.target, input.replacement, nativeFinalFormatting || mixed ? undefined : input.formatting)
       if (!plan.supported) throw new WordChatHostError(plan.reason)

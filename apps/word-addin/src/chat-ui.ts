@@ -3,6 +3,7 @@ import type { WordChatProposal, WordChatSnapshot, WordChatTarget } from "../../.
 import { wordChatApplyPlan, wordChatTargetCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { ChatRequestError, type WordChatApi } from "./chat-client"
 import { nativeEventSession, subscribeNativeChatStream } from "../../../dochaus/lib/native-chat-stream"
+import type { WordChatApplyEligibility } from "./word-chat-apply"
 
 export type ChatHost = {
   documentName: string
@@ -11,6 +12,7 @@ export type ChatHost = {
   watchSelection?(onChange: () => void): () => void
   openAttachments?(options: { conversationId: string; attached: WordChatMaterial[]; onAttach(material: WordChatMaterial): void }): Promise<void>
   apply(proposal: WordChatProposal, request: { conversationId: string; turnId: string }): Promise<unknown>
+  applyEligibility(proposal: WordChatProposal): WordChatApplyEligibility
   sourceUrl?(source: WordChatSource): string | undefined
   now?: () => number
   schedule?: (run: () => void, delay: number) => () => void
@@ -300,6 +302,8 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     const formatting = proposal.formatting
     const wordingChanged = proposal.before !== proposal.after
     const plan = wordChatApplyPlan(proposal.target, proposal.after, proposal.formatting)
+    const eligibility = host.applyEligibility(proposal)
+    const unavailable = !plan.supported ? plan.reason : !eligibility.supported ? eligibility.reason : undefined
     const card = document.createElement("section"); card.className = "chat-proposal"; card.setAttribute("aria-label", formatting && !wordingChanged ? "Formatting to review" : "Amendment to review")
     card.append(line("h3", wordingChanged ? "Review amendment" : "Review formatting"))
     if (wordingChanged) {
@@ -354,7 +358,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (declined.has(proposal.id)) { card.append(line("p", "Declined. Your document is unchanged.", "chat-message-meta")); return card }
     const error = proposalErrors.get(proposal.id)
     if (error) { const note = line("p", error, "chat-proposal-error"); note.setAttribute("role", "alert"); card.append(note) }
-    if (!plan.supported) card.append(line("p", plan.reason, "chat-proposal-limit"))
+    if (unavailable) card.append(line("p", unavailable, "chat-proposal-limit"))
     const actions = document.createElement("div"); actions.className = "chat-proposal-actions"
     const refine = document.createElement("button"); refine.type = "button"; refine.className = "chat-subtle"; refine.textContent = "Refine"
     refine.disabled = applying
@@ -362,6 +366,8 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     const apply = document.createElement("button"); apply.type = "button"; apply.className = "chat-send"; apply.textContent = "Apply"; apply.disabled = applying
     apply.onclick = async () => {
       if (applying || proposalFinished(proposal.id)) return
+      const eligibility = host.applyEligibility(proposal)
+      if (!eligibility.supported) { proposalErrors.delete(proposal.id); renderTurns(); return }
       applying = true; cancelSelectionCapture(); controls(); status("Applying in Word…")
       try {
         await host.apply(proposal, { conversationId: turn.conversationId, turnId: turn.id })
@@ -382,7 +388,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     decline.disabled = applying
     decline.onclick = () => { if (applying || proposalFinished(proposal.id)) return; declined.add(proposal.id); proposalErrors.delete(proposal.id); if (refinement?.id === proposal.id) { refinement = undefined; renderChips() }; renderTurns() }
     actions.append(refine)
-    if (plan.supported) actions.append(apply)
+    if (!unavailable) actions.append(apply)
     actions.append(decline); card.append(actions); return card
   }
   function renderTurns(forceScroll = false) {
@@ -399,7 +405,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     }
     for (const turn of visible) {
       const proposal = turn.status === "complete" ? turn.proposal as WordChatProposal | undefined : undefined
-      const stamp = JSON.stringify([turn, proposal && applied.has(proposal.id), proposal && declined.has(proposal.id), proposal && uncertain.has(proposal.id), proposal && proposalErrors.get(proposal.id)])
+      const stamp = JSON.stringify([turn, proposal && applied.has(proposal.id), proposal && declined.has(proposal.id), proposal && uncertain.has(proposal.id), proposal && proposalErrors.get(proposal.id), proposal && host.applyEligibility(proposal)])
       let cached = nodes.get(turn.id)
       if (cached?.stamp === stamp) continue
       const wrapper = document.createElement("div"); wrapper.dataset.turn = turn.id

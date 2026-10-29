@@ -5,6 +5,7 @@ import { ChatRequestError, type WordChatApi, type ChatAction } from "./chat-clie
 import type { WordChatSend, WordChatTurn } from "../../../dochaus/lib/word-chat-contract"
 import type { WordChatProposal, WordChatSnapshot, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import type { V2Event } from "@opencode/client"
+import { wordChatApplyEligibility } from "./word-chat-apply"
 
 const passage: WordChatTarget = { id: "target-one", text: "Payment within 14 days.", paragraphs: [{ id: "paragraph-one", text: "Payment within 14 days." }], startOffset: 0, endOffset: 23, capturedAt: "2026-10-28T12:00:00Z", saved: false }
 const context: WordChatSnapshot = { text: passage.text, paragraphs: passage.paragraphs, saved: false, capturedAt: passage.capturedAt, truncated: false }
@@ -28,7 +29,9 @@ function fixture(overrides: { request?: (action: ChatAction, input: object) => P
     },
     async upload<T>(conversationId: string, file: File, mode: "request" | "matter"): Promise<T> { if (overrides.upload) return await overrides.upload(conversationId, file, mode) as T; throw new Error("Not used") },
   }
-  const host: ChatHost = { documentName: "Draft.docx", capture: async () => structuredClone(context), captureSelection: async () => structuredClone(passage), apply: async () => {}, now: () => time,
+  // Review lifecycle tests use an explicitly capable fake host. Transport-policy
+  // tests below supply the real Word eligibility instead.
+  const host: ChatHost = { documentName: "Draft.docx", capture: async () => structuredClone(context), captureSelection: async () => structuredClone(passage), apply: async () => {}, applyEligibility: () => ({ supported: true }), now: () => time,
     schedule(run, delay) { const entry = { run, at: time + delay, cancelled: false }; scheduled.push(entry); return () => { entry.cancelled = true } }, ...overrides.host }
   const chat = mountWordChat(root, api, host)
   const get = <T extends HTMLElement>(name: string) => root.querySelector(`[data-chat="${name}"]`) as T
@@ -843,7 +846,9 @@ test("formatting the final selected paragraph can be applied without asking for 
   const formatted: WordChatProposal = { ...proposal, before: passage.text, after: passage.text, formatting: [{ paragraph: 0, spacingAfter: 6 }] }
   const original = JSON.stringify(formatted)
   let writes = 0
-  const f = fixture({ turns: [turn({ kind: "formatting", proposal: formatted })], host: { apply: async () => { writes++ } } })
+  const f = fixture({ turns: [turn({ kind: "formatting", proposal: formatted })], host: {
+    applyEligibility: p => wordChatApplyEligibility(p.target, p.after, p.formatting), apply: async () => { writes++ },
+  } })
   try {
     await f.chat.ready
     const card = f.root.querySelector(".chat-proposal")!
@@ -855,6 +860,52 @@ test("formatting the final selected paragraph can be applied without asking for 
     expect(card.querySelector(".chat-format-target pre")!.textContent).toBe(passage.text)
     buttons.find(button => button.textContent === "Apply")!.click(); await Bun.sleep(0)
     expect(writes).toBe(1); expect(JSON.stringify(formatted)).toBe(original)
+  } finally { f.restore() }
+})
+
+test("unavailable Word transports retain review and refinement without offering an impossible Apply", async () => {
+  const following = { id: "tail", text: "A separate clause remains." }
+  const target: WordChatTarget = { ...passage, text: `${passage.text}\r${following.text}`, paragraphs: [...passage.paragraphs, following], endOffset: following.text.length }
+  for (const change of [proposal,
+    { ...proposal, before: target.text, after: `A new paragraph.\r${target.text}`, target },
+    { ...proposal, before: target.text, after: `A new paragraph.\r${target.text}`, target, formatting: [{ paragraph: 0, spacingAfter: 6 }] },
+    { ...proposal, before: target.text, after: target.text, target, formatting: [{ paragraph: 0, spacingAfter: 6 }] },
+  ]) {
+    let writes = 0
+    const f = fixture({ turns: [turn({ proposal: change })], host: {
+      applyEligibility: p => wordChatApplyEligibility(p.target, p.after, p.formatting), apply: async () => { writes++ },
+    } })
+    try {
+      await f.chat.ready
+      const card = f.root.querySelector(".chat-proposal")!
+      expect(card.querySelector(".chat-proposal-limit")!.textContent).toBe("Word cannot safely apply this change yet. Make it directly in Word.")
+      expect(card.textContent).toContain(change.explanation)
+      const actions = [...card.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")]
+      expect(actions.map(button => button.textContent)).toEqual(["Refine", "Decline"])
+      actions[0]!.click()
+      expect(f.get("chips").textContent).toContain("Refining amendment")
+      const draft = f.get<HTMLTextAreaElement>("message"); draft.value = "Keep my next instruction"
+      actions[1]!.click()
+      expect(draft.value).toBe("Keep my next instruction")
+      expect(card.querySelector(".chat-after")?.textContent ?? card.querySelector(".chat-format-target pre")!.textContent).toBe(change.after.replace(/\r/g, "\n"))
+      expect(writes).toBe(0)
+    } finally { f.restore() }
+  }
+})
+
+test("a cached Apply callback rechecks transport availability before calling the host", async () => {
+  let currentPolicy = false, writes = 0
+  const f = fixture({ turns: [turn({ proposal })], host: {
+    applyEligibility: p => currentPolicy ? wordChatApplyEligibility(p.target, p.after, p.formatting) : { supported: true },
+    apply: async () => { writes++ },
+  } })
+  try {
+    await f.chat.ready
+    const cached = [...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(button => button.textContent === "Apply")!
+    currentPolicy = true; cached.click(); await Bun.sleep(0)
+    expect(writes).toBe(0)
+    expect([...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].map(button => button.textContent)).toEqual(["Refine", "Decline"])
+    expect(f.get("activity").textContent).toBe("")
   } finally { f.restore() }
 })
 

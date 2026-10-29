@@ -2,6 +2,8 @@ import { expect, test } from "bun:test"
 import { WordSync, type Acknowledgement, type Transport } from "./sync"
 import { ConnectionError } from "./client"
 import type { WordConnectionState } from "../../../dochaus/lib/word-addin-contract"
+import type { WordChatProposal, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { applyWordChatIfEligible } from "./word-chat-apply"
 
 function fixture(owner: "available" | "owned" | "other" = "available", checkpoint: Acknowledgement | null = null) {
   const events: string[] = []
@@ -34,6 +36,35 @@ test("reviewed local editing claims available ownership and leaves canonical his
   expect(identity).toEqual({ base: "base-one", generation: "generation-one" })
   expect(events).toEqual(["inspect", "claim", "begin", "local-edit", "settle"])
   expect(sync.snapshot().content).toBe("changed"); expect(sync.snapshot().status).toBe("not-saved"); expect(sync.snapshot().busy).toBe(false)
+})
+
+test("unavailable Word transport refuses before sync admission, authoring or local mutation", async () => {
+  const paragraphs = [{ id: "first", text: "An opening paragraph." }, { id: "last", text: "A retained paragraph." }]
+  const target: WordChatTarget = { id: "target", text: paragraphs.map(p => p.text).join("\r"), paragraphs,
+    startOffset: 0, endOffset: paragraphs[1]!.text.length, saved: true, capturedAt: "2026-10-29T12:00:00Z" }
+  const proposal: WordChatProposal = { id: "proposal", documentId: "document", before: target.text, after: target.text,
+    explanation: "Reviewed change", openItems: [], target, createdAt: target.capturedAt }
+  const f = fixture(); await f.sync.start(); f.events.length = 0
+  const before = f.sync.snapshot()
+  for (const change of [
+    { ...proposal, after: target.text.replace("opening", "revised") },
+    { ...proposal, after: `New paragraph.\r${target.text}` },
+    { ...proposal, after: target.text.replace("opening", "revised"), formatting: [{ paragraph: 1, spacingAfter: 6 }] },
+    { ...proposal, formatting: [{ paragraph: 0, spacingAfter: 6 }] },
+  ]) {
+    await expect(applyWordChatIfEligible(change, () => f.sync.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => {
+      f.events.push("author", "word-mutation"); f.bytes = 2
+    }))).rejects.toMatchObject({ mutationState: "unchanged", message: expect.stringContaining("Make it directly in Word") })
+    expect(f.events).toEqual([])
+    expect(f.sync.snapshot()).toEqual(before)
+    expect(f.bytes).toBe(1)
+  }
+  // Adding the final reviewed paragraph's formatting admits exactly the
+  // existing native path; its ordinary lease/BEGIN/settlement safeguards remain.
+  await applyWordChatIfEligible({ ...proposal, formatting: [{ paragraph: 0, spacingAfter: 6 }, { paragraph: 1, spacingAfter: 6 }] },
+    () => f.sync.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => { f.events.push("author", "word-mutation"); f.bytes = 2 }))
+  expect(f.events).toEqual(["inspect", "claim", "begin", "author", "word-mutation", "settle"])
+  expect(f.sync.snapshot()).toMatchObject({ content: "changed", status: "not-saved" })
 })
 
 test("Save waits for deferred native application; no export or upload races the reviewed edit", async () => {

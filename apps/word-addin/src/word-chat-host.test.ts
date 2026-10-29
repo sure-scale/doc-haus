@@ -304,7 +304,7 @@ test("scoped OOXML imports stop before authoring or mutation while document-wide
     const replacement = kind === "structural" ? `A new paragraph.\r${target.text}` :
       kind === "nonfinal-formatting" ? target.text : target.text.replace("opening", "revised")
     const formatting = kind === "mixed" || kind === "nonfinal-formatting" ? [{ paragraph: 0, spacingAfter: 6 }] : undefined
-    await expect(host.apply({ proposalId: kind, target, replacement, formatting })).rejects.toThrow("numbering elsewhere")
+    await expect(host.apply({ proposalId: kind, target, replacement, formatting })).rejects.toThrow("Make it directly in Word")
     expect(state.authorCalls).toBe(0)
     expect(state.writes).toHaveLength(0)
     expect(state.modeChanges).toEqual([])
