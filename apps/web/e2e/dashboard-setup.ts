@@ -23,7 +23,7 @@ const packs = [{ code: "EW", name: "England & Wales", citationStyle: "fixture" }
 type PersistedTabs = { version: 1; workspace: Dashboards; setupHidden: boolean; view?: "setup" | "dashboard" }
 type TabsEnvelope = { state: PersistedTabs | null; revision: number }
 function fixture(fresh = false) {
-  return { dashboard: { state: null, revision: 0 } as TabsEnvelope, tabWrites: [] as { state: PersistedTabs; revision: number }[], failTabReads: false, failTabWrites: false, holdTabWrites: false, releaseTabWrite: undefined as (() => void) | undefined, ready: !fresh, completed: fresh ? [] as string[] : ["models"], skipped: fresh ? [] as string[] : ["research", "details"], setupWrites: [] as { step: string; status: string }[], candidateInputs: [] as Record<string, unknown>[], tested: [] as { modelID: string; ok: boolean }[], failCandidateTest: false, providerSaves: 0, jurisdictions: [] as string[], preferences: { ...DEFAULT_DRAFTING }, failPreferences: false, holdPreferences: false, releasePreference: undefined as (() => void) | undefined, failMatters: false, word: { ...wordDefault }, templates: [] as { name: string; placeholders: unknown[] }[], matters: [] as (typeof SAMPLE)[], saved: [] as Record<string, unknown>[], samplePosts: 0, wordPosts: 0, unexpected: [] as string[], errors: [] as string[] }
+  return { aiPlan: { name: "Practice costs", widgets: [{ type: "spend" }, { type: "chart", title: "Conversations over time", metric: "conversations", groupBy: "week", form: "line", period: "all" }], unsupported: ["Revenue is not tracked."] } as unknown, aiFailure: false, aiHold: false, aiRelease: [] as (() => void)[], aiReplies: 0, aiCreated: [] as Record<string, unknown>[], aiPrompts: [] as Record<string, unknown>[], aiDeleted: [] as string[], dashboard: { state: null, revision: 0 } as TabsEnvelope, tabWrites: [] as { state: PersistedTabs; revision: number }[], failTabReads: false, failTabWrites: false, holdTabWrites: false, releaseTabWrite: undefined as (() => void) | undefined, ready: !fresh, completed: fresh ? [] as string[] : ["models"], skipped: fresh ? [] as string[] : ["research", "details"], setupWrites: [] as { step: string; status: string }[], candidateInputs: [] as Record<string, unknown>[], tested: [] as { modelID: string; ok: boolean }[], failCandidateTest: false, providerSaves: 0, jurisdictions: [] as string[], preferences: { ...DEFAULT_DRAFTING }, failPreferences: false, holdPreferences: false, releasePreference: undefined as (() => void) | undefined, failMatters: false, word: { ...wordDefault }, templates: [] as { name: string; placeholders: unknown[] }[], matters: [] as (typeof SAMPLE)[], saved: [] as Record<string, unknown>[], samplePosts: 0, wordPosts: 0, unexpected: [] as string[], errors: [] as string[] }
 }
 type State = ReturnType<typeof fixture>
 function seedTabs(state: State, workspace: unknown, setupHidden = false) {
@@ -56,6 +56,31 @@ async function open(state: State, width = 1440, height = 1000) {
     const headers = { "access-control-allow-origin": origin, "access-control-allow-credentials": "true", "access-control-allow-headers": "*", "access-control-allow-methods": "*" }
     const reply = (body: unknown, status = 200) => route.fulfill({ status, headers, contentType: "application/json", body: JSON.stringify(body) })
     if (method === "OPTIONS") return route.fulfill({ status: 204, headers })
+    // Native dashboard-agent protocol; all responses are synthetic and no
+    // model/provider request can leave this route fixture.
+    if (pathname === "/dashboard/directory") return reply({ dir: "/fixture/.dashboard" })
+    if (pathname === "/api/session" && method === "POST") {
+      const input = request.postDataJSON() as Record<string, unknown>
+      state.aiCreated.push(input)
+      return reply({ data: { id: input.id, projectID: "fixture-project", title: "doc.haus dashboard", agent: "dashboard", model: { providerID: "fixture", id: "fast" }, location: { directory: "/fixture/.dashboard" }, metadata: { dochaus_role: "dashboard" }, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: NOW, updated: NOW } } })
+    }
+    const aiSession = pathname.match(/^\/api\/session\/(ses_[^/]+)(?:\/(prompt|interrupt|message))?$/)
+    if (aiSession && state.aiCreated.some(created => created.id === aiSession[1])) {
+      const id = aiSession[1]!, action = aiSession[2]
+      if (action === "prompt" && method === "POST") {
+        state.aiPrompts.push(request.postDataJSON() as Record<string, unknown>)
+        if (state.aiHold) await new Promise<void>(resolve => { state.aiRelease.push(resolve) })
+        try { return await reply({ data: { id: "inbox_dashboard", type: "user", text: "Please build a dashboard.", time: { created: NOW } } }) }
+        finally { state.aiReplies++ }
+      }
+      if (action === "interrupt" && method === "POST") return reply({ interrupted: false })
+      if (!action && method === "DELETE") { state.aiDeleted.push(id); return route.fulfill({ status: 204, headers }) }
+      if (action === "message" && method === "GET") return reply({ data: [
+        { id: "msg_dashboard_plan", type: "assistant", agent: "dashboard", model: { providerID: "fixture", id: "fast" }, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: NOW, completed: NOW + 1 }, content: state.aiFailure ? [] : [{ type: "tool", id: "call_dashboard_plan", name: "dashboard-plan", time: { created: NOW, completed: NOW + 1 }, state: { status: "completed", input: {}, content: [{ type: "text", text: "Dashboard plan accepted." }], metadata: { plan: state.aiPlan } } }] },
+        { id: "msg_dashboard_idle", type: "idle", outcome: state.aiFailure ? "failed" : "succeeded", time: { created: NOW + 2 } },
+      ], cursor: { previous: null, next: null } })
+    }
+    if (/^\/api\/experimental\/session\/ses_[^/]+\/wait$/.test(pathname) && method === "POST") return route.fulfill({ status: 204, headers })
     if (pathname === "/dashboard/tabs" && method === "GET") return state.failTabReads ? reply({ error: "Could not read saved dashboards." }, 503) : reply(state.dashboard)
     if (pathname === "/dashboard/tabs" && method === "PUT") {
       const input = request.postDataJSON() as { state: PersistedTabs; revision: number }
@@ -519,6 +544,129 @@ try {
       await expect(page.getByRole("button", { name: "Load saved dashboards", exact: true })).toHaveCount(0)
       clean(state)
     } finally { await context.close() }
+  })
+  for (const view of ["setup", "empty", "custom"] as const) await scenario(`Add composer opens from ${view} without creating or changing tabs`, async () => {
+    const state = fixture()
+    if (view === "empty") seedTabs(state, { active: "", dashboards: [] }, true)
+    if (view === "custom") seedTabs(state, { active: "costs", dashboards: [{ id: "costs", name: "Costs", period: "month", stages: {}, widgets: [{ key: "spend", widget: { type: "spend" }, pinned: true }] }] })
+    const { context, page } = await open(state, view === "empty" ? 375 : 1440, view === "empty" ? 812 : 1000)
+    try {
+      await page.goto(`${baseURL}/dashboard`)
+      await expect(page.getByRole("button", { name: "New dashboard", exact: true }).first()).toBeEnabled()
+      await tabsSaved(state, () => true)
+      const before = structuredClone(state.dashboard), writes = state.tabWrites.length, url = page.url()
+      const add = page.getByRole("button", { name: "New dashboard", exact: true }).first()
+      await add.click()
+      const dialog = page.getByRole("dialog", { name: "New dashboard", exact: true })
+      const prompt = dialog.getByRole("textbox", { name: "Describe what you want", exact: true })
+      await expect(prompt).toBeFocused()
+      await expect(dialog.getByRole("button", { name: "Generate dashboard", exact: true })).toBeDisabled()
+      await dialog.getByRole("button", { name: "Show my spend by client", exact: true }).click()
+      await expect(prompt).toHaveValue("Show my spend by client"); await expect(prompt).toBeFocused()
+      for (let index = 0; index < 8; index++) {
+        await page.keyboard.press("Tab")
+        expect(await page.evaluate(() => !!document.activeElement?.closest(".dash-ai-composer[open]"))).toBe(true)
+      }
+      expect(state.dashboard).toEqual(before); expect(state.tabWrites).toHaveLength(writes)
+      await capture(page, `dashboard-ai-composer-${view}-${view === "empty" ? "375x812" : "1440x1000"}`)
+      await page.keyboard.press("Escape")
+      await expect(dialog).toHaveCount(0); await expect(add).toBeFocused()
+      expect(page.url()).toBe(url); expect(state.dashboard).toEqual(before)
+      await add.click(); await dialog.getByRole("button", { name: "Cancel", exact: true }).click()
+      await expect(dialog).toHaveCount(0)
+      expect(state.dashboard).toEqual(before); expect(state.tabWrites).toHaveLength(writes)
+      expect(state.aiCreated).toHaveLength(0)
+      clean(state)
+    } finally { await context.close() }
+  })
+  await scenario("Add composer generates one named dashboard and preserves existing widgets", async () => {
+    const state = fixture()
+    const existing = { id: "costs", name: "Costs", period: "month", stages: {}, widgets: [{ key: "spend", widget: { type: "spend" }, pinned: true }] }
+    seedTabs(state, { active: "costs", dashboards: [existing] })
+    const { context, page } = await open(state)
+    try {
+      await page.goto(`${baseURL}/dashboard`)
+      await page.getByRole("button", { name: "New dashboard", exact: true }).click()
+      const dialog = page.getByRole("dialog", { name: "New dashboard", exact: true })
+      await dialog.getByRole("textbox", { name: "Describe what you want", exact: true }).fill("Show practice spend and conversations")
+      await dialog.getByRole("button", { name: "Generate dashboard", exact: true }).click()
+      await expect(dialog).toHaveCount(0)
+      await expect(page.getByRole("tab", { name: "Practice costs", exact: true })).toHaveAttribute("aria-selected", "true")
+      await tabsSaved(state, saved => saved.workspace.dashboards.length === 2 && saved.workspace.active !== "costs")
+      expect(state.dashboard.state!.workspace.dashboards.find(tab => tab.id === "costs")).toMatchObject(existing)
+      expect(state.dashboard.state!.workspace.dashboards.find(tab => tab.name === "Practice costs")!.widgets).toHaveLength(2)
+      expect(String(state.aiPrompts[0]?.text)).toContain("Current widgets with pinned flags (JSON data):\n\n[]")
+      await expect(page.getByRole("tab", { name: "New dashboard", exact: true })).toHaveCount(0)
+      await expect.poll(() => state.aiDeleted.length).toBe(1)
+      await expect(page.getByRole("heading", { name: "Conversations over time", exact: true })).toBeVisible()
+      await capture(page, "dashboard-ai-generated-tab-1440x1000")
+      await page.reload()
+      await expect(page.getByRole("tab", { name: "Practice costs", exact: true })).toHaveAttribute("aria-selected", "true")
+      await expect(page.getByRole("heading", { name: "Conversations over time", exact: true })).toBeVisible()
+      expect(state.dashboard.state!.workspace.dashboards).toHaveLength(2)
+      clean(state)
+    } finally { await context.close() }
+  })
+  await scenario("Add composer failure keeps the prompt and supports retry without empty tabs", async () => {
+    const state = fixture(); state.aiFailure = true
+    const { context, page } = await open(state)
+    try {
+      await page.goto(`${baseURL}/dashboard`); await settled(page); await tabsSaved(state, () => true)
+      const before = structuredClone(state.dashboard), writes = state.tabWrites.length
+      await page.getByRole("button", { name: "New dashboard", exact: true }).click()
+      const dialog = page.getByRole("dialog", { name: "New dashboard", exact: true })
+      const prompt = dialog.getByRole("textbox", { name: "Describe what you want", exact: true })
+      await prompt.fill("Show practice spend")
+      await dialog.getByRole("button", { name: "Generate dashboard", exact: true }).click()
+      await expect(dialog.getByRole("alert")).toBeVisible()
+      await expect(prompt).toHaveValue("Show practice spend")
+      await expect(dialog.getByRole("button", { name: "Generate dashboard", exact: true })).toBeEnabled()
+      expect(state.dashboard).toEqual(before); expect(state.tabWrites).toHaveLength(writes)
+      await expect.poll(() => state.aiDeleted.length).toBe(1)
+      await capture(page, "dashboard-ai-composer-failure-1440x1000")
+      state.aiFailure = false
+      await dialog.getByRole("button", { name: "Generate dashboard", exact: true }).click()
+      await expect(dialog).toHaveCount(0)
+      await tabsSaved(state, saved => saved.workspace.dashboards.filter(tab => tab.id !== "overview").length === 1)
+      await expect(page.getByRole("tab", { name: "Practice costs", exact: true })).toHaveAttribute("aria-selected", "true")
+      await expect.poll(() => state.aiDeleted.length).toBe(2)
+      clean(state)
+    } finally { await context.close() }
+  })
+  for (const action of ["Stop", "Close", "Escape"] as const) await scenario(`Add composer ${action} ignores a delayed AI response`, async () => {
+    const state = fixture(); state.aiHold = true
+    seedTabs(state, { active: "costs", dashboards: [{ id: "costs", name: "Costs", period: "month", stages: {}, widgets: [{ key: "spend", widget: { type: "spend" }, pinned: true }] }] })
+    const { context, page } = await open(state)
+    try {
+      await page.goto(`${baseURL}/dashboard`)
+      await expect(page.getByRole("tab", { name: "Costs", exact: true })).toHaveAttribute("aria-selected", "true")
+      const before = structuredClone(state.dashboard), writes = state.tabWrites.length
+      await page.getByRole("button", { name: "New dashboard", exact: true }).click()
+      const dialog = page.getByRole("dialog", { name: "New dashboard", exact: true })
+      const prompt = dialog.getByRole("textbox", { name: "Describe what you want", exact: true })
+      await prompt.fill("Show practice spend")
+      await dialog.getByRole("button", { name: "Generate dashboard", exact: true }).click()
+      await expect.poll(() => state.aiRelease.length).toBe(1)
+      expect(state.dashboard).toEqual(before)
+      if (action === "Escape") await page.keyboard.press("Escape")
+      else await dialog.getByRole("button", { name: action === "Close" ? "Close dashboard composer" : "Stop", exact: true }).click()
+      if (action === "Stop") {
+        await expect(dialog).toBeVisible(); await expect(prompt).toHaveValue("Show practice spend")
+        await expect(prompt).toBeFocused()
+        await expect(dialog.getByRole("button", { name: "Generate dashboard", exact: true })).toBeEnabled()
+      } else await expect(dialog).toHaveCount(0)
+      state.aiHold = false; state.aiRelease.splice(0).forEach(release => release())
+      await expect.poll(() => state.aiReplies).toBe(1)
+      await expect.poll(() => state.aiDeleted.length).toBe(1)
+      expect(state.dashboard).toEqual(before); expect(state.tabWrites).toHaveLength(writes)
+      if (action === "Stop") {
+        await dialog.getByRole("button", { name: "Generate dashboard", exact: true }).click()
+        await expect(dialog).toHaveCount(0)
+        await expect(page.getByRole("tab", { name: "Practice costs", exact: true })).toHaveAttribute("aria-selected", "true")
+        await expect.poll(() => state.aiDeleted.length).toBe(2)
+      } else await expect(page.getByRole("tab", { name: "Costs", exact: true })).toHaveAttribute("aria-selected", "true")
+      clean(state)
+    } finally { state.aiRelease.splice(0).forEach(release => release()); await context.close() }
   })
   await scenario("Focused stage dialogs trap focus, return it on Escape and preserve drafts", async () => {
     const state = fixture(), { context, page } = await open(state)

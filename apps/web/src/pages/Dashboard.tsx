@@ -5,7 +5,7 @@ import type { SetupProgress } from "../api/ingest/setup"
 import { askDashboard } from "../api/opencode/dashboard"
 import { useDashboardTabs } from "../components/dashboard/useDashboardTabs"
 import { SetupTab, setupTabProgress } from "../components/dashboard/SetupTab"
-import { DashboardTabs } from "../components/dashboard/visual/DashboardChrome"
+import { AIComposer, DashboardTabs } from "../components/dashboard/visual/DashboardChrome"
 import { addDays, attention, PERIOD_LABELS, PERIODS, startOfDay, summarize, useDashboardData, type DashboardData, type Period } from "../components/dashboard/data"
 import { ChartWidget } from "../components/dashboard/chart-widget"
 import { icons, ShapeIcon } from "../components/dashboard/icons"
@@ -29,6 +29,11 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
   // Keep Overview's saved arrangement for later design work, out of the tab strip.
   const customTabs = workspace.dashboards.filter((tab) => tab.id !== "overview")
   const empty = !showSetup && customTabs.length === 0
+  const [newOpen, setNewOpen] = useState(false)
+  const [newRequest, setNewRequest] = useState("")
+  const [newWorking, setNewWorking] = useState(false)
+  const [newError, setNewError] = useState("")
+  const newController = useRef<AbortController | null>(null)
   const [promptOpen, setPromptOpen] = useState(false)
   const [request, setRequest] = useState("")
   const [working, setWorking] = useState(false)
@@ -51,7 +56,7 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
     const timer = setTimeout(reload, addDays(startOfDay(now), 1) - Date.now() + 1000)
     return () => clearTimeout(timer)
   }, [now])
-  useEffect(() => () => controller.current?.abort(), [])
+  useEffect(() => () => { controller.current?.abort(); newController.current?.abort() }, [])
   useEffect(() => {
     const outside = (event: PointerEvent) => { if (tabMenu.current && !tabMenu.current.contains(event.target as Node)) tabMenu.current.open = false }
     document.addEventListener("pointerdown", outside)
@@ -112,21 +117,52 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
     requestAnimationFrame(() => (document.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]') ?? document.querySelector<HTMLButtonElement>('[aria-label="New dashboard"]'))?.focus())
   }
   function create() {
-    if (workspace.dashboards.length >= 12) return
-    setForcedSetup(false)
-    const url = new URL(window.location.href)
-    url.searchParams.delete("tab")
-    window.history.replaceState(window.history.state, "", url)
-    const tab: DashboardTab = { id: crypto.randomUUID(), name: "New dashboard", period: active.period, stages: {}, widgets: [] }
-    update({ active: tab.id, dashboards: [...workspace.dashboards, tab] }, { view: "dashboard" })
+    if (workspaceRef.current.dashboards.length >= 12) return
     controller.current?.abort()
     setWorking(false)
-    setRequest("")
-    setError("")
-    setRenaming(false)
-    setDeleting(false)
-    setPromptOpen(true)
-    requestAnimationFrame(() => prompt.current?.focus())
+    setNewError("")
+    setNewOpen(true)
+  }
+  function stopNew() {
+    newController.current?.abort()
+    newController.current = null
+    setNewWorking(false)
+  }
+  function cancelNew() {
+    stopNew()
+    setNewOpen(false)
+  }
+  async function generateNew() {
+    if (!newRequest.trim() || !ready || !canGenerate || newWorking) return
+    if (workspaceRef.current.dashboards.length >= 12) { setNewError("You can have up to 12 dashboard tabs. Close a tab before adding another."); return }
+    const abort = new AbortController()
+    newController.current?.abort()
+    newController.current = abort
+    setNewWorking(true)
+    setNewError("")
+    try {
+      const own = ready.matters.filter(row => !row.matter.sample)
+      const plan = await askDashboard({ request: newRequest.trim(), current: [], clients: [...new Set(own.flatMap(row => row.matter.client ? [row.matter.client] : []))], matters: own.map(row => row.matter.title), signal: abort.signal })
+      if (abort.signal.aborted || newController.current !== abort) return
+      const current = workspaceRef.current
+      if (current.dashboards.length >= 12) { setNewError("You can have up to 12 dashboard tabs. Close a tab before adding another."); return }
+      const tab: DashboardTab = { id: crypto.randomUUID(), name: plan.name || "My dashboard", period: active.period, stages: {}, widgets: applyPlan([], plan), notes: plan.unsupported }
+      setForcedSetup(false)
+      const url = new URL(window.location.href)
+      url.searchParams.delete("tab")
+      window.history.replaceState(window.history.state, "", url)
+      update({ active: tab.id, dashboards: [...current.dashboards, tab] }, { view: "dashboard" })
+      setPromptOpen(false)
+      setRenaming(false)
+      setDeleting(false)
+      setNewOpen(false)
+      setNewRequest("")
+      setAnnouncement("Dashboard created")
+    } catch (cause) {
+      if (!abort.signal.aborted && newController.current === abort) setNewError(cause instanceof Error ? cause.message : "Could not create the dashboard. Your request is still here. Try again.")
+    } finally {
+      if (newController.current === abort) { newController.current = null; setNewWorking(false) }
+    }
   }
   function setWidgets(next: WidgetInstance[]) {
     changeTab(active.widgets ? { ...active, widgets: next } : { ...active, stages: { ...active.stages, [stage]: next } })
@@ -277,6 +313,7 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
             : <div className="dash-grid" aria-busy={!context}>{widgets.map((item) => <Widget key={item.key} item={item} context={context} period={active.period} bold={item.widget.type === bold} onPin={() => togglePin(item.key)} onRemove={() => remove(item.key)} />)}</div>}
       </div>
     </div>
+    <AIComposer open={newOpen} request={newRequest} working={newWorking} error={newError || (!setup?.ready ? "Connect your AI provider and models in Setup before generating a dashboard." : !ready ? "Your matter data could not be loaded. Retry loading it before generating a dashboard." : workspace.dashboards.length >= 12 ? "You can have up to 12 dashboard tabs. Close a tab before adding another." : undefined)} disabled={!canGenerate || workspace.dashboards.length >= 12} config={{ suggestions, footnote: "Your AI chooses widgets. Figures come from your live matter data." }} onRequestChange={setNewRequest} onGenerate={() => void generateNew()} onCancel={cancelNew} onStop={stopNew} />
     <p className="sr-only" role="status">{announcement}</p>
     {undoState && <Snackbar key={undoState.text} text={undoState.text} onUndo={undo} onDismiss={() => { if (document.activeElement?.closest(".dash-snackbar")) askButton.current?.focus(); setUndoState(undefined) }} />}
   </>

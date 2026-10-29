@@ -1,4 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react"
+import { createPortal } from "react-dom"
+import useModalFocus from "../../useModalFocus"
 import { icons } from "../icons"
 import "../../../styles/dashboard-chrome.css"
 
@@ -108,11 +110,14 @@ export function AIComposer({ open, request, config = {}, working = false, error,
   const body = useRef<HTMLDivElement>(null)
   const before = useRef<HTMLElement | null>(null)
   const titleId = useId(), descriptionId = useId(), promptId = useId()
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = dialog.current
     if (!node) return
     if (open && !node.open) {
       before.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      // React autoFocus does not expose the native attribute used by the
+      // shared focus trap. Set it before that layout effect chooses its target.
+      prompt.current?.setAttribute("autofocus", "")
       node.showModal()
       prompt.current?.focus({ preventScroll: true })
       node.scrollTop = 0
@@ -132,7 +137,8 @@ export function AIComposer({ open, request, config = {}, working = false, error,
       before.current = null
     }
   }, [])
-  return <dialog ref={dialog} className="dash-ai-composer" aria-labelledby={titleId} aria-describedby={descriptionId} onCancel={(event) => { event.preventDefault(); onCancel() }}>
+  useModalFocus(dialog, open)
+  return createPortal(<dialog ref={dialog} className="dash-ai-composer" aria-labelledby={titleId} aria-describedby={descriptionId} onCancel={(event) => { event.preventDefault(); onCancel() }}>
     <form onSubmit={(event) => { event.preventDefault(); if (request.trim() && !working && !disabled) onGenerate() }}>
       <header className="dash-ai-composer-head"><span className="dash-ai-composer-icon">{sparkle}</span><div><h2 id={titleId}>{config.title ?? "New dashboard"}</h2><p id={descriptionId}>{config.description ?? "Tell your AI what you want to see. It will choose widgets and arrange a view for you."}</p></div><button type="button" className="dash-ai-composer-close" onClick={onCancel} aria-label="Close dashboard composer">{icons.close}</button></header>
       <div ref={body} className="dash-ai-composer-body">
@@ -143,7 +149,7 @@ export function AIComposer({ open, request, config = {}, working = false, error,
       </div>
       <footer className="dash-ai-composer-foot"><p>{config.footnote ?? "Pinned widgets stay in place. Figures come from your matter data."}</p><div>{working && onStop ? <button type="button" className="dash-ai-composer-cancel" onClick={() => { onStop(); requestAnimationFrame(() => { prompt.current?.focus({ preventScroll: true }); if (dialog.current) dialog.current.scrollTop = 0; if (body.current) body.current.scrollTop = 0 }) }}>Stop</button> : <button type="button" className="dash-ai-composer-cancel" onClick={onCancel}>Cancel</button>}<button type="submit" className="dash-ai-composer-generate" disabled={!request.trim() || working || disabled} aria-busy={working}>{sparkle}{working ? "Generating…" : config.submitLabel ?? "Generate dashboard"}</button></div></footer>
     </form>
-  </dialog>
+  </dialog>, document.body)
 }
 
 export type AdaptiveGridItem = { id: string; size?: "tile" | "wide" | "full" }
