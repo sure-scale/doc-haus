@@ -42,6 +42,16 @@ function canonical(node: Node): string {
   return JSON.stringify([el.namespaceURI,el.nodeName,Array.from(el.attributes).map(a => [a.namespaceURI,a.name,a.value]).sort(),Array.from(el.childNodes).map(canonical)])
 }
 const same = (a: Node,b: Node) => canonical(a) === canonical(b)
+// SDK raw fragments add projector IDs and indentation; this comparison is
+// mapping-only. The full delivered package remains under strict comparison.
+function sdkMapping(node:Node): unknown {
+  if (node.nodeType===1) {
+    const e=node as Element, pt="http://powertools.codeplex.com/2011", xmlns="http://www.w3.org/2000/xmlns/"
+    return [e.namespaceURI,e.localName,Array.from(e.attributes).filter(a=>a.namespaceURI!==pt && a.namespaceURI!==xmlns).map(a=>[a.namespaceURI,a.localName,a.value]).sort(),Array.from(e.childNodes).map(sdkMapping).filter(x=>x!==undefined)]
+  }
+  if (node.nodeType===3 || node.nodeType===4) return node.nodeValue?.trim() ? [node.nodeType,node.nodeValue] : undefined
+  return [node.nodeType,node.nodeName,node.nodeValue]
+}
 const serialize = (doc: Document) => strToU8(new XMLSerializer().serializeToString(doc))
 type Package = ReturnType<typeof unpack>
 function unpack(bytes: Uint8Array) {
@@ -348,4 +358,92 @@ export async function authorExactParagraphSpacing(input: Uint8Array, request: Ex
     }
     return {trackedBytes:tracked,bakedBytes:baked,revisionId,beforeDirect:direct.kind === "twips" ? direct.raw : null,afterDirect:String(desired)}
   } finally {opened.session.close()}
+}
+
+// Verify a caller-supplied artifact against its frozen source, then derive the
+// registry identifier from the sole physical change. No caller ID is trusted.
+async function verifySupplied(source: Uint8Array, artifact: Uint8Array, request: ExactSpacingRequest) {
+  const base=unpack(source), output=unpack(artifact)
+  requireProof(hash(source)===request.sourceSha256 && /^[a-f0-9]{64}$/.test(request.sourceSha256),"stale_source")
+  requireProof(!!request.author.trim() && Number.isFinite(request.spacingAfterPoints) && request.spacingAfterPoints>=0 && request.spacingAfterPoints<=48 && Number.isInteger(request.spacingAfterPoints*20),"invalid_request")
+  requireProof(!all(base.docs["word/settings.xml"]!,"documentProtection").length,"protected_document")
+  const sourceOpen=await openRevision(source,{pendingRevisions:"layer"})
+  try {
+    const indices=sourceOpen.revision.paragraphs.flatMap((p,i)=>p.paragraph_handle===request.paragraphHandle?[i]:[])
+    requireProof(indices.length===1,"unknown_handle")
+    const index=indices[0]!, view=sourceOpen.revision.paragraphs[index]!
+    requireProof(view.text===request.paragraphText && JSON.stringify(view.table)===JSON.stringify(request.tableContext),"target_changed")
+    const {ordinal,old,sp}=sourceTarget(base,sourceOpen,index), before=directAfter(sp), desired=request.spacingAfterPoints*20
+    requireProof(before.kind!=="twips" || BigInt(before.normalized)!==BigInt(desired),"no_change")
+    samePackage(base,output)
+    const para=all(output.body,"p")[ordinal]; requireProof(para,"target_missing")
+    const pp=ppr(para); requireProof(pp,"missing_revision")
+    const marks=child(pp,"pPrChange"); requireProof(marks.length===1,"revision_membership")
+    const mark=marks[0]!, id=mark.getAttributeNS(W,"id"), author=mark.getAttributeNS(W,"author"), date=mark.getAttributeNS(W,"date")
+    requireProof(/^(0|[1-9]\d{0,9})$/.test(id) && BigInt(id)<=2147483647n && author===request.author && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(date) && !Number.isNaN(Date.parse(date)) && new Date(date).toISOString()===date,"invalid_revision")
+    requireProof(Array.from(mark.attributes).length===3 && Array.from(mark.attributes).every(a=>a.namespaceURI===W && ["id","author","date"].includes(a.localName)),"invalid_revision")
+    const olds=elements(mark); requireProof(olds.length===1 && olds[0]!.namespaceURI===W && olds[0]!.localName==="pPr" && same(olds[0]!,old),"revision_old_properties_changed")
+    requireProof(Array.from(mark.childNodes).every(n=>n.nodeType===1),"invalid_revision")
+    for (const doc of Object.values(base.docs)) for (const el of Array.from(doc.getElementsByTagName("*"))) if (el.hasAttributeNS(W,"id")) {
+      const value=el.getAttributeNS(W,"id"); if (/^\+?\d+$/.test(value)) requireProof(BigInt(value)!==BigInt(id),"revision_id_collision")
+    }
+    const cleaned=output.body.cloneNode(true) as Document, cleanP=all(cleaned,"p")[ordinal]!, cleanMark=child(ppr(cleanP)!,"pPrChange")[0]!
+    cleanMark.parentNode!.removeChild(cleanMark); verifyBody(base.body,cleaned,ordinal,desired)
+    const artifactOpen=await openRevision(artifact,{pendingRevisions:"layer"})
+    try {
+      const artifactPara=all(artifactOpen.documents[BODY]!,"p")[ordinal], selected=artifactOpen.paragraphs.filter(p=>p.part===BODY && p.node===artifactPara)
+      requireProof(selected.length===1 && selected[0]!.match.text===request.paragraphText,"target_changed")
+      const prior=sourceOpen.session.listRevisions(), rows=artifactOpen.session.listRevisions(), priorIds=new Set(prior.map(x=>x.id)), added=rows.filter(x=>!priorIds.has(x.id))
+      requireProof(priorIds.size===prior.length && new Set(rows.map(x=>x.id)).size===rows.length && rows.length===prior.length+1 && added.length===1,"revision_membership")
+      const rev=added[0]!, key=`kind=PropsChange:${W}:pPrChange:${id}`
+      requireProof(rev.resolutionStatus==="supported" && rev.type==="format" && rev.family==="properties_change" && rev.partUri==="/word/document.xml" && rev.scope==="body" && rev.author===author && rev.date===date && rev.text===request.paragraphText && rev.constituentIds.length===1 && rev.constituentIds[0]===id && rev.constituentKeys.length===1 && rev.constituentKeys[0]===key,"revision_membership")
+      const anchor=artifactOpen.session.project().anchorIndex[rev.anchorId], selectedAnchor=selected[0]!.match.enclosingAnchor
+      requireProof(anchor && anchor.partUri === "/word/document.xml" && anchor.scope === "body" && rev.affectedAnchors.length===1 && rev.affectedAnchors[0]!.id===rev.anchorId,"revision_extent")
+      if (anchor.kind === "p") requireProof(rev.anchorId===selectedAnchor.id,"revision_extent")
+      else {
+        requireProof(anchor.kind === "tc","revision_extent")
+        const raw=parse(strToU8(artifactOpen.session.raw.getXml(rev.anchorId))), pt="http://powertools.codeplex.com/2011"
+        const mapped=all(raw,"p").filter(p=>p.getAttributeNS(pt,"Unid")===selectedAnchor.unid)
+        requireProof(mapped.length===1,"revision_extent")
+        const properties=ppr(mapped[0]!), carrier=properties ? child(properties,"pPrChange") : []
+        requireProof(carrier.length===1 && carrier[0]!.getAttributeNS(W,"id")===id && carrier[0]!.getAttributeNS(W,"author")===author && carrier[0]!.getAttributeNS(W,"date")===date && elements(carrier[0]!).length===1 && JSON.stringify(sdkMapping(elements(carrier[0]!)[0]!))===JSON.stringify(sdkMapping(old)),"revision_extent")
+      }
+      const clean=(rs:typeof rows)=>rs.map(({anchorId:_a,affectedAnchors:_b,...r})=>r).sort((a,b)=>a.id.localeCompare(b.id))
+      requireProof(JSON.stringify(clean(prior))===JSON.stringify(clean(rows.filter(r=>priorIds.has(r.id)))),"prior_revision_changed")
+      return {base,output,cleaned,ordinal,physicalRevisionId:id,revisionId:rev.id,revisionDate:date,beforeDirect:before,afterDirect:String(desired),prior:clean(prior)}
+    } finally {artifactOpen.session.close()}
+  } finally {sourceOpen.session.close()}
+}
+export async function verifyExactParagraphSpacing(source:Uint8Array, artifact:Uint8Array, request:ExactSpacingRequest) {
+  const proof=await verifySupplied(new Uint8Array(source),new Uint8Array(artifact),request)
+  return {paragraphHandle:request.paragraphHandle,physicalRevisionId:proof.physicalRevisionId,revisionId:proof.revisionId,beforeDirect:proof.beforeDirect,afterDirect:proof.afterDirect}
+}
+export async function resolveExactParagraphSpacing(sourceInput:Uint8Array, artifactInput:Uint8Array, request:ExactSpacingRequest, decision:"accept"|"reject") {
+  requireProof(decision==="accept" || decision==="reject","invalid_decision")
+  const source=new Uint8Array(sourceInput), artifact=new Uint8Array(artifactInput), proof=await verifySupplied(source,artifact,request)
+  const dx=await docxodus(), session=dx.openDocxSession(artifact,{persistAnchorIds:false})
+  try {
+    session.save()
+    const version=session.getVersion(), digest=session.getPackageManifest().rawPackageBytesDigest
+    requireProof(digest?.algorithm==="SHA-256" && /^[a-f0-9]{64}$/.test(digest.value),"digest_unavailable")
+    const key=`kind=PropsChange:${W}:pPrChange:${proof.physicalRevisionId}`
+    const groups=session.listRevisions().filter(r=>r.constituentKeys.length===1 && r.constituentKeys[0]===key)
+    requireProof(groups.length===1 && groups[0]!.type==="format" && groups[0]!.family==="properties_change" && groups[0]!.partUri==="/word/document.xml" && groups[0]!.scope==="body" && groups[0]!.author===request.author && groups[0]!.date===proof.revisionDate && groups[0]!.text===request.paragraphText && groups[0]!.affectedAnchors.length===1 && groups[0]!.affectedAnchors[0]!.id===groups[0]!.anchorId && groups[0]!.constituentIds.length===1 && groups[0]!.constituentIds[0]===proof.physicalRevisionId && groups[0]!.resolutionStatus==="supported","revision_membership")
+    const resolvedId=groups[0]!.id
+    const result=session.executeBatch([{tool:"paragraph",action:decision,mutation:()=>decision==="accept" ? session.acceptRevision(resolvedId) : session.rejectRevision(resolvedId)}],"atomic")
+    if (!result.success) {
+      const after=session.getPackageManifest().rawPackageBytesDigest
+      requireProof(session.getVersion()===version && after?.algorithm===digest.algorithm && after.value===digest.value,"rollback_failed")
+      throw new Error("docx_exact_spacing:resolution_failed_rolled_back")
+    }
+    const saved=unpack(session.save()); samePackage(proof.base,saved)
+    requireProof(same(saved.body,decision==="reject" ? proof.base.body : proof.cleaned),"resolution_changed")
+    const clean=(rs:ReturnType<typeof session.listRevisions>)=>rs.map(({anchorId:_a,affectedAnchors:_b,...r})=>r).sort((a,b)=>a.id.localeCompare(b.id))
+    requireProof(JSON.stringify(clean(session.listRevisions()))===JSON.stringify(proof.prior),"prior_revision_changed")
+    if (decision==="reject") return source
+    const resultBytes=zipSync({...proof.base.parts,[BODY]:saved.parts[BODY]!}), reopened=dx.openDocxSession(resultBytes,{persistAnchorIds:false})
+    try {requireProof(JSON.stringify(clean(reopened.listRevisions()))===JSON.stringify(proof.prior),"prior_revision_changed")}
+    finally {reopened.close()}
+    return resultBytes
+  } finally {session.close()}
 }

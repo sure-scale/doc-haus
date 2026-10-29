@@ -5,7 +5,7 @@ import { renderMarkdownToDocx } from "./render"
 import { createDocxRevision, applyDocxParagraphEdits } from "./docx-amendments"
 import { exportDocxComments, readDocxComments } from "./docx-comments"
 import { docxodus } from "./docxodus"
-import { authorExactParagraphSpacing, inspectExactParagraphSpacing } from "./docx-exact-spacing"
+import { authorExactParagraphSpacing, inspectExactParagraphSpacing, verifyExactParagraphSpacing, resolveExactParagraphSpacing } from "./docx-exact-spacing"
 const sha = (bytes:Uint8Array) => createHash("sha256").update(bytes).digest("hex")
 test("original generated source and irrelevant-style variant preserve paired bookmarks in either duplicate cell", async () => {
   const raw=(await renderMarkdownToDocx("| Label | Value |\n| --- | --- |\n| A | Same |\n| B | Same |" )).bytes
@@ -127,7 +127,12 @@ test("preserves prior same-author revision and separate comment through selectiv
   const revised=await applyDocxParagraphEdits(first,[{id:"prior",paragraph_handle:old.paragraph_handle,occurrence:0,before_quote:"Prior",replacement:"Earlier"}],undefined,{pendingRevisions:"layer",revisionAuthor:"Synthetic Counsel",ownAuthors:["Synthetic Counsel"]})
   const source=exportDocxComments(revised.bytes,[{id:"note",text:"Existing comment.",author:"Reviewer",anchor:{paragraph_text:"Comment paragraph."}}]).bytes
   const hash=sha(source), current=await createDocxRevision(source,{pendingRevisions:"layer"}), row=current.paragraphs.filter(p=>p.text === "Same")[1]!
-  const result=await authorExactParagraphSpacing(source,{sourceSha256:hash,paragraphHandle:row.paragraph_handle,paragraphText:row.text,tableContext:row.table,spacingAfterPoints:6,author:"Synthetic Counsel"})
+  const request={sourceSha256:hash,paragraphHandle:row.paragraph_handle,paragraphText:row.text,tableContext:row.table,spacingAfterPoints:6,author:"Synthetic Counsel"}
+  const result=await authorExactParagraphSpacing(source,request)
+  const verified=await verifyExactParagraphSpacing(source,result.trackedBytes,request)
+  expect(verified.revisionId).toBe(result.revisionId)
+  const resolvedByHelper=await resolveExactParagraphSpacing(source,result.trackedBytes,request,'accept')
+  expect(readDocxComments(resolvedByHelper)).toEqual(readDocxComments(source))
   const dx=await docxodus(), beforeSession=dx.openDocxSession(source,{persistAnchorIds:false}); const prior=beforeSession.listRevisions(); beforeSession.close()
   expect(prior.length).toBeGreaterThan(0); expect(readDocxComments(source).length).toBe(1)
   const carriers=(bytes:Uint8Array)=>strFromU8(unzipSync(bytes)["word/document.xml"]!).match(/<w:(?:ins|del)\b[\s\S]*?<\/w:(?:ins|del)>/g) ?? []
@@ -309,4 +314,47 @@ test("inspector refuses excessive duplicates and excludes proven deleted-only te
   expect((await inspectExactParagraphSpacing(source,'Keep')).matches).toHaveLength(1)
   expect((await inspectExactParagraphSpacing(source,'Lost')).matches).toHaveLength(0)
   expect(sha(source)).toBe(digest)
+})
+
+test("supplied formatting artifact is independently verified and selectively resolved", async () => {
+  const source=(await renderMarkdownToDocx('| A | B |\n| --- | --- |\n| X | Same |')).bytes, view=await createDocxRevision(source), row=view.paragraphs.find(p=>p.text==='Same')!
+  const request={sourceSha256:sha(source),paragraphHandle:row.paragraph_handle,paragraphText:row.text,tableContext:row.table,spacingAfterPoints:6,author:'Synthetic Counsel'}
+  const authored=await authorExactParagraphSpacing(source,request), sourceHash=sha(source), artifactHash=sha(authored.trackedBytes)
+  const proof=await verifyExactParagraphSpacing(source,authored.trackedBytes,request)
+  expect(proof.afterDirect).toBe('120'); expect(proof.revisionId).toBe(authored.revisionId)
+  const rejected=await resolveExactParagraphSpacing(source,authored.trackedBytes,request,'reject'), accepted=await resolveExactParagraphSpacing(source,authored.trackedBytes,request,'accept')
+  expect(rejected).toEqual(source); expect(sha(source)).toBe(sourceHash); expect(sha(authored.trackedBytes)).toBe(artifactHash)
+  const dx=await docxodus(), sess=dx.openDocxSession(accepted,{persistAnchorIds:false});try{expect(sess.listRevisions()).toHaveLength(0)}finally{sess.close()}
+  const parts=unzipSync(authored.trackedBytes), xml=strFromU8(parts['word/document.xml']!)
+  const mark=xml.match(/<w:pPrChange\b[^>]*>[\s\S]*?<\/w:pPrChange>/)![0]
+  const priorId=xml.match(/<w:bookmarkStart\b[^>]*w:id="(\d+)"/)![1]!
+  for (const [changed,code] of [
+    [xml.replace('w:author="Synthetic Counsel"','w:author="Other"'),'invalid_revision'],
+    [xml.replace(mark,mark.replace('w:after="80"','w:after="81"')),'revision_old_properties_changed'],
+    [xml.replace(mark,mark+mark),'revision_membership'],
+    [xml.replace(mark,mark.replace(/w:id="\d+"/,`w:id="${priorId}"`)),'revision_id_collision'],
+    [xml.replace(mark,mark.replace(/w:date="[^"]+"/,'w:date="2026-15-01T00:00:00.000Z"')),'invalid_revision'],
+    [xml.replace('>X</w:t>','>Y</w:t>'),'other_body_changed'],
+    [xml.replace('w:after="120"','w:after="121"'),'wrong_after'],
+    [xml.replace(/<w:pPrChange\b[^>]*>[\s\S]*?<\/w:pPrChange>/,''),'revision_membership'],
+    [xml.replace('w:author="Synthetic Counsel"','w:author="Synthetic Counsel" w:extra="x"'),'invalid_revision'],
+  ]) {
+    expect(changed).not.toBe(xml);const artifact=zipSync({...parts,'word/document.xml':strToU8(changed)})
+    await expect(verifyExactParagraphSpacing(source,artifact,request)).rejects.toThrow(`docx_exact_spacing:${code}`)
+    expect(sha(source)).toBe(sourceHash)
+  }
+  const changedStyles=zipSync({...parts,'word/styles.xml':strToU8(strFromU8(parts['word/styles.xml']!).replace('</w:styles>','<w:style w:type="paragraph" w:styleId="Injected"/></w:styles>'))})
+  await expect(verifyExactParagraphSpacing(source,changedStyles,request)).rejects.toThrow('docx_exact_spacing:other_part_changed')
+  const session=dx.openDocxSession(authored.trackedBytes,{}),proto=Object.getPrototypeOf(session);session.close()
+  const realBatch=proto.executeBatch; let decisionApplied=false, rolledBack=false
+  const spy=spyOn(proto,'executeBatch').mockImplementation(function(this:typeof session,...args:Parameters<typeof realBatch>) {
+    const before=this.getPackageManifest().rawPackageBytesDigest, version=this.getVersion()
+    const fail={tool:'paragraph',action:'injected-failure',mutation:()=>{decisionApplied=this.listRevisions().length===0;return {success:false,created:[],removed:[],modified:[],error:{code:'injected',message:'Synthetic failure'}}}}
+    const result=realBatch.call(this,[...args[0],fail],args[1]), after=this.getPackageManifest().rawPackageBytesDigest
+    rolledBack=!result.success && this.getVersion()===version && after.algorithm===before.algorithm && after.value===before.value
+    return result
+  })
+  try {await expect(resolveExactParagraphSpacing(source,authored.trackedBytes,request,'accept')).rejects.toThrow('docx_exact_spacing:resolution_failed_rolled_back');expect(decisionApplied).toBe(true);expect(rolledBack).toBe(true)}
+  finally {spy.mockRestore()}
+  expect(sha(source)).toBe(sourceHash);expect(sha(authored.trackedBytes)).toBe(artifactHash)
 })
