@@ -9,7 +9,7 @@ import { SettingsFooter } from "./SettingsFooter"
 // Firm-wide drafting preferences. The engine renders the saved structured
 // settings into standing instructions for each drafting or explanation turn;
 // the page layout settings are read when a document renders instead.
-export default function DraftingTab({ onSaved, onBusy, setupOnly = false }: { onSaved: (text: string) => void; onBusy?: (busy: boolean) => void; setupOnly?: boolean }) {
+export default function DraftingTab({ onSaved, onBusy }: { onSaved: (text: string) => void; onBusy?: (busy: boolean) => void }) {
   const [prefs, setPrefs] = useState<DraftingPreferences | null>(null)
   const [today] = useState(() => new Date())
   const [saving, setSaving] = useState(false)
@@ -58,52 +58,8 @@ export default function DraftingTab({ onSaved, onBusy, setupOnly = false }: { on
     </section>
   )
   const set = (patch: Partial<DraftingPreferences>) => setPrefs({ ...prefs, ...patch })
-  const houseStyleField = (
-    <FieldRow
-      id="drafting-house-style"
-      label="House style notes"
-      hint="Additional standing instructions for drafting and editing across all matters."
-    >
-      <textarea
-        id="drafting-house-style"
-        aria-describedby="drafting-house-style-hint"
-        className="settings-textarea"
-        rows={4}
-        placeholder={'Anything else the assistants should always honor, e.g. "Define parties as Customer and Provider, never Licensee/Licensor."'}
-        value={prefs.houseStyle}
-        onChange={(e) => set({ houseStyle: e.target.value })}
-      />
-    </FieldRow>
-  )
-  const documentStyleField = (
-    <FieldRow
-      id="drafting-style-template"
-      label="Document style"
-      hint={setupOnly ? "Use fonts and numbering from a template, or keep the doc.haus house style." : "Fonts, heading and clause numbering styles and page size for documents drafted without a template of their own. A document drafted from a template or precedent takes that file's styles. Headers and footers follow the settings below."}
-    >
-      <select
-        id="drafting-style-template"
-        aria-describedby="drafting-style-template-hint"
-        value={prefs.styleTemplate}
-        onChange={(e) => set({ styleTemplate: e.target.value })}
-      >
-        <option value="">doc.haus house style</option>
-        {templates?.map((name) => <option key={name} value={name}>{name}</option>)}
-        {prefs.styleTemplate && !templates?.includes(prefs.styleTemplate) && (
-          <option value={prefs.styleTemplate}>{prefs.styleTemplate}{templates ? " (not in the template library)" : ""}</option>
-        )}
-      </select>
-    </FieldRow>
-  )
   return (
     <>
-      {setupOnly ? <section className="settings-section">
-        <p className="settings-hint muted">Add the drafting conventions you use regularly and choose a document style.</p>
-        <fieldset className="settings-drafting-fields" disabled={saving} aria-label="House style and templates">
-          {houseStyleField}
-          {documentStyleField}
-        </fieldset>
-      </section> : <>
       <section className="settings-section">
         <p className="settings-hint muted">
           Applies across matters to new replies and resumed or revisited work.
@@ -171,7 +127,21 @@ export default function DraftingTab({ onSaved, onBusy, setupOnly = false }: { on
               { value: "numerals", label: "30 days" },
             ]}
           />
-          {houseStyleField}
+          <FieldRow
+            id="drafting-house-style"
+            label="House style notes"
+            hint="Additional standing instructions for drafting and editing across all matters."
+          >
+            <textarea
+              id="drafting-house-style"
+              aria-describedby="drafting-house-style-hint"
+              className="settings-textarea"
+              rows={4}
+              placeholder={'Anything else the assistants should always honor, e.g. "Define parties as Customer and Provider, never Licensee/Licensor."'}
+              value={prefs.houseStyle}
+              onChange={(e) => set({ houseStyle: e.target.value })}
+            />
+          </FieldRow>
           <SegRow
             label="Quick drafts in chat"
             hint="For a short request a quick draft can serve. Ask: offer the quick draft first. Automatic: start it without asking. Off: always run the full drafting cycle."
@@ -194,7 +164,24 @@ export default function DraftingTab({ onSaved, onBusy, setupOnly = false }: { on
           Legends can have legal effect and are only added if you choose them.
         </p>
         <fieldset className="settings-drafting-fields" disabled={saving} aria-label="Page layout">
-          {(Boolean(templates?.length) || Boolean(prefs.styleTemplate)) && documentStyleField}
+          {(Boolean(templates?.length) || Boolean(prefs.styleTemplate)) && <FieldRow
+            id="drafting-style-template"
+            label="Document style"
+            hint="Fonts, heading and clause numbering styles and page size for documents drafted without a template of their own. A document drafted from a template or precedent takes that file's styles. Headers and footers follow the settings below."
+          >
+            <select
+              id="drafting-style-template"
+              aria-describedby="drafting-style-template-hint"
+              value={prefs.styleTemplate}
+              onChange={(e) => set({ styleTemplate: e.target.value })}
+            >
+              <option value="">doc.haus house style</option>
+              {templates?.map((name) => <option key={name} value={name}>{name}</option>)}
+              {prefs.styleTemplate && !templates?.includes(prefs.styleTemplate) && (
+                <option value={prefs.styleTemplate}>{prefs.styleTemplate}{templates ? " (not in the template library)" : ""}</option>
+              )}
+            </select>
+          </FieldRow>}
           <SegRow
             label="Page numbers"
             hint="In the footer of each page."
@@ -279,7 +266,6 @@ export default function DraftingTab({ onSaved, onBusy, setupOnly = false }: { on
           </div>
         </fieldset>
       </section>
-      </>}
       {error && <p className="settings-error" role="alert">{error}</p>}
       <SettingsFooter tab="drafting"><div className="settings-actions">
         <button
@@ -292,15 +278,13 @@ export default function DraftingTab({ onSaved, onBusy, setupOnly = false }: { on
             try {
               // Practice areas have their own editor and may have changed in
               // another browser since this drafting form was loaded.
-              const patch: Partial<DraftingPreferences> = setupOnly
-                ? { houseStyle: prefs.houseStyle, styleTemplate: prefs.styleTemplate }
-                : { ...prefs }
+              const patch: Partial<DraftingPreferences> = { ...prefs, draftingConfigured: true }
               delete patch.practiceAreas
               const saved = await savePreferences(patch)
               if (!mounted.current) return
               setPrefs(saved)
               setSaves(count => count + 1)
-              onSaved(setupOnly ? "House style and document style saved." : "Drafting preferences saved. They apply to new replies, resumed drafting and documents rendered from now on.")
+              onSaved("Drafting preferences saved. They apply to new replies, resumed drafting and documents rendered from now on.")
             } catch {
               if (mounted.current) setError("Could not save drafting preferences. Your changes are still here. Try again.")
             } finally {

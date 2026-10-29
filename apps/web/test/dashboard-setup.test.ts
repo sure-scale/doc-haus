@@ -16,12 +16,12 @@ test("an unavailable or skipped step is not completed merely by onboarding bookk
   expect(setupTabProgress(data(), { ...setup, ready: false, completed: ["models", "details", "research"] }, []).done).toBe(0)
 })
 
-test("practice completion requires saved identity and meaningful law and practice choices", () => {
+test("practice completion requires saved identity and law while practice areas are optional", () => {
   const practice = data({ preferences })
   expect(setupTabProgress(practice, setup, ["england-wales"])).toEqual({ done: 2, total: 5 })
   expect(setupTabProgress(practice, setup, []).done).toBe(1)
   expect(setupTabProgress(practice, setup, ["  "]).done).toBe(1)
-  expect(setupTabProgress(data({ preferences: { ...preferences, practiceAreas: [" "] } }), setup, ["england-wales"]).done).toBe(1)
+  expect(setupTabProgress(data({ preferences: { ...preferences, practiceAreas: [] } }), setup, ["england-wales"]).done).toBe(2)
   expect(setupTabProgress(data({ preferences: { ...preferences, firm: " " } }), setup, ["england-wales"]).done).toBe(1)
 })
 
@@ -39,16 +39,17 @@ test("Word requires ready setup or an available administrator-managed connection
   expect(setupTabProgress(data({ word: word("external", true) }), null, []).done).toBe(1)
 })
 
-test("house style and library template are both required and unavailable library is not counted", () => {
+test("drafting completes after an explicit save without requiring house style or templates", () => {
   const styled = { ...preferences, houseStyle: "Use plain English." }
   expect(setupTabProgress(data({ preferences: styled }), null, []).done).toBe(0)
   expect(setupTabProgress(data({ preferences: styled, templates: 0 }), null, []).done).toBe(0)
   expect(setupTabProgress(data({ preferences, templates: 1 }), null, []).done).toBe(0)
-  expect(setupTabProgress(data({ preferences: styled, templates: 1 }), null, []).done).toBe(1)
+  expect(setupTabProgress(data({ preferences: styled, templates: 1 }), null, []).done).toBe(0)
+  expect(setupTabProgress(data({ preferences: { ...preferences, draftingConfigured: true } }), null, []).done).toBe(1)
 })
 
 test("complete saved configuration yields five, and deleting a prerequisite reduces progress", () => {
-  const complete = data({ preferences: { ...preferences, houseStyle: "Use plain English.", searchApiKey: "synthetic-key" }, word: word("ready", true), templates: 1 })
+  const complete = data({ preferences: { ...preferences, draftingConfigured: true, searchApiKey: "synthetic-key" }, word: word("ready", true), templates: 0 })
   expect(setupTabProgress(complete, setup, ["england-wales"])).toEqual({ done: 5, total: 5 })
-  expect(setupTabProgress({ ...complete, templates: 0 }, setup, ["england-wales"])).toEqual({ done: 4, total: 5 })
+  expect(setupTabProgress(complete, setup, [])).toEqual({ done: 4, total: 5 })
 })

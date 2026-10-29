@@ -23,10 +23,10 @@ function completion(data: DashboardData, setup: SetupProgress | null, jurisdicti
   const hasChoice = (choices: string[]) => choices.some((choice) => typeof choice === "string" && !!choice.trim())
   return [
     setup?.ready === true,
-    !!prefs?.attorney.trim() && !!prefs.firm.trim() && hasChoice(jurisdictions) && hasChoice(prefs.practiceAreas),
+    !!prefs?.attorney.trim() && !!prefs.firm.trim() && hasChoice(jurisdictions),
     !!prefs?.searchApiKey.trim(),
     data.word?.status === "ready" || (data.word?.status === "external" && data.word.available),
-    !!prefs?.houseStyle.trim() && (data.templates ?? 0) > 0,
+    prefs?.draftingConfigured === true,
   ]
 }
 
@@ -121,7 +121,7 @@ export function SetupTab({ context, onSampleAdded, onHideSetup, onSetupRefresh }
       { id: "identity", icon: "person", title: "Practice identity & default law", detail: "Add your name, firm and the law you usually work with.", done: !!done[1], editable: true },
       { id: "research", icon: "search", title: "Web research with Exa", detail: done[2] ? "Web research is connected. Test or change it in Research settings." : "Add your Exa API key to search the web for legal and company information.", done: !!done[2], editable: !done[2], ...(done[2] ? { action: { id: "research", label: "Change" } } : {}) },
       { id: "word", icon: "word", title: "Microsoft Word add-in", detail: done[3] ? "Word is connected and ready for document review." : data.word?.status === "word_missing" ? "Install Word on this computer, then connect the add-in" : data.word?.status === "unsupported" ? "See add-in settings for supported ways to connect Word" : "Review documents and apply tracked changes directly in Microsoft Word.", done: !!done[3], action: { id: "addins", label: done[3] ? "Manage Word" : "Set up Word", variant: "outline" } },
-      { id: "style", icon: "template", title: "House style & firm templates", detail: "Choose how your drafts look and upload templates you use regularly.", done: !!done[4], action: { id: "drafting", label: "Configure", variant: "outline" } },
+      { id: "style", icon: "template", title: "Drafting preferences", detail: "Set how doc.haus writes, explains and formats your drafts.", done: !!done[4], action: { id: "drafting", label: "Configure", variant: "outline" } },
     ],
   }
   const selected = config.items.find(item => item.id === stage)
@@ -131,7 +131,7 @@ export function SetupTab({ context, onSampleAdded, onHideSetup, onSetupRefresh }
       <FieldRow id="dash-setup-attorney" label="Your full name"><input id="dash-setup-attorney" value={attorney} onChange={event => { setAttorney(event.target.value); setIdentitySaved("") }} placeholder="Your full name" autoComplete="name" maxLength={200} required /></FieldRow>
       <FieldRow id="dash-setup-firm" label="Firm name"><input id="dash-setup-firm" value={firm} onChange={event => { setFirm(event.target.value); setIdentitySaved("") }} placeholder="Firm name" autoComplete="organization" maxLength={200} required /></FieldRow>
       <FieldRow id="dash-setup-jurisdictions" label="Jurisdictions" hint="Preselected when you create a new matter."><JurisdictionSelect id="dash-setup-jurisdictions" aria-describedby="dash-setup-jurisdictions-hint" jurisdictions={packs} selected={jurisdictions} onChange={values => { setJurisdictions(values); setIdentitySaved("") }} disabled={saving || !packs.length} /></FieldRow>
-      <FieldRow id="dash-setup-practice-areas" label="Practice areas" hint="Select the areas you work in, or add your own."><JurisdictionSelect id="dash-setup-practice-areas" aria-describedby="dash-setup-practice-areas-hint" jurisdictions={areaOptions} selected={areas} onChange={values => { setAreas(values); setIdentitySaved("") }} practiceAreas disabled={saving} /></FieldRow>
+      <FieldRow id="dash-setup-practice-areas" label="Practice areas" hint="Optional. Select the areas you work in, or add your own."><JurisdictionSelect id="dash-setup-practice-areas" aria-describedby="dash-setup-practice-areas-hint" jurisdictions={areaOptions} selected={areas} onChange={values => { setAreas(values); setIdentitySaved("") }} practiceAreas disabled={saving} /></FieldRow>
     </fieldset>
     {identityError && <p className="settings-error" role="alert">{identityError}</p>}
     <SettingsFooter tab="identity"><div className="settings-actions"><button type="submit" form="dash-setup-identity-form" className="primary" disabled={saving || !changed} aria-busy={identityBusy}>{identityBusy ? "Saving…" : "Save"}</button></div></SettingsFooter>
@@ -153,7 +153,7 @@ export function SetupTab({ context, onSampleAdded, onHideSetup, onSetupRefresh }
           {stage === "models" && <AISetup onProgress={progress => setStageBusy(progress.busy || progress.saving === true)} onSaved={closeStage} />}
           {stage === "research" && <ResearchTab connectionOnly showIntro={false} showCourtListener={false} actionLabel="Save key" onBusy={setStageBusy} exaDraft={exaDraft} onExaDraftChange={setExaDraft} onComplete={closeStage} />}
           {stage === "word" && <WordAddin onBusy={setStageBusy} />}
-          {stage === "style" && <><DraftingTab setupOnly onBusy={setStageBusy} onSaved={closeStage} /><div className="dash-setup-style-links"><Link to="/templates" onClick={closeStage}>Manage firm templates{icons.arrowRight}</Link></div></>}
+          {stage === "style" && <><DraftingTab onBusy={setStageBusy} onSaved={closeStage} /><div className="dash-setup-style-links"><Link to="/templates" onClick={closeStage}>Manage firm templates{icons.arrowRight}</Link></div></>}
         </div>
         <div className="settings-footer" ref={setFooter} />
       </SettingsFooterContext.Provider></div></div>

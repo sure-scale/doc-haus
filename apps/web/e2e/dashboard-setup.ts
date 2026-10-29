@@ -149,7 +149,7 @@ async function visuallyShown(locator: Locator) {
 }
 async function badge(page: Page, count: number) { await expect(page.locator("#dash-content-tab-__setup")).toContainText(`${count}/5`); await expect(page.locator(".dash-setup-accordion progress")).toHaveCount(0) }
 async function settled(page: Page) { await expect(checklist(page)).toBeVisible(); await expect(checklist(page).locator(".dash-setup-accordion-item")).toHaveCount(5) }
-const stageNames: Record<string, string> = { models: "AI provider & models", identity: "Practice identity & default law", research: "Web research with Exa", word: "Microsoft Word add-in", style: "House style & firm templates" }
+const stageNames: Record<string, string> = { models: "AI provider & models", identity: "Practice identity & default law", research: "Web research with Exa", word: "Microsoft Word add-in", style: "Drafting preferences" }
 const stepToggle = (page: Page, id: string) => page.locator(`#dash-setup-toggle-${id}`)
 const stageDialog = (page: Page, id: string) => page.getByRole("dialog", { name: stageNames[id], exact: true })
 async function expandStep(page: Page, id: string) {
@@ -567,14 +567,22 @@ try {
       await form.getByLabel("Jurisdictions", { exact: true }).click()
       await page.getByRole("group", { name: "Jurisdictions", exact: true }).getByRole("checkbox", { name: /England & Wales/ }).check()
       await page.keyboard.press("Escape")
-      await form.getByLabel("Practice areas", { exact: true }).click()
-      await page.getByRole("group", { name: "Practice areas", exact: true }).getByRole("checkbox", { name: "Commercial", exact: true }).check()
-      await page.keyboard.press("Escape")
       state.failPreferences = true; await form.getByRole("button", { name: "Save", exact: true }).click()
       await expect(form.getByRole("alert")).toBeVisible(); await badge(page, 1)
       state.failPreferences = false; await form.getByRole("button", { name: "Save", exact: true }).click()
       await badge(page, 2)
       expect(state.preferences.attorney).toBe("Alex Example")
+      expect(state.preferences.practiceAreas).toEqual([])
+      // Practice areas are optional: name, firm and default law completed the
+      // identity step before choosing any areas. Saved choices still work.
+      await expect(stageDialog(page, "identity")).toHaveCount(0)
+      await expandStep(page, "identity")
+      await expect(form.getByLabel("Practice areas", { exact: true })).toContainText("Select practice areas")
+      await form.getByLabel("Practice areas", { exact: true }).click()
+      await page.getByRole("group", { name: "Practice areas", exact: true }).getByRole("checkbox", { name: "Commercial", exact: true }).check()
+      await page.keyboard.press("Escape")
+      await form.getByRole("button", { name: "Save", exact: true }).click()
+      await expect(form).toHaveCount(0); await badge(page, 2)
       expect(state.preferences.practiceAreas).toEqual(["Commercial"])
       expect(await page.evaluate(() => JSON.parse(localStorage.getItem("dochaus.prefs")!).defaultJurisdictions)).toEqual(["EW"])
       await expect(stageDialog(page, "identity")).toHaveCount(0)
@@ -622,7 +630,7 @@ try {
       clean(state)
     } finally { state.releasePreference?.(); await context.close() }
   })
-  await scenario("Focused stage settings refresh readiness, Word and house style", async () => {
+  await scenario("Focused stage settings refresh readiness, Word and full drafting preferences", async () => {
     const state = fixture(), { context, page } = await open(state)
     try {
       await page.goto(`${baseURL}/dashboard?tab=setup`); await settled(page)
@@ -638,11 +646,31 @@ try {
       await expect(word.getByRole("status")).toContainText("Ready")
       await closeStage(page, "word"); await badge(page, 2)
       expect(state.wordPosts).toBe(1)
-      state.templates = [{ name: "Services agreement.docx", placeholders: [] }]
       const style = await expandStep(page, "style")
-      await style.getByRole("textbox", { name: "House style notes", exact: true }).fill("Plain language; numbered clauses.")
+      await badge(page, 2)
+      await expect(style.getByRole("button", { name: "Save", exact: true })).toBeEnabled()
+      await expect(style.getByRole("group", { name: "Posture", exact: true })).toBeVisible()
+      await expect(style.getByRole("group", { name: "Page layout", exact: true })).toBeVisible()
+      await style.getByRole("group", { name: "Posture", exact: true }).getByRole("button", { name: "Conservative", exact: true }).click()
+      await style.getByRole("group", { name: "Style", exact: true }).getByRole("button", { name: "Plain language", exact: true }).click()
+      await style.getByRole("group", { name: "Page numbers", exact: true }).getByRole("button", { name: "Page 2", exact: true }).click()
+      await expect(style.getByRole("textbox", { name: "House style notes", exact: true })).toHaveValue("")
+      expect(state.preferences.draftingConfigured).toBe(false)
       await style.getByRole("button", { name: "Save", exact: true }).click()
       await expect(style).toHaveCount(0); await badge(page, 3)
+      expect(state.preferences.draftingConfigured).toBe(true)
+      expect(state.preferences.houseStyle).toBe("")
+      expect(state.templates).toHaveLength(0)
+      expect(state.preferences.posture).toBe("conservative")
+      expect(state.preferences.formality).toBe("plain")
+      expect(state.preferences.pageNumbers).toBe("page")
+      await expandStep(page, "style")
+      await expect(style.getByRole("group", { name: "Posture", exact: true }).getByRole("button", { name: "Conservative", exact: true })).toHaveAttribute("aria-pressed", "true")
+      await expect(style.getByRole("group", { name: "Page numbers", exact: true }).getByRole("button", { name: "Page 2", exact: true })).toHaveAttribute("aria-pressed", "true")
+      await capture(page, "setup-drafting-preferences-modal-1440x1000")
+      await closeStage(page, "style")
+      await page.reload(); await settled(page); await badge(page, 3)
+      expect(state.preferences.draftingConfigured).toBe(true)
       await capture(page, "setup-connected-tools-1440x1000")
       clean(state)
     } finally { await context.close() }
@@ -678,10 +706,17 @@ try {
       await expect(page.getByRole("status").filter({ hasText: "Your matters could not be loaded. You can still update setup." })).toBeVisible()
       const identity = await expandStep(page, "identity")
       await expect(identity.getByRole("textbox", { name: "Your full name", exact: true })).toBeEnabled()
+      // Closing a focused stage refreshes dashboard data. Keep the service
+      // failing until that specific refresh finishes, then test explicit Retry.
+      const closeRefresh = page.waitForResponse(response => new URL(response.url()).pathname.endsWith("/matters") && response.request().method() === "GET" && response.status() === 503)
       await closeStage(page, "identity")
+      await closeRefresh
+      const retry = page.getByRole("button", { name: "Retry matters", exact: true })
+      await expect(retry).toBeEnabled()
+      await expect(page.getByRole("status").filter({ hasText: "Your matters could not be loaded. You can still update setup." })).toBeVisible()
       await expect(stepToggle(page, "models")).toBeEnabled()
       state.failMatters = false
-      await page.getByRole("button", { name: "Retry matters", exact: true }).click()
+      await retry.click()
       await expect(page.getByRole("status").filter({ hasText: "Your matters could not be loaded. You can still update setup." })).toHaveCount(0)
       await settled(page); await badge(page, 1)
       clean(state)
@@ -690,7 +725,7 @@ try {
   await scenario("All five saved steps remain available on the Setup tab", async () => {
     const state = fixture()
     state.ready = true; state.jurisdictions = ["EW"]
-    state.preferences = { ...state.preferences, attorney: "Alex Example", firm: "Example Partners LLP", practiceAreas: ["Commercial"], searchApiKey: "synthetic-saved-exa", houseStyle: "Plain language; numbered clauses." }
+    state.preferences = { ...state.preferences, attorney: "Alex Example", firm: "Example Partners LLP", practiceAreas: ["Commercial"], searchApiKey: "synthetic-saved-exa", houseStyle: "Plain language; numbered clauses.", draftingConfigured: true }
     state.word = { ...state.word, status: "ready", available: true }
     state.templates = [{ name: "Services agreement.docx", placeholders: [] }]
     const { context, page } = await open(state)
