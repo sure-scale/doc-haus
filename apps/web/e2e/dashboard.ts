@@ -299,8 +299,10 @@ async function open(state: State, width: number, height: number, timezoneId = "E
       state.preferences = { ...state.preferences, ...patch }
       return reply(state.preferences)
     }
-    // Settings opens a provider candidate session on open, on every tab.
+    // Settings opens a provider candidate session on open, on every tab, and
+    // may list its models before the scenario moves on.
     if (pathname === "/api/dochaus/provider-candidate/session" && method === "POST") return reply({ sessionID: "synthetic-candidate" })
+    if (pathname === "/api/dochaus/provider-candidate/models" && method === "POST") return reply({ data: [], customModels: false })
     if (pathname === "/api/dochaus/provider-candidate/session" && method === "DELETE") return route.fulfill({ status: 204, headers })
     if (method !== "GET") { state.unexpected.push(`${method} ${pathname}`); return route.abort() }
     const populatedState = state.kind === "populated"
@@ -416,7 +418,7 @@ async function dashboard(page: Page, expectGrid = true, reload = false) {
   if (expectGrid) await expect(page.locator(".dash-skeleton")).toHaveCount(0)
 }
 
-const SIZES = [[375, 812], [768, 1024], [1440, 1000]] as const
+const SIZES = [[320, 640], [375, 812], [768, 1024], [1440, 1000]] as const
 const ALL_WIDGETS = ["journey", "setup", "attention", "drafts", "spend", "matter-cost", "draft-cost", "week", "recent", "matter-spend", "activity", "trend", "tokens", "sample", "ideas", "actions", "library"]
 const PRACTICE_DEFAULTS = ["attention", "drafts", "setup", "spend", "matter-cost", "draft-cost", "week", "recent", "matter-spend", "activity"]
 const STARTING = ["First steps", "Your practice"]
