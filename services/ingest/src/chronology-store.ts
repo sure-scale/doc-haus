@@ -1,11 +1,17 @@
 import { createHash, randomUUID } from "node:crypto"
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs"
 import path from "node:path"
+import { isDeepStrictEqual } from "node:util"
 import { withArtifactMutationLock } from "../../../dochaus/capabilities/artifacts/mutation-lock"
 import { writeDurableJson } from "../../../dochaus/lib/durable-json"
 import { readRegularFile } from "../../../dochaus/lib/regular-file"
 import { verifyCitation } from "../../../dochaus/plugin/legal/citations"
-import { chronologyCalendarDayOffset, supportedNameAssociationQuote } from "../../../dochaus/lib/chronology"
+import {
+  chronologyCalendarDayOffset,
+  supportedNameAssociationQuote,
+  isSuppliedChronologyName,
+  SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE,
+} from "../../../dochaus/lib/chronology"
 import type {
   Chronology,
   ChronologyAccount,
@@ -564,7 +570,7 @@ export function projectChronologySources(directory: string, state = readChronolo
         completedKeys: [],
         events: 0,
         issues: ["Added since the chronology source set was enumerated."],
-        suppliedChronology: /^chronology\.md$/i.test(source.documentName),
+        suppliedChronology: isSuppliedChronologyName(source.documentName),
       })
   return next
 }
@@ -577,7 +583,7 @@ export async function verifyChronologyProposals(directory: string, proposals: Ch
       if (e.origin !== "generated" || !e.accounts.length)
         throw new ChronologyError("AI proposals require sourced accounts. Manual additions belong in Add event.")
       for (const a of e.accounts) {
-        if (historicalAccount(state, p, a)) continue
+        if (provenanceCorrectionAccount(state, p, a, sources) || historicalAccount(state, p, a)) continue
         if (!a.evidence.length)
           throw new ChronologyError("Every proposed account needs verified supporting source text.")
         for (const evidence of a.evidence) {
@@ -590,6 +596,7 @@ export async function verifyChronologyProposals(directory: string, proposals: Ch
               "chronology_source_changed",
               409,
             )
+          assertEvidenceProvenance(evidence)
           const citation = await verifyCitation({ ...evidence, docPath: source.docPath }).catch(() => undefined)
           if (
             !citation ||
@@ -637,8 +644,9 @@ function assertCurrentProposalSources(directory: string, p: ChronologyProposal, 
     )
   for (const event of p.events)
     for (const account of event.accounts) {
-      if (historicalAccount(state, p, account)) continue
-      for (const evidence of account.evidence)
+      if (provenanceCorrectionAccount(state, p, account, sources) || historicalAccount(state, p, account)) continue
+      for (const evidence of account.evidence) {
+        assertEvidenceProvenance(evidence)
         if (
           !evidence.verified ||
           !sources.some(
@@ -653,6 +661,7 @@ function assertCurrentProposalSources(directory: string, p: ChronologyProposal, 
             "chronology_source_changed",
             409,
           )
+      }
     }
 }
 export function stageChronologyProposals(
@@ -800,11 +809,20 @@ function applyProposalDecision(
   else if (p.kind === "amendment" || p.kind === "conflict") {
     const old = targets[0]!,
       proposed = p.events[0]!
+    const sources = currentChronologySources(directory)
+    const correctedAccounts = old.accounts.map((original) => {
+      const candidate = proposed.accounts.find(
+        (account) => account.id === original.id && isProvenanceOnlyCorrection(original, account, sources),
+      )
+      return candidate ?? original
+    })
     const accounts = [
-      ...old.accounts,
+      ...correctedAccounts,
       ...proposed.accounts
-        .filter((a) => !old.accounts.some((b) => a.id === b.id && accountMaterial(a) === accountMaterial(b)))
-        .map((a) => (old.accounts.some((b) => a.id === b.id) ? { ...a, id: stableId(a.id, accountMaterial(a)) } : a)),
+        .filter((a) => !correctedAccounts.some((b) => a.id === b.id && accountMaterial(a) === accountMaterial(b)))
+        .map((a) =>
+          correctedAccounts.some((b) => a.id === b.id) ? { ...a, id: stableId(a.id, accountMaterial(a)) } : a,
+        ),
     ]
     Object.assign(old, {
       title: proposed.title,
@@ -1309,4 +1327,70 @@ function stripProjectedDateFreshness(state: Chronology) {
     delete correction.freshness
     delete correction.issue
   }
+}
+
+function assertEvidenceProvenance(evidence: ChronologyEvidence) {
+  const expected = isSuppliedChronologyName(evidence.documentName) ? "supplied-chronology" : "source"
+  if (evidence.provenance !== expected)
+    throw new ChronologyError("The proposed evidence provenance does not match the authorised source classification.")
+}
+function provenanceCorrectionAccount(
+  state: Chronology,
+  proposal: ChronologyProposal,
+  proposed: ChronologyAccount,
+  sources: CurrentSource[],
+) {
+  if (proposal.kind !== "amendment") return false
+  return proposal.targetIds.some((id) =>
+    state.events
+      .find((event) => event.id === id)
+      ?.accounts.some((original) => isProvenanceOnlyCorrection(original, proposed, sources)),
+  )
+}
+/** Reclassifying an existing passage is metadata, not a competing report.
+ * Only current authorised source identity and the shared classifier can justify
+ * this exact delta; substantive account edits retain append/history semantics. */
+function isProvenanceOnlyCorrection(
+  original: ChronologyAccount,
+  proposed: ChronologyAccount,
+  sources: CurrentSource[],
+): boolean {
+  if (original.id !== proposed.id || original.evidence.length !== proposed.evidence.length) return false
+  const basis = (account: ChronologyAccount) => ({
+    ...account,
+    evidence: account.evidence.map(({ provenance: _p, issue: _i, freshness: _f, ...evidence }) => evidence),
+  })
+  if (!isDeepStrictEqual(basis(original), basis(proposed))) return false
+  let changed = false
+  for (let index = 0; index < original.evidence.length; index++) {
+    const before = original.evidence[index]!,
+      after = proposed.evidence[index]!
+    if (before.provenance === after.provenance && before.issue === after.issue) continue
+    changed = true
+    const current = sources.find(
+      (source) =>
+        source.sourceId === after.sourceId &&
+        source.documentName === after.documentName &&
+        source.version === after.version,
+    )
+    const expected = isSuppliedChronologyName(after.documentName) ? "supplied-chronology" : "source"
+    if (!current)
+      throw new ChronologyError(
+        "The provenance correction evidence changed. Refresh its current source before deciding.",
+        "chronology_source_changed",
+        409,
+      )
+    if (after.provenance !== expected)
+      throw new ChronologyError("The proposed evidence provenance does not match the authorised source classification.")
+    const issueUnchanged = before.issue === after.issue
+    const issueAdded =
+      expected === "supplied-chronology" &&
+      before.issue === undefined &&
+      after.issue === SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE
+    const issueRemoved =
+      expected === "source" && before.issue === SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE && after.issue === undefined
+    if (!issueUnchanged && !issueAdded && !issueRemoved)
+      throw new ChronologyError("A provenance correction must preserve unrelated evidence issues.")
+  }
+  return changed
 }

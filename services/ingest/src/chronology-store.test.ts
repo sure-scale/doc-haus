@@ -7,6 +7,8 @@ import {
   chronologyCounters,
   chronologyNeedsAttention,
   supportedNameAssociationQuote,
+  isSuppliedChronologyName,
+  SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE,
 } from "../../../dochaus/lib/chronology"
 import { openDb, upsertDocument } from "./db"
 import { liveText } from "../../../dochaus/lib/extract"
@@ -753,4 +755,214 @@ test("a separate changed anchor source flags a reviewed relative event even whil
   projected = projectChronologySources(dir, state)
   expect(projected.events[0]!.date.anchorFreshness).toBe("unavailable")
   expect(chronologyNeedsAttention(projected.events[0]!)).toBe(true)
+})
+
+test("clear supplied chronology filenames are classified generically while ancillary documents stay ordinary", () => {
+  for (const name of [
+    "WitnessChronology.md",
+    "CLIENT_CHRONOLOGY_2025.docx",
+    "Chronology of Events.pdf",
+    "Chronologies 2025.xlsx",
+    "Chronology2025.markdown",
+    "ClientChronology.eml",
+    "2025Chronology.msg",
+  ])
+    expect(isSuppliedChronologyName(name)).toBe(true)
+  for (const name of [
+    "Chronology template.docx",
+    "Chronology guide.pdf",
+    "Chronology instructions.md",
+    "Request for chronology.eml",
+    "Chronology checklist.xlsx",
+    "Chronological notes.md",
+    "Chronology.zip",
+    "../ClientChronology.md",
+  ])
+    expect(isSuppliedChronologyName(name)).toBe(false)
+})
+
+test("accepted provenance-only corrections replace exact account metadata without duplicating corroboration or lawyer work", async () => {
+  const dir = matter()
+  addSource(dir)
+  const a = await account(dir),
+    source = addSource(dir, "WitnessChronology.md")
+  a.evidence[0] = {
+    ...a.evidence[0]!,
+    sourceId: source.sourceId,
+    documentName: source.documentName,
+    version: source.version,
+    provenance: "source",
+  }
+  let state = mutateChronology(dir, 0, "seed old classification", (s) => {
+    s.created = true
+    s.events.push({
+      ...newChronologyEvent({
+        id: "saved",
+        title: "Lawyer collection wording",
+        detail: "Lawyer correction remains",
+        date,
+        accounts: [a],
+      }),
+      reviewed: true,
+      lawyerEdited: true,
+      hidden: true,
+      key: true,
+      note: "Preserve the original envelope.",
+    })
+  })
+  const original = structuredClone(state.events[0]!),
+    correction = structuredClone(original)
+  correction.accounts[0]!.evidence[0]!.provenance = "supplied-chronology"
+  correction.accounts[0]!.evidence[0]!.issue = SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE
+  const change = proposal("classification-correction", correction, original)
+  await verifyChronologyProposals(dir, [change])
+  state = stageChronologyProposals(dir, state.revision, [change], "refresh")
+  expect(state.events[0]).toEqual(original)
+  state = decideChronologyProposal(dir, state.revision, change.id, "accept")
+  expect(state.events[0]).toMatchObject({
+    title: original.title,
+    detail: original.detail,
+    reviewed: true,
+    lawyerEdited: true,
+    hidden: true,
+    key: true,
+    note: original.note,
+  })
+  expect(state.events[0]!.accounts).toHaveLength(1)
+  expect(state.events[0]!.accounts[0]!.id).toBe(a.id)
+  expect(state.events[0]!.accounts[0]!.evidence[0]).toMatchObject({
+    ...a.evidence[0],
+    provenance: "supplied-chronology",
+    issue: SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE,
+  })
+  expect(state.events[0]!.accounts[0]!.evidence[0]!.id).toBe(a.evidence[0]!.id)
+  expect(state.history.at(-1)!.action).toBe("proposal accept")
+  expect(decideChronologyProposal(dir, 0, change.id, "accept").revision).toBe(state.revision)
+})
+
+test("provenance correction validates current authorised identity, version and classification", async () => {
+  const dir = matter()
+  addSource(dir)
+  const a = await account(dir)
+  let state = mutateChronology(dir, 0, "seed", (s) => {
+    s.events.push(newChronologyEvent({ id: "saved", title: a.title, detail: a.detail, date, accounts: [a] }))
+  })
+  const falseCorrection = structuredClone(state.events[0]!)
+  falseCorrection.accounts[0]!.evidence[0]!.provenance = "supplied-chronology"
+  falseCorrection.accounts[0]!.evidence[0]!.issue = SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE
+  const forged = proposal("false-relabel", falseCorrection, state.events[0]!)
+  await expect(verifyChronologyProposals(dir, [forged])).rejects.toThrow("classification")
+  expect(() => stageChronologyProposals(dir, state.revision, [forged], "refresh")).toThrow("classification")
+  expect(readChronology(dir).events[0]!.accounts).toHaveLength(1)
+  const chronology = addSource(dir, "ClientChronology.md")
+  const legacy = structuredClone(a)
+  legacy.evidence[0] = {
+    ...legacy.evidence[0]!,
+    sourceId: chronology.sourceId,
+    documentName: chronology.documentName,
+    version: chronology.version,
+  }
+  state = mutateChronology(dir, state.revision, "seed supplied", (s) => {
+    s.events.push(
+      newChronologyEvent({ id: "supplied", title: legacy.title, detail: legacy.detail, date, accounts: [legacy] }),
+    )
+  })
+  const supplied = state.events[1]!,
+    fixed = structuredClone(supplied)
+  fixed.accounts[0]!.evidence[0]!.provenance = "supplied-chronology"
+  const legitimate = proposal("proper-relabel", fixed, supplied)
+  state = stageChronologyProposals(dir, state.revision, [legitimate], "refresh")
+  writeFileSync(chronology.docPath, "The source changed after its classification was proposed.")
+  expect(() => decideChronologyProposal(dir, state.revision, legitimate.id, "accept")).toThrow("evidence changed")
+  expect(readChronology(dir).events[1]!.accounts[0]!.evidence[0]!.provenance).toBe("source")
+})
+
+test("substantive account amendments retain conflicting reports rather than using the provenance-only replacement path", async () => {
+  const dir = matter()
+  addSource(dir)
+  const a = await account(dir),
+    source = addSource(dir, "ClientChronology.md")
+  a.evidence[0] = {
+    ...a.evidence[0]!,
+    sourceId: source.sourceId,
+    documentName: source.documentName,
+    version: source.version,
+  }
+  let state = mutateChronology(dir, 0, "seed", (s) => {
+    s.events.push(newChronologyEvent({ id: "saved", title: a.title, detail: a.detail, date, accounts: [a] }))
+  })
+  const changed = structuredClone(state.events[0]!)
+  changed.accounts[0]!.detail = "The source now asserts a materially different account."
+  changed.accounts[0]!.evidence[0]!.provenance = "supplied-chronology"
+  changed.accounts[0]!.evidence[0]!.issue = SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE
+  const p = proposal("material-account-amendment", changed, state.events[0]!)
+  state = stageChronologyProposals(dir, state.revision, [p], "refresh")
+  state = decideChronologyProposal(dir, state.revision, p.id, "accept")
+  expect(state.events[0]!.accounts).toHaveLength(2)
+  expect(state.events[0]!.accounts[0]!.detail).toBe(a.detail)
+  expect(state.events[0]!.accounts[1]!.detail).toBe(changed.accounts[0]!.detail)
+  expect(state.events[0]!.accounts[0]!.id).not.toBe(state.events[0]!.accounts[1]!.id)
+})
+
+test("classification metadata cannot erase unrelated evidence issues or accept stale issue-only updates", async () => {
+  const dir = matter()
+  addSource(dir)
+  const a = await account(dir),
+    source = addSource(dir, "ClientChronology.md")
+  a.evidence[0] = {
+    ...a.evidence[0]!,
+    sourceId: source.sourceId,
+    documentName: source.documentName,
+    version: source.version,
+    issue: "The original source needs checking separately.",
+  }
+  let state = mutateChronology(dir, 0, "seed", (s) => {
+    s.events.push(newChronologyEvent({ id: "saved", title: a.title, detail: a.detail, date, accounts: [a] }))
+  })
+  const overwriting = structuredClone(state.events[0]!)
+  overwriting.accounts[0]!.evidence[0]!.provenance = "supplied-chronology"
+  overwriting.accounts[0]!.evidence[0]!.issue = SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE
+  expect(() =>
+    stageChronologyProposals(dir, state.revision, [proposal("erase-issue", overwriting, state.events[0]!)], "refresh"),
+  ).toThrow("preserve unrelated")
+  const preserving = structuredClone(overwriting)
+  preserving.accounts[0]!.evidence[0]!.issue = a.evidence[0]!.issue
+  state = stageChronologyProposals(
+    dir,
+    state.revision,
+    [proposal("preserve-issue", preserving, state.events[0]!)],
+    "refresh",
+  )
+  state = decideChronologyProposal(dir, state.revision, "preserve-issue", "accept")
+  expect(state.events[0]!.accounts).toHaveLength(1)
+  expect(state.events[0]!.accounts[0]!.evidence[0]!.issue).toBe(a.evidence[0]!.issue)
+  const regular = state.events[0]!,
+    issueOnly = structuredClone(regular)
+  issueOnly.accounts[0]!.evidence[0]!.issue = undefined
+  expect(() =>
+    stageChronologyProposals(dir, state.revision, [proposal("erase-only", issueOnly, regular)], "refresh"),
+  ).toThrow("preserve unrelated")
+  const ordinary = await account(dir)
+  ordinary.evidence[0]!.issue = SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE
+  state = mutateChronology(dir, state.revision, "seed old issue", (s) => {
+    s.events.push(
+      newChronologyEvent({
+        id: "ordinary",
+        title: ordinary.title,
+        detail: ordinary.detail,
+        date,
+        accounts: [ordinary],
+      }),
+    )
+  })
+  const ordinaryEvent = state.events.find((event) => event.id === "ordinary")!,
+    removedIssue = structuredClone(ordinaryEvent)
+  delete removedIssue.accounts[0]!.evidence[0]!.issue
+  const issueCorrection = proposal("remove-old-classification-issue", removedIssue, ordinaryEvent)
+  state = stageChronologyProposals(dir, state.revision, [issueCorrection], "refresh")
+  writeFileSync(path.join(dir, "Note.md"), "The source was changed after issue correction staging.")
+  expect(() => decideChronologyProposal(dir, state.revision, issueCorrection.id, "accept")).toThrow("evidence changed")
+  expect(readChronology(dir).events.find((event) => event.id === "ordinary")!.accounts[0]!.evidence[0]!.issue).toBe(
+    SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE,
+  )
 })

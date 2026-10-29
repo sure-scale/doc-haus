@@ -305,3 +305,26 @@ export function supportedNameAssociationQuote(name: string, canonicalName: strin
   }
   return false
 }
+
+export const SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE =
+  "Supported by a supplied chronology. Its underlying original source has not been independently established by this passage."
+
+/** Recognise clearly named supplied chronologies without inferring a document's
+ * role from its contents. Source registration/access is checked by the caller. */
+export function isSuppliedChronologyName(name: string): boolean {
+  if (/[\\/]/.test(name) || !/\.(?:md|markdown|docx|pdf|xlsx|eml|msg)$/i.test(name)) return false
+  const stem = name.slice(0, name.lastIndexOf(".")).normalize("NFKC")
+  const tokens = stem
+    .replace(/([\p{Ll}\p{N}])(\p{Lu})/gu, "$1 $2")
+    .replace(/(\p{Lu})(\p{Lu}\p{Ll})/gu, "$1 $2")
+    .replace(/(\p{L})(\p{N})/gu, "$1 $2")
+    .replace(/(\p{N})(\p{L})/gu, "$1 $2")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+  return (
+    tokens.some((token) => token === "chronology" || token === "chronologies") &&
+    !tokens.some((token) => /^(?:guides?|templates?|instructions?|requests?|checklists?)$/.test(token))
+  )
+}

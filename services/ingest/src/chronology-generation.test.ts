@@ -13,9 +13,10 @@ import {
   resolveRelativeDate,
   assessChronology,
   recentChronologyInstructions,
+  chronologySources,
   type ChronologyGenerationDeps,
 } from "./chronology-generation"
-import { actOnChronology, decideChronologyProposal, readChronology } from "./chronology-store"
+import { actOnChronology, decideChronologyProposal, mutateChronology, readChronology } from "./chronology-store"
 import { openDb, upsertDocument } from "./db"
 import { liveText } from "../../../dochaus/lib/extract"
 import type { StageSessionPort } from "../../../dochaus/workflows/lean/stages"
@@ -792,4 +793,163 @@ test("a changed source does not expose its stale lawyer-supplied date as a curre
   state = readChronology(dir)
   expect(state.events[0]!.date.start).toBeUndefined()
   expect(state.sourceDates["Note.md"]).toEqual(boundDate)
+})
+
+test("clearly titled supplied chronologies cover case, separators, camelcase, dates and readable formats without admitting derived output", () => {
+  const dir = matter()
+  const supplied = [
+    "2025-06-18_CLAIMANT_CHRONOLOGY.PDF",
+    "laterChronologyRecord.docx",
+    "Client-chronologies.xlsx",
+    "CHRONOLOGY.markdown",
+    "Chronology of Events.eml",
+    "received_chronology.msg",
+    "20250618chronology.md",
+  ]
+  const ordinary = [
+    "correspondence.pdf",
+    "ChronologicalIndex.md",
+    "Chronology request.md",
+    "ChronologyTemplates.docx",
+    "ChronologyGuide.md",
+  ]
+  for (const name of [...supplied, ...ordinary]) source(dir, name, "A supplied document.")
+  source(dir, "GeneratedChronology.md", "Derived work product.", undefined, "deliverable")
+  const sources = chronologySources(dir)
+  expect(sources).toHaveLength(supplied.length + ordinary.length)
+  for (const name of supplied) expect(sources.find((s) => s.documentName === name)?.kind).toBe("supplied-chronology")
+  for (const name of ordinary) expect(sources.find((s) => s.documentName === name)?.kind).toBe("source")
+})
+
+test("completed legacy evidence receives one grouped provenance proposal without replaying extraction or changing saved lawyer work", async () => {
+  const dir = matter(),
+    quote = "The instrument was collected on 6 May 2025."
+  source(dir, "laterChronologyRecord.md", quote)
+  source(dir, "Unchanged.md", "The courier returned an unsigned form.")
+  const initial = fake((input) =>
+    input.agent === "chronology-match"
+      ? JSON.stringify({ eventId: null, relation: "independent" })
+      : complete([
+          event(
+            sectionText(input.text).includes(quote) ? "Instrument collected" : "Form returned",
+            sectionText(input.text).trim(),
+          ),
+        ]),
+  )
+  await startChronologyRun(dir, { expectedRevision: 0, privilege: "mixed", mode: "initial" }, initial)
+  await awaitChronologyRun(dir)
+  let state = readChronology(dir)
+  const originalId = state.events.find((e) => e.title === "Instrument collected")!.id
+  for (const action of [
+    {
+      type: "edit",
+      eventId: originalId,
+      title: "Lawyer collection wording",
+      detail: "Corrected account",
+      date: state.events.find((e) => e.id === originalId)!.date,
+    },
+    { type: "note", eventId: originalId, note: "Preserve my collection note" },
+    { type: "key", eventId: originalId, key: true },
+    { type: "review", eventId: originalId, reviewed: true },
+    { type: "hide", eventId: originalId, hidden: true },
+  ] as const)
+    state = actOnChronology(dir, state.revision, action) as typeof state
+  // A persisted pre-fix result had complete text coverage but ordinary-source metadata.
+  state = mutateChronology(dir, state.revision, "legacy provenance fixture", (current) => {
+    const evidence = current.events.find((e) => e.id === originalId)!.accounts[0]!.evidence[0]!
+    evidence.provenance = "source"
+    delete evidence.issue
+    current.coverage.find((c) => c.documentName === "laterChronologyRecord.md")!.suppliedChronology = false
+  })
+  const savedBefore = structuredClone(state.events),
+    keysBefore = state.coverage.map((c) => c.completedKeys)
+  let jobs = 0
+  const noReplay = fake(() => {
+    jobs++
+    throw new Error("Unchanged completed sections must not be replayed")
+  })
+  await startChronologyRun(dir, { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" }, noReplay)
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(jobs).toBe(0)
+  expect(state.events).toEqual(savedBefore)
+  expect(state.coverage.map((c) => c.completedKeys)).toEqual(keysBefore)
+  expect(state.coverage.find((c) => c.documentName === "laterChronologyRecord.md")!.suppliedChronology).toBe(true)
+  expect(state.proposals).toHaveLength(1)
+  const proposal = state.proposals[0]!,
+    proposed = proposal.events[0]!
+  expect(proposal.kind).toBe("amendment")
+  expect(proposal.targetIds).toEqual([originalId])
+  expect(proposed.accounts[0]!.id).toBe(savedBefore[0]!.accounts[0]!.id)
+  expect(proposed.accounts[0]!.evidence[0]).toMatchObject({
+    id: savedBefore[0]!.accounts[0]!.evidence[0]!.id,
+    provenance: "supplied-chronology",
+  })
+  await startChronologyRun(
+    dir,
+    { expectedRevision: state.revision, privilege: "all-cleared", mode: "refresh" },
+    noReplay,
+  )
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(jobs).toBe(0)
+  expect(state.proposals).toHaveLength(1)
+  expect(state.proposals[0]!.id).toBe(proposal.id)
+  state = decideChronologyProposal(dir, state.revision, proposal.id, "accept")
+  const accepted = state.events.find((e) => e.id === originalId)!
+  expect(accepted).toMatchObject({
+    title: "Lawyer collection wording",
+    detail: "Corrected account",
+    hidden: true,
+    key: true,
+    note: "Preserve my collection note",
+    reviewed: true,
+  })
+  expect(accepted.accounts).toHaveLength(1)
+  expect(accepted.accounts[0]!.id).toBe(savedBefore[0]!.accounts[0]!.id)
+  expect(accepted.accounts[0]!.evidence[0]!.provenance).toBe("supplied-chronology")
+  await startChronologyRun(dir, { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" }, noReplay)
+  await awaitChronologyRun(dir)
+  expect(readChronology(dir).proposals).toHaveLength(1)
+  expect(jobs).toBe(0)
+})
+
+test("a provenance correction preserves unrelated evidence issues and stale confirmations cannot replace concurrent lawyer edits", async () => {
+  const dir = matter(),
+    quote = "The instrument was collected on 6 May 2025."
+  source(dir, "Claimant chronology.md", quote)
+  await startChronologyRun(
+    dir,
+    { expectedRevision: 0, privilege: "mixed", mode: "initial" },
+    fake(() => complete([event("Instrument collected", quote)])),
+  )
+  await awaitChronologyRun(dir)
+  let state = readChronology(dir),
+    eventId = state.events[0]!.id
+  state = mutateChronology(dir, state.revision, "legacy provenance fixture", (current) => {
+    current.events[0]!.accounts[0]!.evidence[0]!.provenance = "source"
+    current.events[0]!.accounts[0]!.evidence[0]!.issue = "A separate recorded evidence qualification."
+  })
+  await startChronologyRun(
+    dir,
+    { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" },
+    fake(() => {
+      throw new Error("No replay")
+    }),
+  )
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.proposals[0]!.events[0]!.accounts[0]!.evidence[0]!.issue).toBe(
+    "A separate recorded evidence qualification.",
+  )
+  const proposal = state.proposals[0]!
+  state = actOnChronology(dir, state.revision, {
+    type: "edit",
+    eventId,
+    title: "New lawyer wording",
+    detail: "Concurrent correction",
+    date: state.events[0]!.date,
+  }) as typeof state
+  expect(() => decideChronologyProposal(dir, state.revision, proposal.id, "accept")).toThrow("current event changed")
+  expect(readChronology(dir).events[0]!.title).toBe("New lawyer wording")
 })

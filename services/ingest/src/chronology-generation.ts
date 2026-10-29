@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from "node:crypto"
 import { existsSync, readFileSync, readdirSync, lstatSync } from "node:fs"
 import path from "node:path"
-import { chronologyCalendarDayOffset, supportedNameAssociationQuote } from "../../../dochaus/lib/chronology"
+import {
+  chronologyCalendarDayOffset,
+  supportedNameAssociationQuote,
+  isSuppliedChronologyName,
+  SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE,
+} from "../../../dochaus/lib/chronology"
 import type {
   Chronology,
   ChronologyAccount,
@@ -108,7 +113,7 @@ export function chronologySources(directory: string): ChronologySource[] {
         sourceId: String(row.id),
         documentName: row.name,
         version: available ? hash(readFileSync(target.docPath)) : "",
-        kind: /^chronology\.md$/i.test(row.name) ? "supplied-chronology" : "source",
+        kind: isSuppliedChronologyName(row.name) ? "supplied-chronology" : "source",
         extraction: !available
           ? "unavailable"
           : quality?.status === "no_readable_text"
@@ -556,8 +561,7 @@ async function verifyExtracted(
         ...(extracted.sourceKind ? { sourceKind: extracted.sourceKind } : {}),
         ...(source.kind === "supplied-chronology"
           ? {
-              issue:
-                "Supported by a supplied chronology. Its underlying original source has not been independently established by this passage.",
+              issue: SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE,
             }
           : {}),
       },
@@ -898,6 +902,7 @@ export async function startChronologyRun(
         return previous
           ? {
               ...previous,
+              suppliedChronology: source.kind === "supplied-chronology",
               issues: previous.issues.filter(
                 (issue) =>
                   !/Added or changed while chronology generation|Added since the chronology source set|Source changed; refresh required|source changed or disappeared during this run/i.test(
@@ -981,6 +986,129 @@ export function stopChronologyRun(directory: string, expectedRevision: number): 
   return state
 }
 
+/** A revised source classification is an inspectable metadata proposal, not
+ * another extraction. Quote spans and account identities stay unchanged; only
+ * the lawyer's explicit decision can alter the saved event's provenance. */
+async function stageProvenanceCorrections(
+  directory: string,
+  sources: ChronologySource[],
+  runId: string,
+  runtime: NonNullable<ReturnType<typeof active.get>>,
+  deps: ChronologyGenerationDeps,
+) {
+  const initial = readChronology(directory)
+  const recognised = new Map(sources.map((source) => [sourceKey(source), source]))
+  const authorised = new Map(
+    currentChronologySources(directory).map((source) => [`${source.sourceId}:${source.version}`, source]),
+  )
+  const evidenceKey = (e: ChronologyAccount["evidence"][number]) =>
+    JSON.stringify([e.id, e.sourceId, e.version, e.documentName, e.excerpt, e.charStart, e.charEnd])
+  const verified = new Map<string, ChronologySource["kind"]>()
+  const issues = new Map<string, string>()
+  for (const event of initial.events)
+    for (const account of event.accounts)
+      for (const evidence of account.evidence) {
+        if (runtime.controller.signal.aborted) return
+        const key = `${evidence.sourceId}:${evidence.version}`
+        const source = recognised.get(key),
+          current = authorised.get(key)
+        if (!source || !current || source.documentName !== evidence.documentName || source.kind === evidence.provenance)
+          continue
+        const identity = evidenceKey(evidence)
+        if (verified.has(identity)) continue
+        const citation = await (deps.verify ?? verifyCitation)({ ...evidence, docPath: current.docPath }).catch(
+          () => undefined,
+        )
+        if (runtime.controller.signal.aborted) return
+        if (
+          !citation ||
+          citation.charStart !== evidence.charStart ||
+          citation.charEnd !== evidence.charEnd ||
+          citation.excerpt !== evidence.excerpt
+        ) {
+          issues.set(
+            key,
+            "Source provenance: the existing quote could not be verified at its exact passage. The saved event was preserved; inspect its source before retrying the classification change.",
+          )
+          continue
+        }
+        verified.set(identity, source.kind)
+      }
+  if (runtime.controller.signal.aborted || (!verified.size && !issues.size)) return
+  mutateChronology(
+    directory,
+    undefined,
+    "stage source provenance corrections",
+    (state) => {
+      if (state.run?.id !== runId || state.run.status !== "running") return
+      const current = new Map(
+        currentChronologySources(directory).map((source) => [`${source.sourceId}:${source.version}`, source]),
+      )
+      for (const event of state.events) {
+        const proposed = structuredClone(event),
+          changed: string[] = [],
+          kinds = new Set<ChronologySource["kind"]>()
+        for (const account of proposed.accounts)
+          for (const evidence of account.evidence) {
+            const kind = verified.get(evidenceKey(evidence))
+            if (!kind || kind === evidence.provenance) continue
+            const key = `${evidence.sourceId}:${evidence.version}`
+            const source = current.get(key)
+            if (!source || source.documentName !== evidence.documentName) {
+              issues.set(
+                key,
+                "Source provenance: the source changed or became unavailable while its classification was checked. Saved events remain unchanged; refresh the current authorised source.",
+              )
+              continue
+            }
+            evidence.provenance = kind
+            if (kind === "supplied-chronology") {
+              if (evidence.issue === undefined) evidence.issue = SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE
+            } else if (evidence.issue === SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE) delete evidence.issue
+            changed.push(`${account.id}:${evidence.id}:${evidence.version}:${kind}`)
+            kinds.add(kind)
+          }
+        if (!changed.length) continue
+        const basis = chronologyEventHash(event)
+        const id = `provenance-${hash([event.id, basis, ...changed.sort()].join("\0")).slice(0, 24)}`
+        if (state.proposals.some((p) => p.id === id)) continue
+        proposed.reviewed = false
+        delete proposed.reviewedAt
+        delete proposed.reviewedBy
+        state.proposals.push({
+          id,
+          kind: "amendment",
+          targetIds: [event.id],
+          baseEventHashes: { [event.id]: basis },
+          events: [proposed],
+          reason:
+            kinds.size > 1
+              ? "Source filename classifications differ from the saved evidence. Review the provenance disclosure for the unchanged passages; this adds no independent corroboration."
+              : kinds.has("supplied-chronology")
+                ? "The source filename identifies a supplied chronology. Its existing quoted accounts need the supplied-chronology provenance disclosure; this adds no independent corroboration."
+                : "The current source filename is no longer classified as a supplied chronology. Review removal of that disclosure; this does not establish independent corroboration.",
+          recommendation:
+            "Inspect the unchanged passages and accept the provenance correction, keep the current record, or skip it for later. Event wording, dates, notes, visibility and source identities are preserved.",
+          status: "pending",
+          origin: "refresh",
+          createdAt: now(),
+        })
+      }
+      for (const coverage of state.coverage) {
+        const key = `${coverage.sourceId}:${coverage.version}`
+        if (!recognised.has(key)) continue
+        coverage.issues = coverage.issues.filter((issue) => !issue.startsWith("Source provenance:"))
+        const issue = issues.get(key)
+        if (issue) {
+          coverage.issues.push(issue)
+          coverage.status = "partial"
+        }
+      }
+    },
+    "application",
+  )
+}
+
 async function executeChronologyRun(
   directory: string,
   id: string,
@@ -1007,6 +1135,7 @@ async function executeChronologyRun(
       "model job",
     )
   }
+  await stageProvenanceCorrections(directory, sources, id, runtime, deps)
   for (const source of sources) {
     if (runtime.controller.signal.aborted) return
     const previous = readChronology(directory).coverage.find(
