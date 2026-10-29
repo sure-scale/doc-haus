@@ -557,7 +557,7 @@ try {
       await page.reload(); await settled(page); await badge(page, 3)
       await expandStep(page, "identity")
       await expect(checklist(page).getByRole("textbox", { name: "Your full name", exact: true })).toHaveValue("Alex Example")
-      await expect(checklist(page).getByRole("heading", { name: /Exa web research configured/ })).toBeVisible()
+      await expect(checklist(page).getByRole("heading", { name: /Web research with Exa/ })).toBeVisible()
       await capture(page, "setup-saved-details-1440x1000")
       clean(state)
     } finally { await context.close() }

@@ -131,11 +131,11 @@ export function SetupTab({ context, onSampleAdded, onHideSetup }: { context: Wid
     title: "Finish setting up",
     description: "Connect your tools and defaults so every draft and search is ready.",
     items: [
-      { id: "models", icon: "model", title: done[0] ? "AI provider & models connected" : "Connect your AI provider & models", detail: done[0] ? "Primary & fast models configured" : setup ? "Choose your provider and primary & fast models" : "Could not confirm model setup. Check AI settings.", done: !!done[0], action: { id: "ai", label: done[0] ? "Change" : "Connect" } },
-      { id: "identity", icon: "person", title: "Practice identity & default law", detail: "Stamps your comments and preselects your jurisdiction on new matters", done: !!done[1], editable: true },
-      { id: "research", icon: "search", title: done[2] ? "Exa web research configured" : "Connect Exa web research", detail: done[2] ? "A key is saved. Test or change the connection in Research settings." : "Add your Exa API key to enable legal and company web search", done: !!done[2], editable: !done[2], ...(done[2] ? { action: { id: "research", label: "Change" } } : {}) },
-      { id: "word", icon: "word", title: "Install Microsoft Word add-in", detail: done[3] ? "Word is connected for document review and tracked changes" : data.word?.status === "word_missing" ? "Install Word on this computer, then connect the add-in" : data.word?.status === "unsupported" ? "See add-in settings for supported ways to connect Word" : "Review clauses, run playbooks and apply tracked changes inside Word", done: !!done[3], action: { id: "addins", label: done[3] ? "Manage Word" : "Set up Word", variant: "outline" } },
-      { id: "style", icon: "template", title: "House style & firm templates", detail: "Add drafting conventions and upload your precedent .docx agreements", done: !!done[4], action: { id: "drafting", label: "Configure", variant: "outline" } },
+      { id: "models", icon: "model", title: "AI provider & models", detail: done[0] ? "Your AI tools are connected and ready to use." : setup ? "Connect your AI tools so you can start drafting and searching." : "Open AI settings to check your connection.", done: !!done[0], action: { id: "ai", label: done[0] ? "Change" : "Connect" } },
+      { id: "identity", icon: "person", title: "Practice identity & default law", detail: "Add your name, firm and the law you usually work with.", done: !!done[1], editable: true },
+      { id: "research", icon: "search", title: "Web research with Exa", detail: done[2] ? "Web research is connected. Test or change it in Research settings." : "Add your Exa API key to search the web for legal and company information.", done: !!done[2], editable: !done[2], ...(done[2] ? { action: { id: "research", label: "Change" } } : {}) },
+      { id: "word", icon: "word", title: "Microsoft Word add-in", detail: done[3] ? "Word is connected and ready for document review." : data.word?.status === "word_missing" ? "Install Word on this computer, then connect the add-in" : data.word?.status === "unsupported" ? "See add-in settings for supported ways to connect Word" : "Review documents and apply tracked changes directly in Microsoft Word.", done: !!done[3], action: { id: "addins", label: done[3] ? "Manage Word" : "Set up Word", variant: "outline" } },
+      { id: "style", icon: "template", title: "House style & firm templates", detail: "Choose how your drafts look and upload templates you use regularly.", done: !!done[4], action: { id: "drafting", label: "Configure", variant: "outline" } },
     ],
   }
   function content(id: string): ReactNode {
@@ -157,7 +157,7 @@ export function SetupTab({ context, onSampleAdded, onHideSetup }: { context: Wid
   return <div className="dash-setup-flow">
     <div className="dash-setup-demo-row" role="group" aria-label="Demo data">
       <span className="dash-setup-demo-row-icon" aria-hidden="true">{icons.sample}</span>
-      <div className="dash-setup-demo-copy"><p>{sample ? "Your sample matter is ready to explore" : "Want to see doc.haus in action first?"}</p><span>{sample ? "Open the fictional sample to explore documents and workflows." : "Populate your workspace with a sample matter, documents and data."}</span></div>
+      <div className="dash-setup-demo-copy"><p>Want to see doc.haus in action first?</p><span>{sample ? "Explore your sample matter, documents and data." : "Populate your workspace with a sample matter, documents and data."}</span></div>
       <button type="button" className="dash-setup-demo-primary" disabled={adding} aria-busy={adding} onClick={() => { if (sample) navigate(`/matter/${sample.id}?view=chat&agent=ask`); else void populate() }}>{sample ? icons.arrowRight : icons.plus}{adding ? "Adding demo data…" : sample ? "Open sample matter" : "Add sample data"}</button>
       {onHideSetup && <button type="button" className="dash-text-button dash-setup-hide" onClick={onHideSetup}>Hide setup</button>}
       {demoError && <p className="dash-setup-error" role="alert">{demoError}</p>}

@@ -42,7 +42,7 @@ export function SetupChecklist({ config, onAction, renderContent, accordion }: {
           <span className="dash-setup-number" aria-hidden="true">{index + 1}</span>
           <span className="dash-setup-row-text"><span id={`dash-setup-${item.id}`} className="dash-setup-row-title">{item.title}{item.done && <span className="sr-only">, complete</span>}</span><span className="dash-setup-row-detail">{item.detail}</span></span>
           {item.done ? <span className="dash-setup-completed" aria-hidden="true">{icons.check}</span> : <span className={`dash-setup-row-action${config.items.find(row => !row.done)?.id === item.id ? " is-next" : ""}`} aria-hidden="true">Set up</span>}
-          <span className="dash-setup-chevron" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="m9 5 7 7-7 7" /></svg></span>
+          <span className="dash-setup-chevron" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="m5 9 7 7 7-7" /></svg></span>
         </button></h3>
         <div id={`dash-setup-panel-${item.id}`} className="dash-setup-panel" role="region" aria-labelledby={`dash-setup-${item.id}`} hidden={!expanded}>
           {renderContent?.(item.id)}
