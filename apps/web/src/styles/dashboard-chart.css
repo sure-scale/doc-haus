@@ -1,0 +1,45 @@
+/* AI-selected charts use the dashboard's existing surface and series tokens. */
+.dash-chart-widget { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: var(--space-3); }
+.dash-chart-summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-2) var(--space-3); }
+.dash-chart-total { color: var(--text); font-family: var(--font-display); font-size: 36px; line-height: 1.1; font-weight: 650; letter-spacing: -1px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.dash-chart-summary > span, .dash-chart-period { color: var(--text-secondary); font-size: 12px; }
+.dash-chart-summary .dash-chart-basis { font-size: 13px; }
+.dash-chart-summary .dash-chart-badge { margin-left: auto; padding: 5px 9px; border-radius: var(--radius-pill); color: var(--accent); background: var(--md-sys-color-primary-container); font-weight: 650; white-space: nowrap; }
+.dash-chart-period { margin: 0; overflow-wrap: anywhere; }
+.dash-chart-widget .dash-area { min-height: 210px; flex: 1; color: var(--dash-chart); border-top: 1px solid var(--border); }
+.dash-chart-widget .dash-calendar { color: var(--dash-chart); }
+.dash-chart-rows { list-style: none; margin: 0; padding: var(--space-3) 0 0; display: grid; gap: var(--space-4); border-top: 1px solid var(--border); }
+.dash-chart-rows li { min-width: 0; padding-block: 2px; }
+.dash-chart-row-values { display: flex; gap: var(--space-3); align-items: baseline; justify-content: space-between; font-size: 13px; }
+.dash-chart-row-values > span { min-width: 0; overflow-wrap: anywhere; }
+.dash-chart-row-detail { display: block; margin-top: 2px; color: var(--text-secondary); font-size: 12px; font-weight: 400; }
+.dash-chart-row-values > strong { flex: none; font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.dash-chart-row-share { color: var(--text-secondary); font-size: 12px; font-weight: 500; }
+.dash-chart-track { display: block; height: 8px; margin-top: 7px; overflow: hidden; background: var(--md-sys-color-surface-container-high); border-radius: var(--radius-pill); }
+.dash-chart-track > span { display: block; width: var(--chart-share); height: 100%; background: var(--dash-chart); border-radius: inherit; }
+.dash-chart-empty { margin: var(--space-3) 0; color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
+.dash-chart-notes { margin: auto 0 0; padding: var(--space-3) 0 0; display: grid; gap: var(--space-2); list-style: none; color: var(--text-secondary); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.dash-chart-notes li { padding-left: var(--space-3); border-left: 2px solid var(--border); }
+
+/* The statistic's distribution occupies the complete card width, even when
+   only a handful of matters have spend. Each slot remains a tooltip target. */
+.dash-spread { gap: clamp(2px, calc(48px / var(--bars, 12)), 6px); }
+.dash-spread-slot { max-width: none; background: color-mix(in srgb, currentColor 7%, transparent); }
+.dash-spread-average { border-top-width: 1px; }
+.dash-spread-average-label { position: absolute; right: 0; top: 0; transform: translateY(-50%); padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--panel); color: var(--text-secondary); font-size: 10px; font-weight: 650; line-height: 1.25; white-space: nowrap; }
+.dash-calendar-footer { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2) var(--space-3); margin-top: var(--space-2); }
+.dash-calendar-footer .dash-calendar-hint { flex: 1 1 240px; margin: 0; font-size: 11.5px; }
+.dash-calendar-footer .dash-calendar-key { flex: none; margin: 0 0 0 auto; }
+.dash-token-period { color: var(--text-secondary); font-size: 12px; }
+.dash-token-breakdown .dash-token-summary strong { font-size: 36px; }
+.dash-stack-part:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+@container dash (max-width: 560px) {
+  .dash-chart-total { font-size: 30px; }
+  .dash-chart-widget .dash-area { min-height: 190px; }
+  .dash-chart-row-values { gap: var(--space-2); }
+  .dash-chart-row-values > strong { max-width: 45%; text-align: right; }
+}
+@media (forced-colors: active) {
+  .dash-chart-track { outline: 1px solid CanvasText; }
+  .dash-chart-track > span { background: Highlight; forced-color-adjust: none; }
+}

@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import type { Jurisdiction } from "../api/ingest/matters"
+import JurisdictionFlag from "./JurisdictionFlag"
 
 // A matter can be governed by more than one jurisdiction (a cross-border deal
 // touches each party's law), so the picker is a multi-select: a trigger that
@@ -12,6 +13,7 @@ export default function JurisdictionSelect({
   onChange,
   align = "left",
   trigger,
+  triggerTitle = "Click to edit jurisdiction",
   id,
   practiceAreas = false,
   multiple = true,
@@ -31,6 +33,8 @@ export default function JurisdictionSelect({
   // When given, replaces the default dropdown trigger with custom content (e.g.
   // jurisdiction badges) wrapped in a bare button that still opens the popover.
   trigger?: ReactNode
+  // The custom trigger's tooltip.
+  triggerTitle?: string
   id?: string
   // Reuse the same accessible popover for user-defined practice areas.
   practiceAreas?: boolean
@@ -180,7 +184,7 @@ export default function JurisdictionSelect({
           type="button"
           className="jx-trigger-bare"
           onClick={toggleOpen}
-          title={genericLabel ?? "Click to edit jurisdiction"}
+          title={genericLabel ?? triggerTitle}
         >
           {trigger}
         </button>
@@ -275,6 +279,7 @@ export default function JurisdictionSelect({
                       }}
                       onChange={() => toggle(j.code)}
                     />
+                    {!practiceAreas && !genericLabel && <JurisdictionFlag code={j.code} />}
                     <span className="jx-name">{j.name}</span>
                     {showCode && <span className="jx-code">{j.code}</span>}
                   </label>

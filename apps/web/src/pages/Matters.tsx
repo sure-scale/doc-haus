@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { flushSync } from "react-dom"
-import { Link, useNavigate } from "react-router-dom"
+import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import {
   createMatter,
   deleteMatter,
@@ -74,6 +74,8 @@ export default function Matters({ refresh = 0 }: { refresh?: number }) {
   const editDialog = useRef<HTMLDialogElement>(null)
   const toast = useToast()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const newRequested = searchParams.has("new")
 
   function load() {
     setLoading(true)
@@ -99,6 +101,15 @@ export default function Matters({ refresh = 0 }: { refresh?: number }) {
       .then((prefs) => setAttorney(prefs.attorney.trim() || undefined))
       .catch(() => undefined)
   }, [])
+
+  // `/?new=1` (the dashboard's New matter) opens the form on its title, then
+  // drops the param so Back or a refresh does not open it again. flushSync
+  // cannot run inside an effect, so the focus waits for a microtask.
+  useEffect(() => {
+    if (!newRequested) return
+    queueMicrotask(focusCreateTitle)
+    setSearchParams((params) => { params.delete("new"); return params }, { replace: true })
+  }, [newRequested])
 
   useEffect(() => {
     if (!confirmId) return

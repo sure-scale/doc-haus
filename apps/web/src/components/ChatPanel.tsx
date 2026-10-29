@@ -60,7 +60,7 @@ import { WordWarning } from "./WordDocuments"
 
 // Quiet starter prompts so a fresh matter is not a blank box and the user has
 // ready questions about the documents in scope.
-const STARTERS = [
+export const STARTERS = [
   "What are the key points in these materials?",
   "What deadlines or required actions should I know about?",
   "Flag ambiguities, inconsistencies, or items needing review.",

@@ -9,7 +9,7 @@ import { SettingsFooter } from "./SettingsFooter"
 // Firm-wide drafting preferences. The engine renders the saved structured
 // settings into standing instructions for each drafting or explanation turn;
 // the page layout settings are read when a document renders instead.
-export default function DraftingTab({ onSaved }: { onSaved: (text: string) => void }) {
+export default function DraftingTab({ onSaved, onBusy }: { onSaved: (text: string) => void; onBusy?: (busy: boolean) => void }) {
   const [prefs, setPrefs] = useState<DraftingPreferences | null>(null)
   const [today] = useState(() => new Date())
   const [saving, setSaving] = useState(false)
@@ -273,11 +273,12 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
           disabled={saving}
           onClick={async () => {
             setSaving(true)
+            onBusy?.(true)
             setError("")
             try {
               // Practice areas have their own editor and may have changed in
               // another browser since this drafting form was loaded.
-              const patch: Partial<DraftingPreferences> = { ...prefs }
+              const patch: Partial<DraftingPreferences> = { ...prefs, draftingConfigured: true }
               delete patch.practiceAreas
               const saved = await savePreferences(patch)
               if (!mounted.current) return
@@ -288,6 +289,7 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
               if (mounted.current) setError("Could not save drafting preferences. Your changes are still here. Try again.")
             } finally {
               if (mounted.current) setSaving(false)
+              onBusy?.(false)
             }
           }}
         >

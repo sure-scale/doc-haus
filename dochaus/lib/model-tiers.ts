@@ -47,6 +47,8 @@ export const AGENT_TIER: Record<string, Tier> = {
   draft: "fast",
   // The drafting narrator restates progress in plain language; it makes no legal judgment.
   narrator: "fastest",
+  dashboard: "fastest",
+  "dashboard-chart": "fastest",
 }
 
 export function tierOf(agent: string): Tier {

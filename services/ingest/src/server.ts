@@ -1,4 +1,5 @@
 import { chronologyRoutes } from "./chronology-routes"
+import { dashboardRoutes } from "./dashboard"
 import { playbookLibraryRoutes } from "./playbook-library"
 import { clientRoutes } from "./clients"
 import { updateRoutes, managedUpdateOwner } from "./updater"
@@ -262,6 +263,7 @@ app.get("/jurisdictions", (c) => c.json(listJurisdictions()))
 // the matter's playbook choice; create-playbook reads it to dedupe before writing.
 app.get("/playbooks", (c) => c.json(listPlaybooks()))
 app.route("/", playbookLibraryRoutes())
+app.route("/", dashboardRoutes())
 
 // Import a firm playbook skill into WORKSPACE_ROOT/.playbooks. Ingest is the single
 // writer over WORKSPACE_ROOT (same rationale as the .templates library), so the
