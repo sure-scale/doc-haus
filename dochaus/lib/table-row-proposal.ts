@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { paragraphSpacingExclusiveReason, paragraphSpacingProposalMarker } from "./paragraph-spacing-proposal"
 
 // A structural proposal binds the complete uploaded source. Display strings or
 // coordinates never locate the write; only the verified source/target pair does.
@@ -40,10 +41,18 @@ export function tableRowProposalMarker(row: { scope: string; target_json?: strin
 
 export const tableRowExclusiveReason = "Review or reject the pending changes before preparing a table row change. A table row change must be reviewed on its own."
 export class RedlineProposalConflictError extends Error {}
+export function exclusiveRedlineProposalMarker(row: { scope: string; target_json?: string | null }) {
+  return tableRowProposalMarker(row) || paragraphSpacingProposalMarker(row)
+}
+export function assertExclusiveRedlineSingleton(rows: readonly { scope: string; target_json?: string | null }[]) {
+  if (rows.some(exclusiveRedlineProposalMarker) && rows.length !== 1)
+    throw new RedlineProposalConflictError(rows.some(paragraphSpacingProposalMarker) ? paragraphSpacingExclusiveReason : tableRowExclusiveReason)
+}
 /** Call inside each recorder's immediate transaction, before supersession. */
 export function assertRedlineProposalCompatibility(
   pending: readonly { scope: string; target_json?: string | null }[], incoming: readonly { scope: string; target_json?: string | null }[],
 ) {
-  if ((pending.some(tableRowProposalMarker) && incoming.length) ||
-      (incoming.some(tableRowProposalMarker) && (pending.length || incoming.length !== 1))) throw new RedlineProposalConflictError(tableRowExclusiveReason)
+  if ((pending.some(exclusiveRedlineProposalMarker) && incoming.length) ||
+      (incoming.some(exclusiveRedlineProposalMarker) && (pending.length || incoming.length !== 1)))
+    throw new RedlineProposalConflictError([...pending, ...incoming].some(paragraphSpacingProposalMarker) ? paragraphSpacingExclusiveReason : tableRowExclusiveReason)
 }

@@ -1,12 +1,14 @@
 import { INGEST_URL } from "../../config"
 import type { TableRowProposalView } from "../../../../../dochaus/lib/table-row-proposal"
+import type { ParagraphSpacingProposalView } from "../../../../../dochaus/lib/paragraph-spacing-proposal"
 
 // A pending redline proposal: one tracked change awaiting accept/reject.
 export type Redline = {
   id: number
   doc_name: string
-  scope: "phrase" | "clause" | "table_row"
+  scope: "phrase" | "clause" | "table_row" | "paragraph_spacing"
   table_row?: TableRowProposalView
+  paragraph_spacing?: ParagraphSpacingProposalView
   target_json?: string | null
   find_text: string
   old_text: string

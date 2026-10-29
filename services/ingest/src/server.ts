@@ -80,8 +80,10 @@ import { DocxTrackedRevisionsError, type DocxRevisionOptions } from "../../../do
 import { compareVersions } from "../../../dochaus/lib/version-compare"
 import { pendingRedlinesForDoc } from "../../../dochaus/lib/redlines"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { frozenTableRowView, tableRowProposalMarker, type TableRowProposalView } from "../../../dochaus/lib/table-row-proposal"
-import { assertTableRowSingleton, rowChanged, rowMixed, tableRowBinding, tableRowView } from "./table-row-proposals"
+import { assertExclusiveRedlineSingleton, exclusiveRedlineProposalMarker, frozenTableRowView, tableRowProposalMarker, type TableRowProposalView } from "../../../dochaus/lib/table-row-proposal"
+import { frozenParagraphSpacingView, paragraphSpacingExclusiveReason, paragraphSpacingProposalMarker, type ParagraphSpacingProposalView } from "../../../dochaus/lib/paragraph-spacing-proposal"
+import { paragraphSpacingBinding, paragraphSpacingView, spacingChanged } from "./paragraph-spacing-proposals"
+import { rowChanged, rowMixed, tableRowBinding, tableRowView } from "./table-row-proposals"
 import { containerAttachmentsPending, ingestEmailDocument, isContainerName, isEmailName, reingestLegacyEmails, removeMatterDocument, withEmailLinks } from "./email-attachments"
 import { ingestZipDocument, ZipFormatError, ZipTooLargeError } from "./zip-archive"
 import { MsgFormatError } from "../../../dochaus/lib/msg"
@@ -1119,16 +1121,23 @@ app.get("/matters/:id/redlines", async (c) => {
       const bytes = await Bun.file(target.docPath).bytes()
       const state = await redlineState(bytes,rows,proposalRevisionOptions(dir,target.docPath),getDocumentRole(db,target.docPath))
       const protectedWord = Boolean(readWorkingDocx(dir,target.docPath))
-      const mixed = rows.some(tableRowProposalMarker) && rows.length !== 1
+      const mixed = rows.some(exclusiveRedlineProposalMarker) && rows.length !== 1
+      const mixedReason = rows.some(paragraphSpacingProposalMarker) ? paragraphSpacingExclusiveReason : rowMixed
       return c.json(await Promise.all(rows.map(async (row) => {
-        let stale_reason = mixed ? rowMixed : redlineStaleReason(row,state,protectedWord)
+        let stale_reason = mixed ? mixedReason : paragraphSpacingProposalMarker(row) && row.doc_path !== target.docPath ? spacingChanged : redlineStaleReason(row,state,protectedWord)
         let table_row: TableRowProposalView | undefined
-        if (tableRowProposalMarker(row)) try {
+        let paragraph_spacing: ParagraphSpacingProposalView | undefined
+        if (paragraphSpacingProposalMarker(row)) try {
+          const value = paragraphSpacingBinding(row)
+          paragraph_spacing = frozenParagraphSpacingView(value)
+          if (!stale_reason) paragraph_spacing = await paragraphSpacingView(bytes,row)
+        } catch { stale_reason ??= "This spacing change cannot be displayed safely. Reject it and prepare a fresh change list." }
+        else if (tableRowProposalMarker(row)) try {
           const value = tableRowBinding(row)
           table_row = frozenTableRowView(value)
           if (!stale_reason) table_row = await tableRowView(bytes,row)
         } catch { stale_reason ??= "This row change cannot be displayed safely. Reject it and prepare a fresh change list." }
-        return {...row,...(table_row ? {table_row} : {}),...(stale_reason ? {stale:true,stale_reason} : {})}
+        return {...row,...(table_row ? {table_row} : {}),...(paragraph_spacing ? {paragraph_spacing} : {}),...(stale_reason ? {stale:true,stale_reason} : {})}
       })))
     } finally {
       db.close()
@@ -1162,9 +1171,9 @@ app.get("/matters/:id/documents/redlined", async (c) => {
       }
     })()
     const options = pending.length ? proposalRevisionOptions(dir, target.docPath) : {}
-    try { assertTableRowSingleton(pending) } catch (error) { return c.json({error:error instanceof Error ? error.message : "The mixed change list cannot be previewed."},409) }
+    try { assertExclusiveRedlineSingleton(pending) } catch (error) { return c.json({error:error instanceof Error ? error.message : "The mixed change list cannot be previewed."},409) }
     const state = await redlineState(original, pending, options,proposalDocumentRole(dir,target.docPath))
-    const rows = pending.filter((row) => !redlineStaleReason(row, state, protectedWord))
+    const rows = pending.filter((row) => !(paragraphSpacingProposalMarker(row) && row.doc_path !== target.docPath) && !redlineStaleReason(row, state, protectedWord))
     try {
       const bytes = await buildRedlined(original, rows, state, options)
       const disclosure = rows.length && !layeredRedline(rows, options) ? await sourceRevisionDisclosure(original) : undefined
@@ -1330,7 +1339,7 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
     db.close()
     if (!current || current.status !== "pending")
       return c.json({ error: "Redline not found or already resolved" }, 404)
-    try { assertTableRowSingleton(pending) } catch (error) { return c.json({error:error instanceof Error ? error.message : "The mixed change list cannot be accepted."},409) }
+    try { assertExclusiveRedlineSingleton(pending) } catch (error) { return c.json({error:error instanceof Error ? error.message : "The mixed change list cannot be accepted."},409) }
     const combined = await prepareCombinedFile(dir, current.doc_path)
     let redline: PreparedRedline
     try {
@@ -1338,15 +1347,17 @@ app.post("/matters/:id/redlines/:rid/accept", async (c) => {
       const prior = createHash("sha256").update(original).digest("hex")
       const working = readWorkingDocx(dir,current.doc_path)
       const options = proposalRevisionOptions(dir,current.doc_path)
-      const structural = tableRowProposalMarker(current)
+      const exact = exclusiveRedlineProposalMarker(current)
       const state = await redlineState(original,[current],options,proposalDocumentRole(dir,current.doc_path))
       const stale = redlineStaleReason(current,state,Boolean(working))
       if (stale || working && working.source_sha256 !== prior) return c.json({error:stale ?? "The working Word revision is inconsistent. Refresh it through the revision API."},409)
       const accepted = await bake(original,[current],state,options)
-      if (structural && proposalDocumentRole(dir,current.doc_path) !== "source") throw new RedlineAcceptConflictError(rowChanged)
-      const baked = documentRevisionBytes(dir,current.doc_name,Buffer.from(accepted),structural).bytes
+      if (exact && proposalDocumentRole(dir,current.doc_path) !== "source") throw new RedlineAcceptConflictError(paragraphSpacingProposalMarker(current) ? spacingChanged : rowChanged)
+      assertSpacingSourceCurrent(dir,[current],prior)
+      const baked = documentRevisionBytes(dir,current.doc_name,Buffer.from(accepted),exact).bytes
       redline = await prepareDeliveredRedline(dir,current.doc_path,baked)
-      await writeDocumentRevision(dir,current.doc_name,baked,[current.id],prior,current.target_json != null,{version:acceptVersion(c,[current.id]),exact:structural})
+      assertSpacingSourceCurrent(dir,[current],prior)
+      await writeDocumentRevision(dir,current.doc_name,baked,[current.id],prior,current.target_json != null,{version:acceptVersion(c,[current.id]),exact})
     } catch (error) {
       if (error instanceof RedlineAcceptConflictError) return c.json({error:error.message},409)
       if (error instanceof RedlineReplayError) return c.json({error:error.refusal},409)
@@ -1406,7 +1417,7 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
     const rows = listPendingRedlines(db, file)
     db.close()
     if (!rows.length) return c.json({ ok: true, accepted: 0 })
-    try { assertTableRowSingleton(rows) } catch (error) { return c.json({error:error instanceof Error ? error.message : "The mixed change list cannot be accepted."},409) }
+    try { assertExclusiveRedlineSingleton(rows) } catch (error) { return c.json({error:error instanceof Error ? error.message : "The mixed change list cannot be accepted."},409) }
     const combined = await prepareCombinedFile(dir, file)
     let redline: PreparedRedline
     try {
@@ -1414,16 +1425,18 @@ app.post("/matters/:id/redlines/accept-all", async (c) => {
       const prior = createHash("sha256").update(original).digest("hex")
       const working = readWorkingDocx(dir,file)
       const options = proposalRevisionOptions(dir,file)
-      const structural = rows.some(tableRowProposalMarker)
+      const exact = rows.some(exclusiveRedlineProposalMarker)
       const state = await redlineState(original,rows,options,proposalDocumentRole(dir,file))
       const stale = rows.flatMap((row) => {const reason = redlineStaleReason(row,state,Boolean(working));return reason ? [{row,reason}] : []})
       if (stale.length || working && working.source_sha256 !== prior)
         return c.json({error:stale.length ? staleBatchReason(stale) : "The working Word revision is inconsistent. Refresh it through the revision API."},409)
       const accepted = await bake(original,rows,state,options)
-      if (structural && proposalDocumentRole(dir,file) !== "source") throw new RedlineAcceptConflictError(rowChanged)
-      const baked = documentRevisionBytes(dir,name,Buffer.from(accepted),structural).bytes
+      if (exact && proposalDocumentRole(dir,file) !== "source") throw new RedlineAcceptConflictError(rows.some(paragraphSpacingProposalMarker) ? spacingChanged : rowChanged)
+      assertSpacingSourceCurrent(dir,rows,prior)
+      const baked = documentRevisionBytes(dir,name,Buffer.from(accepted),exact).bytes
       redline = await prepareDeliveredRedline(dir,file,baked)
-      await writeDocumentRevision(dir,name,baked,rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null),{version:acceptVersion(c,rows.map((row) => row.id)),exact:structural})
+      assertSpacingSourceCurrent(dir,rows,prior)
+      await writeDocumentRevision(dir,name,baked,rows.map((row) => row.id),prior,rows.some((row) => row.target_json != null),{version:acceptVersion(c,rows.map((row) => row.id)),exact})
     } catch (error) {
       if (error instanceof RedlineAcceptConflictError) return c.json({error:error.message},409)
       if (error instanceof RedlineReplayError) return c.json({error:error.refusal},409)
@@ -1540,6 +1553,13 @@ function proposalRevisionOptions(directory: string, docPath: string): DocxRevisi
 function proposalDocumentRole(directory: string, docPath: string) {
   const db = openDb(directory)
   try { return getDocumentRole(db,docPath) } finally { db.close() }
+}
+function assertSpacingSourceCurrent(directory: string, rows: readonly RedlineRow[], sha256: string) {
+  for (const row of rows) if (paragraphSpacingProposalMarker(row)) {
+    const target = readDocumentTarget(directory,row.doc_name)
+    if (target?.docPath !== row.doc_path || proposalDocumentRole(directory,row.doc_path) !== "source" ||
+      createHash("sha256").update(readFileSync(row.doc_path)).digest("hex") !== sha256) throw new RedlineAcceptConflictError(spacingChanged)
+  }
 }
 
 // Changes accepted into the body of a completed lean run are appended to that

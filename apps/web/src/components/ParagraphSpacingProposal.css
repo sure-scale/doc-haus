@@ -1,0 +1,19 @@
+.paragraph-spacing-proposal { width: 100%; min-width: 0; max-width: 100%; color: var(--text); overflow-wrap: anywhere; }
+.paragraph-spacing-proposal .paragraph-spacing-title { margin: 0 0 4px; font-size: 0.8125rem; font-weight: 550; line-height: 1.5; }
+.paragraph-spacing-proposal .paragraph-spacing-help, .paragraph-spacing-proposal .paragraph-spacing-location { margin: 0 0 8px; color: var(--muted); font-size: 0.6875rem; line-height: 1.5; }
+.paragraph-spacing-unavailable { margin: 0 0 8px; color: var(--muted); font-size: 0.75rem; line-height: 1.5; overflow-wrap: anywhere; }
+.paragraph-spacing-proposal .paragraph-spacing-text { min-width: 0; margin: 8px 0; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); font-size: 0.75rem; line-height: 1.6; }
+.paragraph-spacing-proposal .paragraph-spacing-literal { white-space: pre-wrap; overflow-wrap: anywhere; }
+.paragraph-spacing-proposal .paragraph-spacing-note { display: block; width: fit-content; margin-top: 4px; padding: 1px 4px; border: 1px solid var(--border); border-radius: 3px; color: var(--muted); background: var(--panel); font-size: 0.625rem; font-style: italic; white-space: normal; }
+.paragraph-spacing-proposal .paragraph-spacing-change { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 8px; margin: 10px 0; }
+.paragraph-spacing-proposal .paragraph-spacing-change dl { min-width: 0; margin: 0; }
+.paragraph-spacing-proposal .paragraph-spacing-change dt { color: var(--muted); font-size: 0.625rem; }
+.paragraph-spacing-proposal .paragraph-spacing-change dd { margin: 2px 0 0; font-size: 0.8125rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.paragraph-spacing-proposal .paragraph-spacing-context summary { min-height: 36px; padding-block: 8px; color: var(--text-secondary); font-size: 0.6875rem; cursor: pointer; }
+.paragraph-spacing-proposal .paragraph-spacing-scroll { width: 100%; min-width: 0; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; border: 1px solid var(--border); border-radius: var(--radius-sm); scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.paragraph-spacing-proposal .paragraph-spacing-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.paragraph-spacing-proposal table { width: 100%; table-layout: fixed; border-collapse: collapse; font-family: inherit; font-size: 0.75rem; line-height: 1.5; text-align: left; }
+.paragraph-spacing-proposal :is(th, td) { padding: 8px; border: 0; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); vertical-align: top; text-align: left; overflow-wrap: anywhere; }
+.paragraph-spacing-proposal th { color: var(--muted); background: var(--bg); font-size: 0.625rem; font-weight: 500; }
+.paragraph-spacing-proposal tr > :last-child { border-right: 0; }
+.paragraph-spacing-proposal tbody tr:last-child > * { border-bottom: 0; }

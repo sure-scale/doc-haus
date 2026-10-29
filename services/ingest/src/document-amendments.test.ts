@@ -11,7 +11,9 @@ import { paragraphTargets, withParagraphPointers } from "../../../dochaus/lib/dr
 import { openDb, deleteDocument, getDocumentRole, getPreparedChanges, getRedline, listDocuments, listSourceDocuments, upsertDocument } from "./db"
 import { docxTableRowInsertionTargets } from "../../../dochaus/lib/docx-table-row-insertion"
 import { docxTableRowDeletionTargets } from "../../../dochaus/lib/docx-table-row-deletion"
+import { inspectExactParagraphSpacing } from "../../../dochaus/lib/docx-exact-spacing"
 import { recordTableRowProposal } from "./table-row-proposals"
+import { recordParagraphSpacingProposal } from "./paragraph-spacing-proposals"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { createDocxLocalization, createDocxRevision, openRevision, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
@@ -177,10 +179,12 @@ test("on a clean document the preview of prepared and older proposals together i
 })
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-type Candidate = {amendment_id:string;target_handle:string;previous_paragraph?:string|null;table?:number;row?:number;cells?:string[];previous_row?:string[]|null;next_row?:string[]|null}
+type Candidate = {amendment_id:string;target_handle:string;previous_paragraph?:string|null;table?:number;row?:number;cells?:string[];previous_row?:string[]|null;next_row?:string[]|null;
+  paragraph_text?:string;scope?:string;table_context?:Awaited<ReturnType<typeof inspectExactParagraphSpacing>>["matches"][number]["tableContext"];direct_after?:unknown;eligibility?:{eligible:boolean;reason?:string}}
 type LegalPass = {amendments:Array<{before_quote:string;replacement:string;target_context:string;reason:string}>;open_items:string[];
   table_rows?:Array<{reference_cells:string[];position:"before"|"after";cells:string[];target_context:string;reason:string}>;
-  table_row_deletions?:Array<{reference_cells:string[];target_context:string;reason:string}>}
+  table_row_deletions?:Array<{reference_cells:string[];target_context:string;reason:string}>;
+  paragraph_formats?:Array<{kind:"paragraph_spacing_after";paragraph_text:string;spacing_after_points:number;target_context:string;reason:string}|{kind:"unsupported_formatting";request:string;reason:string}>}
 
 // Protocol fixture only: a local stand-in for the engine's generate route. The
 // first pass returns frozen legal proposals; the second returns locator rows,
@@ -555,6 +559,208 @@ test("row deletion Prepare metadata survives an older empty Prepare finishing af
       release();expect((await pending).status).toBe(409)
       expect(state().prepared).toEqual(expected)
       expect(state().rows.map(row => [JSON.parse(row.target_json).kind,row.status])).toEqual([["table_row_delete","pending"]])
+    })
+    expect(await Bun.file(file).bytes()).toEqual(bytes)
+  } finally {release();engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+async function spacingPrepareDocx(labels = ["A","B"],options:{text?:string;before?:string|null;header?:boolean} = {}) {
+  const raw = (await renderMarkdownToDocx(["| Label | Value |","| --- | --- |",...labels.map(label => `| ${label} | Same |`)].join("\n"))).bytes
+  const parts = unzipSync(raw), text = options.text ?? "Same"
+  let body = strFromU8(parts["word/document.xml"]!)
+  body = body.replace(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g,paragraph => {
+    if (!paragraph.includes(">Same</w:t>")) return paragraph
+    let changed = paragraph.replace(">Same</w:t>",`>${text}</w:t>`)
+    if (options.before !== undefined) changed = changed.replace('w:after="80"',options.before === null ? "" : `w:after="${options.before}"`)
+    return changed
+  })
+  if (options.header) {
+    const O="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    parts["word/spacing-header.xml"] = strToU8(`<w:hdr xmlns:w="${W}"><w:p><w:pPr><w:spacing w:after="80"/></w:pPr><w:r><w:t xml:space="preserve">${text}</w:t></w:r></w:p></w:hdr>`)
+    parts["word/_rels/document.xml.rels"] = strToU8(strFromU8(parts["word/_rels/document.xml.rels"]!).replace("</Relationships>",`<Relationship Id="spacing-header" Type="${O}/header" Target="spacing-header.xml"/></Relationships>`))
+    parts["[Content_Types].xml"] = strToU8(strFromU8(parts["[Content_Types].xml"]!).replace("</Types>",'<Override PartName="/word/spacing-header.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/></Types>'))
+    body = body.replace("<w:sectPr>",`<w:sectPr><w:headerReference xmlns:r="${O}" w:type="default" r:id="spacing-header"/>`)
+  }
+  parts["word/document.xml"] = strToU8(body)
+  return zipSync(parts,{mtime:new Date(1980,0,1)})
+}
+const legalSpacing = {kind:"paragraph_spacing_after" as const,paragraph_text:"Same",spacing_after_points:6,target_context:"the value cell in the B row",reason:"Sets the explicitly requested direct spacing after."}
+
+test("spacing Prepare freezes exact source values and resolves duplicates by changed row context without editing words", async () => {
+  const text = "  Same  ", {directory,file,state} = await rowPrepareMatter(await spacingPrepareDocx(["A","B"],{text,before:"0080"}))
+  const formatting = {...legalSpacing,paragraph_text:text}
+  const engine = syntheticEngine(() => ({amendments:[],paragraph_formats:[formatting],open_items:["Confirm the separate filing instruction."]}),candidates => {
+    expect(candidates).toHaveLength(2)
+    expect(candidates.every(candidate => candidate.paragraph_text === text && candidate.eligibility?.eligible)).toBe(true)
+    expect(candidates.every(candidate => JSON.stringify(candidate.direct_after) === JSON.stringify({kind:"twips",raw:"0080",normalized:"80"}))).toBe(true)
+    return [{amendment_id:"spacing-1",target_handle:candidates.find(candidate => candidate.table_context?.row_context[0] === "B")!.target_handle}]
+  })
+  try {
+    await withPreparation(directory,engine,async prepare => {
+      for (const [labels,index] of [[["A","B"],1],[["B","A"],0]] as const) {
+        const bytes = await spacingPrepareDocx([...labels],{text,before:"0080"});await Bun.write(file,bytes)
+        const instruction = "Set spacing after the complete value paragraph in row B to 6 points. Preserve every word and other formatting."
+        const response = await prepare(instruction)
+        expect(response.status).toBe(200)
+        const result = await response.json() as {proposed:number;redline_ids:number[]}
+        expect(result.proposed).toBe(1)
+        const matched = (await inspectExactParagraphSpacing(bytes,text)).matches[index]!
+        expect(JSON.parse(state().rows.at(-1)!.target_json)).toEqual({version:4,kind:"paragraph_spacing_after",prepared_role:"source",source_sha256:sha256(bytes),paragraph_handle:matched.paragraphHandle,paragraph_text:text,table_context:matched.tableContext,before_direct_after:{kind:"twips",raw:"0080",normalized:"80"},after_direct_after_twips:"120"})
+        expect(state().prepared).toEqual({redline_ids:result.redline_ids,open_items:["Confirm the separate filing instruction."]})
+        const prompt = engine.prompts.at(-1)!
+        expect(prompt).toContain(JSON.stringify(instruction))
+        expect(JSON.parse(prompt.match(/<frozen_amendments>([\s\S]*)<\/frozen_amendments>/)![1])).toEqual([{amendment_id:"spacing-1",...formatting}])
+        const before = state().prepared, calls = engine.prompts.length
+        expect((await prepare("Prepare another wording change.")).status).toBe(409)
+        expect(state().prepared).toEqual(before);expect(engine.prompts).toHaveLength(calls)
+        expect(await Bun.file(file).bytes()).toEqual(bytes)
+        const db=openDb(directory);try {db.run("UPDATE redlines SET status='rejected' WHERE status='pending'")} finally {db.close()}
+      }
+    })
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("spacing Prepare keeps an unsupported header duplicate and refuses the intended header instead of substituting the body", async () => {
+  const bytes = await spacingPrepareDocx(["B"],{header:true}), {directory,file,state} = await rowPrepareMatter(bytes)
+  let chooseHeader = false
+  const engine = syntheticEngine(() => ({amendments:[],paragraph_formats:[legalSpacing],open_items:[]}),candidates => {
+    expect(candidates).toHaveLength(2)
+    expect(candidates.filter(candidate => candidate.eligibility?.eligible)).toHaveLength(1)
+    const chosen = candidates.find(candidate => chooseHeader ? candidate.scope !== "body" : candidate.scope === "body")!
+    return [{amendment_id:"spacing-1",target_handle:chosen.target_handle}]
+  })
+  try {
+    await withPreparation(directory,engine,async prepare => {
+      const valid = await prepare("Set spacing after the Same paragraph in the B value cell to 6 points.")
+      expect(valid.status).toBe(200);expect(await valid.json()).toMatchObject({proposed:1})
+      const db=openDb(directory);try {db.run("UPDATE redlines SET status='rejected'")} finally {db.close()}
+      chooseHeader = true
+      const refused = await prepare("Set spacing after the Same paragraph in the page header to 6 points.")
+      expect(refused.status).toBe(200)
+      expect(await refused.json()).toMatchObject({proposed:0,open_items:[expect.stringContaining("No other occurrence was substituted")]})
+      expect(state().rows).toHaveLength(1);expect(state().rows[0]!.status).toBe("rejected")
+    })
+    expect(await Bun.file(file).bytes()).toEqual(bytes)
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("spacing Prepare handles exact point limits, explicit absence and numeric semantic no-ops without rounding", async () => {
+  const {directory,file,state} = await rowPrepareMatter(await spacingPrepareDocx(["B"],{before:null}))
+  let points = 0
+  const engine = syntheticEngine(() => ({amendments:[],paragraph_formats:[{...legalSpacing,spacing_after_points:points}],open_items:[]}),firstCandidate)
+  try {
+    await withPreparation(directory,engine,async prepare => {
+      for (const desired of [0,0.05,48]) {
+        points = desired
+        const source = await spacingPrepareDocx(["B"],{before:null});await Bun.write(file,source)
+        const response = await prepare(`Set the direct spacing after the B value paragraph to ${points} points.`)
+        expect(response.status).toBe(200);expect(await response.json()).toMatchObject({proposed:1})
+        const binding = JSON.parse(state().rows.at(-1)!.target_json)
+        expect(binding.before_direct_after).toEqual({kind:"absent"})
+        expect(binding.after_direct_after_twips).toBe(String(points*20))
+        expect(await Bun.file(file).bytes()).toEqual(source)
+        const db=openDb(directory);try {db.run("UPDATE redlines SET status='rejected'")} finally {db.close()}
+      }
+      points = 4;await Bun.write(file,await spacingPrepareDocx(["B"],{before:"0080"}))
+      const noop = await prepare("Set direct spacing after the B value paragraph to 4 points.")
+      expect(noop.status).toBe(200);expect(await noop.json()).toMatchObject({proposed:0,open_items:[expect.stringContaining("already has")]})
+      expect(state().rows).toHaveLength(3)
+    })
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("spacing Prepare rejects malformed units, mixed work and unsupported formatting without partial proposals", async () => {
+  const {directory,state} = await rowPrepareMatter(await spacingPrepareDocx(["B"]))
+  let output:LegalPass = {amendments:[],paragraph_formats:[legalSpacing],open_items:[]}
+  const engine = syntheticEngine(() => output,() => {throw new Error("No locator may run")})
+  try {
+    await withPreparation(directory,engine,async prepare => {
+      for (const value of ["6",null,49,-1,0.07]) {
+        output = {amendments:[],paragraph_formats:[{...legalSpacing,spacing_after_points:value}],open_items:[]} as unknown as LegalPass
+        expect((await prepare("Use the requested spacing value.")).status).toBe(409)
+      }
+      const unsupported = {kind:"unsupported_formatting" as const,request:"Add line spacing and a heading style",reason:"Only absolute spacing after is supported."}
+      const text = {before_quote:"Absent text",replacement:"Changed text",target_context:"operative clause",reason:"Requested wording change."}
+      for (const value of [
+        {amendments:[text],paragraph_formats:[legalSpacing],open_items:[]},
+        {amendments:[],table_rows:[legalRow],paragraph_formats:[legalSpacing],open_items:[]},
+        {amendments:[],paragraph_formats:[legalSpacing,legalSpacing],open_items:[]},
+        {amendments:[],paragraph_formats:[legalSpacing,unsupported],open_items:[]},
+        {amendments:[],paragraph_formats:[unsupported],open_items:[]},
+      ]) {
+        output = value
+        const response = await prepare("Prepare every requested wording and formatting change.")
+        expect(response.status).toBe(200);expect(await response.json()).toMatchObject({proposed:0})
+      }
+      output = {amendments:[],paragraph_formats:[{...legalSpacing,lineSpacing:2}],open_items:[]} as unknown as LegalPass
+      expect((await prepare("Double the line spacing.")).status).toBe(409)
+      expect(engine.prompts).toHaveLength(11);expect(state().rows).toEqual([])
+    })
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("spacing Prepare preserves ambiguous original units for a scripted locator refusal", async () => {
+  const bytes = await spacingPrepareDocx(["B"]), {directory,file,state} = await rowPrepareMatter(bytes)
+  const instruction = "Double the space after the B paragraph."
+  const engine = syntheticEngine(() => ({amendments:[],paragraph_formats:[legalSpacing],open_items:[]}),() => [{amendment_id:"spacing-1",unresolved_reason:"The requested relative change does not specify an absolute point value."}])
+  try {
+    await withPreparation(directory,engine,async prepare => {
+      const response = await prepare(instruction)
+      expect(response.status).toBe(200);expect(await response.json()).toMatchObject({proposed:0})
+      expect(engine.prompts.at(-1)).toContain(JSON.stringify(instruction));expect(engine.prompts.at(-1)).toContain("relative adjustments")
+      expect(state().rows).toEqual([])
+    })
+    // This is protocol/hand-off evidence from a scripted model, not a claim of
+    // deterministic language classification or actual model legal judgement.
+    expect(await Bun.file(file).bytes()).toEqual(bytes)
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("spacing Prepare refuses complete candidate count and context overflow without a locator", async () => {
+  for (const limit of ["count","context"] as const) {
+    const source = await spacingPrepareDocx(limit === "count" ? Array.from({length:33},(_,index) => `B${index}`) : [`B ${"X".repeat(64*1024)}`])
+    const {directory,file,state} = await rowPrepareMatter(source)
+    const engine = syntheticEngine(() => ({amendments:[],paragraph_formats:[legalSpacing],open_items:[]}),() => {throw new Error("Overflow must not localize")})
+    try {
+      await withPreparation(directory,engine,async prepare => {
+        const response = await prepare("Set direct spacing after the intended Same paragraph to 6 points.")
+        expect(response.status).toBe(200);expect(await response.json()).toMatchObject({proposed:0,open_items:[expect.stringContaining(limit === "count" ? "Too many paragraphs" : "context is too large")]})
+      })
+      expect(engine.prompts).toHaveLength(1);expect(state().rows).toEqual([]);expect(await Bun.file(file).bytes()).toEqual(source)
+    } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+  }
+})
+
+test("spacing Prepare never rebases a frozen direct property or accepts locator value changes", async () => {
+  for (const mutation of ["source","locator"] as const) {
+    const source = await spacingPrepareDocx(["B"],{before:"0080"}), {directory,file,state} = await rowPrepareMatter(source)
+    const engine = syntheticEngine(() => ({amendments:[],paragraph_formats:[legalSpacing],open_items:[]}),async candidates => {
+      if (mutation === "source") await Bun.write(file,await spacingPrepareDocx(["B"],{before:"80"}))
+      return [{amendment_id:"spacing-1",target_handle:candidates[0]!.target_handle,...(mutation === "locator" ? {spacing_after_points:12} : {})}]
+    })
+    try {
+      await withPreparation(directory,engine,async prepare => {expect((await prepare("Set direct spacing after the B value paragraph to 6 points.")).status).toBe(409)})
+      expect(engine.prompts).toHaveLength(2);expect(state().rows).toEqual([])
+      if (mutation !== "source") expect(await Bun.file(file).bytes()).toEqual(source)
+    } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+  }
+})
+
+test("spacing Prepare metadata survives an older empty Prepare finishing after v4 admission", async () => {
+  const bytes = await spacingPrepareDocx(["B"]), {directory,file,state} = await rowPrepareMatter(bytes)
+  let began!:()=>void, release!:()=>void
+  const started = new Promise<void>(resolve => {began=resolve}), held = new Promise<void>(resolve => {release=resolve})
+  const engine = syntheticEngine(async () => {began();await held;return {amendments:[],open_items:["Old request item."]}},firstCandidate)
+  try {
+    await withPreparation(directory,engine,async prepare => {
+      const pending = prepare("Explain the existing wording.");await started
+      const inspected = await inspectExactParagraphSpacing(bytes,"Same"), match = inspected.matches[0]!
+      if (!match.eligibility.eligible || match.directAfter.kind === "unavailable") throw new Error("Synthetic spacing target must be eligible")
+      const result = await recordParagraphSpacingProposal(directory,"working.docx",{version:4,kind:"paragraph_spacing_after",prepared_role:"source",source_sha256:inspected.sourceSha256,paragraph_handle:match.paragraphHandle,paragraph_text:match.text,table_context:match.tableContext,before_direct_after:match.directAfter,after_direct_after_twips:"120"},
+        {author:"Review Editor",reason:legalSpacing.reason,openItems:["New spacing item."],preparedPath:file})
+      const expected = {redline_ids:[result.id],open_items:["New spacing item."]}
+      expect(state().prepared).toEqual(expected);release();expect((await pending).status).toBe(409)
+      expect(state().prepared).toEqual(expected);expect(state().rows.map(row => [JSON.parse(row.target_json).version,row.status])).toEqual([[4,"pending"]])
     })
     expect(await Bun.file(file).bytes()).toEqual(bytes)
   } finally {release();engine.server.stop(true);await rm(directory,{recursive:true,force:true})}

@@ -51,7 +51,7 @@ export function recordRedline(
 // same paragraph and the replay would collide.
 export type PendingRedline = {
   id: number
-  scope: "phrase" | "clause" | "table_row"
+  scope: "phrase" | "clause" | "table_row" | "paragraph_spacing"
   find_text: string
   new_text: string
   author: string

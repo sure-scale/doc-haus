@@ -2,8 +2,9 @@ import { useId } from "react"
 import type { Redline } from "../api/ingest/redlines"
 import { ProposalRedline } from "./redline"
 import "./TableRowProposal.css"
+import { ParagraphSpacingProposal, paragraphSpacingMarker, reviewableParagraphSpacing } from "./ParagraphSpacingProposal"
 
-type Proposal = Pick<Redline, "scope" | "table_row" | "target_json" | "stale">
+type Proposal = Pick<Redline, "scope" | "table_row" | "paragraph_spacing" | "target_json" | "stale">
 type RowView = NonNullable<Redline["table_row"]>
 type InsertView = Extract<RowView, { kind: "table_row_insert" }>
 type DeleteView = Extract<RowView, { kind: "table_row_delete" }>
@@ -11,7 +12,7 @@ const record = (value: unknown): value is Record<string, unknown> => Boolean(val
 const cells = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0 && value.length <= 32 && value.every(cell => typeof cell === "string")
 
 export function ordinaryProposal(proposal: Proposal): boolean {
-  if (proposal.scope !== "phrase" && proposal.scope !== "clause" || proposal.table_row !== undefined) return false
+  if (proposal.scope !== "phrase" && proposal.scope !== "clause" || proposal.table_row !== undefined || paragraphSpacingMarker(proposal)) return false
   try {
     const binding: unknown = JSON.parse(proposal.target_json ?? "null")
     if (record(binding) && (binding.version === 3 || binding.kind === "table_row_insert" || binding.kind === "table_row_delete")) return false
@@ -42,6 +43,7 @@ function rowView(value: unknown): RowView | undefined {
  * authority; a row must also have its full readable content and location. */
 export function reviewableProposal(proposal: Proposal): boolean {
   if (proposal.stale) return false
+  if (paragraphSpacingMarker(proposal)) return reviewableParagraphSpacing(proposal)
   if (ordinaryProposal(proposal)) return true
   if (proposal.scope !== "table_row") return false
   const view = rowView(proposal.table_row)
@@ -49,6 +51,7 @@ export function reviewableProposal(proposal: Proposal): boolean {
 }
 
 export function ProposalPreview({ proposal }: { proposal: Redline }) {
+  if (paragraphSpacingMarker(proposal)) return <ParagraphSpacingProposal proposal={proposal} />
   if (ordinaryProposal(proposal)) return <ProposalRedline before={proposal.old_text} after={proposal.new_text} />
   return <TableRowProposal view={proposal.scope === "table_row" ? rowView(proposal.table_row) : undefined} stale={proposal.stale} />
 }
