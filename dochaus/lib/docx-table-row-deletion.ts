@@ -270,6 +270,19 @@ async function inspect(sourceBytes: Uint8Array, bytes: Uint8Array, input: DocxTa
     return { source, output, session, located, before, revisions: added }
   } catch (error) { session.close(); throw error } finally { baseline.close() }
 }
+/** Detached summaries from this verified artifact; no live session, DOM or
+ * caller-provided revision ID grants authority to the review wrapper. */
+export async function verifyDocxTableRowDeletion(sourceBytes: Uint8Array, authored: Uint8Array, value: DocxTableRowDeletion) {
+  const source = new Uint8Array(sourceBytes), input = request(value, source), checked = await inspect(source, new Uint8Array(authored), input)
+  try {
+    const row = rowAt(checked.output.body, checked.located.view).row, paragraphs = all(checked.output.body, "p")
+    return { revisions: structuredClone(checked.revisions), paragraphs: children(row, "tc").map((cell, index) => {
+      const paragraph = children(cell, "p")[0]!, xml_paragraph_index = paragraphs.indexOf(paragraph)
+      require(xml_paragraph_index >= 0, "deleted_paragraph_unavailable")
+      return { cell: index, xml_paragraph_index, text: checked.located.view.cells[index]! }
+    }) }
+  } finally { checked.session.close() }
+}
 /** Reconstruct complete ownership from THIS artifact, never caller-supplied IDs. */
 export async function resolveDocxTableRowDeletion(sourceBytes: Uint8Array, authored: Uint8Array, value: DocxTableRowDeletion, decision: "accept" | "reject") {
   const source = new Uint8Array(sourceBytes), input = request(value, source)

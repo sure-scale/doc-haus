@@ -3,7 +3,7 @@ import { createHash } from "node:crypto"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { docxodus } from "./docxodus"
-import { exportDocxComments, readDocxCommentParagraphPositions } from "./docx-comments"
+import { exportDocxComments, readDocxCommentParagraphPositions, readDocxComments } from "./docx-comments"
 import { authorDocxTableRowInsertion, resolveDocxTableRowInsertion, verifyDocxTableRowInsertion, type DocxTableRowInsertion } from "./docx-table-row-insertion"
 
 // Offline artifact only: a reason belongs to this one verified new row. This
@@ -168,6 +168,22 @@ function comparePackages(actual: Uint8Array, expected: Uint8Array) {
   const a = unpack(actual), b = unpack(expected)
   require(JSON.stringify(Object.keys(a.parts).sort()) === JSON.stringify(Object.keys(b.parts).sort()), "resolved_package_inventory_changed")
   for (const name of Object.keys(a.parts)) require(a.docs[name] ? same(a.docs[name]!, b.docs[name]!) : hash(a.parts[name]!) === hash(b.parts[name]!), `resolved_package_changed:${name}`)
+}
+// Reuse only the audited annotation/dependency proof. Deleted-row review has a
+// distinct explicit anchor contract and does not relax insertion's mapping.
+export const validateDocxRowReviewReason = reasonText
+export const assertDocxRowReviewPackage = comparePackages
+export function peelDeletedRowReviewComment(source: Uint8Array, bytes: Uint8Array, author: string, reason: string,
+  anchor: { kind: "deleted"; xml_paragraph_index: number; text: string }) {
+  require(anchor.kind === "deleted" && Number.isSafeInteger(anchor.xml_paragraph_index) && anchor.xml_paragraph_index >= 0 && typeof anchor.text === "string" && anchor.text.length > 0, "invalid_deleted_anchor")
+  const result = peel(unpack(source), bytes, author, reason)
+  require(result.paragraphIndex === anchor.xml_paragraph_index, "deleted_comment_extent_changed")
+  const comment = readDocxComments(bytes).filter(comment => comment.comment_id === result.commentId)
+  require(comment.length === 1 && comment[0]!.markers.length === 3 && comment[0]!.markers.every(marker => marker.xml_paragraph_index === anchor.xml_paragraph_index && !marker.accepted_paragraph_text.trim() && marker.deleted_paragraph_text === anchor.text), "deleted_comment_text_changed")
+  return result
+}
+export function peelRemovedRowReviewComment(source: Uint8Array, bytes: Uint8Array, author: string, reason: string, ownedId: string) {
+  return peel(unpack(source), bytes, author, reason, ownedId)
 }
 /** Review this one row and its reason as an application-controlled atomic group.
  * Reject explicitly removes this reason; native Word's own row rejection may
