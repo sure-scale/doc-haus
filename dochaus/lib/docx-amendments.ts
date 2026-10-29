@@ -254,6 +254,12 @@ function assertAssociationAncestry(paragraph: Element, id?: string) {
   }
 }
 
+class DocxStructuralAmendmentRefusal extends Error {
+  constructor(readonly kind: "unsupported_structural_replacement" | "unsupported_empty_paragraph_replacement", readonly amendmentId: string) {
+    super(`${kind}:${amendmentId}`)
+  }
+}
+
 function admittedFields(opened: Opened, binding: Binding) {
   const { amendment, match, ordinal } = binding
   assertAssociationAncestry(opened.paragraphs[ordinal]!.node, amendment.id)
@@ -263,9 +269,9 @@ function admittedFields(opened: Opened, binding: Binding) {
   if (closest(opened.paragraphs[ordinal]!.node, "sdt")) throw new Error(`docx_protected_inline_content:${amendment.id}`)
   const pending = opened.paragraphs[ordinal]!.pending
   if (othersPending(pending, opened.options.ownAuthors).length) throw new Error(`docx_pending_revision:${amendment.id}`)
-  if (/[\r\n\t]/.test(amendment.replacement)) throw new Error("unsupported_structural_replacement")
+  if (/[\r\n\t]/.test(amendment.replacement)) throw new DocxStructuralAmendmentRefusal("unsupported_structural_replacement", amendment.id)
   if (!amendment.replacement && match.text === opened.paragraphs[ordinal].match.text)
-    throw new Error("unsupported_empty_paragraph_replacement")
+    throw new DocxStructuralAmendmentRefusal("unsupported_empty_paragraph_replacement", amendment.id)
   const whole = opened.paragraphs[ordinal]!.match
   // The paragraph's tabs and breaks, by offset in the quote.
   const breaks = breakOffsets(opened.paragraphs[ordinal]!.node).map(at => at - (match.span.start - whole.span.start))
@@ -429,6 +435,8 @@ export async function admissionRefusals(bytes: Uint8Array, packet: DocxLocalizat
     return new Map(selectedBindings(opened, packet, selectionSchema.parse(selections)).flatMap(binding => {
       try { admitted(opened, binding); return [] }
       catch (error) {
+        if (error instanceof DocxStructuralAmendmentRefusal && error.amendmentId === binding.amendment.id)
+          return [[binding.amendment.id, error.kind] as const]
         if (error instanceof Error && ["docx_own_revision", "docx_field_replacement", "docx_mixed_format_replacement", "docx_protected_association"].some(code => error.message === `${code}:${binding.amendment.id}`))
           return [[binding.amendment.id, error.message.split(":")[0]!] as const]
         throw error

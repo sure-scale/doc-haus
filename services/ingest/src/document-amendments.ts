@@ -327,7 +327,11 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
     }
   }
   for (const {row,amendment} of resolved) if (inside.has(amendment.id))
-    refused.push(inside.get(amendment.id) === "docx_field_replacement"
+    refused.push(inside.get(amendment.id) === "unsupported_empty_paragraph_replacement"
+      ? `The change to ${quoted(row.before_quote)} was not proposed: removing a whole Word paragraph is not supported here. Remove the paragraph in Word, then request edits again.`
+      : inside.get(amendment.id) === "unsupported_structural_replacement"
+      ? `The change to ${quoted(row.before_quote)} was not proposed: a replacement containing a paragraph break or tab is not supported here. Make the structural change in Word, then request edits again.`
+      : inside.get(amendment.id) === "docx_field_replacement"
       ? `The change to ${quoted(row.before_quote)} was not proposed: it touches a Word field that could not be safely preserved. Make this change in Word, then request edits again.`
       : inside.get(amendment.id) === "docx_protected_association"
       ? `The change to ${quoted(row.before_quote)} was not proposed: a Word note, link or field could not be safely preserved. Review the passage in Word, then request edits again.`
@@ -741,7 +745,9 @@ function withoutDraftViewMarks(paragraphs:{text:string;label?:string}[],legal:Re
       if (look === "repeated") repeated = true
       else if ((found = look)) break
     }
-    const replacement = found && withSpacesOf(found.before_quote,reading!.before_quote,reading!.replacement)
+    // Do not normalize a proposed tab or paragraph break into ordinary space:
+    // the writer must identify and refuse that structural request explicitly.
+    const replacement = found && (/[\r\n\t]/.test(reading!.replacement) ? reading!.replacement : withSpacesOf(found.before_quote,reading!.before_quote,reading!.replacement))
     if (found && withoutListLabel(replacement!,found.label) !== found.before_quote) return [{...found,replacement:replacement!}]
     unmatched.push(`The change to ${quoted(found?.before_quote ?? plain)} was not proposed: ${found ? "it changes no words. Say which words change"
       : repeated ? "those words appear more than once in the document. Say which of them it changes"

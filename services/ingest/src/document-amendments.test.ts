@@ -3634,3 +3634,54 @@ test("mixed-format correction does not run when another selected or unresolved p
     } finally { engine.server.stop(true); await rm(directory, { recursive: true, force: true }) }
   }
 })
+
+test("Prepare isolates unsupported paragraph changes while safe numbered-document edits remain reviewable", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "dochaus-structural-refusal-"))
+  const sentence = "The Supplier shall deliver within thirty days.", safeText = "Records must be retained."
+  let structural = { before_quote: sentence, replacement: "", target_context: "first numbered clause", reason: "Remove the clause." }
+  const engine = syntheticEngine(() => ({ amendments: [structural, { before_quote: "retained", replacement: "archived", target_context: "records clause", reason: "Update the records requirement." }], open_items: [] }), firstCandidate)
+  const ingest = await isolatedIngest(temporary, engine.server)
+  try {
+    await ingest.start("structural-refusal")
+    const original = new Uint8Array(await Packer.toBuffer(new Document({ numbering:{config:[{reference:"clauses",levels:[{level:0,format:LevelFormat.DECIMAL,text:"%1.",alignment:AlignmentType.START}]}]}, sections:[{children:[
+      new Paragraph({numbering:{reference:"clauses",level:0},children:[new TextRun(sentence)]}),
+      new Paragraph({numbering:{reference:"clauses",level:0},children:[new TextRun(safeText)]}),
+    ]}]})))
+    for (const mode of ["whole", "linefeed", "return", "tab", "partial"] as const) {
+      structural = mode === "whole" ? { ...structural, before_quote: sentence, replacement: "" }
+        : mode === "partial" ? { ...structural, before_quote: " within thirty days", replacement: "" }
+        : { ...structural, before_quote: sentence, replacement: `The Supplier shall deliver${mode === "linefeed" ? "\n" : mode === "return" ? "\r" : "\t"}within thirty days.` }
+      const matter = await ingest.matter(`Structural ${mode}`)
+      expect(await matter.deliver(original)).toBe(200)
+      const before = await Bun.file(matter.file).bytes(), promptCount = engine.prompts.length
+      const response = await matter.prepare("Remove or adjust the delivery clause as requested and update the records wording.")
+      expect(response.status).toBe(200)
+      const result = await response.json() as {proposed:number;redline_ids:number[];open_items:string[]}
+      expect(result.proposed).toBe(mode === "partial" ? 2 : 1)
+      if (mode !== "partial") {
+        expect(result.open_items.join(" ")).toContain(mode === "whole" ? "removing a whole Word paragraph" : "paragraph break or tab")
+        expect(result.open_items.join(" ")).not.toContain("unsupported_")
+      }
+      expect(engine.prompts.slice(promptCount).some(prompt => prompt.includes("One proposed amendment was refused"))).toBe(false)
+      expect(await Bun.file(matter.file).bytes()).toEqual(before)
+      const db = openDb(matter.dir)
+      let safeId:number
+      try {
+        const rows = result.redline_ids.map(id => getRedline(db,id)!)
+        expect(rows.some(row => row.find_text === "retained")).toBe(true)
+        expect(rows.some(row => row.find_text === structural.before_quote)).toBe(mode === "partial")
+        safeId = rows.find(row => row.find_text === "retained")!.id
+      } finally { db.close() }
+      const preview = await ingest.request(`${matter.route}/documents/redlined?name=working.docx`)
+      expect(preview.status).toBe(200)
+      const previewed = await createDocxRevision(new Uint8Array(await preview.arrayBuffer()), {pendingRevisions:"layer"})
+      expect(previewed.paragraphs.some(p => p.text.includes("Records must be archived."))).toBe(true)
+      expect(await Bun.file(matter.file).bytes()).toEqual(before)
+      expect(await matter.accept(safeId!)).toBe(200)
+      const accepted = await Bun.file(matter.file).bytes(), revision = await createDocxRevision(accepted)
+      expect(revision.paragraphs.some(p => p.text === sentence)).toBe(true)
+      expect(revision.paragraphs.some(p => p.text === "Records must be archived.")).toBe(true)
+      expect(unzipSync(accepted)["word/numbering.xml"]).toEqual(unzipSync(before)["word/numbering.xml"])
+    }
+  } finally { await ingest.stop(); engine.server.stop(true); await rm(temporary, {recursive:true,force:true}) }
+},120000)
