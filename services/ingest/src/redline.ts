@@ -4,7 +4,7 @@ import type { WordChatParagraphFormat } from "../../../dochaus/lib/word-chat-ame
 import { compareDocxWithPointers, paragraphTargets, resolveParagraphTarget, withStableRevisionDates, type ParagraphTarget } from "../../../dochaus/lib/drafting-amendment"
 import type { RedlineRow } from "./db"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { createDocxLocalization, applyDocxParagraphEdits, DocxOverlappingAmendmentsError, DocxTrackedRevisionsError, hasTrackedRevisions, openRevision, othersPending, pendingRevisionAnchors, pendingRevisionRefusal, quoted, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
+import { createDocxLocalization, applyDocxParagraphEdits, applyLegacyPhrase, LegacyPhraseRefusal, DocxOverlappingAmendmentsError, DocxTrackedRevisionsError, hasTrackedRevisions, openRevision, othersPending, pendingRevisionAnchors, pendingRevisionRefusal, quoted, type DocxRevisionOptions } from "../../../dochaus/lib/docx-amendments"
 import { createHash } from "node:crypto"
 import { draftingAttribution, ourAuthors } from "../../../dochaus/lib/docx-attribution"
 import { normalizeUntrustedText } from "../../../dochaus/lib/untrusted-text"
@@ -41,7 +41,7 @@ export class RedlineAcceptConflictError extends Error {}
  * replay's reason; `refusal` is Accept all's, which names the proposal. */
 export class RedlineReplayError extends Error {
   readonly refusal: string
-  constructor(row: RedlineRow, reason: string, actionable = false) {
+  constructor(row: RedlineRow, reason: string, actionable = false, readonly skippable = false) {
     super(reason)
     // The touch rule's refusal already names the change and what to do.
     this.refusal = actionable || reason.startsWith("The change to ") ? reason
@@ -155,30 +155,27 @@ export async function buildRedlined(original: Uint8Array, rows: RedlineRow[], st
       throw new RedlinePreviewConflictError("A proposal no longer resolves against this Word revision. Prepare a fresh change list before exporting its tracked changes and review comments.")
     }
   }
-  const dx = await docxodus()
-  const session = dx.openDocxSession(original, {})
   try {
-    const targets: number[] = []
-    const applied = rows.filter((row) => {
-      const before = row.review_comment.trim() ? readDocxCommentParagraphs(session.save()) : []
-      if (row.review_comment.trim() && before.filter(paragraph => paragraph.paragraph_text.includes(row.find_text)).length !== 1)
-        throw new RedlinePreviewConflictError(`Review comment for proposal #${row.id} has a missing or ambiguous paragraph target. Prepare a fresh change list before exporting.`)
-      const result = applyProposal(session, row)
-      if (!result.ok) {
-        if (row.review_comment.trim()) throw new RedlinePreviewConflictError(`Proposal #${row.id} cannot be replayed with its review comment. Prepare a fresh change list before exporting.`)
-        console.warn("[redline] skipping in redlined view", diagnosticErrorMetadata(result.error))
-        return false
+    if (!annotated) {
+      let bytes = original
+      const applied: RedlineRow[] = []
+      for (const row of rows) {
+        try { bytes = (await bakeOlder(bytes, [row], false, false, options)).bytes; applied.push(row) }
+        catch (error) {
+          if (!(error instanceof RedlineReplayError) || !error.skippable) throw error
+          console.warn("[redline] skipping in redlined view", diagnosticErrorMetadata(error.message))
+        }
       }
-      const after = row.review_comment.trim() ? readDocxCommentParagraphs(session.save()) : []
-      const changed = before.filter((paragraph, index) => paragraph.paragraph_text !== after[index]?.paragraph_text)
-      if (row.review_comment.trim() && (before.length !== after.length || changed.length !== 1))
-        throw new RedlinePreviewConflictError(`Review comment for proposal #${row.id} requires one exact changed paragraph. Prepare a fresh change list before exporting.`)
-      targets.push(changed[0]?.paragraph_index ?? -1)
-      return true
-    })
-    if (!applied.length) return original
-    return commentRedline(original, session.save(), applied, targets)
-  } finally { session.close() }
+      return applied.length ? await commentRedline(original, bytes, applied, applied.map(() => -1)) : original
+    }
+    const written = await writeProposals(original, rows, state, options, { locate: true })
+    const paragraphs = readDocxCommentParagraphPositions(written.bytes)
+    return await commentRedline(original, written.bytes, rows, written.positions.map(at => paragraphs.findIndex(row => at !== undefined && row.xml_paragraph_indexes.includes(at))))
+  } catch (error) {
+    if (error instanceof RedlineReplayError) throw new RedlinePreviewConflictError(error.refusal)
+    const protection = docxProtectionMessage(error)
+    throw new RedlinePreviewConflictError(protection ?? "The proposals cannot be safely previewed. Prepare a fresh change list.")
+  }
 }
 
 async function commentRedline(original: Uint8Array, modified: Uint8Array, rows: RedlineRow[], targets: number[]) {
@@ -396,11 +393,26 @@ async function bakeOlder(original: Uint8Array, rows: RedlineRow[], tracked = fal
       positions.push(locate && row.review_comment.trim() ? position : undefined)
       continue
     }
+    if (row.scope === "phrase") {
+      const before = locate && row.review_comment.trim() ? readDocxCommentParagraphPositions(bytes) : undefined
+      try {
+        bytes = (await applyLegacyPhrase(bytes, row.find_text, row.new_text,
+          { ...options, pendingRevisions: "layer", ownAuthors: ours([rowAuthor(row)]), ...(tracked ? { revisionAuthor: rowAuthor(row) } : {}) })).bytes
+      } catch (error) {
+        const protection = docxProtectionMessage(error)
+        if (error instanceof LegacyPhraseRefusal) throw new RedlineReplayError(row, error.kind === "missing" ? `Text no longer found for redline #${row.id}: ${JSON.stringify(row.find_text)}` : error.message, error.kind === "pending", true)
+        throw new RedlineReplayError(row, protection ?? "The wording cannot be safely changed at every occurrence.", Boolean(protection))
+      }
+      const after = before && readDocxCommentParagraphPositions(bytes)
+      const changed = before && after?.filter((paragraph, index) => paragraph.paragraph_text !== before[index]?.paragraph_text)
+      positions.push(before && after && after.length === before.length && changed?.length === 1 ? changed[0]!.xml_paragraph_indexes[0] : undefined)
+      continue
+    }
     const session = dx.openDocxSession(bytes, tracked ? { trackedChanges: "render_inline", revisionAuthor: rowAuthor(row) } : {})
     try {
       const before = locate && row.review_comment.trim() ? readDocxCommentParagraphPositions(bytes) : undefined
       const result = applyProposal(session, row)
-      if (!result.ok) throw new RedlineReplayError(row, result.error)
+      if (!result.ok) throw new RedlineReplayError(row, result.error, result.error.startsWith("The change to "), result.error.startsWith("Clause no longer found") || result.error.startsWith("The change to "))
       bytes = session.save()
       const after = before && readDocxCommentParagraphPositions(bytes)
       const changed = before && after?.filter((paragraph, index) => paragraph.paragraph_text !== before[index]?.paragraph_text)

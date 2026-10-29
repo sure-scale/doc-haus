@@ -117,6 +117,41 @@ export async function applyDocxParagraphEdits(bytes: Uint8Array, edits: DocxPara
   } finally { opened.session.close() }
 }
 
+export class LegacyPhraseRefusal extends Error {
+  constructor(readonly kind: "missing" | "pending", message: string) { super(message) }
+}
+/** Replay every exact legacy phrase occurrence through the preservation writer. */
+export async function applyLegacyPhrase(bytes: Uint8Array, find: string, replacement: string, options: DocxRevisionOptions = {}, verb: "proposed" | "applied" = "applied") {
+  if (!find || /[\r\n\t]/.test(find + replacement)) throw new Error("unsupported_legacy_phrase")
+  const opened = await openRevision(new Uint8Array(bytes), options)
+  let edits: DocxParagraphEdit[]
+  try {
+    const targets = opened.session.findAllByText(find)
+    if (!targets.length) throw new LegacyPhraseRefusal("missing", "Text no longer found")
+    const refusal = pendingRevisionRefusal(opened.session, pendingRevisionAnchors(opened.session), targets.map(target => target.id), find, verb, options.ownAuthors ?? [])
+    if (refusal) throw new LegacyPhraseRefusal("pending", refusal)
+    const anchors = new Set(targets.map(target => target.id))
+    const mapped = new Set<string>()
+    const spans: string[] = []
+    edits = []
+    for (const [ordinal, paragraph] of opened.paragraphs.entries()) {
+      let at = 0, occurrence = 0
+      while ((at = paragraph.match.text.indexOf(find, at)) >= 0) {
+        mapped.add(paragraph.match.enclosingAnchor.id)
+        spans.push(JSON.stringify([paragraph.match.enclosingAnchor.id, paragraph.match.span.start + at, find]))
+        edits.push({ id: `legacy-${edits.length}`, paragraph_handle: opened.revision.paragraphs[ordinal]!.paragraph_handle,
+          occurrence: occurrence++, before_quote: find, replacement })
+        at += find.length
+      }
+    }
+    const matches = opened.session.grep(literal(find), { scope: 63, whitespace: 0 })
+      .map(match => JSON.stringify([match.enclosingAnchor.id, match.span.start, match.text])).sort()
+    if (!edits.length || anchors.size !== mapped.size || [...anchors].some(anchor => !mapped.has(anchor)) ||
+      JSON.stringify(matches) !== JSON.stringify(spans.sort())) throw new Error("unsupported_legacy_phrase_target")
+  } finally { opened.session.close() }
+  return applyDocxParagraphEdits(bytes, edits, undefined, options)
+}
+
 function selectedBindings(opened: Opened, packet: DocxLocalizationPacket, selected: DocxLocalizationSelection[]) {
   const rebuilt = localize(opened, packet.amendments, packet.limits)
   if (JSON.stringify(rebuilt.packet) !== JSON.stringify(packet)) throw new Error("docx_packet_binding_changed")

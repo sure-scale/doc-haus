@@ -2153,12 +2153,29 @@ test("on an uploaded markup, the preview and Accept all write a prepared proposa
     // Each is tracked under its own author, beside their changes as they were.
     const after = await listedRevisions(accepted)
     const by = (author:string) => after.filter((row) => row.author === author).map((row) => [row.type,row.text])
-    expect([by("doc.haus"),by("Review")]).toEqual([[["delete","Province"],["insert","State"]],[["delete","without consent"],["insert","without prior written consent"]]])
+    expect([by("doc.haus"),by("Review")]).toEqual([[["delete","Province"],["insert","State"]],[["insert","prior written "]]])
     expect(after.filter((row) => row.author !== "doc.haus" && row.author !== "Review")).toEqual(theirs)
     const shown = (rows:Awaited<ReturnType<typeof listedRevisions>>) => rows.map((row) => [row.author,row.type,row.text])
     expect(shown(after)).toEqual(shown(await listedRevisions(previewed)))
     expect(new Set(revisionMarkIds(accepted)).size).toBe(revisionMarkIds(accepted).length)
     expect([prepared!,consent].map(both.status)).toEqual(["accepted","accepted"])
+    const oldIds = new Set(theirs.map(row => row.id))
+    const review = after.filter(row => row.author === "Review" && !oldIds.has(row.id))
+    expect(review).toHaveLength(1)
+    for (const accept of [false, true]) {
+      const session = (await docxodus()).openDocxSession(new Uint8Array(accepted), { persistAnchorIds: false })
+      let resolved: Uint8Array
+      try {
+        const decision = accept ? session.acceptRevision(review[0]!.id) : session.rejectRevision(review[0]!.id)
+        expect(decision.success).toBe(true)
+        resolved = session.save()
+      } finally { session.close() }
+      const remaining = await listedRevisions(resolved)
+      expect(remaining).toEqual(after.filter(row => row.id !== review[0]!.id))
+      const text = (await createDocxRevision(resolved, { pendingRevisions: "layer" })).paragraphs.map(row => row.text)
+      expect(text).toContain(accept ? " without prior written consent." : " without consent.")
+      expect(text).toContain("9. Governing law. This Agreement is governed by the law of the State.")
+    }
 
     // An older proposal whose words the prepared one rewrites cannot follow
     // it: the preview and Accept all name it and say what to do, and Accept

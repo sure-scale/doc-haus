@@ -122,3 +122,17 @@ test("mixed wording can retain already-correct paragraph formatting", async () =
   expect(document).toContain("<w:b")
   expect(document).toContain('w:after="120"')
 })
+
+test("legacy phrase replay refuses a live field result atomically and preserves all safe occurrences", async () => {
+  const source = (await renderMarkdownToDocx(["# Agreement", "## 1. Terms", "1.1 As set out in clause 2.1.", "## 2. Duties", "2.1 Do things."].join("\n\n"), undefined, undefined, { form: "agreement" })).bytes
+  const phrase = { ...row("2.1", "2.2"), scope: "phrase" as const, formatting_json: null, review_comment: "" }
+  const before = new Uint8Array(source)
+  await expect(bake(source, [phrase])).rejects.toThrow()
+  await expect(buildRedlined(source, [phrase])).rejects.toThrow()
+  expect(source).toEqual(before)
+  const ordinary = (await renderMarkdownToDocx("Five days and five days.\n\nFive days remain.")).bytes
+  const safe = { ...phrase, find_text: "days", old_text: "days", new_text: "weeks" }
+  const result = await bake(ordinary, [safe])
+  const revision = await (await import("../../../dochaus/lib/docx-amendments")).createDocxRevision(result)
+  expect(revision.paragraphs.map(p => p.text)).toEqual(["Five weeks and five weeks.", "Five weeks remain."])
+})

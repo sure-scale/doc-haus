@@ -4,8 +4,9 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { applyDocxLocalization, createDocxLocalization } from "../lib/docx-amendments"
-import { pendingRedlinesForDoc, supersedeMatchingRedlines } from "../lib/redlines"
+import { pendingRedlinesForDoc, recordRedlineProposal, supersedeMatchingRedlines } from "../lib/redlines"
 import { renderMarkdownToDocx } from "../lib/render"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import redline from "../tool/redline"
 import trackedChanges from "../tool/tracked-changes"
 import wordIntegration from "../tool/word-integration"
@@ -154,4 +155,33 @@ test("on a deliverable with doc.haus's own pending change the chat tools refuse 
     expect(saved).toEqual([])
     expect(new Uint8Array(readFileSync(document))).toEqual(tracked)
   } finally { ingest.stop(true) }
+})
+
+
+test("tracked changes rechecks all occurrences after approval against a new live field", async () => {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "dh-field-permission-")))
+  roots.push(root)
+  const document = path.join(root, COUNTERPARTY_MARKUP.name)
+  const source = (await renderMarkdownToDocx("Notice requires VALUE.\n\nOther VALUE remains.")).bytes
+  writeFileSync(document, source)
+  register(root, "source")
+  const existing = recordRedlineProposal(root, { docPath: document, docName: COUNTERPARTY_MARKUP.name, scope: "phrase", findText: "VALUE", oldText: "VALUE", newText: "OLD", author: "Counsel", reviewComment: "Existing", anchorId: "prior" })
+  const before = pendingRedlinesForDoc(root, document)
+  let arrived!: () => void, release!: () => void
+  const asked = new Promise<void>(resolve => { arrived = resolve })
+  const approval = new Promise<void>(resolve => { release = resolve })
+  const context = { sessionID: "field", messageID: "field", agent: "redliner", directory: root, worktree: root, abort: new AbortController().signal,
+    metadata() {}, async ask() { arrived(); await approval } }
+  const request = trackedChanges.execute({ document: COUNTERPARTY_MARKUP.name, find: "VALUE", replace: "UPDATED", comment: "Review.", author: "Counsel" }, context)
+  await asked
+  const parts = unzipSync(source)
+  const xml = strFromU8(parts["word/document.xml"]!)
+  const field = '</w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> REF Target </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>VALUE</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t xml:space="preserve">'
+  const altered = zipSync({ ...parts, "word/document.xml": strToU8(xml.replace("VALUE", field)) })
+  writeFileSync(document, altered)
+  release()
+  expect(await request).toContain("Word field")
+  expect(pendingRedlinesForDoc(root, document)).toEqual(before)
+  expect(pendingRedlinesForDoc(root, document)[0]!.id).toBe(existing.id)
+  expect(new Uint8Array(readFileSync(document))).toEqual(altered)
 })
