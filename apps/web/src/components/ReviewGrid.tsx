@@ -6,6 +6,7 @@ import { computeCell, describeRecheck, needsFill } from "../api/review-recheck"
 import { cellKey, checkCellSources, getGrid, GridConflictError, hashQuestion, isStale, recheckPassages, saveGrid, type Grid, type GridCellData, type SourceCheck } from "../api/ingest/grid"
 import { humanizeError } from "../api/ingest/errors"
 import { getPreferences } from "../api/ingest/preferences"
+import { getMatter } from "../api/ingest/matters"
 import type { Document } from "../api/ingest/documents"
 import { createSession, getMessages, sendPrompt } from "../api/opencode/sessions"
 import { matterClient, type Client } from "../api/opencode/client"
@@ -19,6 +20,8 @@ import DocumentViewer from "./DocumentViewer"
 import { citationDocument } from "./citation-target"
 import { WordWarning } from "./WordDocuments"
 import useReviewGridPresence from "./useReviewGridPresence"
+import ReviewStarter, { normaliseStarterQuestion } from "./ReviewStarter"
+import FillPreview from "./FillPreview"
 
 // Tabular review: rows are the matter's documents, columns are natural-language
 // questions, each cell is an extracted answer with a source citation. The grid is
@@ -86,17 +89,23 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   }
   const [grid, setGrid] = useState<Grid>({ columns: [], cells: {} })
   const gridRef = useRef<Grid>(grid)
+  const documentsRef = useRef(documents)
+  documentsRef.current = documents
   const [error, setError] = useState<string>()
   const [loaded, setLoaded] = useState(false)
   const [saveProblem, setSaveProblem] = useState<string>()
   const [reloading, setReloading] = useState(false)
   const reloadInFlight = useRef(false)
   const bypassNavigation = useRef(false)
+  const preflight = useRef(false)
   const dataRouter = useContext(UNSAFE_DataRouterContext)
-  const saveState = useRef<{ version: number; pending: boolean; saving: boolean; blocked: boolean; epoch: number; queue: Grid[] }>({ version: 0, pending: false, saving: false, blocked: false, epoch: 0, queue: [] })
+  const saveState = useRef<{ version: number; pending: boolean; saving: boolean; blocked: boolean; epoch: number; queue: Array<{ grid: Grid; resolve?: (saved: boolean) => void }> }>({ version: 0, pending: false, saving: false, blocked: false, epoch: 0, queue: [] })
   const otherWindow = useReviewGridPresence(directory, matterId)
   const canEdit = loaded && !saveProblem
   const [running, setRunning] = useState(0) // cells currently extracting
+  const [starterOpen, setStarterOpen] = useState(false)
+  const [fillPreview, setFillPreview] = useState<Array<{ docName: string; column: { id: string; question: string } }>>()
+  const [checkingFill, setCheckingFill] = useState(false)
   // The detail overlay identifies its cell by key and reads it live from `grid`,
   // so the comment thread updates in place as comments are added or removed.
   const [detail, setDetail] = useState<{ docName: string; columnId: string; question: string }>()
@@ -183,7 +192,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   // A failed or in-flight save is not safely disposable just because the tab is closed.
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
-      if (!saveState.current.pending && !saveState.current.saving && !running && !commentSaving && !draft.trim()) return
+      if (!saveState.current.pending && !saveState.current.saving && !preflight.current && !running && !commentSaving && !draft.trim()) return
       event.preventDefault()
       event.returnValue = ""
     }
@@ -214,18 +223,21 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
     while (state.queue.length && !state.blocked && state.epoch === epoch) {
       const queued = state.queue.shift()!
       state.pending = state.queue.length > 0
-      const snapshot = { ...queued, version: state.version }
+      const snapshot = { ...queued.grid, version: state.version }
       try {
         const saved = await saveGrid(matterId, snapshot)
         if (state.epoch !== epoch) break
         state.version = saved.version ?? state.version + 1
         gridRef.current = { ...gridRef.current, version: state.version }
         setGrid(gridRef.current)
+        queued.resolve?.(true)
       } catch (e) {
         if (state.epoch !== epoch) break
         state.queue.unshift(queued)
         state.pending = true
         state.blocked = true
+        queued.resolve?.(false)
+        state.queue.forEach((item) => item.resolve?.(false))
         setSaveProblem(e instanceof GridConflictError
           ? "This table conflicts with the saved table. Your changes are still shown here and have not been saved. Extractions in progress may need to be run again after reloading."
           : "The table could not be saved. Your changes are still shown here; the save may or may not have reached the server. Extractions in progress may need to be run again after reloading.")
@@ -235,15 +247,17 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   }
 
   // One local writer for concurrent cell completions and user changes.
-  function commit(next: Grid) {
-    if (!loaded || saveState.current.blocked) return
+  function commit(next: Grid): Promise<boolean> {
+    if (!loaded || saveState.current.blocked) return Promise.resolve(false)
     gridRef.current = next
     setGrid(next)
     saveState.current.pending = true
     // Keep each intentional transition, including an unlock before a later
     // edit, so the server can distinguish it from replacing a reviewed cell.
-    saveState.current.queue.push(next)
-    void flush()
+    return new Promise((resolve) => {
+      saveState.current.queue.push({ grid: next, resolve })
+      void flush()
+    })
   }
 
   async function reloadGrid() {
@@ -289,7 +303,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
 
   function canLeaveGrid() {
     const state = saveState.current
-    return !(state.pending || state.saving || running || commentSaving || draft.trim()) || window.confirm("There are unsaved changes or work in progress. Leave the review table anyway?")
+    return !(state.pending || state.saving || preflight.current || running || commentSaving || draft.trim()) || window.confirm("There are unsaved changes or work in progress. Leave the review table anyway?")
   }
 
   function closeGrid() {
@@ -424,17 +438,95 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
     await Promise.all(Array.from({ length: Math.min(POOL, targets.length) }, worker))
   }
 
-  function fillEmpty() {
-    const targets = documents.flatMap((doc) =>
-      grid.columns
+  function fillTargets() {
+    const current = gridRef.current
+    return documentsRef.current.flatMap((doc) =>
+      current.columns
         .filter((col) => {
           // Compute blank, stale and never re-checked negative cells; never touch a
           // reviewed (locked) cell or one already re-checked for this question.
-          return needsFill(grid.cells[cellKey(doc.name, col.id)], hashQuestion(col.question))
+          return needsFill(current.cells[cellKey(doc.name, col.id)], hashQuestion(col.question))
         })
         .map((column) => ({ docName: doc.name, column })),
     )
-    fill(targets)
+  }
+
+  function sameDocuments(current: Document[]) {
+    const names = (docs: Document[]) => docs.map((doc) => doc.name).sort()
+    return JSON.stringify(names(current)) === JSON.stringify(names(documentsRef.current))
+  }
+
+  async function confirmFill() {
+    if (!fillPreview || checkingFill) return
+    const state = saveState.current
+    if (state.pending || state.saving || state.blocked) {
+      setError("Wait for the table to save, or resolve the save problem, before filling.")
+      setFillPreview(undefined)
+      return
+    }
+    setCheckingFill(true)
+    preflight.current = true
+    const epoch = state.epoch
+    try {
+      const [saved, matter] = await Promise.all([getGrid(matterId), getMatter(matterId)])
+      if (state.epoch !== epoch) return
+      if (!sameDocuments(matter.documents)) {
+        setError("The matter's documents changed. Close the review table and reload the matter, then review the fill again.")
+        setFillPreview(undefined)
+        return
+      }
+      const current = fillTargets()
+      if ((saved.version ?? 0) !== state.version) {
+        state.blocked = true
+        setSaveProblem("This table changed elsewhere. Reload the saved table before filling; download a copy first if needed.")
+        setFillPreview(undefined)
+        return
+      }
+      if (state.blocked || state.pending || state.saving || JSON.stringify(current) !== JSON.stringify(fillPreview)) {
+        setError("The fill targets changed. Review the fill again before starting.")
+        setFillPreview(undefined)
+        return
+      }
+      setFillPreview(undefined)
+      void fill(current)
+    } catch (e) {
+      setError(humanizeError(e, "Could not check the saved table. Try again before filling."))
+      setFillPreview(undefined)
+    } finally {
+      preflight.current = false
+      setCheckingFill(false)
+    }
+  }
+
+  async function addStarterQuestions(questions: string[]) {
+    const state = saveState.current
+    const epoch = state.epoch
+    preflight.current = true
+    try {
+      const matter = await getMatter(matterId)
+      if (state.epoch !== epoch) return false
+      if (!sameDocuments(matter.documents)) {
+        setError("The matter's documents changed. Close the review table and reload the matter before adding the starter.")
+        return false
+      }
+    } catch (e) {
+      setError(humanizeError(e, "Could not check the matter's documents. Try again."))
+      return false
+    } finally {
+      preflight.current = false
+    }
+    const existing = new Set(gridRef.current.columns.map((col) => normaliseStarterQuestion(col.question)))
+    const unique = questions.map((question) => question.trim()).filter((question) => {
+      const key = normaliseStarterQuestion(question)
+      if (!key || existing.has(key)) return false
+      existing.add(key)
+      return true
+    })
+    if (!unique.length || unique.length !== questions.length || !documentsRef.current.length) {
+      setError("Questions or documents changed. Review the starter and try again.")
+      return false
+    }
+    return commit({ ...gridRef.current, columns: [...gridRef.current.columns, ...unique.map((question) => ({ id: crypto.randomUUID(), question }))] })
   }
 
   // Excel, CSV and Word read one model of the grid (./review-export) and save
@@ -483,7 +575,8 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
           </div>
           <div className="row" style={{ gap: 8 }}>
             {running > 0 && <span className="review-running" role="status">Extracting {running}</span>}
-            <button className="primary" onClick={fillEmpty} disabled={!canEdit || documents.length === 0 || grid.columns.length === 0 || running > 0}>
+            <button type="button" onClick={() => { setError(undefined); setStarterOpen(true) }} disabled={!canEdit || running > 0}>Use a starter</button>
+            <button className="primary" onClick={() => { setError(undefined); setFillPreview(fillTargets()) }} disabled={!canEdit || documents.length === 0 || grid.columns.length === 0 || running > 0}>
               Fill empty
             </button>
             <SplitButton
@@ -501,6 +594,9 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
 
         {error && <p role="alert">{error}</p>}
         {saveProblem && <div role="alert"><p>{saveProblem}</p><p>Export the table above or download your local copy before reloading the saved table.</p><button type="button" onClick={downloadPending}>Download unsaved copy</button> <button type="button" disabled={reloading} onClick={reloadGrid}>{reloading ? "Reloading…" : "Reload saved table"}</button></div>}
+
+        {starterOpen && <ReviewStarter matterName={title} documents={documents.map((doc) => doc.name)} existingQuestions={grid.columns.map((column) => column.question)} problem={saveProblem ?? error} onCancel={() => setStarterOpen(false)} onConfirm={addStarterQuestions} />}
+        {fillPreview && <FillPreview targets={fillPreview} checking={checkingFill} onCancel={() => setFillPreview(undefined)} onConfirm={confirmFill} />}
 
         {grid.columns.length === 0 && (
           <p className="review-hint">Use + to add a question for every document.</p>

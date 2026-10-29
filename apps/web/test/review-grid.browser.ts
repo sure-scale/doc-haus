@@ -161,6 +161,10 @@ try {
       if (holdPreferences) { heldPreferences = route; return }
       return preferencesFailed ? route.fulfill({ status: 503 }) : json({ attorney, firm: "Synthetic Review LLP" })
     }
+    if (url.pathname === "/matters/matter-grid") return json({ documents: [
+      { name: "Supply terms.docx" }, { name: "Side letter.docx" }, { name: "Old note.docx" },
+      ...(page.url().endsWith("?pool") ? Array.from({ length: 4 }, (_, i) => ({ name: `Extra ${i}.docx` })) : []),
+    ] })
     if (url.pathname === "/engine/config") return json({ model: "test/model" })
     if (url.pathname === "/matters/matter-grid/grid/recheck") return json({ citations: [], passages: "", scope: { passages: 0, read: 0, candidates: 0, reread: 0, terms: [], channels: [] } })
     if (url.pathname === "/matters/matter-grid/grid/sources") {
@@ -517,6 +521,7 @@ try {
   onExtraction = undefined
   await page.goto(server.url.href + "?pool")
   await page.getByRole("button", { name: "Fill empty" }).click()
+  await page.getByRole("dialog", { name: "Review fill" }).getByRole("button", { name: "Start fill" }).click()
   for (let attempt = 0; extractionWaits.length < 5 && attempt < 250; attempt++) await new Promise(resolve => setTimeout(resolve, 20))
   assert.equal(extractionWaits.length, 5, "five extraction jobs should be in flight")
   assert.equal(extractionStarts, 5, "the extraction pool should hold the remaining work")
