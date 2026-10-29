@@ -57,6 +57,10 @@ button.dash-edit { display: inline-flex; align-items: center; gap: var(--space-2
   .dash-period button { flex: 1 1 0; padding-inline: 6px; font-size: 12.5px; }
   .dash-period .settings-seg-check { display: none; }
 }
+/* On the narrowest screens the period labels wrap rather than push the page wider. */
+@container dash (max-width: 334px) {
+  .dash-period button { line-height: 1.2; white-space: normal; }
+}
 
 /* ---------- Card ---------- */
 .dash-card {
