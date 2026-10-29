@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { insertChunk, openDb, upsertDocument } from "./db"
-import { questionTerms, readGrid, recheckPassages, recheckRequest, writeGrid, type Grid } from "./grid"
+import { gridRequest, questionTerms, readGrid, recheckPassages, recheckRequest, writeGrid, type Grid } from "./grid"
 
 // Synthetic supply agreement: one clause per passage. The liquidated-damages
 // clause sits at passage 9, outside the five passages a first extraction saw.
@@ -54,6 +54,7 @@ function withMatter(run: (dir: string) => void) {
 
 test("grid persistence keeps each recorded author and leaves older comments unattributed across saves", () => withMatter((dir) => {
   const grid: Grid = {
+    version: 0,
     columns: [{ id: "q1", question: "What is the governing law?" }],
     cells: {
       "Supply.docx::q1": {
@@ -63,7 +64,7 @@ test("grid persistence keeps each recorded author and leaves older comments unat
     },
   }
   writeGrid(dir, grid)
-  expect(readGrid(dir)).toEqual(grid)
+  expect(readGrid(dir)).toEqual({ ...grid, version: 1 })
   const next = readGrid(dir)
   next.cells["Supply.docx::q1"]!.comments!.push({ id: "later", text: "Agreed.", at: 3, author: "Jordan Chen" })
   writeGrid(dir, next)
@@ -73,6 +74,49 @@ test("grid persistence keeps each recorded author and leaves older comments unat
     { id: "later", text: "Agreed.", at: 3, author: "Jordan Chen" },
   ])
 }))
+
+test("legacy grids load at version zero; stale writes cannot overwrite an accepted edit", () => withMatter((dir) => {
+  const file = path.join(dir, ".dochaus", "grid.json")
+  mkdirSync(path.dirname(file), { recursive: true })
+  writeFileSync(file, JSON.stringify({ columns: [{ id: "q1", question: "Question?" }], cells: {} }))
+  const first = readGrid(dir)
+  const second = readGrid(dir)
+  expect(first.version).toBe(0)
+  const saved = writeGrid(dir, { ...first, columns: [...first.columns, { id: "q2", question: "Another?" }] })
+  expect(saved.ok).toBe(true)
+  const stale = writeGrid(dir, { ...second, columns: [] })
+  expect(stale.ok).toBe(false)
+  expect(stale.grid).toEqual(readGrid(dir))
+  expect(readGrid(dir).columns.map((c) => c.id)).toEqual(["q1", "q2"])
+  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(saved.grid)
+}))
+
+test("reviewed answers cannot be replaced by an unreviewed extraction but can be explicitly unreviewed", () => withMatter((dir) => {
+  const cell = { answer: "Reviewed answer", status: "reviewed" as const, questionHash: "q" }
+  expect(writeGrid(dir, { version: 0, columns: [{ id: "q", question: "Question?" }], cells: { "a.docx::q": cell } }).ok).toBe(true)
+  const current = readGrid(dir)
+  const replacement = { ...current, cells: { "a.docx::q": { ...cell, answer: "Late answer", status: "filled" as const } } }
+  expect(writeGrid(dir, replacement).ok).toBe(false)
+  expect(writeGrid(dir, { ...current, cells: { "a.docx::q": { ...cell, answer: "Changed while reviewed" } } }).ok).toBe(false)
+  expect(writeGrid(dir, { ...current, cells: {} }).ok).toBe(false)
+  expect(readGrid(dir)).toEqual(current)
+  expect(writeGrid(dir, { ...current, cells: { "a.docx::q": { ...cell, comments: [{ id: "c", text: "Checked", at: 1 }] } } }).ok).toBe(true)
+  const withComment = readGrid(dir)
+  expect(writeGrid(dir, { ...withComment, cells: { "a.docx::q": { ...withComment.cells["a.docx::q"]!, status: "filled" } } }).ok).toBe(true)
+  const unreviewed = readGrid(dir)
+  expect(writeGrid(dir, { ...unreviewed, cells: { "a.docx::q": cell } }).ok).toBe(true)
+  const againReviewed = readGrid(dir)
+  expect(writeGrid(dir, { ...againReviewed, columns: [], cells: {} }).ok).toBe(true)
+}))
+
+test("grid save validates the version, questions and cell structure", () => {
+  const valid: Grid = { version: 0, columns: [{ id: "q", question: "Question?" }], cells: { "a.docx::q": { answer: "Yes", status: "filled", questionHash: "q" } } }
+  expect(gridRequest(valid)).toEqual(valid)
+  expect(gridRequest({ ...valid, version: undefined })).toBeUndefined()
+  expect(gridRequest({ ...valid, version: -1 })).toBeUndefined()
+  expect(gridRequest({ ...valid, columns: [valid.columns[0], valid.columns[0]] })).toBeUndefined()
+  expect(gridRequest({ ...valid, cells: { "a.docx::q": { answer: "Yes", status: "unknown", questionHash: "q" } } })).toBeUndefined()
+})
 
 // Identity of a passage as the first extraction's search returned it.
 function seenPassages(dir: string, name: string, clauses: string[][], indexes: number[]) {

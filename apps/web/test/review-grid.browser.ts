@@ -28,6 +28,7 @@ const supplyTerms = zipSync(Object.fromEntries(Object.entries({
   "word/document.xml": `<w:document xmlns:w="${W}"><w:body><w:p><w:r><w:t>1. Supply. The Supplier shall supply the Goods.</w:t></w:r></w:p><w:p><w:r><w:t xml:space="preserve">12. This agreement is governed by </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>the law of England and Wales.</w:t></w:r></w:p><w:p><w:r><w:t>13. Notices must be in writing.</w:t></w:r></w:p></w:body></w:document>`,
 }).map(([name, xml]) => [name, strToU8(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>${xml}`)])))
 const grid: Grid = {
+  version: 0,
   columns: [{ id: "c1", question: "What is the governing law?" }],
   cells: {
     "Supply terms.docx::c1": {
@@ -58,6 +59,7 @@ const entry = path.join(directory, "harness.tsx")
 await Bun.write(entry, `
 import { createElement, useState } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react")))}
 import { createRoot } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-dom/client")))}
+import { createBrowserRouter, RouterProvider, Link, useLocation, useNavigate } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-router-dom")))}
 import ReviewGrid from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/ReviewGrid.tsx"))}
 // Closing unmounts the grid, as MatterDetail drops ?view=review.
 function Harness() {
@@ -70,12 +72,30 @@ function Harness() {
         quality: { status: "degraded", signals: [{ code: "replacement_characters", detail: "40 of 900 characters are replacement or control characters" }] } },
       { id: 2, name: "Side letter.docx", doc_path: "Side letter.docx", created_at: 0 },
       { id: 3, name: "Old note.docx", doc_path: "Old note.docx", created_at: 0 },
+      ...(location.search === "?pool" ? Array.from({ length: 4 }, (_, i) => ({ id: 10 + i, name: "Extra " + i + ".docx", doc_path: "Extra " + i + ".docx", created_at: 0 })) : []),
     ],
     onClose: () => { window.gridCloses = (window.gridCloses ?? 0) + 1; setOpen(false) },
     onAsk: (prompt) => { window.asked = prompt },
   }) : null
 }
-createRoot(document.getElementById("root")).render(createElement(Harness))
+function NavigationHarness() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const open = new URLSearchParams(location.search).get("view") === "review"
+  return createElement("div", null,
+    createElement(Link, { to: "/nav?view=review" }, "Open review"),
+    createElement(Link, { to: "/outside" }, "Other page"),
+    open && createElement(ReviewGrid, {
+      matterId: "matter-grid", title: "Supplier review", directory: "/matters/supplier-review",
+      documents: [{ id: 1, name: "Supply terms.docx", doc_path: "Supply terms.docx", created_at: 0 }],
+      onClose: () => navigate("/nav"), onAsk: () => navigate("/nav?view=chat"),
+    }))
+}
+const node = document.getElementById("root")
+if (location.pathname === "/nav") {
+  const router = createBrowserRouter([{ path: "*", element: createElement(NavigationHarness) }])
+  createRoot(node).render(createElement(RouterProvider, { router, useTransitions: false }))
+} else createRoot(node).render(createElement(Harness))
 `)
 const build = await Bun.build({ entrypoints: [entry], target: "browser", define: { "import.meta.env": JSON.stringify({ VITE_INGEST_URL: "http://grid.invalid", VITE_OPENCODE_URL: "http://engine.invalid" }) } })
 assert.equal(build.success, true, build.logs.join("\n"))
@@ -103,19 +123,46 @@ try {
   let preferencesFailed = false
   let heldPreferences: import("@playwright/test").Route | undefined
   let holdPreferences = false
+  let holdPut = false
+  let heldPut: import("@playwright/test").Route | undefined
+  let holdGridGet = false
+  let heldGridGet: import("@playwright/test").Route | undefined
+  let gridGets = 0
+  let onExtraction: ((route: import("@playwright/test").Route) => void) | undefined
+  const extractionWaits: import("@playwright/test").Route[] = []
+  let extractionStarts = 0
+  const putVersions: number[] = []
+  const save = (route: import("@playwright/test").Route) => {
+    const incoming = route.request().postDataJSON() as Grid
+    putVersions.push(incoming.version ?? -1)
+    if (incoming.version !== storedGrid.version) return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "Conflict", grid: storedGrid }) })
+    for (const [key, prior] of Object.entries(storedGrid.cells)) {
+      const next = incoming.cells[key]
+      if (prior.status === "reviewed" && next?.status === "filled" && JSON.stringify({ ...next, status: "reviewed" }) !== JSON.stringify(prior))
+        return route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "Unlock separately", grid: storedGrid }) })
+    }
+    storedGrid = { ...incoming, version: (storedGrid.version ?? 0) + 1 }
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(storedGrid) })
+  }
   await page.route("http://grid.invalid/**", route => {
     const request = route.request()
     const url = new URL(request.url())
     const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) })
     if (url.pathname === "/matters/matter-grid/grid") {
-      if (request.method() === "GET") return json(storedGrid)
-      storedGrid = request.postDataJSON() as Grid
-      return route.fulfill({ status: 204 })
+      if (request.method() === "GET") {
+        gridGets++
+        if (holdGridGet) { heldGridGet = route; holdGridGet = false; return }
+        return json(storedGrid)
+      }
+      if (holdPut) { heldPut = route; holdPut = false; return }
+      return save(route)
     }
     if (url.pathname === "/preferences") {
       if (holdPreferences) { heldPreferences = route; return }
       return preferencesFailed ? route.fulfill({ status: 503 }) : json({ attorney, firm: "Synthetic Review LLP" })
     }
+    if (url.pathname === "/engine/config") return json({ model: "test/model" })
+    if (url.pathname === "/matters/matter-grid/grid/recheck") return json({ citations: [], passages: "", scope: { passages: 0, read: 0, candidates: 0, reread: 0, terms: [], channels: [] } })
     if (url.pathname === "/matters/matter-grid/grid/sources") {
       const cells = (request.postDataJSON() as { cells: { key: string }[] }).cells
       checked.push(cells.map(cell => cell.key))
@@ -137,7 +184,21 @@ try {
     if (url.pathname === "/matters/matter-grid/documents/amendments") return json(null)
     return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: `Unexpected ${url.pathname}` }) })
   })
-  await page.route("http://engine.invalid/**", route => route.fulfill({ status: 404 }))
+  await page.route("http://engine.invalid/**", route => {
+    const url = new URL(route.request().url())
+    const key = `${route.request().method()} ${url.pathname}`
+    const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) })
+    if (key === "POST /api/session") { extractionStarts++; return json({ data: { id: "ses_grid", location: { directory: "/matters/supplier-review" } } }) }
+    if (/^POST \/api\/session\/ses_grid\/(agent|model)$/.test(key)) return route.fulfill({ status: 204 })
+    if (key === "POST /api/session/ses_grid/prompt") return json({ data: { id: "msg_user", type: "user", sessionID: "ses_grid", time: { created: 1 }, payload: { text: "test" }, delivery: "queue" } })
+    if (key === "POST /api/experimental/session/ses_grid/wait") { extractionWaits.push(route); onExtraction?.(route); return }
+    if (key === "GET /api/session/ses_grid/message") {
+      const assistant = { type: "assistant", id: "msg_answer", agent: "extract", model: { providerID: "test", id: "model" }, finish: "stop", time: { created: 1, completed: 2 }, content: [{ type: "text", text: "New extracted answer" }] }
+      const idle = { type: "idle", id: "msg_idle", outcome: "succeeded", time: { created: 3 } }
+      return json({ data: url.searchParams.get("order") === "desc" ? [idle, assistant] : [assistant, idle], cursor: {} })
+    }
+    return route.fulfill({ status: 404, body: `Unexpected ${key}` })
+  })
   await page.goto(server.url.href)
   const table = page.getByRole("dialog", { name: "Review table — Supplier review" })
   const answer = page.getByRole("button", { name: /^The law of England and Wales\./ })
@@ -147,6 +208,32 @@ try {
   const focusInDetail = () => detailModal.evaluate(element => element.contains(document.activeElement))
 
   await table.getByRole("rowheader", { name: /Supply terms\.docx/ }).getByText("Text may be incomplete or garbled").waitFor()
+  assert.equal(putVersions.length, 0, "opening the grid must not write it")
+  // Keep the first save in flight while the lawyer makes a second change.
+  holdPut = true
+  const firstPut = page.waitForRequest(request => request.url().endsWith("/grid") && request.method() === "PUT")
+  const lock = page.getByRole("row", { name: /^Supply terms\.docx/ }).getByTitle("Mark reviewed")
+  await lock.click()
+  await firstPut
+  await page.getByRole("row", { name: /^Supply terms\.docx/ }).getByTitle("Unlock").click()
+  await answer.click()
+  await detail.getByRole("textbox", { name: "Add a comment" }).fill("Note after unlocking")
+  await detail.getByRole("button", { name: "Add comment", exact: true }).click()
+  await detail.getByText("Note after unlocking").waitFor()
+  page.once("dialog", dialog => dialog.dismiss())
+  await detail.getByRole("button", { name: "Ask about this answer in chat", exact: true }).click()
+  assert.equal(await page.evaluate(() => (window as unknown as { asked?: string }).asked), undefined, "chat navigation must not discard a pending save")
+  assert.ok(heldPut)
+  await save(heldPut)
+  await page.waitForFunction(() => document.querySelector('[title="Mark reviewed"]') !== null)
+  await page.waitForTimeout(100)
+  assert.deepEqual(putVersions, [0, 1, 2], "queued saves must retain the unlock before the following edit")
+  assert.equal(storedGrid.cells["Supply terms.docx::c1"]!.status, "filled")
+  assert.equal(storedGrid.cells["Supply terms.docx::c1"]!.comments![0]!.text, "Note after unlocking")
+  await detail.getByTitle("Delete comment").click()
+  await page.keyboard.press("Escape")
+  await page.waitForTimeout(100)
+  console.log("PASS opening is read-only and overlapping edits are saved in order")
   assert.match(await answer.innerText(), /cited text may be incomplete or garbled/)
   console.log("PASS a degraded source and the cells citing it say its text may be incomplete")
 
@@ -214,6 +301,7 @@ try {
   await compose.fill("Settings are unavailable.")
   await detail.getByRole("button", { name: "Add comment", exact: true }).click()
   await comments.filter({ hasText: "Settings are unavailable." }).getByText("Unattributed", { exact: true }).waitFor()
+  await page.waitForTimeout(100)
   assert.deepEqual(storedGrid.cells["Supply terms.docx::c1"]!.comments!.map(comment => comment.author), ["Amina Shah", "Jordan Chen", undefined, undefined])
   assert.equal(storedGrid.cells["Side letter.docx::c1"]!.comments![0]!.author, undefined)
   preferencesFailed = false
@@ -354,10 +442,193 @@ try {
   await page.keyboard.press("Escape")
   await detail.waitFor({ state: "detached" })
   assert.equal(await table.isVisible(), true)
+
+  // A stale save cannot overwrite the other window. Local edits stay visible,
+  // a close needs confirmation, and reload is a deliberate discard.
+  storedGrid = { ...storedGrid, version: (storedGrid.version ?? 0) + 1 }
+  page.once("dialog", dialog => dialog.accept("What is the local question?"))
+  await table.getByRole("button", { name: "Edit question: What is the governing law?" }).click()
+  await table.getByText("Your changes are still shown here and have not been saved.", { exact: false }).waitFor()
+  assert.equal(await table.getByRole("button", { name: "Edit question: What is the local question?" }).isDisabled(), true)
+  assert.equal(storedGrid.columns[0]!.question, "What is the governing law?")
+  page.once("dialog", dialog => dialog.dismiss())
+  await table.getByRole("button", { name: "Close", exact: true }).click()
+  assert.equal(await table.isVisible(), true)
+  holdGridGet = true
+  const countBeforeReload = gridGets
+  const reloadRequest = page.waitForRequest(request => request.url().endsWith("/grid") && request.method() === "GET")
+  page.once("dialog", dialog => dialog.accept())
+  await table.getByRole("button", { name: "Reload saved table" }).click()
+  await reloadRequest
+  await table.getByRole("button", { name: "Reloading…" }).waitFor()
+  assert.equal(await table.getByRole("button", { name: "Reloading…" }).isDisabled(), true)
+  assert.equal(gridGets, countBeforeReload + 1)
+  assert.ok(heldGridGet)
+  await heldGridGet.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(storedGrid) })
+  await table.getByRole("button", { name: "Edit question: What is the governing law?" }).waitFor()
+  console.log("PASS stale changes remain visible until the user deliberately reloads")
   await page.keyboard.press("Escape")
   await table.waitFor({ state: "detached" })
   assert.equal(await closes(), 1)
   console.log("PASS the next Escape closes the review table once")
+
+  // Real component + mocked engine: release one extraction after changing its
+  // live inputs. The unchanged baseline proves the same result is normally applied.
+  for (const action of ["none", "review", "question", "delete", "comment"] as const) {
+    storedGrid = structuredClone(grid)
+    await page.goto(server.url.href)
+    const row = page.getByRole("row", { name: /^Supply terms\.docx/ })
+    const waiting = new Promise<import("@playwright/test").Route>(resolve => { onExtraction = resolve })
+    await row.getByTitle("Re-run this cell").click()
+    await page.waitForFunction(() => document.body.textContent?.includes("Extracting 1"))
+    const heldExtraction = await waiting
+    if (action === "review") await row.getByTitle("Mark reviewed").click()
+    if (action === "question") {
+      page.once("dialog", dialog => dialog.accept("A changed question"))
+      await page.getByRole("button", { name: "Edit question: What is the governing law?" }).click()
+    }
+    if (action === "delete") await page.getByRole("button", { name: "Delete column: What is the governing law?" }).click()
+    if (action === "comment") {
+      await row.getByRole("button", { name: /^The law of England and Wales\./ }).click()
+      await page.getByRole("textbox", { name: "Add a comment" }).fill("Preserve this note")
+      await page.getByRole("button", { name: "Add comment", exact: true }).click()
+      await page.getByText("Preserve this note").waitFor()
+      await page.keyboard.press("Escape")
+    }
+    await heldExtraction.fulfill({ status: 204 })
+    await page.getByText("Extracting 1").waitFor({ state: "detached" })
+    if (action === "none" || action === "comment") {
+      await row.getByRole("button", { name: "New extracted answer" }).waitFor()
+      if (action === "comment") await row.getByRole("button", { name: /^1 comments/ }).waitFor()
+    } else if (action === "delete") {
+      assert.equal(await page.getByRole("button", { name: /New extracted answer/ }).count(), 0)
+      assert.equal(storedGrid.columns.length, 0)
+    } else {
+      await row.getByRole("button", { name: /^The law of England and Wales\./ }).waitFor()
+      assert.equal(await page.getByRole("button", { name: /New extracted answer/ }).count(), 0)
+      if (action === "review") assert.equal(await row.getByTitle("Unlock").count(), 1)
+    }
+    console.log(`PASS extraction result with ${action} during the run`)
+  }
+
+  storedGrid = structuredClone(grid)
+  extractionWaits.length = 0
+  extractionStarts = 0
+  onExtraction = undefined
+  await page.goto(server.url.href + "?pool")
+  await page.getByRole("button", { name: "Fill empty" }).click()
+  for (let attempt = 0; extractionWaits.length < 5 && attempt < 250; attempt++) await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(extractionWaits.length, 5, "five extraction jobs should be in flight")
+  assert.equal(extractionStarts, 5, "the extraction pool should hold the remaining work")
+  storedGrid = { ...storedGrid, version: (storedGrid.version ?? 0) + 1 }
+  page.once("dialog", dialog => dialog.accept("Conflicting question"))
+  await page.getByRole("button", { name: "Edit question: What is the governing law?" }).click()
+  await page.getByText("Your changes are still shown here and have not been saved.", { exact: false }).waitFor()
+  page.once("dialog", dialog => dialog.accept())
+  await page.getByRole("button", { name: "Reload saved table" }).click()
+  await page.getByRole("button", { name: "Edit question: What is the governing law?" }).waitFor()
+  await Promise.all(extractionWaits.map(route => route.fulfill({ status: 204 })))
+  await page.getByText(/Extracting/).waitFor({ state: "detached" })
+  assert.equal(extractionStarts, 5, "queued targets from the old table must not start after reload")
+  assert.equal(await page.getByRole("button", { name: /New extracted answer/ }).count(), 0)
+  console.log("PASS reloading cancels queued extraction targets and ignores in-flight results")
+
+  // A pending settings read is part of a comment submission. Reload must not
+  // let that older submission write into the newly loaded table.
+  storedGrid = structuredClone(grid)
+  await page.goto(server.url.href)
+  await page.getByRole("button", { name: /^The law of England and Wales\./ }).click()
+  holdPreferences = true
+  const waitingPreferences = page.waitForRequest(request => new URL(request.url()).pathname === "/preferences")
+  await page.getByRole("textbox", { name: "Add a comment" }).fill("Old pending comment")
+  await page.getByRole("button", { name: "Add comment", exact: true }).click()
+  await waitingPreferences
+  await page.keyboard.press("Escape")
+  page.once("dialog", dialog => dialog.dismiss())
+  await page.getByRole("dialog", { name: "Review table — Supplier review" }).getByRole("button", { name: "Close", exact: true }).click()
+  assert.equal(await page.getByRole("dialog", { name: "Review table — Supplier review" }).isVisible(), true)
+  storedGrid = { ...storedGrid, version: (storedGrid.version ?? 0) + 1 }
+  page.once("dialog", dialog => dialog.accept("Conflicting question"))
+  await page.getByRole("button", { name: "Edit question: What is the governing law?" }).click()
+  await page.getByText("Your changes are still shown here and have not been saved.", { exact: false }).waitFor()
+  page.once("dialog", dialog => dialog.accept())
+  await page.getByRole("button", { name: "Reload saved table" }).click()
+  await page.getByRole("button", { name: "Edit question: What is the governing law?" }).waitFor()
+  assert.ok(heldPreferences)
+  const countBeforeRelease = putVersions.length
+  await heldPreferences.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ attorney: "Amina Shah" }) })
+  holdPreferences = false
+  await page.waitForTimeout(100)
+  assert.equal(putVersions.length, countBeforeRelease)
+  assert.equal(storedGrid.cells["Supply terms.docx::c1"]!.comments, undefined)
+  console.log("PASS a pending comment warns before close and cannot write after reload")
+
+  storedGrid = structuredClone(grid)
+  await page.goto(new URL("/nav", server.url).href)
+  await page.getByRole("link", { name: "Open review" }).click()
+  const navTable = page.getByRole("dialog", { name: "Review table — Supplier review" })
+  await navTable.getByTitle("Mark reviewed").waitFor()
+  holdPut = true
+  const navPut = page.waitForRequest(request => request.url().endsWith("/grid") && request.method() === "PUT")
+  await navTable.getByTitle("Mark reviewed").click()
+  await navPut
+  let prompts = 0
+  page.once("dialog", dialog => { prompts++; return dialog.dismiss() })
+  await page.goBack()
+  await navTable.getByTitle("Unlock").waitFor()
+  assert.equal(prompts, 1, "Back should ask once before discarding unsaved changes")
+  assert.match(page.url(), /view=review/)
+  assert.equal(await page.evaluate(() => { const event = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented }), true)
+  page.once("dialog", dialog => { prompts++; return dialog.accept() })
+  await page.goBack()
+  await navTable.waitFor({ state: "detached" })
+  assert.equal(prompts, 2, "confirming Back should leave once")
+  assert.ok(heldPut)
+  await save(heldPut)
+  await page.getByRole("link", { name: "Open review" }).click()
+  await navTable.getByTitle("Unlock").waitFor()
+  holdPut = true
+  const secondNavPut = page.waitForRequest(request => request.url().endsWith("/grid") && request.method() === "PUT")
+  await navTable.getByTitle("Unlock").click()
+  await secondNavPut
+  let closePrompts = 0
+  page.once("dialog", dialog => { closePrompts++; return dialog.accept() })
+  await navTable.getByRole("button", { name: "Close", exact: true }).click()
+  await navTable.waitFor({ state: "detached" })
+  assert.equal(closePrompts, 1, "closing through the router must not double-prompt")
+  assert.ok(heldPut)
+  await save(heldPut)
+  await page.getByRole("link", { name: "Other page" }).click()
+  assert.match(page.url(), /\/outside$/)
+  await page.goBack()
+  assert.match(page.url(), /\/nav$/)
+  await page.goto(new URL("/nav?view=review", server.url).href)
+  await navTable.getByTitle("Mark reviewed").waitFor()
+  await navTable.getByRole("button", { name: "Close", exact: true }).click()
+  await navTable.waitFor({ state: "detached" })
+  console.log("PASS Back and router close guard unsaved work without duplicate prompts; unload remains guarded")
+
+  await page.getByRole("link", { name: "Open review" }).click()
+  await navTable.getByRole("button", { name: "Edit question: What is the governing law?" }).waitFor()
+  storedGrid = { ...storedGrid, version: (storedGrid.version ?? 0) + 1 }
+  page.once("dialog", dialog => dialog.accept("Conflicting question"))
+  await navTable.getByRole("button", { name: "Edit question: What is the governing law?" }).click()
+  await navTable.getByText("Your changes are still shown here and have not been saved.", { exact: false }).waitFor()
+  holdGridGet = true
+  const heldReload = page.waitForRequest(request => request.url().endsWith("/grid") && request.method() === "GET")
+  page.once("dialog", dialog => dialog.accept())
+  await navTable.getByRole("button", { name: "Reload saved table" }).click()
+  await heldReload
+  await navTable.getByRole("button", { name: "Reloading…" }).waitFor()
+  page.once("dialog", dialog => dialog.accept())
+  await navTable.getByRole("button", { name: "Close", exact: true }).click()
+  await navTable.waitFor({ state: "detached" })
+  assert.ok(heldGridGet)
+  await heldGridGet.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ...storedGrid, columns: [{ id: "c1", question: "Obsolete response" }] }) })
+  await page.getByRole("link", { name: "Open review" }).click()
+  await navTable.getByRole("button", { name: "Edit question: What is the governing law?" }).waitFor()
+  assert.equal(await navTable.getByRole("button", { name: "Edit question: Obsolete response" }).count(), 0)
+  console.log("PASS an in-flight reload cannot affect a later opening of the table")
 } finally {
   await browser.close()
   server.stop(true)

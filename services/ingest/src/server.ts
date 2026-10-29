@@ -65,7 +65,7 @@ import { listAgents, createAgent, updateAgent, deleteAgent, setAgentEnabled, AGE
 import { docxodus } from "./docxodus"
 import { listGcpProjects, listAwsProfiles, vertexProbeRoutes } from "./host"
 import { parserCapabilitiesRoutes } from "./parser-capabilities-route"
-import { checkCellSources, readGrid, recheckPassages, recheckRequest, sourceCheckRequest, writeGrid, type Grid } from "./grid"
+import { checkCellSources, gridRequest, readGrid, recheckPassages, recheckRequest, sourceCheckRequest, writeGrid } from "./grid"
 import { PreferencesUnavailableError, PreferencesValidationError, readDraftingPreferences, readDraftingTelemetryRetentionPreference, writeDraftingPreferences } from "./preferences"
 import { researchConnectionRoutes } from "./research-connections"
 import { readLeanPayload, readDetailPayload, readStoragePayload } from "./telemetry"
@@ -948,8 +948,11 @@ app.delete("/matters/:id/documents", async (c) => {
 app.get("/matters/:id/grid", (c) => c.json(readGrid(matterDir(c.req.param("id")))))
 
 app.put("/matters/:id/grid", async (c) => {
-  writeGrid(matterDir(c.req.param("id")), await c.req.json<Grid>())
-  return c.json({ ok: true })
+  const grid = gridRequest(await c.req.json().catch(() => undefined))
+  if (!grid) return c.json({ error: "A valid review table and version are required." }, 400)
+  const result = writeGrid(matterDir(c.req.param("id")), grid)
+  if (!result.ok) return c.json({ error: result.error, grid: result.grid }, 409)
+  return c.json(result.grid)
 })
 
 // One deterministic re-check pass for a negative grid cell, scoped to its own
