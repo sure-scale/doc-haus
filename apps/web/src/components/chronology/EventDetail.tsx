@@ -219,11 +219,16 @@ export default function EventDetail({
               {account.evidence.length === 0 && (
                 <p className="chronology-warning">No verified supporting passage is available.</p>
               )}
-              {account.gaps.map((gap, index) => (
-                <p key={index} className="chronology-warning">
-                  {gap}
-                </p>
-              ))}
+              {account.gaps.length > 0 && (
+                <div className="chronology-source-questions">
+                  <h4>Source questions to check</h4>
+                  {account.gaps.map((gap, index) => (
+                    <p key={index} className="chronology-warning">
+                      {gap}
+                    </p>
+                  ))}
+                </div>
+              )}
               <details className="chronology-account-details">
                 <summary>Account details</summary>
                 <p>
