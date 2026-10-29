@@ -329,6 +329,8 @@ async function prepare(directory:string,name:string,instructions:string,diagnost
   for (const {row,amendment} of resolved) if (inside.has(amendment.id))
     refused.push(inside.get(amendment.id) === "docx_field_replacement"
       ? `The change to ${quoted(row.before_quote)} was not proposed: it touches a Word field that could not be safely preserved. Make this change in Word, then request edits again.`
+      : inside.get(amendment.id) === "docx_protected_association"
+      ? `The change to ${quoted(row.before_quote)} was not proposed: a Word note, link or field could not be safely preserved. Review the passage in Word, then request edits again.`
       : inside.get(amendment.id) === "docx_mixed_format_replacement"
       ? `The change to ${quoted(row.before_quote)} was not proposed: its changed words cross different Word formatting. Make this change in Word, or request smaller changes within each formatting region.`
       : ownRevisionReason(row.before_quote,"proposed"))

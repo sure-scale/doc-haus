@@ -1215,3 +1215,242 @@ test("format guard admits deletion, uniform edits and insertion without changing
   const inserted = await applyDocxParagraphEdits(source, [edit("The Supplier", "The new Supplier")])
   expect((await createDocxRevision(inserted.bytes)).markdown).toContain("The new **Supplier** pays")
 })
+
+test("changed-paragraph associations retain notes, links and live field locations", async () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const make = async (body: string) => {
+    const parts = unzipSync((await renderMarkdownToDocx("Monday VALUE")).bytes)
+    const doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+    const matches = Array.from(doc.getElementsByTagNameNS(W, "t")).filter(node => node.textContent === "Monday VALUE")
+    expect(matches).toHaveLength(1)
+    const run = matches[0]!.parentNode!, parent = run.parentNode!
+    expect((run as Element).localName).toBe("r")
+    const template = new DOMParser().parseFromString(`<w:p xmlns:w="${W}">${body}</w:p>`, "application/xml")
+    for (const child of Array.from(template.documentElement.childNodes)) parent.insertBefore(doc.importNode(child, true), run)
+    parent.removeChild(run)
+    parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+    return parts
+  }
+  const check = async (parts: Record<string, Uint8Array>, tamper: (xml: string) => string,
+    options: { pendingRevisions?: "layer"; revisionAuthor?: string; ownAuthors?: string[] } = {}) => {
+    const source = zipSync(parts), view = await createDocxRevision(source, options)
+    const ordinal = view.paragraphs.findIndex(p => p.text.startsWith("Monday "))
+    expect(ordinal).toBeGreaterThanOrEqual(0)
+    const edit = { id: "adjacent", paragraph_handle: view.paragraphs[ordinal]!.paragraph_handle, occurrence: 0, before_quote: "Monday", replacement: "Tuesday" }
+    const result = await applyDocxParagraphEdits(source, [edit], undefined, options)
+    const out = unzipSync(result.bytes), xml = strFromU8(out["word/document.xml"]!), altered = tamper(xml)
+    expect(altered).not.toBe(xml)
+    out["word/document.xml"] = strToU8(altered)
+    const before = await openRevision(source, options), good = await openRevision(result.bytes, options), bad = await openRevision(zipSync(out), options)
+    const spans = new Map([[ordinal, [{ offset: 0, replaced: "Monday", changed: "Tuesday", author: options.revisionAuthor }]]])
+    try {
+      expect(good.paragraphs[ordinal]!.match.text).toBe(bad.paragraphs[ordinal]!.match.text)
+      expect(() => verifyPreservation(before, good, new Set([ordinal]), spans)).not.toThrow()
+      expect(() => verifyPreservation(before, bad, new Set([ordinal]), spans)).toThrow()
+    } finally { before.session.close(); good.session.close(); bad.session.close() }
+  }
+  const notes = await make('<w:r><w:t xml:space="preserve">Monday VALUE</w:t></w:r><w:r><w:footnoteReference w:id="1"/></w:r>')
+  notes["word/footnotes.xml"] = strToU8(`<w:footnotes xmlns:w="${W}"><w:footnote w:id="1"><w:p><w:r><w:t>First note.</w:t></w:r></w:p></w:footnote><w:footnote w:id="2"><w:p><w:r><w:t>Other note.</w:t></w:r></w:p></w:footnote></w:footnotes>`)
+  notes["word/_rels/document.xml.rels"] = strToU8(strFromU8(notes["word/_rels/document.xml.rels"]!).replace('</Relationships>', '<Relationship Id="notes-test" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/></Relationships>'))
+  notes["[Content_Types].xml"] = strToU8(strFromU8(notes["[Content_Types].xml"]!).replace('</Types>', '<Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/></Types>'))
+  await check(notes, xml => xml.replace('w:footnoteReference w:id="1"', 'w:footnoteReference w:id="2"'))
+  await check(notes, xml => xml.replace(/<w:footnoteReference w:id="1"\s*\/>/, ''))
+  for (const kind of ["del", "moveFrom", "ins", "moveTo"]) {
+    const prior = { ...notes }, doc = new DOMParser().parseFromString(strFromU8(prior["word/document.xml"]!), "application/xml")
+    const paragraph = doc.getElementsByTagNameNS(W, "p")[0]!
+    const carrier = doc.createElementNS(W, `w:${kind}`)
+    carrier.setAttributeNS(W, "w:id", "76"); carrier.setAttributeNS(W, "w:author", "doc.haus"); carrier.setAttributeNS(W, "w:date", "2026-01-01T00:00:00Z")
+    const run = doc.createElementNS(W, "w:r"), reference = doc.createElementNS(W, "w:footnoteReference")
+    reference.setAttributeNS(W, "w:id", "1"); run.appendChild(reference); carrier.appendChild(run); paragraph.appendChild(carrier)
+    prior["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+    await check(prior, xml => {
+      const changed = new DOMParser().parseFromString(xml, "application/xml")
+      const wrappers = Array.from(changed.getElementsByTagNameNS(W, kind)).filter(node => node.getAttributeNS(W, "id") === "76")
+      expect(wrappers).toHaveLength(1)
+      const ref = wrappers[0]!.getElementsByTagNameNS(W, "footnoteReference")[0]!
+      expect(ref).toBeTruthy(); ref.getAttributeNodeNS(W, "id")!.value = "2"
+      return new XMLSerializer().serializeToString(changed)
+    }, { pendingRevisions: "layer", ownAuthors: ["doc.haus"], revisionAuthor: "doc.haus" })
+  }
+  const links = unzipSync((await renderMarkdownToDocx('Monday [VALUE](https://example.invalid/one) and [OTHER](https://example.invalid/two)')).bytes)
+  await check(links, xml => {
+    const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    const doc = new DOMParser().parseFromString(xml, "application/xml")
+    const found = Array.from(doc.getElementsByTagNameNS(W, "hyperlink"))
+    expect(found).toHaveLength(2)
+    const first = found[0]!.getAttributeNS(R, "id"), second = found[1]!.getAttributeNS(R, "id")
+    expect(first).toBeTruthy(); expect(second).toBeTruthy(); expect(first).not.toBe(second)
+    const attribute = found[0]!.getAttributeNodeNS(R, "id")
+    expect(attribute).toBeTruthy(); attribute!.value = second!
+    const serialized = new XMLSerializer().serializeToString(doc)
+    const reread = new DOMParser().parseFromString(serialized, "application/xml")
+    const link = reread.getElementsByTagNameNS(W, "hyperlink")[0]!
+    expect(Array.from(link.attributes).filter(attr => attr.namespaceURI === R && attr.localName === "id")).toHaveLength(1)
+    expect(link.getAttributeNS(R, "id")).toBe(second)
+    return serialized
+  })
+  await check(links, xml => {
+    const doc = new DOMParser().parseFromString(xml, "application/xml")
+    const found = Array.from(doc.getElementsByTagNameNS(W, "hyperlink"))
+    expect(found).toHaveLength(2)
+    const link = found[0]!, parent = link.parentNode!
+    while (link.firstChild) parent.insertBefore(link.firstChild, link)
+    parent.removeChild(link)
+    return new XMLSerializer().serializeToString(doc)
+  })
+  const qualified = { ...links }
+  {
+    const doc = new DOMParser().parseFromString(strFromU8(qualified["word/document.xml"]!), "application/xml")
+    const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!
+    link.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:mc", "http://schemas.openxmlformats.org/markup-compatibility/2006")
+    link.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:x", "urn:test:one")
+    link.setAttributeNS("http://schemas.openxmlformats.org/markup-compatibility/2006", "mc:Ignorable", "x")
+    qualified["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+  }
+  await check(qualified, xml => {
+    const doc = new DOMParser().parseFromString(xml, "application/xml"), link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!
+    const binding = link.getAttributeNodeNS("http://www.w3.org/2000/xmlns/", "x")
+    expect(binding?.value).toBe("urn:test:one"); binding!.value = "urn:test:two"
+    return new XMLSerializer().serializeToString(doc)
+  })
+  const ancestor = { ...links }
+  {
+    const doc = new DOMParser().parseFromString(strFromU8(ancestor["word/document.xml"]!), "application/xml")
+    const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!, parent = link.parentNode!
+    const wrapper = doc.createElementNS(W, "w:customXml")
+    wrapper.setAttributeNS(W, "w:element", "association")
+    wrapper.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:mc", "http://schemas.openxmlformats.org/markup-compatibility/2006")
+    wrapper.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:x", "urn:test:one")
+    wrapper.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:y", "urn:test:two")
+    wrapper.setAttributeNS("http://schemas.openxmlformats.org/markup-compatibility/2006", "mc:Ignorable", "x")
+    parent.replaceChild(wrapper, link); wrapper.appendChild(link)
+    ancestor["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+  }
+  {
+    const source = zipSync(ancestor), original = new Uint8Array(source), view = await createDocxRevision(source)
+    const paragraph = view.paragraphs.find(p => p.text.startsWith("Monday "))!
+    expect(paragraph).toBeTruthy()
+    const edit = { id: "adjacent", paragraph_handle: paragraph.paragraph_handle, occurrence: 0, before_quote: "Monday", replacement: "Tuesday" }
+    const dx = await docxodus(), probe = dx.openDocxSession(source, {}), prototype = Object.getPrototypeOf(probe)
+    probe.close()
+    const originalReplace = prototype.replaceMatch, originalTrack = prototype.setTrackedChanges, originalAuthor = prototype.setRevisionAuthor
+    let setters = 0
+    prototype.replaceMatch = function (...args: unknown[]) { setters++; return originalReplace.apply(this, args) }
+    prototype.setTrackedChanges = function (...args: unknown[]) { setters++; return originalTrack.apply(this, args) }
+    prototype.setRevisionAuthor = function (...args: unknown[]) { setters++; return originalAuthor.apply(this, args) }
+    try {
+      await expect(applyDocxParagraphEdits(source, [edit])).rejects.toThrow("docx_protected_association:adjacent")
+      expect(setters).toBe(0); expect(source).toEqual(original)
+    } finally { prototype.replaceMatch = originalReplace; prototype.setTrackedChanges = originalTrack; prototype.setRevisionAuthor = originalAuthor }
+  }
+  const markedRun = { ...notes }
+  {
+    const doc = new DOMParser().parseFromString(strFromU8(markedRun["word/document.xml"]!), "application/xml")
+    const run = doc.getElementsByTagNameNS(W, "footnoteReference")[0]!.parentNode as Element
+    run.setAttributeNS(W, "w:rsidR", "00112233")
+    markedRun["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+  }
+  await check(markedRun, xml => {
+    const doc = new DOMParser().parseFromString(xml, "application/xml")
+    const run = doc.getElementsByTagNameNS(W, "footnoteReference")[0]!.parentNode as Element
+    const attr = run.getAttributeNodeNS(W, "rsidR")!
+    expect(attr.value).toBe("00112233"); attr.value = "44556677"
+    return new XMLSerializer().serializeToString(doc)
+  })
+  const duplicate = unzipSync((await renderMarkdownToDocx('Monday [VALUE](https://example.invalid/one) VALUE')).bytes)
+  await check(duplicate, xml => {
+    const doc = new DOMParser().parseFromString(xml, "application/xml")
+    const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!
+    const plain = Array.from(doc.getElementsByTagNameNS(W, "t")).find(node => node.textContent?.trim() === "VALUE" && node.parentNode?.parentNode !== link)!
+    expect(link).toBeTruthy(); expect(plain).toBeTruthy()
+    const run = plain.parentNode!, parent = link.parentNode!
+    expect(plain.textContent).toBe(" VALUE")
+    const spacer = run.cloneNode(true) as Element
+    spacer.getElementsByTagNameNS(W, "t")[0]!.textContent = " "
+    plain.textContent = "VALUE"; parent.insertBefore(spacer, run)
+    const offset = (target: Element) => {
+      let value = 0
+      for (const node of Array.from(doc.getElementsByTagNameNS(W, "t"))) {
+        if (target === node.parentNode?.parentNode) break
+        value += (node.textContent ?? "").length
+      }
+      return value
+    }
+    const before = offset(link), next = run.nextSibling
+    parent.replaceChild(run, link); parent.insertBefore(link, next)
+    expect(offset(link)).toBeGreaterThan(before)
+    return new XMLSerializer().serializeToString(doc)
+  })
+  const fieldStart = '<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> REF Target </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+  const fieldEnd = '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
+  const value = '<w:r><w:t>1</w:t></w:r>', middle = '<w:r><w:t xml:space="preserve"> then </w:t></w:r>'
+  const fields = await make(`<w:r><w:t xml:space="preserve">Monday </w:t></w:r>${fieldStart}${value}${fieldEnd}${middle}${value}`)
+  await check(fields, xml => {
+    const doc = new DOMParser().parseFromString(xml, "application/xml")
+    const control = Array.from(doc.getElementsByTagNameNS(W, "fldChar")), texts = Array.from(doc.getElementsByTagNameNS(W, "t")).filter(node => node.textContent === "1")
+    expect(control).toHaveLength(3); expect(texts).toHaveLength(2)
+    const parent = control[0]!.parentNode!.parentNode!, first = control[0]!.parentNode!, last = control[2]!.parentNode!
+    const moved: Node[] = []; for (let at: Node | null = first; at; at = at.nextSibling) { moved.push(at); if (at === last) break }
+    expect(moved.at(-1)).toBe(last)
+    const plain = texts[1]!.parentNode!; parent.insertBefore(plain, first)
+    for (const node of moved) parent.appendChild(node)
+    return new XMLSerializer().serializeToString(doc)
+  })
+})
+
+test("a simple hyperlink permits a proven interior edit and rejects changed destinations or revision authors", async () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  const source = (await renderMarkdownToDocx("Before [Alpha beta term](https://example.invalid/one) after.")).bytes
+  for (const options of [{}, { pendingRevisions: "layer" as const, revisionAuthor: "Reviewer", ownAuthors: ["Reviewer"] }]) {
+    const view = await createDocxRevision(source, options), ordinal = view.paragraphs.findIndex(p => p.text.includes("Alpha beta term"))
+    expect(ordinal).toBeGreaterThanOrEqual(0)
+    const edit = { id: "link", paragraph_handle: view.paragraphs[ordinal]!.paragraph_handle, occurrence: 0, before_quote: "beta", replacement: "delta" }
+    const result = await applyDocxParagraphEdits(source, [edit], undefined, options)
+    const before = await openRevision(source, options), after = await openRevision(result.bytes, options)
+    const changes = wordChanges(view.paragraphs[ordinal]!.text, after.paragraphs[ordinal]!.match.text).map(change => ({ ...change, author: "revisionAuthor" in options ? options.revisionAuthor : undefined }))
+    const spans = new Map([[ordinal, changes]])
+    try {
+      expect(() => verifyPreservation(before, after, new Set([ordinal]), spans)).not.toThrow()
+      const assertTamper = async (change: (doc: Document) => void) => {
+        const parts = unzipSync(result.bytes), doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+        change(doc); parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+        const altered = await openRevision(zipSync(parts), options)
+        try {
+          expect(altered.paragraphs[ordinal]!.match.text).toBe(after.paragraphs[ordinal]!.match.text)
+          expect(() => verifyPreservation(before, altered, new Set([ordinal]), spans)).toThrow("docx_protected_association_changed")
+        } finally { altered.session.close() }
+      }
+      await assertTamper(doc => {
+        const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!, id = link.getAttributeNodeNS(R, "id")
+        expect(id).toBeTruthy(); id!.value = "tampered-destination"
+      })
+      await assertTamper(doc => {
+        const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!, parent = link.parentNode!
+        while (link.firstChild) parent.insertBefore(link.firstChild, link)
+        parent.removeChild(link)
+      })
+      await assertTamper(doc => {
+        const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!
+        const run = doc.createElementNS(W, "w:r"), reference = doc.createElementNS(W, "w:footnoteReference")
+        reference.setAttributeNS(W, "w:id", "1"); run.appendChild(reference); link.appendChild(run)
+      })
+      if ("revisionAuthor" in options) await assertTamper(doc => {
+        const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!, revision = link.getElementsByTagNameNS(W, "ins")[0]!
+        expect(revision).toBeTruthy(); revision.setAttributeNS(W, "w:author", "Other")
+      })
+    } finally { before.session.close(); after.session.close() }
+  }
+})
+
+
+test("length-changing edits on both sides of a hyperlink retain its association", async () => {
+  const source = (await renderMarkdownToDocx("Monday [VALUE](https://example.invalid/one) Friday")).bytes
+  const view = await createDocxRevision(source), paragraph = view.paragraphs.find(p => p.text.startsWith("Monday"))!
+  const edits = [
+    { id: "first", paragraph_handle: paragraph.paragraph_handle, occurrence: 0, before_quote: "Monday", replacement: "Wednesday" },
+    { id: "second", paragraph_handle: paragraph.paragraph_handle, occurrence: 0, before_quote: "Friday", replacement: "Saturday" },
+  ]
+  const result = await applyDocxParagraphEdits(source, edits)
+  const updated = await createDocxRevision(result.bytes)
+  expect(updated.paragraphs.find(p => p.text.startsWith("Wednesday"))?.text).toBe("Wednesday VALUE Saturday")
+})

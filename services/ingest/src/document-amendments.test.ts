@@ -5,6 +5,7 @@ import { chmodSync, existsSync, realpathSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { AlignmentType, Document, Footer, Header, LevelFormat, Packer, Paragraph, Table, TableCell, TableRow, TextRun } from "docx"
 import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
 import { paragraphTargets, withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
@@ -3355,6 +3356,39 @@ test("only a body accept of a completed run touches its notes, and only while th
     await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
   }
 },120000)
+
+test("Prepare reports unsupported association wrappers as an open item without a correction call", async () => {
+  const base = (await renderMarkdownToDocx("Monday [VALUE](https://example.invalid/one)" )).bytes
+  for (const wrapped of [false, true]) {
+    const directory = await mkdtemp(path.join(tmpdir(), "dochaus-association-prepare-")), file = path.join(directory, "working.docx")
+    const engine = syntheticEngine(() => ({ amendments: [{ before_quote: "Monday", replacement: "Tuesday", target_context: "payment timing", reason: "Update timing." }], open_items: [] }), firstCandidate)
+    try {
+      const parts = unzipSync(base)
+      if (wrapped) {
+        const doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+        const links = Array.from(doc.getElementsByTagNameNS(W, "hyperlink")); expect(links).toHaveLength(1)
+        const link = links[0]!, parent = link.parentNode!, wrapper = doc.createElementNS(W, "w:customXml")
+        wrapper.setAttributeNS(W, "w:element", "association"); parent.replaceChild(wrapper, link); wrapper.appendChild(link)
+        parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+      }
+      await writeDeliverable(directory, "working.docx", Buffer.from(zipSync(parts)))
+      const before = await Bun.file(file).bytes()
+      await withPreparation(directory, engine, async prepare => {
+        const response = await prepare("Update the timing.")
+        expect(response.status).toBe(200)
+        const result = await response.json() as { redline_ids?: number[]; proposed?: number; open_items: string[] }
+        expect(result.proposed ?? result.redline_ids?.length).toBe(wrapped ? 0 : 1)
+        if (wrapped) {
+          expect(result.open_items.join(" ")).toContain("Word note, link or field")
+          expect(result.open_items.join(" ")).toContain("request edits again")
+          expect(result.open_items.join(" ")).not.toContain("docx_")
+          expect(engine.prompts.some(prompt => prompt.includes("One proposed amendment was refused"))).toBe(false)
+        }
+      })
+      expect(await Bun.file(file).bytes()).toEqual(before)
+    } finally { engine.server.stop(true); await rm(directory, { recursive: true, force: true }) }
+  }
+})
 
 test("preparation reports a mixed-format replacement as an open item and leaves the document unchanged", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "dochaus-mixed-format-")), file = path.join(directory, "working.docx")

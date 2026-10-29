@@ -241,8 +241,22 @@ function paragraphSpan(paragraph: Match, start: number, length: number): Match {
     contextBefore: paragraph.text.slice(Math.max(0, start - 160), start), contextAfter: paragraph.text.slice(end, end + 160) }
 }
 
+const ASSOCIATIONS = ["footnoteReference", "endnoteReference", "hyperlink", "fldSimple", "fldChar", "instrText"]
+// Only wrappers whose text and revision ownership are understood are admitted.
+// In particular MC alternatives and custom XML can change the projection.
+function assertAssociationAncestry(paragraph: Element, id?: string) {
+  const supported = new Set(["r", "hyperlink", "fldSimple", "ins", "del", "moveFrom", "moveTo", "sdt", "sdtContent"])
+  for (const element of elements(paragraph, "*").filter(node => ASSOCIATIONS.includes(node.localName))) {
+    for (let node = element.parentNode; node && node !== paragraph; node = node.parentNode) {
+      if (node.nodeType !== 1 || (node as Element).namespaceURI !== W || !supported.has((node as Element).localName))
+        throw new Error(`docx_protected_association${id ? `:${id}` : ""}`)
+    }
+  }
+}
+
 function admittedFields(opened: Opened, binding: Binding) {
   const { amendment, match, ordinal } = binding
+  assertAssociationAncestry(opened.paragraphs[ordinal]!.node, amendment.id)
   // The touch rule (see pendingRevisionParagraphs); only a layer-mode reader marks paragraphs.
   // A paragraph inside a block content control is governed by its enclosing
   // control, outside the paragraph XML we can safely verify here.
@@ -415,7 +429,7 @@ export async function admissionRefusals(bytes: Uint8Array, packet: DocxLocalizat
     return new Map(selectedBindings(opened, packet, selectionSchema.parse(selections)).flatMap(binding => {
       try { admitted(opened, binding); return [] }
       catch (error) {
-        if (error instanceof Error && ["docx_own_revision", "docx_field_replacement", "docx_mixed_format_replacement"].some(code => error.message === `${code}:${binding.amendment.id}`))
+        if (error instanceof Error && ["docx_own_revision", "docx_field_replacement", "docx_mixed_format_replacement", "docx_protected_association"].some(code => error.message === `${code}:${binding.amendment.id}`))
           return [[binding.amendment.id, error.message.split(":")[0]!] as const]
         throw error
       }
@@ -1091,6 +1105,7 @@ export function verifyPreservation(before: Awaited<ReturnType<typeof openRevisio
       throw new Error("docx_paragraph_properties_changed")
     verifyInlineControls(a.node, b.node, a.match.text, b.match.text, spans?.get(ordinal), before.options.revisionAuthor)
     verifyFields(a.node, b.node)
+    verifyAssociations(a.node, b.node, a.match.text, b.match.text, spans?.get(ordinal), before.options.revisionAuthor)
     // Native UNIDs are transient, but within this session identify original runs.
     const edited = parse(before.session.raw.getXml(a.match.enclosingAnchor.id))
     const remaining = new Map(elements(edited, "r").map(run => [run.getAttributeNS(PT, "Unid"), run]))
@@ -1120,6 +1135,97 @@ function verifyFields(before: Element, after: Element) {
   }
   if (JSON.stringify(snapshot(before)) !== JSON.stringify(snapshot(after)))
     throw new Error("docx_field_replacement")
+}
+
+// A text edit does not authorize changing a note reference, link destination,
+// or the position of a live field. One plain-run link may be edited only when
+// its shell and both original and current text/run properties are proven.
+function verifyAssociations(before: Element, after: Element, oldText: string, newText: string, actualChanges?: ProtectedWordChange[], defaultAuthor?: string) {
+  assertAssociationAncestry(before); assertAssociationAncestry(after)
+  const names = ASSOCIATIONS
+  type Record = { kind: string; start: number; end: number; xml: string; namespaces: string; ancestry: string; node: Element }
+  const ancestry = (root: Element, paragraph: Element) => {
+    const shells: string[] = []
+    for (let node = root.parentNode; node && node !== paragraph; node = node.parentNode) {
+      if (node.nodeType !== 1) throw new Error("docx_protected_association_changed")
+      shells.push(canonical(node.cloneNode(false)))
+    }
+    return JSON.stringify(shells)
+  }
+  // Preserve all bindings visible to the association, including those used by
+  // QName-valued markup-compatibility attributes. Nested declarations need
+  // a per-node namespace proof, so this narrow check refuses that shape.
+  const bindings = (root: Element) => {
+    const xmlns = "http://www.w3.org/2000/xmlns/"
+    if (Array.from(root.getElementsByTagName("*")).some(node => Array.from(node.attributes).some(attr => attr.namespaceURI === xmlns)))
+      throw new Error("docx_protected_association_changed")
+    const result = new Map<string, string>()
+    for (let node: Node | null = root; node && node.nodeType === 1; node = node.parentNode) {
+      for (const attr of Array.from((node as Element).attributes)) {
+        if (attr.namespaceURI !== xmlns) continue
+        const prefix = attr.name === "xmlns" ? "" : attr.localName
+        if (!result.has(prefix)) result.set(prefix, attr.value)
+      }
+    }
+    return JSON.stringify([...result].sort(([a], [b]) => a.localeCompare(b)))
+  }
+  const inventory = (paragraph: Element) => {
+    let text = ""
+    const found: Record[] = []
+    const walk = (node: Element) => {
+      if (node.namespaceURI === W && ["pPr", "rPr"].includes(node.localName)) return
+      const hasAssociation = names.some(name => elements(node, name).length)
+      if (node.namespaceURI === W && ["del", "moveFrom"].includes(node.localName)) {
+        if (hasAssociation) found.push({ kind: node.localName, start: text.length, end: text.length, xml: canonical(node), namespaces: bindings(node), ancestry: ancestry(node, paragraph), node })
+        return
+      }
+      if (node.namespaceURI === W && ["ins", "moveTo"].includes(node.localName) && hasAssociation) {
+        const entry = { kind: node.localName, start: text.length, end: text.length, xml: canonical(node), namespaces: bindings(node), ancestry: ancestry(node, paragraph), node }
+        found.push(entry)
+        for (const child of Array.from(node.childNodes)) if (child.nodeType === 1) walk(child as Element)
+        entry.end = text.length
+        return
+      }
+      if (node.namespaceURI === W && node.localName === "t") { text += node.textContent ?? ""; return }
+      const association = node.namespaceURI === W && names.includes(node.localName)
+      const entry = association ? { kind: node.localName, start: text.length, end: text.length, xml: canonical(node), namespaces: bindings(node), ancestry: ancestry(node, paragraph), node } : undefined
+      if (entry) found.push(entry)
+      for (const child of Array.from(node.childNodes)) if (child.nodeType === 1) walk(child as Element)
+      if (entry) entry.end = text.length
+    }
+    walk(paragraph)
+    return { text, found }
+  }
+  const a = inventory(before), b = inventory(after)
+  if (!a.found.length && !b.found.length) return
+  if (a.text !== oldText || b.text !== newText) throw new Error("docx_protected_association_changed")
+  const changes: ProtectedWordChange[] = (actualChanges ?? wordChanges(oldText, newText)).filter(change => change.replaced || change.changed)
+  const map = (point: number) => point + changes.reduce((delta, change) => delta +
+    (change.offset < point && change.offset + change.replaced.length <= point ? change.changed.length - change.replaced.length : 0), 0)
+  if (a.found.length !== b.found.length || a.found.some((item, index) => {
+    const next = b.found[index]!
+    const touches = changes.some(change => change.replaced.length
+      ? change.offset < item.end && change.offset + change.replaced.length > item.start || item.start === item.end && change.offset < item.start && change.offset + change.replaced.length > item.start
+      : change.offset >= item.start && change.offset <= item.end)
+    const inside = item.kind === "hyperlink" && changes.filter(change => change.replaced.length
+      ? change.offset < item.end && change.offset + change.replaced.length > item.start
+      : change.offset >= item.start && change.offset <= item.end)
+    const asControl = (link: Element) => {
+      const doc = link.ownerDocument!, control = doc.createElementNS(W, "w:sdt")
+      control.appendChild(doc.createElementNS(W, "w:sdtPr"))
+      const content = doc.createElementNS(W, "w:sdtContent")
+      for (const child of Array.from(link.childNodes)) content.appendChild(child.cloneNode(true))
+      control.appendChild(content)
+      return control
+    }
+    const approved = inside && inside.length === 1 && actualChanges && inside.every(change =>
+      change.offset > item.start && change.offset + change.replaced.length < item.end ||
+      change.offset === item.start && change.offset + change.replaced.length === item.end && !!change.changed) &&
+      canonical(item.node.cloneNode(false)) === canonical(next.node.cloneNode(false)) &&
+      safeControlTextEdit(asControl(item.node), asControl(next.node), oldText.slice(item.start, item.end),
+        newText.slice(map(item.start), map(item.end)), inside[0]!, inside[0]!.offset - item.start, inside[0]!.author ?? defaultAuthor)
+    return touches && !approved || item.kind !== next.kind || item.namespaces !== next.namespaces || item.ancestry !== next.ancestry || !approved && item.xml !== next.xml || map(item.start) !== next.start || map(item.end) !== next.end
+  })) throw new Error("docx_protected_association_changed")
 }
 
 // Prove both the complete control markup and its position in the visible

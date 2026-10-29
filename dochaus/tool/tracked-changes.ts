@@ -131,6 +131,7 @@ function legacyRefusal(error: unknown) {
   if (error instanceof LegacyPhraseRefusal) return error.message
   if (error instanceof Error && /^docx_field_replacement(?::|$)/.test(error.message)) return "This change touches a Word field that could not be safely preserved. Make the change in Word, then prepare a fresh change."
   if (error instanceof Error && /^docx_mixed_format_replacement(?::|$)/.test(error.message)) return "This change crosses different Word formatting. Make it in Word, or prepare smaller changes within each formatting region."
+  if (error instanceof Error && /^docx_protected_association(?::|$|_changed$)/.test(error.message)) return "A Word note, link or field could not be safely preserved. Review the passage in Word and prepare a fresh change."
   if (error instanceof Error && /^docx_protected_inline_content(?::|$|_changed$)/.test(error.message)) return "Word content or its anchors could not be confirmed as preserved. Review the passage in Word and prepare a fresh change."
   return "This change cannot be safely prepared for every occurrence. Review the passage in Word or request a smaller change."
 }
