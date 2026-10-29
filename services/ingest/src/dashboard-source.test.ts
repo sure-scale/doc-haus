@@ -50,7 +50,9 @@ test("native paginated sessions and messages use per-message spend, with failed 
   const matter = createMatter("One")
   const db = openDb(matter.dir)
   try { db.run("INSERT INTO documents (doc_path, name, created_at, role) VALUES (?, ?, ?, ?)", ["source.docx", "source.docx", Date.now(), "source"]) } finally { db.close() }
-  const first = Date.parse("2026-01-01T12:00:00Z"), second = Date.parse("2026-01-02T12:00:00Z")
+  // São Paulo skipped midnight on 4 November 2018. The real source route
+  // must advance through that date while attributing each message's spend.
+  const first = Date.parse("2018-11-03T12:00:00Z"), second = Date.parse("2018-11-04T12:00:00Z")
   const session = (id: string, cost: number) => ({ id, location: { directory: matter.dir }, title: id, cost, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: first, updated: second } })
   let failMessages = false
   globalThis.fetch = Object.assign(async (input: Parameters<typeof fetch>[0]) => {
@@ -68,7 +70,10 @@ test("native paginated sessions and messages use per-message spend, with failed 
   }, { preconnect: originalFetch.preconnect }) as typeof fetch
   const chart = { type: "chart", title: "Spend", metric: "spend", groupBy: "day", form: "line", period: "all", source: { kind: "local-query", query: "practice-chart", version: 1 } }
   try {
-    const result = await dashboardChartSource(JSON.stringify(chart), "all", "UTC")
+    const query = new URLSearchParams({ chart: JSON.stringify(chart), period: "all", timeZone: "America/Sao_Paulo" })
+    const response = await dashboardRoutes().request(`/dashboard/sources/chart?${query}`)
+    expect(response.status).toBe(200)
+    const result = await response.json()
     expect(result.data.total).toBe(4)
     expect(result.data.basis).not.toContain("partial")
     const docs = { ...chart, title: "Documents", metric: "documents", groupBy: "matter", form: "bars" }
@@ -77,8 +82,8 @@ test("native paginated sessions and messages use per-message spend, with failed 
     expect((await dashboardChartSource(JSON.stringify(tokens), "all", "UTC")).data.total).toBe(4)
     const availability = await validateDashboardSources({ widgets: [docs, tokens, { type: "actions" }, { type: "library" }], period: "all", timeZone: "UTC" })
     expect(availability.results.map(row => row.dataBacked)).toEqual([true, true, false, true])
-    expect(result.data.points.find(point => point.time === Date.parse("2026-01-01T00:00:00Z"))?.value).toBe(3)
-    expect(result.data.points.find(point => point.time === Date.parse("2026-01-02T00:00:00Z"))?.value).toBe(1)
+    expect(result.data.points.find((point: { time: number }) => point.time === Date.parse("2018-11-03T03:00:00Z"))?.value).toBe(3)
+    expect(result.data.points.find((point: { time: number }) => point.time === Date.parse("2018-11-04T03:00:00Z"))?.value).toBe(1)
     failMessages = true
     const partial = await dashboardChartSource(JSON.stringify(chart), "all", "UTC")
     expect(partial.data.basis).toContain("partial")

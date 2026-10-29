@@ -75,3 +75,31 @@ test("calendar buckets follow the requested time zone across daylight saving", (
   const after = view.points.find(point => point.label === "30 Mar")!
   expect(after.time! - before.time!).toBe(23 * 60 * 60 * 1000)
 })
+
+test("civil day buckets progress through midnight gaps, repeats and skipped dates", () => {
+  const cases = [
+    { zone: "America/Sao_Paulo", created: "2018-11-02T12:00:00Z", end: "2018-11-06T12:00:00Z", labels: ["2 Nov", "3 Nov", "4 Nov", "5 Nov", "6 Nov"], transition: "4 Nov", boundary: "2018-11-04T03:00:00Z" },
+    { zone: "America/Havana", created: "2020-10-31T12:00:00Z", end: "2020-11-02T12:00:00Z", labels: ["31 Oct", "1 Nov", "2 Nov"], transition: "1 Nov", boundary: "2020-11-01T04:00:00Z" },
+    { zone: "Pacific/Apia", created: "2011-12-29T12:00:00Z", end: "2011-12-31T12:00:00Z", labels: ["29 Dec", "31 Dec", "1 Jan"], transition: "31 Dec", boundary: "2011-12-30T10:00:00Z" },
+  ]
+  for (const item of cases) {
+    const view = chartData(chart({ metric: "matters", groupBy: "day", form: "line", period: "all" }), data(row("civil", { matter: { ...row("civil").matter, created_at: at(item.created) } })), "all", at(item.end), item.zone)
+    expect(view.unavailable).toBe(false)
+    expect(view.points.map(point => point.label)).toEqual(item.labels)
+    expect(view.points.find(point => point.label === item.transition)?.time).toBe(at(item.boundary))
+    expect(view.points.reduce((sum, point) => sum + point.value, 0)).toBe(view.total)
+    for (const groupBy of ["week", "month"] as const) {
+      const grouped = chartData(chart({ metric: "matters", groupBy, form: "line", period: "all" }), data(row("civil", { matter: { ...row("civil").matter, created_at: at(item.created) } })), "all", at(item.end), item.zone)
+      expect(grouped.unavailable).toBe(false)
+      expect(grouped.points.reduce((sum, point) => sum + point.value, 0)).toBe(grouped.total)
+    }
+  }
+})
+
+
+test("both occurrences of a repeated midnight belong to the same earliest civil-day bucket", () => {
+  const records = ["2020-11-01T04:30:00Z", "2020-11-01T05:30:00Z"].map((time, i) => row(String(i), { matter: { ...row(String(i)).matter, created_at: at(time) } }))
+  const view = chartData(chart({ metric: "matters", groupBy: "day", form: "line", period: "all" }), data(...records), "all", at("2020-11-02T12:00:00Z"), "America/Havana")
+  expect(view.points[0]).toMatchObject({ label: "1 Nov", time: at("2020-11-01T04:00:00Z"), value: 2 })
+  expect(view.points.reduce((sum, point) => sum + point.value, 0)).toBe(2)
+})

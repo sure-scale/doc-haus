@@ -26,8 +26,7 @@ export type MatterActivity = {
   drafting?: LeanDraftingStatus
   documents?: number
   costs: CostEntry[]
-  // Its sessions or its drafting run could not be read, so an empty-looking
-  // matter is never taken for an idle one.
+  // Sessions, cost timing or the drafting run could not be read completely.
   unread: boolean
   // Sessions that used tokens but report no cost: see isUnpriced.
   unpriced: number
@@ -85,11 +84,11 @@ export function messageCosts(session: Session, messages: SessionMessageInfo[]): 
 }
 
 // A session that stayed within one day needs no message read. If the read
-// fails the session's spend falls on the day it started, as before.
-async function sessionCosts(client: Client, session: Session): Promise<CostEntry[]> {
+// fails the session's spend falls on the day it started and is marked partial.
+async function sessionCosts(client: Client, session: Session): Promise<{ entries: CostEntry[]; unread: boolean }> {
   const whole = [{ time: session.time.created, cost: session.cost || 0, session: session.id }]
-  if (!session.cost || startOfDay(session.time.created) === startOfDay(session.time.updated)) return whole
-  return listMessageInfos(client, session.id).then((messages) => messageCosts(session, messages), () => whole)
+  if (!session.cost || startOfDay(session.time.created) === startOfDay(session.time.updated)) return { entries: whole, unread: false }
+  return listMessageInfos(client, session.id).then((messages) => ({ entries: messageCosts(session, messages), unread: false }), () => ({ entries: whole, unread: true }))
 }
 
 async function loadMatter(matter: Matter, withDocuments: boolean): Promise<MatterActivity> {
@@ -100,13 +99,14 @@ async function loadMatter(matter: Matter, withDocuments: boolean): Promise<Matte
     withDocuments ? getMatter(matter.id).then((detail) => detail.documents.length) : Promise.resolve(undefined),
   ])
   const list = sessions.status === "fulfilled" ? sessions.value : []
+  const costs = await mapLimited(list, 2, (session) => sessionCosts(client, session))
   return {
     matter,
     sessions: list,
     drafting: drafting.status === "fulfilled" ? drafting.value : undefined,
     documents: documents.status === "fulfilled" ? documents.value : undefined,
-    costs: (await mapLimited(list, 2, (session) => sessionCosts(client, session))).flat(),
-    unread: sessions.status === "rejected" || drafting.status === "rejected",
+    costs: costs.flatMap((result) => result.entries),
+    unread: sessions.status === "rejected" || drafting.status === "rejected" || costs.some((result) => result.unread),
     unpriced: list.filter(isUnpriced).length,
   }
 }

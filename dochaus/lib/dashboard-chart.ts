@@ -16,7 +16,25 @@ function draftedCount(drafting: MatterActivity["drafting"]) { return drafting?.d
 function calendar(zone: string) {
   const fmt = new Intl.DateTimeFormat("en-GB", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" })
   const parts = (time: number) => { const p = Object.fromEntries(fmt.formatToParts(time).map(x => [x.type, Number(x.value)])); return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) }
-  const midnight = (wall: number) => { let instant = wall; for (let i = 0; i < 4; i++) { const next = instant + wall - parts(instant); if (next === instant) break; instant = next } return instant }
+  // Most midnights have a unique offset and converge immediately. A clock can
+  // also skip midnight, repeat it, or skip an entire civil date. In those cases
+  // find the first instant whose local date reaches the requested civil date.
+  const midnight = (wall: number) => {
+    let instant = wall
+    for (let i = 0; i < 4; i++) { const next = instant + wall - parts(instant); if (next === instant) break; instant = next }
+    const localDay = (time: number) => { const date = new Date(parts(time)); return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) }
+    if (parts(instant) === wall && localDay(instant - 1000) < wall) return instant
+    const hour = 3600000
+    let before = wall - 48 * hour
+    for (let after = before + hour; after <= wall + 48 * hour; before = after, after += hour) {
+      if (localDay(after) < wall) continue
+      // Intl has second precision; return the first second of the local date.
+      let lo = Math.floor(before / 1000), hi = Math.ceil(after / 1000)
+      while (hi - lo > 1) { const mid = Math.floor((lo + hi) / 2); if (localDay(mid * 1000) >= wall) hi = mid; else lo = mid }
+      return hi * 1000
+    }
+    throw new Error("Could not resolve dashboard calendar date.")
+  }
   const wallDay = (time: number) => { const d = new Date(parts(time)); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) }
   const day = (time: number) => midnight(wallDay(time))
   const add = (time: number, days: number) => midnight(wallDay(time) + days * 86400000)
@@ -109,8 +127,14 @@ export function chartData(chart: Chart, data: DashboardData, dashboardPeriod: Pe
   if (TIME.has(chart.groupBy)) {
     const first = Number.isFinite(range.start) ? range.start : Math.min(c.day(now), ...values.map((entry) => entry.time!))
     const groups = new Map<number, ChartPoint>()
-    for (let time = bucket(first, chart.groupBy, c); time < range.end; time = nextBucket(time, chart.groupBy, c)) {
+    for (let time = bucket(first, chart.groupBy, c); time < range.end;) {
       groups.set(time, { key: String(time), time, label: chart.groupBy === "month" ? dateLabel(time, true, zone) : `${chart.groupBy === "week" ? "Week of " : ""}${dateLabel(time, false, zone)}`, value: 0 })
+      const next = nextBucket(time, chart.groupBy, c)
+      if (!(next > time)) {
+        notes.push("This calendar period could not be calculated safely. Try a different grouping.")
+        return { ...result([], total), unavailable: true, empty: "This calendar period is unavailable." }
+      }
+      time = next
     }
     for (const entry of values) {
       const point = groups.get(bucket(entry.time!, chart.groupBy, c))

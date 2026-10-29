@@ -24,7 +24,7 @@ test("the prompt carries settings, exact names and pins, with no practice figure
   expect(prompt).toContain("catalog")
 })
 
-async function nativeJob(outcome: "succeeded" | "failed", chosen = plan, options: { usable?: boolean; preview?: boolean; request?: DashboardRequest } = {}) {
+async function nativeJob(outcome: "succeeded" | "failed", chosen = plan, options: { usable?: boolean; dataBacked?: boolean; preview?: boolean; request?: DashboardRequest } = {}) {
   const original = globalThis.fetch
   const requests: Request[] = []
   const period = "month"
@@ -36,7 +36,7 @@ async function nativeJob(outcome: "succeeded" | "failed", chosen = plan, options
     requests.push(request.clone())
     const pathname = new URL(request.url).pathname
     if (pathname === "/engine/config") return Response.json({ model: "provider/primary", small_model: "provider/fast" })
-    if (pathname === "/dashboard/discovery") return Response.json({ results: chosen.widgets.map((_, index) => ({ index, status: options.usable === false ? "empty" : "available", usable: options.usable !== false, dataBacked: options.usable !== false })) })
+    if (pathname === "/dashboard/discovery") return Response.json({ results: chosen.widgets.map((_, index) => ({ index, status: options.usable === false ? "empty" : "available", usable: options.usable !== false, dataBacked: options.dataBacked ?? (options.usable !== false) })) })
     if (pathname === "/dashboard/directory") return Response.json({ dir: "/synthetic-workspace/.dashboard" })
     if (pathname === "/api/session" && request.method === "POST") {
       created = await request.json() as Record<string, unknown>
@@ -107,4 +107,30 @@ test("accepts a discovered client whose saved name has surrounding whitespace", 
   const { error, result } = await nativeJob("succeeded", chosen, { request: { ...input, clients: [" Example LLP "] } })
   expect(error).toBeUndefined()
   expect(result).toEqual(chosen)
+})
+
+
+test("refine can add intrinsic actions when an omitted pinned view supplies data after merge", async () => {
+  const chosen: Plan = { widgets: [{ type: "actions" }], unsupported: [] }
+  const { error, result } = await nativeJob("succeeded", chosen, { dataBacked: false, request: { ...input, current: [{ widget: { type: "spend" }, pinned: true }] } })
+  expect(error).toBeUndefined()
+  expect(result).toEqual(chosen)
+  const add = await nativeJob("succeeded", chosen, { dataBacked: false, request: { ...input, current: [] } })
+  expect(String(add.error)).toContain("No usable data")
+})
+
+test("unchanged old chart filters survive missing names but new filters remain checked", async () => {
+  const old = { type: "chart", title: "Old matter", metric: "matters", groupBy: "none", form: "stat", period: "all", matter: "Renamed matter" } as const
+  const chosen: Plan = { widgets: [old, { type: "spend" }], unsupported: [] }
+  const retained = await nativeJob("succeeded", chosen, { request: { ...input, current: [{ widget: old, pinned: true }] } })
+  expect(retained.error).toBeUndefined()
+  expect(retained.result).toEqual(chosen)
+  const introduced = await nativeJob("succeeded", chosen, { request: { ...input, current: [] } })
+  expect(String(introduced.error)).toContain("unknown matter")
+  const oldClient = { ...old, title: "Old client", matter: undefined, client: "Renamed client" }
+  const clientPlan: Plan = { widgets: [oldClient, { type: "spend" }], unsupported: [] }
+  const retainedClient = await nativeJob("succeeded", clientPlan, { request: { ...input, current: [{ widget: oldClient, pinned: true }] } })
+  expect(retainedClient.error).toBeUndefined()
+  const newClient = await nativeJob("succeeded", clientPlan, { request: { ...input, current: [] } })
+  expect(String(newClient.error)).toContain("unknown client")
 })

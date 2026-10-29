@@ -257,6 +257,7 @@ function fixture(kind: Kind, options: { layout?: unknown; data?: Data; preferenc
     aiFailure: false, aiDelay: 0, aiSession: "", aiCreated: [] as Record<string, unknown>[], aiPrompts: [] as Record<string, unknown>[], aiDeleted: [] as string[],
     // Folders whose session list the engine fails to return.
     failSessions: new Set<string>(),
+    failMessages: new Set<string>(),
     jurisdictions: options.jurisdictions ?? (kind === "populated" ? ["EW"] : undefined),
     preferences: kind === "populated"
       ? { ...DEFAULT_DRAFTING, ...PROFILE, practiceAreas: ["Commercial contracts", "Property"], houseStyle: "Arial 11pt, numbered clauses.", searchApiKey: "fixture-exa-key" }
@@ -443,7 +444,7 @@ async function open(state: State, width: number, height: number, timezoneId = "E
     }
     // A conversation's messages, read for one that ran over several days.
     const messageMatch = pathname.match(/^\/api\/session\/([^/]+)\/message$/)
-    if (messageMatch && state.sessions.some((row) => row.id === messageMatch[1])) return reply({ data: state.messages[messageMatch[1]!] ?? [], cursor: { previous: null, next: null } })
+    if (messageMatch && state.sessions.some((row) => row.id === messageMatch[1])) return state.failMessages.has(messageMatch[1]!) ? reply({ error: "Message costs unavailable" }, 503) : reply({ data: state.messages[messageMatch[1]!] ?? [], cursor: { previous: null, next: null } })
     if (pathname === "/api/permission/request") return reply({ location: { directory: "/fixture" }, data: [] })
     if (pathname === "/api/event") return route.fulfill({ status: 200, headers, contentType: "text/event-stream", body: `data: ${JSON.stringify({ id: "evt_fixture", type: "server.connected", data: {} })}\n\n` })
     state.unexpected.push(`${method} ${pathname}`)
@@ -985,6 +986,30 @@ try {
     } finally { await context.close() }
   })
 
+  for (const retained of ["useful", "renamed"] as const) await scenario(`Refine preserves ${retained} pins when adding a different widget`, async () => {
+    const state = fixture("populated")
+    const pinned: Chart = { type: "chart", title: retained === "useful" ? "Pinned spend" : "Former matter", metric: "spend", groupBy: "none", form: "stat", period: "all", ...(retained === "renamed" ? { matter: "Former matter name" } : {}) }
+    state.dashboardState = { version: 1, setupHidden: false, view: "dashboard", workspace: { active: "pins", dashboards: [{ id: "pins", name: "Pinned", period: "month", stages: {}, widgets: [{ key: chartKey(pinned), widget: pinned, pinned: true }] }] } }
+    state.aiPlan = { widgets: retained === "useful" ? [{ type: "actions" }] : [pinned, { type: "spend" }], unsupported: [] }
+    const { page, context } = await open(state, 375, 812)
+    try {
+      await dashboard(page)
+      await askButton(page).click()
+      const dialog = page.getByRole("dialog", { name: "Refine dashboard", exact: true })
+      await dialog.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true }).fill(retained === "useful" ? "Add quick actions" : "Keep my old chart and add total spend")
+      await dialog.getByRole("button", { name: "Update dashboard", exact: true }).click()
+      await expect(dialog).toHaveCount(0)
+      const expected = [pinned.title, retained === "useful" ? "Quick actions" : "Total spend"]
+      expect(await order(page)).toEqual(expected)
+      await expect(page.getByRole("button", { name: `Unpin ${pinned.title}`, exact: true })).toHaveAttribute("aria-pressed", "true")
+      await dashboard(page, true, true)
+      expect(await order(page)).toEqual(expected)
+      expect(state.dashboardState.workspace.dashboards[0]?.widgets?.[0]?.pinned).toBe(true)
+      await expect.poll(() => state.aiDeleted.length).toBe(1)
+      clean(state)
+    } finally { await context.close() }
+  })
+
   await scenario("Refine cannot save an empty result when pins displace its usable chart", async () => {
     const state = fixture("populated")
     const pins = Array.from({ length: 16 }, (_, index) => {
@@ -1302,7 +1327,7 @@ try {
     const { page, context } = await open(state, 1440, 1000)
     try {
       await dashboard(page)
-      const banner = page.getByRole("status").filter({ hasText: "Some matters could not be read, so their spend and drafts are missing here." })
+      const banner = page.getByRole("status").filter({ hasText: "Some activity could not be read completely." })
       await expect(banner).toBeVisible()
       // A model that reports no price makes the total an estimate.
       // The total leaves out the matter it could not read, and says why.
@@ -1318,6 +1343,29 @@ try {
       await openOptions(page)
       await expect(page.getByRole("button", { name: "Refresh", exact: true })).toBeEnabled()
       await expect(card(page, "Total spend").locator(".dash-stat-value")).toHaveText(money(month))
+      clean(state)
+    } finally { await context.close() }
+  })
+
+  await scenario("Uncertain multi-day cost timing is disclosed and Retry recovers", async () => {
+    const state = fixture("populated")
+    const { page, context } = await open(state, 375, 812)
+    try {
+      await dashboard(page)
+      const banner = page.locator(".dash-banner").filter({ hasText: "Some activity could not be read completely." })
+      await expect(banner).toHaveCount(0)
+      const total = card(page, "Total spend").locator(".dash-stat-value")
+      const knownTotal = await total.textContent()
+      state.failMessages.add("ses_northbank_overnight")
+      await openOptions(page)
+      await page.getByRole("button", { name: "Refresh", exact: true }).click()
+      await expect(banner).toBeVisible()
+      await expect(banner).toContainText("daily spend may be estimated")
+      await expect(total).toHaveText(knownTotal!)
+      state.failMessages.clear()
+      await banner.getByRole("button", { name: "Retry", exact: true }).click()
+      await expect(banner).toHaveCount(0)
+      await expect(total).toHaveText(knownTotal!)
       clean(state)
     } finally { await context.close() }
   })

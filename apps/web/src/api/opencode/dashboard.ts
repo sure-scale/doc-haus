@@ -101,8 +101,10 @@ export async function askDashboard(input: DashboardRequest): Promise<Plan> {
       return result.plan?.widgets.map(widgetIdentity) ?? []
     }))
     if (plan.widgets.some((widget) => !previewed.has(widgetIdentity(widget)))) throw new Error("The dashboard could not check its proposed views against your data. Try again.")
-    await validateDashboardData(plan.widgets, newWidgets, period, timeZone, signal)
-    for (const widget of plan.widgets) {
+    // A refinement's pinned widgets are merged by the caller. Check each new
+    // widget now, then let that caller check usefulness of the complete result.
+    await validateDashboardData(plan.widgets, newWidgets, period, timeZone, signal, input.current.length === 0)
+    for (const widget of newWidgets) {
       if (widget.type !== "chart") continue
       if (widget.client && !input.clients.some((client) => client.trim() === widget.client)) throw new Error(`The AI chose an unknown client: ${widget.client}. Try again with a client shown in your matters.`)
       if (widget.matter && !input.matters.includes(widget.matter)) throw new Error(`The AI chose an unknown matter: ${widget.matter}. Try again with a matter shown in your list.`)
@@ -121,7 +123,7 @@ export async function askDashboard(input: DashboardRequest): Promise<Plan> {
 
 function widgetIdentity(widget: PlanWidget) { return widget.type === "chart" ? chartKey(widget) : widget.type }
 
-export async function validateDashboardData(widgets: PlanWidget[], newWidgets: PlanWidget[], period: Period, timeZone: string, signal?: AbortSignal) {
+export async function validateDashboardData(widgets: PlanWidget[], newWidgets: PlanWidget[], period: Period, timeZone: string, signal?: AbortSignal, requireData = true) {
   const response = await fetch(`${INGEST_URL}/dashboard/discovery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "validate", widgets, period, timeZone }), signal })
   if (!response.ok) throw new Error("Could not check dashboard data. Check your data sources and try again.")
   const value: unknown = await response.json()
@@ -137,5 +139,5 @@ export async function validateDashboardData(widgets: PlanWidget[], newWidgets: P
       throw new Error(`No usable data is available for ${label}.${reason} Add data or ask for a different view.`)
     }
   }
-  if (!hasData) throw new Error("No usable data is available for this dashboard. Add data or ask for a different view.")
+  if (requireData && !hasData) throw new Error("No usable data is available for this dashboard. Add data or ask for a different view.")
 }
