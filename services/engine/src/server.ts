@@ -152,7 +152,7 @@ await runEngine(
     Effect.gen(function* () {
       const loggers = yield* Logger.CurrentLoggers
       const options = {
-          app: { name: "doc.haus", version: "2.0.19" },
+          app: { name: "doc.haus", version: JSON.parse(readFileSync(path.join(repository, "release.json"), "utf8")).name as string },
           password,
           config: { directory: path.join(runtime, "config"), project: false },
           database: { path: databasePath },
