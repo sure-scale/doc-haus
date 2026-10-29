@@ -38,7 +38,8 @@ test("time charts fill local calendar buckets across clock changes, and conversa
 test("all-time matter charts start at the first matter, even when it predates spend or chat", () => {
   const view = chartData(chart({ metric: "matters", period: "all", groupBy: "month", form: "line" }), data(row("old")), "month", now)
   expect(view.total).toBe(1)
-  expect(view.points.map(({ label, value }) => [label, value])).toEqual([["Sep 2026", 1], ["Oct 2026", 0]])
+  // ICU versions use either Sep or Sept for the same en-GB month.
+  expect(view.points.map(({ label, value }) => [label, value])).toEqual([[expect.stringMatching(/^Sept? 2026$/), 1], ["Oct 2026", 0]])
   expect(chartData(chart({ metric: "matters", groupBy: "none", form: "stat" }), data(row("old")), "month", now).total).toBe(0)
 })
 
