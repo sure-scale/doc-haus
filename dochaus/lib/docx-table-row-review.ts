@@ -173,6 +173,19 @@ function comparePackages(actual: Uint8Array, expected: Uint8Array) {
 // distinct explicit anchor contract and does not relax insertion's mapping.
 export const validateDocxRowReviewReason = reasonText
 export const assertDocxRowReviewPackage = comparePackages
+// This proves annotation data only. The caller must independently establish
+// that this exact physical paragraph is its verified formatting target.
+export function peelAcceptedParagraphReviewComment(source: Uint8Array, bytes: Uint8Array, author: string, reason: string,
+  anchor: { kind: "accepted"; xml_paragraph_index: number; text: string }) {
+  require(anchor.kind === "accepted" && Number.isSafeInteger(anchor.xml_paragraph_index) && anchor.xml_paragraph_index >= 0 && typeof anchor.text === "string" && anchor.text.length > 0, "invalid_accepted_anchor")
+  const result = peel(unpack(source), bytes, author, reason)
+  require(result.paragraphIndex === anchor.xml_paragraph_index, "accepted_comment_extent_changed")
+  const positions = readDocxCommentParagraphPositions(bytes).filter(row => row.xml_paragraph_indexes.length === 1 && row.xml_paragraph_indexes[0] === anchor.xml_paragraph_index && row.paragraph_text === anchor.text)
+  require(positions.length === 1, "accepted_comment_text_changed")
+  const comments = readDocxComments(bytes).filter(comment => comment.comment_id === result.commentId)
+  require(comments.length === 1 && comments[0]!.markers.length === 3 && comments[0]!.markers.every(marker => marker.xml_paragraph_index === anchor.xml_paragraph_index && marker.paragraph_index === positions[0]!.paragraph_index && marker.accepted_paragraph_text === anchor.text && marker.deleted_paragraph_text === ""), "accepted_comment_text_changed")
+  return result
+}
 export function peelDeletedRowReviewComment(source: Uint8Array, bytes: Uint8Array, author: string, reason: string,
   anchor: { kind: "deleted"; xml_paragraph_index: number; text: string }) {
   require(anchor.kind === "deleted" && Number.isSafeInteger(anchor.xml_paragraph_index) && anchor.xml_paragraph_index >= 0 && typeof anchor.text === "string" && anchor.text.length > 0, "invalid_deleted_anchor")

@@ -9,7 +9,7 @@ const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
 const BODY = "word/document.xml"
 const hash = (v: Uint8Array) => createHash("sha256").update(v).digest("hex")
-const requireProof = (v: unknown, code: string): asserts v => { if (!v) throw new Error(`docx_exact_spacing:${code}`) }
+function requireProof(v: unknown, code: string): asserts v { if (!v) throw new Error(`docx_exact_spacing:${code}`) }
 const elements = (n: Node) => Array.from(n.childNodes).filter((c): c is Element => c.nodeType === 1)
 const all = (n: Document | Element, name: string) => Array.from(n.getElementsByTagNameNS(W, name))
 const child = (n: Element, name: string) => elements(n).filter(c => c.namespaceURI === W && c.localName === name)
@@ -119,6 +119,9 @@ function samePackage(a: Package,b: Package) {
     requireProof(a.docs[name] ? !!b.docs[name] && same(a.docs[name]!,b.docs[name]!) : hash(a.parts[name]!) === hash(b.parts[name]!),"other_part_changed")
   }
 }
+// Annotation adapters must inspect the original ZIP before rebuilding a peeled
+// package, so duplicate entries and invalid OPC/namespace data cannot disappear.
+export function assertExactSpacingPackage(input: Uint8Array) { unpack(new Uint8Array(input)) }
 const ppr = (p: Element) => { const pps=child(p,"pPr"); requireProof(pps.length <= 1,"ambiguous_ppr"); return pps[0] }
 function spacing(p: Element) { const pp=ppr(p); const rows=pp ? child(pp,"spacing") : []; requireProof(rows.length <= 1,"ambiguous_spacing"); return rows[0] }
 const ranges = new Map([["bookmarkStart","bookmark"],["bookmarkEnd","bookmark"],["commentRangeStart","comment"],["commentRangeEnd","comment"],["permStart","perm"],["permEnd","perm"]])
@@ -139,7 +142,7 @@ function protect(body: Document, target: Element) {
           bookmarkNames.add(normalizedName)
         }
         const id=e.getAttributeNS(W,"id")
-        requireProof(/^\d+$/.test(id),"invalid_range")
+        requireProof(typeof id === "string" && /^\d+$/.test(id),"invalid_range")
         const key=`${ranges.get(e.localName)}:${BigInt(id).toString()}`
         if (inside) {
           requireProof(ranges.get(e.localName) === "bookmark" && e.parentNode === target && !e.childNodes?.length &&
@@ -175,7 +178,8 @@ function verifyBody(source: Document,candidate: Document,ordinal: number,value: 
 function allocate(pkg: Package) {
   const used = new Set<string>()
   for (const doc of Object.values(pkg.docs)) for (const e of Array.from(doc.getElementsByTagName("*"))) if (e.hasAttributeNS(W,"id")) {
-    const id=e.getAttributeNS(W,"id"); if (/^\+?\d+$/.test(id)) used.add(BigInt(id).toString())
+    const id=e.getAttributeNS(W,"id"); requireProof(typeof id === "string","invalid_revision_id")
+    if (/^\+?\d+$/.test(id)) used.add(BigInt(id).toString())
     else if (["ins","del","moveFrom","moveTo","pPrChange","rPrChange","tblPrChange","tcPrChange","trPrChange"].includes(e.localName) && e.namespaceURI === W) throw new Error("docx_exact_spacing:invalid_revision_id")
   }
   for (let n=0;n<=used.size && n<=2147483647;n++) if (!used.has(String(n))) return String(n)
@@ -205,7 +209,7 @@ function safeSpacingClosure(pkg: Package, para: Element, inTable: boolean) {
   }
   const isDefault=(style:Element) => {
     if (!style.hasAttributeNS(W,"default")) return false
-    const value=style.getAttributeNS(W,"default"); requireProof(["0","1","true","false","on","off"].includes(value),"unresolved_spacing")
+    const value=style.getAttributeNS(W,"default"); requireProof(typeof value === "string" && ["0","1","true","false","on","off"].includes(value),"unresolved_spacing")
     return ["1","true","on"].includes(value)
   }
   const defaults=declarations.filter(style => style.getAttributeNS(W,"type") === "paragraph" && isDefault(style))
@@ -240,7 +244,7 @@ function sourceTarget(pkg: Package, opened: Opened, index: number) {
 function directAfter(sp: Element): {kind:"absent"}|{kind:"twips";raw:string;normalized:string} {
   if (!sp.hasAttributeNS(W,"after")) return {kind:"absent"}
   const value=sp.getAttributeNS(W,"after")
-  requireProof(/^\d{1,32}$/.test(value),"unsupported_spacing")
+  requireProof(typeof value === "string" && /^\d{1,32}$/.test(value),"unsupported_spacing")
   return {kind:"twips",raw:value,normalized:BigInt(value).toString()}
 }
 // Only classify content we can account for as current literal text. This is
@@ -267,7 +271,8 @@ function currentLiteral(paragraph: Element) {
       return
     }
     if (refs.has(name)) {
-      requireProof((parent === "p" || parent === "r") && !e.childNodes?.length && /^\d+$/.test(e.getAttributeNS(W,"id")),"unsupported_story"); return
+      const id=e.getAttributeNS(W,"id")
+      requireProof((parent === "p" || parent === "r") && !e.childNodes?.length && typeof id === "string" && /^\d+$/.test(id),"unsupported_story"); return
     }
     const wrappers=["p","r","hyperlink","ins","del","moveTo","moveFrom"]
     requireProof(wrappers.includes(name),"unsupported_story")
@@ -380,12 +385,13 @@ async function verifySupplied(source: Uint8Array, artifact: Uint8Array, request:
     const pp=ppr(para); requireProof(pp,"missing_revision")
     const marks=child(pp,"pPrChange"); requireProof(marks.length===1,"revision_membership")
     const mark=marks[0]!, id=mark.getAttributeNS(W,"id"), author=mark.getAttributeNS(W,"author"), date=mark.getAttributeNS(W,"date")
-    requireProof(/^(0|[1-9]\d{0,9})$/.test(id) && BigInt(id)<=2147483647n && author===request.author && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(date) && !Number.isNaN(Date.parse(date)) && new Date(date).toISOString()===date,"invalid_revision")
+    requireProof(typeof id === "string" && /^(0|[1-9]\d{0,9})$/.test(id) && BigInt(id)<=2147483647n && typeof author === "string" && author===request.author && typeof date === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(date) && !Number.isNaN(Date.parse(date)) && new Date(date).toISOString()===date,"invalid_revision")
     requireProof(Array.from(mark.attributes).length===3 && Array.from(mark.attributes).every(a=>a.namespaceURI===W && ["id","author","date"].includes(a.localName)),"invalid_revision")
     const olds=elements(mark); requireProof(olds.length===1 && olds[0]!.namespaceURI===W && olds[0]!.localName==="pPr" && same(olds[0]!,old),"revision_old_properties_changed")
     requireProof(Array.from(mark.childNodes).every(n=>n.nodeType===1),"invalid_revision")
     for (const doc of Object.values(base.docs)) for (const el of Array.from(doc.getElementsByTagName("*"))) if (el.hasAttributeNS(W,"id")) {
-      const value=el.getAttributeNS(W,"id"); if (/^\+?\d+$/.test(value)) requireProof(BigInt(value)!==BigInt(id),"revision_id_collision")
+      const value=el.getAttributeNS(W,"id"); requireProof(typeof value === "string","invalid_revision_id")
+      if (/^\+?\d+$/.test(value)) requireProof(BigInt(value)!==BigInt(id),"revision_id_collision")
     }
     const cleaned=output.body.cloneNode(true) as Document, cleanP=all(cleaned,"p")[ordinal]!, cleanMark=child(ppr(cleanP)!,"pPrChange")[0]!
     cleanMark.parentNode!.removeChild(cleanMark); verifyBody(base.body,cleaned,ordinal,desired)
@@ -397,6 +403,7 @@ async function verifySupplied(source: Uint8Array, artifact: Uint8Array, request:
       requireProof(priorIds.size===prior.length && new Set(rows.map(x=>x.id)).size===rows.length && rows.length===prior.length+1 && added.length===1,"revision_membership")
       const rev=added[0]!, key=`kind=PropsChange:${W}:pPrChange:${id}`
       requireProof(rev.resolutionStatus==="supported" && rev.type==="format" && rev.family==="properties_change" && rev.partUri==="/word/document.xml" && rev.scope==="body" && rev.author===author && rev.date===date && rev.text===request.paragraphText && rev.constituentIds.length===1 && rev.constituentIds[0]===id && rev.constituentKeys.length===1 && rev.constituentKeys[0]===key,"revision_membership")
+      requireProof(typeof rev.anchorId === "string","revision_extent")
       const anchor=artifactOpen.session.project().anchorIndex[rev.anchorId], selectedAnchor=selected[0]!.match.enclosingAnchor
       requireProof(anchor && anchor.partUri === "/word/document.xml" && anchor.scope === "body" && rev.affectedAnchors.length===1 && rev.affectedAnchors[0]!.id===rev.anchorId,"revision_extent")
       if (anchor.kind === "p") requireProof(rev.anchorId===selectedAnchor.id,"revision_extent")
