@@ -828,19 +828,38 @@ async function verifyExtracted(
 
 const terms = (value: string) => new Set(value.toLocaleLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])
 export function chronologyMatchCandidates(account: ChronologyAccount, events: ChronologyEvent[]) {
-  const query = terms(
+  // Core act wording must survive a long shared project/party narrative. Local
+  // term rarity reduces that background's influence without deciding identity.
+  const words = (value: string) => new Set([...terms(value)].filter((word) => /\p{L}/u.test(word)))
+  const queryTitle = words(account.title)
+  const query = words(
     `${account.title} ${account.detail} ${account.people.join(" ")} ${currentNameVariants(account).join(" ")}`,
   )
-  return events
+  const rows = events
     .filter((event) => !event.supersededBy?.length)
     .map((event) => {
-      const words = terms(
-        `${event.title} ${event.detail} ${event.accounts.flatMap((a) => [...a.people, ...currentNameVariants(a)]).join(" ")}`,
+      const titles = [event.title, ...event.accounts.map((a) => a.title)].map(words)
+      const context = words(
+        `${event.title} ${event.detail} ${event.accounts.map((a) => a.title).join(" ")} ${event.accounts.flatMap((a) => [...a.people, ...currentNameVariants(a)]).join(" ")}`,
       )
-      const overlap = [...query].filter((word) => words.has(word)).length
-      return { event, score: overlap / Math.max(1, Math.min(query.size, words.size)) }
+      return { event, titles, context }
     })
-    .filter((row) => row.score >= 0.22)
+  const frequency = new Map<string, number>()
+  for (const row of rows)
+    for (const word of row.context) frequency.set(word, (frequency.get(word) ?? 0) + 1)
+  const weight = (word: string) => 1 + Math.log((rows.length + 1) / ((frequency.get(word) ?? 0) + 1))
+  const similarity = (left: Set<string>, right: Set<string>) => {
+    const mass = (set: Set<string>) => [...set].reduce((total, word) => total + weight(word), 0)
+    const overlap = [...left].filter((word) => right.has(word)).reduce((total, word) => total + weight(word), 0)
+    return overlap / Math.max(1, Math.min(mass(left), mass(right)))
+  }
+  return rows
+    .map((row) => {
+      const core = Math.max(0, ...row.titles.map((title) => similarity(queryTitle, title)))
+      const context = similarity(query, row.context)
+      return { event: row.event, score: 3 * core + context, eligible: core >= 0.22 || context >= 0.22 }
+    })
+    .filter((row) => row.eligible)
     .sort((a, b) => b.score - a.score)
     .slice(0, 6)
     .map((row) => row.event)
