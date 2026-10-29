@@ -14,6 +14,8 @@ export type DraftingPreferences = {
   dateFormat: "month-day-year" | "day-month-year" | "iso"
   numberStyle: "words-and-numerals" | "numerals"
   houseStyle: string
+  // Firm practice areas provide general context for assistants and library builders.
+  practiceAreas: string[]
   // Enforced by the legal plugin's webfetch fence (dochaus/lib/research.ts),
   // not rendered into drafting.md: "official" limits web research to official
   // primary legal sources; "open" allows the whole web.
@@ -87,6 +89,7 @@ export const DEFAULT_DRAFTING: DraftingPreferences = {
   dateFormat: "month-day-year",
   numberStyle: "numerals",
   houseStyle: "",
+  practiceAreas: [],
   webResearch: "open",
   searchApiKey: "",
   caseLawApiKey: "",
@@ -118,6 +121,7 @@ export function normalizePreferences(value: unknown): DraftingPreferences {
     attorney: typeof input.attorney === "string" ? input.attorney : DEFAULT_DRAFTING.attorney,
     firm: typeof input.firm === "string" ? input.firm : DEFAULT_DRAFTING.firm,
     houseStyle: typeof input.houseStyle === "string" ? input.houseStyle : DEFAULT_DRAFTING.houseStyle,
+    practiceAreas: normalizePracticeAreas(input.practiceAreas),
     posture: normalizeChoice(input.posture, POSTURE, DEFAULT_DRAFTING.posture),
     formality: normalizeChoice(input.formality, FORMALITY, DEFAULT_DRAFTING.formality),
     detail: normalizeChoice(input.detail, DETAIL, DEFAULT_DRAFTING.detail),
@@ -141,6 +145,20 @@ export function normalizePreferences(value: unknown): DraftingPreferences {
     styleTemplate: normalizeStyleTemplate(input.styleTemplate),
     quickDraftOffer: input.quickDraftOffer === "auto" || input.quickDraftOffer === "off" ? input.quickDraftOffer : DEFAULT_DRAFTING.quickDraftOffer,
   }
+}
+
+/** User-defined display names; keep their spelling while removing duplicates. */
+export function normalizePracticeAreas(input: unknown): string[] {
+  if (!Array.isArray(input)) return []
+  const seen = new Set<string>()
+  return input.flatMap((value: unknown) => {
+    if (typeof value !== "string") return []
+    const name = value.normalize("NFC").replace(/\s+/gu, " ").trim()
+    const key = name.toLocaleLowerCase()
+    if (!name || name.length > 100 || /[\p{Cc}\u2028\u2029]/u.test(name) || seen.has(key) || seen.size >= 50) return []
+    seen.add(key)
+    return [name]
+  })
 }
 
 /** A style template is a library .docx named by its file name alone; anything

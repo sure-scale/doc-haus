@@ -275,7 +275,11 @@ export default function DraftingTab({ onSaved }: { onSaved: (text: string) => vo
             setSaving(true)
             setError("")
             try {
-              const saved = await savePreferences(prefs)
+              // Practice areas have their own editor and may have changed in
+              // another browser since this drafting form was loaded.
+              const patch: Partial<DraftingPreferences> = { ...prefs }
+              delete patch.practiceAreas
+              const saved = await savePreferences(patch)
               if (!mounted.current) return
               setPrefs(saved)
               setSaves(count => count + 1)

@@ -56,7 +56,8 @@ export default function Settings({ onClose, closing = false, firstRun = false, r
   const toast = useToast()
   const [aiSaving, setAISaving] = useState(false)
   const [wordBusy, setWordBusy] = useState(false)
-  const busy = aiSaving || wordBusy
+  const [matterBusy, setMatterBusy] = useState(false)
+  const busy = aiSaving || wordBusy || matterBusy
   function switchTab(next: Tab) {
     if (busy || (recoveryRequired && next !== "ai")) return
     setTab(next)
@@ -109,7 +110,7 @@ export default function Settings({ onClose, closing = false, firstRun = false, r
             {tab === "drafting" && <DraftingTab onSaved={(m) => toast("success", m)} />}
             {tab === "research" && <ResearchTab onSaved={(m) => toast("success", m)} />}
             {tab === "data" && <StatisticsTab onSaved={(m) => toast("success", m)} onError={(m) => toast("error", m)} />}
-            {tab === "matters" && <MatterDefaultsTab onSampleAdded={() => { toast("success", "Sample matter added to your matters."); onSampleAdded?.() }} onError={(m) => toast("error", m)} onSaved={() => toast("success", "Matter defaults saved.")} />}
+            {tab === "matters" && <MatterDefaultsTab onSampleAdded={() => { toast("success", "Sample matter added to your matters."); onSampleAdded?.() }} onError={(m) => toast("error", m)} onSaved={() => toast("success", "Matter settings saved.")} onBusy={setMatterBusy} />}
             {tab === "addins" && <WordAddin onBusy={setWordBusy} />}
             {tab === "approvals" && <ApprovalsTab />}
             {tab === "appearance" && <AppearanceTab />}

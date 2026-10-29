@@ -34,7 +34,7 @@ test("two-pass HTTP proposals require approval, preserve atomic revision metadat
   const config = path.join(temporary,"config")
   await mkdir(workspace);await mkdir(config)
   await mkdir(path.join(workspace,".preferences"))
-  await Bun.write(path.join(workspace,".preferences/preferences.json"),JSON.stringify({attorney:"Saved Reviewing Lawyer",firm:"Saved Reviewing Firm"}))
+  await Bun.write(path.join(workspace,".preferences/preferences.json"),JSON.stringify({attorney:"Saved Reviewing Lawyer",firm:"Saved Reviewing Firm",practiceAreas:["Commercial"]}))
   await Bun.write(path.join(config,"opencode.json"),"{}")
   const generationRequests:Array<{path:string;directory:string|null;prompt:string}> = []
   // Protocol fixture only. The live provider proof is a separate product run.
@@ -75,6 +75,9 @@ test("two-pass HTTP proposals require approval, preserve atomic revision metadat
     expect(proposed.proposed).toBe(2)
     expect(generationRequests.map((row) => row.path)).toEqual(["/api/dochaus/generate","/api/dochaus/generate"])
     expect(generationRequests.every((row) => row.directory === matter.dir)).toBe(true)
+    expect(generationRequests[0].prompt).toContain('["Commercial"]')
+    expect(generationRequests[0].prompt).toContain("Do not assume any area is the subject of this matter")
+    expect(generationRequests[1].prompt).not.toContain("<practice_areas>")
     expect(generationRequests[1].prompt).not.toContain("<draft_view")
     const file=path.join(matter.dir,"working.docx")
     expect(hash(await Bun.file(file).bytes())).toBe(hash(original))
@@ -388,7 +391,7 @@ test("row Prepare stays visible when an older empty or textual Prepare finishes 
 
 // Isolated ingest child processes sharing one workspace. Each start gets a fresh
 // port and log, so a restart holds no in-memory carry-over.
-async function isolatedIngest(temporary:string,engine:{port?:number}) {
+async function isolatedIngest(temporary:string,engine:{port?:number},dataRootOnly = false) {
   const workspace = path.join(temporary,"workspace")
   const config = path.join(temporary,"config")
   await mkdir(workspace,{recursive:true});await mkdir(config,{recursive:true})
@@ -399,8 +402,10 @@ async function isolatedIngest(temporary:string,engine:{port?:number}) {
   const start = async (label:string,env:Record<string,string> = {}) => {
     const probe = Bun.serve({port:0,fetch:() => new Response()});port=probe.port!;probe.stop(true)
     const log = path.join(temporary,`ingest-${label}.log`)
+    const inheritedEnv = {...process.env}
+    if (dataRootOnly) delete inheritedEnv.WORKSPACE_ROOT
     const service = Bun.spawn([process.execPath,"run","src/server.ts"],{cwd:path.resolve(import.meta.dir,".."),
-      env:{...process.env,...env,WORKSPACE_ROOT:workspace,DOCHAUS_DIR:config,INGEST_PORT:String(port),INGEST_HOST:"127.0.0.1",OPENCODE_URL:`http://127.0.0.1:${engine.port}`,OPENCODE_SERVER_PASSWORD:""},
+      env:{...inheritedEnv,...env,...dataRootOnly ? {DOCHAUS_DATA_ROOT:temporary} : {WORKSPACE_ROOT:workspace},DOCHAUS_DIR:config,INGEST_PORT:String(port),INGEST_HOST:"127.0.0.1",OPENCODE_URL:`http://127.0.0.1:${engine.port}`,OPENCODE_SERVER_PASSWORD:""},
       stdout:Bun.file(log),stderr:Bun.file(log)})
     services.push(service)
     const deadline = Date.now()+20000
@@ -428,6 +433,25 @@ async function isolatedIngest(temporary:string,engine:{port?:number}) {
   return {start,request,matter,stop}
 }
 const wordForm = (bytes:Uint8Array) => {const body=new FormData();body.append("file",new File([new Uint8Array(bytes)],"working.docx"));return body}
+
+test("standalone ingest uses its data root for amendment practice areas", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(),"dochaus-word-practice-"))
+  const engine = syntheticEngine(() => ({amendments:[],open_items:[]}),firstCandidate)
+  const ingest = await isolatedIngest(temporary,engine.server,true)
+  try {
+    await ingest.start("data-root")
+    const matter = await ingest.matter("Practice background")
+    const original = Buffer.from(withParagraphPointers(await Packer.toBuffer(new Document({sections:[{children:[new Paragraph("Notice within five days.")]}]}))))
+    expect(await matter.deliver(original)).toBe(200)
+    expect((await matter.prepare("Review the notice period.")).status).toBe(200)
+    expect(engine.prompts[0]).not.toContain("<practice_areas>")
+    expect((await ingest.request("/preferences",{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify({practiceAreas:["Commercial"]})})).status).toBe(200)
+    expect((await matter.prepare("Review the notice period.")).status).toBe(200)
+    expect(engine.prompts[1]).toContain('["Commercial"]')
+  } finally {
+    await ingest.stop();engine.server.stop(true);await rm(temporary,{recursive:true,force:true})
+  }
+},120000)
 const paragraphChanged = "The paragraph this change targets has changed since it was prepared. Prepare a fresh change list."
 const earlierRevision = "This proposal targets an earlier Word revision. Prepare a fresh change list."
 const periods = [
@@ -1452,6 +1476,7 @@ test("on an uploaded markup with Word paragraph ids, each Accept keeps doc.haus'
     const kept = async (bytes:Uint8Array) => expect((await listedRevisions(bytes)).filter((row) => row.author !== "doc.haus")).toEqual(theirs)
     // Clause 9 and the continuation of clause 7, the two paragraphs without a pending change.
     const [first,second] = (await (await matter.prepare("Make the State's law govern and require written consent to assign.")).json() as {redline_ids:number[]}).redline_ids
+    expect(engine.prompts[0]).not.toContain("<practice_areas>")
     expect(await matter.accept(first)).toBe(200)
     // The saved file is the redline: their ten changes as they were, by id,
     // author, type, text and date, and doc.haus's tracked beside them, with

@@ -13,9 +13,11 @@ export default function JurisdictionSelect({
   align = "left",
   trigger,
   id,
+  practiceAreas = false,
+  disabled = false,
   "aria-describedby": ariaDescribedBy,
 }: {
-  jurisdictions: Jurisdiction[]
+  jurisdictions: Pick<Jurisdiction, "code" | "name">[]
   selected: string[]
   onChange: (codes: string[]) => void
   align?: "left" | "right"
@@ -23,6 +25,9 @@ export default function JurisdictionSelect({
   // jurisdiction badges) wrapped in a bare button that still opens the popover.
   trigger?: ReactNode
   id?: string
+  // Reuse the same accessible popover for user-defined practice areas.
+  practiceAreas?: boolean
+  disabled?: boolean
   "aria-describedby"?: string
 }) {
   const [open, setOpen] = useState(false)
@@ -33,6 +38,7 @@ export default function JurisdictionSelect({
   const [pos, setPos] = useState({ top: 0, left: 0, width: 280, maxHeight: 360 })
   const ref = useRef<HTMLDivElement>(null)
   const popRef = useRef<HTMLDivElement>(null)
+  useEffect(() => { if (disabled) setOpen(false) }, [disabled])
 
   useLayoutEffect(() => {
     if (!open) return
@@ -113,28 +119,32 @@ export default function JurisdictionSelect({
   }
 
   function toggle(code: string) {
+    if (practiceAreas && !selected.includes(code) && selected.length >= 50) return
     onChange(selected.includes(code) ? selected.filter((c) => c !== code) : [...selected, code])
   }
 
   const term = filter.trim().toLowerCase()
+  const custom = filter.normalize("NFC").replace(/\s+/gu, " ").trim()
+  const canAdd = practiceAreas && custom.length > 0 && custom.length <= 100 && !/[\p{Cc}\u2028\u2029]/u.test(filter)
+    && !jurisdictions.some((j) => j.name.toLocaleLowerCase() === custom.toLocaleLowerCase())
   const visible = jurisdictions.filter(
     (j) => !term || j.name.toLowerCase().includes(term) || j.code.toLowerCase().includes(term),
   )
   const label =
     selected.length === 0
-      ? "Jurisdiction (optional)"
+      ? practiceAreas ? "Select practice areas" : "Jurisdiction (optional)"
       : selected.length === 1
         ? jurisdictions.find((j) => j.code === selected[0])?.name ?? selected[0]
-        : `${selected.length} jurisdictions`
+        : `${selected.length} ${practiceAreas ? "practice areas" : "jurisdictions"}`
 
   return (
     <div className="jx-select" ref={ref}>
       {trigger ? (
-        <button id={id} aria-describedby={ariaDescribedBy} aria-expanded={open} aria-controls={open ? popoverId : undefined} type="button" className="jx-trigger-bare" onClick={toggleOpen} title="Click to edit jurisdiction">
+        <button id={id} disabled={disabled} aria-describedby={ariaDescribedBy} aria-expanded={open} aria-controls={open ? popoverId : undefined} type="button" className="jx-trigger-bare" onClick={toggleOpen} title="Click to edit jurisdiction">
           {trigger}
         </button>
       ) : (
-        <button id={id} aria-describedby={ariaDescribedBy} aria-expanded={open} aria-controls={open ? popoverId : undefined} type="button" className={`assistant-trigger jx-trigger${selected.length === 0 ? " is-empty" : ""}`} onClick={toggleOpen} title="Jurisdiction — steers reasoning and citation style">
+        <button id={id} disabled={disabled} aria-describedby={ariaDescribedBy} aria-expanded={open} aria-controls={open ? popoverId : undefined} type="button" className={`assistant-trigger jx-trigger${selected.length === 0 ? " is-empty" : ""}`} onClick={toggleOpen} title={practiceAreas ? "Select practice areas" : "Jurisdiction — steers reasoning and citation style"}>
           <span className="assistant-trigger-label">{label}</span>
           <svg className={`assistant-caret${open ? " open" : ""}`} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
         </button>
@@ -146,7 +156,7 @@ export default function JurisdictionSelect({
             id={popoverId}
             className="jx-popover"
             role="group"
-            aria-label="Jurisdictions"
+            aria-label={practiceAreas ? "Practice areas" : "Jurisdictions"}
             onKeyDown={(event) => {
               if (event.key !== "Escape") return
               event.preventDefault()
@@ -159,23 +169,26 @@ export default function JurisdictionSelect({
             <input
               className="jx-search"
               autoFocus
-              aria-label="Search jurisdictions"
-              placeholder="Search jurisdictions"
+              aria-label={practiceAreas ? "Search or add practice areas" : "Search jurisdictions"}
+              placeholder={practiceAreas ? "Search or add practice areas" : "Search jurisdictions"}
+              maxLength={practiceAreas ? 100 : undefined}
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
             />
             <div className="jx-list">
-              {visible.length === 0 ? (
+              {visible.length === 0 && !canAdd ? (
                 <p className="muted jx-empty">No match.</p>
               ) : (
                 visible.map((j) => (
                   <label key={j.code} className={`jx-option${selected.includes(j.code) ? " selected" : ""}`}>
-                    <input type="checkbox" checked={selected.includes(j.code)} onChange={() => toggle(j.code)} />
+                    <input type="checkbox" checked={selected.includes(j.code)} disabled={practiceAreas && selected.length >= 50 && !selected.includes(j.code)} onChange={() => toggle(j.code)} />
                     <span className="jx-name">{j.name}</span>
-                    <span className="jx-code">{j.code}</span>
+                    {!practiceAreas && <span className="jx-code">{j.code}</span>}
                   </label>
                 ))
               )}
+              {canAdd && <button type="button" className="jx-option jx-add-custom" disabled={selected.length >= 50} onClick={() => { onChange([...selected, custom]); setFilter("") }}>Add “{custom}”</button>}
+              {practiceAreas && selected.length >= 50 && <p className="muted jx-empty">Maximum of 50 practice areas.</p>}
             </div>
           </div>,
           ref.current?.closest("dialog") ?? document.body,
