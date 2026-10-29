@@ -10,7 +10,7 @@ import { SUGGESTED_PRACTICE_AREAS } from "../settings/MatterDefaultsTab"
 import { useOpenSettings } from "../settings/navigation"
 import type { DashboardData } from "./data"
 import { icons } from "./icons"
-import { DemoDataCard, SetupChecklist, type SetupChecklistConfig } from "./visual/SetupCards"
+import { SetupChecklist, type SetupChecklistConfig } from "./visual/SetupCards"
 import type { WidgetContext } from "./widgets"
 
 function completion(data: DashboardData, setup: SetupProgress | null, jurisdictions: string[]) {
@@ -52,6 +52,7 @@ export function SetupTab({ context, onSampleAdded }: { context: WidgetContext; o
   const saving = identityBusy || keyBusy
   const [adding, setAdding] = useState(false)
   const [demoError, setDemoError] = useState("")
+  const [demoHidden, setDemoHidden] = useState(false)
   const [added, setAdded] = useState<Matter>()
   // Saving an Exa key or refreshing unrelated settings must not discard an
   // unfinished identity form. Synchronize only the saved fields that changed.
@@ -145,13 +146,14 @@ export function SetupTab({ context, onSampleAdded }: { context: WidgetContext; o
     if (id === "style") return <div className="dash-setup-style-links"><span>{prefs?.houseStyle.trim() ? "House style saved" : "House style to add"}</span><Link to="/templates">{data.templates === undefined ? "View templates" : `${data.templates} ${data.templates === 1 ? "template" : "templates"}`}{icons.arrowRight}</Link></div>
     return null
   }
-  return <div className="dash-setup-grid">
+  return <div className="dash-setup-flow">
+    {demoHidden ? <button type="button" className="dash-text-button dash-setup-demo-show" onClick={() => setDemoHidden(false)}>Show demo data</button> : <div className="dash-setup-demo-row" role="group" aria-label="Demo data">
+      <span className="dash-setup-demo-row-icon" aria-hidden="true">{icons.sample}</span>
+      <p>{sample ? "Your sample matter is ready to explore." : "Explore doc.haus with a fictional sample matter."}</p>
+      <button type="button" className="dash-setup-outline" disabled={adding} aria-busy={adding} onClick={() => { if (sample) navigate(`/matter/${sample.id}?view=chat&agent=ask`); else void populate() }}>{sample ? icons.arrowRight : icons.plus}{adding ? "Adding demo data…" : sample ? "Open sample matter" : "Populate with demo data"}</button>
+      <button type="button" className="dash-text-button" aria-label="Hide demo data" disabled={adding} onClick={() => setDemoHidden(true)}>Hide</button>
+      {demoError && <p className="dash-setup-error" role="alert">{demoError}</p>}
+    </div>}
     <SetupChecklist config={config} onAction={(action) => { if (action === "ai" || action === "research" || action === "addins" || action === "drafting") openSettings(action) }} renderContent={content} />
-    <DemoDataCard config={{
-      title: "Explore with demo data", description: "A fictional sample, ready to explore",
-      features: [{ value: "1", label: "Sample matter" }, { icon: "draft", label: "Engagement letter" }, { icon: "question", label: "Cited questions & answers" }, { icon: "review", label: "Legal review" }],
-      action: { id: sample ? "open-sample" : "populate", label: adding ? "Adding demo data…" : sample ? "Open sample matter" : "Populate with demo data", icon: sample ? "arrowRight" : "plus" },
-      note: "Fictional data only · Delete the sample matter whenever you like",
-    }} onAction={(action) => { if (action === "open-sample" && sample) navigate(`/matter/${sample.id}?view=chat&agent=ask`); else if (action === "populate") void populate() }} busy={adding} error={demoError} />
   </div>
 }

@@ -76,3 +76,11 @@ test("all 17 legacy templates survive a pin and reload; pins do not expand an AI
   expect(saved.dashboards[0]!.stages.starting).toHaveLength(17)
   expect(applyPlan(widgets, plan([{ type: "spend" }]))).toEqual(widgets)
 })
+
+
+test("an intentionally empty custom dashboard stays empty after saving and reloading", () => {
+  const saved = readDashboards(JSON.parse(JSON.stringify({ active: "custom", dashboards: [{ id: "custom", name: "My work", period: "month", stages: { starting: [] }, widgets: [] }] })))
+  expect(tabWidgets(saved.dashboards[0]!, "starting", false)).toEqual([])
+  expect(saved.dashboards[0]!.widgets).toEqual([])
+  expect(readDashboards({ active: "", dashboards: [] })).toEqual({ active: "", dashboards: [] })
+})

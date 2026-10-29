@@ -3,6 +3,7 @@
 // pinned clock; unknown requests are refused before any network I/O.
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
+import type { DashboardTabState } from "../src/api/ingest/dashboard-tabs"
 import { DEFAULT_DRAFTING } from "../../../dochaus/lib/drafting-preferences"
 
 const { chromium, expect } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
@@ -237,6 +238,7 @@ function fixture(kind: Kind, options: { layout?: unknown; data?: Data; preferenc
   const data = options.data ?? (kind === "populated" ? populated() : { matters: [], sessions: [], messages: {}, drafting: {}, documents: {} })
   return {
     kind, layout: options.layout, ...data, samplePosts: 0, failPreferences: false,
+    dashboardState: null as DashboardTabState | null, dashboardRevision: 0,
     aiPlan: { name: "Practice costs", widgets: [
       { type: "chart", title: "Spend by client", metric: "spend", groupBy: "client", form: "bars", period: "dashboard" },
       { type: "chart", title: "Conversations over time", metric: "conversations", groupBy: "week", form: "line", period: "quarter" },
@@ -304,6 +306,16 @@ async function open(state: State, width: number, height: number, timezoneId = "E
     if (method === "OPTIONS") return route.fulfill({ status: 204, headers })
     state.requests.push({ method, path: pathname })
     const reply = (body: unknown, status = 200) => route.fulfill({ status, headers, contentType: "application/json", body: JSON.stringify(body) })
+    if (pathname === "/dashboard/tabs") {
+      if (method === "GET") return reply({ state: state.dashboardState, revision: state.dashboardRevision })
+      if (method === "PUT") {
+        const input = request.postDataJSON() as { state: DashboardTabState; revision: number }
+        if (input.revision !== state.dashboardRevision) return reply({ state: state.dashboardState, revision: state.dashboardRevision }, 409)
+        state.dashboardState = input.state
+        state.dashboardRevision++
+        return reply({ state: state.dashboardState, revision: state.dashboardRevision })
+      }
+    }
     if (method === "POST" && pathname === "/api/dochaus/provider-test") return reply({ ok: true })
     if (method === "POST" && pathname === "/sample-matter") { state.samplePosts++; return reply({ matter: SAMPLE }) }
     // Ingest merges the top-level keys it is sent.
@@ -408,6 +420,7 @@ async function capture(page: Page, name: string, options: { fullPage?: boolean }
   for (const dialog of metrics.dialogs) { expect(dialog.left, `${name}: dialog left`).toBeGreaterThanOrEqual(-1); expect(dialog.right, `${name}: dialog right`).toBeLessThanOrEqual(dialog.width + 1); expect(dialog.top, `${name}: dialog top`).toBeGreaterThanOrEqual(-1); expect(dialog.bottom, `${name}: dialog bottom`).toBeLessThanOrEqual(dialog.height + 1) }
 }
 async function scenario(name: string, run: () => Promise<void>) {
+  if (process.env.DASHBOARD_SCENARIO && !name.includes(process.env.DASHBOARD_SCENARIO)) return
   try { await run(); results.push({ name, status: "passed" }); console.log(`PASS ${name}`) }
   catch (error) { results.push({ name, status: "failed", error: error instanceof Error ? error.message : String(error) }); console.log(`FAIL ${name}: ${error instanceof Error ? error.message : String(error)}`) }
 }
@@ -421,13 +434,13 @@ async function hideWidget(page: Page, title: string) {
   await expect(card(page, title)).toHaveCount(0)
 }
 const order = (page: Page) => page.locator(".dash-grid > section.dash-card h2").allTextContents()
-const greeting = (page: Page, text: string) => expect(page.locator(".page-bar").getByText(`${text}. What needs you, your drafts and what your matters cost.`, { exact: true })).toBeVisible()
+const noPageHeading = (page: Page) => expect(page.locator(".page-bar")).toHaveCount(0)
 const period = (page: Page) => page.getByRole("group", { name: "Period", exact: true })
-// Settled: the page bar shown, no skeletons left and the refresh control idle.
+// Settled: saved tabs shown, no skeletons left and the refresh control idle.
 async function dashboard(page: Page, expectGrid = true, reload = false) {
   if (reload) await page.reload()
   else await page.goto(`${baseURL}/dashboard`)
-  await expect(page.getByRole("heading", { name: "Dashboard", exact: true, level: 1 })).toBeVisible()
+  await expect(page.getByRole("tablist", { name: "Dashboards" })).toBeVisible()
   await expect(page.getByRole("button", { name: "Refresh", exact: true })).toBeEnabled()
   if (expectGrid) await expect(page.locator(".dash-skeleton")).toHaveCount(0)
 }
@@ -476,7 +489,7 @@ try {
       const state = fixture("new"); const { page, context } = await open(state, width, height)
       try {
         await dashboard(page)
-        await greeting(page, "Good morning")
+        await noPageHeading(page)
         // No figures yet: the dashboard leads with first steps and the profile, not empty charts.
         expect(await order(page)).toEqual(STARTING)
         await expect(period(page)).toHaveCount(0)
@@ -502,7 +515,7 @@ try {
       const state = fixture("new", { data: early({ first: 3 }), preferences: PROFILE, jurisdictions: ["EW"] }); const { page, context } = await open(state, width, height)
       try {
         await dashboard(page)
-        await greeting(page, "Good morning, Alex Example")
+        await noPageHeading(page)
         expect(await order(page)).toEqual(STARTING)
         const setup = card(page, "Your practice")
         await expect(setup.getByText("1 detail to go", { exact: true })).toBeVisible()
@@ -524,7 +537,7 @@ try {
       const state = fixture("populated"); const { page, context } = await open(state, width, height)
       try {
         await dashboard(page)
-        await greeting(page, "Good morning, Alex Example")
+        await noPageHeading(page)
         // Essentials done and drafts finished: the work and the figures, no onboarding.
         expect(await order(page)).toEqual(PRACTICE)
         await expect(period(page).getByRole("button", { name: "This month", exact: true })).toHaveAttribute("aria-pressed", "true")
@@ -722,7 +735,7 @@ try {
       await signed.getByRole("button", { name: "Save", exact: true }).click()
       await expect(detail(setup, "Name and firm", true)).toContainText("Alex Example, Example Partners LLP")
       expect(state.saved.at(-1)).toEqual({ attorney: "Alex Example", firm: "Example Partners LLP" })
-      await greeting(page, "Good morning, Alex Example")
+      await noPageHeading(page)
       await ring(setup, 3)
       await expect(setup.getByText("Your practice is set up", { exact: true })).toBeVisible()
       await setup.scrollIntoViewIfNeeded()
@@ -886,6 +899,29 @@ try {
     } finally { await context.close() }
   })
 
+  await scenario("Delayed AI update preserves a Setup tab closed while it was running", async () => {
+    const state = fixture("populated"); state.aiDelay = 1600
+    const { page, context } = await open(state, 1440, 1000)
+    try {
+      await dashboard(page)
+      await askButton(page).click()
+      await page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true }).fill("Show spend by client")
+      await page.getByRole("button", { name: "Update dashboard", exact: true }).click()
+      await expect.poll(() => state.aiPrompts.length).toBe(1)
+      await page.getByRole("button", { name: "Close Setup tab", exact: true }).click({ force: true })
+      await page.getByRole("button", { name: "Confirm close Setup tab", exact: true }).click()
+      await expect.poll(() => state.dashboardState?.setupHidden).toBe(true)
+      await expect.poll(() => order(page)).toEqual(["Spend by client", "Conversations over time"])
+      await expect.poll(() => state.aiDeleted.length).toBe(1)
+      await expect(page.getByRole("tab", { name: "Setup", exact: true })).toHaveCount(0)
+      await expect.poll(() => state.dashboardState?.setupHidden).toBe(true)
+      await dashboard(page, true, true)
+      await expect(page.getByRole("tab", { name: "Setup", exact: true })).toHaveCount(0)
+      expect(await order(page)).toEqual(["Spend by client", "Conversations over time"])
+      clean(state)
+    } finally { await context.close() }
+  })
+
   for (const action of ["stop", "escape", "switch"] as const) await scenario(`Pending AI ${action} preserves layout and cleans its session`, async () => {
     const state = fixture("populated"); state.aiDelay = 1200
     const { page, context } = await open(state, 375, 812)
@@ -924,7 +960,8 @@ try {
     const state = fixture("populated"); const { page, context } = await open(state, width, height)
     try {
       await dashboard(page)
-      await page.evaluate(() => localStorage.setItem("dh.dashboard.v4", JSON.stringify({ active: "view-11", dashboards: Array.from({ length: 12 }, (_, index) => ({ id: `view-${index}`, name: `Practice dashboard ${index + 1}`, period: "month", stages: {}, widgets: [] })) })))
+      state.dashboardState = { version: 1, setupHidden: false, view: "dashboard", workspace: { active: "view-11", dashboards: Array.from({ length: 12 }, (_, index) => ({ id: `view-${index}`, name: `Practice dashboard ${index + 1}`, period: "month", stages: {}, widgets: [] })) } }
+      state.dashboardRevision++
       await dashboard(page, false, true)
       const first = page.getByRole("tab", { name: "Practice dashboard 1", exact: true })
       const last = page.getByRole("tab", { name: "Practice dashboard 12", exact: true })
@@ -969,7 +1006,7 @@ try {
       await expect(activity.locator(".dash-cell").first()).toBeInViewport()
       await day.tap()
       await expect(activity.getByRole("tooltip")).toBeVisible()
-      await page.getByRole("heading", { name: "Dashboard", exact: true, level: 1 }).tap()
+      await page.getByRole("tab", { name: "Saved work", exact: true }).tap()
       await expect(activity.getByRole("tooltip")).toHaveCount(0)
       clean(state)
     } finally { await context.close() }

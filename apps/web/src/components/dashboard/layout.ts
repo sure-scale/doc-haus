@@ -167,7 +167,7 @@ function savedInstances(value: unknown): WidgetInstance[] | undefined {
     seen.add(next.key)
     result.push(next)
   }
-  return result.length ? result : undefined
+  return result.length || value.length === 0 ? result : undefined
 }
 
 export function readDashboards(saved: unknown, legacy: Layout = DEFAULT_LAYOUT): Dashboards {
@@ -178,7 +178,7 @@ export function readDashboards(saved: unknown, legacy: Layout = DEFAULT_LAYOUT):
       const dashboards = value.dashboards.flatMap((entry): DashboardTab[] => {
         if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return []
         const tab = entry as Record<string, unknown>
-        if (typeof tab.id !== "string" || !tab.id || seen.has(tab.id) || typeof tab.name !== "string" || !tab.name.trim()) return []
+        if (typeof tab.id !== "string" || !tab.id || tab.id === "__setup" || seen.has(tab.id) || typeof tab.name !== "string" || !tab.name.trim()) return []
         seen.add(tab.id)
         const stages = typeof tab.stages === "object" && tab.stages !== null ? tab.stages as Record<string, unknown> : {}
         const legacyStages = typeof tab.legacy === "object" && tab.legacy !== null ? tab.legacy as Record<string, unknown> : {}
@@ -188,6 +188,7 @@ export function readDashboards(saved: unknown, legacy: Layout = DEFAULT_LAYOUT):
           legacy: Object.fromEntries(STAGES.flatMap((stage) => { const entry = arrangement(legacyStages[stage]); return entry ? [[stage, entry]] : [] })),
         }]
       }).slice(0, 12)
+      if (!value.dashboards.length && value.active === "") return { active: "", dashboards: [] }
       if (dashboards.length) return { active: dashboards.some((tab) => tab.id === value.active) ? value.active as string : dashboards[0]!.id, dashboards }
     }
   }

@@ -3,6 +3,7 @@
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { DEFAULT_DRAFTING } from "../../../dochaus/lib/drafting-preferences"
+import type { Dashboards } from "../src/components/dashboard/layout"
 
 const { chromium, expect } = await import("@playwright/test")
 type Page = import("@playwright/test").Page
@@ -19,10 +20,18 @@ const NOW = Date.UTC(2026, 9, 29, 10)
 const SAMPLE = { id: "setup-sample", title: "Kestrel Books · Engagement letter", sample: true, jurisdictions: ["EW"], dir: "/fixture/matters/sample", created_at: NOW }
 const wordDefault = { available: false, origin: null, manifestUrl: null, platform: "macos", wordInstalled: true, canSetup: true, configured: false, registered: false, trusted: false, running: false, status: "not_configured" }
 const packs = [{ code: "EW", name: "England & Wales", citationStyle: "fixture" }, { code: "SCT", name: "Scotland", citationStyle: "fixture" }, { code: "IE", name: "Ireland", citationStyle: "fixture" }]
+type PersistedTabs = { version: 1; workspace: Dashboards; setupHidden: boolean; view?: "setup" | "dashboard" }
+type TabsEnvelope = { state: PersistedTabs | null; revision: number }
 function fixture(fresh = false) {
-  return { ready: !fresh, completed: fresh ? [] as string[] : ["models"], skipped: fresh ? [] as string[] : ["research", "details"], setupWrites: [] as { step: string; status: string }[], candidateInputs: [] as Record<string, unknown>[], tested: [] as { modelID: string; ok: boolean }[], failCandidateTest: false, providerSaves: 0, jurisdictions: [] as string[], preferences: { ...DEFAULT_DRAFTING }, failPreferences: false, holdPreferences: false, releasePreference: undefined as (() => void) | undefined, failMatters: false, word: { ...wordDefault }, templates: [] as { name: string; placeholders: unknown[] }[], matters: [] as (typeof SAMPLE)[], saved: [] as Record<string, unknown>[], samplePosts: 0, wordPosts: 0, unexpected: [] as string[], errors: [] as string[] }
+  return { dashboard: { state: null, revision: 0 } as TabsEnvelope, tabWrites: [] as { state: PersistedTabs; revision: number }[], failTabReads: false, failTabWrites: false, holdTabWrites: false, releaseTabWrite: undefined as (() => void) | undefined, ready: !fresh, completed: fresh ? [] as string[] : ["models"], skipped: fresh ? [] as string[] : ["research", "details"], setupWrites: [] as { step: string; status: string }[], candidateInputs: [] as Record<string, unknown>[], tested: [] as { modelID: string; ok: boolean }[], failCandidateTest: false, providerSaves: 0, jurisdictions: [] as string[], preferences: { ...DEFAULT_DRAFTING }, failPreferences: false, holdPreferences: false, releasePreference: undefined as (() => void) | undefined, failMatters: false, word: { ...wordDefault }, templates: [] as { name: string; placeholders: unknown[] }[], matters: [] as (typeof SAMPLE)[], saved: [] as Record<string, unknown>[], samplePosts: 0, wordPosts: 0, unexpected: [] as string[], errors: [] as string[] }
 }
 type State = ReturnType<typeof fixture>
+function seedTabs(state: State, workspace: unknown, setupHidden = false) {
+  state.dashboard = { state: { version: 1, workspace: workspace as Dashboards, setupHidden }, revision: state.dashboard.revision + 1 }
+}
+async function tabsSaved(state: State, check: (saved: PersistedTabs) => boolean) {
+  await expect.poll(() => state.dashboard.state !== null && check(state.dashboard.state)).toBe(true)
+}
 function progress(state: State) {
   const completed = state.completed.filter(step => step !== "models" || state.ready)
   const skipped = state.skipped.filter(step => step !== "models" && !completed.includes(step))
@@ -47,6 +56,16 @@ async function open(state: State, width = 1440, height = 1000) {
     const headers = { "access-control-allow-origin": origin, "access-control-allow-credentials": "true", "access-control-allow-headers": "*", "access-control-allow-methods": "*" }
     const reply = (body: unknown, status = 200) => route.fulfill({ status, headers, contentType: "application/json", body: JSON.stringify(body) })
     if (method === "OPTIONS") return route.fulfill({ status: 204, headers })
+    if (pathname === "/dashboard/tabs" && method === "GET") return state.failTabReads ? reply({ error: "Could not read saved dashboards." }, 503) : reply(state.dashboard)
+    if (pathname === "/dashboard/tabs" && method === "PUT") {
+      const input = request.postDataJSON() as { state: PersistedTabs; revision: number }
+      state.tabWrites.push(structuredClone(input))
+      if (state.failTabWrites) return reply({ error: "Could not save dashboards." }, 503)
+      if (state.holdTabWrites && !state.releaseTabWrite) await new Promise<void>(resolve => { state.releaseTabWrite = resolve })
+      if (input.revision !== state.dashboard.revision) return reply({ error: "Dashboards changed in another browser. Reload saved dashboards.", ...state.dashboard }, 409)
+      state.dashboard = { state: structuredClone(input.state), revision: state.dashboard.revision + 1 }
+      return reply(state.dashboard)
+    }
     if (pathname === "/preferences" && method === "PUT") {
       const patch = request.postDataJSON() as Record<string, unknown>
       if (state.failPreferences) return reply({ error: `Synthetic failed save: ${patch.searchApiKey ?? "settings unavailable"}` }, 500)
@@ -179,6 +198,10 @@ try {
       await onboarding.getByRole("button", { name: /^Save and finish/ }).click()
       await expect(onboarding).toHaveCount(0); await settled(page)
       await expect(page).toHaveURL(/\/dashboard\?tab=setup$/)
+      await expect(page.locator("main h1:not(.sr-only)")).toHaveCount(0)
+      await expect(page.locator(".page-bar")).toHaveCount(0)
+      const widths = await page.evaluate(() => ({ dashboard: document.querySelector(".dash")!.getBoundingClientRect().width, checklist: document.querySelector(".dash-setup-checklist")!.getBoundingClientRect().width }))
+      expect(Math.abs(widths.dashboard - widths.checklist)).toBeLessThanOrEqual(1)
       await expect(setupTab(page)).toHaveAttribute("aria-selected", "true"); await badge(page, 1)
       expect(state.setupWrites).toEqual([{ step: "models", status: "completed" }, { step: "research", status: "completed" }, { step: "details", status: "completed" }])
       await expect(page.locator("dialog[open]")).toHaveCount(0)
@@ -213,17 +236,17 @@ try {
       await expect(checklist(page)).toBeVisible()
       const confirmBox = await confirmCloseSetup(page).boundingBox()
       const confirming = await setupTab(page).boundingBox()
-      expect(Math.abs((confirmBox!.x + confirmBox!.width / 2) - (closeBox!.x + closeBox!.width / 2))).toBeLessThanOrEqual(1)
+      expect(Math.abs((confirmBox!.x + confirmBox!.width) - (closeBox!.x + closeBox!.width))).toBeLessThanOrEqual(1)
       expect(Math.abs(confirming!.width - before!.width)).toBeLessThanOrEqual(1)
       await capture(page, "setup-tab-inline-confirm-1440x1000")
       await page.keyboard.press("Escape")
       await expect(confirmCloseSetup(page)).toHaveCount(0)
       await expect(setupTab(page)).toBeFocused()
-      await page.getByRole("heading", { name: "Dashboard", exact: true }).click()
+      await page.getByRole("heading", { name: "Finish setting up", exact: true }).click()
       await page.mouse.move(0, 0)
       await expect.poll(() => visuallyShown(tabBadge(page))).toBe(true)
       await setupTab(page).locator("span").first().hover(); await closeSetup(page).click()
-      await page.getByRole("heading", { name: "Dashboard", exact: true }).click()
+      await page.getByRole("heading", { name: "Finish setting up", exact: true }).click()
       await expect(confirmCloseSetup(page)).toHaveCount(0)
       await setupTab(page).focus(); await page.keyboard.press("Tab")
       await expect(closeSetup(page)).toBeFocused()
@@ -231,6 +254,7 @@ try {
       await expect(confirmCloseSetup(page)).toBeFocused()
       await page.keyboard.press("Enter")
       await expect(setupTab(page)).toHaveCount(0); await expect(checklist(page)).toHaveCount(0)
+      await tabsSaved(state, saved => saved.setupHidden)
       await expect(page.getByRole("button", { name: "Show setup", exact: true })).toBeVisible()
       await expect(page.getByRole("button", { name: "New dashboard", exact: true }).first()).toBeEnabled()
       await capture(page, "setup-tab-closed-1440x1000")
@@ -238,6 +262,7 @@ try {
       await expect(setupTab(page)).toHaveCount(0)
       await page.getByRole("button", { name: "Show setup", exact: true }).click()
       await settled(page); await badge(page, 1)
+      await tabsSaved(state, saved => !saved.setupHidden)
       await page.reload(); await settled(page); await badge(page, 1)
       expect(state.saved).toEqual([]); expect(state.setupWrites).toEqual([])
       clean(state)
@@ -268,7 +293,7 @@ try {
         { id: "drafts", name: "Drafts", period: "month", stages: {}, widgets: [] },
         { id: "costs", name: "Costs", period: "month", stages: {}, widgets: [] },
       ] }
-      await page.evaluate(value => localStorage.setItem("dh.dashboard.v4", JSON.stringify(value)), saved)
+      seedTabs(state, saved)
       await page.reload()
       const costs = page.getByRole("tab", { name: "Costs", exact: true })
       await expect(costs).toHaveAttribute("aria-selected", "true")
@@ -279,7 +304,8 @@ try {
       await confirmCloseSetup(page).click()
       await expect(costs).toHaveAttribute("aria-selected", "true")
       await expect(costs).toBeFocused()
-      expect(await page.evaluate(() => JSON.parse(localStorage.getItem("dh.dashboard.v4")!))).toEqual(saved)
+      await tabsSaved(state, stored => stored.setupHidden && stored.workspace.active === "costs")
+      expect(state.dashboard.state!.workspace).toMatchObject(saved)
       await page.reload()
       await expect(costs).toHaveAttribute("aria-selected", "true")
       await expect(setupTab(page)).toHaveCount(0)
@@ -290,7 +316,8 @@ try {
       await closeSetup(page).click(); await confirmCloseSetup(page).click()
       await expect(costs).toHaveAttribute("aria-selected", "true")
       await expect(page.getByRole("tab", { name: "Drafts", exact: true })).toHaveAttribute("aria-selected", "false")
-      expect(await page.evaluate(() => JSON.parse(localStorage.getItem("dh.dashboard.v4")!))).toMatchObject(saved)
+      await tabsSaved(state, stored => stored.setupHidden && stored.workspace.active === "costs")
+      expect(state.dashboard.state!.workspace).toMatchObject(saved)
       clean(state)
     } finally { await context.close() }
   })
@@ -302,7 +329,7 @@ try {
         { id: "overview", name: "Overview", period: "month", stages: {}, widgets: [] },
         { id: "costs", name: "Costs", period: "month", stages: {}, widgets: [] },
       ] }
-      await page.evaluate(value => localStorage.setItem("dh.dashboard.v4", JSON.stringify(value)), saved)
+      seedTabs(state, saved)
       await page.reload()
       const costs = page.getByRole("tab", { name: "Costs", exact: true })
       await expect(costs).toHaveAttribute("aria-selected", "true")
@@ -314,13 +341,158 @@ try {
       await expect(costs).toHaveCount(0)
       await expect(setupTab(page)).toHaveAttribute("aria-selected", "true")
       await expect(page.locator("#dash-ai-panel")).toHaveCount(0)
+      await tabsSaved(state, stored => !stored.workspace.dashboards.some(tab => tab.id === "costs"))
       await page.getByRole("button", { name: "Undo", exact: true }).click()
       await expect(costs).toHaveAttribute("aria-selected", "true")
       await expect(setupTab(page)).toHaveAttribute("aria-selected", "false")
       await expect(checklist(page)).toHaveCount(0)
       await expect(page.locator("#dash-ai-panel")).toHaveCount(0)
-      expect(await page.evaluate(() => JSON.parse(localStorage.getItem("dh.dashboard.v4")!))).toMatchObject(saved)
+      await tabsSaved(state, stored => stored.workspace.active === "costs" && stored.workspace.dashboards.some(tab => tab.id === "costs"))
+      expect(state.dashboard.state!.workspace).toMatchObject(saved)
       await capture(page, "setup-tab-undo-restores-custom-1440x1000")
+      clean(state)
+    } finally { await context.close() }
+  })
+  await scenario("Browser migration seeds only an empty local database; another browser uses saved tabs", async () => {
+    const state = fixture(), first = await open(state)
+    const legacy = { active: "costs", dashboards: [
+      { id: "overview", name: "Overview", period: "month", stages: {}, widgets: [] },
+      { id: "costs", name: "Costs", period: "month", stages: {}, widgets: [{ key: "spend", widget: { type: "spend" }, pinned: true }] },
+    ] }
+    const second = await open(state)
+    try {
+      await first.context.addInitScript(value => {
+        localStorage.setItem("dh.dashboard.v4", JSON.stringify(value))
+        localStorage.setItem("dh.dashboard.setup-hidden.v1", "true")
+      }, legacy)
+      await first.page.goto(`${baseURL}/dashboard`)
+      await expect(first.page.getByRole("tab", { name: "Costs", exact: true })).toHaveAttribute("aria-selected", "true")
+      await expect(setupTab(first.page)).toHaveCount(0)
+      await tabsSaved(state, stored => stored.setupHidden && stored.workspace.active === "costs")
+      expect(state.dashboard.state!.workspace).toMatchObject(legacy)
+      const writes = state.tabWrites.length
+      // A clean context has no dashboard browser state; a stale legacy value
+      // must not replace a database which is already populated.
+      await second.context.addInitScript(() => localStorage.setItem("dh.dashboard.v4", JSON.stringify({ active: "stale", dashboards: [{ id: "stale", name: "Stale browser view", period: "all", stages: {}, widgets: [] }] })))
+      await second.page.goto(`${baseURL}/dashboard`)
+      await expect(second.page.getByRole("tab", { name: "Costs", exact: true })).toHaveAttribute("aria-selected", "true")
+      await expect(second.page.getByRole("tab", { name: "Stale browser view", exact: true })).toHaveCount(0)
+      await expect(second.page.getByRole("button", { name: "Unpin Total spend", exact: true })).toBeVisible()
+      await expect(setupTab(second.page)).toHaveCount(0)
+      expect(state.tabWrites.length).toBe(writes)
+      await capture(second.page, "dashboard-tabs-from-local-database-1440x1000")
+      clean(state)
+    } finally { await first.context.close(); await second.context.close() }
+  })
+  await scenario("Every custom tab confirms close and Undo is saved for another browser", async () => {
+    const state = fixture()
+    const saved = { active: "costs", dashboards: [
+      { id: "overview", name: "Overview", period: "month", stages: {}, widgets: [] },
+      { id: "drafts", name: "Drafts", period: "month", stages: {}, widgets: [] },
+      { id: "costs", name: "Costs", period: "month", stages: {}, widgets: [] },
+    ] }
+    seedTabs(state, saved)
+    const first = await open(state), second = await open(state)
+    try {
+      await first.page.goto(`${baseURL}/dashboard`)
+      const costs = first.page.getByRole("tab", { name: "Costs", exact: true })
+      await expect(costs).toHaveAttribute("aria-selected", "true")
+      await costs.locator("span").first().hover()
+      await first.page.getByRole("button", { name: "Close Costs tab", exact: true }).click()
+      await expect(costs).toBeVisible()
+      await expect(first.page.getByRole("button", { name: "Confirm close Costs tab", exact: true })).toHaveText("Confirm")
+      await capture(first.page, "dashboard-custom-tab-inline-confirm-1440x1000")
+      await first.page.getByRole("button", { name: "Confirm close Costs tab", exact: true }).click()
+      await expect(costs).toHaveCount(0)
+      await tabsSaved(state, stored => !stored.workspace.dashboards.some(tab => tab.id === "costs"))
+      await first.page.getByRole("button", { name: "Undo", exact: true }).click()
+      await expect(costs).toHaveAttribute("aria-selected", "true")
+      await tabsSaved(state, stored => stored.workspace.active === "costs" && stored.workspace.dashboards.some(tab => tab.id === "costs"))
+      await second.page.goto(`${baseURL}/dashboard`)
+      await expect(second.page.getByRole("tab", { name: "Costs", exact: true })).toHaveAttribute("aria-selected", "true")
+      await expect(second.page.getByRole("button", { name: "Close Drafts tab", exact: true })).toHaveCount(1)
+      clean(state)
+    } finally { await first.context.close(); await second.context.close() }
+  })
+  await scenario("A database read failure blocks tabs until an explicit retry", async () => {
+    const state = fixture(); state.failTabReads = true
+    const { context, page } = await open(state)
+    try {
+      await page.goto(`${baseURL}/dashboard`)
+      await expect(page.getByRole("alert").filter({ hasText: "Could not load your dashboards" })).toBeVisible()
+      await expect(setupTab(page)).toHaveCount(0)
+      await expect(page.getByRole("button", { name: "New dashboard", exact: true })).toHaveCount(0)
+      expect(state.tabWrites).toEqual([]); expect(state.dashboard.state).toBeNull()
+      state.failTabReads = false
+      await page.getByRole("button", { name: "Retry dashboards", exact: true }).click()
+      await settled(page)
+      await tabsSaved(state, () => true)
+      clean(state)
+    } finally { await context.close() }
+  })
+  await scenario("A failed database save keeps the edit visible and retry persists it", async () => {
+    const state = fixture()
+    seedTabs(state, { active: "costs", dashboards: [{ id: "overview", name: "Overview", period: "month", stages: {}, widgets: [] }, { id: "costs", name: "Costs", period: "month", stages: {}, widgets: [] }] })
+    const { context, page } = await open(state)
+    try {
+      await page.goto(`${baseURL}/dashboard`)
+      const costs = page.getByRole("tab", { name: "Costs", exact: true })
+      await expect(costs).toHaveAttribute("aria-selected", "true")
+      state.failTabWrites = true
+      await costs.locator("span").first().hover()
+      await page.getByRole("button", { name: "Close Costs tab", exact: true }).click()
+      await page.getByRole("button", { name: "Confirm close Costs tab", exact: true }).click()
+      await expect(costs).toHaveCount(0)
+      await expect(page.getByRole("alert").filter({ hasText: "Could not save your dashboard changes. Your changes are still here." })).toBeVisible()
+      expect(state.dashboard.state!.workspace.dashboards.some(tab => tab.id === "costs")).toBe(true)
+      expect(await page.evaluate(() => localStorage.getItem("dh.dashboard.v4"))).toBeNull()
+      state.failTabWrites = false
+      await page.getByRole("button", { name: "Retry save", exact: true }).click()
+      await tabsSaved(state, stored => !stored.workspace.dashboards.some(tab => tab.id === "costs"))
+      await expect(page.getByRole("button", { name: "Retry save", exact: true })).toHaveCount(0)
+      await page.reload(); await settled(page)
+      await expect(costs).toHaveCount(0)
+      clean(state)
+    } finally { await context.close() }
+  })
+  await scenario("Rapid tab selection serializes saves using each acknowledged database revision", async () => {
+    const state = fixture()
+    seedTabs(state, { active: "costs", dashboards: [{ id: "overview", name: "Overview", period: "month", stages: {}, widgets: [] }, { id: "costs", name: "Costs", period: "month", stages: {}, widgets: [] }, { id: "drafts", name: "Drafts", period: "month", stages: {}, widgets: [] }] })
+    const { context, page } = await open(state)
+    try {
+      await page.goto(`${baseURL}/dashboard`)
+      await expect(page.getByRole("tab", { name: "Costs", exact: true })).toHaveAttribute("aria-selected", "true")
+      state.holdTabWrites = true
+      await page.getByRole("tab", { name: "Drafts", exact: true }).click()
+      await expect.poll(() => typeof state.releaseTabWrite).toBe("function")
+      await page.getByRole("tab", { name: "Costs", exact: true }).click()
+      expect(state.tabWrites).toHaveLength(1)
+      state.holdTabWrites = false; state.releaseTabWrite?.(); state.releaseTabWrite = undefined
+      await tabsSaved(state, stored => stored.workspace.active === "costs")
+      await expect.poll(() => state.tabWrites.length).toBe(2)
+      expect(state.tabWrites.map(write => write.revision)).toEqual([1, 2])
+      clean(state)
+    } finally { state.releaseTabWrite?.(); await context.close() }
+  })
+  await scenario("A stale database revision never overwrites another browser's saved tabs", async () => {
+    const state = fixture()
+    seedTabs(state, { active: "costs", dashboards: [{ id: "overview", name: "Overview", period: "month", stages: {}, widgets: [] }, { id: "costs", name: "Costs", period: "month", stages: {}, widgets: [] }] })
+    const { context, page } = await open(state)
+    try {
+      await page.goto(`${baseURL}/dashboard`)
+      const costs = page.getByRole("tab", { name: "Costs", exact: true })
+      await expect(costs).toHaveAttribute("aria-selected", "true")
+      const next = structuredClone(state.dashboard.state!)
+      next.workspace.dashboards.find(tab => tab.id === "costs")!.name = "Costs updated elsewhere"
+      state.dashboard = { state: next, revision: state.dashboard.revision + 1 }
+      await costs.locator("span").first().hover()
+      await page.getByRole("button", { name: "Close Costs tab", exact: true }).click()
+      await page.getByRole("button", { name: "Confirm close Costs tab", exact: true }).click()
+      await expect(page.getByRole("alert").filter({ hasText: "These dashboards changed in another window. Your unsaved changes are still here." })).toBeVisible()
+      expect(state.dashboard.state!.workspace.dashboards.find(tab => tab.id === "costs")!.name).toBe("Costs updated elsewhere")
+      await page.getByRole("button", { name: "Load saved dashboards", exact: true }).click()
+      await expect(page.getByRole("tab", { name: "Costs updated elsewhere", exact: true })).toHaveAttribute("aria-selected", "true")
+      await expect(page.getByRole("button", { name: "Load saved dashboards", exact: true })).toHaveCount(0)
       clean(state)
     } finally { await context.close() }
   })
@@ -413,7 +585,14 @@ try {
     const state = fixture(), { context, page } = await open(state)
     try {
       await page.goto(`${baseURL}/dashboard?tab=setup`); await settled(page)
-      const demo = page.getByRole("complementary", { name: "Explore with demo data", exact: true })
+      const demo = page.getByRole("group", { name: "Demo data", exact: true })
+      await demo.getByRole("button", { name: "Hide demo data", exact: true }).click()
+      await expect(demo).toHaveCount(0)
+      await expect(page.getByRole("button", { name: "Show demo data", exact: true })).toBeVisible()
+      expect(state.samplePosts).toBe(0)
+      await capture(page, "setup-demo-row-hidden-1440x1000")
+      await page.getByRole("button", { name: "Show demo data", exact: true }).click()
+      await expect(demo).toBeVisible()
       await demo.getByRole("button", { name: "Populate with demo data", exact: true }).click()
       await expect(demo.getByRole("button", { name: "Open sample matter", exact: true })).toBeEnabled()
       expect(state.samplePosts).toBe(1); expect(state.matters).toHaveLength(1)
