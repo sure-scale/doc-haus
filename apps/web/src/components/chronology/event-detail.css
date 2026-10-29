@@ -11,8 +11,9 @@
   align-self: start;
   display: flex;
   flex-direction: column;
-  min-height: min(520px, calc(100dvh - 170px));
-  max-height: calc(100dvh - 170px);
+  height: calc(100dvh - 152px);
+  min-height: 0;
+  max-height: calc(100dvh - 152px);
   min-width: 0;
   overflow-y: auto;
   scrollbar-gutter: stable;
@@ -350,6 +351,7 @@
   .chronology-workbench .chronology-evidence-panel {
     padding: 0;
     border-left: 0;
+    height: auto;
     min-height: calc(100dvh - 180px);
     max-height: none;
     overflow: visible;

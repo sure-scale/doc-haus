@@ -247,6 +247,8 @@ try {
   await page.getByRole("button", { name: "Equipment collected", exact: true }).focus()
   await page.keyboard.press("Enter")
   await expect(detail).toBeVisible()
+  const evidencePanelBox = (await detail.boundingBox())!
+  assert.ok(evidencePanelBox.height >= 700, "short evidence fills the desktop column, keeping its footer near the bottom")
   await expect.poll(() => state.events[0]!.opened).toBe(true)
   assert.equal(state.events[0]!.reviewed, false, "opening clears New without review")
   await detail.getByRole("button", { name: "View in document" }).click()
