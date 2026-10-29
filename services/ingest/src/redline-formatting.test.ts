@@ -2,7 +2,9 @@ import { expect, test } from "bun:test"
 import { strFromU8, unzipSync } from "fflate"
 import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
 import { docxodus } from "./docxodus"
-import { bake, buildRedlined } from "./redline"
+import { bake, binding, buildRedlined, redlineStaleReason, redlineState } from "./redline"
+import { createDocxLocalization, createDocxRevision } from "../../../dochaus/lib/docx-amendments"
+import { paragraphTargets, withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import type { RedlineRow } from "./db"
 
 function row(before: string, after: string): RedlineRow {
@@ -10,6 +12,41 @@ function row(before: string, after: string): RedlineRow {
     new_text: after, author: "Counsel", review_comment: "Explain the proposal.", anchor_id: null, created_at: 1,
     status: "pending", target_json: null, formatting_json: JSON.stringify({ spacingAfter: 6 }) }
 }
+
+test("bound wording proposals reject any stored formatting instead of silently dropping it", async () => {
+  const source = await withParagraphPointers((await renderMarkdownToDocx("First paragraph.\n\nSecond paragraph.")).bytes)
+  const before = new Uint8Array(source)
+  const wording = { ...row("Second paragraph.", "Updated paragraph."), formatting_json: null }
+  const packet = await createDocxLocalization(source, [{ id: "1", before_quote: wording.find_text, replacement: wording.new_text }])
+  const target = (await paragraphTargets(source))[1]!
+  const bindings = [
+    { version: 1, source_sha256: packet.revision.source_sha256, target_handle: packet.candidates[0]!.target_handle, amendment_id: "1" },
+    { version: 2, pid: target.pid!, paragraph_sha256: target.sha256, occurrence: 0, base_sha256: packet.revision.source_sha256, amendment_id: "1" },
+  ]
+  for (const value of bindings) {
+    const valid = { ...wording, target_json: JSON.stringify(value) }
+    for (const options of [{}, { pendingRevisions: "layer" as const }]) {
+      const state = await redlineState(source, [valid], options)
+      expect(redlineStaleReason(valid, state, false)).toBeUndefined()
+      expect((await buildRedlined(source, [valid], state, options)).length).toBeGreaterThan(0)
+      expect((await createDocxRevision(await bake(source, [valid], state, options))).paragraphs.some(p => p.text === wording.new_text)).toBe(true)
+      // Only the additional stored column changes: neither its syntax nor an
+      // empty value can turn a wording binding into a formatting writer.
+      for (const formatting_json of [JSON.stringify({ spacingAfter: 6 }), "", "null", "{invalid"]) {
+        const invalid = { ...valid, formatting_json }
+        expect(() => binding(invalid)).toThrow("Formatting cannot be combined")
+        expect(redlineStaleReason(invalid, state, false)).toContain("invalid Word revision binding")
+        await expect(buildRedlined(source, [invalid], state, options)).rejects.toThrow()
+        await expect(bake(source, [invalid], state, options)).rejects.toThrow("Formatting cannot be combined")
+      }
+      const sibling = { ...row("First paragraph.", "First revised paragraph."), id: 2 }
+      const invalid = { ...valid, formatting_json: JSON.stringify({ spacingAfter: 6 }) }
+      await expect(buildRedlined(source, [sibling, invalid], state, options)).rejects.toThrow()
+      await expect(bake(source, [sibling, invalid], state, options)).rejects.toThrow("Formatting cannot be combined")
+      expect(source).toEqual(before)
+    }
+  }
+})
 
 test("main redline previews and accepts mixed wording and formatting atomically", async () => {
   const source = (await renderMarkdownToDocx("First paragraph.\n\nSecond paragraph.")).bytes

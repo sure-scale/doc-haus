@@ -403,6 +403,8 @@ type ParagraphBinding = { version:2; amendment_id:string; paragraph_sha256:strin
 export function binding(row:RedlineRow):RevisionBinding|ParagraphBinding {
   if (tableRowProposalMarker(row)) throw new Error("A row insertion requires its structural writer.")
   if (!row.target_json) throw new Error("The proposal has no exact Word revision binding.")
+  // Bound proposals use the wording writer; it cannot apply stored formatting.
+  if (row.formatting_json != null) throw new Error("Formatting cannot be combined with a Word revision binding. Prepare a fresh change list.")
   const parsed:unknown = JSON.parse(row.target_json)
   const value = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string,unknown> : {}
   const hex = (text:unknown) => typeof text === "string" && /^[a-f0-9]{64}$/.test(text)
