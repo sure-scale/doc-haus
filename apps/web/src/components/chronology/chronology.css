@@ -951,3 +951,177 @@
 .chronology-dialog details[open] > .chronology-form-grid {
   margin-top: 12px;
 }
+
+/* Counts describe the saved record; pressed controls filter only this view. */
+.chronology-counters {
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px 16px;
+}
+.chronology-review-filters,
+.chronology-summary-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.chronology-workbench .chronology-counters button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  min-height: 34px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  text-decoration: none;
+  color: #687181;
+}
+.chronology-workbench .chronology-counters button:hover {
+  text-decoration: none;
+  background: #f1f3f7;
+}
+.chronology-workbench .chronology-counters button[aria-pressed="true"] {
+  color: #244782;
+  background: #eaf0fa;
+  border-color: #d9e3f4;
+  font-weight: 500;
+}
+.chronology-counters button > span {
+  font-variant-numeric: tabular-nums;
+}
+.chronology-counter-divider {
+  height: 15px;
+  width: 1px;
+  margin-inline: 5px;
+  background: #e0e2e7;
+}
+.chronology-workbench .chronology-summary-actions button {
+  color: #445778;
+  border-color: #e2e6ed;
+  background: #fff;
+}
+.chronology-counters .chronology-summary-attention {
+  color: #a07428;
+  font-size: 10px;
+}
+.chronology-workbench .chronology-search-row > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.chronology-workbench button.chronology-sort-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 0;
+  border: 0;
+  min-height: 30px;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+}
+.chronology-sort-heading > span {
+  color: #8b94a3;
+  font-size: 12px;
+}
+.chronology-event-table th[aria-sort="ascending"] .chronology-sort-heading > span,
+.chronology-event-table th[aria-sort="descending"] .chronology-sort-heading > span {
+  color: #2c5693;
+}
+.chronology-run {
+  align-items: center;
+  padding: 12px 14px;
+}
+.chronology-run > div:first-of-type {
+  flex: 1;
+}
+.chronology-building-spinner {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  border: 2px solid #d8e1ef;
+  border-top-color: #466799;
+  border-radius: 50%;
+  animation: chronology-building-spin 0.8s linear infinite;
+}
+@keyframes chronology-building-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.chronology-surface-overlay {
+  align-items: center;
+  padding: 24px;
+}
+.chronology-surface-panel {
+  width: min(1000px, 100%);
+  max-height: calc(var(--viewport-block, 100dvh) - 48px);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #e4e6eb;
+  border-radius: 12px;
+  box-shadow: 0 16px 64px #18223822;
+  overflow: hidden;
+}
+.chronology-surface-panel > .viewer-bar {
+  flex: none;
+  background: #fff;
+}
+.chronology-surface-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 24px;
+  overscroll-behavior: contain;
+}
+.chronology-surface-body .chronology-sources {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.chronology-surface-body .chronology-proposal-review {
+  border-top: 0;
+  padding-top: 0;
+}
+.chronology-surface-body .chronology-section-head {
+  flex-wrap: wrap;
+}
+.chronology-scope-explanation {
+  margin: 14px 0;
+  padding: 10px 12px;
+  background: #f6f7f9;
+  border-radius: 6px;
+}
+.chronology-scope-explanation > p {
+  font-size: 12px;
+  color: #5d6879;
+}
+@media (max-width: 800px) {
+  .chronology-workbench .chronology-counters button {
+    min-height: 44px;
+  }
+  .chronology-counter-divider {
+    display: none;
+  }
+  .chronology-workbench button.chronology-sort-heading {
+    min-height: 44px;
+  }
+  .chronology-surface-overlay {
+    padding: 12px;
+  }
+  .chronology-surface-panel {
+    max-height: calc(var(--viewport-block, 100dvh) - 24px);
+  }
+  .chronology-surface-body {
+    padding: 16px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chronology-building-spinner {
+    animation: none;
+  }
+}

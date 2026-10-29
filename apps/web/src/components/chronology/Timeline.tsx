@@ -116,6 +116,7 @@ export default function ChronologyTimeline({
   const clusterListRef = useRef<HTMLDivElement>(null)
   const clusterTriggerRef = useRef<HTMLButtonElement | null>(null)
   const pickerFocusedElement = useRef<HTMLElement | null>(null)
+  const suppressPreviewFocus = useRef(false)
   const tooltipId = useId()
   const tooltipRef = useRef<HTMLDivElement>(null)
   const tooltipLeaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -124,18 +125,27 @@ export default function ChronologyTimeline({
   const cancelTooltipLeave = () => clearTimeout(tooltipLeaveTimer.current)
   const hideTooltip = () => {
     cancelTooltipLeave()
+    pickerFocusedElement.current = null
     setTooltip(undefined)
     setTooltipPosition(undefined)
+    setCluster((current) => (current.length ? [] : current))
   }
-  const showTooltip = (anchor: HTMLElement, ids: string[], kind: "point" | "period" = "point") => {
+  const showTooltip = (anchor: HTMLElement, ids: string[], kind: "point" | "period" = "point", force = false) => {
+    if (cluster.length && !force) return
     cancelTooltipLeave()
+    clusterTriggerRef.current = anchor instanceof HTMLButtonElement ? anchor : null
     setTooltipPosition(undefined)
     setTooltip({ anchor, ids, kind })
   }
   const leaveTooltip = () => {
     cancelTooltipLeave()
     tooltipLeaveTimer.current = setTimeout(() => {
-      if (document.activeElement !== tooltip?.anchor) hideTooltip()
+      if (
+        !cluster.length &&
+        document.activeElement !== tooltip?.anchor &&
+        !tooltipRef.current?.contains(document.activeElement)
+      )
+        hideTooltip()
     }, 160)
   }
   useEffect(() => () => clearTimeout(tooltipLeaveTimer.current), [])
@@ -156,11 +166,17 @@ export default function ChronologyTimeline({
   const tooltipEvents = useMemo(() => dated.filter((event) => tooltip?.ids.includes(event.id)), [dated, tooltip])
   useLayoutEffect(() => {
     const bubble = tooltipRef.current
-    if (!tooltip || !bubble) return
+    if (!tooltip) return
     if (!tooltip.anchor.isConnected || !tooltipEvents.length) {
+      const focused = pickerFocusedElement.current
+      const restore =
+        bubble?.contains(document.activeElement) ||
+        (focused && !focused.isConnected && document.activeElement === document.body)
       hideTooltip()
+      if (restore) restoreClusterFocus()
       return
     }
+    if (!bubble) return
     const scale = Number.parseFloat(getComputedStyle(document.body).zoom) || 1
     const viewport = window.visualViewport
     const left = viewport?.offsetLeft ?? 0
@@ -169,7 +185,7 @@ export default function ChronologyTimeline({
     const height = viewport?.height ?? window.innerHeight
     const gap = 8
     bubble.style.maxWidth = `${Math.max(0, Math.min(320, (width - gap * 2) / scale))}px`
-    bubble.style.maxHeight = `${Math.max(0, (height - gap * 2) / scale)}px`
+    bubble.style.maxHeight = `${Math.max(0, Math.min(420, (height - gap * 2) / scale))}px`
     const anchor = tooltip.anchor.getBoundingClientRect()
     const rect = bubble.getBoundingClientRect()
     const above = anchor.top - rect.height - gap
@@ -186,23 +202,37 @@ export default function ChronologyTimeline({
       if (event.key !== "Escape" || event.defaultPrevented) return
       event.preventDefault()
       event.stopPropagation()
+      const restore = bubble.contains(document.activeElement)
       hideTooltip()
+      if (restore) restoreClusterFocus()
+    }
+    const outside = (event: PointerEvent) => {
+      if (!(event.target instanceof Node) || bubble.contains(event.target) || tooltip.anchor.contains(event.target))
+        return
+      hideTooltip()
+    }
+    const dismissForGeometry = () => {
+      const restore = bubble.contains(document.activeElement)
+      hideTooltip()
+      if (restore) restoreClusterFocus()
     }
     const scroll = (event: Event) => {
       if (event.target instanceof Node && bubble.contains(event.target)) return
-      hideTooltip()
+      dismissForGeometry()
     }
     document.addEventListener("keydown", escape, true)
+    document.addEventListener("pointerdown", outside, true)
     window.addEventListener("scroll", scroll, true)
-    window.addEventListener("resize", hideTooltip)
-    viewport?.addEventListener("scroll", hideTooltip)
-    viewport?.addEventListener("resize", hideTooltip)
+    window.addEventListener("resize", dismissForGeometry)
+    viewport?.addEventListener("scroll", dismissForGeometry)
+    viewport?.addEventListener("resize", dismissForGeometry)
     return () => {
       document.removeEventListener("keydown", escape, true)
+      document.removeEventListener("pointerdown", outside, true)
       window.removeEventListener("scroll", scroll, true)
-      window.removeEventListener("resize", hideTooltip)
-      viewport?.removeEventListener("scroll", hideTooltip)
-      viewport?.removeEventListener("resize", hideTooltip)
+      window.removeEventListener("resize", dismissForGeometry)
+      viewport?.removeEventListener("scroll", dismissForGeometry)
+      viewport?.removeEventListener("resize", dismissForGeometry)
     }
   }, [tooltip, tooltipEvents])
   const bounds = dated
@@ -270,6 +300,7 @@ export default function ChronologyTimeline({
         scrollRef.current ??
         sectionRef.current?.querySelector<HTMLElement>("summary") ??
         sectionRef.current)
+    suppressPreviewFocus.current = Boolean(target?.classList.contains("chronology-timeline-point"))
     target?.focus({ preventScroll: true })
   }
   useLayoutEffect(() => {
@@ -285,13 +316,17 @@ export default function ChronologyTimeline({
     }
   }, [cluster, clusterEvents])
   useEffect(() => {
-    if (cluster.length)
+    if (cluster.length && tooltipPosition && !tooltipRef.current?.contains(document.activeElement))
       clusterListRef.current?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true })
-  }, [cluster])
+  }, [cluster, tooltipPosition])
   const closeCluster = () => {
-    pickerFocusedElement.current = null
-    setCluster([])
+    hideTooltip()
     restoreClusterFocus()
+  }
+  const openPicker = (anchor: HTMLButtonElement, ids: string[]) => {
+    clusterTriggerRef.current = anchor
+    showTooltip(anchor, ids, "point", true)
+    setCluster(ids)
   }
   const tickFormat = new Intl.DateTimeFormat(
     undefined,
@@ -404,7 +439,14 @@ export default function ChronologyTimeline({
                         ? `${group.length} clustered events near ${dateLabel(event.date)}`
                         : `${dateLabel(event.date)}: ${event.title}`
                     }
-                    aria-describedby={
+                    aria-haspopup="dialog"
+                    aria-expanded={
+                      tooltip?.kind === "point" &&
+                      tooltip.anchor === clusterTriggerRef.current &&
+                      tooltip.ids.length === group.length &&
+                      tooltip.ids.every((id) => group.some((item) => item.id === id))
+                    }
+                    aria-controls={
                       tooltip?.kind === "point" &&
                       tooltip.ids.length === group.length &&
                       tooltip.ids.every((id) => group.some((item) => item.id === id))
@@ -419,18 +461,41 @@ export default function ChronologyTimeline({
                         )
                     }}
                     onPointerLeave={leaveTooltip}
-                    onFocus={(focus) =>
+                    onFocus={(focus) => {
+                      if (suppressPreviewFocus.current) {
+                        suppressPreviewFocus.current = false
+                        return
+                      }
                       showTooltip(
                         focus.currentTarget,
                         group.map((item) => item.id),
                       )
-                    }
-                    onBlur={hideTooltip}
+                    }}
+                    onBlur={(blur) => {
+                      if (!tooltipRef.current?.contains(blur.relatedTarget as Node | null)) hideTooltip()
+                    }}
+                    onKeyDown={(key) => {
+                      if (
+                        key.key === "ArrowDown" ||
+                        (key.key === "Tab" && !key.shiftKey && tooltip?.anchor === key.currentTarget)
+                      ) {
+                        key.preventDefault()
+                        openPicker(
+                          key.currentTarget,
+                          group.map((item) => item.id),
+                        )
+                      }
+                    }}
                     onClick={(click) => {
-                      hideTooltip()
                       clusterTriggerRef.current = click.currentTarget
-                      if (group.length === 1) onSelect(event)
-                      setCluster(group.length > 1 ? group.map((item) => item.id) : [])
+                      if (group.length === 1) {
+                        hideTooltip()
+                        onSelect(event)
+                      } else
+                        openPicker(
+                          click.currentTarget,
+                          group.map((item) => item.id),
+                        )
                     }}
                   >
                     <span className="chronology-point-mark" aria-hidden="true">
@@ -539,8 +604,9 @@ export default function ChronologyTimeline({
           <div
             ref={tooltipRef}
             id={tooltipId}
-            role="tooltip"
-            className="chronology-marker-tooltip"
+            role="dialog"
+            aria-label="Timeline events"
+            className="chronology-marker-popup"
             style={{
               left: tooltipPosition?.left ?? 0,
               top: tooltipPosition?.top ?? 0,
@@ -548,77 +614,70 @@ export default function ChronologyTimeline({
             }}
             onPointerEnter={cancelTooltipLeave}
             onPointerLeave={leaveTooltip}
+            onFocusCapture={(event) => {
+              pickerFocusedElement.current = event.target as HTMLElement
+            }}
+            onBlurCapture={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                pickerFocusedElement.current = null
+                if (event.relatedTarget !== tooltip.anchor) hideTooltip()
+              }
+            }}
+            onKeyDown={(key) => {
+              if (key.key !== "Tab") return
+              const buttons = [...key.currentTarget.querySelectorAll<HTMLButtonElement>("button")]
+              const first = buttons[0],
+                last = buttons[buttons.length - 1]
+              if (key.shiftKey && document.activeElement === first) {
+                key.preventDefault()
+                closeCluster()
+              } else if (!key.shiftKey && document.activeElement === last) {
+                key.preventDefault()
+                const controls = [
+                  ...(sectionRef.current?.querySelectorAll<HTMLElement>(
+                    'button:not(:disabled), summary, [tabindex="0"]',
+                  ) ?? []),
+                ].filter((element) => element.getClientRects().length && !element.closest("[inert]"))
+                const next = controls[controls.indexOf(tooltip.anchor) + 1]
+                hideTooltip()
+                if (next) next.focus({ preventScroll: true })
+                else restoreClusterFocus()
+              }
+            }}
           >
-            {tooltipEvents.length > 1 ? (
-              <>
-                <strong>{tooltipEvents.length} nearby events</strong>
-                <ul>
-                  {tooltipEvents.slice(0, 3).map((event) => (
-                    <li key={event.id}>
-                      <span className="chronology-marker-tooltip-date">{dateLabel(event.date)}</span>
-                      <span>{event.title}</span>
-                      <small>{eventMeaning(event)}</small>
-                    </li>
-                  ))}
-                </ul>
-                {tooltipEvents.length > 3 && (
-                  <span className="chronology-marker-tooltip-more">+{tooltipEvents.length - 3} more events</span>
-                )}
-                <span className="chronology-marker-tooltip-hint">Select to inspect each event.</span>
-              </>
-            ) : (
-              <>
-                <strong>{dateLabel(tooltipEvents[0].date)}</strong>
-                <span className="chronology-marker-tooltip-title">{tooltipEvents[0].title}</span>
-                <small>{eventMeaning(tooltipEvents[0])}</small>
-                {periodMeaning(tooltipEvents[0]) && (
-                  <small className="chronology-marker-tooltip-period">{periodMeaning(tooltipEvents[0])}</small>
-                )}
-                {tooltip.kind === "point" && (
-                  <span className="chronology-marker-tooltip-hint">Select to view evidence.</span>
-                )}
-              </>
-            )}
+            <strong>{tooltipEvents.length > 1 ? `${tooltipEvents.length} nearby events` : "Timeline event"}</strong>
+            <span className="chronology-marker-popup-hint">Choose an event to view its evidence.</span>
+            <div
+              ref={clusterListRef}
+              role="group"
+              aria-label={tooltipEvents.length > 1 ? "Clustered events" : "Event preview"}
+              className="chronology-marker-popup-events"
+            >
+              {tooltipEvents.map((event) => (
+                <button
+                  key={event.id}
+                  type="button"
+                  className="chronology-marker-popup-event"
+                  onClick={() => {
+                    hideTooltip()
+                    onSelect(event)
+                  }}
+                >
+                  <span className="chronology-marker-popup-date">{dateLabel(event.date)}</span>
+                  <span className="chronology-marker-popup-title">{event.title}</span>
+                  <small>{eventMeaning(event)}</small>
+                  {periodMeaning(event) && (
+                    <small className="chronology-marker-popup-period">{periodMeaning(event)}</small>
+                  )}
+                </button>
+              ))}
+            </div>
+            <button type="button" className="chronology-marker-popup-close" onClick={closeCluster}>
+              Close event list
+            </button>
           </div>,
           document.body,
         )}
-      {clusterEvents.length > 0 && (
-        <div
-          ref={clusterListRef}
-          className="chronology-timeline-cluster"
-          role="group"
-          aria-label="Clustered events"
-          onFocusCapture={(event) => {
-            pickerFocusedElement.current = event.target as HTMLElement
-          }}
-          onBlurCapture={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) pickerFocusedElement.current = null
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault()
-              closeCluster()
-            }
-          }}
-        >
-          {clusterEvents.map((event) => (
-            <button
-              key={event.id}
-              type="button"
-              onClick={() => {
-                pickerFocusedElement.current = null
-                setCluster([])
-                onSelect(event)
-              }}
-            >
-              {dateLabel(event.date)} · {event.title}
-            </button>
-          ))}
-          <button type="button" onClick={closeCluster}>
-            Close cluster
-          </button>
-        </div>
-      )}
     </section>
   )
 }

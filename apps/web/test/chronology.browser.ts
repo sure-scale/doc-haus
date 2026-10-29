@@ -250,7 +250,7 @@ try {
     }))
   await expect(page.getByRole("heading", { name: "Fact chronology", exact: true })).toBeVisible()
   await expect(detail).toHaveCount(0)
-  const tooltip = page.getByRole("tooltip")
+  const timelinePopup = page.getByRole("dialog", { name: "Timeline events", exact: true })
   const collectionPoint = page.getByRole("button", { name: "2026-05-06: Equipment collected", exact: true })
   const beforePreview = {
     revision: state.revision,
@@ -259,24 +259,40 @@ try {
   }
   const beforePreviewCanvas = await canvasGeometry()
   await collectionPoint.hover()
-  await expect(tooltip).toContainText("2026-05-06")
-  await expect(tooltip).toContainText("Equipment collected")
-  await expect(tooltip).toContainText("Exact date")
+  await expect(timelinePopup).toContainText("2026-05-06")
+  await expect(timelinePopup).toContainText("Equipment collected")
+  await expect(timelinePopup).toContainText("Exact date")
   await expect(detail).toHaveCount(0)
   assert.deepEqual(await canvasGeometry(), beforePreviewCanvas, "hover help does not resize or scroll the chronology")
   await page.keyboard.press("Escape")
-  await expect(tooltip).toHaveCount(0)
+  await expect(timelinePopup).toHaveCount(0)
   await collectionPoint.focus()
-  await expect(tooltip).toContainText("Equipment collected")
-  await expect(collectionPoint).toHaveAccessibleDescription(/Exact date/)
+  await expect(timelinePopup).toContainText("Equipment collected")
+  await expect(collectionPoint).toHaveAttribute("aria-expanded", "true")
   await page.keyboard.press("Escape")
-  await expect(tooltip).toHaveCount(0)
+  await expect(timelinePopup).toHaveCount(0)
   await expect(collectionPoint).toBeFocused()
   assert.deepEqual(
     { revision: state.revision, opened: state.events[0]!.opened, reviewed: state.events[0]!.reviewed },
     beforePreview,
     "hover, focus and Escape preview the event without opening or reviewing it",
   )
+  const arrivalPoint = page.getByRole("button", { name: "2026-05-08: Equipment arrived", exact: true })
+  await arrivalPoint.hover()
+  await timelinePopup.getByRole("button", { name: /Equipment arrived/ }).click()
+  await expect(timelinePopup).toHaveCount(0)
+  await expect(detail.getByRole("heading", { name: "Equipment arrived", exact: true })).toBeVisible()
+  await detail.getByRole("button", { name: "Close event evidence" }).click()
+  await expect(detail).toHaveCount(0)
+  await expect(page.locator('[data-event-id="arrival"] .chronology-event-title')).toBeFocused()
+  await collectionPoint.click()
+  await expect(detail.getByRole("heading", { name: "Equipment collected", exact: true })).toBeVisible()
+  await expect.poll(() => state.events[0]!.opened).toBe(true)
+  await detail.getByRole("button", { name: "Close event evidence" }).click()
+  await expect(detail).toHaveCount(0)
+  await expect(page.locator('[data-event-id="collection"] .chronology-event-title')).toBeFocused()
+  // Restore this fixture's unopened baseline for the review workflow below.
+  state.events[0]!.opened = false
   // Each searchable filter must narrow actual events and restore its trigger,
   // rather than merely searching labels in an unconnected dropdown.
   const inspection = event("inspection-filter", "Independent inspection completed", "2026-05-10")
@@ -325,9 +341,25 @@ try {
   state.revision++
   await page.reload()
   await expect(page.locator(".chronology-event-table tbody tr")).toHaveCount(2)
-  await page.getByRole("combobox", { name: "Sort events", exact: true }).selectOption("newest")
+  const savedFilters = page.getByRole("group", { name: "Filter saved events", exact: true })
+  await savedFilters.getByRole("button", { name: /^Not opened/ }).click()
+  await expect(page.locator(".chronology-event-table tbody tr")).toHaveCount(1)
+  await expect(page.locator(".chronology-event-table tbody tr")).toHaveAttribute("data-event-id", "collection")
+  await savedFilters.getByRole("button", { name: /^All events/ }).click()
+  await expect(page.locator(".chronology-event-table tbody tr")).toHaveCount(2)
+  const sourcesButton = page.getByRole("button", { name: /^Sources/ })
+  await sourcesButton.click()
+  const sources = page.getByRole("dialog", { name: "Sources and coverage", exact: true })
+  await expect(sources).toContainText("Carrier note.md")
+  await expect(sources).toContainText("Uploaded, readable text, and chronology coverage are separate states")
+  await sources.getByText("How source processing works", { exact: true }).click()
+  await expect(sources).toContainText("Display filters change only the events you see")
+  await page.keyboard.press("Escape")
+  await expect(sources).toHaveCount(0)
+  await expect(sourcesButton).toBeFocused()
   await expect(page.locator(".chronology-event-table tbody tr").first()).toHaveAttribute("data-event-id", "arrival")
-  await page.getByRole("combobox", { name: "Sort events", exact: true }).selectOption("oldest")
+  await expect(page.getByRole("columnheader", { name: /Date/ })).toHaveAttribute("aria-sort", "descending")
+  await page.getByRole("button", { name: "Sort by Date", exact: true }).click()
   await expect(page.locator(".chronology-event-table tbody tr").first()).toHaveAttribute("data-event-id", "collection")
   await page.getByRole("searchbox", { name: "Search events and quotations" }).fill("sealed equipment")
   await page.getByRole("button", { name: "Equipment collected", exact: true }).focus()
@@ -431,8 +463,8 @@ try {
     "Confirm the carrier name with the client.",
   )
   await detail.getByRole("button", { name: "Close event evidence" }).click()
-  await page.locator(".chronology-workbench-menu > summary").click()
-  const menuItems = await page.locator(".chronology-workbench-menu > div > button").evaluateAll((buttons) =>
+  await page.locator(".matter-actions-menu > summary").click()
+  const menuItems = await page.locator(".matter-actions-menu-items > button").evaluateAll((buttons) =>
     buttons.map((button) => {
       const box = button.getBoundingClientRect()
       return { x: box.x, y: box.y, right: box.right, bottom: box.bottom, width: box.width }
@@ -442,17 +474,17 @@ try {
   assert.ok(menuItems[1]!.y >= menuItems[0]!.bottom, "overflow actions stack vertically")
   assert.ok(Math.abs(menuItems[0]!.x - menuItems[1]!.x) < 1, "overflow actions share a left edge")
   assert.ok(Math.abs(menuItems[0]!.width - menuItems[1]!.width) < 1, "overflow actions fill one column")
-  await page.getByRole("button", { name: "Refresh from sources" }).click()
+  await page.getByRole("button", { name: "Check for source changes" }).click()
   const refresh = page.getByRole("dialog", { name: "Refresh chronology", exact: true })
   await expectSharedBackdrop()
   await expect(refresh).toContainText("Carrier note.md")
-  await expect(refresh.getByRole("button", { name: "Generate refresh proposals" })).toBeDisabled()
+  await expect(refresh.getByRole("button", { name: "Check sources and suggest updates" })).toBeDisabled()
   await refresh.getByRole("radio", { name: /^Mixed/ }).check()
-  await refresh.getByRole("button", { name: "Generate refresh proposals" }).click()
+  await refresh.getByRole("button", { name: "Check sources and suggest updates" }).click()
   await expect(refresh).toHaveCount(0)
   assert.equal(runCalls, 1)
-  await page.locator(".chronology-workbench-menu > summary").click()
-  await page.getByRole("button", { name: "Refresh from sources" }).click()
+  await page.locator(".matter-actions-menu > summary").click()
+  await page.getByRole("button", { name: "Check for source changes" }).click()
   await expect(refresh.getByRole("radio", { name: /^Mixed/ })).not.toBeChecked()
   await refresh.getByRole("button", { name: "Cancel", exact: true }).click()
   assert.equal(runCalls, 1)
@@ -470,7 +502,7 @@ try {
   }
   state.proposals.push(proposal)
   await page.reload()
-  await page.getByRole("button", { name: "1 Updates", exact: true }).click()
+  await page.getByRole("button", { name: "Updates 1", exact: true }).click()
   await expect(page.getByRole("region", { name: "Review chronology updates" })).toContainText("Signed receipt recorded")
   await page.getByRole("button", { name: "Skip for later", exact: true }).click()
   await expect.poll(() => state.proposals[0]!.status).toBe("deferred")
@@ -578,18 +610,24 @@ try {
     "long desktop record scrolls inside the workbench",
   )
   await clusterPoint.hover()
-  await expect(tooltip).toContainText("8 nearby events")
-  await expect(tooltip.locator("li")).toHaveCount(3)
-  await expect(tooltip).toContainText("Independent occurrence")
-  await expect(tooltip).toContainText("+5 more events")
-  await expect(tooltip).toContainText("Select to inspect each event.")
-  await expect(page.getByRole("group", { name: "Clustered events", exact: true })).toHaveCount(0)
+  await expect(timelinePopup).toContainText("8 nearby events")
+  await expect(timelinePopup.locator(".chronology-marker-popup-event")).toHaveCount(8)
+  await expect(timelinePopup).toContainText("Independent occurrence")
+  await expect(timelinePopup).toContainText("Choose an event to view its evidence.")
+  const eventTargets = await timelinePopup
+    .locator(".chronology-marker-popup-event")
+    .evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().height))
+  assert.ok(
+    eventTargets.every((height) => height >= 44),
+    "every clustered event has its own 44px action",
+  )
+  await expect(page.locator(".chronology-event-table tbody tr")).toHaveCount(25)
   await page.keyboard.press("Escape")
-  await expect(tooltip).toHaveCount(0)
+  await expect(timelinePopup).toHaveCount(0)
   await page.setViewportSize({ width: 375, height: 900 })
   await page.getByRole("button", { name: "2026-12-20: Later follow-up", exact: true }).hover()
-  await expect(tooltip).toContainText("Later follow-up")
-  const tooltipBounds = (await tooltip.boundingBox())!
+  await expect(timelinePopup).toContainText("Later follow-up")
+  const tooltipBounds = (await timelinePopup.boundingBox())!
   assert.ok(
     tooltipBounds.x >= 0 &&
       tooltipBounds.y >= 0 &&
@@ -598,7 +636,7 @@ try {
     "hover help at the right timeline edge stays inside a narrow viewport",
   )
   await page.keyboard.press("Escape")
-  await expect(tooltip).toHaveCount(0)
+  await expect(timelinePopup).toHaveCount(0)
   await page.setViewportSize({ width: 1050, height: 900 })
   await clusterPoint.click()
   const cluster = page.getByRole("group", { name: "Clustered events", exact: true })
@@ -606,6 +644,18 @@ try {
   await page.keyboard.press("Escape")
   await expect(cluster).toHaveCount(0)
   await expect(clusterPoint).toBeFocused()
+  await clusterPoint.click()
+  const firstClusterEvent = cluster.getByRole("button").first()
+  const chosenTitle = await firstClusterEvent.locator(".chronology-marker-popup-title").innerText()
+  await firstClusterEvent.click()
+  await expect(timelinePopup).toHaveCount(0)
+  await expect(detail.getByRole("heading", { name: chosenTitle, exact: true })).toBeVisible()
+  await expect(page.locator(".chronology-event-table tbody tr")).toHaveCount(25)
+  await detail.getByRole("button", { name: "Close event evidence" }).click()
+  await expect(detail).toHaveCount(0)
+  await expect(
+    page.locator(".chronology-event-table").getByRole("button", { name: chosenTitle, exact: true }),
+  ).toBeFocused()
   const overlappingTargets = () =>
     page.locator(".chronology-timeline-point").evaluateAll((points) => {
       const bounds = points.map((point) => ({
@@ -657,7 +707,7 @@ try {
   await page.emulateMedia({ reducedMotion: "reduce" })
   assert.deepEqual(errors, [])
   console.log(
-    "Chronology browser passed: hover/focus/Escape help, searchable source/person filters, source/focus return, review/note/star/hide, stale save, reopen, fresh privilege, proposals and 375/768/1440px (scripted ingest; no model).",
+    "Chronology browser passed: actionable hover/focus/Escape event lists, source coverage/review filters, searchable source/person filters, source/focus return, review/note/star/hide, stale save, reopen, fresh privilege, proposals and 375/768/1440px (scripted ingest; no model).",
   )
 } finally {
   await browser.close()

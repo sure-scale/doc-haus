@@ -26,6 +26,8 @@ import JurisdictionSelect from "../JurisdictionSelect"
 import DateInput, { useChronologyDateFormat } from "./DateInput"
 import { type CitationFocus } from "../citation-target"
 import ChronologyDialog from "./Dialog"
+import ChronologySurface from "./ChronologySurface"
+import MatterActionsMenu, { type MatterMenuAction } from "../matter/MatterActionsMenu"
 import EventDetail from "./EventDetail"
 import EventForm from "./EventForm"
 import ProposalReview from "./ProposalReview"
@@ -54,6 +56,7 @@ export default function ChronologyWorkbench({
   onState,
   onAsk,
   onClose,
+  onActionsChange,
 }: {
   matterId: string
   title: string
@@ -65,13 +68,18 @@ export default function ChronologyWorkbench({
   onState: (state: Chronology) => void
   onAsk: (reference: ChronologyChatReference) => void
   onClose: () => void
+  onActionsChange?: (actions: MatterMenuAction[]) => void
 }) {
   const [state, setState] = useState(chronology)
   const [selectedId, setSelectedId] = useState<string | undefined>(initialEvent)
   const [search, setSearch] = useState("")
-  const [sort, setSort] = useState("newest")
+  const [sort, setSort] = useState<{
+    key: "date" | "event" | "sources" | "review"
+    direction: "ascending" | "descending"
+  }>({ key: "date", direction: "descending" })
   const [filters, setFilters] = useState<ChronologyFilters>(emptyFilters)
   const [filterOpen, setFilterOpen] = useState(false)
+  const [filterReset, setFilterReset] = useState(0)
   const [error, setError] = useState("")
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
@@ -125,7 +133,7 @@ export default function ChronologyWorkbench({
     if (initialEvent) setSelectedId(initialEvent)
   }, [initialEvent])
   useEffect(() => {
-    if (initialProposal) setUpdatesOpen(true)
+    if (initialProposal) showUpdates()
   }, [initialProposal])
   useEffect(() => {
     if (state?.run?.status !== "running") return
@@ -259,16 +267,88 @@ export default function ChronologyWorkbench({
     .filter((event) => !event.supersededBy?.length)
     .filter((event) => matchesChronology(event, search, filters, people.canonical))
     .sort((a, b) => {
-      if (!a.date.start) return b.date.start ? 1 : a.createdAt - b.createdAt
-      if (!b.date.start) return -1
-      const order = a.date.start.localeCompare(b.date.start) || a.createdAt - b.createdAt
-      return sort === "newest" ? -order : order
+      let order = 0
+      if (sort.key === "date") {
+        if (!a.date.start) return b.date.start ? 1 : a.createdAt - b.createdAt
+        if (!b.date.start) return -1
+        order = a.date.start.localeCompare(b.date.start)
+      } else {
+        const value = (event: ChronologyEvent) =>
+          sort.key === "event"
+            ? event.title
+            : sort.key === "sources"
+              ? [...new Set(eventEvidence(event).map((evidence) => evidence.documentName))].sort().join(", ")
+              : event.reviewed
+                ? "Reviewed"
+                : "Unreviewed"
+        order = value(a).localeCompare(value(b), undefined, { sensitivity: "base", numeric: true })
+      }
+      return (sort.direction === "descending" ? -order : order) || a.createdAt - b.createdAt
     })
   const activeFilterCount = Object.entries(filters).filter(([key, value]) =>
     key === "hidden" ? value !== "exclude" : !!value,
   ).length
   const running = state?.run?.status === "running"
   const complete = state?.coverage.filter((source) => source.status === "complete").length ?? 0
+  const currentEvents = state?.events.filter((event) => !event.hidden && !event.supersededBy?.length) ?? []
+  const menuActions: MatterMenuAction[] = [
+    ...(running
+      ? [
+          {
+            id: "stop",
+            label: "Stop building; keep saved work",
+            disabled: busy,
+            onSelect: () => {
+              if (state) void perform(() => stopChronology(matterId, state.revision))
+            },
+          },
+        ]
+      : [
+          {
+            id: "update",
+            label: state?.created ? "Check for source changes" : "Build chronology",
+            disabled: !state || busy,
+            onSelect: () => void prepare(state?.created ? "refresh" : "initial"),
+          },
+        ]),
+    ...(!running && state?.run && (state.run.status !== "complete" || counters!.sources > 0)
+      ? [
+          {
+            id: "continue",
+            label: "Continue unfinished sources",
+            disabled: busy,
+            onSelect: () => void prepare("resume"),
+          },
+        ]
+      : []),
+    { id: "scope", label: "About source processing", disabled: !state, onSelect: showSources },
+  ]
+  useEffect(() => {
+    onActionsChange?.(menuActions)
+  }, [onActionsChange, state, busy, matterId])
+  function showSources() {
+    setSelectedId(undefined)
+    setUpdatesOpen(false)
+    setSourcesOpen(true)
+  }
+  function showUpdates() {
+    setSelectedId(undefined)
+    setSourcesOpen(false)
+    setUpdatesOpen(true)
+  }
+  function resetDisplay() {
+    setSearch("")
+    setFilters(emptyFilters)
+    setFilterReset((value) => value + 1)
+  }
+  function reviewFilter(review: string) {
+    setFilterReset((value) => value + 1)
+    setSearch("")
+    setFilters({ ...emptyFilters, review: filters.review === review ? "" : review })
+  }
+  function sortBy(key: typeof sort.key) {
+    setSort({ key, direction: sort.key === key && sort.direction === "ascending" ? "descending" : "ascending" })
+  }
   return (
     <section
       ref={root}
@@ -289,28 +369,7 @@ export default function ChronologyWorkbench({
           >
             + Add event
           </button>
-          <details className="chronology-workbench-menu">
-            <summary aria-label="Chronology actions" title="Chronology actions">
-              ···
-            </summary>
-            <div>
-              {state?.created && (
-                <button
-                  type="button"
-                  disabled={busy || running}
-                  onClick={(click) => {
-                    click.currentTarget.closest("details")?.removeAttribute("open")
-                    void prepare("refresh")
-                  }}
-                >
-                  Refresh from sources
-                </button>
-              )}
-              <button type="button" onClick={onClose}>
-                Return to conversation
-              </button>
-            </div>
-          </details>
+          {!onActionsChange && <MatterActionsMenu actions={menuActions} />}
         </div>
       </div>
       {error && (
@@ -327,57 +386,63 @@ export default function ChronologyWorkbench({
       {!state && <p role="status">Loading saved chronology…</p>}
       {state && (
         <>
-          <div className="chronology-counters" aria-label="Chronology status">
-            <span>{state.events.filter((event) => !event.hidden && !event.supersededBy?.length).length} events</span>
-            <button
-              type="button"
-              title="Saved events not yet opened; opening does not mark reviewed"
-              onClick={() => {
-                setFilters({ ...emptyFilters, review: "new" })
-                setUpdatesOpen(false)
-              }}
-            >
-              {counters!.new} New
-            </button>
-            <button
-              type="button"
-              title="Events awaiting individual lawyer review"
-              onClick={() => {
-                setFilters({ ...emptyFilters, review: "unreviewed" })
-                setUpdatesOpen(false)
-              }}
-            >
-              {counters!.unreviewed} Unreviewed
-            </button>
-            <button
-              type="button"
-              title="Distinct events with unresolved conflicts or stale/unverified evidence"
-              onClick={() => {
-                setFilters({ ...emptyFilters, review: "attention" })
-                setUpdatesOpen(false)
-              }}
-            >
-              {counters!.attention} Needs attention
-            </button>
-            <button
-              type="button"
-              aria-expanded={updatesOpen}
-              onClick={() => {
-                setUpdatesOpen((value) => !value)
-                setSelectedId(undefined)
-              }}
-            >
-              {counters!.updates} Updates
-            </button>
-            <button
-              type="button"
-              aria-expanded={sourcesOpen}
-              aria-controls="chronology-sources"
-              onClick={() => setSourcesOpen((value) => !value)}
-            >
-              Sources · {complete}/{state.coverage.length} processed
-              {counters!.sources ? ` · ${counters!.sources} incomplete` : ""}
-            </button>
+          <div className="chronology-counters">
+            <div className="chronology-review-filters" role="group" aria-label="Filter saved events">
+              <button
+                type="button"
+                onClick={resetDisplay}
+                aria-pressed={!search && activeFilterCount === 0}
+                title="Show every visible saved event and clear display filters"
+              >
+                All events <span>{currentEvents.length}</span>
+              </button>
+              <span className="chronology-counter-divider" aria-hidden="true" />
+              <button
+                type="button"
+                onClick={() => reviewFilter("new")}
+                aria-pressed={filters.review === "new"}
+                title="Show events not yet opened. Opening does not mark an event reviewed."
+              >
+                Not opened <span>{currentEvents.filter((event) => !event.opened).length}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => reviewFilter("unreviewed")}
+                aria-pressed={filters.review === "unreviewed"}
+                title="Show events awaiting lawyer review"
+              >
+                Unreviewed <span>{currentEvents.filter((event) => !event.reviewed).length}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => reviewFilter("attention")}
+                aria-pressed={filters.review === "attention"}
+                title="Show conflicts, uncertain dates or supporting evidence that needs checking"
+              >
+                Needs attention <span>{currentEvents.filter(chronologyNeedsAttention).length}</span>
+              </button>
+            </div>
+            <div className="chronology-summary-actions">
+              <button
+                type="button"
+                aria-haspopup="dialog"
+                onClick={showUpdates}
+                title="Review suggested changes before applying them to saved events"
+              >
+                Updates <span>{counters!.updates}</span>
+              </button>
+              <button
+                type="button"
+                aria-haspopup="dialog"
+                onClick={showSources}
+                title="See which sources and sections were processed, limitations, and outstanding work"
+              >
+                Sources <span>{state.coverage.length}</span>
+                {counters!.sources > 0 && (
+                  <span className="chronology-summary-attention">{counters!.sources} to check</span>
+                )}
+              </button>
+            </div>
           </div>
           {!state.created && !state.events.length && (
             <div className="chronology-invitation">
@@ -420,37 +485,24 @@ export default function ChronologyWorkbench({
               </div>
             </div>
           )}
-          {state.run && (sourcesOpen || state.run.status !== "complete" || state.run.errors.length > 0) && (
+          {state.run && (state.run.status !== "complete" || state.run.errors.length > 0) && (
             <div className={`chronology-run is-${state.run.status}`} role="status">
+              {running && <span className="chronology-building-spinner" aria-hidden="true" />}
               <div>
                 <strong>
                   {running
-                    ? "Building chronology"
-                    : state.run.status === "complete"
-                      ? "Source processing finished"
-                      : state.run.status === "stopped"
-                        ? "Generation stopped"
-                        : "Generation interrupted"}
+                    ? "Building chronology…"
+                    : state.run.status === "stopped"
+                      ? "Building stopped"
+                      : state.run.status === "complete"
+                        ? "Source processing needs attention"
+                        : "Building interrupted"}
                 </strong>
-                <span>
-                  {" "}
-                  · {state.coverage.reduce((sum, source) => sum + source.processedSections.length, 0)}/
-                  {state.coverage.reduce((sum, source) => sum + source.sections, 0)} source sections completed ·{" "}
-                  {state.run.sourceKeys.length} sources enumerated
-                </span>
                 <p>
                   {state.run.mode === "initial"
                     ? "Completed draft entries are saved as unreviewed."
-                    : "Completed changes are staged for your review. Saved entries are preserved."}{" "}
-                  {state.run.model && `Model: ${state.run.model}.`}
+                    : "Completed changes are saved as suggestions. Your existing events stay unchanged."}
                 </p>
-                {state.run.usage && (
-                  <p>
-                    Recorded usage: {state.run.usage.input.toLocaleString()} input /{" "}
-                    {state.run.usage.output.toLocaleString()} output tokens
-                    {state.run.usage.cost !== undefined ? ` · ${state.run.usage.cost.toFixed(4)} recorded cost` : ""}.
-                  </p>
-                )}
                 {state.run.errors.map((issue, index) => (
                   <p key={index} className="chronology-warning">
                     {issue}
@@ -458,399 +510,456 @@ export default function ChronologyWorkbench({
                 ))}
               </div>
               <div className="chronology-inline">
+                <button type="button" onClick={showSources}>
+                  View source coverage
+                </button>
                 {running ? (
                   <button
                     type="button"
                     disabled={busy}
                     onClick={() => void perform(() => stopChronology(matterId, state.revision))}
                   >
-                    Stop; keep completed work
+                    Stop; keep saved work
                   </button>
                 ) : (
-                  (state.run.status !== "complete" || counters!.sources > 0) && (
+                  state.run.status !== "complete" && (
                     <button type="button" disabled={busy} onClick={() => void prepare("resume")}>
-                      Resume / retry unfinished sources
+                      Continue unfinished sources
                     </button>
                   )
                 )}
               </div>
             </div>
           )}
-          {sourcesOpen && (
-            <section id="chronology-sources" className="chronology-sources">
-              <div className="chronology-section-head">
-                <h2>Sources & coverage</h2>
-                <button type="button" onClick={() => setSourceDate(true)}>
-                  Supply / correct source date
+          <div className="chronology-content">
+            <div className="chronology-main">
+              {(state.created || state.events.length > 0) && (
+                <ChronologyTimeline events={events} selected={selectedId} onSelect={select} />
+              )}
+              <div className="chronology-search-row">
+                <label className="chronology-search">
+                  <span className="chronology-sr-only">Search events and quotations</span>
+                  <input
+                    ref={searchControl}
+                    type="search"
+                    placeholder="Search events and supporting quotations…"
+                    value={search}
+                    onChange={(change) => setSearch(change.target.value)}
+                  />
+                </label>
+                <button
+                  type="button"
+                  aria-expanded={filterOpen}
+                  aria-controls="chronology-filters"
+                  onClick={() => setFilterOpen((value) => !value)}
+                >
+                  <svg
+                    width="17"
+                    height="17"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    aria-hidden="true"
+                  >
+                    <path d="M4 7h16M7 12h10M10 17h4" />
+                  </svg>
+                  Filter{activeFilterCount ? ` (${activeFilterCount})` : ""}
                 </button>
-              </div>
-              <p>
-                Uploaded, text extracted and chronology processed are separate states. Every eligible source is
-                included; the table's display filters do not restrict extraction. Empty results do not prove complete
-                processing.
-              </p>
-              {state.coverage.length === 0 ? (
-                <p>No chronology run has enumerated the source set yet. Generate to review the current source list.</p>
-              ) : (
-                <div className="chronology-source-scroll">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Source</th>
-                        <th>Uploaded / text</th>
-                        <th>Chronology coverage</th>
-                        <th>Contribution & limitations</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {state.coverage.map((source) => (
-                        <tr key={source.sourceId}>
-                          <td>
-                            <strong>{source.documentName}</strong>
-                            {source.suppliedChronology && <p>Supplied chronology; provenance may be unknown</p>}
-                          </td>
-                          <td>
-                            {source.uploaded ? "Uploaded" : "Unavailable"} ·{" "}
-                            {source.textExtracted ? "Text extracted" : "No readable text"}
-                          </td>
-                          <td>
-                            {source.status}
-                            <p>
-                              {source.processedSections.length}/{source.sections} sections read
-                            </p>
-                            {source.processedSections.length > 0 && (
-                              <details>
-                                <summary>Sections actually read</summary>
-                                {source.processedSections.map((section) => section + 1).join(", ")}
-                              </details>
-                            )}
-                          </td>
-                          <td>
-                            {source.events} sourced events
-                            {source.issues.map((issue, index) => (
-                              <p key={index} className="chronology-warning">
-                                {issue}
-                              </p>
-                            ))}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              <p className="chronology-muted">
-                Archives and unreadable material may contain sources that could not be processed. A quiet period
-                describes the supplied record; it does not prove nothing occurred or that evidence is missing.
-              </p>
-              {state.gaps.length > 0 && (
-                <div className="chronology-notice">
-                  <h3>Evidence questions to check</h3>
-                  <p className="chronology-muted">
-                    These source-level questions need checking against the whole record. A reference absent from one
-                    section may be supplied elsewhere in the matter.
-                  </p>
-                  {state.gaps.map((gap, index) => (
-                    <p key={index}>{gap}</p>
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
-          {updatesOpen ? (
-            <ProposalReview
-              chronology={state}
-              busy={busy}
-              initialProposal={initialProposal}
-              onDecision={(proposal, decision) =>
-                perform(() => decideChronologyProposal(matterId, state.revision, proposal.id, decision))
-              }
-              onBatch={(ids) => perform(() => batchChronologyAdditions(matterId, state.revision, ids))}
-              onDiscard={() => action({ type: "discard-refresh" })}
-              onClose={() => setUpdatesOpen(false)}
-              onEvidence={inspect}
-              onAsk={(event, proposal) => onAsk(chronologyChatReference(matterId, event, proposal))}
-            />
-          ) : (
-            <div className="chronology-content">
-              <div className="chronology-main">
-                {(state.created || state.events.length > 0) && (
-                  <ChronologyTimeline events={events} selected={selectedId} onSelect={select} />
+                {(search || activeFilterCount > 0) && (
+                  <button type="button" onClick={resetDisplay}>
+                    Clear
+                  </button>
                 )}
-                <div className="chronology-search-row">
-                  <label className="chronology-search">
-                    <span className="chronology-sr-only">Search events and quotations</span>
-                    <input
-                      ref={searchControl}
-                      type="search"
-                      placeholder="Search events and supporting quotations…"
-                      value={search}
-                      onChange={(change) => setSearch(change.target.value)}
-                    />
-                  </label>
-                  <label className="chronology-sort">
-                    <span className="chronology-sr-only">Sort events</span>
-                    <select value={sort} onChange={(change) => setSort(change.target.value)}>
-                      <option value="oldest">Date (oldest first)</option>
-                      <option value="newest">Date (newest first)</option>
+              </div>
+              {filterOpen && (
+                <div key={filterReset} id="chronology-filters" className="chronology-filters">
+                  <JurisdictionSelect
+                    jurisdictions={[
+                      ...new Set(state.events.flatMap(eventEvidence).map((evidence) => evidence.documentName)),
+                    ]
+                      .sort()
+                      .map((name) => ({ code: name, name }))}
+                    selected={filters.document ? [filters.document] : []}
+                    onChange={(codes) => setFilters({ ...filters, document: codes[0] ?? "" })}
+                    multiple={false}
+                    label="Document"
+                    searchLabel="Search documents"
+                    emptyLabel="All documents"
+                    showCode={false}
+                    allowClear
+                  />
+                  <JurisdictionSelect
+                    jurisdictions={people.options.map((name) => ({ code: name, name }))}
+                    selected={filters.person ? [filters.person] : []}
+                    onChange={(codes) => setFilters({ ...filters, person: codes[0] ?? "" })}
+                    multiple={false}
+                    label="Person / organisation"
+                    searchLabel="Search people and organisations"
+                    emptyLabel="All people"
+                    showCode={false}
+                    allowClear
+                  />
+                  <DateInput
+                    label="From date"
+                    value={filters.from}
+                    format={dateFormat}
+                    onChange={(value) => setFilters({ ...filters, from: value ?? "" })}
+                  />
+                  <DateInput
+                    label="To date"
+                    value={filters.to}
+                    format={dateFormat}
+                    onChange={(value) => setFilters({ ...filters, to: value ?? "" })}
+                  />
+                  <label>
+                    Review
+                    <select
+                      value={filters.review}
+                      onChange={(change) => setFilters({ ...filters, review: change.target.value })}
+                    >
+                      <option value="">All review states</option>
+                      <option value="new">New, not opened</option>
+                      <option value="unreviewed">Unreviewed</option>
+                      <option value="reviewed">Reviewed</option>
+                      <option value="attention">Needs attention</option>
                     </select>
                   </label>
-                  <button
-                    type="button"
-                    aria-expanded={filterOpen}
-                    aria-controls="chronology-filters"
-                    onClick={() => setFilterOpen((value) => !value)}
-                  >
-                    Filter{activeFilterCount ? ` (${activeFilterCount})` : ""}
-                  </button>
-                  {(search || activeFilterCount > 0) && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSearch("")
-                        setFilters(emptyFilters)
-                      }}
+                  <label>
+                    Significance
+                    <select
+                      value={filters.significance}
+                      onChange={(change) => setFilters({ ...filters, significance: change.target.value })}
                     >
-                      Clear
-                    </button>
-                  )}
-                </div>
-                {filterOpen && (
-                  <div id="chronology-filters" className="chronology-filters">
-                    <JurisdictionSelect
-                      jurisdictions={[
-                        ...new Set(state.events.flatMap(eventEvidence).map((evidence) => evidence.documentName)),
-                      ]
-                        .sort()
-                        .map((name) => ({ code: name, name }))}
-                      selected={filters.document ? [filters.document] : []}
-                      onChange={(codes) => setFilters({ ...filters, document: codes[0] ?? "" })}
-                      multiple={false}
-                      label="Document"
-                      searchLabel="Search documents"
-                      emptyLabel="All documents"
-                      showCode={false}
-                      allowClear
-                    />
-                    <JurisdictionSelect
-                      jurisdictions={people.options.map((name) => ({ code: name, name }))}
-                      selected={filters.person ? [filters.person] : []}
-                      onChange={(codes) => setFilters({ ...filters, person: codes[0] ?? "" })}
-                      multiple={false}
-                      label="Person / organisation"
-                      searchLabel="Search people and organisations"
-                      emptyLabel="All people"
-                      showCode={false}
-                      allowClear
-                    />
-                    <DateInput
-                      label="From date"
-                      value={filters.from}
-                      format={dateFormat}
-                      onChange={(value) => setFilters({ ...filters, from: value ?? "" })}
-                    />
-                    <DateInput
-                      label="To date"
-                      value={filters.to}
-                      format={dateFormat}
-                      onChange={(value) => setFilters({ ...filters, to: value ?? "" })}
-                    />
-                    <label>
-                      Review
-                      <select
-                        value={filters.review}
-                        onChange={(change) => setFilters({ ...filters, review: change.target.value })}
-                      >
-                        <option value="">All review states</option>
-                        <option value="new">New, not opened</option>
-                        <option value="unreviewed">Unreviewed</option>
-                        <option value="reviewed">Reviewed</option>
-                        <option value="attention">Needs attention</option>
-                      </select>
-                    </label>
-                    <label>
-                      Significance
-                      <select
-                        value={filters.significance}
-                        onChange={(change) => setFilters({ ...filters, significance: change.target.value })}
-                      >
-                        <option value="">All significance</option>
-                        <option value="key">Key (AI assessment)</option>
-                        <option value="relevant">Relevant</option>
-                        <option value="background">Background</option>
-                      </select>
-                    </label>
-                    <label>
-                      Visibility
-                      <select
-                        value={filters.hidden}
-                        onChange={(change) =>
-                          setFilters({ ...filters, hidden: change.target.value as ChronologyFilters["hidden"] })
-                        }
-                      >
-                        <option value="exclude">Visible events</option>
-                        <option value="include">Include hidden</option>
-                        <option value="only">Hidden only</option>
-                      </select>
-                    </label>
-                    <label className="chronology-check">
-                      <input
-                        type="checkbox"
-                        checked={filters.key}
-                        onChange={(change) => setFilters({ ...filters, key: change.target.checked })}
-                      />
-                      Lawyer-starred key events
-                    </label>
-                    <label className="chronology-check">
-                      <input
-                        type="checkbox"
-                        checked={filters.conflict}
-                        onChange={(change) => setFilters({ ...filters, conflict: change.target.checked })}
-                      />
-                      Conflicts / disputes
-                    </label>
-                    <label className="chronology-check">
-                      <input
-                        type="checkbox"
-                        checked={filters.undated}
-                        onChange={(change) => setFilters({ ...filters, undated: change.target.checked })}
-                      />
-                      Undated
-                    </label>
-                  </div>
-                )}
-                <div className="chronology-table-scroll" tabIndex={0} role="region" aria-label="Chronology events">
-                  <table className="chronology-event-table">
-                    <thead>
-                      <tr>
-                        <th>Date</th>
-                        <th>Event</th>
-                        <th>Sources</th>
-                        <th>Review</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {events.map((event) => (
-                        <tr
-                          key={event.id}
-                          data-event-id={event.id}
-                          className={`${selectedId === event.id ? "is-selected" : ""}${event.hidden ? " is-hidden" : ""}`}
-                        >
-                          <td>
-                            {dateLabel(event.date)}
-                            {event.date.rangeKind === "duration" && (
-                              <span className="chronology-table-qualification">Known period</span>
-                            )}
-                          </td>
-                          <td>
-                            <button
-                              type="button"
-                              className="chronology-event-title"
-                              aria-expanded={selectedId === event.id}
-                              onClick={(click) => select(event, click.currentTarget)}
-                            >
-                              {event.key && <span aria-label="Key event">★ </span>}
-                              {event.title}
-                            </button>
-                            <div className="chronology-table-qualifications">
-                              {eventQualifications(event).map((text) => (
-                                <span key={text} className={text === "Conflict / dispute" ? "is-conflict" : undefined}>
-                                  {text}
-                                </span>
-                              ))}
-                            </div>
-                          </td>
-                          <td>
-                            {[...new Set(eventEvidence(event).map((evidence) => evidence.documentName))]
-                              .slice(0, 2)
-                              .map((name) => (
-                                <span key={name} className="chronology-source-name">
-                                  <SourceIcon
-                                    name={name}
-                                    kind={
-                                      eventEvidence(event).find((evidence) => evidence.documentName === name)
-                                        ?.sourceKind
-                                    }
-                                  />
-                                  <span>{name}</span>
-                                </span>
-                              ))}
-                            {new Set(eventEvidence(event).map((evidence) => evidence.documentName)).size > 2 && (
-                              <span className="chronology-muted">
-                                +{new Set(eventEvidence(event).map((evidence) => evidence.documentName)).size - 2}{" "}
-                                sources
-                              </span>
-                            )}
-                            {eventEvidence(event).length === 0 && (
-                              <span className="chronology-warning">Source not supplied</span>
-                            )}
-                          </td>
-                          <td>
-                            <span className={`chronology-review-state ${event.reviewed ? "is-reviewed" : ""}`}>
-                              {event.reviewed ? "✓ Reviewed" : "● Unreviewed"}
-                            </span>
-                            {!event.opened && <span className="chronology-new">New</span>}
-                            {chronologyNeedsAttention(event) && (
-                              <span className="chronology-table-qualification is-alert">Needs attention</span>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {events.length === 0 && (
-                    <p className="chronology-empty">
-                      {state.events.length > 0
-                        ? "No events match these display filters."
-                        : "No saved events yet. Generation or a manual addition will appear here."}
-                    </p>
-                  )}
-                </div>
-                <p className="chronology-muted chronology-table-foot">
-                  Showing {events.length} of {state.events.filter((event) => !event.supersededBy?.length).length} events
-                  · Display filters do not limit whole-matter extraction.
-                </p>
-              </div>
-              {detail && (
-                <div
-                  className={`viewer-overlay chronology-detail-overlay${detailClosing ? " is-closing" : ""}${compactDetail ? " is-compact" : ""}`}
-                  inert={detailClosing}
-                  {...backdropClose(() => closeDetail())}
-                >
-                  <div className="chronology-detail-sheet">
-                    <EventDetail
-                      key={detail.id}
-                      event={detail}
-                      closing={detailClosing}
-                      chronology={state}
-                      busy={busy}
-                      onAction={action}
-                      onEdit={(mode) => setEditing({ mode, event: detail })}
-                      onClose={closeDetail}
-                      onEvidence={inspect}
-                      onNavigate={(eventId) => {
-                        const event = state.events.find((item) => item.id === eventId)
-                        if (event) select(event)
-                        else setError("This earlier event record is unavailable. Its recorded history is preserved.")
-                      }}
-                      onAsk={() =>
-                        onAsk(
-                          chronologyChatReference(
-                            matterId,
-                            detail,
-                            state.proposals.find(
-                              (proposal) =>
-                                proposal.targetIds.includes(detail.id) &&
-                                ["pending", "deferred"].includes(proposal.status),
-                            ),
-                          ),
-                        )
+                      <option value="">All significance</option>
+                      <option value="key">Key (AI assessment)</option>
+                      <option value="relevant">Relevant</option>
+                      <option value="background">Background</option>
+                    </select>
+                  </label>
+                  <label>
+                    Visibility
+                    <select
+                      value={filters.hidden}
+                      onChange={(change) =>
+                        setFilters({ ...filters, hidden: change.target.value as ChronologyFilters["hidden"] })
                       }
+                    >
+                      <option value="exclude">Visible events</option>
+                      <option value="include">Include hidden</option>
+                      <option value="only">Hidden only</option>
+                    </select>
+                  </label>
+                  <label className="chronology-check">
+                    <input
+                      type="checkbox"
+                      checked={filters.key}
+                      onChange={(change) => setFilters({ ...filters, key: change.target.checked })}
                     />
-                  </div>
+                    Lawyer-starred key events
+                  </label>
+                  <label className="chronology-check">
+                    <input
+                      type="checkbox"
+                      checked={filters.conflict}
+                      onChange={(change) => setFilters({ ...filters, conflict: change.target.checked })}
+                    />
+                    Conflicts / disputes
+                  </label>
+                  <label className="chronology-check">
+                    <input
+                      type="checkbox"
+                      checked={filters.undated}
+                      onChange={(change) => setFilters({ ...filters, undated: change.target.checked })}
+                    />
+                    Undated
+                  </label>
                 </div>
               )}
+              <div className="chronology-table-scroll" tabIndex={0} role="region" aria-label="Chronology events">
+                <table className="chronology-event-table">
+                  <thead>
+                    <tr>
+                      {(
+                        [
+                          ["date", "Date"],
+                          ["event", "Event"],
+                          ["sources", "Sources"],
+                          ["review", "Review"],
+                        ] as const
+                      ).map(([key, label]) => (
+                        <th key={key} aria-sort={sort.key === key ? sort.direction : "none"}>
+                          <button
+                            type="button"
+                            className="chronology-sort-heading"
+                            aria-label={`Sort by ${label}`}
+                            onClick={() => sortBy(key)}
+                          >
+                            {label}
+                            <span aria-hidden="true">
+                              {sort.key === key ? (sort.direction === "ascending" ? "↑" : "↓") : "↕"}
+                            </span>
+                          </button>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {events.map((event) => (
+                      <tr
+                        key={event.id}
+                        data-event-id={event.id}
+                        className={`${selectedId === event.id ? "is-selected" : ""}${event.hidden ? " is-hidden" : ""}`}
+                      >
+                        <td>
+                          {dateLabel(event.date)}
+                          {event.date.rangeKind === "duration" && (
+                            <span className="chronology-table-qualification">Known period</span>
+                          )}
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="chronology-event-title"
+                            aria-expanded={selectedId === event.id}
+                            onClick={(click) => select(event, click.currentTarget)}
+                          >
+                            {event.key && <span aria-label="Key event">★ </span>}
+                            {event.title}
+                          </button>
+                          <div className="chronology-table-qualifications">
+                            {eventQualifications(event).map((text) => (
+                              <span key={text} className={text === "Conflict / dispute" ? "is-conflict" : undefined}>
+                                {text}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                        <td>
+                          {[...new Set(eventEvidence(event).map((evidence) => evidence.documentName))]
+                            .slice(0, 2)
+                            .map((name) => (
+                              <span key={name} className="chronology-source-name">
+                                <SourceIcon
+                                  name={name}
+                                  kind={
+                                    eventEvidence(event).find((evidence) => evidence.documentName === name)?.sourceKind
+                                  }
+                                />
+                                <span>{name}</span>
+                              </span>
+                            ))}
+                          {new Set(eventEvidence(event).map((evidence) => evidence.documentName)).size > 2 && (
+                            <span className="chronology-muted">
+                              +{new Set(eventEvidence(event).map((evidence) => evidence.documentName)).size - 2} sources
+                            </span>
+                          )}
+                          {eventEvidence(event).length === 0 && (
+                            <span className="chronology-warning">Source not supplied</span>
+                          )}
+                        </td>
+                        <td>
+                          <span className={`chronology-review-state ${event.reviewed ? "is-reviewed" : ""}`}>
+                            {event.reviewed ? "✓ Reviewed" : "● Unreviewed"}
+                          </span>
+                          {!event.opened && <span className="chronology-new">New</span>}
+                          {chronologyNeedsAttention(event) && (
+                            <span className="chronology-table-qualification is-alert">Needs attention</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {events.length === 0 && (
+                  <p className="chronology-empty">
+                    {state.events.length > 0
+                      ? "No events match these display filters."
+                      : "No saved events yet. Generation or a manual addition will appear here."}
+                  </p>
+                )}
+              </div>
+              <p className="chronology-muted chronology-table-foot">
+                Showing {events.length} of {state.events.filter((event) => !event.supersededBy?.length).length} events ·
+                Display filters do not limit whole-matter extraction.
+              </p>
             </div>
+            {detail && (
+              <div
+                className={`viewer-overlay chronology-detail-overlay${detailClosing ? " is-closing" : ""}${compactDetail ? " is-compact" : ""}`}
+                inert={detailClosing}
+                {...backdropClose(() => closeDetail())}
+              >
+                <div className="chronology-detail-sheet">
+                  <EventDetail
+                    key={detail.id}
+                    event={detail}
+                    closing={detailClosing}
+                    chronology={state}
+                    busy={busy}
+                    onAction={action}
+                    onEdit={(mode) => setEditing({ mode, event: detail })}
+                    onClose={closeDetail}
+                    onEvidence={inspect}
+                    onNavigate={(eventId) => {
+                      const event = state.events.find((item) => item.id === eventId)
+                      if (event) select(event)
+                      else setError("This earlier event record is unavailable. Its recorded history is preserved.")
+                    }}
+                    onAsk={() =>
+                      onAsk(
+                        chronologyChatReference(
+                          matterId,
+                          detail,
+                          state.proposals.find(
+                            (proposal) =>
+                              proposal.targetIds.includes(detail.id) &&
+                              ["pending", "deferred"].includes(proposal.status),
+                          ),
+                        ),
+                      )
+                    }
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+          {sourcesOpen && (
+            <ChronologySurface title="Sources and coverage" onClose={() => setSourcesOpen(false)}>
+              <section id="chronology-sources" className="chronology-sources">
+                <div className="chronology-section-head">
+                  <h2>
+                    Saved source coverage{" "}
+                    <small>
+                      {complete} of {state.coverage.length} complete
+                    </small>
+                  </h2>
+                  <button type="button" onClick={() => setSourceDate(true)}>
+                    Supply / correct source date
+                  </button>
+                </div>
+                <p>
+                  Uploaded, readable text, and chronology coverage are separate states. Review each source below; an
+                  empty result does not prove that processing is complete.
+                </p>
+                <details className="chronology-scope-explanation">
+                  <summary>How source processing works</summary>
+                  <p>
+                    The first build covers the whole authorised matter. Later checks normally process only new, changed,
+                    or unfinished source sections; unchanged completed sections are reused.
+                  </p>
+                  <p>
+                    Display filters change only the events you see. They never restrict the source set. A fresh
+                    privilege choice is required before each build or update.
+                  </p>
+                  <p>
+                    Initial results are saved as an unreviewed draft. Later proposed changes wait for your review;
+                    completed work and previous source accounts are kept.
+                  </p>
+                </details>
+                <p className="chronology-muted">
+                  Coverage includes completed work retained from earlier runs; these are saved coverage counts, not a
+                  current-run progress estimate.
+                </p>
+                {state.run?.errors.map((issue, index) => (
+                  <p key={index} className="chronology-warning">
+                    {issue}
+                  </p>
+                ))}
+                {state.run && (
+                  <p className="chronology-muted">
+                    Saved coverage:
+                    {state.coverage.reduce((sum, source) => sum + source.processedSections.length, 0)} of{" "}
+                    {state.coverage.reduce((sum, source) => sum + source.sections, 0)} source sections completed.
+                  </p>
+                )}
+                {state.coverage.length === 0 ? (
+                  <p>
+                    No chronology run has enumerated the source set yet. Generate to review the current source list.
+                  </p>
+                ) : (
+                  <div className="chronology-source-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Source</th>
+                          <th>Uploaded / text</th>
+                          <th>Chronology coverage</th>
+                          <th>Contribution & limitations</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {state.coverage.map((source) => (
+                          <tr key={source.sourceId}>
+                            <td>
+                              <strong>{source.documentName}</strong>
+                              {source.suppliedChronology && <p>Supplied chronology; provenance may be unknown</p>}
+                            </td>
+                            <td>
+                              {source.uploaded ? "Uploaded" : "Unavailable"} ·{" "}
+                              {source.textExtracted ? "Text extracted" : "No readable text"}
+                            </td>
+                            <td>
+                              {source.status}
+                              <p>
+                                {source.processedSections.length}/{source.sections} sections read
+                              </p>
+                              {source.processedSections.length > 0 && (
+                                <details>
+                                  <summary>Sections actually read</summary>
+                                  {source.processedSections.map((section) => section + 1).join(", ")}
+                                </details>
+                              )}
+                            </td>
+                            <td>
+                              {source.events} sourced events
+                              {source.issues.map((issue, index) => (
+                                <p key={index} className="chronology-warning">
+                                  {issue}
+                                </p>
+                              ))}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <p className="chronology-muted">
+                  Archives and unreadable material may contain sources that could not be processed. A quiet period
+                  describes the supplied record; it does not prove nothing occurred or that evidence is missing.
+                </p>
+                {state.gaps.length > 0 && (
+                  <div className="chronology-notice">
+                    <h3>Evidence questions to check</h3>
+                    <p className="chronology-muted">
+                      These source-level questions need checking against the whole record. A reference absent from one
+                      section may be supplied elsewhere in the matter.
+                    </p>
+                    {state.gaps.map((gap, index) => (
+                      <p key={index}>{gap}</p>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </ChronologySurface>
+          )}
+          {updatesOpen && (
+            <ChronologySurface title="Review chronology updates" onClose={() => setUpdatesOpen(false)}>
+              <ProposalReview
+                chronology={state}
+                busy={busy}
+                initialProposal={initialProposal}
+                onDecision={(proposal, decision) =>
+                  perform(() => decideChronologyProposal(matterId, state.revision, proposal.id, decision))
+                }
+                onBatch={(ids) => perform(() => batchChronologyAdditions(matterId, state.revision, ids))}
+                onDiscard={() => action({ type: "discard-refresh" })}
+                onClose={() => setUpdatesOpen(false)}
+                onEvidence={inspect}
+                onAsk={(event, proposal) => onAsk(chronologyChatReference(matterId, event, proposal))}
+              />
+            </ChronologySurface>
           )}
         </>
       )}
@@ -897,17 +1006,20 @@ export default function ChronologyWorkbench({
             <>
               <p>{preflight.workExplanation}</p>
               <p>
+                {generation === "initial"
+                  ? "This first build covers the authorised matter."
+                  : "Only new, changed, or unfinished source sections normally need processing. Unchanged completed sections are reused."}{" "}
+                Every run starts with a fresh privilege choice.
+              </p>
+              <p>
                 <strong>Scope:</strong> every eligible source in this matter. Display filters do not restrict
                 processing.
               </p>
+              {!preflight.model && (
+                <p className="chronology-warning">Connect an AI provider in setup before building the chronology.</p>
+              )}
               <p>
-                <strong>Model:</strong>{" "}
-                {preflight.model
-                  ? `${preflight.model.providerID} / ${preflight.model.modelID}`
-                  : "No model configured — complete AI setup first."}
-              </p>
-              <p>
-                <strong>Expected work:</strong> {preflight.sources.length} sources · approximately{" "}
+                <strong>Source set:</strong> {preflight.sources.length} sources · approximately{" "}
                 {preflight.estimatedSections} bounded source sections. This section count estimates the work, not a
                 token or price quote. See native session usage where available; no fixed price is assumed.
               </p>
@@ -979,7 +1091,7 @@ export default function ChronologyWorkbench({
                     : busy
                       ? "Starting…"
                       : generation === "refresh"
-                        ? "Generate refresh proposals"
+                        ? "Check sources and suggest updates"
                         : generation === "resume"
                           ? "Resume unfinished work"
                           : "Generate unreviewed draft"}

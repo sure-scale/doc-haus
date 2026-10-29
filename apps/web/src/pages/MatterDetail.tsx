@@ -27,6 +27,7 @@ import BlacklineViewer from "../components/BlacklineViewer"
 import ChatPanel from "../components/ChatPanel"
 import ReviewGrid from "../components/ReviewGrid"
 import MatterHeader, { type MatterFields } from "../components/matter/MatterHeader"
+import type { MatterMenuAction } from "../components/matter/MatterActionsMenu"
 import MatterRail from "../components/matter/MatterRail"
 import useDraftingStatus from "../components/drafting/useDraftingStatus"
 import useNeedsYouTitle from "../components/drafting/useNeedsYouTitle"
@@ -70,6 +71,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   const session = params.get("session") ?? undefined
   const [matter, setMatter] = useState<Detail>()
   const [chronology, setChronology] = useState<Chronology>()
+  const [chronologyActions, setChronologyActions] = useState<MatterMenuAction[]>([])
   const [chronologyReference, setChronologyReference] = useState<ChronologyChatReference>()
   const [sourceRefresh, setSourceRefresh] = useState(0)
   const chronologyMatter = useRef(id)
@@ -370,6 +372,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
     <WordDocumentsProvider matterId={matter.id} onChanged={refresh}>
       <MatterHeader
         compact={view === "chronology"}
+        chronologyActions={view === "chronology" ? chronologyActions : undefined}
         matter={matter}
         jurisdictions={jurisdictions}
         editingRef={editingRef}
@@ -464,6 +467,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
         </div>
         {view === "chronology" && (
           <ChronologyWorkbench
+            onActionsChange={setChronologyActions}
             key={matter.id}
             matterId={matter.id}
             title={matter.title}

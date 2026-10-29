@@ -6,9 +6,12 @@ import { POSTURES, type Posture } from "../../api/ingest/preferences"
 import ClientCombobox from "../ClientCombobox"
 import { useClientNames } from "../../lib/clients"
 import "./chronology-matter-header.css"
+import MatterActionsMenu, { type MatterMenuAction } from "./MatterActionsMenu"
 
 /** The title-area fields one save changes; "" clears the matter's Posture. */
-export type MatterFields = Partial<Pick<Detail, "title" | "reference" | "jurisdictions" | "playbook" | "client">> & { posture?: Posture | "" }
+export type MatterFields = Partial<Pick<Detail, "title" | "reference" | "jurisdictions" | "playbook" | "client">> & {
+  posture?: Posture | ""
+}
 
 export default function MatterHeader({
   matter,
@@ -32,6 +35,7 @@ export default function MatterHeader({
   onEditConflicts,
   onOpenChronology,
   compact = false,
+  chronologyActions,
 }: {
   matter: Detail
   jurisdictions: Jurisdiction[]
@@ -54,6 +58,7 @@ export default function MatterHeader({
   onEditConflicts: () => void
   onOpenChronology?: () => void
   compact?: boolean
+  chronologyActions?: MatterMenuAction[]
 }) {
   const chip = conflictsChip(matter.conflicts)
   const clientNames = useClientNames(editingClient)
@@ -190,7 +195,9 @@ export default function MatterHeader({
       <div className="matter-head">
         <nav className="matter-breadcrumb" aria-label="Breadcrumb">
           <ol>
-            <li><Link to="/">Matters</Link></li>
+            <li>
+              <Link to="/">Matters</Link>
+            </li>
             <li className="matter-breadcrumb-current" aria-current="page">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
                 <path d="m9 5 7 7-7 7" />
@@ -221,7 +228,17 @@ export default function MatterHeader({
                     }}
                   >
                     {matter.title}
-                    <svg className="matter-title-pencil" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <svg
+                      className="matter-title-pencil"
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden
+                    >
                       <path d="M12 20h9" />
                       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
                     </svg>
@@ -235,37 +252,30 @@ export default function MatterHeader({
         {!compact && metadata}
       </div>
 
-      {compact && (
-        <details
-          className="chronology-matter-details"
-          onKeyDown={(event) => {
-            if (event.key !== "Escape" || event.defaultPrevented) return
-            event.preventDefault()
-            const details = event.currentTarget
-            // Let a field's Escape cancellation unmount its input before focus
-            // moves; synchronously blurring it would save the canceled draft.
-            requestAnimationFrame(() => {
-              if (!details.isConnected) return
-              details.open = false
-              details.querySelector("summary")?.focus({ preventScroll: true })
-            })
-          }}
-        >
-          <summary>
-            Matter details
-            {chip.tone !== "ok" && (
-              <span className="chronology-matter-conflicts-status">
-                · {chip.tone === "pending" ? "Conflicts pending" : chip.tone === "bypassed" ? "Conflicts bypassed" : "Conflicts not recorded"}
-              </span>
-            )}
-            <span className="chronology-matter-details-caret" aria-hidden="true">⌄</span>
-          </summary>
-          <div className="chronology-matter-details-popup">{metadata}</div>
-        </details>
+      {compact && chip.tone !== "ok" && (
+        <span className="chronology-matter-conflicts-status">
+          {chip.tone === "pending"
+            ? "Conflicts pending"
+            : chip.tone === "bypassed"
+              ? "Conflicts bypassed"
+              : "Conflicts not recorded"}
+        </span>
       )}
-
-      {onOpenChronology && <details className="matter-chronology-actions"><summary aria-label="Matter actions">Matter actions</summary><button type="button" onClick={(event) => { event.currentTarget.closest("details")?.removeAttribute("open"); onOpenChronology() }}>Build / open chronology</button></details>}
+      {(onOpenChronology || chronologyActions) && (
+        <MatterActionsMenu
+          actions={
+            chronologyActions ??
+            (onOpenChronology ? [{ id: "open-chronology", label: "Open chronology", onSelect: onOpenChronology }] : [])
+          }
+        >
+          {compact && (
+            <section className="matter-actions-menu-section">
+              <h2>Matter details</h2>
+              {metadata}
+            </section>
+          )}
+        </MatterActionsMenu>
+      )}
     </header>
   )
 }
-
