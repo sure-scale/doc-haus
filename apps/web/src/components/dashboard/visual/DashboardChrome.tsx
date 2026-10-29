@@ -9,13 +9,14 @@ export type DashboardTabItem = {
   disabled?: boolean
 }
 
-export function DashboardTabs({ items, activeId, onSelect, onNew, newDisabled = false, label = "Dashboards" }: {
+export function DashboardTabs({ items, activeId, onSelect, onNew, newDisabled = false, label = "Dashboards", panelId }: {
   items: DashboardTabItem[]
   activeId: string
   onSelect: (id: string) => void
   onNew: () => void
   newDisabled?: boolean
   label?: string
+  panelId?: string
 }) {
   const list = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -32,7 +33,7 @@ export function DashboardTabs({ items, activeId, onSelect, onNew, newDisabled = 
       onSelect(target.id)
       Array.from(list.current?.querySelectorAll<HTMLButtonElement>("button[data-tab-id]") ?? []).find((button) => button.dataset.tabId === target.id)?.focus()
     }}>
-      {items.map((item) => <button key={item.id} type="button" role="tab" data-tab-id={item.id} className="dash-view-tab" disabled={item.disabled} aria-selected={item.id === activeId} tabIndex={item.id === activeId || !enabled.some((tab) => tab.id === activeId) && enabled[0]?.id === item.id ? 0 : -1} onClick={() => onSelect(item.id)}>
+      {items.map((item) => <button key={item.id} type="button" role="tab" id={panelId ? `${panelId}-tab-${item.id}` : undefined} aria-controls={panelId} data-tab-id={item.id} className="dash-view-tab" disabled={item.disabled} aria-selected={item.id === activeId} tabIndex={item.id === activeId || !enabled.some((tab) => tab.id === activeId) && enabled[0]?.id === item.id ? 0 : -1} onClick={() => onSelect(item.id)}>
         <span>{item.label}</span>{item.badge && <span className="dash-view-tab-badge" aria-label={item.badge.label ?? `${item.badge.value}${item.badge.total === undefined ? "" : ` of ${item.badge.total}`}`}>{item.badge.value}{item.badge.total === undefined ? "" : `/${item.badge.total}`}</span>}
       </button>)}
     </div>

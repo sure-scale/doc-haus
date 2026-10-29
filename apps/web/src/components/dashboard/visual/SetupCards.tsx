@@ -36,7 +36,7 @@ export function SetupItem({ item, onAction, children }: { item: SetupCardItem; o
 export function SetupChecklist({ config, onAction, renderContent }: { config: SetupChecklistConfig; onAction?: (action: string) => void; renderContent?: (id: string) => ReactNode }) {
   const count = config.items.filter((item) => item.done).length
   return <section className="dash-setup-checklist" aria-label={config.title}>
-    <header className="dash-setup-head"><ShapeIcon icon="setup" /><div><h2>{config.title}</h2><p>{config.description}</p></div><span className="dash-setup-progress"><progress value={count} max={config.items.length || 1} aria-label="Setup progress" />{count} of {config.items.length} complete</span></header>
+    <header className="dash-setup-head"><ShapeIcon icon="setup" /><div><h2>{config.title}</h2><p>{config.description}</p></div><span className="dash-checklist-progress"><progress value={count} max={config.items.length || 1} aria-label="Setup progress" />{count} of {config.items.length} complete</span></header>
     <ol className="dash-setup-list">{config.items.map((item) => <SetupItem key={item.id} item={item} onAction={onAction}>{renderContent?.(item.id)}</SetupItem>)}</ol>
   </section>
 }

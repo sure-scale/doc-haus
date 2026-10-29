@@ -6,11 +6,11 @@
 .dash-setup-head > div { flex: 1; min-width: 150px; }
 .dash-setup-head h2, .dash-setup-demo h2 { margin: 0; font-size: 17px; line-height: 1.35; font-weight: 650; }
 .dash-setup-head p, .dash-setup-demo header p { margin: 3px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
-.dash-setup-progress { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--radius-pill); background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); font-size: 12px; font-weight: 650; white-space: nowrap; }
-.dash-setup-progress progress { width: 48px; height: 6px; accent-color: var(--accent); border: 0; border-radius: var(--radius-pill); overflow: hidden; }
-.dash-setup-progress progress::-webkit-progress-bar { background: var(--border); border-radius: var(--radius-pill); }
-.dash-setup-progress progress::-webkit-progress-value { background: var(--accent); border-radius: var(--radius-pill); }
-.dash-setup-progress progress::-moz-progress-bar { background: var(--accent); border-radius: var(--radius-pill); }
+.dash-checklist-progress { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--radius-pill); background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); font-size: 12px; font-weight: 650; white-space: nowrap; }
+.dash-checklist-progress progress { width: 48px; height: 6px; accent-color: var(--accent); border: 0; border-radius: var(--radius-pill); overflow: hidden; }
+.dash-checklist-progress progress::-webkit-progress-bar { background: var(--border); border-radius: var(--radius-pill); }
+.dash-checklist-progress progress::-webkit-progress-value { background: var(--accent); border-radius: var(--radius-pill); }
+.dash-checklist-progress progress::-moz-progress-bar { background: var(--accent); border-radius: var(--radius-pill); }
 .dash-setup-list { list-style: none; padding: 0; margin: 0; display: grid; gap: var(--space-3); }
 .dash-setup-item { min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--md-sys-shape-corner-large); background: var(--panel-subtle, var(--md-sys-color-surface-container-low)); }
 .dash-setup-item.is-editable:not(.is-done) { background: var(--panel); border-color: var(--md-sys-color-primary-container); box-shadow: 0 3px 14px color-mix(in srgb, var(--accent) 5%, transparent); }
@@ -57,7 +57,7 @@
 @container dash (max-width: 560px) {
   .dash-setup-checklist, .dash-setup-demo { padding: 16px; }
   .dash-setup-head > div { min-width: 100px; }
-  .dash-setup-progress { margin-left: 48px; }
+  .dash-checklist-progress { margin-left: 48px; }
   .dash-setup-item { padding: 12px; }
   .dash-setup-item-text { min-width: 110px; }
   .dash-setup-item-main > .dash-setup-outline { margin-left: 48px; }

@@ -66,7 +66,7 @@ test("broken browser state falls back to a usable dashboard", () => {
   expect(saved.active).toBe("a")
   expect(saved.dashboards).toHaveLength(1)
   expect(saved.dashboards[0]!.period).toBe("month")
-  expect(tabWidgets(saved.dashboards[0]!, "starting", false).map((item) => item.widget.type)).toEqual(["journey", "setup"])
+  expect(tabWidgets(saved.dashboards[0]!, "starting", false).map((item) => item.widget.type)).toEqual(["journey"])
 })
 
 

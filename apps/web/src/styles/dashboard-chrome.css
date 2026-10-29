@@ -84,3 +84,6 @@
   .dash-ai-composer { overflow-y: auto; }
   .dash-ai-composer form { max-height: none; }
 }
+
+/* The dashboard options sit beside the reusable tab strip. */
+.dash-tabs-row > .dash-view-tabs-row { flex: 1; border-bottom: 0; padding-bottom: 0; }

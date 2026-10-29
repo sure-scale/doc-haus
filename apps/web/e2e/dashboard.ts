@@ -279,7 +279,15 @@ async function open(state: State, width: number, height: number, timezoneId = "E
     // Seed the saved layout and jurisdictions once; a reload keeps what the page saved.
     if (sessionStorage.getItem("dashboard-fixture-seeded")) return
     if (jurisdiction) localStorage.setItem("dochaus.prefs", JSON.stringify({ defaultJurisdictions: jurisdiction }))
-    if (layout) localStorage.setItem("dh.dashboard.v3", JSON.stringify(layout))
+    // Preserve the prior profile widget as an explicit legacy arrangement.
+    // New default Setup composition is covered separately in dashboard-setup.ts.
+    const prior = (layout ?? { period: "month", stages: {} }) as { period?: string; stages?: Record<string, { hidden?: string[]; added?: string[]; order?: string[] }> }
+    const orders = { starting: ["journey", "setup"], practice: ["attention", "drafts", "setup", "spend", "matter-cost", "draft-cost", "week", "recent", "matter-spend", "activity"] }
+    for (const stage of ["starting", "practice"] as const) {
+      const arrangement = prior.stages?.[stage] ?? { hidden: [], added: [] }
+      prior.stages = { ...prior.stages, [stage]: { ...arrangement, order: arrangement.order ?? orders[stage], added: [...(arrangement.added ?? []), "setup"] } }
+    }
+    localStorage.setItem("dh.dashboard.v3", JSON.stringify(prior))
     sessionStorage.setItem("dashboard-fixture-seeded", "1")
   }, { layout: state.layout ?? null, jurisdiction: state.jurisdictions ?? null })
   await context.route("**/*", async (route: Route) => {
@@ -809,6 +817,8 @@ try {
       await expect(page.getByRole("tab", { name: "Overview", exact: true })).toBeFocused()
       expect(await order(page)).toEqual(PRACTICE)
       await page.keyboard.press("End")
+      await expect(page.getByRole("tab", { name: /^Setup/ })).toBeFocused()
+      await page.keyboard.press("ArrowLeft")
       await expect(page.getByRole("tab", { name: "Practice costs", exact: true })).toBeFocused()
       expect(await order(page)).toEqual(["Spend by client", "Conversations over time"])
       await page.locator('summary[aria-label="Options for Practice costs dashboard"]').click()
@@ -923,6 +933,8 @@ try {
       await expect(first).toBeFocused()
       await expect(first).toBeInViewport()
       await page.keyboard.press("End")
+      await expect(page.getByRole("tab", { name: /^Setup/ })).toBeFocused()
+      await page.keyboard.press("ArrowLeft")
       await expect(last).toBeFocused()
       await expect(last).toBeInViewport()
       await capture(page, `frontend-crowded-tabs-${width}x${height}`, { fullPage: false })

@@ -15,9 +15,10 @@ import type { WidgetContext } from "./widgets"
 
 function completion(data: DashboardData, setup: SetupProgress | null, jurisdictions: string[]) {
   const prefs = data.preferences
+  const hasChoice = (choices: string[]) => choices.some((choice) => typeof choice === "string" && !!choice.trim())
   return [
     setup?.ready === true,
-    !!prefs?.attorney.trim() && !!prefs.firm.trim() && jurisdictions.length > 0 && prefs.practiceAreas.length > 0,
+    !!prefs?.attorney.trim() && !!prefs.firm.trim() && hasChoice(jurisdictions) && hasChoice(prefs.practiceAreas),
     !!prefs?.searchApiKey.trim(),
     data.word?.status === "ready" || (data.word?.status === "external" && data.word.available),
     !!prefs?.houseStyle.trim() && (data.templates ?? 0) > 0,
@@ -30,7 +31,7 @@ export function setupTabProgress(data: DashboardData, setup: SetupProgress | nul
 }
 
 
-export function SetupTab({ context }: { context: WidgetContext }) {
+export function SetupTab({ context, onSampleAdded }: { context: WidgetContext; onSampleAdded?: () => void }) {
   const { data, setup, onPreferences, onRetry } = context
   const openSettings = useOpenSettings()
   const navigate = useNavigate()
@@ -46,14 +47,20 @@ export function SetupTab({ context }: { context: WidgetContext }) {
   const [keyBusy, setKeyBusy] = useState(false)
   const [keyError, setKeyError] = useState("")
   const [keySaved, setKeySaved] = useState("")
+  // Both endpoints return full preferences; serialize writes to avoid an older
+  // response replacing a newer save in the live checklist.
+  const saving = identityBusy || keyBusy
   const [adding, setAdding] = useState(false)
   const [demoError, setDemoError] = useState("")
   const [added, setAdded] = useState<Matter>()
-  useEffect(() => {
-    setAttorney(prefs?.attorney ?? "")
-    setFirm(prefs?.firm ?? "")
-    setAreas(prefs?.practiceAreas ?? [])
-  }, [prefs])
+  // Saving an Exa key or refreshing unrelated settings must not discard an
+  // unfinished identity form. Synchronize only the saved fields that changed.
+  useEffect(() => { setAttorney(prefs?.attorney ?? "") }, [prefs?.attorney])
+  useEffect(() => { setFirm(prefs?.firm ?? "") }, [prefs?.firm])
+  const savedAreas = JSON.stringify(prefs?.practiceAreas ?? [])
+  useEffect(() => { setAreas(prefs?.practiceAreas ?? []) }, [savedAreas])
+  const savedJurisdictions = JSON.stringify(loadPrefs().defaultJurisdictions)
+  useEffect(() => { setJurisdictions(loadPrefs().defaultJurisdictions) }, [savedJurisdictions])
   const done = completion(data, setup, loadPrefs().defaultJurisdictions)
   const sample = data.matters.find((row) => row.matter.sample)?.matter ?? added
   const changed = attorney.trim() !== prefs?.attorney.trim() || firm.trim() !== prefs?.firm.trim()
@@ -65,17 +72,25 @@ export function SetupTab({ context }: { context: WidgetContext }) {
   const areaOptions = [...areas, ...SUGGESTED_PRACTICE_AREAS].filter((area, index, all) => all.findIndex((other) => other.toLocaleLowerCase() === area.toLocaleLowerCase()) === index).map((name) => ({ code: name, name }))
   async function saveIdentity(event: FormEvent) {
     event.preventDefault()
-    if (!prefs || identityBusy) return
+    if (!prefs || saving) return
+    if (!attorney.trim() || !firm.trim()) {
+      setIdentityError("Enter your name and firm name before saving.")
+      setIdentitySaved("")
+      return
+    }
     setIdentityBusy(true); setIdentityError(""); setIdentitySaved("")
     try {
       const saved = await savePreferences({ attorney: attorney.trim(), firm: firm.trim(), practiceAreas: areas })
-      // Keep an engine save visible even if browser storage is unavailable.
-      onPreferences?.(saved)
       try {
         savePrefs({ defaultJurisdictions: jurisdictions }, { requireStorage: true })
+        // Publish after both saves, so the parent's progress reads the new
+        // jurisdiction defaults on the very same render as the saved identity.
+        onPreferences?.(saved)
         setIdentitySaved("Practice details saved.")
         onRetry()
       } catch {
+        // The server save succeeded even when this browser could not save law defaults.
+        onPreferences?.(saved)
         setIdentityError("Your name, firm and practice areas were saved. Jurisdiction defaults could not be saved in this browser. Try again.")
       }
     } catch {
@@ -84,10 +99,11 @@ export function SetupTab({ context }: { context: WidgetContext }) {
   }
   async function saveKey(event: FormEvent) {
     event.preventDefault()
-    if (!key.trim() || keyBusy) return
+    if (!key.trim() || saving) return
     setKeyBusy(true); setKeyError(""); setKeySaved("")
     try {
       const saved = await savePreferences({ searchApiKey: key.trim() })
+      if (!saved.searchApiKey.trim()) throw new Error("Key was not saved")
       onPreferences?.(saved)
       setKey("")
       setKeySaved("Exa key saved. You can test the connection in Research settings.")
@@ -99,7 +115,7 @@ export function SetupTab({ context }: { context: WidgetContext }) {
   async function populate() {
     if (adding || sample) return
     setAdding(true); setDemoError("")
-    try { setAdded(await addSampleMatter()); onRetry() }
+    try { setAdded(await addSampleMatter()); onSampleAdded?.(); onRetry() }
     catch { setDemoError("Could not add the sample matter. Try again.") }
     finally { setAdding(false) }
   }
@@ -117,13 +133,13 @@ export function SetupTab({ context }: { context: WidgetContext }) {
   }
   function content(id: string): ReactNode {
     if (id === "identity") return prefs ? <form className="dash-setup-inline" onSubmit={saveIdentity} aria-labelledby="dash-setup-identity">
-      <div className="dash-setup-input-row"><label><span className="sr-only">Your full name</span><input value={attorney} onChange={(event) => { setAttorney(event.target.value); setIdentitySaved("") }} placeholder="Your full name" autoComplete="name" disabled={identityBusy} maxLength={200} required /></label><label><span className="sr-only">Firm name</span><input value={firm} onChange={(event) => { setFirm(event.target.value); setIdentitySaved("") }} placeholder="Firm name" autoComplete="organization" disabled={identityBusy} maxLength={200} required /></label><button type="submit" disabled={identityBusy || !changed} aria-busy={identityBusy}>{identityBusy ? "Saving…" : "Save"}</button></div>
-      <div className="dash-setup-chips" role="group" aria-label="Default jurisdictions">{shownPacks.map((code) => <button type="button" key={code} aria-pressed={jurisdictions.includes(code)} disabled={identityBusy} onClick={() => { setJurisdictions(toggle(jurisdictions, code)); setIdentitySaved("") }}><JurisdictionFlag code={code} region />{packs.find((pack) => pack.code === code)?.name ?? code}{jurisdictions.includes(code) && icons.check}</button>)}<JurisdictionSelect jurisdictions={packs} selected={jurisdictions} onChange={setJurisdictions} disabled={identityBusy || !packs.length} trigger={<span>All jurisdictions…</span>} triggerTitle="Choose default jurisdictions" /></div>
-      <div className="dash-setup-chips" role="group" aria-label="Practice areas">{shownAreas.map((area) => <button type="button" key={area} aria-pressed={areas.includes(area)} disabled={identityBusy} onClick={() => { setAreas(toggle(areas, area)); setIdentitySaved("") }}>{area}{areas.includes(area) && icons.check}</button>)}<JurisdictionSelect jurisdictions={areaOptions} selected={areas} onChange={setAreas} practiceAreas disabled={identityBusy} trigger={<span>More…</span>} triggerTitle="Choose practice areas" /></div>
+      <div className="dash-setup-input-row"><label><span className="sr-only">Your full name</span><input value={attorney} onChange={(event) => { setAttorney(event.target.value); setIdentitySaved("") }} placeholder="Your full name" autoComplete="name" disabled={saving} maxLength={200} required /></label><label><span className="sr-only">Firm name</span><input value={firm} onChange={(event) => { setFirm(event.target.value); setIdentitySaved("") }} placeholder="Firm name" autoComplete="organization" disabled={saving} maxLength={200} required /></label><button type="submit" disabled={saving || !changed} aria-busy={identityBusy}>{identityBusy ? "Saving…" : "Save"}</button></div>
+      <div className="dash-setup-chips" role="group" aria-label="Default jurisdictions">{shownPacks.map((code) => <button type="button" key={code} aria-pressed={jurisdictions.includes(code)} disabled={saving} onClick={() => { setJurisdictions(toggle(jurisdictions, code)); setIdentitySaved("") }}><JurisdictionFlag code={code} region />{packs.find((pack) => pack.code === code)?.name ?? code}{jurisdictions.includes(code) && icons.check}</button>)}<JurisdictionSelect jurisdictions={packs} selected={jurisdictions} onChange={setJurisdictions} disabled={saving || !packs.length} trigger={<span>All jurisdictions…</span>} triggerTitle="Choose default jurisdictions" /></div>
+      <div className="dash-setup-chips" role="group" aria-label="Practice areas">{shownAreas.map((area) => <button type="button" key={area} aria-pressed={areas.includes(area)} disabled={saving} onClick={() => { setAreas(toggle(areas, area)); setIdentitySaved("") }}>{area}{areas.includes(area) && icons.check}</button>)}<JurisdictionSelect jurisdictions={areaOptions} selected={areas} onChange={setAreas} practiceAreas disabled={saving} trigger={<span>More…</span>} triggerTitle="Choose practice areas" /></div>
       {identityError && <p className="dash-setup-error" role="alert">{identityError}</p>}{identitySaved && <p className="dash-setup-saved" role="status">{identitySaved}</p>}
     </form> : <p className="dash-setup-unavailable">Could not load your practice details. <button type="button" className="dash-text-button" onClick={onRetry}>Retry</button></p>
     if (id === "research") return <>
-      {!done[2] && <form className="dash-setup-exa" onSubmit={saveKey} aria-labelledby="dash-setup-research"><label><span className="sr-only">Exa API key</span><input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="Paste Exa API key" autoComplete="off" spellCheck={false} disabled={keyBusy || !prefs} maxLength={4096} required /></label><button type="submit" disabled={keyBusy || !key.trim() || !prefs} aria-busy={keyBusy}>{keyBusy ? "Saving…" : "Save key"}</button></form>}
+      {!done[2] && <form className="dash-setup-exa" onSubmit={saveKey} aria-labelledby="dash-setup-research"><label><span className="sr-only">Exa API key</span><input type="password" value={key} onChange={(event) => { setKey(event.target.value); setKeyError("") }} placeholder="Paste Exa API key" autoComplete="off" spellCheck={false} disabled={saving || !prefs} maxLength={4096} required /></label><button type="submit" disabled={saving || !key.trim() || !prefs} aria-busy={keyBusy}>{keyBusy ? "Saving…" : "Save key"}</button></form>}
       {keyError && <p className="dash-setup-error" role="alert">{keyError}</p>}{keySaved && <p className="dash-setup-saved" role="status">{keySaved}</p>}
     </>
     if (id === "style") return <div className="dash-setup-style-links"><span>{prefs?.houseStyle.trim() ? "House style saved" : "House style to add"}</span><Link to="/templates">{data.templates === undefined ? "View templates" : `${data.templates} ${data.templates === 1 ? "template" : "templates"}`}{icons.arrowRight}</Link></div>

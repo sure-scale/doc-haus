@@ -34,11 +34,11 @@ export type Stage = "starting" | "practice"
 const STAGES: Stage[] = ["starting", "practice"]
 
 // The default dashboards. Starting out, the figures would all be zero, so
-// first steps and setup lead. Once a draft has finished, the work and the
-// figures take over. Setup joins either while an essential is missing.
+// first steps lead. Setup has its own dashboard tab. Once a draft has finished, the work and the
+// figures take over. Explicit saved layouts can still include the practice widget.
 export const DEFAULT_WIDGETS: Record<Stage, WidgetId[]> = {
-  starting: ["journey", "setup"],
-  practice: ["attention", "drafts", "setup", "spend", "matter-cost", "draft-cost", "week", "recent", "matter-spend", "activity"],
+  starting: ["journey"],
+  practice: ["attention", "drafts", "spend", "matter-cost", "draft-cost", "week", "recent", "matter-spend", "activity"],
 }
 
 // Widgets whose figures follow the chosen period.
