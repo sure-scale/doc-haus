@@ -34,6 +34,8 @@ export const METRICS = {
   conversations: "Conversations the lawyer started, counted on the day each started.",
   matters: "Matters, counted on the day each was opened.",
   drafts: "Finished drafted documents in the latest run per matter. Has no completion dates: use the all-time period and group by none, matter or client.",
+  documents: "Ingested source documents in each matter. Has no reliable dates: use the all-time period and group by none, matter or client.",
+  tokens: "Total input, cached input, output and reasoning tokens across sessions, counted on the day each session started.",
 } as const
 
 export const GROUPINGS = {
@@ -126,6 +128,8 @@ function chartErrors(chart: Record<string, unknown>, at: string) {
   if (form === "calendar" && groupBy !== "day") errors.push(`${at}: a calendar has one cell per day, so groupBy must be "day".`)
   if (metric === "drafts" && chart.period !== "all") errors.push(`${at}: drafts have no completion dates, so period must be "all".`)
   if (metric === "drafts" && TIME.includes(groupBy)) errors.push(`${at}: drafts have no dates, so group them by "matter" or "client", or use "none".`)
+  if (metric === "documents" && chart.period !== "all") errors.push(`${at}: source documents have no reliable dates, so period must be "all".`)
+  if (metric === "documents" && TIME.includes(groupBy)) errors.push(`${at}: source documents have no reliable dates, so group them by "matter" or "client", or use "none".`)
   if (groupBy === "matter" && chart.matter !== undefined) errors.push(`${at}: a chart of one matter cannot group by matter.`)
   if (chart.limit !== undefined) {
     if (!RANKED.includes(groupBy)) errors.push(`${at}: limit applies only when grouping by matter or client.`)

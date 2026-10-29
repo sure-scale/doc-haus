@@ -183,6 +183,12 @@ export function AdaptiveGrid({ items, renderItem, mode = "adaptive", label }: { 
 }
 
 export type AboutViewConfig = { title?: string; text: string; actionLabel?: string }
-export function AboutView({ config, onRefine }: { config: AboutViewConfig; onRefine?: () => void }) {
-  return <div className="dash-about-view"><span className="dash-about-view-icon" aria-hidden="true">{icons.question}</span><p title={config.text}><strong>{config.title ?? "About this view"}:</strong> {config.text}</p>{onRefine && <button type="button" onClick={onRefine}>{config.actionLabel ?? "Refine view"}</button>}</div>
+export function AboutView({ config, notes = [], onRefine }: { config: AboutViewConfig; notes?: string[]; onRefine?: () => void }) {
+  const [expanded, setExpanded] = useState(false)
+  const detailsId = useId()
+  const summary = [...notes, config.text].join(" · ")
+  return <div className="dash-about-container">
+    <div className="dash-about-view"><span className="dash-about-view-icon" aria-hidden="true">{icons.question}</span><p title={summary}><strong>{config.title ?? "About this view"}:</strong> {summary}</p>{notes.length > 0 && <button type="button" aria-expanded={expanded} aria-controls={detailsId} onClick={() => setExpanded(!expanded)}>{expanded ? "Hide details" : "Details"}</button>}{onRefine && <button type="button" className="dash-about-refine" onClick={onRefine}>{config.actionLabel ?? "Refine view"}</button>}</div>
+    {notes.length > 0 && <div id={detailsId} className="dash-about-details" hidden={!expanded}><p>{config.text}</p><ul>{notes.map((note, index) => <li key={`${index}-${note}`}>{note}</li>)}</ul></div>}
+  </div>
 }

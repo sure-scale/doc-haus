@@ -41,3 +41,9 @@ test("chart sources preserve old plans and reject unapproved mappings", () => {
     expect(checkPlan({ widgets: [{ ...chart, source }] }).errors).toBeDefined()
   }
 })
+
+test("source documents have no date groupings; token charts use session-start periods", () => {
+  expect(checkPlan({ widgets: [{ ...chart, metric: "documents", period: "all", groupBy: "client", form: "bars" }] }).plan).toBeDefined()
+  expect(checkPlan({ widgets: [{ ...chart, metric: "documents", period: "month" }] }).errors?.join(" ")).toContain("no reliable dates")
+  expect(checkPlan({ widgets: [{ ...chart, metric: "tokens" }] }).plan).toBeDefined()
+})

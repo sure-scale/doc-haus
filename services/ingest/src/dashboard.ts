@@ -1,5 +1,5 @@
 import { Hono } from "hono"
-import { dashboardChartSource } from "./dashboard-source"
+import { dashboardChartSource, dashboardInventory, validateDashboardSources } from "./dashboard-source"
 import path from "node:path"
 import { mkdirSync } from "node:fs"
 import { workspaceRoot } from "./matter"
@@ -13,6 +13,24 @@ export function dashboardRoutes() {
     c.header("Cache-Control", "no-store")
     try { return c.json(await dashboardChartSource(c.req.query("chart"), c.req.query("period"), c.req.query("timeZone"))) }
     catch (error) { return c.json({ error: error instanceof Error && error.message === "Invalid dashboard source" ? "Invalid dashboard source." : "Could not load dashboard data." }, error instanceof Error && error.message === "Invalid dashboard source" ? 400 : 503) }
+  })
+  app.post("/dashboard/discovery", async (c) => {
+    c.header("Cache-Control", "no-store")
+    try {
+      const text = await c.req.text()
+      if (text.length > 65536) throw new Error("Invalid dashboard source")
+      const input = JSON.parse(text)
+      if (!input || typeof input !== "object" || Array.isArray(input) || !["inventory", "preview", "validate"].includes(input.action)) throw new Error("Invalid dashboard source")
+      const { action, ...rest } = input
+      if (action === "inventory") {
+        if (Object.keys(rest).some(key => !["period", "timeZone"].includes(key))) throw new Error("Invalid dashboard source")
+        return c.json(await dashboardInventory(rest.period, rest.timeZone))
+      }
+      return c.json(await validateDashboardSources(rest))
+    } catch (error) {
+      const invalid = error instanceof SyntaxError || error instanceof Error && error.message === "Invalid dashboard source"
+      return c.json({ error: invalid ? "Invalid dashboard source." : "Could not inspect dashboard data." }, invalid ? 400 : 503)
+    }
   })
   app.get("/dashboard/directory", (c) => {
     const dir = path.join(workspaceRoot(), ".dashboard")

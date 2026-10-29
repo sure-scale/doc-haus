@@ -3,7 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { createMatter } from "./matter"
-import { dashboardChartSource } from "./dashboard-source"
+import { openDb } from "./db"
+import { dashboardChartSource, dashboardInventory, validateDashboardSources, templateAvailability } from "./dashboard-source"
+import { dashboardRoutes } from "./dashboard"
 
 test("local source reads current matters, coalesces concurrent reads, and rejects unknown mappings", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "dashboard-source-"))
@@ -21,6 +23,17 @@ test("local source reads current matters, coalesces concurrent reads, and reject
     const before = reads
     await expect(dashboardChartSource(JSON.stringify({ ...chart, source: { kind: "local-query", query: "other", version: 1 } }), "all", "UTC")).rejects.toThrow("Invalid dashboard source")
     expect(reads).toBe(before)
+    const response = await dashboardRoutes().request("/dashboard/discovery", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "inventory", period: "all", timeZone: "UTC" }) })
+    expect(response.status).toBe(200)
+    expect((await response.json()).metrics.matters.total).toBe(2)
+    const inventory = await dashboardInventory("all", "UTC")
+    expect(inventory.metrics.matters.total).toBe(2)
+    expect(inventory.metrics.spend.status).toBe("empty")
+    expect(inventory.filters.matters).toContain("One")
+    const checks = await validateDashboardSources({ widgets: [chart, { ...chart, title: "Unknown", matter: "Missing" }, { type: "actions" }], period: "all", timeZone: "UTC" })
+    expect(checks.results.map(result => result.usable)).toEqual([true, false, true])
+    expect(checks.results[1]?.status).toBe("empty")
+    await expect(validateDashboardSources({ widgets: [chart], period: "all", timeZone: "bad-zone" })).rejects.toThrow("Invalid dashboard source")
   } finally {
     globalThis.fetch = originalFetch
     if (previous === undefined) delete process.env.WORKSPACE_ROOT; else process.env.WORKSPACE_ROOT = previous
@@ -33,6 +46,8 @@ test("native paginated sessions and messages use per-message spend, with failed 
   const previous = process.env.WORKSPACE_ROOT, originalFetch = globalThis.fetch
   process.env.WORKSPACE_ROOT = root
   const matter = createMatter("One")
+  const db = openDb(matter.dir)
+  try { db.run("INSERT INTO documents (doc_path, name, created_at, role) VALUES (?, ?, ?, ?)", ["source.docx", "source.docx", Date.now(), "source"]) } finally { db.close() }
   const first = Date.parse("2026-01-01T12:00:00Z"), second = Date.parse("2026-01-02T12:00:00Z")
   const session = (id: string, cost: number) => ({ id, location: { directory: matter.dir }, title: id, cost, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: first, updated: second } })
   let failMessages = false
@@ -51,15 +66,47 @@ test("native paginated sessions and messages use per-message spend, with failed 
   try {
     const result = await dashboardChartSource(JSON.stringify(chart), "all", "UTC")
     expect(result.data.total).toBe(4)
+    const docs = { ...chart, title: "Documents", metric: "documents", groupBy: "matter", form: "bars" }
+    const tokens = { ...chart, title: "Tokens", metric: "tokens", groupBy: "none", form: "stat" }
+    expect((await dashboardChartSource(JSON.stringify(docs), "all", "UTC")).data.total).toBe(1)
+    expect((await dashboardChartSource(JSON.stringify(tokens), "all", "UTC")).data.total).toBe(4)
+    const availability = await validateDashboardSources({ widgets: [docs, tokens, { type: "actions" }, { type: "library" }], period: "all", timeZone: "UTC" })
+    expect(availability.results.map(row => row.dataBacked)).toEqual([true, true, false, true])
     expect(result.data.points.find(point => point.time === Date.parse("2026-01-01T00:00:00Z"))?.value).toBe(3)
     expect(result.data.points.find(point => point.time === Date.parse("2026-01-02T00:00:00Z"))?.value).toBe(1)
     failMessages = true
     const partial = await dashboardChartSource(JSON.stringify(chart), "all", "UTC")
     expect(partial.data.basis).toContain("partial")
     expect(partial.data.notes.join(" ")).toContain("incomplete")
+    const unaffected = await validateDashboardSources({ widgets: [docs], period: "all", timeZone: "UTC" })
+    expect(unaffected.results[0]?.status).toBe("available")
+    await expect(validateDashboardSources({ widgets: [{ ...docs, period: "month" }], period: "month", timeZone: "UTC" })).rejects.toThrow("Invalid dashboard source")
   } finally {
     globalThis.fetch = originalFetch
     if (previous === undefined) delete process.env.WORKSPACE_ROOT; else process.env.WORKSPACE_ROOT = previous
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+
+test("template availability follows actual time windows and correlates draft cost to its own run", () => {
+  const now = Date.now(), old = now - 400 * 86400000
+  const session = (id: string, time: number, cost: number) => ({ id, title: id, cost, tokens: { input: 1, output: 1, reasoning: 0 }, time: { created: time, updated: time } })
+  const row = { matter: { id: "a", title: "A", created_at: old }, sessions: [session("unrelated", old, 4)], costs: [{ time: old, cost: 4 }], unread: false, sessionUnread: false, draftingUnread: false, documentsUnread: false, unpriced: 0, drafting: { status: "completed", owner_session_id: "owner", stages: {}, documents: { status: "completed", documents: [{ kind: "body", deliverable: "body.docx" }] } } } as any
+  expect(templateAvailability("week", { matters: [row] }, "all", "UTC").usable).toBe(false)
+  expect(templateAvailability("activity", { matters: [row] }, "all", "UTC").usable).toBe(false)
+  expect(templateAvailability("draft-cost", { matters: [row] }, "all", "UTC").usable).toBe(false)
+  row.sessions.push(session("owner", now, 2))
+  expect(templateAvailability("draft-cost", { matters: [row] }, "all", "UTC").usable).toBe(true)
+  row.draftingUnread = true
+  expect(templateAvailability("tokens", { matters: [row] }, "all", "UTC").status).toBe("available")
+  expect(templateAvailability("draft-cost", { matters: [row] }, "all", "UTC").status).toBe("partial")
+})
+
+
+test("queued answers do not make a completed run need attention", () => {
+  const row = { matter: { id: "a", title: "A", created_at: 1 }, sessions: [], costs: [], unread: false, sessionUnread: false, draftingUnread: false, documentsUnread: false, unpriced: 0, drafting: { status: "completed", stopped: false, in_flight: false, questions: [{ id: "q1", status: "open" }], queued_answer_ids: ["q1"] } } as any
+  expect(templateAvailability("attention", { matters: [row] }, "all", "UTC").usable).toBe(false)
+  row.drafting.queued_answer_ids = []
+  expect(templateAvailability("attention", { matters: [row] }, "all", "UTC").usable).toBe(true)
 })

@@ -17,13 +17,14 @@ const browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_C
 const results: { name: string; status: string; error?: string }[] = []
 const screens: Record<string, unknown>[] = []
 const NOW = Date.UTC(2026, 9, 29, 10)
+const SYNTHETIC = { id: "setup-fictional", title: "Fictional client matter", sample: false, jurisdictions: ["EW"], dir: "/fixture/matters/fictional", created_at: NOW }
 const SAMPLE = { id: "setup-sample", title: "Kestrel Books · Engagement letter", sample: true, jurisdictions: ["EW"], dir: "/fixture/matters/sample", created_at: NOW }
 const wordDefault = { available: false, origin: null, manifestUrl: null, platform: "macos", wordInstalled: true, canSetup: true, configured: false, registered: false, trusted: false, running: false, status: "not_configured" }
 const packs = [{ code: "EW", name: "England & Wales", citationStyle: "fixture" }, { code: "SCT", name: "Scotland", citationStyle: "fixture" }, { code: "IE", name: "Ireland", citationStyle: "fixture" }]
 type PersistedTabs = { version: 1; workspace: Dashboards; setupHidden: boolean; view?: "setup" | "dashboard" }
 type TabsEnvelope = { state: PersistedTabs | null; revision: number }
 function fixture(fresh = false) {
-  return { aiPlan: { name: "Practice costs", widgets: [{ type: "spend" }, { type: "chart", title: "Conversations over time", metric: "conversations", groupBy: "week", form: "line", period: "all" }], unsupported: ["Revenue is not tracked."] } as unknown, aiFailure: false, aiHold: false, aiRelease: [] as (() => void)[], aiReplies: 0, aiCreated: [] as Record<string, unknown>[], aiPrompts: [] as Record<string, unknown>[], aiDeleted: [] as string[], dashboard: { state: null, revision: 0 } as TabsEnvelope, tabWrites: [] as { state: PersistedTabs; revision: number }[], failTabReads: false, failTabWrites: false, holdTabWrites: false, releaseTabWrite: undefined as (() => void) | undefined, ready: !fresh, completed: fresh ? [] as string[] : ["models"], skipped: fresh ? [] as string[] : ["research", "details"], setupWrites: [] as { step: string; status: string }[], candidateInputs: [] as Record<string, unknown>[], tested: [] as { modelID: string; ok: boolean }[], failCandidateTest: false, providerSaves: 0, jurisdictions: [] as string[], preferences: { ...DEFAULT_DRAFTING }, failPreferences: false, holdPreferences: false, releasePreference: undefined as (() => void) | undefined, failMatters: false, word: { ...wordDefault }, templates: [] as { name: string; placeholders: unknown[] }[], matters: [] as (typeof SAMPLE)[], saved: [] as Record<string, unknown>[], samplePosts: 0, wordPosts: 0, unexpected: [] as string[], errors: [] as string[] }
+  return { aiActivity: false, aiPlan: { name: "Practice costs", widgets: [{ type: "spend" }, { type: "chart", title: "Conversations over time", metric: "conversations", groupBy: "week", form: "line", period: "all" }], unsupported: ["Revenue is not tracked."] } as unknown, aiFailure: false, aiHold: false, aiRelease: [] as (() => void)[], aiReplies: 0, aiCreated: [] as Record<string, unknown>[], aiPrompts: [] as Record<string, unknown>[], aiDeleted: [] as string[], dashboard: { state: null, revision: 0 } as TabsEnvelope, tabWrites: [] as { state: PersistedTabs; revision: number }[], failTabReads: false, failTabWrites: false, holdTabWrites: false, releaseTabWrite: undefined as (() => void) | undefined, ready: !fresh, completed: fresh ? [] as string[] : ["models"], skipped: fresh ? [] as string[] : ["research", "details"], setupWrites: [] as { step: string; status: string }[], candidateInputs: [] as Record<string, unknown>[], tested: [] as { modelID: string; ok: boolean }[], failCandidateTest: false, providerSaves: 0, jurisdictions: [] as string[], preferences: { ...DEFAULT_DRAFTING }, failPreferences: false, holdPreferences: false, releasePreference: undefined as (() => void) | undefined, failMatters: false, word: { ...wordDefault }, templates: [] as { name: string; placeholders: unknown[] }[], matters: [] as (typeof SAMPLE)[], saved: [] as Record<string, unknown>[], samplePosts: 0, wordPosts: 0, unexpected: [] as string[], errors: [] as string[] }
 }
 type State = ReturnType<typeof fixture>
 function seedTabs(state: State, workspace: unknown, setupHidden = false) {
@@ -38,7 +39,7 @@ function progress(state: State) {
   return { version: 1, ready: state.ready, completed, skipped, next: ["models", "research", "details"].find(step => !completed.includes(step) && !skipped.includes(step)) ?? "done" }
 }
 async function open(state: State, width = 1440, height = 1000) {
-  const context = await browser.newContext({ viewport: { width, height }, hasTouch: width <= 768, reducedMotion: "reduce", locale: "en-GB" })
+  const context = await browser.newContext({ viewport: { width, height }, hasTouch: width <= 768, reducedMotion: "reduce", timezoneId: "Europe/London", locale: "en-GB" })
   await context.clock.setFixedTime(new Date(NOW))
   await context.addInitScript((jurisdictions: string[]) => {
     localStorage.setItem("dh.launch-notice.v1", new Date().toDateString())
@@ -58,6 +59,17 @@ async function open(state: State, width = 1440, height = 1000) {
     if (method === "OPTIONS") return route.fulfill({ status: 204, headers })
     // Native dashboard-agent protocol; all responses are synthetic and no
     // model/provider request can leave this route fixture.
+    if (pathname === "/dashboard/discovery" && method === "POST") {
+      const input = request.postDataJSON() as { action: string; widgets?: Array<{ type: string }> }
+      if (input.action === "inventory") return reply({ updatedAt: NOW, metrics: {}, templates: {}, library: {}, filters: { clients: [], matters: state.aiActivity ? [SYNTHETIC.title] : [] } })
+      const results = (input.widgets ?? []).map((widget, index) => {
+        const intrinsic = ["actions", "ideas", "setup", "journey", "sample"].includes(widget.type)
+        const usable = intrinsic || state.aiActivity
+        return { index, status: usable ? "available" : "empty", usable, dataBacked: usable && !intrinsic }
+      })
+      return reply({ updatedAt: NOW, results })
+    }
+    if (pathname === "/dashboard/sources/chart" && method === "GET") return reply({ data: { points: state.aiActivity ? [{ label: "Fictional session", value: 1, time: NOW }] : [], total: state.aiActivity ? 1 : 0, basis: "Conversations started", period: "All time", badge: "", unavailable: false, notes: [], empty: "Nothing recorded for this view yet." }, updatedAt: NOW })
     if (pathname === "/dashboard/directory") return reply({ dir: "/fixture/.dashboard" })
     if (pathname === "/api/session" && method === "POST") {
       const input = request.postDataJSON() as Record<string, unknown>
@@ -76,6 +88,12 @@ async function open(state: State, width = 1440, height = 1000) {
       if (action === "interrupt" && method === "POST") return reply({ interrupted: false })
       if (!action && method === "DELETE") { state.aiDeleted.push(id); return route.fulfill({ status: 204, headers }) }
       if (action === "message" && method === "GET") return reply({ data: [
+        ...(() => {
+          const text = String(state.aiPrompts.at(-1)?.text ?? "")
+          const period = /Data context: period ([^;]+);/.exec(text)?.[1] ?? "month"
+          const widgets = (state.aiPlan as { widgets?: unknown[] }).widgets ?? []
+          return ["inventory", "preview"].map(action => ({ id: `msg_${action}`, type: "assistant", agent: "dashboard", model: { providerID: "fixture", id: "fast" }, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: NOW, completed: NOW + 1 }, content: [{ type: "tool", id: `call_${action}`, name: "dashboard-data", time: { created: NOW, completed: NOW + 1 }, state: { status: "completed", input: {}, content: [{ type: "text", text: "Synthetic discovery." }], metadata: { action, period, timeZone: "Europe/London", ...(action === "preview" ? { widgets } : {}) } } }] }))
+        })(),
         { id: "msg_dashboard_plan", type: "assistant", agent: "dashboard", model: { providerID: "fixture", id: "fast" }, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: NOW, completed: NOW + 1 }, content: state.aiFailure ? [] : [{ type: "tool", id: "call_dashboard_plan", name: "dashboard-plan", time: { created: NOW, completed: NOW + 1 }, state: { status: "completed", input: {}, content: [{ type: "text", text: "Dashboard plan accepted." }], metadata: { plan: state.aiPlan } } }] },
         { id: "msg_dashboard_idle", type: "idle", outcome: state.aiFailure ? "failed" : "succeeded", time: { created: NOW + 2 } },
       ], cursor: { previous: null, next: null } })
@@ -135,8 +153,9 @@ async function open(state: State, width = 1440, height = 1000) {
     if (pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
     if (pathname === "/setup") return reply(progress(state))
     if (pathname === "/preferences") return reply(state.preferences)
-    if (pathname === "/matters") return state.failMatters ? reply({ error: "Matter list unavailable" }, 503) : reply(state.matters)
+    if (pathname === "/matters") return state.failMatters ? reply({ error: "Matter list unavailable" }, 503) : reply([...state.matters, ...(state.aiActivity ? [SYNTHETIC] : [])])
     if (/^\/matters\/[^/]+\/drafting-status$/.test(pathname)) return reply(null)
+    if (pathname === `/matters/${SYNTHETIC.id}`) return reply({ ...SYNTHETIC, documents: [] })
     if (pathname === `/matters/${SAMPLE.id}`) return reply({ ...SAMPLE, documents: [] })
     if (pathname === "/word/setup") return reply(state.word)
     if (pathname === "/templates") return reply({ dir: "/fixture/templates", templates: state.templates })
@@ -151,7 +170,7 @@ async function open(state: State, width = 1440, height = 1000) {
     if (pathname === "/api/model") return reply({ location: { directory: "/fixture" }, data: ["primary", "fast"].map(id => ({ providerID: "fixture", id, name: id, enabled: true })) })
     if (pathname === "/api/integration") return reply({ location: { directory: "/fixture" }, data: [{ id: "fixture", name: "Fixture", methods: [], connections: [{ type: "credential", id: "fixture-account", label: "Fixture", method: "key" }] }] })
     if (pathname === "/api/session/active") return reply({ data: {} })
-    if (pathname === "/api/session") return reply({ data: [], cursor: { previous: null, next: null } })
+    if (pathname === "/api/session") return reply({ data: state.aiActivity && request.headers()["x-opencode-directory"] === SYNTHETIC.dir ? [{ id: "ses_fictional", projectID: "fixture", title: "Fictional conversation", cost: 1, tokens: { input: 20, output: 10, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: NOW, updated: NOW }, metadata: {} }] : [], cursor: { previous: null, next: null } })
     if (pathname === "/api/permission/request") return reply({ location: { directory: "/fixture" }, data: [] })
     if (pathname === "/api/event") return route.fulfill({ status: 200, headers, contentType: "text/event-stream", body: `data: ${JSON.stringify({ id: "evt_setup", type: "server.connected", data: {} })}\n\n` })
     state.unexpected.push(`${method} ${pathname}`); return route.abort()
@@ -582,7 +601,7 @@ try {
     } finally { await context.close() }
   })
   await scenario("Add composer generates one named dashboard and preserves existing widgets", async () => {
-    const state = fixture()
+    const state = fixture(); state.aiActivity = true
     const existing = { id: "costs", name: "Costs", period: "month", stages: {}, widgets: [{ key: "spend", widget: { type: "spend" }, pinned: true }] }
     seedTabs(state, { active: "costs", dashboards: [existing] })
     const { context, page } = await open(state)
@@ -609,8 +628,23 @@ try {
       clean(state)
     } finally { await context.close() }
   })
+  await scenario("Add composer rejects a dashboard without available data", async () => {
+    const state = fixture(), { context, page } = await open(state)
+    try {
+      await page.goto(`${baseURL}/dashboard`); await settled(page); await tabsSaved(state, () => true)
+      const before = structuredClone(state.dashboard), writes = state.tabWrites.length
+      await page.getByRole("button", { name: "New dashboard", exact: true }).click()
+      const dialog = page.getByRole("dialog", { name: "New dashboard", exact: true })
+      await dialog.getByRole("textbox", { name: "Describe what you want", exact: true }).fill("Show my spend and conversations")
+      await dialog.getByRole("button", { name: "Generate dashboard", exact: true }).click()
+      await expect(dialog.getByRole("alert")).toContainText("No usable data")
+      expect(state.dashboard).toEqual(before); expect(state.tabWrites).toHaveLength(writes)
+      await expect.poll(() => state.aiDeleted.length).toBe(1)
+      clean(state)
+    } finally { await context.close() }
+  })
   await scenario("Add composer failure keeps the prompt and supports retry without empty tabs", async () => {
-    const state = fixture(); state.aiFailure = true
+    const state = fixture(); state.aiFailure = true; state.aiActivity = true
     const { context, page } = await open(state)
     try {
       await page.goto(`${baseURL}/dashboard`); await settled(page); await tabsSaved(state, () => true)
@@ -636,7 +670,7 @@ try {
     } finally { await context.close() }
   })
   for (const action of ["Stop", "Close", "Escape"] as const) await scenario(`Add composer ${action} ignores a delayed AI response`, async () => {
-    const state = fixture(); state.aiHold = true
+    const state = fixture(); state.aiHold = true; state.aiActivity = true
     seedTabs(state, { active: "costs", dashboards: [{ id: "costs", name: "Costs", period: "month", stages: {}, widgets: [{ key: "spend", widget: { type: "spend" }, pinned: true }] }] })
     const { context, page } = await open(state)
     try {
@@ -786,9 +820,11 @@ try {
       await page.goto(`${baseURL}/dashboard?tab=setup`); await settled(page)
       await expandStep(page, "models")
       await expect(stageDialog(page, "models").getByRole("tab", { name: "Add-ins", exact: true })).toHaveCount(0)
+      await expect(stageDialog(page, "models").locator(".ai-setup")).toHaveAttribute("aria-busy", "false")
       state.ready = false
       await closeStage(page, "models"); await badge(page, 0)
       await expandStep(page, "models")
+      await expect(stageDialog(page, "models").locator(".ai-setup")).toHaveAttribute("aria-busy", "false")
       state.ready = true
       await closeStage(page, "models"); await badge(page, 1)
       const word = await expandStep(page, "word")

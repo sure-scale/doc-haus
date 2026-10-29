@@ -4,6 +4,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { DashboardTabState } from "../src/api/ingest/dashboard-tabs"
+import { chartData } from "../../../dochaus/lib/dashboard-chart"
+import { chartKey, checkPlan, type Chart, type PlanWidget } from "../../../dochaus/lib/dashboard-plan"
 import { DEFAULT_DRAFTING } from "../../../dochaus/lib/drafting-preferences"
 
 const { chromium, expect } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
@@ -304,13 +306,33 @@ async function open(state: State, width: number, height: number, timezoneId = "E
     if (method === "OPTIONS") return route.fulfill({ status: 204, headers })
     state.requests.push({ method, path: pathname })
     const reply = (body: unknown, status = 200) => route.fulfill({ status, headers, contentType: "application/json", body: JSON.stringify(body) })
+    if (pathname === "/dashboard/discovery" && method === "POST") {
+      const input = request.postDataJSON() as { action: string; widgets?: unknown[]; period: "month" | "last-month" | "quarter" | "all"; timeZone: string }
+      const checked = checkPlan({ widgets: input.widgets })
+      if (input.action === "inventory") return reply({ updatedAt: NOW, metrics: {}, templates: {}, library: {}, filters: { clients: [], matters: [] } })
+      if (!checked.plan) return reply({ error: "Invalid widgets" }, 400)
+      const own = state.matters.filter(matter => !matter.sample)
+      const rows = own.map(matter => ({ matter, sessions: state.sessions.filter(session => session.matter === matter.id), costs: state.sessions.filter(session => session.matter === matter.id).map(session => ({ time: session.time.created, cost: session.cost })), unread: state.failSessions.has(matter.dir), unpriced: 0 }))
+      const results = checked.plan.widgets.map((widget: PlanWidget, index) => {
+        if (widget.type === "chart") {
+          const view = chartData(widget, { matters: rows }, input.period, NOW, input.timeZone)
+          const usable = !view.unavailable && view.total > 0
+          return { index, status: view.unavailable ? "unavailable" : usable ? view.incomplete ? "partial" : "available" : view.incomplete ? "unavailable" : "empty", usable, dataBacked: usable }
+        }
+        const intrinsic = ["actions", "ideas", "setup", "journey", "sample"].includes(widget.type)
+        const activity = ["spend", "matter-cost", "draft-cost", "week", "matter-spend", "trend", "tokens", "activity"].includes(widget.type)
+        const usable = intrinsic || (activity ? state.sessions.some(session => own.some(matter => matter.id === session.matter)) : own.length > 0)
+        return { index, status: usable ? "available" : "empty", usable, dataBacked: usable && !intrinsic }
+      })
+      return reply({ updatedAt: NOW, results })
+    }
     if (pathname === "/dashboard/sources/chart" && method === "GET") {
       state.chartRequests++
-      const chart = JSON.parse(url.searchParams.get("chart") ?? "{}") as { metric: string; groupBy: string; period: string; form: string }
+      const chart = JSON.parse(url.searchParams.get("chart") ?? "{}") as { metric: string; groupBy: string; period: string; form: string; client?: string; matter?: string }
       const selectedPeriod = chart.period === "dashboard" ? url.searchParams.get("period") : chart.period
       const start = selectedPeriod === "month" ? Date.UTC(2026, 9, 1) : selectedPeriod === "last-month" ? Date.UTC(2026, 8, 1) : selectedPeriod === "quarter" ? Date.UTC(2026, 6, 1) : -Infinity
       const end = selectedPeriod === "last-month" ? Date.UTC(2026, 9, 1) : NOW + DAY
-      const matters = state.matters.filter((matter) => !matter.sample)
+      const matters = state.matters.filter((matter) => !matter.sample && (!chart.client || matter.client === chart.client) && (!chart.matter || matter.title === chart.matter))
       const values = chart.metric === "matters" ? matters.map((matter) => ({ matter, time: matter.created_at, value: 1 })) : state.sessions.filter((session) => !session.parentID || chart.metric === "spend").flatMap((session) => {
         const matter = matters.find((item) => item.id === session.matter)
         return matter ? [{ matter, time: session.time.created, value: chart.metric === "spend" ? session.cost : 1 }] : []
@@ -372,6 +394,13 @@ async function open(state: State, width: number, height: number, timezoneId = "E
     if (pathname === `/api/session/${state.aiSession}/interrupt` && method === "POST") return reply({ interrupted: false })
     if (pathname === `/api/session/${state.aiSession}` && method === "DELETE") { state.aiDeleted.push(state.aiSession); return route.fulfill({ status: 204, headers }) }
     if (pathname === `/api/session/${state.aiSession}/message`) return reply({ data: [
+      ...(() => {
+        const text = String(state.aiPrompts.at(-1)?.text ?? "")
+        const period = /Data context: period ([^;]+);/.exec(text)?.[1] ?? "month"
+        const context = { period, timeZone: timezoneId }
+        const widgets = (state.aiPlan as { widgets?: unknown[] }).widgets ?? []
+        return ["inventory", "preview"].map(action => ({ id: `msg_${action}`, type: "assistant", agent: "dashboard", model: { providerID: "fixture", id: "fast" }, time: { created: NOW, completed: NOW + 1 }, cost: 0, tokens: tokensFor(0, rng(1)), content: [{ type: "tool", id: `call_${action}`, name: "dashboard-data", time: { created: NOW, completed: NOW + 1 }, state: { status: "completed", input: {}, content: [{ type: "text", text: "Synthetic discovery." }], metadata: { action, ...context, ...(action === "preview" ? { widgets } : {}) } } }] }))
+      })(),
       { id: "msg_dashboard_plan", type: "assistant", agent: "dashboard", model: { providerID: "fixture", id: "fast" }, time: { created: NOW, completed: NOW + 1 }, cost: 0, tokens: tokensFor(0, rng(1)), content: state.aiFailure ? [] : [{ type: "tool", id: "call_dashboard_plan", name: "dashboard-plan", time: { created: NOW, completed: NOW + 1 }, state: { status: "completed", input: {}, content: [{ type: "text", text: "Dashboard plan accepted." }], metadata: { plan: state.aiPlan } } }] },
       { id: "msg_dashboard_idle", type: "idle", outcome: state.aiFailure ? "failed" : "succeeded", time: { created: NOW + 2 } },
     ], cursor: { previous: null, next: null } })
@@ -827,6 +856,7 @@ try {
       await capture(page, `ai-prompt-open-${width}x${height}`, { fullPage: false })
       await page.getByRole("button", { name: "Update dashboard", exact: true }).click()
       await expect.poll(() => order(page)).toEqual(["Needs you", "Spend by client", "Conversations over time"])
+      await page.getByRole("button", { name: "Details", exact: true }).click()
       await expect(page.getByText("Time per fee earner is not tracked.", { exact: true })).toBeVisible()
       await expect(card(page, "Spend by client").locator(".dash-chart-total")).toHaveText(money(monthSpend(state, 9)))
       await expect(card(page, "Conversations over time").locator(".dash-area svg")).toBeVisible()
@@ -895,8 +925,10 @@ try {
       await page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true }).fill("Show spend and time per fee earner")
       await page.getByRole("button", { name: "Update dashboard", exact: true }).click()
       const note = page.getByText("Time per fee earner is not tracked.", { exact: true })
+      await page.getByRole("button", { name: "Details", exact: true }).click()
       await expect(note).toBeVisible()
       await dashboard(page, true, true)
+      await page.getByRole("button", { name: "Details", exact: true }).click()
       await expect(note).toBeVisible()
       await page.getByRole("button", { name: "New dashboard", exact: true }).click()
       state.aiPlan = { ...state.aiPlan as Record<string, unknown>, unsupported: [] }
@@ -906,15 +938,41 @@ try {
       await expect(page.getByRole("tab", { name: "Practice costs", exact: true })).toHaveAttribute("aria-selected", "true")
       await expect(note).toHaveCount(0)
       await page.getByRole("tab", { name: "Saved work", exact: true }).click()
+      if (await page.getByRole("button", { name: "Details", exact: true }).count()) await page.getByRole("button", { name: "Details", exact: true }).click()
       await expect(note).toBeVisible()
       await page.locator('summary[aria-label="Options for Saved work dashboard"]').click()
       await page.getByRole("button", { name: "Delete dashboard", exact: true }).click()
       await page.getByRole("group", { name: "Delete dashboard", exact: true }).getByRole("button", { name: "Delete dashboard", exact: true }).click()
       await expect(note).toHaveCount(0)
       await page.locator(".dash-snackbar").getByRole("button", { name: "Undo", exact: true }).click()
+      if (await page.getByRole("button", { name: "Details", exact: true }).count()) await page.getByRole("button", { name: "Details", exact: true }).click()
       await expect(note).toBeVisible()
       await expect(page.getByRole("tab", { name: "Saved work", exact: true })).toHaveAttribute("aria-selected", "true")
       await capture(page, "frontend-tab-notes-375x812", { fullPage: false })
+      clean(state)
+    } finally { await context.close() }
+  })
+
+  await scenario("Refine cannot save an empty result when pins displace its usable chart", async () => {
+    const state = fixture("populated")
+    const pins = Array.from({ length: 16 }, (_, index) => {
+      const widget: Chart = { type: "chart", title: `Missing matter ${index}`, metric: "spend", groupBy: "none", form: "stat", period: "all", matter: `Missing matter ${index}` }
+      return { key: chartKey(widget), widget, pinned: true }
+    })
+    state.dashboardState = { version: 1, setupHidden: false, view: "dashboard", workspace: { active: "pins", dashboards: [{ id: "pins", name: "Pinned", period: "month", stages: {}, widgets: pins }] } }
+    state.aiPlan = { widgets: [{ type: "chart", title: "Spend by client", metric: "spend", groupBy: "client", form: "bars", period: "dashboard" }], unsupported: [] }
+    const { page, context } = await open(state, 1440, 1000)
+    try {
+      await dashboard(page)
+      const before = structuredClone(state.dashboardState), revision = state.dashboardRevision
+      await askButton(page).click()
+      const dialog = page.getByRole("dialog", { name: "Refine dashboard", exact: true })
+      await dialog.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true }).fill("Show spend by client")
+      await dialog.getByRole("button", { name: "Update dashboard", exact: true }).click()
+      await expect(dialog.getByRole("alert")).toContainText("No usable data")
+      expect(state.dashboardState).toEqual(before)
+      expect(state.dashboardRevision).toBe(revision)
+      await expect.poll(() => state.aiDeleted.length).toBe(1)
       clean(state)
     } finally { await context.close() }
   })

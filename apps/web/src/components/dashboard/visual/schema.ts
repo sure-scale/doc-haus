@@ -114,7 +114,7 @@ function valid(kind: ComponentKind, row: RecordValue): boolean {
     case "chart": return validChart(row)
     case "actions": return list(row.items, (item) => icon(item.icon) && text(item.title) && text(item.detail) && optional(item, "href", isLocalDashboardHref))
     case "tokens": {
-      if (!list(row.segments, (segment) => text(segment.label) && number(segment.value) && Number.isInteger(segment.value) && segment.value >= 0, "key", 50) || !optional(row, "period", text) || !optional(row, "notes", strings)) return false
+      if (!list(row.segments, (segment) => text(segment.label) && number(segment.value) && Number.isInteger(segment.value) && segment.value >= 0, "key", 50) || !optional(row, "period", text) || !optional(row, "badge", text) || !optional(row, "notes", strings)) return false
       const total = (row.segments as { value: number }[]).reduce((sum, segment) => sum + segment.value, 0)
       return Number.isFinite(total) && optional(row, "total", (value) => number(value) && Number.isInteger(value) && value === total)
     }

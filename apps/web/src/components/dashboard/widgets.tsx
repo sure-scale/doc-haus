@@ -332,7 +332,7 @@ function Tokens({ summary, period }: WidgetContext) {
   const { input, cached, output, reasoning } = summary.tokens
   if (!input && !cached && !output && !reasoning) return <Empty icon="tokens" title="No tokens used in this period" />
   const total = input + cached + output + reasoning
-  return <TokenBreakdown period={PERIOD_LABELS[period]} notes={cached > 0 ? [`${Math.round(cached / total * 100)}% cached input`] : []} segments={[
+  return <TokenBreakdown period={PERIOD_LABELS[period]} badge={Number.isFinite(total) && total > 0 && Number.isFinite(cached) && cached > 0 ? `${Math.round(cached / total * 100)}% cached input` : undefined} segments={[
     { key: "input", label: "Input", value: input },
     { key: "cached", label: "Cached input", value: cached },
     { key: "output", label: "Output", value: output },
@@ -354,7 +354,8 @@ function Trend({ data, period, now }: WidgetContext) {
   if (!points.some((row) => row.value > 0)) return <Empty icon="trend" title="No spend in this period" />
   const total = daily.reduce((sum, row) => sum + row.cost, 0)
   const active = daily.filter((row) => row.cost > 0).length
-  return <div className="dash-trend-body"><div className="dash-trend-summary"><p><strong>{formatCost(total)}</strong><span>estimated spend</span></p><span className="dash-pill">Avg {formatCost(total / active)} / active day</span></div><AreaChart points={points} format={axisMoney} detail={money} label={`${weekly ? "Weekly" : "Daily"} spend, ${lower(period)}`} /></div>
+  const peak = daily.reduce((best, row) => row.cost > best.cost ? row : best)
+  return <div className="dash-trend-body"><div className="dash-trend-summary"><p><strong>{formatCost(total)}</strong><span>estimated spend · peak {formatCost(peak.cost)} on {formatDate(peak.day)}</span></p><span className="dash-pill">Avg {formatCost(total / active)} / active day</span></div><AreaChart points={points} format={axisMoney} detail={money} label={`${weekly ? "Weekly" : "Daily"} spend, ${lower(period)}`} /></div>
 }
 
 // Adds the sample matter (an existing one is returned as is) and opens it at

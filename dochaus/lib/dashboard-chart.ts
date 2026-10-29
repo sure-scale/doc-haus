@@ -2,8 +2,9 @@ import type { Chart, Grouping, Metric } from "./dashboard-plan"
 export type Period = "month" | "last-month" | "quarter" | "all"
 export type MatterActivity = {
   matter: { id: string; title: string; client?: string; sample?: boolean; created_at: number }
-  sessions: { id: string; parentID?: string; title?: string; metadata?: { dochaus_role?: unknown }; time: { created: number; updated: number } }[]
+  sessions: { id: string; parentID?: string; title?: string; metadata?: { dochaus_role?: unknown }; tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }; time: { created: number; updated: number } }[]
   drafting?: { status?: string; documents?: { status: string; documents: { kind: string; deliverable?: unknown }[] } | null }
+  documents?: number
   costs: { time: number; cost: number }[]
   unread: boolean
   unpriced: number
@@ -55,6 +56,8 @@ function events(row: MatterActivity, metric: Metric): Event[] {
   if (metric === "spend") return row.costs.map(({ time, cost }) => ({ time, value: cost, row }))
   if (metric === "conversations") return row.sessions.filter(isConversation).map(({ time }) => ({ time: time.created, value: 1, row }))
   if (metric === "matters") return [{ time: row.matter.created_at, value: 1, row }]
+  if (metric === "documents") return [{ value: row.documents ?? 0, row }]
+  if (metric === "tokens") return row.sessions.map(({ time, tokens }) => ({ time: time.created, value: (tokens?.input || 0) + (tokens?.output || 0) + (tokens?.reasoning || 0) + (tokens?.cache?.read || 0) + (tokens?.cache?.write || 0), row }))
   // The latest run's delivered body files are distinct drafts. Its updated_at
   // is a mutable status timestamp, so it cannot date the delivered documents.
   return [{ value: row.drafting?.status === "completed" ? draftedCount(row.drafting) : 0, row }]
@@ -74,7 +77,7 @@ export function chartData(chart: Chart, data: DashboardData, dashboardPeriod: Pe
   const notes: string[] = []
   const result = (points: ChartPoint[], total: number, groups = points.length): ChartData => ({
     points, total, groups, notes, unavailable: Boolean(data.error), incomplete: chart.metric !== "matters" && rows.some((row) => row.unread),
-    period: chart.metric === "drafts" ? "Latest finished run in each matter · all time" : PERIOD_LABELS[period],
+    period: chart.metric === "drafts" ? "Latest finished run in each matter · all time" : chart.metric === "documents" ? "Current source documents · all time" : PERIOD_LABELS[period],
     empty: data.error ? "These figures could not be loaded." : chart.client !== undefined && !rows.length ? `No matters found for ${chart.client}.`
       : chart.matter !== undefined && !rows.length ? `No matter named ${chart.matter} was found.`
       : rows.some((row) => row.unread) && chart.metric !== "matters" ? "No figures are available from the activity that could be read." : "Nothing recorded for this view yet.",
@@ -91,11 +94,16 @@ export function chartData(chart: Chart, data: DashboardData, dashboardPeriod: Pe
       return { ...result([], 0), unavailable: true, empty: "Drafts cannot be dated for this view." }
     }
   }
+  if (chart.metric === "documents") {
+    notes.push("Counts current source documents across all time; document dates are not used.")
+    if (TIME.has(chart.groupBy)) return { ...result([], 0), unavailable: true, empty: "Documents cannot be dated for this view." }
+  }
+  if (chart.metric === "tokens") notes.push("Tokens are attributed to the date each session started.")
   if (rows.some((row) => row.unread) && chart.metric !== "matters") notes.push("Some matter activity could not be read. These figures may be incomplete.")
   if (chart.metric === "spend" && rows.some((row) => row.unpriced > 0)) notes.push("Some AI use has no price and is missing from this estimate.")
   const values = rows.flatMap((row) => events(row, chart.metric)).filter((entry) =>
     Number.isFinite(entry.value) && entry.value >= 0 &&
-    (chart.metric === "drafts" || (entry.time !== undefined && Number.isFinite(entry.time) && entry.time >= range.start && entry.time < range.end)))
+    (["drafts", "documents"].includes(chart.metric) || (entry.time !== undefined && Number.isFinite(entry.time) && entry.time >= range.start && entry.time < range.end)))
   const total = values.reduce((sum, entry) => sum + entry.value, 0)
   if (chart.groupBy === "none") return result([{ key: "total", label: chart.title, value: total }], total)
   if (TIME.has(chart.groupBy)) {

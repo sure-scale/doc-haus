@@ -13,6 +13,6 @@ export default tool({
   async execute(input) {
     const result = checkPlan(input)
     if (result.errors) throw new Error(result.errors.join("\n"))
-    return { title: "Dashboard plan", output: `Dashboard plan accepted (${result.plan.widgets.length} widgets).`, metadata: { plan: result.plan } }
+    return { title: "Dashboard plan", output: `Dashboard plan submitted (${result.plan.widgets.length} widgets). The app will verify its data before applying it.`, metadata: { plan: result.plan } }
   },
 })

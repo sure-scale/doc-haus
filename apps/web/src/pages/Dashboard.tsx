@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import type { DraftingPreferences } from "../api/ingest/preferences"
 import type { SetupProgress } from "../api/ingest/setup"
-import { askDashboard } from "../api/opencode/dashboard"
+import { askDashboard, validateDashboardData } from "../api/opencode/dashboard"
 import { useDashboardTabs } from "../components/dashboard/useDashboardTabs"
 import { SetupTab, setupTabProgress } from "../components/dashboard/SetupTab"
 import { AdaptiveGrid, AIComposer, AboutView, DashboardTabs } from "../components/dashboard/visual/DashboardChrome"
@@ -80,7 +80,7 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
   const widgets = tabWidgets(active, stage, setupDone)
 
   function focusDashboardAction() {
-    ;(document.querySelector<HTMLButtonElement>(".dash-about-view button, .dash-blank button:not(:disabled)") ?? tabMenu.current?.querySelector<HTMLElement>("summary"))?.focus()
+    ;(document.querySelector<HTMLButtonElement>(".dash-about-refine, .dash-blank button:not(:disabled)") ?? tabMenu.current?.querySelector<HTMLElement>("summary"))?.focus()
   }
   function stopRefine() {
     controller.current?.abort()
@@ -151,7 +151,7 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
     setNewError("")
     try {
       const own = ready.matters.filter(row => !row.matter.sample)
-      const plan = await askDashboard({ request: newRequest.trim(), current: [], clients: [...new Set(own.flatMap(row => row.matter.client ? [row.matter.client] : []))], matters: own.map(row => row.matter.title), signal: abort.signal })
+      const plan = await askDashboard({ request: newRequest.trim(), period: active.period, current: [], clients: [...new Set(own.flatMap(row => row.matter.client ? [row.matter.client] : []))], matters: own.map(row => row.matter.title), signal: abort.signal })
       if (abort.signal.aborted || newController.current !== abort) return
       const current = workspaceRef.current
       if (current.dashboards.length >= 12) { setNewError("You can have up to 12 dashboard tabs. Close a tab before adding another."); return }
@@ -239,12 +239,17 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
     setError("")
     try {
       const own = ready.matters.filter((row) => !row.matter.sample)
-      const plan = await askDashboard({ request: request.trim(), current: widgets.map(({ widget, pinned }) => ({ widget, pinned })), clients: [...new Set(own.flatMap((row) => row.matter.client ? [row.matter.client] : []))], matters: own.map((row) => row.matter.title), signal: abort.signal })
+      const plan = await askDashboard({ request: request.trim(), period: active.period, current: widgets.map(({ widget, pinned }) => ({ widget, pinned })), clients: [...new Set(own.flatMap((row) => row.matter.client ? [row.matter.client] : []))], matters: own.map((row) => row.matter.title), signal: abort.signal })
       if (abort.signal.aborted || workspaceRef.current.active !== tabId) return
       const current = workspaceRef.current
       const tab = current.dashboards.find((entry) => entry.id === tabId)
       if (!tab) return
-      const next = { ...tab, name: tab.name === "New dashboard" && plan.name ? plan.name : tab.name, widgets: applyPlan(tabWidgets(tab, stage, setupDone), plan), notes: plan.unsupported, description: describeRequest(request) }
+      const before = tabWidgets(tab, stage, setupDone)
+      const merged = applyPlan(before, plan)
+      await validateDashboardData(merged.map(entry => entry.widget), merged.filter(entry => !before.some(old => old.key === entry.key)).map(entry => entry.widget), tab.period, Intl.DateTimeFormat().resolvedOptions().timeZone, abort.signal)
+      if (abort.signal.aborted) return
+      if (workspaceRef.current !== current) throw new Error("This dashboard changed while it was being checked. Your changes are saved; try your request again.")
+      const next = { ...tab, name: tab.name === "New dashboard" && plan.name ? plan.name : tab.name, widgets: merged, notes: plan.unsupported, description: describeRequest(request) }
       update({ ...current, dashboards: current.dashboards.map((entry) => entry.id === tabId ? next : entry) })
       setUndoState({ text: "Dashboard updated", value: current })
       setPromptOpen(false)
@@ -291,8 +296,7 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
         <p>Delete “{active.name}”? Your matters stay as they are.</p><button type="button" onClick={() => deleteTab()}>Delete dashboard</button><button type="button" className="ghost" onClick={() => { setDeleting(false); requestAnimationFrame(() => tabMenu.current?.querySelector("summary")?.focus()) }}>Cancel</button>
       </div>}
       {!showSetup && !empty && !setup?.ready && <p className="dash-ai-error" role="status">Connect your AI provider and models to build a dashboard. <button type="button" onClick={() => select("__setup")}>Connect AI in Setup</button></p>}
-      {!showSetup && !empty && widgets.length > 0 && <AboutView config={{ text: active.description || `Showing ${widgets.map(titleOf).join(", ")}.` }} onRefine={canGenerate ? () => { setError(""); setPromptOpen(true) } : undefined} />}
-      {!showSetup && !empty && notes.length > 0 && <div className="dash-ai-notes" role="status"><strong>About this dashboard</strong><ul>{notes.map((note) => <li key={note}>{note}</li>)}</ul></div>}
+      {!showSetup && !empty && widgets.length > 0 && <AboutView key={active.id} config={{ text: active.description || `Showing ${widgets.map(titleOf).join(", ")}.` }} notes={notes} onRefine={canGenerate ? () => { setError(""); setPromptOpen(true) } : undefined} />}
       {stored.error && <p className="dash-ai-error" role="alert">{stored.error} {stored.conflict ? <button type="button" onClick={() => { controller.current?.abort(); setWorking(false); setForcedSetup(false); setUndoState(undefined); setRenaming(false); setDeleting(false); setPromptOpen(false); void stored.loadSaved() }}>Load saved dashboards</button> : <button type="button" onClick={() => void stored.retry()}>Retry save</button>}</p>}
       {!showSetup && !empty && unread > 0 && <div className="dash-banner" role="status">{icons.warning}<p>Some matters could not be read, so their spend and drafts are missing here.</p><button type="button" className="btn-sm" onClick={reload} disabled={loading}>Retry</button></div>}
       <div id="dash-content" role={empty ? "region" : "tabpanel"} aria-label={empty ? "Dashboard" : undefined} aria-labelledby={empty ? undefined : `dash-content-tab-${showSetup ? "__setup" : active.id}`} tabIndex={0}>
