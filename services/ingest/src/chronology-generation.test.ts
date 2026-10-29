@@ -1280,3 +1280,147 @@ test("refresh proposes reversible static cleanup without hiding genuine undated 
     date: { precision: "undated" },
   })
 })
+
+test("a changed supporting quotation stages the same explicit date correction and cached accounts can repair a stranded header", async () => {
+  const dir = matter(),
+    header = "Date: 2038-04-17T09:25:00.000Z",
+    body = "This note records our planning call."
+  source(dir, "Planning email.md", header + "\n\n" + body)
+  const model = fake((input) =>
+    input.agent === "chronology-match"
+      ? matchFirst(input.text)
+      : complete([
+          event("Planning note sent", header, {
+            date: { original: "2038-04-17T09:25:00.000Z", precision: "exact", start: "2038-04-17" },
+          }),
+        ]),
+  )
+  await startChronologyRun(dir, { expectedRevision: 0, privilege: "mixed", mode: "initial" }, model)
+  await awaitChronologyRun(dir)
+  let state = readChronology(dir)
+  state = mutateChronology(dir, state.revision, "legacy body quote", (current) => {
+    const e = current.events[0]!,
+      a = e.accounts[0]!,
+      evidence = a.evidence[0]!
+    e.date = { original: "2038-04-17T09:25:00.000Z", precision: "ambiguous" }
+    a.date = structuredClone(e.date)
+    a.id = "old-body-account"
+    evidence.id = "old-body-evidence"
+    evidence.excerpt = body
+    evidence.charStart = header.length + 2
+    evidence.charEnd = evidence.charStart + body.length
+    current.coverage[0]!.completedKeys = ["old-normalizer"]
+    current.run!.status = "stopped"
+  })
+  const original = structuredClone(state.events)
+  await startChronologyRun(dir, { expectedRevision: state.revision, privilege: "mixed", mode: "resume" }, model)
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.events).toEqual(original)
+  expect(state.proposals).toHaveLength(1)
+  expect(state.proposals[0]!.events[0]!.date.start).toBe("2038-04-17")
+  state = mutateChronology(dir, state.revision, "previous stranded header", (current) => {
+    current.events[0]!.accounts = structuredClone(current.proposals[0]!.events[0]!.accounts)
+    current.proposals = []
+    current.run!.status = "stopped"
+  })
+  const stranded = structuredClone(state.events)
+  let paidCalls = 0
+  await startChronologyRun(
+    dir,
+    { expectedRevision: state.revision, privilege: "mixed", mode: "resume" },
+    fake(() => {
+      paidCalls++
+      throw new Error("Completed section should be reused")
+    }),
+  )
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(paidCalls).toBe(0)
+  expect(state.events).toEqual(stranded)
+  expect(state.proposals).toHaveLength(1)
+  const proposal = state.proposals[0]!
+  expect(proposal.events[0]!.accounts).toHaveLength(stranded[0]!.accounts.length)
+  expect(proposal.events[0]!.date.start).toBe("2038-04-17")
+  state = decideChronologyProposal(dir, state.revision, proposal.id, "accept")
+  expect(state.events[0]!.date.start).toBe("2038-04-17")
+  expect(state.events[0]!.reviewed).toBe(true)
+  expect(state.events[0]!.accounts.some((a) => a.id === "old-body-account")).toBe(true)
+  state = mutateChronology(dir, state.revision, "another legacy header", (current) => {
+    current.events[0]!.date = { original: "2038-04-17T09:25:00.000Z", precision: "ambiguous" }
+    current.proposals = []
+  })
+  const beforeFailedVerification = structuredClone(state.events)
+  const unavailable = fake(() => {
+    throw new Error("Unchanged completed section must not replay")
+  })
+  unavailable.verify = async () => undefined
+  await startChronologyRun(dir, { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" }, unavailable)
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.events).toEqual(beforeFailedVerification)
+  expect(state.proposals).toHaveLength(0)
+})
+
+test("cached date repair cannot infer unknown originals, numeric order, periods or disputed headers", async () => {
+  const dir = matter(),
+    quote = "The inspection occurred on 17 April 2038; the register also says 04/05/2038."
+  source(dir, "Inspection register.md", quote)
+  await startChronologyRun(
+    dir,
+    { expectedRevision: 0, privilege: "mixed", mode: "initial" },
+    fake(() =>
+      complete([
+        event("Inspection recorded", quote, {
+          date: { original: "17 April 2038", precision: "exact", start: "2038-04-17" },
+        }),
+      ]),
+    ),
+  )
+  await awaitChronologyRun(dir)
+  const baseline = structuredClone(readChronology(dir).events[0]!)
+  for (const variant of [
+    "unknown",
+    "numeric",
+    "candidate period",
+    "previous period",
+    "header period",
+    "disputed",
+  ] as const) {
+    let state = readChronology(dir)
+    state = mutateChronology(dir, state.revision, `legacy ${variant}`, (current) => {
+      const e = structuredClone(baseline),
+        a = e.accounts[0]!
+      e.date = { original: "17 April 2038", precision: "ambiguous" }
+      if (variant === "unknown" || variant === "numeric") {
+        e.date.original = a.date.original = variant === "unknown" ? "Undated" : "04/05/2038"
+      }
+      if (variant === "candidate period") Object.assign(a.date, { end: "2038-04-18", rangeKind: "duration" })
+      if (variant === "previous period")
+        e.accounts.push({
+          ...structuredClone(a),
+          id: "previous-period",
+          date: { ...a.date, end: "2038-04-18", rangeKind: "duration" },
+        })
+      if (variant === "header period") Object.assign(e.date, { rangeKind: "uncertainty" })
+      if (variant === "disputed") e.disputed = true
+      current.events = [e]
+      current.proposals = []
+    })
+    const before = structuredClone(state.events)
+    let calls = 0
+    await startChronologyRun(
+      dir,
+      { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" },
+      fake(() => {
+        calls++
+        throw new Error("Completed source must be reused")
+      }),
+    )
+    await awaitChronologyRun(dir)
+    state = readChronology(dir)
+    expect(calls).toBe(0)
+    expect(state.events).toEqual(before)
+    expect(state.proposals).toHaveLength(0)
+  }
+})

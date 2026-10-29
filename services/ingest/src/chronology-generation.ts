@@ -897,23 +897,34 @@ function accountEvent(account: ChronologyAccount): ChronologyEvent {
   })
 }
 function proposedResolvedDate(event: ChronologyEvent, account: ChronologyAccount): ChronologyDate | undefined {
-  if (event.date.start || event.date.correction || !account.date.start || account.date.precision !== "exact") return
-  if (event.accounts.some((old) => old.date.start && old.date.start !== account.date.start)) return
+  if (
+    event.disputed ||
+    event.date.start ||
+    event.date.correction ||
+    event.date.end ||
+    event.date.rangeKind ||
+    !account.date.start ||
+    account.date.precision !== "exact" ||
+    account.date.end ||
+    account.date.rangeKind ||
+    account.date.relative
+  )
+    return
+  const expression = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase()
+  if (expression(event.date.original) !== expression(account.date.original)) return
+  if (
+    event.accounts.some(
+      (old) => old.date.end || old.date.rangeKind || (old.date.start && old.date.start !== account.date.start),
+    )
+  )
+    return
   if (
     !event.accounts.some(
       (old) =>
         old.status === account.status &&
-        old.date.original.trim().replace(/\s+/g, " ").toLowerCase() ===
-          account.date.original.trim().replace(/\s+/g, " ").toLowerCase() &&
+        expression(old.date.original) === expression(account.date.original) &&
         old.evidence.some((evidence) =>
-          account.evidence.some(
-            (next) =>
-              evidence.sourceId === next.sourceId &&
-              evidence.version === next.version &&
-              evidence.excerpt === next.excerpt &&
-              evidence.charStart === next.charStart &&
-              evidence.charEnd === next.charEnd,
-          ),
+          account.evidence.some((next) => evidence.sourceId === next.sourceId && evidence.version === next.version),
         ),
     )
   )
@@ -931,7 +942,9 @@ function stageProposal(
   const next = event
     ? {
         ...structuredClone(event),
-        accounts: [...event.accounts, account],
+        accounts: event.accounts.some((old) => old.id === account.id)
+          ? [...event.accounts]
+          : [...event.accounts, account],
         date: resolvedDate ?? structuredClone(event.date),
         disputed: event.disputed || conflict,
         reviewed: false,
@@ -963,7 +976,7 @@ function stageProposal(
     reason:
       reason ??
       (resolvedDate
-        ? "The same sourced passage supports a complete event date under the verified source context. The saved date and original account remain unchanged until this proposal is accepted."
+        ? "Verified evidence supports the complete date for the same event and original date expression. The saved date and original account remain unchanged until this proposal is accepted."
         : conflict
           ? "A source reports a competing account of this event."
           : event
@@ -1503,6 +1516,91 @@ async function stageNonEventProposals(
   )
 }
 
+/** An earlier extraction may have saved an exact account but left its event
+ * header unresolved. Reverify that existing explicit support during a requested
+ * run; completed extraction keys need no paid replay and saved events stay put. */
+async function stageSavedDateCorrections(
+  directory: string,
+  runId: string,
+  runtime: NonNullable<ReturnType<typeof active.get>>,
+  deps: ChronologyGenerationDeps,
+) {
+  for (const event of readChronology(directory).events) {
+    if (runtime.controller.signal.aborted) return
+    if (event.supersededBy?.length || event.date.start || event.date.correction) continue
+    for (const account of event.accounts) {
+      const date = proposedResolvedDate(event, account)
+      if (!date || !account.evidence.length) continue
+      const explicit = account.evidence.some((evidence) =>
+        writtenDates(evidence.excerpt).some(
+          (mention) =>
+            mention.year &&
+            `${mention.year}-${String(mention.month).padStart(2, "0")}-${String(mention.day).padStart(2, "0")}` ===
+              date.start,
+        ),
+      )
+      if (!explicit) continue
+      const normalised = normaliseChronologyDate(
+        account.date,
+        "",
+        account.evidence.map((evidence) => evidence.excerpt).join("\n"),
+      ).date
+      if (normalised.precision !== "exact" || normalised.start !== date.start) continue
+      let verified = true
+      for (const evidence of account.evidence) {
+        const source = currentChronologySources(directory).find(
+          (source) =>
+            source.sourceId === evidence.sourceId &&
+            source.version === evidence.version &&
+            source.documentName === evidence.documentName,
+        )
+        if (!source || !evidence.verified || evidence.freshness !== "current") {
+          verified = false
+          break
+        }
+        const citation = await (deps.verify ?? verifyCitation)({ ...evidence, docPath: source.docPath }).catch(
+          () => undefined,
+        )
+        if (
+          !citation ||
+          citation.charStart !== evidence.charStart ||
+          citation.charEnd !== evidence.charEnd ||
+          citation.excerpt !== evidence.excerpt
+        ) {
+          verified = false
+          break
+        }
+      }
+      if (runtime.controller.signal.aborted) return
+      if (!verified) continue
+      mutateChronology(
+        directory,
+        undefined,
+        "propose supported saved date",
+        (current) => {
+          if (current.run?.id !== runId || current.run.status !== "running") return
+          const saved = current.events.find((item) => item.id === event.id)
+          if (!saved || chronologyEventHash(saved) !== chronologyEventHash(event)) return
+          if (
+            !account.evidence.every((evidence) =>
+              currentChronologySources(directory).some(
+                (source) =>
+                  source.sourceId === evidence.sourceId &&
+                  source.version === evidence.version &&
+                  source.documentName === evidence.documentName,
+              ),
+            )
+          )
+            return
+          stageProposal(current, saved, account, false)
+        },
+        "application",
+      )
+      break
+    }
+  }
+}
+
 async function executeChronologyRun(
   directory: string,
   id: string,
@@ -1530,6 +1628,7 @@ async function executeChronologyRun(
     )
   }
   await stageProvenanceCorrections(directory, sources, id, runtime, deps)
+  await stageSavedDateCorrections(directory, id, runtime, deps)
   for (const source of sources) {
     if (runtime.controller.signal.aborted) return
     const target = currentChronologySources(directory).find(
