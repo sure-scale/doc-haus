@@ -10,6 +10,7 @@ import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
 import { paragraphTargets, withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import { openDb, deleteDocument, getDocumentRole, getPreparedChanges, getRedline, listDocuments, listSourceDocuments, upsertDocument } from "./db"
 import { docxTableRowInsertionTargets } from "../../../dochaus/lib/docx-table-row-insertion"
+import { docxTableRowDeletionTargets } from "../../../dochaus/lib/docx-table-row-deletion"
 import { recordTableRowProposal } from "./table-row-proposals"
 import { readWorkingDocx } from "../../../dochaus/lib/working-docx"
 import { createDocxLocalization, createDocxRevision, openRevision, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
@@ -178,7 +179,8 @@ test("on a clean document the preview of prepared and older proposals together i
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 type Candidate = {amendment_id:string;target_handle:string;previous_paragraph?:string|null;table?:number;row?:number;cells?:string[];previous_row?:string[]|null;next_row?:string[]|null}
 type LegalPass = {amendments:Array<{before_quote:string;replacement:string;target_context:string;reason:string}>;open_items:string[];
-  table_rows?:Array<{reference_cells:string[];position:"before"|"after";cells:string[];target_context:string;reason:string}>}
+  table_rows?:Array<{reference_cells:string[];position:"before"|"after";cells:string[];target_context:string;reason:string}>;
+  table_row_deletions?:Array<{reference_cells:string[];target_context:string;reason:string}>}
 
 // Protocol fixture only: a local stand-in for the engine's generate route. The
 // first pass returns frozen legal proposals; the second returns locator rows,
@@ -387,6 +389,175 @@ test("row Prepare stays visible when an older empty or textual Prepare finishes 
       expect(await Bun.file(file).bytes()).toEqual(bytes)
     } finally {release();engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
   }
+})
+
+function rowDeletionPrepareDocx(contexts = ["Other context","Authorized context"],matchingRows = 1,spaces = false) {
+  const parts = unzipSync(rowPrepareDocx(contexts,matchingRows))
+  let body = strFromU8(parts["word/document.xml"]!).replaceAll("<w:trPr/>","")
+  if (spaces) body = body.replaceAll("<w:t>Same</w:t>",'<w:t xml:space="preserve">  Same  </w:t>')
+  parts["word/document.xml"] = strToU8(body)
+  return zipSync(parts,{mtime:new Date(1980,0,1)})
+}
+const legalRowDeletion = {reference_cells:["Same","Right"],target_context:"the table whose next row is Authorized context",reason:"Removes the explicitly requested whole row."}
+
+test("row deletion Prepare freezes complete original spaces and selects duplicate rows using source context", async () => {
+  const bytes = rowDeletionPrepareDocx(undefined,1,true), {directory,file,state} = await rowPrepareMatter(bytes)
+  const deletion = {...legalRowDeletion,reference_cells:["  Same  ","Right"]}
+  const instruction = "Remove the entire Same | Right row from the table whose next row is Authorized context. Keep the other table unchanged."
+  const engine = syntheticEngine(() => ({amendments:[],table_row_deletions:[deletion],open_items:["Confirm the separate filing instruction."]}),candidates => {
+    expect(candidates).toHaveLength(2)
+    expect(candidates.map(candidate => candidate.cells)).toEqual([deletion.reference_cells,deletion.reference_cells])
+    return [{amendment_id:"row-1",target_handle:candidates.find(candidate => candidate.next_row?.[0] === "Authorized context")!.target_handle}]
+  })
+  try {
+    await withPreparation(directory,engine,async prepare => {
+      const response = await prepare(instruction)
+      expect(response.status).toBe(200)
+      const result = await response.json() as {proposed:number;redline_ids:number[]}
+      expect(result.proposed).toBe(1)
+      const target = (await docxTableRowDeletionTargets(bytes)).targets.find(target => target.table === 2 && target.row === 1)!
+      expect(JSON.parse(state().rows[0]!.target_json)).toEqual({version:3,kind:"table_row_delete",prepared_role:"source",source_sha256:sha256(bytes),target_handle:target.target_handle,cells:deletion.reference_cells})
+      expect(state().prepared).toEqual({redline_ids:result.redline_ids,open_items:["Confirm the separate filing instruction."]})
+      const prompt = engine.prompts.at(-1)!
+      expect(prompt).toContain(JSON.stringify(instruction))
+      expect(JSON.parse(prompt.match(/<frozen_amendments>([\s\S]*)<\/frozen_amendments>/)![1])).toEqual([{amendment_id:"row-1",kind:"table_row_delete",...deletion}])
+      const before = state().prepared, calls = engine.prompts.length
+      const blocked = await prepare("Clear the first cell only.")
+      expect(blocked.status).toBe(409);expect(engine.prompts).toHaveLength(calls)
+      expect(state().prepared).toEqual(before)
+    })
+    expect(await Bun.file(file).bytes()).toEqual(bytes)
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("row deletion Prepare retains an immediate physical neighbour when only that neighbour becomes ineligible for deletion", async () => {
+  const parts = unzipSync(rowDeletionPrepareDocx(["Authorized context"]))
+  let body = strFromU8(parts["word/document.xml"]!)
+  const neighbour = [...body.matchAll(/<w:tr>[\s\S]*?<\/w:tr>/g)][1]![0]
+  body = body.replace(neighbour,neighbour+neighbour.replace("Authorized context","Next eligible"))
+  parts["word/document.xml"] = strToU8(body)
+  const {directory,file,state} = await rowPrepareMatter(zipSync(parts))
+  const engine = syntheticEngine(() => ({amendments:[],table_row_deletions:[legalRowDeletion],open_items:[]}),candidates => {
+    expect(candidates).toHaveLength(1)
+    expect(candidates[0]!.next_row).toEqual(["Authorized context","Stable"])
+    return [{amendment_id:"row-1",unresolved_reason:"The client must confirm the whole-row removal."}]
+  })
+  try {
+    await withPreparation(directory,engine,async prepare => {
+      for (const eligible of [true,false]) {
+        const original = eligible ? body : body.replace(neighbour,neighbour.replace("<w:tr>","<w:tr><w:trPr/>"))
+        parts["word/document.xml"] = strToU8(original)
+        const bytes = zipSync(parts);await Bun.write(file,bytes)
+        const packet = await docxTableRowDeletionTargets(bytes)
+        expect(packet.targets.some(target => target.row === 2)).toBe(eligible)
+        expect(packet.targets.some(target => target.row === 3)).toBe(true)
+        const response = await prepare("Remove the complete Same | Right row after confirming its surrounding rows.")
+        expect(response.status).toBe(200);expect(await response.json()).toMatchObject({proposed:0})
+        expect(state().rows).toEqual([])
+        expect(await Bun.file(file).bytes()).toEqual(bytes)
+      }
+    })
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("row deletion Prepare sends original clear-cell intent to an independent locator and retains its unresolved refusal", async () => {
+  const bytes = rowDeletionPrepareDocx(["Authorized context"]), {directory,file,state} = await rowPrepareMatter(bytes)
+  const instruction = "Clear only the words in the first cell; keep the row and the second cell."
+  const engine = syntheticEngine(() => ({amendments:[],table_row_deletions:[legalRowDeletion],open_items:[]}),() =>
+    [{amendment_id:"row-1",unresolved_reason:"The client requested a cell edit, not a whole-row deletion."}])
+  try {
+    await withPreparation(directory,engine,async prepare => {
+      const response = await prepare(instruction)
+      expect(response.status).toBe(200);expect(await response.json()).toMatchObject({proposed:0})
+      // A scripted refusal verifies the exact handoff and its handling, not a
+      // deterministic natural-language classifier or actual model judgement.
+      expect(engine.prompts.at(-1)).toContain(JSON.stringify(instruction))
+      expect(engine.prompts.at(-1)).toContain("clear cell text")
+      expect(engine.prompts.at(-1)).toContain("whole-row removal is not explicit")
+      expect(state().rows).toEqual([])
+    })
+    expect(await Bun.file(file).bytes()).toEqual(bytes)
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("row deletion Prepare refuses mixed or multiple operations and malformed deletion fields before localization", async () => {
+  const bytes = rowDeletionPrepareDocx(), {directory,file,state} = await rowPrepareMatter(bytes)
+  let output:LegalPass = {amendments:[],table_row_deletions:[legalRowDeletion],open_items:[]}
+  const engine = syntheticEngine(() => output,() => {throw new Error("No locator may run")})
+  try {
+    await withPreparation(directory,engine,async prepare => {
+      const text = {before_quote:"Absent words",replacement:"Other words",target_context:"operative clause",reason:"Requested legal edit."}
+      for (const value of [
+        {amendments:[text],table_row_deletions:[legalRowDeletion],open_items:[]},
+        {amendments:[],table_rows:[legalRow],table_row_deletions:[legalRowDeletion],open_items:[]},
+        {amendments:[],table_row_deletions:[legalRowDeletion,legalRowDeletion],open_items:[]},
+        {amendments:[],table_row_deletions:null,open_items:[]},
+        {amendments:[],table_row_deletions:[{...legalRowDeletion,position:"before"}],open_items:[]},
+        {amendments:[],table_row_deletions:[{...legalRowDeletion,cells:["Replacement","cells"]}],open_items:[]},
+      ]) {
+        output = value as unknown as LegalPass
+        const response = await prepare("Prepare all requested legal and row changes.")
+        const malformed = value.table_row_deletions === null || value.table_row_deletions?.some(row => "position" in row || "cells" in row)
+        expect(response.status).toBe(malformed ? 409 : 200)
+        expect(state().rows).toEqual([])
+      }
+      expect(engine.prompts).toHaveLength(6)
+    })
+    expect(await Bun.file(file).bytes()).toEqual(bytes)
+  } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+})
+
+test("row deletion Prepare retains both candidate-count and full-context budget refusals without a locator", async () => {
+  for (const limit of ["count","context"] as const) {
+    const bytes = limit === "count" ? rowDeletionPrepareDocx(["Authorized context"],33) : rowDeletionPrepareDocx([`Authorized context ${"x".repeat(64*1024)}`])
+    const {directory,file,state} = await rowPrepareMatter(bytes)
+    const engine = syntheticEngine(() => ({amendments:[],table_row_deletions:[legalRowDeletion],open_items:[]}),() => {throw new Error("Overflow must not localize")})
+    try {
+      await withPreparation(directory,engine,async prepare => {
+        const response = await prepare("Remove the complete intended Same | Right row.")
+        expect(response.status).toBe(200)
+        expect(await response.json()).toMatchObject({proposed:0,open_items:[expect.stringContaining(limit === "count" ? "Too many reference rows" : "context is too large")]})
+      })
+      expect(engine.prompts).toHaveLength(1);expect(state().rows).toEqual([])
+      expect(await Bun.file(file).bytes()).toEqual(bytes)
+    } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+  }
+})
+
+test("row deletion Prepare refuses source changes and locator rewrites instead of rebasing its frozen row", async () => {
+  for (const mutation of ["source","locator"] as const) {
+    const bytes = rowDeletionPrepareDocx(), {directory,file,state} = await rowPrepareMatter(bytes)
+    const engine = syntheticEngine(() => ({amendments:[],table_row_deletions:[legalRowDeletion],open_items:[]}),async candidates => {
+      if (mutation === "source") await Bun.write(file,rowDeletionPrepareDocx(["Changed context","Authorized context"]))
+      return [{amendment_id:"row-1",target_handle:candidates[0]!.target_handle,...(mutation === "locator" ? {reference_cells:["Changed","scope"]} : {})}]
+    })
+    try {
+      await withPreparation(directory,engine,async prepare => {expect((await prepare("Remove the entire authorized row.")).status).toBe(409)})
+      expect(engine.prompts).toHaveLength(2);expect(state().rows).toEqual([])
+      if (mutation !== "source") expect(await Bun.file(file).bytes()).toEqual(bytes)
+    } finally {engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
+  }
+})
+
+test("row deletion Prepare metadata survives an older empty Prepare finishing after deletion admission", async () => {
+  const bytes = rowDeletionPrepareDocx(), {directory,file,state} = await rowPrepareMatter(bytes)
+  let began!:()=>void, release!:()=>void
+  const started = new Promise<void>(resolve => {began=resolve}), held = new Promise<void>(resolve => {release=resolve})
+  const engine = syntheticEngine(async () => {began();await held;return {amendments:[],open_items:["Old request item."]}},firstCandidate)
+  try {
+    await withPreparation(directory,engine,async prepare => {
+      const pending = prepare("Explain the existing wording.");await started
+      const packet = await docxTableRowDeletionTargets(bytes)
+      const result = await recordTableRowProposal(directory,"working.docx",{version:3,kind:"table_row_delete",prepared_role:"source",source_sha256:packet.source_sha256,target_handle:packet.targets[0]!.target_handle,cells:legalRowDeletion.reference_cells},
+        {author:"Review Editor",reason:legalRowDeletion.reason,openItems:["New deletion item."],preparedPath:file})
+      const expected = {redline_ids:[result.id],open_items:["New deletion item."]}
+      expect(state().prepared).toEqual(expected)
+      release();expect((await pending).status).toBe(409)
+      expect(state().prepared).toEqual(expected)
+      expect(state().rows.map(row => [JSON.parse(row.target_json).kind,row.status])).toEqual([["table_row_delete","pending"]])
+    })
+    expect(await Bun.file(file).bytes()).toEqual(bytes)
+  } finally {release();engine.server.stop(true);await rm(directory,{recursive:true,force:true})}
 })
 
 // Isolated ingest child processes sharing one workspace. Each start gets a fresh

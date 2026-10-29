@@ -9,7 +9,7 @@ import { docxTableRowInsertionTargets } from "../../../dochaus/lib/docx-table-ro
 import { docxodus as sharedDocxodus } from "../../../dochaus/lib/docxodus"
 import { readDocxComments } from "../../../dochaus/lib/docx-comments"
 import { recordRedline, recordRedlineProposal } from "../../../dochaus/lib/redlines"
-import { tableRowProposalSchema, type TableRowProposalBinding } from "../../../dochaus/lib/table-row-proposal"
+import { tableRowProposalSchema, type TableRowInsertionProposalBinding } from "../../../dochaus/lib/table-row-proposal"
 import { getPreparedChanges, getRedline, listPendingRedlines, openDb, upsertDocument, type RedlineRow } from "./db"
 import { bake, buildRedlined, redlineStaleReason, redlineState } from "./redline"
 import { docxodus } from "./docxodus"
@@ -46,7 +46,7 @@ function matter(bytes=source()) {
   const db=openDb(directory);try {upsertDocument(db,file,FILE,Date.now(),null)} finally {db.close()}
   return {directory,file,bytes}
 }
-async function operation(bytes:Uint8Array,cells=["Literal **bold** | <value>","","Emoji 😀"]):Promise<TableRowProposalBinding> {
+async function operation(bytes:Uint8Array,cells=["Literal **bold** | <value>","","Emoji 😀"]):Promise<TableRowInsertionProposalBinding> {
   const offered=await docxTableRowInsertionTargets(bytes)
   return {version:3,kind:"table_row_insert",prepared_role:"source",source_sha256:offered.source_sha256,target_handle:offered.targets[1]!.target_handle,position:"after",cells}
 }

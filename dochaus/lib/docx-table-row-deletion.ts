@@ -152,7 +152,8 @@ async function locate(source: Uint8Array, pkg: Package, session: Session, input:
   const packet = await docxTableRowDeletionTargets(source), view = packet.targets.find(t => t.target_handle === input.target_handle)
   require(view, "target_not_eligible")
   const tableIds = Object.entries(session.project().anchorIndex).filter(([, a]) => a.kind === "tbl" && a.partUri === "/word/document.xml")
-  const id = tableIds[view.table - 1]?.[0], result = id && session.getTableMetadata(id), metadata = result && result.metadata, row = metadata?.rows[view.row - 1], cell = row?.cells[0]
+  const id = tableIds[view.table - 1]?.[0], result = id ? session.getTableMetadata(id) : undefined
+  const metadata = result?.metadata, row = metadata?.rows[view.row - 1], cell = row?.cells[0]
   require(result && result.success && id && row && cell && hash(JSON.stringify([input.source_sha256, id, row.anchor.id, cell.anchor.id])) === input.target_handle, "canonical_target_changed")
   return { view, sourceRow: targetContent(pkg, view, storyRanges(pkg.body)), cell: cell.anchor.id, paragraphIds: row.cells.flatMap(c => c.paragraphAnchors.map(p => p.id)), rowId: row.anchor.id }
 }

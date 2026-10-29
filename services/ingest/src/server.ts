@@ -80,8 +80,8 @@ import { DocxTrackedRevisionsError, type DocxRevisionOptions } from "../../../do
 import { compareVersions } from "../../../dochaus/lib/version-compare"
 import { pendingRedlinesForDoc } from "../../../dochaus/lib/redlines"
 import { diagnosticErrorMetadata } from "../../../dochaus/lib/diagnostic-metadata"
-import { tableRowProposalMarker, type TableRowProposalView } from "../../../dochaus/lib/table-row-proposal"
-import { assertTableRowSingleton, rowChanged, tableRowBinding, tableRowView } from "./table-row-proposals"
+import { frozenTableRowView, tableRowProposalMarker, type TableRowProposalView } from "../../../dochaus/lib/table-row-proposal"
+import { assertTableRowSingleton, rowChanged, rowMixed, tableRowBinding, tableRowView } from "./table-row-proposals"
 import { containerAttachmentsPending, ingestEmailDocument, isContainerName, isEmailName, reingestLegacyEmails, removeMatterDocument, withEmailLinks } from "./email-attachments"
 import { ingestZipDocument, ZipFormatError, ZipTooLargeError } from "./zip-archive"
 import { MsgFormatError } from "../../../dochaus/lib/msg"
@@ -1121,13 +1121,13 @@ app.get("/matters/:id/redlines", async (c) => {
       const protectedWord = Boolean(readWorkingDocx(dir,target.docPath))
       const mixed = rows.some(tableRowProposalMarker) && rows.length !== 1
       return c.json(await Promise.all(rows.map(async (row) => {
-        let stale_reason = mixed ? "A row insertion must be reviewed on its own. Reject the mixed change list and prepare separate requests." : redlineStaleReason(row,state,protectedWord)
+        let stale_reason = mixed ? rowMixed : redlineStaleReason(row,state,protectedWord)
         let table_row: TableRowProposalView | undefined
         if (tableRowProposalMarker(row)) try {
           const value = tableRowBinding(row)
-          table_row = {kind:"table_row_insert",position:value.position,cells:value.cells}
+          table_row = frozenTableRowView(value)
           if (!stale_reason) table_row = await tableRowView(bytes,row)
-        } catch { stale_reason ??= "This row insertion cannot be displayed safely. Reject it and prepare a fresh change list." }
+        } catch { stale_reason ??= "This row change cannot be displayed safely. Reject it and prepare a fresh change list." }
         return {...row,...(table_row ? {table_row} : {}),...(stale_reason ? {stale:true,stale_reason} : {})}
       })))
     } finally {

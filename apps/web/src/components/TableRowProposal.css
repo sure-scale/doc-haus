@@ -11,4 +11,7 @@
 .table-row-proposal tr > th:first-child { width: 5.25rem; font-size: 0.625rem; font-weight: 550; }
 .table-row-proposal .table-row-reference { color: var(--text-secondary); }
 .table-row-proposal .table-row-new > * { color: var(--accent); background: var(--accent-soft); }
+.table-row-proposal .table-row-delete > * { color: var(--danger); background: var(--danger-soft); }
 .table-row-proposal .table-row-empty { color: var(--muted); white-space: inherit; }
+.table-row-proposal .table-row-cell-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.table-row-proposal .table-row-cell-note { display: block; width: fit-content; margin-top: 4px; padding: 1px 4px; border: 1px solid var(--border); border-radius: 3px; color: var(--muted); background: var(--panel); font-size: 0.625rem; font-style: italic; white-space: normal; }

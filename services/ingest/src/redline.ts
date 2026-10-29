@@ -16,7 +16,9 @@ import { docxProtectionMessage } from "./docx-protection-message"
 import { tableRowProposalMarker } from "../../../dochaus/lib/table-row-proposal"
 import { authorDocxTableRowInsertion, resolveDocxTableRowInsertion } from "../../../dochaus/lib/docx-table-row-insertion"
 import { authorDocxTableRowReview } from "../../../dochaus/lib/docx-table-row-review"
-import { assertTableRowSingleton, rowChanged, rowSourceOnly, rowUnsupported, tableRowBinding, tableRowRequest, tableRowSourceHasRevisions, TableRowProposalError } from "./table-row-proposals"
+import { authorDocxTableRowDeletion, resolveDocxTableRowDeletion } from "../../../dochaus/lib/docx-table-row-deletion"
+import { authorDocxTableRowDeletionReview } from "../../../dochaus/lib/docx-table-row-deletion-review"
+import { assertTableRowSingleton, checkedTableRowOperation, rowChanged, rowSourceOnly, tableRowBinding, tableRowSourceHasRevisions, TableRowProposalError } from "./table-row-proposals"
 
 // Replay and bake pending redline proposals against a .docx.
 //
@@ -102,7 +104,10 @@ export async function buildRedlined(original: Uint8Array, rows: RedlineRow[], st
   if (rows.some(tableRowProposalMarker)) {
     try {
       const row = await checkedTableRow(original, rows, state)
-      return (await authorDocxTableRowReview(original, tableRowRequest(tableRowBinding(row), row.author), row.review_comment)).bytes
+      const operation = await checkedTableRowOperation(original,row)
+      return operation.kind === "table_row_delete"
+        ? (await authorDocxTableRowDeletionReview(original,operation.request,row.review_comment)).bytes
+        : (await authorDocxTableRowReview(original,operation.request,row.review_comment)).bytes
     } catch (error) { throw new RedlinePreviewConflictError(rowFailure(error)) }
   }
   const annotated = rows.some(row => row.review_comment.trim())
@@ -282,9 +287,13 @@ function previewAuthor(rows: RedlineRow[]) {
 export async function bake(original: Uint8Array, rows: RedlineRow[], state?: RedlineState, options: DocxRevisionOptions = {}): Promise<Uint8Array> {
   if (rows.some(tableRowProposalMarker)) {
     try {
-      const row = await checkedTableRow(original, rows, state), request = tableRowRequest(tableRowBinding(row), row.author)
-      const authored = await authorDocxTableRowInsertion(original, request)
-      return await resolveDocxTableRowInsertion(original, authored.bytes, request, "accept")
+      const row = await checkedTableRow(original, rows, state), operation = await checkedTableRowOperation(original,row)
+      if (operation.kind === "table_row_delete") {
+        const authored = await authorDocxTableRowDeletion(original,operation.request)
+        return await resolveDocxTableRowDeletion(original,authored.bytes,operation.request,"accept")
+      }
+      const authored = await authorDocxTableRowInsertion(original, operation.request)
+      return await resolveDocxTableRowInsertion(original, authored.bytes, operation.request, "accept")
     } catch (error) { throw new RedlineAcceptConflictError(rowFailure(error)) }
   }
   try {
@@ -469,7 +478,7 @@ async function checkedTableRow(original: Uint8Array, rows: RedlineRow[], state?:
 }
 function rowFailure(error: unknown) {
   if (error instanceof TableRowProposalError || error instanceof RedlineAcceptConflictError) return error.message
-  return rowUnsupported
+  return "This table row change cannot be safely prepared. Reject it and prepare a fresh change list, or make the change directly in Word."
 }
 /** Accept all's refusal for its stale proposals, in list order: the first by
  * its quote and reason, and how many others are stale too. */
