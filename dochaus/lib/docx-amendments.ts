@@ -1105,7 +1105,7 @@ export function verifyPreservation(before: Awaited<ReturnType<typeof openRevisio
       throw new Error("docx_paragraph_properties_changed")
     verifyInlineControls(a.node, b.node, a.match.text, b.match.text, spans?.get(ordinal), before.options.revisionAuthor)
     verifyFields(a.node, b.node)
-    verifyAssociations(a.node, b.node, a.match.text, b.match.text, spans?.get(ordinal), before.options.revisionAuthor)
+    verifyAssociations(a.node, b.node, a.match.text, b.match.text, spans?.get(ordinal), before.options.revisionAuthor, before.documents)
     // Native UNIDs are transient, but within this session identify original runs.
     const edited = parse(before.session.raw.getXml(a.match.enclosingAnchor.id))
     const remaining = new Map(elements(edited, "r").map(run => [run.getAttributeNS(PT, "Unid"), run]))
@@ -1140,7 +1140,7 @@ function verifyFields(before: Element, after: Element) {
 // A text edit does not authorize changing a note reference, link destination,
 // or the position of a live field. One plain-run link may be edited only when
 // its shell and both original and current text/run properties are proven.
-function verifyAssociations(before: Element, after: Element, oldText: string, newText: string, actualChanges?: ProtectedWordChange[], defaultAuthor?: string) {
+function verifyAssociations(before: Element, after: Element, oldText: string, newText: string, actualChanges?: ProtectedWordChange[], defaultAuthor?: string, sourceDocuments?: Record<string, Document>) {
   assertAssociationAncestry(before); assertAssociationAncestry(after)
   const names = ASSOCIATIONS
   type Record = { kind: string; start: number; end: number; xml: string; namespaces: string; ancestry: string; node: Element }
@@ -1218,12 +1218,14 @@ function verifyAssociations(before: Element, after: Element, oldText: string, ne
       control.appendChild(content)
       return control
     }
-    const approved = inside && inside.length === 1 && actualChanges && inside.every(change =>
-      change.offset > item.start && change.offset + change.replaced.length < item.end ||
-      change.offset === item.start && change.offset + change.replaced.length === item.end && !!change.changed) &&
-      canonical(item.node.cloneNode(false)) === canonical(next.node.cloneNode(false)) &&
-      safeControlTextEdit(asControl(item.node), asControl(next.node), oldText.slice(item.start, item.end),
-        newText.slice(map(item.start), map(item.end)), inside[0]!, inside[0]!.offset - item.start, inside[0]!.author ?? defaultAuthor)
+    const approved = inside && inside.length === 1 && actualChanges &&
+      canonical(item.node.cloneNode(false)) === canonical(next.node.cloneNode(false)) && (
+      (inside.every(change => change.offset > item.start && change.offset + change.replaced.length < item.end ||
+        change.offset === item.start && change.offset + change.replaced.length === item.end && !!change.changed) &&
+        safeControlTextEdit(asControl(item.node), asControl(next.node), oldText.slice(item.start, item.end),
+          newText.slice(map(item.start), map(item.end)), inside[0]!, inside[0]!.offset - item.start, inside[0]!.author ?? defaultAuthor)) ||
+      (changes.length === 1 && safeMultiRunLinkEdit(item.node, next.node, inside[0]!, inside[0]!.offset - item.start,
+        inside[0]!.author ?? defaultAuthor, sourceDocuments)))
     return touches && !approved || item.kind !== next.kind || item.namespaces !== next.namespaces || item.ancestry !== next.ancestry || !approved && item.xml !== next.xml || map(item.start) !== next.start || map(item.end) !== next.end
   })) throw new Error("docx_protected_association_changed")
 }
@@ -1287,6 +1289,91 @@ function verifyInlineControls(before: Element, after: Element, oldText: string, 
       : change.offset === control.start && !["bookmarkStart", "bookmarkEnd"].includes(control.kind)) ||
       control.kind !== next.kind || (!approved && control.xml !== next.xml) || map(control.start, control.kind === "bookmarkEnd") !== next.start || map(control.end, control.kind === "bookmarkEnd") !== next.end
   })) throw new Error("docx_protected_inline_content_changed")
+}
+
+// A single replacement wholly within one plain run of a multi-run link.
+// The linked shell is checked by the caller; compare both revision views by
+// UTF-16 unit and preserve every retained character's run shell and rPr.
+function safeMultiRunLinkEdit(before: Element, after: Element, change: WordChange, offset: number, author?: string, documents?: Record<string, Document>): boolean {
+  if (!change.replaced || !change.changed) return false
+  const direct = (node: Element) => Array.from(node.childNodes).filter((child): child is Element => child.nodeType === 1)
+  const cleanChildren = (node: Element) => Array.from(node.childNodes).every(child => child.nodeType === 1 || child.nodeType === 3 && !child.nodeValue?.trim())
+  const XML = "http://www.w3.org/XML/1998/namespace", XMLNS = "http://www.w3.org/2000/xmlns/"
+  type Unit = { value: string; style: string; space: boolean }
+  const run = (node: Element, deleted: boolean): Unit[] | undefined => {
+    if (node.namespaceURI !== W || node.localName !== "r" || !cleanChildren(node)) return
+    const items = direct(node), texts = items.filter(item => item.namespaceURI === W && item.localName === (deleted ? "delText" : "t"))
+    if (texts.length !== 1 || items.some(item => item.namespaceURI !== W || !["rPr", deleted ? "delText" : "t"].includes(item.localName)) || children(node, "rPr").length > 1 || elements(node, "rPrChange").length) return
+    const text = texts[0]!, value = text.textContent ?? ""
+    if (!value || Array.from(text.childNodes).some(child => child.nodeType !== 3 && child.nodeType !== 4) ||
+      Array.from(text.attributes).some(attr => attr.namespaceURI !== XMLNS && !(attr.namespaceURI === XML && attr.localName === "space" && attr.value === "preserve"))) return
+    const space = text.getAttributeNS(XML, "space") === "preserve"
+    if (/^\s|\s$/.test(value) && !space) return
+    const style = JSON.stringify([canonical(node.cloneNode(false)), canonical(children(node, "rPr")[0])])
+    return value.split("").map(value => ({ value, style, space }))
+  }
+  if (!cleanChildren(before) || !cleanChildren(after)) return false
+  const sourceRuns = direct(before)
+  if (sourceRuns.length < 2) return false
+  const source: Unit[] = [], ranges: { from: number; to: number }[] = []
+  for (const node of sourceRuns) {
+    const units = run(node, false)
+    if (!units) return false
+    const from = source.length; source.push(...units); ranges.push({ from, to: source.length })
+  }
+  const end = offset + change.replaced.length
+  const touched = ranges.filter(range => range.from <= offset && end <= range.to)
+  if (touched.length !== 1 || source.slice(offset, end).map(unit => unit.value).join("") !== change.replaced) return false
+  const boundary = (at: number) => at > 0 && at < source.length &&
+    /[\uD800-\uDBFF]/.test(source[at - 1]!.value) && /[\uDC00-\uDFFF]/.test(source[at]!.value)
+  if (boundary(offset) || boundary(end)) return false
+  const touchedStyle = source[offset]!
+  const expectedCurrent = [...source.slice(0, offset), ...change.changed.split("").map(value => ({ ...touchedStyle, value })), ...source.slice(end)]
+  const current: Unit[] = [], original: Unit[] = [], revisions: { kind: string; text: string; original: number; current: number }[] = []
+  if (!documents) return false
+  const revisionNodes = Object.values(documents).flatMap(doc => elements(doc, "*")).filter(node => /^(ins|del|moveFrom|moveTo|.*PrChange|.*GridChange|numberingChange|cellIns|cellDel|cellMerge|moveFromRange(?:Start|End)|moveToRange(?:Start|End)|customXml(?:Ins|Del|MoveFrom|MoveTo)Range(?:Start|End))$/.test(node.localName))
+  const oldIds = new Set<string>()
+  for (const node of revisionNodes) {
+    const id = node.getAttributeNS(W, "id")
+    if (!id || !/^\d+$/.test(id)) return false
+    oldIds.add(BigInt(id).toString())
+  }
+  const newIds = new Set<string>()
+  const validDate = (value: string) => {
+    const match = value.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/)
+    if (!match) return false
+    const timestamp = Date.parse(value)
+    return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === `${match[1]}.${(match[2] ?? "").padEnd(3, "0")}Z`
+  }
+  for (const node of direct(after)) {
+    if (node.namespaceURI !== W || !["r", "ins", "del"].includes(node.localName)) return false
+    const revised = node.localName !== "r", removed = node.localName === "del", inserted = node.localName === "ins"
+    if (revised) {
+      const id = node.getAttributeNS(W, "id")
+      if (!author || !id || !/^\d+$/.test(id) || oldIds.has(BigInt(id).toString()) || newIds.has(BigInt(id).toString()) || node.getAttributeNS(W, "author") !== author ||
+        !validDate(node.getAttributeNS(W, "date") ?? "") || !cleanChildren(node) ||
+        Array.from(node.attributes).some(attr => attr.namespaceURI !== XMLNS && (attr.namespaceURI !== W || !["id", "author", "date"].includes(attr.localName)))) return false
+      newIds.add(BigInt(id).toString())
+    }
+    const runs = revised ? direct(node) : [node]
+    if (!runs.length) return false
+    const startOriginal = original.length, startCurrent = current.length, units: Unit[] = []
+    for (const item of runs) { const part = run(item, removed); if (!part) return false; units.push(...part) }
+    if (!inserted) original.push(...units)
+    if (!removed) current.push(...units)
+    if (revised) revisions.push({ kind: node.localName, text: units.map(unit => unit.value).join(""), original: startOriginal, current: startCurrent })
+  }
+  const equal = (expected: Unit[], actual: Unit[]) => expected.length === actual.length && expected.every((unit, index) => {
+    const got = actual[index]!
+    // A generated split may add preserve, but never remove it from source text.
+    return unit.value === got.value && unit.style === got.style && (!unit.space || got.space)
+  })
+  if (!equal(expectedCurrent, current)) return false
+  if (!author) return revisions.length === 0
+  return equal(source, original) && JSON.stringify(revisions) === JSON.stringify([
+    { kind: "del", text: change.replaced, original: offset, current: offset },
+    { kind: "ins", text: change.changed, original: end, current: offset },
+  ])
 }
 
 // A deliberately narrow rich-text control: one unbound, unlocked, unnested

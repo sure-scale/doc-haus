@@ -3357,6 +3357,138 @@ test("only a body accept of a completed run touches its notes, and only while th
   }
 },120000)
 
+test("HTTP Prepare previews and accepts a contained multi-run hyperlink edit beside prior markup and an independent proposal", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "dochaus-multi-run-link-http-"))
+  const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships", PR = "http://schemas.openxmlformats.org/package/2006/relationships"
+  const url = "https://example.invalid/Schedule-1", layer = { pendingRevisions: "layer" } as const
+  const parts = unzipSync(counterpartyMarkupDocx())
+  const old = '<w:r><w:t xml:space="preserve">9. Governing law. This Agreement is governed by the law of the Province.</w:t></w:r>'
+  const link = '<w:hyperlink r:id="rId4"><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">the </w:t></w:r><w:r><w:rPr><w:i/></w:rPr><w:t>Province</w:t></w:r></w:hyperlink>'
+  const xml = strFromU8(parts["word/document.xml"]!)
+  expect(xml.split(old)).toHaveLength(2)
+  parts["word/document.xml"] = strToU8(xml.replace("<w:document ", `<w:document xmlns:r="${R}" `)
+    .replace(old, `<w:r><w:t xml:space="preserve">9. Governing law. This Agreement is governed by the law of </w:t></w:r>${link}<w:r><w:t>.</w:t></w:r>`)
+    .replace("<w:sectPr", '<w:p><w:r><w:t>Records must be retained for three months.</w:t></w:r></w:p><w:sectPr'))
+  parts["word/_rels/document.xml.rels"] = strToU8(strFromU8(parts["word/_rels/document.xml.rels"]!).replace("</Relationships>",
+    `<Relationship Id="rId4" Type="${R}/hyperlink" Target="${url}" TargetMode="External"/></Relationships>`))
+  const source = withParaIds(zipSync(parts, { mtime: new Date(1980, 0, 1) }))
+  const changes = [
+    { before_quote: "Province", replacement: "State", target_context: "governing law hyperlink", reason: "Update the linked jurisdiction." },
+    { before_quote: "three months", replacement: "six months", target_context: "standalone records paragraph", reason: "Extend records retention." },
+  ]
+  const engine = syntheticEngine(() => ({ amendments: changes, open_items: [] }), firstCandidate)
+  const ingest = await isolatedIngest(temporary, engine.server)
+  const parse = (bytes:Uint8Array, name = "word/document.xml") => new DOMParser().parseFromString(strFromU8(unzipSync(bytes)[name]!), "application/xml")
+  // Compare parsed names, every attribute, text and child order, not ZIP timestamps
+  // or serializer spelling. Existing comment/revision subtrees remain authoritative.
+  const canonical = (node:Node):string => {
+    if (node.nodeType !== 1) return JSON.stringify([node.nodeType, node.nodeValue])
+    const element = node as Element
+    return JSON.stringify([element.namespaceURI, element.localName,
+      Array.from(element.attributes).map(a => [a.namespaceURI, a.localName, a.value]).sort(), Array.from(element.childNodes).map(canonical)])
+  }
+  const physical = (bytes:Uint8Array) => Array.from(parse(bytes).getElementsByTagNameNS(W, "p"))
+  const sourceParagraphs = physical(source), sourceRevision = await createDocxRevision(source, layer)
+  const lawOrdinal = sourceRevision.paragraphs.findIndex(p => p.text.startsWith("9. Governing law."))
+  const recordsOrdinal = sourceRevision.paragraphs.findIndex(p => p.text.startsWith("Records must"))
+  expect(lawOrdinal).toBeGreaterThanOrEqual(0); expect(recordsOrdinal).toBeGreaterThanOrEqual(0)
+  const originalLinkRuns = Array.from(parse(source).getElementsByTagNameNS(W, "hyperlink")[0]!.getElementsByTagNameNS(W, "r"))
+  expect(originalLinkRuns.map(r => r.textContent)).toEqual(["the ", "Province"])
+  const editedPhysical = new Set(sourceParagraphs.flatMap((p, i) => /^(9\. Governing law\.|Records must)/.test(p.textContent ?? "") ? [i] : []))
+  expect(editedPhysical.size).toBe(2)
+  const oldCarriers = Array.from(parse(source).getElementsByTagNameNS(W, "*")).filter(e => e.hasAttributeNS(W, "author"))
+    .map(e => ({ name: e.localName, id: e.getAttributeNS(W, "id"), xml: canonical(e) }))
+  const originalComments = readDocxComments(source), originalRevisions = await listedRevisions(source)
+  expect(originalRevisions).toHaveLength(10)
+  expect(originalComments).toHaveLength(4)
+  const preserved = async (bytes:Uint8Array, preview = false) => {
+    const document = parse(bytes), paragraphs = physical(bytes)
+    expect(paragraphs).toHaveLength(sourceParagraphs.length)
+    sourceParagraphs.forEach((p, i) => { if (!editedPhysical.has(i)) expect(canonical(paragraphs[i]!)).toBe(canonical(p)) })
+    for (const carrier of oldCarriers) {
+      const actual = Array.from(document.getElementsByTagNameNS(W, carrier.name)).filter(e => e.getAttributeNS(W, "id") === carrier.id)
+      expect(actual).toHaveLength(1); expect(canonical(actual[0]!)).toBe(carrier.xml)
+    }
+    const originalIds = new Set(originalRevisions.map(r => r.id))
+    expect((await listedRevisions(bytes)).filter(r => originalIds.has(r.id))).toEqual(originalRevisions)
+    expect(readDocxComments(bytes).filter(c => originalComments.some(old => old.comment_id === c.comment_id))).toEqual(originalComments)
+    if (!preview) for (const name of ["word/comments.xml", "word/commentsExtended.xml", "word/people.xml"])
+      expect(canonical(parse(bytes, name).documentElement)).toBe(canonical(parse(source, name).documentElement))
+  }
+  const hyperlink = (bytes:Uint8Array) => {
+    const links = Array.from(parse(bytes).getElementsByTagNameNS(W, "hyperlink"))
+    expect(links).toHaveLength(1)
+    const actual = links[0]!
+    expect(Array.from(actual.attributes).map(a => [a.namespaceURI, a.localName, a.value])).toEqual([[R, "id", "rId4"]])
+    const relationship = Array.from(parse(bytes, "word/_rels/document.xml.rels").getElementsByTagNameNS(PR, "Relationship")).filter(e => e.getAttribute("Id") === "rId4")
+    expect(relationship).toHaveLength(1)
+    expect([relationship[0]!.getAttribute("Type"), relationship[0]!.getAttribute("Target"), relationship[0]!.getAttribute("TargetMode")]).toEqual([`${R}/hyperlink`, url, "External"])
+    const runs = Array.from(actual.getElementsByTagNameNS(W, "r"))
+    expect(runs[0]!.textContent).toBe("the ")
+    expect(canonical(runs[0]!.getElementsByTagNameNS(W, "rPr")[0]!)).toBe(canonical(originalLinkRuns[0]!.getElementsByTagNameNS(W, "rPr")[0]!))
+    for (const run of runs.slice(1)) {
+      expect(canonical(run.getElementsByTagNameNS(W, "rPr")[0]!)).toBe(canonical(originalLinkRuns[1]!.getElementsByTagNameNS(W, "rPr")[0]!))
+    }
+    return actual
+  }
+  try {
+    await ingest.start("multi-run-link")
+    const matter = await ingest.matter("Synthetic multi-run linked jurisdiction")
+    expect((await ingest.request(`${matter.route}/documents`, { method: "POST", body: wordForm(source) })).status).toBe(200)
+    const prepared = await matter.prepare("Change Province to State inside the governing law link and retain records for six months. Preserve the link and its formatting.")
+    expect(prepared.status).toBe(200)
+    const result = await prepared.json() as { proposed:number; redline_ids:number[]; open_items:string[] }
+    expect(result).toMatchObject({ proposed: 2, open_items: [] })
+    expect(engine.prompts).toHaveLength(2)
+    expect(matter.bindings(result.redline_ids).every(b => b.version === 2 && b.base_sha256 === sha256(source))).toBe(true)
+    expect(await Bun.file(matter.file).bytes()).toEqual(source)
+    const previewResponse = await ingest.request(`${matter.route}/documents/redlined?name=working.docx`)
+    expect(previewResponse.status).toBe(200)
+    const preview = new Uint8Array(await previewResponse.arrayBuffer())
+    await preserved(preview, true); hyperlink(preview)
+    expect(readDocxComments(preview).slice(originalComments.length).map(c => [c.text, c.markers[0]!.accepted_paragraph_text])).toEqual([
+      [changes[0]!.reason, "9. Governing law. This Agreement is governed by the law of the State."],
+      [changes[1]!.reason, "Records must be retained for six months."],
+    ])
+    expect(await Bun.file(matter.file).bytes()).toEqual(source)
+    expect(await matter.accept(result.redline_ids[0]!)).toBe(200)
+    expect(await matter.pending()).toEqual([[result.redline_ids[1], undefined, undefined]])
+    expect(await matter.accept(result.redline_ids[1]!)).toBe(200)
+    expect(await matter.pending()).toEqual([])
+    const accepted = await Bun.file(matter.file).bytes()
+    await preserved(accepted)
+    const acceptedLink = hyperlink(accepted), after = await listedRevisions(accepted)
+    expect(after.filter(r => !originalRevisions.some(old => old.id === r.id)).map(r => [r.author, r.type, r.text])).toEqual([
+      ["doc.haus", "delete", "Province"], ["doc.haus", "insert", "State"], ["doc.haus", "delete", "three"], ["doc.haus", "insert", "six"],
+    ])
+    const linkIds = new Set(["del", "ins"].flatMap(name => Array.from(acceptedLink.getElementsByTagNameNS(W, name)).map(e => {
+      const id = e.getAttributeNS(W, "id")
+      if (typeof id !== "string" || !id) throw new Error("Expected every hyperlink revision carrier to have an ID")
+      return id
+    })))
+    expect(linkIds.size).toBe(2)
+    // Decisions use the actual final artifact's native membership, not author or
+    // text search; resolving the link never resolves the independent safe edit.
+    for (const accept of [true, false]) {
+      const session = (await docxodus()).openDocxSession(new Uint8Array(accepted), { persistAnchorIds: false })
+      let decided:Uint8Array
+      try {
+        const selected = session.listRevisions().filter(r => r.constituentIds.some(id => linkIds.has(id)))
+        expect(selected).toHaveLength(2)
+        expect(new Set(selected.flatMap(r => r.constituentIds))).toEqual(linkIds)
+        for (const revision of selected) expect((accept ? session.acceptRevision(revision.id) : session.rejectRevision(revision.id)).success).toBe(true)
+        decided = session.save()
+        expect(await listedRevisions(decided)).toEqual(after.filter(r => !selected.some(s => s.id === r.id)))
+      } finally { session.close() }
+      await preserved(decided); hyperlink(decided)
+      const view = await createDocxRevision(decided, layer)
+      expect(view.paragraphs.map(p => p.text)).toEqual(sourceRevision.paragraphs.map((p, i) => i === lawOrdinal ? p.text.replace("Province", accept ? "State" : "Province")
+        : i === recordsOrdinal ? p.text.replace("three", "six") : p.text))
+    }
+    expect(await Bun.file(matter.file).bytes()).toEqual(accepted)
+  } finally { await ingest.stop(); engine.server.stop(true); await rm(temporary, { recursive: true, force: true }) }
+}, 120000)
+
 test("Prepare reports unsupported association wrappers as an open item without a correction call", async () => {
   const base = (await renderMarkdownToDocx("Monday [VALUE](https://example.invalid/one)" )).bytes
   for (const wrapped of [false, true]) {
