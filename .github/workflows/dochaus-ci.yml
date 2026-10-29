@@ -137,6 +137,10 @@ jobs:
         run: |
           bun test src/preferences.test.ts --timeout 30000
           bun test src/engine-config.test.ts src/setup.test.ts src/research-connections.test.ts src/auth-reuse.test.ts src/identifiers.test.ts src/source-artifacts.test.ts src/playbook-library.test.ts src/matter.test.ts src/matter-http.test.ts --timeout 30000
+      - name: Test chronology, source identity and Markdown indexing
+        working-directory: services/ingest
+        # Independent synthetic sources and scripted model jobs; no paid provider.
+        run: bun test src/chronology-*.test.ts src/db-source-identity.test.ts src/markdown-source.test.ts src/source-index-consistency.test.ts --timeout 30000
       - name: Test combined provider setup save and rollback
         working-directory: services/ingest
         run: bun test src/provider-setup.test.ts --timeout 30000
