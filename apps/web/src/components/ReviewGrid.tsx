@@ -1,8 +1,9 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { SplitButton } from "./SplitButton"
 import { createPortal } from "react-dom"
+import { UNSAFE_DataRouterContext, useBlocker } from "react-router-dom"
 import { computeCell, describeRecheck, needsFill } from "../api/review-recheck"
-import { cellKey, checkCellSources, getGrid, hashQuestion, isStale, recheckPassages, saveGrid, type Grid, type GridCellData, type SourceCheck } from "../api/ingest/grid"
+import { cellKey, checkCellSources, getGrid, GridConflictError, hashQuestion, isStale, recheckPassages, saveGrid, type Grid, type GridCellData, type SourceCheck } from "../api/ingest/grid"
 import { humanizeError } from "../api/ingest/errors"
 import { getPreferences } from "../api/ingest/preferences"
 import type { Document } from "../api/ingest/documents"
@@ -17,6 +18,7 @@ import useExit, { Closing, Exit } from "./useExit"
 import DocumentViewer from "./DocumentViewer"
 import { citationDocument } from "./citation-target"
 import { WordWarning } from "./WordDocuments"
+import useReviewGridPresence from "./useReviewGridPresence"
 
 // Tabular review: rows are the matter's documents, columns are natural-language
 // questions, each cell is an extracted answer with a source citation. The grid is
@@ -58,6 +60,18 @@ function cellQuestion(docName: string, question: string, cell: GridCellData, che
   ].join("\n")
 }
 
+// The production app uses a data router. Keep this separate so component-only
+// harnesses without a router can still mount the review table.
+function GridNavigationGuard({ canLeave, bypass }: { canLeave: () => boolean; bypass: React.RefObject<boolean> }) {
+  const blocker = useBlocker(({ currentLocation, nextLocation }) => {
+    if (bypass.current) return false
+    if (currentLocation.pathname === nextLocation.pathname && new URLSearchParams(nextLocation.search).get("view") === "review") return false
+    return !canLeave()
+  })
+  useEffect(() => { if (blocker.state === "blocked") blocker.reset() }, [blocker])
+  return null
+}
+
 export default function ReviewGrid({ matterId, title, directory, documents, onClose, onAsk }: { matterId: string; title: string; directory: string; documents: Document[]; onClose: () => void; onAsk?: (prompt: string) => void }) {
   const closing = useContext(Closing)
   const dialog = useRef<HTMLDialogElement>(null)
@@ -73,6 +87,15 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   const [grid, setGrid] = useState<Grid>({ columns: [], cells: {} })
   const gridRef = useRef<Grid>(grid)
   const [error, setError] = useState<string>()
+  const [loaded, setLoaded] = useState(false)
+  const [saveProblem, setSaveProblem] = useState<string>()
+  const [reloading, setReloading] = useState(false)
+  const reloadInFlight = useRef(false)
+  const bypassNavigation = useRef(false)
+  const dataRouter = useContext(UNSAFE_DataRouterContext)
+  const saveState = useRef<{ version: number; pending: boolean; saving: boolean; blocked: boolean; epoch: number; queue: Grid[] }>({ version: 0, pending: false, saving: false, blocked: false, epoch: 0, queue: [] })
+  const otherWindow = useReviewGridPresence(directory, matterId)
+  const canEdit = loaded && !saveProblem
   const [running, setRunning] = useState(0) // cells currently extracting
   // The detail overlay identifies its cell by key and reads it live from `grid`,
   // so the comment thread updates in place as comments are added or removed.
@@ -145,9 +168,28 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   }, [detail])
 
   useEffect(() => {
-    getGrid(matterId).then((g) => commit(g)).catch((e) => setError(humanizeError(e)))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    let cancelled = false
+    setLoaded(false)
+    getGrid(matterId).then((g) => {
+      if (cancelled) return
+      gridRef.current = g
+      setGrid(g)
+      saveState.current = { version: g.version ?? 0, pending: false, saving: false, blocked: false, epoch: saveState.current.epoch + 1, queue: [] }
+      setLoaded(true)
+    }).catch((e) => !cancelled && setError(humanizeError(e)))
+    return () => { cancelled = true; saveState.current.epoch++ }
   }, [matterId])
+
+  // A failed or in-flight save is not safely disposable just because the tab is closed.
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (!saveState.current.pending && !saveState.current.saving && !running && !commentSaving && !draft.trim()) return
+      event.preventDefault()
+      event.returnValue = ""
+    }
+    window.addEventListener("beforeunload", warn)
+    return () => window.removeEventListener("beforeunload", warn)
+  }, [running, commentSaving, draft])
 
   // Check each cited cell's excerpt against its document's current text
   // whenever the set of citations changes. Read-only: a verdict never edits a cell.
@@ -162,12 +204,101 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [matterId, sourcesKey, sourceRound])
 
-  // One writer for both state and the server, so concurrent cell completions
-  // merge against the latest grid (each call reads+writes gridRef synchronously).
+  // Serialize whole-grid saves. A failed response can be ambiguous (the server
+  // might have written it), so stop and keep the local copy for explicit recovery.
+  async function flush() {
+    const state = saveState.current
+    if (state.saving || state.blocked || !state.pending) return
+    state.saving = true
+    const epoch = state.epoch
+    while (state.queue.length && !state.blocked && state.epoch === epoch) {
+      const queued = state.queue.shift()!
+      state.pending = state.queue.length > 0
+      const snapshot = { ...queued, version: state.version }
+      try {
+        const saved = await saveGrid(matterId, snapshot)
+        if (state.epoch !== epoch) break
+        state.version = saved.version ?? state.version + 1
+        gridRef.current = { ...gridRef.current, version: state.version }
+        setGrid(gridRef.current)
+      } catch (e) {
+        if (state.epoch !== epoch) break
+        state.queue.unshift(queued)
+        state.pending = true
+        state.blocked = true
+        setSaveProblem(e instanceof GridConflictError
+          ? "This table conflicts with the saved table. Your changes are still shown here and have not been saved. Extractions in progress may need to be run again after reloading."
+          : "The table could not be saved. Your changes are still shown here; the save may or may not have reached the server. Extractions in progress may need to be run again after reloading.")
+      }
+    }
+    state.saving = false
+  }
+
+  // One local writer for concurrent cell completions and user changes.
   function commit(next: Grid) {
+    if (!loaded || saveState.current.blocked) return
     gridRef.current = next
     setGrid(next)
-    saveGrid(matterId, next).catch((e) => setError(humanizeError(e)))
+    saveState.current.pending = true
+    // Keep each intentional transition, including an unlock before a later
+    // edit, so the server can distinguish it from replacing a reviewed cell.
+    saveState.current.queue.push(next)
+    void flush()
+  }
+
+  async function reloadGrid() {
+    if (reloadInFlight.current) return
+    if (!window.confirm("Reload the saved table? Your unsaved changes in this window will be discarded. You can download a copy first.")) return
+    reloadInFlight.current = true
+    setReloading(true)
+    const state = saveState.current
+    const epoch = state.epoch
+    let completed = false
+    try {
+      const latest = await getGrid(matterId)
+      if (saveState.current !== state || state.epoch !== epoch) return
+      state.epoch++
+      completed = true
+      state.version = latest.version ?? 0
+      state.pending = false
+      state.queue = []
+      state.blocked = false
+      state.saving = false
+      gridRef.current = latest
+      setGrid(latest)
+      setDetail(undefined)
+      setDraft("")
+      setSaveProblem(undefined)
+      setError(undefined)
+    } catch (e) {
+      if (saveState.current === state && state.epoch === epoch) setError(humanizeError(e, "Could not reload the review table."))
+    } finally {
+      reloadInFlight.current = false
+      if (saveState.current === state && state.epoch === epoch + (completed ? 1 : 0)) setReloading(false)
+    }
+  }
+
+  function downloadPending() {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(gridRef.current, null, 2)], { type: "application/json" }))
+    const link = document.createElement("a")
+    link.href = url
+    link.download = "review-table-unsaved.json"
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function canLeaveGrid() {
+    const state = saveState.current
+    return !(state.pending || state.saving || running || commentSaving || draft.trim()) || window.confirm("There are unsaved changes or work in progress. Leave the review table anyway?")
+  }
+
+  function closeGrid() {
+    if (canLeaveGrid()) allowNavigation(onClose)
+  }
+
+  function allowNavigation(action: () => void) {
+    bypassNavigation.current = true
+    try { action() } finally { queueMicrotask(() => { bypassNavigation.current = false }) }
   }
 
   function commitCell(key: string, data: GridCellData) {
@@ -190,7 +321,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   function deleteColumn(id: string) {
     const cells = { ...gridRef.current.cells }
     for (const doc of documents) delete cells[cellKey(doc.name, id)]
-    commit({ columns: gridRef.current.columns.filter((c) => c.id !== id), cells })
+    commit({ ...gridRef.current, columns: gridRef.current.columns.filter((c) => c.id !== id), cells })
     dialog.current?.querySelector<HTMLButtonElement>(".review-add-button")?.focus()
   }
 
@@ -206,6 +337,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
     const key = cellKey(detail.docName, detail.columnId)
     const submitted = draft
     const at = Date.now()
+    const epoch = saveState.current.epoch
     setCommentSaving(true)
     try {
       // Read at creation, rather than labeling stored comments with a name
@@ -213,7 +345,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
       // settings) leaves an honest, unattributed comment.
       const author = await getPreferences().then((prefs) => prefs.attorney?.trim() || undefined, () => undefined)
       const cell = gridRef.current.cells[key]
-      if (!cell) return
+      if (!cell || saveState.current.blocked || saveState.current.epoch !== epoch) return
       commitCell(key, {
         ...cell,
         comments: [...(cell.comments ?? []), { id: crypto.randomUUID().slice(0, 6), text, at, ...(author ? { author } : {}) }],
@@ -257,17 +389,31 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   // Run a set of (document, column) targets through a small concurrency pool so a
   // large grid does not open hundreds of sessions at once.
   async function fill(targets: Array<{ docName: string; column: { id: string; question: string } }>) {
-    if (targets.length === 0) return
+    if (targets.length === 0 || !loaded || saveState.current.blocked) return
     setError(undefined)
     setRunning((n) => n + targets.length)
+    const fillEpoch = saveState.current.epoch
     let next = 0
     const worker = async () => {
       while (next < targets.length) {
         const t = targets[next++]
+        const key = cellKey(t.docName, t.column.id)
+        const original = gridRef.current.cells[key]
+        const initialColumn = gridRef.current.columns.find((col) => col.id === t.column.id)
+        // Comments can be added during extraction. Compare all other cell data,
+        // and carry the newest comments forward if the result is still applicable.
+        const withoutComments = (cell: GridCellData | undefined) => {
+          if (!cell) return undefined
+          const { comments: _, ...rest } = cell
+          return JSON.stringify(rest)
+        }
         try {
+          if (saveState.current.epoch !== fillEpoch || saveState.current.blocked || !initialColumn || initialColumn.question !== t.column.question || original?.status === "reviewed") continue
           const data = await extract(t.docName, t.column.question)
-          const key = cellKey(t.docName, t.column.id)
-          commitCell(key, { ...data, comments: gridRef.current.cells[key]?.comments })
+          const current = gridRef.current.cells[key]
+          const column = gridRef.current.columns.find((col) => col.id === t.column.id)
+          if (saveState.current.epoch !== fillEpoch || saveState.current.blocked || !column || column.question !== t.column.question || current?.status === "reviewed" || withoutComments(current) !== withoutComments(original)) continue
+          commitCell(key, { ...data, comments: current?.comments })
         } catch (error) {
           setError(humanizeError(error, "Extraction failed. Try the unfinished cells again."))
         } finally {
@@ -318,15 +464,17 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
       className={`viewer-panel review-modal${closing ? " is-closing" : ""}`}
       inert={closing}
       aria-label={`Review table — ${title}`}
-      onCancel={(event) => { event.preventDefault(); detail ? setDetail(undefined) : onClose() }}
+      onCancel={(event) => { event.preventDefault(); detail ? setDetail(undefined) : closeGrid() }}
       {...backdropClose((event) => {
         const bounds = event.currentTarget.getBoundingClientRect()
-        if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose()
+        if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) closeGrid()
       })}
     >
-      <ModalHeader title={`Review table — ${title}`} onClose={() => detail ? setDetail(undefined) : onClose()} />
+      <ModalHeader title={`Review table — ${title}`} onClose={() => detail ? setDetail(undefined) : closeGrid()} />
+      {dataRouter && <GridNavigationGuard canLeave={canLeaveGrid} bypass={bypassNavigation} />}
       <div className="card review">
         <WordWarning />
+        {otherWindow && <p role="status">This review table is open in another window.</p>}
         <div className="row review-toolbar">
           <div>
             <span className="review-summary">
@@ -335,7 +483,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
           </div>
           <div className="row" style={{ gap: 8 }}>
             {running > 0 && <span className="review-running" role="status">Extracting {running}</span>}
-            <button className="primary" onClick={fillEmpty} disabled={documents.length === 0 || grid.columns.length === 0 || running > 0}>
+            <button className="primary" onClick={fillEmpty} disabled={!canEdit || documents.length === 0 || grid.columns.length === 0 || running > 0}>
               Fill empty
             </button>
             <SplitButton
@@ -352,6 +500,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
         </div>
 
         {error && <p role="alert">{error}</p>}
+        {saveProblem && <div role="alert"><p>{saveProblem}</p><p>Export the table above or download your local copy before reloading the saved table.</p><button type="button" onClick={downloadPending}>Download unsaved copy</button> <button type="button" disabled={reloading} onClick={reloadGrid}>{reloading ? "Reloading…" : "Reload saved table"}</button></div>}
 
         {grid.columns.length === 0 && (
           <p className="review-hint">Use + to add a question for every document.</p>
@@ -364,17 +513,17 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                 {grid.columns.map((col) => (
                   <th key={col.id} scope="col">
                     <div className="review-col-head">
-                      <button className="review-col-q" onClick={() => renameColumn(col.id)} aria-label={`Edit question: ${col.question}`} title="Edit question">
+                      <button className="review-col-q" disabled={!canEdit} onClick={() => renameColumn(col.id)} aria-label={`Edit question: ${col.question}`} title="Edit question">
                         {col.question}
                       </button>
-                      <button className="icon-btn review-col-x" onClick={() => deleteColumn(col.id)} aria-label={`Delete column: ${col.question}`} title="Delete column">
+                      <button className="icon-btn review-col-x" disabled={!canEdit} onClick={() => deleteColumn(col.id)} aria-label={`Delete column: ${col.question}`} title="Delete column">
                         ×
                       </button>
                     </div>
                   </th>
                 ))}
                 <th className="review-add-col" scope="col">
-                  <button className="review-add-button" type="button" onClick={addColumn} aria-label="Add column" title="Add column">
+                  <button className="review-add-button" type="button" disabled={!canEdit} onClick={addColumn} aria-label="Add column" title="Add column">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" aria-hidden="true">
                       <path d="M12 5v14M5 12h14" />
                     </svg>
@@ -397,7 +546,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                         {!cell ? (
                           <button
                             className="review-cell-fill"
-                            disabled={running > 0}
+                            disabled={!canEdit || running > 0}
                             onClick={() => fill([{ docName: doc.name, column: col }])}
                           >
                             Fill
@@ -449,11 +598,11 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                                 {cell.comments?.length ?? 0}
                               </button>
                               {stale && <span className="review-stale" title="Question changed since this answer">stale</span>}
-                              <button className={`icon-btn review-lock${cell.status === "reviewed" ? " locked" : ""}`} aria-pressed={cell.status === "reviewed"} title={cell.status === "reviewed" ? "Unlock" : "Mark reviewed"} onClick={() => toggleReviewed(key)}>
+                              <button className={`icon-btn review-lock${cell.status === "reviewed" ? " locked" : ""}`} disabled={!canEdit} aria-pressed={cell.status === "reviewed"} title={cell.status === "reviewed" ? "Unlock" : "Mark reviewed"} onClick={() => toggleReviewed(key)}>
                                 {cell.status === "reviewed" ? "Locked" : "Lock"}
                               </button>
                               {cell.status !== "reviewed" && (
-                                <button className="icon-btn" title="Re-run this cell" disabled={running > 0} onClick={() => fill([{ docName: doc.name, column: col }])}>
+                                <button className="icon-btn" title="Re-run this cell" disabled={!canEdit || running > 0} onClick={() => fill([{ docName: doc.name, column: col }])}>
                                   Refresh
                                 </button>
                               )}
@@ -522,7 +671,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                 })()}
                 {onAsk && (
                   <div className="review-ask">
-                    <button type="button" onClick={() => onAsk(cellQuestion(detailShown.docName, detailShown.question, detailCell, detailKey ? sourceCheck(detailKey, detailCell) : undefined))}>
+                    <button type="button" onClick={() => { if (canLeaveGrid()) allowNavigation(() => onAsk(cellQuestion(detailShown.docName, detailShown.question, detailCell, detailKey ? sourceCheck(detailKey, detailCell) : undefined))) }}>
                       Ask about this answer in chat
                     </button>
                   </div>
@@ -532,7 +681,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                     <div key={c.id} className="review-comment">
                       <div className="review-comment-meta">
                         <span><strong>{c.author || "Unattributed"}</strong><span className="muted"> · {formatDateTime(c.at)}</span></span>
-                        <button className="icon-btn" aria-label="Delete comment" title="Delete comment" onClick={() => deleteComment(c.id)}>
+                        <button className="icon-btn" disabled={!canEdit} aria-label="Delete comment" title="Delete comment" onClick={() => deleteComment(c.id)}>
                           ×
                         </button>
                       </div>
@@ -543,7 +692,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                   <div className="review-comment-compose">
                     <textarea
                       value={draft}
-                      readOnly={commentSaving}
+                      readOnly={commentSaving || !canEdit}
                       aria-label="Add a comment"
                       placeholder="Add a comment..."
                       onChange={(e) => setDraft(e.target.value)}
@@ -554,7 +703,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                         }
                       }}
                     />
-                    <button className="primary" onClick={addComment} disabled={!draft.trim() || commentSaving}>
+                    <button className="primary" onClick={addComment} disabled={!canEdit || !draft.trim() || commentSaving}>
                       {commentSaving ? "Adding comment…" : "Add comment"}
                     </button>
                   </div>

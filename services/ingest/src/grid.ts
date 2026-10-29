@@ -1,6 +1,9 @@
 import { Database } from "bun:sqlite"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync } from "node:fs"
 import path from "node:path"
+import { isDeepStrictEqual } from "node:util"
+import { withArtifactMutationLock } from "../../../dochaus/capabilities/artifacts/mutation-lock"
+import { writeDurableJson } from "../../../dochaus/lib/durable-json"
 import { verifyCitation } from "../../../dochaus/plugin/legal/citations"
 import { degradedExtractions, formatCitations } from "../../../dochaus/lib/citations"
 import { indexIsContained, lexicalChannel, phraseChannel, type ChunkRow } from "../../../dochaus/lib/search/channels"
@@ -8,7 +11,8 @@ import { indexIsContained, lexicalChannel, phraseChannel, type ChunkRow } from "
 // The tabular-review grid for a matter. Persisted as a single JSON file next to
 // the matter's retrieval index (`<matter>/.dochaus/grid.json`) so the review
 // work product lives with the documents it summarizes and survives across
-// devices and sessions. The web app owns the merge; this service just persists.
+// devices and sessions. The web app owns conflict resolution; this service
+// atomically replaces the file only if its version is still current.
 //
 // Rows are NOT stored here — they are the matter's documents, enumerated live
 // from the index. We store the columns (the questions) and the computed cells.
@@ -50,7 +54,7 @@ export type GridRecheck = { outcome: "found" | "not_found" } & RecheckScope
 export type RecheckScope = { passages: number; read: number; candidates: number; reread: number; terms: string[]; channels: string[] }
 
 // Cells are keyed `<documentName>::<columnId>`.
-export type Grid = { columns: GridColumn[]; cells: Record<string, GridCell> }
+export type Grid = { version: number; columns: GridColumn[]; cells: Record<string, GridCell> }
 
 function gridFile(matterDir: string) {
   return path.join(matterDir, ".dochaus", "grid.json")
@@ -58,13 +62,61 @@ function gridFile(matterDir: string) {
 
 export function readGrid(matterDir: string): Grid {
   const file = gridFile(matterDir)
-  if (!existsSync(file)) return { columns: [], cells: {} }
-  return JSON.parse(readFileSync(file, "utf8")) as Grid
+  if (!existsSync(file)) return { version: 0, columns: [], cells: {} }
+  const grid = JSON.parse(readFileSync(file, "utf8")) as Grid
+  // Existing files predate versioning. Never reset an invalid stored version:
+  // doing so could make a stale request look current.
+  if (grid.version === undefined) return { ...grid, version: 0 }
+  if (!Number.isSafeInteger(grid.version) || grid.version < 0) throw new Error("The review table has an invalid version.")
+  return grid
 }
 
-export function writeGrid(matterDir: string, grid: Grid) {
+const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value)
+
+// Check the structure used by the grid before replacing the work product.
+// Additional fields are retained for forward and backward compatibility.
+export function gridRequest(value: unknown): Grid | undefined {
+  if (!record(value) || !Number.isSafeInteger(value.version) || (value.version as number) < 0 || (value.version as number) >= Number.MAX_SAFE_INTEGER) return
+  if (!Array.isArray(value.columns) || !record(value.cells)) return
+  const ids = new Set<string>()
+  for (const column of value.columns) {
+    if (!record(column) || typeof column.id !== "string" || !column.id || typeof column.question !== "string" || ids.has(column.id)) return
+    ids.add(column.id)
+  }
+  for (const cell of Object.values(value.cells)) {
+    if (!record(cell) || typeof cell.answer !== "string" || typeof cell.questionHash !== "string" || (cell.status !== "filled" && cell.status !== "reviewed")) return
+    if (cell.comments !== undefined && (!Array.isArray(cell.comments) || cell.comments.some((c: unknown) => !record(c) || typeof c.id !== "string" || typeof c.text !== "string" || typeof c.at !== "number" || !Number.isFinite(c.at) || (c.author !== undefined && typeof c.author !== "string")))) return
+    if (cell.citation !== undefined && (!record(cell.citation) || typeof cell.citation.documentName !== "string" || typeof cell.citation.docPath !== "string" || typeof cell.citation.section !== "string" || typeof cell.citation.excerpt !== "string" || !Number.isInteger(cell.citation.charStart) || !Number.isInteger(cell.citation.charEnd) || (cell.citation.structuralPath !== undefined && typeof cell.citation.structuralPath !== "string"))) return
+    if (cell.recheck !== undefined && (!record(cell.recheck) || (cell.recheck.outcome !== "found" && cell.recheck.outcome !== "not_found") || ![cell.recheck.passages, cell.recheck.read, cell.recheck.candidates, cell.recheck.reread].every((n) => Number.isSafeInteger(n) && (n as number) >= 0) || !Array.isArray(cell.recheck.terms) || !cell.recheck.terms.every((term: unknown) => typeof term === "string") || !Array.isArray(cell.recheck.channels) || !cell.recheck.channels.every((channel: unknown) => typeof channel === "string"))) return
+  }
+  return value as Grid
+}
+
+export function writeGrid(matterDir: string, grid: Grid): { ok: true; grid: Grid } | { ok: false; grid: Grid; error: string } {
   mkdirSync(path.join(matterDir, ".dochaus"), { recursive: true })
-  writeFileSync(gridFile(matterDir), JSON.stringify(grid, null, 2))
+  return withArtifactMutationLock(matterDir, ".dochaus/grid.json", () => {
+    const current = readGrid(matterDir)
+    if (grid.version !== current.version) return { ok: false, grid: current, error: "The review table has changed since it was opened." }
+    for (const [key, oldCell] of Object.entries(current.cells)) {
+      if (oldCell.status !== "reviewed") continue
+      const nextCell = grid.cells[key]
+      const column = current.columns.find((candidate) => key.endsWith(`::${candidate.id}`))
+      if (!nextCell) {
+        if (column && grid.columns.some((candidate) => candidate.id === column.id)) return { ok: false, grid: current, error: "A reviewed answer cannot be removed until it is unreviewed." }
+        continue // Deleting the question also deletes its cells.
+      }
+      // A reviewed answer may receive comments, and an explicit un-review
+      // changes status alone. A new extraction cannot change its contents or
+      // clear its sign-off by sending a different unreviewed answer.
+      const { status: _oldStatus, comments: oldComments, ...oldContent } = oldCell
+      const { status: _nextStatus, comments: nextComments, ...nextContent } = nextCell
+      if (!isDeepStrictEqual(oldContent, nextContent) || (nextCell.status === "filled" && !isDeepStrictEqual(oldComments, nextComments)))
+        return { ok: false, grid: current, error: "A reviewed answer cannot be replaced until it is unreviewed." }
+    }
+    const saved = { ...grid, version: current.version + 1 }
+    writeDurableJson(gridFile(matterDir), saved)
+    return { ok: true, grid: saved }
+  })
 }
 
 // --- Source check of cited cells -------------------------------------------
