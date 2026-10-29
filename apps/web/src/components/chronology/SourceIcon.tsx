@@ -1,6 +1,6 @@
 /** A source format icon is descriptive, with no credibility or privilege meaning. */
 export default function SourceIcon({ name = "", kind = "" }: { name?: string; kind?: string }) {
-  const email = /\.(eml|msg)$/i.test(name) || /\b(email|e-mail|correspondence)\b/i.test(kind)
+  const email = /\.(eml|msg)$/i.test(name) || (!name && /\b(email|e-mail|correspondence)\b/i.test(kind))
   const sheet = /\.xlsx$/i.test(name)
   return (
     <svg
