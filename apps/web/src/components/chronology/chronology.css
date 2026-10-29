@@ -123,10 +123,6 @@
 .chronology-main {
   min-width: 0;
 }
-.chronology-workbench.has-selection .chronology-content {
-  grid-template-columns: minmax(0, 1fr) minmax(290px, 35%);
-  gap: 24px;
-}
 .chronology-search-row {
   display: flex;
   align-items: center;
@@ -159,8 +155,8 @@
 .chronology-dialog textarea {
   resize: vertical;
 }
-.chronology-workbench label:not(.chronology-check),
-.chronology-dialog label:not(.chronology-check) {
+.chronology-workbench label:not(.chronology-check):not(.jx-option),
+.chronology-dialog label:not(.chronology-check):not(.jx-option) {
   display: grid;
   gap: 5px;
   font-size: 12px;
@@ -504,9 +500,6 @@
   font: 13px/1.6 var(--font-sans, system-ui, sans-serif);
   box-shadow: 0 16px 80px #15291c33;
 }
-.chronology-dialog::backdrop {
-  background: #15291c55;
-}
 .chronology-dialog > div {
   max-height: inherit;
   display: flex;
@@ -600,10 +593,6 @@
   box-shadow: 0 6px 20px #15291c15;
 }
 @media (max-width: 1100px) {
-  .chronology-workbench.has-selection .chronology-content {
-    grid-template-columns: minmax(0, 1fr) minmax(275px, 43%);
-    gap: 16px;
-  }
   .chronology-event-table th:nth-child(3),
   .chronology-event-table td:nth-child(3) {
     width: 17%;
@@ -621,12 +610,6 @@
   }
   .chronology-head > .chronology-inline {
     width: 100%;
-  }
-  .chronology-workbench.has-selection .chronology-content {
-    display: block;
-  }
-  .chronology-workbench.has-selection .chronology-main {
-    display: none;
   }
   .chronology-event-table th:nth-child(1) {
     width: 20%;
@@ -862,30 +845,6 @@
 .chronology-filters {
   background: #f6f6f8;
 }
-/* The saved evidence column starts beside the heading, as in the reference,
-   rather than being pushed below the toolbar and processing information. */
-@media (min-width: 801px) {
-  .chronology-workbench.has-selection {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 370px;
-    column-gap: 24px;
-    align-content: start;
-    padding-right: 18px;
-  }
-  .chronology-workbench.has-selection > * {
-    grid-column: 1;
-  }
-  .chronology-workbench.has-selection .chronology-content {
-    display: contents;
-  }
-  .chronology-workbench.has-selection .chronology-main {
-    grid-column: 1;
-  }
-  .chronology-workbench.has-selection .chronology-detail {
-    grid-column: 2;
-    grid-row: 1 / span 20;
-  }
-}
 .shell-matter:has(.chronology-workbench) .sidebar {
   background: #f8f7f6;
   border-color: #e6e5e7;
@@ -897,30 +856,7 @@
   font-weight: 500;
   box-shadow: inset 2px 0 #3668bc;
 }
-@media (max-width: 1100px) and (min-width: 801px) {
-  .chronology-workbench.has-selection {
-    grid-template-columns: minmax(0, 1fr) 310px;
-    column-gap: 16px;
-    padding-left: 20px;
-  }
-  .chronology-workbench.has-selection .chronology-head {
-    display: block;
-  }
-  .chronology-workbench.has-selection .chronology-head > .chronology-inline {
-    margin-top: 10px;
-  }
-  .chronology-workbench.has-selection .chronology-sort {
-    flex-basis: 132px;
-  }
-  .chronology-workbench.has-selection .chronology-event-table {
-    min-width: 580px;
-  }
-}
 @media (max-width: 800px) {
-  .chronology-workbench.has-selection .chronology-head,
-  .chronology-workbench.has-selection .chronology-counters {
-    display: none;
-  }
   .chronology-sort {
     flex-basis: 140px;
   }
@@ -937,6 +873,7 @@
 
 .chronology-workbench-menu {
   position: relative;
+  margin-left: auto;
 }
 .chronology-workbench-menu > summary {
   display: flex;
@@ -954,6 +891,8 @@
   display: none;
 }
 .chronology-workbench-menu > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   position: absolute;
   right: 0;
   top: calc(100% + 6px);
@@ -963,16 +902,26 @@
   border-radius: 6px;
   background: white;
   box-shadow: 0 5px 20px #18223812;
-  white-space: nowrap;
+  width: max-content;
+  min-width: 220px;
+  max-width: calc(100vw - 24px);
+  box-sizing: border-box;
+  white-space: normal;
 }
 .chronology-workbench .chronology-workbench-menu button {
+  display: block;
   border: 0;
   width: 100%;
   text-align: left;
+  min-height: 40px;
+  overflow-wrap: anywhere;
 }
 @media (max-width: 800px) {
   .chronology-workbench-menu > summary {
     min-width: 44px;
+    min-height: 44px;
+  }
+  .chronology-workbench .chronology-workbench-menu button {
     min-height: 44px;
   }
 }
@@ -996,4 +945,9 @@
     flex: 1;
     align-self: stretch;
   }
+}
+
+.chronology-dialog details[open] > label,
+.chronology-dialog details[open] > .chronology-form-grid {
+  margin-top: 12px;
 }

@@ -11,8 +11,7 @@ export default function ChronologyDialog({
   children: ReactNode
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
-  const panel = useRef<HTMLDivElement>(null)
-  useModalFocus(panel)
+  useModalFocus(dialog)
   useLayoutEffect(() => {
     dialog.current?.showModal()
     return () => dialog.current?.close()
@@ -28,7 +27,7 @@ export default function ChronologyDialog({
         onClose()
       }}
     >
-      <div ref={panel}>
+      <div>
         <ModalHeader title={title} onClose={onClose} />
         <div className="chronology-dialog-body">{children}</div>
       </div>

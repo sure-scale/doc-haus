@@ -373,3 +373,63 @@
     margin-left: auto;
   }
 }
+
+/* Portaled above the canvas so date help is never cut by horizontal scrolling. */
+.chronology-marker-tooltip {
+  position: fixed;
+  z-index: var(--z-popover, 60);
+  box-sizing: border-box;
+  width: max-content;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 10px 12px;
+  border: 1px solid #e3e6ec;
+  border-radius: 7px;
+  background: #fff;
+  color: #182238;
+  box-shadow: 0 5px 20px #18223818;
+  font-family: var(--font-sans, sans-serif);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.chronology-marker-tooltip > strong,
+.chronology-marker-tooltip > span,
+.chronology-marker-tooltip small,
+.chronology-marker-tooltip li > span {
+  display: block;
+}
+.chronology-marker-tooltip > strong,
+.chronology-marker-tooltip-date {
+  font-size: 11px;
+  font-weight: 600;
+}
+.chronology-marker-tooltip-title {
+  margin: 2px 0 5px;
+}
+.chronology-marker-tooltip small {
+  color: #697383;
+  font-size: 10px;
+}
+.chronology-marker-tooltip-period {
+  margin-top: 4px;
+}
+.chronology-marker-tooltip ul {
+  list-style: none;
+  padding: 0;
+  margin: 7px 0;
+}
+.chronology-marker-tooltip li + li {
+  border-top: 1px solid #eef0f3;
+  padding-top: 6px;
+  margin-top: 6px;
+}
+.chronology-marker-tooltip-more {
+  color: #697383;
+  font-size: 11px;
+}
+.chronology-marker-tooltip-hint {
+  color: #697383;
+  font-size: 10px;
+  margin-top: 6px;
+}

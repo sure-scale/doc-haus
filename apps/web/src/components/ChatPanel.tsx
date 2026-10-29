@@ -1,12 +1,25 @@
 import { useLibraryAttachments } from "./chat/use-library-attachments"
+import ChronologyReferenceCard from "./ChronologyReferenceCard"
+import {
+  addChronologyChatReference,
+  withChronologyChatReferences,
+  currentChronologyChatReferences,
+  type ChronologyChatReference,
+} from "./chronology/model"
 import { draftingUpdateAdmission } from "../../../../dochaus/lib/drafting-update-admission"
 import { furnitureLegend } from "../../../../dochaus/lib/furniture-legend"
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import type { CompareParams } from "../api/ingest/compare"
 import type { Document } from "../api/ingest/documents"
-import { removeLibraryAttachment, uploadLibraryAttachment, type LibraryAttachment, type LibraryAttachmentScope } from "../api/ingest/library"
+import { getChronology } from "../api/ingest/chronology"
+import {
+  removeLibraryAttachment,
+  uploadLibraryAttachment,
+  type LibraryAttachment,
+  type LibraryAttachmentScope,
+} from "../api/ingest/library"
 import type { LeanDraftingStatus } from "../api/ingest/lean"
-import { matterClient, type Client } from "../api/opencode/client"
+import { boundedRequest, matterClient, type Client } from "../api/opencode/client"
 import { CLIENT_SUMMARY, EXPLICIT_ONLY, QUICK_DRAFT, isAuto, type AssistantMeta, type WorkflowMeta } from "../agents"
 import { QUICK_BANNER, quickDraftAnswer } from "./chat/quick-draft"
 import { getPreferences } from "../api/ingest/preferences"
@@ -59,8 +72,8 @@ export default function ChatPanel({
   sessionID,
   created,
   initialPrompt,
-  chronologyContext,
-  onChronologyContextSeated,
+  chronologyReference,
+  onChronologyReferenceSeated,
   onPromptSeated,
   agent,
   available,
@@ -102,9 +115,9 @@ export default function ChatPanel({
   // A prompt to seat the composer with on a fresh chat (no session yet).
   // Prefilled, not auto-sent: the lawyer reviews and sends it.
   initialPrompt?: string
-  // Chronology context is appended to the existing draft, never sent automatically.
-  chronologyContext?: string
-  onChronologyContextSeated?: () => void
+  // Visible source snapshot included only on Send; never replaces the lawyer draft.
+  chronologyReference?: ChronologyChatReference
+  onChronologyReferenceSeated?: () => void
   // The surface clears its prompt link once seated. A prompt that arrives while
   // this chat is open is then seated here too, without a remount, when the
   // composer is empty; text the lawyer typed is never overwritten.
@@ -183,6 +196,25 @@ export default function ChatPanel({
   const formsRefreshRef = useRef<() => void>(() => {})
   const state = useChatState(sessionID)
   const [attachments, setAttachments] = useLibraryAttachments(directory, sessionID)
+  const [chronologyReferences, setChronologyReferences] = useState<ChronologyChatReference[]>([])
+  const scopedChronologyReferences = chronologyReferences.filter((reference) => reference.matterId === matterId)
+  const referenceRequests = useRef(
+    new Map<string, { draft: string; references: ChronologyChatReference[]; priorUserIds: Set<string> }>(),
+  )
+  const referenceSend = useRef<string | undefined>(undefined)
+  const [checkingReferences, setCheckingReferences] = useState(false)
+  const checkingReferencesRef = useRef(false)
+  const referenceScope = useRef({ matterId, input: state.input, references: scopedChronologyReferences })
+  referenceScope.current = { matterId, input: state.input, references: scopedChronologyReferences }
+
+  function clearSentReferences(references: ChronologyChatReference[]) {
+    setChronologyReferences((current) =>
+      current.filter(
+        (reference) => !references.some((sent) => sent.key === reference.key && sent.text === reference.text),
+      ),
+    )
+  }
+
   const [attaching, setAttaching] = useState(false)
   const attachmentInput = useRef<HTMLInputElement>(null)
   const settlement = useTurnSettlement({ state, client, matterName, matterId, directory, onSessionCreated })
@@ -231,7 +263,11 @@ export default function ChatPanel({
     workflows,
     onSessionPersisted,
     onSessionStarted,
-    onDraftingStarted: (owner, turn) => setDrafting({ owner, turn }),
+    onDraftingStarted: (owner, turn) => {
+      setDrafting({ owner, turn })
+      const request = referenceRequests.current.get(state.turns[turn]?.text ?? referenceSend.current ?? "")
+      if (request) clearSentReferences(request.references)
+    },
     sourceCount: documents?.filter((document) => document.role !== "deliverable").length,
   })
   const {
@@ -289,14 +325,99 @@ export default function ChatPanel({
     }
   }
 
+  async function checkedChronologyReferences(): Promise<ChronologyChatReference[] | undefined> {
+    const snapshot = referenceScope.current
+    if (!snapshot.references.length) return []
+    if (!snapshot.matterId || checkingReferencesRef.current) return
+    checkingReferencesRef.current = true
+    setCheckingReferences(true)
+    try {
+      const current = await boundedRequest(getChronology(snapshot.matterId), 5000, "Chronology reference check")
+      if (referenceScope.current.matterId !== snapshot.matterId) return
+      if (
+        referenceScope.current.input !== snapshot.input ||
+        JSON.stringify(referenceScope.current.references) !== JSON.stringify(snapshot.references)
+      ) {
+        toast("info", "Your message or references changed while the sources were checked. Review them and send again.")
+        return
+      }
+      const checked = currentChronologyChatReferences(snapshot.references, current, snapshot.matterId)
+      if (checked.changed || checked.proposalChanged) {
+        setChronologyReferences((current) => {
+          const next = current.flatMap((reference) => {
+            const update = checked.updates.find(
+              (update) => update.key === reference.key && update.originalText === reference.text,
+            )
+            return update ? (update.reference ? [update.reference] : []) : [reference]
+          })
+          return next.filter((reference, index) => next.findIndex((other) => other.key === reference.key) === index)
+        })
+        toast(
+          "info",
+          checked.removed
+            ? "A chronology entry is no longer available. Its reference was removed; your message was kept."
+            : checked.proposalChanged
+              ? "The proposal is no longer pending. The saved entry is shown; review it before sending."
+              : "The chronology evidence or review status changed. Updated references are shown; review them before sending.",
+        )
+        return
+      }
+      return checked.references
+    } catch (error) {
+      toast(
+        "error",
+        error instanceof Error
+          ? error.message
+          : "Could not confirm current chronology access. Your message and references were kept.",
+      )
+      return
+    } finally {
+      checkingReferencesRef.current = false
+      setCheckingReferences(false)
+    }
+  }
+
   async function sendWithAttachments() {
-    if (busy || attaching) return
-    if (!attachments.length) { await onSend(); return }
-    const references = attachments.map(({ name, source, original }) => `${JSON.stringify(name)}: extracted text ${JSON.stringify(source)}, original file ${JSON.stringify(original)}`).join("\n")
-    const message = `${input.trim()}\n\nAttached files (read the complete extracted text; the original file is available when needed):\n${references}`.trim()
-    await onSend(message, input,
-      () => setAttachments((current) => current.map((item) => ({ ...item, dispatched: true }))),
-      () => setAttachments([]))
+    if (busy || attaching || checkingReferencesRef.current) return
+    if (!attachments.length && !scopedChronologyReferences.length) {
+      await onSend()
+      return
+    }
+    const sentReferences = await checkedChronologyReferences()
+    if (!sentReferences) return
+    const references = attachments
+      .map(
+        ({ name, source, original }) =>
+          `${JSON.stringify(name)}: extracted text ${JSON.stringify(source)}, original file ${JSON.stringify(original)}`,
+      )
+      .join("\n")
+    const fileMessage = attachments.length
+      ? `${input.trim()}\n\nAttached files (read the complete extracted text; the original file is available when needed):\n${references}`.trim()
+      : input
+    const message = withChronologyChatReferences(fileMessage, sentReferences, matterId)
+    if (sentReferences.length) {
+      referenceRequests.current.set(message, {
+        draft: input,
+        references: sentReferences,
+        priorUserIds: new Set(turns.filter((turn) => turn.role === "user" && turn.id).map((turn) => turn.id!)),
+      })
+      if (referenceRequests.current.size > 20)
+        referenceRequests.current.delete(referenceRequests.current.keys().next().value!)
+      referenceSend.current = message
+    }
+    try {
+      await onSend(
+        message,
+        input,
+        () => setAttachments((current) => current.map((item) => ({ ...item, dispatched: true }))),
+        () => {
+          setAttachments([])
+          clearSentReferences(sentReferences)
+        },
+      )
+    } finally {
+      referenceSend.current = undefined
+    }
   }
   async function removeAttachment(attachment: LibraryAttachment) {
     if (!libraryAttachments) return
@@ -314,7 +435,11 @@ export default function ChatPanel({
   }
   useEffect(() => {
     if (!initialPrompt || (sessionID && !onPromptSeated)) return
-    if (input.trim() && input !== initialPrompt) toast("info", "Your unsent message was kept, so the suggested question was not added. Send or clear it, then try again.")
+    if (input.trim() && input !== initialPrompt)
+      toast(
+        "info",
+        "Your unsent message was kept, so the suggested question was not added. Send or clear it, then try again.",
+      )
     else {
       setInput(initialPrompt)
       inputRef.current?.focus({ preventScroll: true })
@@ -324,12 +449,36 @@ export default function ChatPanel({
   }, [initialPrompt])
 
   useEffect(() => {
-    if (!chronologyContext) return
-    setInput(current => current.trim() ? `${current}\n\n${chronologyContext}` : chronologyContext)
-    inputRef.current?.focus({ preventScroll: true })
-    onChronologyContextSeated?.()
+    setChronologyReferences((current) => current.filter((reference) => reference.matterId === matterId))
+    referenceRequests.current.clear()
+  }, [matterId])
+  useEffect(() => {
+    if (!chronologyReference) return
+    if (chronologyReference.matterId === matterId) {
+      setChronologyReferences((current) => addChronologyChatReference(current, chronologyReference, matterId))
+      setInput((current) => (current === "" ? "Please explain the evidence for this chronology entry." : current))
+      inputRef.current?.focus({ preventScroll: true })
+    }
+    onChronologyReferenceSeated?.()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chronologyContext])
+  }, [chronologyReference])
+
+  useEffect(() => {
+    const request = referenceRequests.current.get(input)
+    if (request) setInput(request.draft)
+  }, [input, setInput])
+  useEffect(() => {
+    for (const turn of turns) {
+      if (turn.role !== "user" || !turn.id) continue
+      const request = referenceRequests.current.get(turn.text)
+      if (request && !request.priorUserIds.has(turn.id)) {
+        clearSentReferences(request.references)
+        referenceRequests.current.delete(turn.text)
+      }
+    }
+    // Source references are cleared by durable admission, never by an optimistic turn.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [turns])
 
   // Refocus the composer the moment a turn settles (busy → false). Done in an
   // effect, not inline in finalize(), so it runs after React commits the
@@ -357,13 +506,21 @@ export default function ChatPanel({
     if (!showsLegend || legends) return
     let current = true
     getPreferences()
-      .then((prefs) => current && setLegends({ agreementLegend: prefs.agreementLegend ?? "", adviceLegend: prefs.adviceLegend ?? "" }))
+      .then(
+        (prefs) =>
+          current &&
+          setLegends({ agreementLegend: prefs.agreementLegend ?? "", adviceLegend: prefs.adviceLegend ?? "" }),
+      )
       .catch(() => current && setLegendsFailed(true))
     return () => {
       current = false
     }
   }, [showsLegend, legends])
-  const legendMissing = legendsFailed && <p className="quick-draft-legend-missing" role="note">Firm legend could not be loaded.</p>
+  const legendMissing = legendsFailed && (
+    <p className="quick-draft-legend-missing" role="note">
+      Firm legend could not be loaded.
+    </p>
+  )
   const stopping = busy && turnRef.current.stopped
   useEffect(() => {
     onBusyChange?.(busy, activity)
@@ -383,10 +540,19 @@ export default function ChatPanel({
   const updateTooLate = updateAdmission === "closed"
   const clarifyingRun = updateAdmission === "clarification"
   async function sendRunUpdate() {
-    const text = input.trim()
+    const draft = input
+    if (checkingReferencesRef.current) return
+    const sentReferences = await checkedChronologyReferences()
+    if (!sentReferences) return
+    const text = withChronologyChatReferences(draft.trim(), sentReferences, matterId)
     if (!text || actions.busy || busy || updateTooLate) return
     if (await actions.update(text)) {
-      setInput((current) => (current.trim() === text ? "" : current))
+      setInput((current) => (current === draft ? "" : current))
+      setChronologyReferences((current) =>
+        current.filter(
+          (reference) => !sentReferences.some((sent) => sent.key === reference.key && sent.text === reference.text),
+        ),
+      )
       if (inputRef.current) inputRef.current.style.height = "auto"
     }
   }
@@ -409,11 +575,16 @@ export default function ChatPanel({
     </p>
   )
   // After a reload the offer's request is not in the stored history yet.
-  const showPendingRoute = pendingRoute !== undefined && !(turns.at(-1)?.role === "user" && turns.at(-1)?.text === pendingRoute)
+  const showPendingRoute =
+    pendingRoute !== undefined && !(turns.at(-1)?.role === "user" && turns.at(-1)?.text === pendingRoute)
   // A comparison's answer draws each change it names as a redline.
   const answer = (text: string, compares?: VersionCompare[]) => {
     const compare = chatCompare(compares)
-    return compare ? <CompareAnswer text={text} compare={compare} onOpen={onOpenBlackline} /> : <Markdown>{text}</Markdown>
+    return compare ? (
+      <CompareAnswer text={text} compare={compare} onOpen={onOpenBlackline} />
+    ) : (
+      <Markdown>{text}</Markdown>
+    )
   }
   // A quick draft shows the firm's legend for its form, its text without the
   // form line and, once settled, the placeholders left in the draft as open
@@ -448,7 +619,11 @@ export default function ChatPanel({
     )
   }
   const agentAnswer = (agentName: string | undefined, text: string, settled: boolean, compares?: VersionCompare[]) =>
-    agentName === QUICK_DRAFT ? quickAnswer(text, settled) : agentName === CLIENT_SUMMARY ? clientAnswer(text) : answer(stripIssues(text), compares)
+    agentName === QUICK_DRAFT
+      ? quickAnswer(text, settled)
+      : agentName === CLIENT_SUMMARY
+        ? clientAnswer(text)
+        : answer(stripIssues(text), compares)
 
   const narrationView = own && matterId && (
     <DraftingNarration
@@ -462,24 +637,77 @@ export default function ChatPanel({
   const composer = (documentsControl?: ReactNode) => (
     <Composer
       documentsControl={documentsControl}
-      attachmentControl={libraryAttachments && <div className="library-attachments">
-        <input ref={attachmentInput} type="file" hidden multiple accept=".pdf,.docx,.txt,.md,.markdown" onChange={(event) => {
-          const files = Array.from(event.currentTarget.files ?? [])
-          event.currentTarget.value = ""
-          void attachFiles(files)
-        }} />
-        {attachments.map((attachment) => <span className="library-attachment" key={attachment.source}>
-          {attachment.name}
-          <button type="button" aria-label={`Remove ${attachment.name}`} disabled={busy || attaching} onClick={() => void removeAttachment(attachment)}>×</button>
-        </span>)}
-        <button type="button" className="workflow-btn" disabled={busy || attaching} onClick={() => attachmentInput.current?.click()}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.19 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-          </svg>
-          <span>{attaching ? "Attaching…" : "Attach"}</span>
-        </button>
-      </div>}
-      hasAttachments={attachments.length > 0}
+      attachmentControl={
+        (libraryAttachments || scopedChronologyReferences.length > 0) && (
+          <div
+            className={scopedChronologyReferences.length ? "chronology-composer-attachments" : undefined}
+            style={scopedChronologyReferences.length ? undefined : { display: "contents" }}
+            aria-busy={checkingReferences || undefined}
+          >
+            {scopedChronologyReferences.map((reference) => (
+              <ChronologyReferenceCard
+                key={reference.key}
+                reference={reference}
+                sessionID={sessionID}
+                busy={busy || attaching || actions.busy || checkingReferences}
+                onRemove={() =>
+                  setChronologyReferences((current) => current.filter((item) => item.key !== reference.key))
+                }
+              />
+            ))}
+            {libraryAttachments && (
+              <div className="library-attachments">
+                <input
+                  ref={attachmentInput}
+                  type="file"
+                  hidden
+                  multiple
+                  accept=".pdf,.docx,.txt,.md,.markdown"
+                  onChange={(event) => {
+                    const files = Array.from(event.currentTarget.files ?? [])
+                    event.currentTarget.value = ""
+                    void attachFiles(files)
+                  }}
+                />
+                {attachments.map((attachment) => (
+                  <span className="library-attachment" key={attachment.source}>
+                    {attachment.name}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${attachment.name}`}
+                      disabled={busy || attaching}
+                      onClick={() => void removeAttachment(attachment)}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                <button
+                  type="button"
+                  className="workflow-btn"
+                  disabled={busy || attaching}
+                  onClick={() => attachmentInput.current?.click()}
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
+                    <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.19 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                  </svg>
+                  <span>{attaching ? "Attaching…" : "Attach"}</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )
+      }
+      hasAttachments={attachments.length > 0 || scopedChronologyReferences.length > 0}
       draftingUpdate={updatingRun}
       draftingClarification={clarifyingRun}
       pinned={pinned}
@@ -495,13 +723,25 @@ export default function ChatPanel({
       playbook={playbook}
       onPlaybookChange={onPlaybookChange}
       toolsLoading={toolsLoading}
-      composerPlaceholder={clarifyingRun ? "Clarify the source or applicability for the held checklist…" : updatingRun ? "Add an instruction or consideration for this draft…" : composerPlaceholder}
+      composerPlaceholder={
+        clarifyingRun
+          ? "Clarify the source or applicability for the held checklist…"
+          : updatingRun
+            ? "Add an instruction or consideration for this draft…"
+            : composerPlaceholder
+      }
       input={input}
       setInput={setInput}
       onSend={updatingRun ? sendRunUpdate : sendWithAttachments}
       onStop={busy ? onStop : undefined}
       stopping={stopping}
-      busy={busy || attaching || pendingRoute !== undefined || (updatingRun && (actions.busy || updateTooLate))}
+      busy={
+        busy ||
+        attaching ||
+        checkingReferences ||
+        pendingRoute !== undefined ||
+        (updatingRun && (actions.busy || updateTooLate))
+      }
     />
   )
 
@@ -526,7 +766,9 @@ export default function ChatPanel({
             // cannot re-pin the log and cancel it.
             stickRef.current = false
             const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches
-            document.getElementById("run-result")?.scrollIntoView({ block: "start", behavior: still ? "auto" : "smooth" })
+            document
+              .getElementById("run-result")
+              ?.scrollIntoView({ block: "start", behavior: still ? "auto" : "smooth" })
           }}
         />
       )}
@@ -542,15 +784,21 @@ export default function ChatPanel({
             </div>
           )}
           {loading && turns.length === 0 && <ChatSkeleton />}
-          {!loading && !loadError && turns.length === 0 && !busy && !own && !updatingRun && pendingRoute === undefined && (
-            <ChatEmpty
-              hint={emptyHint}
-              starters={starters}
-              documentCount={documents?.length}
-              onPick={setInput}
-              onAddDocuments={documents && onAddFiles ? () => setDocumentsDrawer(true) : undefined}
-            />
-          )}
+          {!loading &&
+            !loadError &&
+            turns.length === 0 &&
+            !busy &&
+            !own &&
+            !updatingRun &&
+            pendingRoute === undefined && (
+              <ChatEmpty
+                hint={emptyHint}
+                starters={starters}
+                documentCount={documents?.length}
+                onPick={setInput}
+                onAddDocuments={documents && onAddFiles ? () => setDocumentsDrawer(true) : undefined}
+              />
+            )}
           {turns.map((t, i) => (
             <Fragment key={i}>
               {t.role === "user" ? (
@@ -591,7 +839,12 @@ export default function ChatPanel({
                       >
                         <IconPencil />
                       </button>
-                      <button className="icon-btn" title="Retry" aria-label="Retry message" onClick={() => resendFrom(t, i, t.text)}>
+                      <button
+                        className="icon-btn"
+                        title="Retry"
+                        aria-label="Retry message"
+                        onClick={() => resendFrom(t, i, t.text)}
+                      >
                         <IconRetry />
                       </button>
                     </div>
@@ -602,9 +855,7 @@ export default function ChatPanel({
                   {t.agent && <div className="msg-agent">{agentLabel(t.agent)}</div>}
                   {t.agent === QUICK_DRAFT && !t.error && !isEmptyAnswer(t.text) && quickBanner(i)}
                   <StepsPanel steps={t.steps} busy={false} answered={!isEmptyAnswer(t.text)} />
-                  {t.text &&
-                    !isEmptyAnswer(t.text) &&
-                    agentAnswer(t.agent, t.text, true, t.compares)}
+                  {t.text && !isEmptyAnswer(t.text) && agentAnswer(t.agent, t.text, true, t.compares)}
                   <IssuesView issues={parseIssues(t.text)} />
                   {t.error && <div className="msg-error">{t.error}</div>}
                   {t.stopped && !t.superseded && (
@@ -640,11 +891,7 @@ export default function ChatPanel({
                 </div>
               )}
               {/* Auto's acknowledgement opens the reply to this message: display only. */}
-              {t.role === "user" && t.ack && (
-                <p className="msg-ack">
-                  {t.ack}
-                </p>
-              )}
+              {t.role === "user" && t.ack && <p className="msg-ack">{t.ack}</p>}
               {anchor === i && narrationView}
             </Fragment>
           ))}
@@ -716,14 +963,18 @@ export default function ChatPanel({
       {permissions.map((p) => (
         <PermissionCard key={p.id} request={p} onReply={onPermissionReply} />
       ))}
-      {own && run && queuedNote(run) && <p className="run-note" role="status">{queuedNote(run)}</p>}
+      {own && run && queuedNote(run) && (
+        <p className="run-note" role="status">
+          {queuedNote(run)}
+        </p>
+      )}
       {own && run && matterId && (
         <QuestionDock
           matterId={matterId}
           ownerSessionID={run.owner_session_id}
           questions={asked}
           answered={run.questions.length - asked.length}
-          answeredQuestions={run.stopped ? [] : run.questions.filter(question => question.status === "answered")}
+          answeredQuestions={run.stopped ? [] : run.questions.filter((question) => question.status === "answered")}
           queuedAnswerIDs={run.queued_answer_ids}
           titles={new Map((run.plan?.documents ?? []).map((row) => [row.id, cleanTitle(row.title)]))}
           busy={actions.busy}

@@ -204,3 +204,135 @@ export function chronologyChatContext(matterId: string, event: ChronologyEvent, 
       : ""
   }\n\nPlease explain the evidence and qualifications. Propose any changes for my confirmation; do not apply changes directly.`
 }
+
+export type ChronologyChatReference = {
+  key: string
+  matterId: string
+  eventId: string
+  proposalId?: string
+  title: string
+  date: string
+  link: string
+  reviewed: boolean
+  hidden: boolean
+  qualifications: string[]
+  sources: {
+    documentName: string
+    section: string
+    excerpt: string
+    verified: boolean
+    freshness: "current" | "stale" | "unavailable" | "unverified"
+    provenance: "source" | "supplied-chronology"
+    scope: "saved" | "proposal"
+  }[]
+  text: string
+}
+
+/** Explicit source snapshots for the composer. The readable question stays in
+ * the text field; qualified evidence is included only when the lawyer sends. */
+export function chronologyChatReference(
+  matterId: string,
+  event: ChronologyEvent,
+  proposal?: ChronologyProposal,
+): ChronologyChatReference {
+  const sources: ChronologyChatReference["sources"] = [
+    ...eventEvidence(event).map((evidence) => ({
+      documentName: evidence.documentName,
+      section: evidence.section,
+      excerpt: evidence.excerpt,
+      verified: evidence.verified,
+      freshness: evidence.freshness,
+      provenance: evidence.provenance,
+      scope: "saved" as const,
+    })),
+    ...(proposal?.events.flatMap((item) =>
+      eventEvidence(item).map((evidence) => ({
+        documentName: evidence.documentName,
+        section: evidence.section,
+        excerpt: evidence.excerpt,
+        verified: evidence.verified,
+        freshness: evidence.freshness,
+        provenance: evidence.provenance,
+        scope: "proposal" as const,
+      })),
+    ) ?? []),
+  ]
+  const unique = sources.filter(
+    (source, index) => sources.findIndex((other) => JSON.stringify(other) === JSON.stringify(source)) === index,
+  )
+  return {
+    key: JSON.stringify([matterId, event.id, proposal?.id ?? null]),
+    matterId,
+    eventId: event.id,
+    ...(proposal ? { proposalId: proposal.id } : {}),
+    title: event.title,
+    date: dateLabel(event.date),
+    link: `/matter/${encodeURIComponent(matterId)}?view=chronology&event=${encodeURIComponent(event.id)}${proposal ? `&proposal=${encodeURIComponent(proposal.id)}` : ""}`,
+    reviewed: event.reviewed,
+    hidden: event.hidden,
+    qualifications: [...eventQualifications(event)],
+    sources: unique,
+    text: chronologyChatContext(matterId, event, proposal),
+  }
+}
+
+export function addChronologyChatReference(
+  current: ChronologyChatReference[],
+  reference: ChronologyChatReference,
+  matterId?: string,
+) {
+  if (!matterId || reference.matterId !== matterId) return current.filter((item) => item.matterId === matterId)
+  const scoped = current.filter((item) => item.matterId === matterId)
+  return scoped.some((item) => item.key === reference.key)
+    ? scoped.map((item) => (item.key === reference.key ? reference : item))
+    : [...scoped, reference]
+}
+export function withChronologyChatReferences(
+  message: string,
+  references: ChronologyChatReference[],
+  matterId?: string,
+) {
+  const scoped = references.filter((reference) => reference.matterId === matterId)
+  return scoped.length
+    ? `${message.trim()}\n\nIncluded chronology references (source snapshots, with the recorded review and freshness qualifications):\n\n${scoped.map((reference) => reference.text).join("\n\n")}`.trim()
+    : message
+}
+
+/** Rebuild composer snapshots from the current access-projected matter state.
+ * Decided proposals cannot remain in an outgoing request as pending changes. */
+export function currentChronologyChatReferences(
+  references: ChronologyChatReference[],
+  state: { events: ChronologyEvent[]; proposals: ChronologyProposal[] },
+  matterId: string,
+) {
+  let changed = false,
+    removed = false,
+    proposalChanged = false
+  const updates = references
+    .filter((reference) => reference.matterId === matterId)
+    .map((previous) => {
+      const proposal = previous.proposalId
+        ? state.proposals.find(
+            (proposal) =>
+              proposal.id === previous.proposalId && (proposal.status === "pending" || proposal.status === "deferred"),
+          )
+        : undefined
+      if (previous.proposalId && !proposal) proposalChanged = true
+      const event =
+        state.events.find((event) => event.id === previous.eventId) ??
+        proposal?.events.find((event) => event.id === previous.eventId)
+      const reference = event ? chronologyChatReference(matterId, event, proposal) : undefined
+      if (!reference) {
+        removed = true
+        changed = true
+      } else if (reference.text !== previous.text || reference.key !== previous.key) changed = true
+      return { key: previous.key, originalText: previous.text, reference }
+    })
+  return {
+    updates,
+    references: updates.flatMap((update) => (update.reference ? [update.reference] : [])),
+    changed,
+    removed,
+    proposalChanged,
+  }
+}

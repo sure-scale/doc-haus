@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import type { ChronologyEvent } from "../../api/ingest/chronology"
 import { dateLabel } from "./model"
 import "./timeline.css"
@@ -32,6 +33,36 @@ function eventLane(event: ChronologyEvent): Lane {
   if (kinds.length && kinds.every((kind) => kind === "correspondence")) return "correspondence"
   if (kinds.length && kinds.every((kind) => kind === "documents")) return "documents"
   return "other"
+}
+
+function eventMeaning(event: ChronologyEvent) {
+  const precision: Record<string, string> = {
+    exact: "Exact date",
+    approximate: "Approximate date",
+    month: "Month only",
+    year: "Year only",
+    relative: "Relative date",
+  }
+  const meanings = [precision[event.date.precision] ?? "Uncertain date"]
+  for (const status of new Set(event.accounts.map((account) => account.status))) {
+    if (status === "scheduled") meanings.push("Scheduled event")
+    if (status === "required") meanings.push("Required event")
+  }
+  return meanings.join(" · ")
+}
+
+function periodMeaning(event: ChronologyEvent) {
+  if (!event.date.end) return undefined
+  const label = (value: string) => {
+    const date = timestamp(value)
+    if (!Number.isFinite(date)) return value
+    const format: Intl.DateTimeFormatOptions = { year: "numeric", timeZone: "UTC" }
+    if (!/^\d{4}$/.test(value)) format.month = "short"
+    if (!/^\d{4}(?:-\d{2})?$/.test(value)) format.day = "numeric"
+    return new Intl.DateTimeFormat(undefined, format).format(new Date(date))
+  }
+  const interval = `${label(event.date.start!)} – ${label(event.date.end)}`
+  return event.date.rangeKind === "duration" ? `Known duration: ${interval}` : `Date uncertainty interval: ${interval}`
 }
 
 function LaneIcon({ lane }: { lane: Lane }) {
@@ -85,6 +116,32 @@ export default function ChronologyTimeline({
   const clusterListRef = useRef<HTMLDivElement>(null)
   const clusterTriggerRef = useRef<HTMLButtonElement | null>(null)
   const pickerFocusedElement = useRef<HTMLElement | null>(null)
+  const tooltipId = useId()
+  const tooltipRef = useRef<HTMLDivElement>(null)
+  const tooltipLeaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const [tooltip, setTooltip] = useState<{ anchor: HTMLElement; ids: string[]; kind: "point" | "period" }>()
+  const [tooltipPosition, setTooltipPosition] = useState<{ left: number; top: number }>()
+  const cancelTooltipLeave = () => clearTimeout(tooltipLeaveTimer.current)
+  const hideTooltip = () => {
+    cancelTooltipLeave()
+    setTooltip(undefined)
+    setTooltipPosition(undefined)
+  }
+  const showTooltip = (anchor: HTMLElement, ids: string[], kind: "point" | "period" = "point") => {
+    cancelTooltipLeave()
+    setTooltipPosition(undefined)
+    setTooltip({ anchor, ids, kind })
+  }
+  const leaveTooltip = () => {
+    cancelTooltipLeave()
+    tooltipLeaveTimer.current = setTimeout(() => {
+      if (document.activeElement !== tooltip?.anchor) hideTooltip()
+    }, 160)
+  }
+  useEffect(() => () => clearTimeout(tooltipLeaveTimer.current), [])
+  useLayoutEffect(() => {
+    hideTooltip()
+  }, [selected])
   const dated = useMemo(
     () =>
       events.filter((event) => Number.isFinite(timestamp(event.date.start)) && event.date.precision !== "ambiguous"),
@@ -96,6 +153,58 @@ export default function ChronologyTimeline({
     [dated],
   )
   const clusterEvents = useMemo(() => dated.filter((event) => cluster.includes(event.id)), [dated, cluster])
+  const tooltipEvents = useMemo(() => dated.filter((event) => tooltip?.ids.includes(event.id)), [dated, tooltip])
+  useLayoutEffect(() => {
+    const bubble = tooltipRef.current
+    if (!tooltip || !bubble) return
+    if (!tooltip.anchor.isConnected || !tooltipEvents.length) {
+      hideTooltip()
+      return
+    }
+    const scale = Number.parseFloat(getComputedStyle(document.body).zoom) || 1
+    const viewport = window.visualViewport
+    const left = viewport?.offsetLeft ?? 0
+    const top = viewport?.offsetTop ?? 0
+    const width = viewport?.width ?? window.innerWidth
+    const height = viewport?.height ?? window.innerHeight
+    const gap = 8
+    bubble.style.maxWidth = `${Math.max(0, Math.min(320, (width - gap * 2) / scale))}px`
+    bubble.style.maxHeight = `${Math.max(0, (height - gap * 2) / scale)}px`
+    const anchor = tooltip.anchor.getBoundingClientRect()
+    const rect = bubble.getBoundingClientRect()
+    const above = anchor.top - rect.height - gap
+    const preferredTop = above >= top + gap ? above : anchor.bottom + gap
+    setTooltipPosition({
+      left:
+        Math.max(
+          left + gap,
+          Math.min(anchor.left + anchor.width / 2 - rect.width / 2, left + width - rect.width - gap),
+        ) / scale,
+      top: Math.max(top + gap, Math.min(preferredTop, top + height - rect.height - gap)) / scale,
+    })
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return
+      event.preventDefault()
+      event.stopPropagation()
+      hideTooltip()
+    }
+    const scroll = (event: Event) => {
+      if (event.target instanceof Node && bubble.contains(event.target)) return
+      hideTooltip()
+    }
+    document.addEventListener("keydown", escape, true)
+    window.addEventListener("scroll", scroll, true)
+    window.addEventListener("resize", hideTooltip)
+    viewport?.addEventListener("scroll", hideTooltip)
+    viewport?.addEventListener("resize", hideTooltip)
+    return () => {
+      document.removeEventListener("keydown", escape, true)
+      window.removeEventListener("scroll", scroll, true)
+      window.removeEventListener("resize", hideTooltip)
+      viewport?.removeEventListener("scroll", hideTooltip)
+      viewport?.removeEventListener("resize", hideTooltip)
+    }
+  }, [tooltip, tooltipEvents])
   const bounds = dated
     .flatMap((event) => [timestamp(event.date.start), timestamp(event.date.end)])
     .filter(Number.isFinite)
@@ -267,7 +376,10 @@ export default function ChronologyTimeline({
                       top: `${62 + row(event) * 50}px`,
                       width: `${Math.max(0.25, ((timestamp(event.date.end) - timestamp(event.date.start)) / span) * plotWidth)}%`,
                     }}
-                    title={`${event.date.rangeKind === "duration" ? "Known duration" : "Date uncertainty interval"}: ${dateLabel(event.date)}`}
+                    onPointerEnter={(pointer) => {
+                      if (pointer.pointerType !== "touch") showTooltip(pointer.currentTarget, [event.id], "period")
+                    }}
+                    onPointerLeave={leaveTooltip}
                   />
                 ))}
               {selectedEvent && (
@@ -292,12 +404,30 @@ export default function ChronologyTimeline({
                         ? `${group.length} clustered events near ${dateLabel(event.date)}`
                         : `${dateLabel(event.date)}: ${event.title}`
                     }
-                    title={
-                      group.length > 1
-                        ? `${group.length} events — select to inspect`
-                        : `${dateLabel(event.date)} — ${event.title}`
+                    aria-describedby={
+                      tooltip?.kind === "point" &&
+                      tooltip.ids.length === group.length &&
+                      tooltip.ids.every((id) => group.some((item) => item.id === id))
+                        ? tooltipId
+                        : undefined
                     }
+                    onPointerEnter={(pointer) => {
+                      if (pointer.pointerType !== "touch")
+                        showTooltip(
+                          pointer.currentTarget,
+                          group.map((item) => item.id),
+                        )
+                    }}
+                    onPointerLeave={leaveTooltip}
+                    onFocus={(focus) =>
+                      showTooltip(
+                        focus.currentTarget,
+                        group.map((item) => item.id),
+                      )
+                    }
+                    onBlur={hideTooltip}
                     onClick={(click) => {
+                      hideTooltip()
                       clusterTriggerRef.current = click.currentTarget
                       if (group.length === 1) onSelect(event)
                       setCluster(group.length > 1 ? group.map((item) => item.id) : [])
@@ -403,6 +533,55 @@ export default function ChronologyTimeline({
           </button>
         </div>
       </div>
+      {tooltip &&
+        tooltipEvents.length > 0 &&
+        createPortal(
+          <div
+            ref={tooltipRef}
+            id={tooltipId}
+            role="tooltip"
+            className="chronology-marker-tooltip"
+            style={{
+              left: tooltipPosition?.left ?? 0,
+              top: tooltipPosition?.top ?? 0,
+              visibility: tooltipPosition ? "visible" : "hidden",
+            }}
+            onPointerEnter={cancelTooltipLeave}
+            onPointerLeave={leaveTooltip}
+          >
+            {tooltipEvents.length > 1 ? (
+              <>
+                <strong>{tooltipEvents.length} nearby events</strong>
+                <ul>
+                  {tooltipEvents.slice(0, 3).map((event) => (
+                    <li key={event.id}>
+                      <span className="chronology-marker-tooltip-date">{dateLabel(event.date)}</span>
+                      <span>{event.title}</span>
+                      <small>{eventMeaning(event)}</small>
+                    </li>
+                  ))}
+                </ul>
+                {tooltipEvents.length > 3 && (
+                  <span className="chronology-marker-tooltip-more">+{tooltipEvents.length - 3} more events</span>
+                )}
+                <span className="chronology-marker-tooltip-hint">Select to inspect each event.</span>
+              </>
+            ) : (
+              <>
+                <strong>{dateLabel(tooltipEvents[0].date)}</strong>
+                <span className="chronology-marker-tooltip-title">{tooltipEvents[0].title}</span>
+                <small>{eventMeaning(tooltipEvents[0])}</small>
+                {periodMeaning(tooltipEvents[0]) && (
+                  <small className="chronology-marker-tooltip-period">{periodMeaning(tooltipEvents[0])}</small>
+                )}
+                {tooltip.kind === "point" && (
+                  <span className="chronology-marker-tooltip-hint">Select to view evidence.</span>
+                )}
+              </>
+            )}
+          </div>,
+          document.body,
+        )}
       {clusterEvents.length > 0 && (
         <div
           ref={clusterListRef}

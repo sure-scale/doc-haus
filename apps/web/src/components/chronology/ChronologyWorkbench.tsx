@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
+import useExit from "../useExit"
+import backdropClose from "../backdropClose"
 import {
   batchChronologyAdditions,
   chronologyAction,
@@ -20,6 +22,8 @@ import {
 } from "../../api/ingest/chronology"
 import { type Document } from "../../api/ingest/documents"
 import DocumentViewer from "../DocumentViewer"
+import JurisdictionSelect from "../JurisdictionSelect"
+import DateInput, { useChronologyDateFormat } from "./DateInput"
 import { type CitationFocus } from "../citation-target"
 import ChronologyDialog from "./Dialog"
 import EventDetail from "./EventDetail"
@@ -28,7 +32,8 @@ import ProposalReview from "./ProposalReview"
 import ChronologyTimeline from "./Timeline"
 import SourceIcon from "./SourceIcon"
 import {
-  chronologyChatContext,
+  chronologyChatReference,
+  type ChronologyChatReference,
   chronologyPeople,
   dateLabel,
   emptyFilters,
@@ -58,7 +63,7 @@ export default function ChronologyWorkbench({
   initialEvent?: string
   initialProposal?: string
   onState: (state: Chronology) => void
-  onAsk: (context: string) => void
+  onAsk: (reference: ChronologyChatReference) => void
   onClose: () => void
 }) {
   const [state, setState] = useState(chronology)
@@ -73,6 +78,7 @@ export default function ChronologyWorkbench({
   const [sourcesOpen, setSourcesOpen] = useState(false)
   const [updatesOpen, setUpdatesOpen] = useState(!!initialProposal)
   const [editing, setEditing] = useState<{ mode: "add" | "edit" | "merge" | "split"; event?: ChronologyEvent }>()
+  const dateFormat = useChronologyDateFormat()
   const [sourceDate, setSourceDate] = useState(false)
   const [generation, setGeneration] = useState<"initial" | "refresh" | "resume">()
   const [preflight, setPreflight] = useState<ChronologyPreflight>()
@@ -84,6 +90,15 @@ export default function ChronologyWorkbench({
   const rowFocus = useRef<HTMLButtonElement | null>(null)
   const tableScroll = useRef<Array<{ element: HTMLElement; top: number; left: number }>>([])
   const selected = state?.events.find((event) => event.id === selectedId)
+  const [detail, detailClosing] = useExit(selected)
+  const [compactDetail, setCompactDetail] = useState(() => window.matchMedia("(max-width: 800px)").matches)
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 800px)")
+    const update = () => setCompactDetail(query.matches)
+    query.addEventListener("change", update)
+    return () => query.removeEventListener("change", update)
+  }, [])
+
   function receive(next: Chronology) {
     setState((current) => (current && current.revision > next.revision ? current : next))
     onState(next)
@@ -186,13 +201,12 @@ export default function ChronologyWorkbench({
   function closeDetail() {
     setSelectedId(undefined)
     requestAnimationFrame(() => {
-      for (const { element, top, left } of tableScroll.current) element.scrollTo({ top, left, behavior: "instant" })
+      if (compactDetail)
+        for (const { element, top, left } of tableScroll.current) element.scrollTo({ top, left, behavior: "instant" })
       const target = rowFocus.current
       if (target?.isConnected && target.getClientRects().length) target.focus({ preventScroll: true })
       else {
         searchControl.current?.focus({ preventScroll: true })
-        if (!tableScroll.current.length)
-          searchControl.current?.scrollIntoView({ block: "nearest", behavior: "instant" })
       }
       tableScroll.current = []
     })
@@ -258,7 +272,7 @@ export default function ChronologyWorkbench({
   return (
     <section
       ref={root}
-      className={`chronology-workbench${selected ? " has-selection" : ""}${viewing ? " has-source-viewer" : ""}`}
+      className={`chronology-workbench${detail ? " has-selection" : ""}${viewing ? " has-source-viewer" : ""}`}
       aria-label={`Fact chronology — ${title}`}
     >
       <div className="chronology-head">
@@ -555,7 +569,7 @@ export default function ChronologyWorkbench({
               onDiscard={() => action({ type: "discard-refresh" })}
               onClose={() => setUpdatesOpen(false)}
               onEvidence={inspect}
-              onAsk={(event, proposal) => onAsk(chronologyChatContext(matterId, event, proposal))}
+              onAsk={(event, proposal) => onAsk(chronologyChatReference(matterId, event, proposal))}
             />
           ) : (
             <div className="chronology-content">
@@ -603,48 +617,44 @@ export default function ChronologyWorkbench({
                 </div>
                 {filterOpen && (
                   <div id="chronology-filters" className="chronology-filters">
-                    <label>
-                      Document
-                      <select
-                        value={filters.document}
-                        onChange={(change) => setFilters({ ...filters, document: change.target.value })}
-                      >
-                        <option value="">All documents</option>
-                        {[...new Set(state.events.flatMap(eventEvidence).map((evidence) => evidence.documentName))]
-                          .sort()
-                          .map((name) => (
-                            <option key={name}>{name}</option>
-                          ))}
-                      </select>
-                    </label>
-                    <label>
-                      Person / organisation
-                      <select
-                        value={filters.person}
-                        onChange={(change) => setFilters({ ...filters, person: change.target.value })}
-                      >
-                        <option value="">All people</option>
-                        {people.options.map((person) => (
-                          <option key={person}>{person}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      From date
-                      <input
-                        type="date"
-                        value={filters.from}
-                        onChange={(change) => setFilters({ ...filters, from: change.target.value })}
-                      />
-                    </label>
-                    <label>
-                      To date
-                      <input
-                        type="date"
-                        value={filters.to}
-                        onChange={(change) => setFilters({ ...filters, to: change.target.value })}
-                      />
-                    </label>
+                    <JurisdictionSelect
+                      jurisdictions={[
+                        ...new Set(state.events.flatMap(eventEvidence).map((evidence) => evidence.documentName)),
+                      ]
+                        .sort()
+                        .map((name) => ({ code: name, name }))}
+                      selected={filters.document ? [filters.document] : []}
+                      onChange={(codes) => setFilters({ ...filters, document: codes[0] ?? "" })}
+                      multiple={false}
+                      label="Document"
+                      searchLabel="Search documents"
+                      emptyLabel="All documents"
+                      showCode={false}
+                      allowClear
+                    />
+                    <JurisdictionSelect
+                      jurisdictions={people.options.map((name) => ({ code: name, name }))}
+                      selected={filters.person ? [filters.person] : []}
+                      onChange={(codes) => setFilters({ ...filters, person: codes[0] ?? "" })}
+                      multiple={false}
+                      label="Person / organisation"
+                      searchLabel="Search people and organisations"
+                      emptyLabel="All people"
+                      showCode={false}
+                      allowClear
+                    />
+                    <DateInput
+                      label="From date"
+                      value={filters.from}
+                      format={dateFormat}
+                      onChange={(value) => setFilters({ ...filters, from: value ?? "" })}
+                    />
+                    <DateInput
+                      label="To date"
+                      value={filters.to}
+                      format={dateFormat}
+                      onChange={(value) => setFilters({ ...filters, to: value ?? "" })}
+                    />
                     <label>
                       Review
                       <select
@@ -801,35 +811,44 @@ export default function ChronologyWorkbench({
                   · Display filters do not limit whole-matter extraction.
                 </p>
               </div>
-              {selected && (
-                <EventDetail
-                  key={selected.id}
-                  event={selected}
-                  chronology={state}
-                  busy={busy}
-                  onAction={action}
-                  onEdit={(mode) => setEditing({ mode, event: selected })}
-                  onClose={closeDetail}
-                  onEvidence={inspect}
-                  onNavigate={(eventId) => {
-                    const event = state.events.find((item) => item.id === eventId)
-                    if (event) select(event)
-                    else setError("This earlier event record is unavailable. Its recorded history is preserved.")
-                  }}
-                  onAsk={() =>
-                    onAsk(
-                      chronologyChatContext(
-                        matterId,
-                        selected,
-                        state.proposals.find(
-                          (proposal) =>
-                            proposal.targetIds.includes(selected.id) &&
-                            ["pending", "deferred"].includes(proposal.status),
-                        ),
-                      ),
-                    )
-                  }
-                />
+              {detail && (
+                <div
+                  className={`viewer-overlay chronology-detail-overlay${detailClosing ? " is-closing" : ""}${compactDetail ? " is-compact" : ""}`}
+                  inert={detailClosing}
+                  {...backdropClose(() => closeDetail())}
+                >
+                  <div className="chronology-detail-sheet">
+                    <EventDetail
+                      key={detail.id}
+                      event={detail}
+                      closing={detailClosing}
+                      chronology={state}
+                      busy={busy}
+                      onAction={action}
+                      onEdit={(mode) => setEditing({ mode, event: detail })}
+                      onClose={closeDetail}
+                      onEvidence={inspect}
+                      onNavigate={(eventId) => {
+                        const event = state.events.find((item) => item.id === eventId)
+                        if (event) select(event)
+                        else setError("This earlier event record is unavailable. Its recorded history is preserved.")
+                      }}
+                      onAsk={() =>
+                        onAsk(
+                          chronologyChatReference(
+                            matterId,
+                            detail,
+                            state.proposals.find(
+                              (proposal) =>
+                                proposal.targetIds.includes(detail.id) &&
+                                ["pending", "deferred"].includes(proposal.status),
+                            ),
+                          ),
+                        )
+                      }
+                    />
+                  </div>
+                </div>
               )}
             </div>
           )}
@@ -1008,6 +1027,8 @@ function SourceDateDialog({
   ]
   const [documentName, setDocumentName] = useState(names[0] ?? "")
   const [date, setDate] = useState(chronology.sourceDates[documentName]?.date ?? "")
+  const format = useChronologyDateFormat()
+  const [dateValid, setDateValid] = useState(true)
   return (
     <ChronologyDialog title="Supply / correct a source date" onClose={onClose}>
       <form
@@ -1025,24 +1046,29 @@ function SourceDateDialog({
           This records a lawyer-supplied date without changing the source file. Only affected supported relative dates
           become proposals for your confirmation; the saved event dates are not silently changed.
         </p>
-        <label>
-          Source
-          <select
-            value={documentName}
-            onChange={(event) => {
-              setDocumentName(event.target.value)
-              setDate(chronology.sourceDates[event.target.value]?.date ?? "")
-            }}
-          >
-            {names.map((name) => (
-              <option key={name}>{name}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Lawyer-supplied source date
-          <input type="date" required value={date} onChange={(event) => setDate(event.target.value)} />
-        </label>
+        <JurisdictionSelect
+          jurisdictions={names.map((name) => ({ code: name, name }))}
+          selected={documentName ? [documentName] : []}
+          onChange={(codes) => {
+            const name = codes[0] ?? ""
+            setDocumentName(name)
+            setDate(chronology.sourceDates[name]?.date ?? "")
+          }}
+          multiple={false}
+          label="Source"
+          searchLabel="Search source documents"
+          emptyLabel="Choose source"
+          showCode={false}
+        />
+        <DateInput
+          key={documentName}
+          label="Lawyer-supplied source date"
+          required
+          value={date}
+          format={format}
+          onChange={(value) => setDate(value ?? "")}
+          onValidityChange={setDateValid}
+        />
         {chronology.sourceDates[documentName] && (
           <div>
             <p>
@@ -1058,7 +1084,7 @@ function SourceDateDialog({
           <button type="button" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" className="primary" disabled={busy || !documentName || !date}>
+          <button type="submit" className="primary" disabled={busy || !documentName || !date || !dateValid}>
             Record date & propose affected changes
           </button>
         </div>

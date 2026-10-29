@@ -3,12 +3,14 @@ import {
   chronologyNeedsAttention,
   type Chronology,
   type ChronologyAction,
+  type ChronologyAccount,
   type ChronologyEvent,
   type ChronologyEvidence,
 } from "../../api/ingest/chronology"
 import { dateLabel, eventQualifications } from "./model"
 import "./event-detail.css"
 import SourceIcon from "./SourceIcon"
+import useModalFocus from "../useModalFocus"
 
 export default function EventDetail({
   event,
@@ -20,8 +22,10 @@ export default function EventDetail({
   onEvidence,
   onAsk,
   onNavigate,
+  closing = false,
 }: {
   event: ChronologyEvent
+  closing?: boolean
   chronology: Chronology
   busy: boolean
   onAction: (action: ChronologyAction) => Promise<boolean>
@@ -31,6 +35,8 @@ export default function EventDetail({
   onAsk: () => void
   onNavigate: (eventId: string) => void
 }) {
+  const panel = useRef<HTMLElement>(null)
+  useModalFocus(panel, !closing, true)
   const heading = useRef<HTMLHeadingElement>(null)
   const [note, setNote] = useState(event.note)
   const [dispute, setDispute] = useState(event.dispute ?? "")
@@ -39,8 +45,6 @@ export default function EventDetail({
   const priorDispute = useRef(event.dispute ?? "")
   useEffect(() => {
     heading.current?.focus({ preventScroll: true })
-    if (window.matchMedia("(max-width: 800px)").matches)
-      heading.current?.closest("aside")?.scrollIntoView({ block: "start", behavior: "instant" })
   }, [event.id])
   useEffect(() => {
     // A refresh may update the saved record while a lawyer is typing. Keep an
@@ -53,11 +57,25 @@ export default function EventDetail({
     priorDispute.current = event.dispute ?? ""
   }, [event.note, event.dispute])
   return (
-    <aside className="chronology-detail chronology-evidence-panel" aria-label="Event and evidence">
+    <aside
+      ref={panel}
+      className="chronology-detail chronology-evidence-panel"
+      aria-label="Event and evidence"
+      role="dialog"
+      aria-modal="true"
+      inert={closing}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || event.defaultPrevented) return
+        event.preventDefault()
+        event.stopPropagation()
+        const actions = (event.target as HTMLElement).closest<HTMLDetailsElement>(".chronology-more-actions[open]")
+        if (actions) {
+          actions.open = false
+          actions.querySelector("summary")?.focus({ preventScroll: true })
+        } else onClose()
+      }}
+    >
       <div className="chronology-detail-top">
-        <button type="button" className="chronology-detail-back" onClick={onClose}>
-          <span aria-hidden="true">←</span> Back to events
-        </button>
         <button
           type="button"
           className="chronology-star"
@@ -67,6 +85,26 @@ export default function EventDetail({
           onClick={() => void onAction({ type: "key", eventId: event.id, key: !event.key })}
         >
           {event.key ? "★" : "☆"}
+        </button>
+        <button
+          type="button"
+          className="chronology-detail-close"
+          aria-label="Close event evidence"
+          title="Close event evidence (Esc)"
+          onClick={onClose}
+        >
+          <svg
+            width="19"
+            height="19"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            aria-hidden="true"
+          >
+            <path d="m6 6 12 12M18 6 6 18" />
+          </svg>
         </button>
       </div>
       <div className="chronology-detail-content">
@@ -97,7 +135,7 @@ export default function EventDetail({
             <p>This record is retained after a merge or split. Current entries:</p>
             {event.supersededBy.map((id) => (
               <button key={id} type="button" onClick={() => onNavigate(id)}>
-                {chronology.events.find((item) => item.id === id)?.title ?? id}
+                {chronology.events.find((item) => item.id === id)?.title ?? "Current event record"}
               </button>
             ))}
           </div>
@@ -148,120 +186,110 @@ export default function EventDetail({
           {event.accounts.length === 0 && (
             <p className="chronology-notice">Source not supplied. This entry was added by hand.</p>
           )}
-          {event.accounts.map((account) => (
-            <div key={account.id} className="chronology-source-account">
-              {event.accounts.length > 1 && account.title !== event.title && <h4>{account.title}</h4>}
-              <div className="chronology-account-qualifications">
-                {(account.date.precision !== "exact" || dateLabel(account.date) !== dateLabel(event.date)) && (
-                  <span>Source account date: {dateLabel(account.date)}</span>
+          {event.accounts.map((account) => {
+            const context = sourceContext(account, event)
+            return (
+              <div key={account.id} className="chronology-source-account">
+                {account.title !== event.title && <h4>{account.title}</h4>}
+                {!event.disputed && account.detail && account.detail !== event.detail && <p>{account.detail}</p>}
+                {account.attribution && (
+                  <p className="chronology-source-attribution">Reported by {account.attribution}</p>
                 )}
-                {account.date.rangeKind === "uncertainty" && <span>Uncertain date interval</span>}
-                {account.date.anchorFreshness && account.date.anchorFreshness !== "current" && (
-                  <span>Source-date anchor needs checking</span>
+                <div className="chronology-account-qualifications">
+                  {(account.date.precision !== "exact" || dateLabel(account.date) !== dateLabel(event.date)) && (
+                    <span>Date in this source: {dateLabel(account.date)}</span>
+                  )}
+                  {account.date.rangeKind === "uncertainty" && <span>Uncertain date interval</span>}
+                  {account.date.relative?.interpretation === "legal-interpretation" &&
+                    event.date.relative?.interpretation !== "legal-interpretation" && (
+                      <span>Legal date interpretation — verify separately</span>
+                    )}
+                  {account.date.anchorFreshness && account.date.anchorFreshness !== "current" && (
+                    <span>Source-date anchor needs checking</span>
+                  )}
+                  {account.status !== "reported" && (
+                    <span>{account.status === "required" ? "Required event" : "Scheduled event"}</span>
+                  )}
+                  {(account.privilege === "uncertain" || account.privilege === "privileged") && (
+                    <span>Privilege: {account.privilege} — lawyer review needed</span>
+                  )}
+                </div>
+                {account.date.anchorIssue && <p className="chronology-warning">{account.date.anchorIssue}</p>}
+                {account.nameAssociations?.some(
+                  (association) =>
+                    association.status === "uncertain" ||
+                    association.evidenceIds.length === 0 ||
+                    !association.evidenceIds.every((id) =>
+                      account.evidence.some(
+                        (evidence) => evidence.id === id && evidence.verified && evidence.freshness === "current",
+                      ),
+                    ),
+                ) && (
+                  <p className="chronology-warning">
+                    Name association uncertain or support unavailable; names remain separate in person filters. Review
+                    the names under More about this source.
+                  </p>
                 )}
-                {account.status !== "reported" && (
-                  <span>{account.status === "required" ? "Required event" : "Scheduled event"}</span>
+                {account.evidence.map((evidence) => (
+                  <article key={evidence.id} className="chronology-evidence">
+                    <div className="chronology-evidence-heading">
+                      <SourceIcon name={evidence.documentName} kind={evidence.sourceKind} />
+                      <strong>{evidence.documentName}</strong>
+                      <span>{evidence.section || "Passage"}</span>
+                    </div>
+                    <blockquote>“{evidence.excerpt}”</blockquote>
+                    <p
+                      className={`chronology-evidence-status ${!evidence.verified || evidence.freshness !== "current" ? "chronology-warning" : "chronology-muted"}`}
+                    >
+                      {evidence.verified ? "Quotation verified" : "Quotation unverified"} · {evidence.freshness}
+                      {evidence.sourceKind ? ` · ${evidence.sourceKind}` : ""}
+                      {evidence.provenance === "source" ? " · Source document" : ""}
+                    </p>
+                    {evidence.provenance === "supplied-chronology" && (
+                      <p className="chronology-warning">
+                        Supplied chronology account. Original provenance may be unknown; this does not establish
+                        independent corroboration.
+                      </p>
+                    )}
+                    {evidence.issue && (
+                      <p role="status" className="chronology-warning">
+                        {evidence.issue}
+                      </p>
+                    )}
+                    <button type="button" onClick={() => onEvidence(evidence)}>
+                      {evidence.freshness === "current" ? "View in document" : "Inspect current source"}
+                    </button>
+                  </article>
+                ))}
+                {account.evidence.length === 0 && (
+                  <p className="chronology-warning">No verified supporting passage is available.</p>
                 )}
-                {(account.privilege === "uncertain" || account.privilege === "privileged") && (
-                  <span>Privilege: {account.privilege} — lawyer review needed</span>
+                {account.gaps.length > 0 && (
+                  <div className="chronology-source-questions">
+                    <h4>Source questions to check</h4>
+                    {account.gaps.map((gap, index) => (
+                      <p key={index} className="chronology-warning">
+                        {gap}
+                      </p>
+                    ))}
+                  </div>
+                )}
+                {context.length > 0 && (
+                  <details className="chronology-source-context">
+                    <summary>More about this source</summary>
+                    <dl>
+                      {context.map((item, index) => (
+                        <div key={index}>
+                          <dt>{item.label}</dt>
+                          <dd>{item.value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </details>
                 )}
               </div>
-              {account.date.anchorIssue && <p className="chronology-warning">{account.date.anchorIssue}</p>}
-              {account.nameAssociations?.some(
-                (association) =>
-                  association.status === "uncertain" ||
-                  !association.evidenceIds.every((id) =>
-                    account.evidence.some(
-                      (evidence) => evidence.id === id && evidence.verified && evidence.freshness === "current",
-                    ),
-                  ),
-              ) && (
-                <p className="chronology-warning">
-                  Name association uncertain or support unavailable; names remain separate in person filters. See
-                  account details.
-                </p>
-              )}
-              {account.evidence.map((evidence) => (
-                <article key={evidence.id} className="chronology-evidence">
-                  <div className="chronology-evidence-heading">
-                    <SourceIcon name={evidence.documentName} kind={evidence.sourceKind} />
-                    <strong>{evidence.documentName}</strong>
-                    <span>{evidence.section || "Passage"}</span>
-                  </div>
-                  <blockquote>“{evidence.excerpt}”</blockquote>
-                  <p
-                    className={`chronology-evidence-status ${!evidence.verified || evidence.freshness !== "current" ? "chronology-warning" : "chronology-muted"}`}
-                  >
-                    {evidence.verified ? "Quotation verified" : "Quotation unverified"} · {evidence.freshness}
-                    {evidence.sourceKind ? ` · ${evidence.sourceKind}` : ""}
-                    {evidence.provenance === "source" ? " · Source document" : ""}
-                  </p>
-                  {evidence.provenance === "supplied-chronology" && (
-                    <p className="chronology-warning">
-                      Supplied chronology account. Original provenance may be unknown; this does not establish
-                      independent corroboration.
-                    </p>
-                  )}
-                  {evidence.issue && (
-                    <p role="status" className="chronology-warning">
-                      {evidence.issue}
-                    </p>
-                  )}
-                  <button type="button" onClick={() => onEvidence(evidence)}>
-                    {evidence.freshness === "current" ? "View in document" : "Inspect current source"}
-                  </button>
-                  <details className="chronology-source-details">
-                    <summary>Source details</summary>
-                    <p className="chronology-muted">Version {evidence.version}</p>
-                  </details>
-                </article>
-              ))}
-              {account.evidence.length === 0 && (
-                <p className="chronology-warning">No verified supporting passage is available.</p>
-              )}
-              {account.gaps.length > 0 && (
-                <div className="chronology-source-questions">
-                  <h4>Source questions to check</h4>
-                  {account.gaps.map((gap, index) => (
-                    <p key={index} className="chronology-warning">
-                      {gap}
-                    </p>
-                  ))}
-                </div>
-              )}
-              <details className="chronology-account-details">
-                <summary>Account details</summary>
-                <p>
-                  {account.title} · {dateLabel(account.date)} · {account.status}
-                </p>
-                {!event.disputed && account.detail && <p>{account.detail}</p>}
-                {account.attribution && <p>Attribution: {account.attribution}</p>}
-                <p className="chronology-muted">
-                  Significance: {account.significance} · Privilege: {account.privilege}
-                  {account.people.length ? ` · ${account.people.join(", ")}` : ""}
-                </p>
-                {account.nameAssociations?.map((association, index) => (
-                  <p key={index} className="chronology-muted">
-                    Name association: {association.name} → {association.canonicalName} ·{" "}
-                    {association.status === "uncertain"
-                      ? "Uncertain; kept separate in person filters. Review the supporting passage."
-                      : association.evidenceIds.every((id) =>
-                            account.evidence.some(
-                              (evidence) => evidence.id === id && evidence.verified && evidence.freshness === "current",
-                            ),
-                          )
-                        ? "Source-supported; person filters use this association unless another source assigns the same name differently."
-                        : "Support is stale or unavailable; kept separate in person filters."}
-                  </p>
-                ))}
-                {account.obligationId && (
-                  <p className="chronology-muted">
-                    Linked obligation: {account.obligationId}. The original deadline is preserved.
-                  </p>
-                )}
-              </details>
-            </div>
-          ))}
+            )
+          })}
           <p className="chronology-evidence-caveat">
             A verified quotation is a text match, not proof that the reported event occurred. Source types carry no
             automatic credibility ranking.
@@ -385,7 +413,7 @@ export default function EventDetail({
                   <p>Previous records:</p>
                   {event.previousIds.map((id) => (
                     <button key={id} type="button" onClick={() => onNavigate(id)}>
-                      {chronology.events.find((item) => item.id === id)?.title ?? id}
+                      {chronology.events.find((item) => item.id === id)?.title ?? "Earlier event record"}
                     </button>
                   ))}
                 </div>
@@ -396,4 +424,52 @@ export default function EventDetail({
       </div>
     </aside>
   )
+}
+
+// The date, claim, attribution and warnings already appear with the excerpts.
+// Keep only additional source context in this optional disclosure.
+function sourceContext(account: ChronologyAccount, event: ChronologyEvent) {
+  const context: Array<{ label: string; value: string }> = []
+  if (account.people.length) context.push({ label: "People named", value: account.people.join(", ") })
+  for (const association of account.nameAssociations ?? []) {
+    const supported =
+      association.status === "supported" &&
+      association.evidenceIds.length > 0 &&
+      association.evidenceIds.every((id) =>
+        account.evidence.some(
+          (evidence) => evidence.id === id && evidence.verified && evidence.freshness === "current",
+        ),
+      )
+    context.push({
+      label: "Name association",
+      value: `${association.name} → ${association.canonicalName}. ${
+        association.status === "uncertain"
+          ? "Uncertain; kept separate in person filters. Review the supporting passage."
+          : supported
+            ? "Source-supported; person filters use this association unless another source assigns the same name differently."
+            : "Support is stale or unavailable; kept separate in person filters."
+      }`,
+    })
+  }
+  if (account.significance !== "relevant")
+    context.push({ label: "Significance", value: account.significance === "key" ? "Key" : "Background" })
+  if (account.privilege === "cleared" || account.privilege === "not-privileged")
+    context.push({ label: "Privilege", value: account.privilege === "cleared" ? "Cleared" : "Not privileged" })
+  if (account.date.documentDate && account.date.documentDate !== event.date.documentDate)
+    context.push({ label: "Document date", value: account.date.documentDate })
+  const relative = account.date.relative
+  if (relative) {
+    if (
+      relative.anchorDocument !== event.date.relative?.anchorDocument ||
+      relative.anchorDate !== event.date.relative?.anchorDate
+    )
+      context.push({
+        label: "Date anchor",
+        value: `${relative.anchorDocument} · ${relative.anchorDate ?? "not established"}`,
+      })
+    if (relative.calculation && relative.calculation !== event.date.relative?.calculation)
+      context.push({ label: "Date calculation", value: relative.calculation })
+  }
+  if (account.obligationId) context.push({ label: "Linked obligation", value: "The original deadline is preserved." })
+  return context
 }
