@@ -156,7 +156,7 @@ export type AdaptiveGridItem = { id: string; size?: "tile" | "wide" | "full" }
 
 // Measured row spans keep natural card heights while retaining one DOM sequence.
 // The 1px row unit avoids the large empty tracks beside a taller neighboring card.
-export function AdaptiveGrid({ items, renderItem, mode = "adaptive", label }: { items: AdaptiveGridItem[]; renderItem: (id: string) => ReactNode; mode?: "adaptive" | "catalog"; label?: string }) {
+export function AdaptiveGrid({ items, renderItem, mode = "adaptive", label }: { items: AdaptiveGridItem[]; renderItem: (id: string) => ReactNode; mode?: "adaptive" | "catalog" | "practice"; label?: string }) {
   const grid = useRef<HTMLDivElement>(null)
   const [heights, setHeights] = useState<Record<string, number>>(() => Object.create(null))
   const keys = items.map((item) => item.id).join("\u0000")
@@ -184,5 +184,5 @@ export function AdaptiveGrid({ items, renderItem, mode = "adaptive", label }: { 
 
 export type AboutViewConfig = { title?: string; text: string; actionLabel?: string }
 export function AboutView({ config, onRefine }: { config: AboutViewConfig; onRefine?: () => void }) {
-  return <div className="dash-about-view"><span className="dash-about-view-icon" aria-hidden="true">{icons.question}</span><p><strong>{config.title ?? "About this view"}:</strong> {config.text}</p>{onRefine && <button type="button" onClick={onRefine}>{config.actionLabel ?? "Refine view"}</button>}</div>
+  return <div className="dash-about-view"><span className="dash-about-view-icon" aria-hidden="true">{icons.question}</span><p title={config.text}><strong>{config.title ?? "About this view"}:</strong> {config.text}</p>{onRefine && <button type="button" onClick={onRefine}>{config.actionLabel ?? "Refine view"}</button>}</div>
 }

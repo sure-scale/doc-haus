@@ -85,11 +85,11 @@ export function SamplePreview({ items }: { items: SamplePreviewData[] }) {
 }
 
 export type ActionTileData = { id: string; icon: IconName; title: string; detail: string; href?: string }
-export function ActionTiles({ items, onAction }: { items: ActionTileData[]; onAction?: (id: string) => void }) {
+export function ActionTiles({ items, onAction, busy }: { items: ActionTileData[]; onAction?: (id: string) => void; busy?: boolean }) {
   return <ul className="dash-actions dash-action-tiles">{items.map((item, index) => {
     const body = <><ShapeIcon icon={item.icon} shape={SHAPES[index % SHAPES.length]} /><strong>{item.title}</strong><span>{item.detail}</span></>
     return <li key={item.id}>{item.href
       ? <Link to={item.href}>{body}</Link>
-      : <button type="button" onClick={() => onAction?.(item.id)} disabled={!onAction}>{body}</button>}</li>
+      : <button type="button" onClick={() => onAction?.(item.id)} disabled={!onAction || busy} aria-busy={busy}>{body}</button>}</li>
   })}</ul>
 }

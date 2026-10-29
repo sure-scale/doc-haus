@@ -100,3 +100,15 @@ test("closed empty tabs persist and workspace roots keep separate dashboard data
   process.env.WORKSPACE_ROOT = first
   expect(await (await app.request("/dashboard/tabs")).json()).toEqual({ state: closed, revision: 1 })
 })
+
+test("dashboard descriptions persist with their view and reject malformed edits without replacing it", async () => {
+  workspace(); const app = dashboardRoutes(), original = state()
+  const saved = { ...original, workspace: { ...original.workspace, dashboards: original.workspace.dashboards.map(tab => ({ ...tab, description: "Spend by client and conversations over time" })) } }
+  expect((await put(app, saved, 0)).status).toBe(200)
+  expect(await (await dashboardRoutes().request("/dashboard/tabs")).json()).toEqual({ state: saved, revision: 1 })
+  for (const description of ["", " ", "x".repeat(241), "A line\nAnother line", 123, { source: "generated-code" }]) {
+    const invalid = { ...saved, workspace: { ...saved.workspace, dashboards: saved.workspace.dashboards.map(tab => ({ ...tab, description })) } }
+    expect((await put(app, invalid, 1)).status).toBe(400)
+  }
+  expect(await (await app.request("/dashboard/tabs")).json()).toEqual({ state: saved, revision: 1 })
+})

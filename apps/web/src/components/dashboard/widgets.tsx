@@ -12,7 +12,7 @@ import { useOpenSettings } from "../settings/navigation"
 import type { Tab } from "../settings/types"
 import { STARTERS } from "../ChatPanel"
 import { useToast } from "../Toast"
-import { ActivityCalendar, AreaChart, Ring, Sparkline, SpreadBars, StackedBar, WeekBars } from "./charts"
+import { ActivityCalendar, AreaChart, Ring, Sparkline, SpreadBars, WeekBars } from "./charts"
 import {
   addDays,
   attention,
@@ -40,7 +40,8 @@ import {
 } from "./data"
 import { icons, ShapeIcon, SHAPES, type IconName, type ShapeName } from "./icons"
 import type { Stage, WidgetId } from "./layout"
-import { AttentionRows, LibraryCards, MatterRows, SamplePreview, StatCard as Stat, type AttentionRowData } from "./visual/WidgetCards"
+import { ActionTiles, AttentionRows, LibraryCards, MatterRows, SamplePreview, StatCard as Stat, type AttentionRowData } from "./visual/WidgetCards"
+import { TokenBreakdown } from "./visual/TokenBreakdown"
 
 // `onPreferences` takes settings a widget saved, so the page shows them at once.
 export type WidgetContext = { data: DashboardData; setup: SetupProgress | null; summary: Summary; period: Period; now: number; onPreferences?: (preferences: DraftingPreferences) => void; onRetry: () => void }
@@ -75,12 +76,7 @@ const money = (value: number) => (value > 0 && value < 0.01 ? "< $0.01" : `$${va
 // Axis labels: whole dollars once amounts reach them.
 const axisMoney = (value: number) => (value === 0 ? "$0" : value >= 10 ? `$${Math.round(value)}` : `$${value.toFixed(value >= 1 ? 1 : 2)}`)
 
-function compact(value: number) {
-  if (value >= 1e9) return `${(value / 1e9).toFixed(1)}B`
-  if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`
-  if (value >= 1e3) return `${(value / 1e3).toFixed(1)}k`
-  return String(value)
-}
+
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`
 
@@ -336,20 +332,12 @@ function Tokens({ summary, period }: WidgetContext) {
   const { input, cached, output, reasoning } = summary.tokens
   if (!input && !cached && !output && !reasoning) return <Empty icon="tokens" title="No tokens used in this period" />
   const total = input + cached + output + reasoning
-  return (
-    <div className="dash-token-body">
-    <div className="dash-token-summary"><div><strong>{compact(total)}</strong><span>total tokens processed</span></div>{cached > 0 && <span className="dash-pill tone-good">{Math.round(cached / total * 100)}% cached input</span>}</div>
-    <StackedBar
-      label={`Tokens, ${lower(period)}`}
-      segments={[
-        { key: "input", label: "Input", value: input, display: compact(input) },
-        { key: "cached", label: "Cached input", value: cached, display: compact(cached) },
-        { key: "output", label: "Output", value: output, display: compact(output) },
-        { key: "reasoning", label: "Reasoning", value: reasoning, display: compact(reasoning) },
-      ]}
-    />
-    </div>
-  )
+  return <TokenBreakdown period={PERIOD_LABELS[period]} notes={cached > 0 ? [`${Math.round(cached / total * 100)}% cached input`] : []} segments={[
+    { key: "input", label: "Input", value: input },
+    { key: "cached", label: "Cached input", value: cached },
+    { key: "output", label: "Output", value: output },
+    { key: "reasoning", label: "Reasoning", value: reasoning },
+  ]} />
 }
 
 // Daily spend over the window; long windows group by week.
@@ -388,37 +376,14 @@ function useSampleMatter() {
 // The chat's first starter, seated in the composer for the lawyer to send.
 const ASK = `?view=chat&prompt=${encodeURIComponent(STARTERS[0])}`
 
-type Tile = { icon: IconName; title: string; text: string; to?: string; run?: () => void }
-
-function Tiles({ tiles, busy }: { tiles: Tile[]; busy?: boolean }) {
-  return (
-    <ul className="dash-actions">
-      {tiles.map((tile, index) => {
-        const body = <>
-          <ShapeIcon icon={tile.icon} shape={SHAPE_ORDER[index % 4]} />
-          <strong>{tile.title}</strong>
-          <span>{tile.text}</span>
-        </>
-        return (
-          <li key={tile.title}>
-            {tile.to ? <Link to={tile.to}>{body}</Link> : <button type="button" onClick={tile.run} disabled={busy} aria-busy={busy}>{body}</button>}
-          </li>
-        )
-      })}
-    </ul>
-  )
-}
-
 function Actions() {
   const sample = useSampleMatter()
-  return (
-    <Tiles busy={sample.adding} tiles={[
-      { icon: "matter", title: "New matter", text: "Open a folder for an engagement", to: "/?new=1" },
-      { icon: "template", title: "Add a template", text: "Draft from your own precedent", to: "/templates" },
-      { icon: "client", title: "Add a client", text: "Keep parties and details on file", to: "/clients" },
-      { icon: "sample", title: "Try the sample", text: "Explore a matter with documents", run: () => sample.open() },
-    ]} />
-  )
+  return <ActionTiles busy={sample.adding} onAction={(id) => { if (id === "sample") sample.open() }} items={[
+    { id: "matter", icon: "matter", title: "New matter", detail: "Open a folder for an engagement", href: "/?new=1" },
+    { id: "template", icon: "template", title: "Add a template", detail: "Draft from your own precedent", href: "/templates" },
+    { id: "client", icon: "client", title: "Add a client", detail: "Keep parties and details on file", href: "/clients" },
+    { id: "sample", icon: "sample", title: "Try the sample", detail: "Explore a matter with documents" },
+  ]} />
 }
 
 // Ways in. Asking and reviewing happen in a matter: the one last worked in,
@@ -428,11 +393,11 @@ function Ideas({ data }: WidgetContext) {
   const matter = own ?? data.matters.find((row) => row.matter.sample)?.matter
   const at = (path: string) => (matter ? `/matter/${matter.id}${path}` : "/?new=1")
   return (
-    <Tiles tiles={[
-      { icon: "documents", title: "Ask about documents", text: own ? `Key points in ${own.title}` : "Key points, deadlines and gaps", to: at(ASK) },
-      { icon: "template", title: "Draft from a template", text: "Start from the firm's own precedent", to: "/templates" },
-      { icon: "review", title: "Review across documents", text: "Ask the same questions of every file", to: at("?view=review") },
-      { icon: "workflow", title: "Run a workflow", text: "A repeatable routine for a matter", to: "/workflows" },
+    <ActionTiles items={[
+      { id: "ask", icon: "documents", title: "Ask about documents", detail: own ? `Key points in ${own.title}` : "Key points, deadlines and gaps", href: at(ASK) },
+      { id: "template", icon: "template", title: "Draft from a template", detail: "Start from the firm's own precedent", href: "/templates" },
+      { id: "review", icon: "review", title: "Review across documents", detail: "Ask the same questions of every file", href: at("?view=review") },
+      { id: "workflow", icon: "workflow", title: "Run a workflow", detail: "A repeatable routine for a matter", href: "/workflows" },
     ]} />
   )
 }

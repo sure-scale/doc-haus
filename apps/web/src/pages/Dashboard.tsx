@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import type { DraftingPreferences } from "../api/ingest/preferences"
 import type { SetupProgress } from "../api/ingest/setup"
 import { askDashboard } from "../api/opencode/dashboard"
 import { useDashboardTabs } from "../components/dashboard/useDashboardTabs"
 import { SetupTab, setupTabProgress } from "../components/dashboard/SetupTab"
-import { AIComposer, DashboardTabs } from "../components/dashboard/visual/DashboardChrome"
+import { AdaptiveGrid, AIComposer, AboutView, DashboardTabs } from "../components/dashboard/visual/DashboardChrome"
 import { addDays, attention, PERIOD_LABELS, PERIODS, startOfDay, summarize, useDashboardData, type DashboardData, type Period } from "../components/dashboard/data"
 import { ChartWidget } from "../components/dashboard/chart-widget"
 import { icons, ShapeIcon } from "../components/dashboard/icons"
@@ -15,6 +15,7 @@ import { caption, LOOKS, RENDER, setupComplete, stageOf, type WidgetContext } fr
 const sparkle = <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5zM20 2v5M17.5 4.5h5" /></svg>
 const pin = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round" aria-hidden="true"><path d="m8 3 8 0-1 7 4 4H5l4-4zM12 14v7" /></svg>
 const suggestions = ["Show my spend by client", "Give me a weekly overview", "Focus on drafts that need me"]
+const describeRequest = (request: string) => request.replace(/[\s\p{Cc}]+/gu, " ").trim().slice(0, 240)
 const titleOf = ({ widget }: WidgetInstance) => widget.type === "chart" ? widget.title : WIDGETS[widget.type].title
 
 // Setup is re-read by App whenever Settings or onboarding closes.
@@ -43,8 +44,6 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
   const [rename, setRename] = useState("")
   const [renaming, setRenaming] = useState(false)
   const [deleting, setDeleting] = useState(false)
-  const askButton = useRef<HTMLButtonElement>(null)
-  const prompt = useRef<HTMLTextAreaElement>(null)
   const tabMenu = useRef<HTMLDetailsElement>(null)
   const controller = useRef<AbortController>(null)
   const workspaceRef = useRef(workspace)
@@ -62,7 +61,6 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
     document.addEventListener("pointerdown", outside)
     return () => document.removeEventListener("pointerdown", outside)
   }, [])
-  useEffect(() => { if (promptOpen) prompt.current?.focus() }, [promptOpen])
   useEffect(() => {
     document.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" })
   }, [active.id, showSetup])
@@ -80,6 +78,17 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
   const setupDone = useMemo(() => !!ready && setupComplete(ready), [ready])
   const stage = ready ? stageOf(ready) : "starting"
   const widgets = tabWidgets(active, stage, setupDone)
+
+  function focusDashboardAction() {
+    ;(document.querySelector<HTMLButtonElement>(".dash-about-view button, .dash-blank button:not(:disabled)") ?? tabMenu.current?.querySelector<HTMLElement>("summary"))?.focus()
+  }
+  function stopRefine() {
+    controller.current?.abort()
+    controller.current = null
+    setWorking(false)
+    setAnnouncement("Dashboard update stopped")
+  }
+  function cancelRefine() { stopRefine(); setPromptOpen(false) }
 
   function update(next: Dashboards, extra: { setupHidden?: boolean; view?: "setup" | "dashboard" } = {}) {
     // A later edit starts a new undo boundary, so Undo never erases newer work.
@@ -146,7 +155,7 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
       if (abort.signal.aborted || newController.current !== abort) return
       const current = workspaceRef.current
       if (current.dashboards.length >= 12) { setNewError("You can have up to 12 dashboard tabs. Close a tab before adding another."); return }
-      const tab: DashboardTab = { id: crypto.randomUUID(), name: plan.name || "My dashboard", period: active.period, stages: {}, widgets: applyPlan([], plan), notes: plan.unsupported }
+      const tab: DashboardTab = { id: crypto.randomUUID(), name: plan.name || "My dashboard", period: active.period, stages: {}, widgets: applyPlan([], plan), notes: plan.unsupported, description: describeRequest(newRequest) }
       setForcedSetup(false)
       const url = new URL(window.location.href)
       url.searchParams.delete("tab")
@@ -180,7 +189,8 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
     setAnnouncement(`${titleOf(item)} removed`)
     requestAnimationFrame(() => {
       const buttons = document.querySelectorAll<HTMLButtonElement>(".dash-pin")
-      ;(buttons[Math.min(index, buttons.length - 1)] ?? askButton.current)?.focus()
+      ;(buttons[Math.min(index, buttons.length - 1)])?.focus()
+      if (!buttons.length) focusDashboardAction()
     })
   }
   function undo() {
@@ -198,7 +208,7 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
     }
     setUndoState(undefined)
     setAnnouncement("Dashboard change undone")
-    requestAnimationFrame(() => askButton.current?.focus())
+    requestAnimationFrame(focusDashboardAction)
   }
   function deleteTab(id = active.id) {
     const removed = workspace.dashboards.find((tab) => tab.id === id)
@@ -219,8 +229,7 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
     setAnnouncement("Dashboard deleted")
     requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')?.focus())
   }
-  async function generate(event: FormEvent) {
-    event.preventDefault()
+  async function generate() {
     if (!request.trim() || !ready || !canGenerate || working) return
     const abort = new AbortController()
     controller.current?.abort()
@@ -235,9 +244,10 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
       const current = workspaceRef.current
       const tab = current.dashboards.find((entry) => entry.id === tabId)
       if (!tab) return
-      const next = { ...tab, name: tab.name === "New dashboard" && plan.name ? plan.name : tab.name, widgets: applyPlan(tabWidgets(tab, stage, setupDone), plan), notes: plan.unsupported }
+      const next = { ...tab, name: tab.name === "New dashboard" && plan.name ? plan.name : tab.name, widgets: applyPlan(tabWidgets(tab, stage, setupDone), plan), notes: plan.unsupported, description: describeRequest(request) }
       update({ ...current, dashboards: current.dashboards.map((entry) => entry.id === tabId ? next : entry) })
       setUndoState({ text: "Dashboard updated", value: current })
+      setPromptOpen(false)
       setAnnouncement("Dashboard updated")
     } catch (cause) {
       if (!abort.signal.aborted) setError(cause instanceof Error ? cause.message : "Could not update the dashboard. Try again.")
@@ -266,6 +276,8 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
         }} onBlur={(event) => { if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) event.currentTarget.open = false }}>
           <summary aria-label={`Options for ${active.name} dashboard`} title="Dashboard options">{icons.edit}</summary>
           <div className="viewer-more-menu">
+            {periodic && <div className="dash-menu-period" role="group" aria-label="Period"><span>Period</span>{PERIODS.map((period: Period) => <button key={period} type="button" aria-pressed={active.period === period} onClick={() => changeTab({ ...active, period })}>{PERIOD_LABELS[period]}{active.period === period && <span aria-hidden="true"> ✓</span>}</button>)}</div>}
+            <button type="button" onClick={() => { if (tabMenu.current) tabMenu.current.open = false; reload() }} disabled={loading} aria-busy={loading}>Refresh</button>
             <button type="button" onClick={(event) => { event.currentTarget.closest("details")!.open = false; setRename(active.name); setRenaming(true); setDeleting(false) }}>Rename</button>
             <button type="button" onClick={(event) => { event.currentTarget.closest("details")!.open = false; setDeleting(true); setRenaming(false); requestAnimationFrame(() => document.querySelector<HTMLButtonElement>(".dash-delete-confirm button")?.focus()) }}>Delete dashboard</button>
           </div>
@@ -278,44 +290,21 @@ export default function Dashboard({ setup, refresh = 0, onSampleAdded, onSetupRe
       {deleting && <div className="dash-delete-confirm" role="group" aria-label="Delete dashboard">
         <p>Delete “{active.name}”? Your matters stay as they are.</p><button type="button" onClick={() => deleteTab()}>Delete dashboard</button><button type="button" className="ghost" onClick={() => { setDeleting(false); requestAnimationFrame(() => tabMenu.current?.querySelector("summary")?.focus()) }}>Cancel</button>
       </div>}
-      {!showSetup && !empty && <div className="dash-toolbar">
-        {periodic && <div className="settings-seg dash-period" role="group" aria-label="Period">{PERIODS.map((period: Period) => <button key={period} type="button" aria-pressed={active.period === period} className={active.period === period ? "active" : ""} onClick={() => changeTab({ ...active, period })}>
-          {active.period === period && <svg className="settings-seg-check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>}{PERIOD_LABELS[period]}
-        </button>)}</div>}
-        <div className="dash-controls">
-          <button type="button" className="icon-btn dash-refresh" onClick={reload} disabled={loading} aria-busy={loading} aria-label="Refresh" title="Refresh">{icons.refresh}</button>
-          <button ref={askButton} type="button" className={`dash-ask${promptOpen ? " is-open" : ""}`} onClick={() => { if (promptOpen && working) { controller.current?.abort(); setWorking(false); setAnnouncement("Dashboard update stopped") } setPromptOpen(!promptOpen) }} disabled={!canGenerate} aria-expanded={promptOpen} aria-controls="dash-ai-panel">{sparkle}Ask AI</button>
-        </div>
-      </div>}
       {!showSetup && !empty && !setup?.ready && <p className="dash-ai-error" role="status">Connect your AI provider and models to build a dashboard. <button type="button" onClick={() => select("__setup")}>Connect AI in Setup</button></p>}
-      {promptOpen && !showSetup && !empty && <form id="dash-ai-panel" className="dash-ai-panel" onSubmit={generate} onKeyDown={(event) => {
-        if (event.key !== "Escape") return
-        event.preventDefault()
-        controller.current?.abort()
-        setWorking(false)
-        setPromptOpen(false)
-        if (working) setAnnouncement("Dashboard update stopped")
-        requestAnimationFrame(() => askButton.current?.focus())
-      }}>
-        <div className="dash-ai-heading"><span className="dash-ai-mark">{sparkle}</span><div><label htmlFor="dash-request">Tell AI what you want from this dashboard</label><p>Your AI arranges the widgets. Your app works out the figures.</p></div></div>
-        <div className="dash-ai-entry"><textarea ref={prompt} id="dash-request" value={request} onChange={(event) => setRequest(event.target.value)} placeholder="For example, show my spend by client and the drafts that need me…" rows={2} maxLength={2000} disabled={working} /><button type="submit" className="dash-ai-submit" disabled={!request.trim() || working || !canGenerate}>{sparkle}{working ? "Building dashboard…" : "Update dashboard"}</button></div>
-        <div className="dash-ai-suggestions" aria-label="Dashboard ideas">{suggestions.map((suggestion) => <button type="button" key={suggestion} disabled={working} onClick={() => { setRequest(suggestion); prompt.current?.focus() }}>{suggestion}</button>)}</div>
-        <div className="dash-ai-foot"><p>Pinned widgets stay in place. Uses your fast AI model.</p>{working && <button type="button" className="dash-text-button" onClick={() => { controller.current?.abort(); setWorking(false); setAnnouncement("Dashboard update stopped"); requestAnimationFrame(() => prompt.current?.focus()) }}>Stop</button>}</div>
-        {working && <p role="status" className="dash-ai-working">Your AI is choosing widgets and chart settings…</p>}
-        {error && <p role="alert" className="dash-ai-error">{error}</p>}
-      </form>}
+      {!showSetup && !empty && widgets.length > 0 && <AboutView config={{ text: active.description || `Showing ${widgets.map(titleOf).join(", ")}.` }} onRefine={canGenerate ? () => { setError(""); setPromptOpen(true) } : undefined} />}
       {!showSetup && !empty && notes.length > 0 && <div className="dash-ai-notes" role="status"><strong>About this dashboard</strong><ul>{notes.map((note) => <li key={note}>{note}</li>)}</ul></div>}
       {stored.error && <p className="dash-ai-error" role="alert">{stored.error} {stored.conflict ? <button type="button" onClick={() => { controller.current?.abort(); setWorking(false); setForcedSetup(false); setUndoState(undefined); setRenaming(false); setDeleting(false); setPromptOpen(false); void stored.loadSaved() }}>Load saved dashboards</button> : <button type="button" onClick={() => void stored.retry()}>Retry save</button>}</p>}
       {!showSetup && !empty && unread > 0 && <div className="dash-banner" role="status">{icons.warning}<p>Some matters could not be read, so their spend and drafts are missing here.</p><button type="button" className="btn-sm" onClick={reload} disabled={loading}>Retry</button></div>}
       <div id="dash-content" role={empty ? "region" : "tabpanel"} aria-label={empty ? "Dashboard" : undefined} aria-labelledby={empty ? undefined : `dash-content-tab-${showSetup ? "__setup" : active.id}`} tabIndex={0}>
         {empty ? <div className="dash-blank"><ShapeIcon icon="plus" shape="sunny" className="dash-blank-badge" /><p className="dash-blank-title">A dashboard for the way you work</p><p>Create a dashboard, or return to your setup checklist.</p><div className="dash-blank-actions"><button type="button" onClick={create}>{icons.plus}New dashboard</button><button type="button" className="ghost" onClick={() => select("__setup")}>Show setup</button></div></div> : showSetup ? context ? <>{data?.error && <p className="dash-ai-error" role="status">Your matters could not be loaded. You can still update setup. <button type="button" onClick={reload} disabled={loading}>Retry matters</button></p>}<SetupTab context={context} onSetupRefresh={onSetupRefresh} onSampleAdded={onSampleAdded} onHideSetup={() => closeTab("__setup")} /></> : <div className="dash-error" role={data?.error ? "alert" : "status"}><ShapeIcon icon="setup" shape="sunny" /><div><p className="dash-error-title">{data?.error ? "Could not load setup" : "Loading your setup…"}</p>{data?.error && <p>Your saved settings will show when the services are available.</p>}</div>{data?.error && <button type="button" onClick={reload} disabled={loading}>Retry</button>}</div> : data?.error ? <div className="dash-error" role="alert"><ShapeIcon icon="warning" shape="flower" /><div><p className="dash-error-title">Could not load your matters</p><p>Your figures will show once the matter list loads.</p></div><button type="button" onClick={reload} disabled={loading}>Retry</button></div>
-          : widgets.length === 0 ? <div className="dash-blank"><ShapeIcon icon="plus" shape="sunny" className="dash-blank-badge" /><p className="dash-blank-title">A dashboard for the way you work</p><p>Tell your AI what you want to keep an eye on.</p><button type="button" disabled={!canGenerate} onClick={() => { setPromptOpen(true); requestAnimationFrame(() => prompt.current?.focus()) }}>{sparkle}Ask AI to build it</button></div>
-            : <div className="dash-grid" aria-busy={!context}>{widgets.map((item) => <Widget key={item.key} item={item} context={context} period={active.period} bold={item.widget.type === bold} onPin={() => togglePin(item.key)} onRemove={() => remove(item.key)} />)}</div>}
+          : widgets.length === 0 ? <div className="dash-blank"><ShapeIcon icon="plus" shape="sunny" className="dash-blank-badge" /><p className="dash-blank-title">A dashboard for the way you work</p><p>Tell your AI what you want to keep an eye on.</p><button type="button" disabled={!canGenerate} onClick={() => { setError(""); setPromptOpen(true) }}>{sparkle}Ask AI to build it</button></div>
+            : <div aria-busy={!context}><AdaptiveGrid mode="practice" items={widgets.map((item) => ({ id: item.key, size: item.widget.type === "chart" ? item.widget.form === "stat" ? "tile" : item.widget.form === "calendar" ? "full" : "wide" : WIDGETS[item.widget.type].size }))} renderItem={(id) => { const item = widgets.find((entry) => entry.key === id)!; return <Widget item={item} context={context} period={active.period} bold={item.widget.type === bold} onPin={() => togglePin(item.key)} onRemove={() => remove(item.key)} /> }} /></div>}
       </div>
     </div>
+    <AIComposer open={promptOpen && !showSetup && !empty} request={request} working={working} error={error} disabled={!canGenerate} config={{ title: "Refine dashboard", promptLabel: "Tell AI what you want from this dashboard", submitLabel: "Update dashboard", suggestions, footnote: "Pinned widgets stay in place. Figures come from your live matter data." }} onRequestChange={setRequest} onGenerate={() => void generate()} onCancel={cancelRefine} onStop={stopRefine} />
     <AIComposer open={newOpen} request={newRequest} working={newWorking} error={newError || (!setup?.ready ? "Connect your AI provider and models in Setup before generating a dashboard." : !ready ? "Your matter data could not be loaded. Retry loading it before generating a dashboard." : workspace.dashboards.length >= 12 ? "You can have up to 12 dashboard tabs. Close a tab before adding another." : undefined)} disabled={!canGenerate || workspace.dashboards.length >= 12} config={{ suggestions, footnote: "Your AI chooses widgets. Figures come from your live matter data." }} onRequestChange={setNewRequest} onGenerate={() => void generateNew()} onCancel={cancelNew} onStop={stopNew} />
     <p className="sr-only" role="status">{announcement}</p>
-    {undoState && <Snackbar key={undoState.text} text={undoState.text} onUndo={undo} onDismiss={() => { if (document.activeElement?.closest(".dash-snackbar")) askButton.current?.focus(); setUndoState(undefined) }} />}
+    {undoState && <Snackbar key={undoState.text} text={undoState.text} onUndo={undo} onDismiss={() => { if (document.activeElement?.closest(".dash-snackbar")) focusDashboardAction(); setUndoState(undefined) }} />}
   </>
 }
 

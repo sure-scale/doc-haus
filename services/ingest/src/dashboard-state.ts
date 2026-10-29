@@ -10,7 +10,7 @@ export const DASHBOARD_STATE_MAX_BYTES = 256 * 1024
 
 type Widget = { key: string; widget: PlanWidget; pinned: boolean }
 type Arrangement = { order?: string[]; hidden: string[]; added: string[] }
-type Tab = { id: string; name: string; period: string; stages: Record<string, Widget[]>; widgets?: Widget[]; notes?: string[]; legacy?: Record<string, Arrangement> }
+type Tab = { id: string; name: string; description?: string; period: string; stages: Record<string, Widget[]>; widgets?: Widget[]; notes?: string[]; legacy?: Record<string, Arrangement> }
 export type DashboardState = {
   version: 1
   workspace: { active: string; dashboards: Tab[] }
@@ -75,10 +75,11 @@ export function parseDashboardState(value: unknown): DashboardState {
   const ids = new Set<string>()
   const dashboards = list.map((item): Tab => {
     if (!object(item)) throw new DashboardStateError("Choose valid dashboard tabs.")
-    fields(item, ["id", "name", "period", "stages", "widgets", "notes", "legacy"])
+    fields(item, ["id", "name", "description", "period", "stages", "widgets", "notes", "legacy"])
     const id = text(item.id, 128, "Each dashboard tab needs a short identifier.")
     if (id === "__setup") throw new DashboardStateError("The Setup tab identifier is reserved.")
     const name = text(item.name, 30, "Each dashboard tab needs a name of at most 30 characters.").trim()
+    const description = item.description === undefined ? undefined : text(item.description, 240, "Dashboard descriptions must be a single line of at most 240 characters.").trim()
     if (ids.has(id) || !PERIODS.includes(item.period as string) || !object(item.stages)) throw new DashboardStateError("Choose distinct dashboard tabs and a valid period.")
     ids.add(id)
     fields(item.stages, STAGES)
@@ -99,7 +100,7 @@ export function parseDashboardState(value: unknown): DashboardState {
         return [stage, { ...(arrangement.order === undefined ? {} : { order: templateList(arrangement.order) }), hidden: templateList(arrangement.hidden), added: templateList(arrangement.added) }]
       }))
     }
-    return { id, name, period: item.period as string, stages, ...(widgets === undefined ? {} : { widgets }), ...(notes === undefined ? {} : { notes }), ...(legacy === undefined ? {} : { legacy }) }
+    return { id, name, ...(description === undefined ? {} : { description }), period: item.period as string, stages, ...(widgets === undefined ? {} : { widgets }), ...(notes === undefined ? {} : { notes }), ...(legacy === undefined ? {} : { legacy }) }
   })
   const active = value.workspace.active
   if (typeof active !== "string" || (dashboards.length ? !ids.has(active) : active !== "")) throw new DashboardStateError("Select a saved dashboard tab.")

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { SessionMessageInfo } from "@opencode/client"
 import { getMatter, listJurisdictions, listMatters, type Jurisdiction, type Matter } from "../../api/ingest/matters"
 import { getDraftingStatus } from "../../api/ingest/drafting-status"
@@ -145,26 +145,73 @@ export async function loadDashboard(): Promise<DashboardData> {
   }
 }
 
-// Re-reads when `setup` changes (App re-reads it whenever Settings or
-// onboarding closes, so saved settings may have changed), when a matter is added
-// elsewhere (`refresh`) or on reload(). Keeps the previous figures on screen
-// while a refresh runs.
+// One reader for the whole dashboard. Invalidation during a read coalesces into
+// one subsequent read; an obsolete result never replaces the newer request.
+export function dashboardRefreshController<T>(options: {
+  load: () => Promise<T>
+  publish: (value: T) => void
+  pending: () => void
+  visible: () => boolean
+  intervalMs?: number
+}) {
+  let stopped = false
+  let running = false
+  let queued = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const schedule = () => {
+    clearTimeout(timer)
+    if (!stopped && options.visible()) timer = setTimeout(() => { if (options.visible()) request() }, options.intervalMs ?? 30_000)
+  }
+  async function run() {
+    running = true
+    options.pending()
+    try {
+      const value = await options.load()
+      if (!stopped && !queued) options.publish(value)
+    } finally {
+      running = false
+      if (stopped) return
+      if (queued) { queued = false; void run() }
+      else schedule()
+    }
+  }
+  function request() {
+    if (stopped) return
+    clearTimeout(timer)
+    if (running) queued = true
+    else void run()
+  }
+  return { request, onVisible() { if (options.visible()) request() }, stop() { stopped = true; queued = false; clearTimeout(timer) } }
+}
+
+// Retain previous figures during reads; setup changes and manual refresh still
+// invalidate them, as do returning to a visible dashboard and periodic reads.
 export function useDashboardData(setup: unknown, refresh: number) {
   const [data, setData] = useState<DashboardData>()
   const [loading, setLoading] = useState(true)
-  const [reloads, setReloads] = useState(0)
+  const controller = useRef<ReturnType<typeof dashboardRefreshController<DashboardData>> | undefined>(undefined)
+  const inputs = useRef({ setup, refresh })
   useEffect(() => {
-    let live = true
-    setLoading(true)
-    // A read that throws shows as the error state, never endless placeholders.
-    void loadDashboard().catch((): DashboardData => ({ matters: [], error: "Could not load matters" })).then((next) => {
-      if (!live) return
-      setData(next)
-      setLoading(false)
+    const reader = dashboardRefreshController({
+      load: () => loadDashboard().catch((): DashboardData => ({ matters: [], error: "Could not load matters" })),
+      pending: () => setLoading(true),
+      publish: (next) => { setData(next); setLoading(false) },
+      visible: () => document.visibilityState === "visible",
     })
-    return () => { live = false }
-  }, [setup, refresh, reloads])
-  return { data, loading, reload: () => setReloads((count) => count + 1) }
+    controller.current = reader
+    const onVisible = reader.onVisible
+    document.addEventListener("visibilitychange", onVisible)
+    window.addEventListener("focus", onVisible)
+    reader.request()
+    return () => { reader.stop(); controller.current = undefined; document.removeEventListener("visibilitychange", onVisible); window.removeEventListener("focus", onVisible) }
+  }, [])
+  useEffect(() => {
+    if (inputs.current.setup !== setup || inputs.current.refresh !== refresh) {
+      inputs.current = { setup, refresh }
+      controller.current?.request()
+    }
+  }, [setup, refresh])
+  return { data, loading, reload: () => controller.current?.request() }
 }
 
 export function startOfDay(time: number) {

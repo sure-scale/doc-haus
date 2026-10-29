@@ -574,6 +574,9 @@ dialog.dash-add-panel:not([open]) { display: none; }
 .dash-tab-menu > summary { width: 40px; height: 40px; border-radius: var(--radius-pill); }
 .dash-tab-menu .viewer-more-menu { min-width: 170px; }
 .dash-tab-menu .viewer-more-menu button { width: 100%; text-align: left; min-height: 40px; border: 0; background: transparent; padding: 6px 12px; color: var(--text); }
+.dash-menu-period { border-bottom: 1px solid var(--border); padding-bottom: 4px; margin-bottom: 4px; }
+.dash-menu-period > span { display: block; padding: 8px 12px 2px; color: var(--text-secondary); font-size: 12px; }
+.dash-tab-menu .viewer-more-menu button[aria-pressed="true"] { font-weight: 650; }
 .dash-tab-menu .viewer-more-menu button:hover:not(:disabled) { background: var(--panel-hover); }
 .dash-tab-form, .dash-delete-confirm { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3) var(--space-4); background: var(--panel); border: 1px solid var(--border); border-radius: var(--md-sys-shape-corner-large); }
 .dash-tab-form label { font-size: 13px; font-weight: 600; }

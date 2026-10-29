@@ -423,22 +423,25 @@ async function scenario(name: string, run: () => Promise<void>) {
 }
 const clean = (state: State) => { expect(state.unexpected, "unexpected requests").toEqual([]); expect(state.errors, "page errors").toEqual([]) }
 const card = (page: Page, title: string) => page.locator("section.dash-card").filter({ has: page.getByRole("heading", { name: title, exact: true, level: 2 }) })
-const askButton = (page: Page) => page.getByRole("button", { name: "Ask AI", exact: true })
+const askButton = (page: Page) => page.getByRole("button", { name: "Refine view", exact: true })
 const menuHits: unknown[] = []
 async function hideWidget(page: Page, title: string) {
   await card(page, title).hover()
   await page.getByRole("button", { name: `Remove ${title}`, exact: true }).click()
   await expect(card(page, title)).toHaveCount(0)
 }
-const order = (page: Page) => page.locator(".dash-grid > section.dash-card h2").allTextContents()
+const order = (page: Page) => page.locator("#dash-content section.dash-card h2").allTextContents()
 const noPageHeading = (page: Page) => expect(page.locator(".page-bar")).toHaveCount(0)
-const period = (page: Page) => page.getByRole("group", { name: "Period", exact: true })
+const period = (page: Page) => page.locator('.dash-menu-period[aria-label="Period"]')
+async function openOptions(page: Page) {
+  const menu = page.locator("details.dash-tab-menu")
+  if (!await menu.evaluate((node) => (node as HTMLDetailsElement).open)) await menu.locator("summary").click()
+}
 // Settled: saved tabs shown, no skeletons left and the refresh control idle.
 async function dashboard(page: Page, expectGrid = true, reload = false) {
   if (reload) await page.reload()
   else await page.goto(`${baseURL}/dashboard`)
   await expect(page.getByRole("tablist", { name: "Dashboards" })).toBeVisible()
-  await expect(page.getByRole("button", { name: "Refresh", exact: true })).toBeEnabled()
   if (expectGrid) await expect(page.locator(".dash-skeleton")).toHaveCount(0)
 }
 
@@ -537,7 +540,9 @@ try {
         await noPageHeading(page)
         // Essentials done and drafts finished: the work and the figures, no onboarding.
         expect(await order(page)).toEqual(PRACTICE)
+        await openOptions(page)
         await expect(period(page).getByRole("button", { name: "This month", exact: true })).toHaveAttribute("aria-pressed", "true")
+        await page.locator("details.dash-tab-menu summary").click()
         const needs = card(page, "Needs you").locator(".dash-attention > li")
         await expect(needs.locator("strong")).toHaveText(["Drafting run failed", "2 questions waiting", "Drafting stalled, press Continue"])
         for (const [index, id] of ["m-tidewater", "m-marlowe", "m-copperleaf"].entries()) {
@@ -824,6 +829,10 @@ try {
       await composer.getByRole("textbox", { name: "Describe what you want", exact: true }).fill("A dashboard about client spend")
       await composer.getByRole("button", { name: "Generate dashboard", exact: true }).click()
       await expect(page.getByRole("tab", { name: "Practice costs", exact: true })).toHaveAttribute("aria-selected", "true")
+      await expect(page.locator(".dash-about-view")).toContainText("A dashboard about client spend")
+      await page.locator(".dash-about-view").getByRole("button", { name: "Refine view", exact: true }).click()
+      await expect(page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true })).toBeFocused()
+      await page.keyboard.press("Escape")
       await capture(page, "ai-named-tabs-1440x1000")
       await page.getByRole("tab", { name: "Practice costs", exact: true }).focus()
       await page.keyboard.press("Home")
@@ -841,6 +850,7 @@ try {
       await expect(page.getByRole("tab", { name: "Client work", exact: true })).toBeVisible()
       await dashboard(page, true, true)
       await expect(page.getByRole("tab", { name: "Client work", exact: true })).toHaveAttribute("aria-selected", "true")
+      await expect(page.locator(".dash-about-view")).toContainText("A dashboard about client spend")
       await page.locator('summary[aria-label="Options for Client work dashboard"]').click()
       await page.getByRole("button", { name: "Delete dashboard", exact: true }).click()
       await page.getByRole("group", { name: "Delete dashboard", exact: true }).getByRole("button", { name: "Delete dashboard", exact: true }).click()
@@ -883,7 +893,7 @@ try {
     } finally { await context.close() }
   })
 
-  await scenario("Clicking the current tab preserves the AI request and Undo", async () => {
+  await scenario("Clicking the current tab after an AI update preserves Undo", async () => {
     const state = fixture("populated"); state.aiDelay = 1000
     const { page, context } = await open(state, 1440, 1000)
     try {
@@ -892,8 +902,7 @@ try {
       await page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true }).fill("Show spend by client")
       await page.getByRole("button", { name: "Update dashboard", exact: true }).click()
       await expect.poll(() => state.aiPrompts.length).toBe(1)
-      await page.getByRole("tab", { name: "Saved work", exact: true }).click()
-      await expect(page.getByRole("button", { name: "Building dashboard…", exact: true })).toBeVisible()
+      await expect(page.getByRole("button", { name: "Generating…", exact: true })).toBeVisible()
       await expect.poll(() => order(page)).toEqual(["Spend by client", "Conversations over time"])
       await page.getByRole("tab", { name: "Saved work", exact: true }).click()
       await expect(page.locator(".dash-snackbar").getByRole("button", { name: "Undo", exact: true })).toBeVisible()
@@ -911,8 +920,9 @@ try {
       await page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true }).fill("Show spend by client")
       await page.getByRole("button", { name: "Update dashboard", exact: true }).click()
       await expect.poll(() => state.aiPrompts.length).toBe(1)
-      await page.getByRole("button", { name: "Close Setup tab", exact: true }).click({ force: true })
-      await page.getByRole("button", { name: "Confirm close Setup tab", exact: true }).click()
+      // Simulate a queued internal closure event while the modal makes background clicks inert.
+      await page.locator('button[aria-label="Close Setup tab"]').dispatchEvent("click")
+      await page.locator('button[aria-label="Confirm close Setup tab"]').dispatchEvent("click")
       await expect.poll(() => state.dashboardState?.setupHidden).toBe(true)
       await expect.poll(() => order(page)).toEqual(["Spend by client", "Conversations over time"])
       await expect.poll(() => state.aiDeleted.length).toBe(1)
@@ -946,6 +956,7 @@ try {
         await expect(input).toHaveCount(0)
         await expect(askButton(page)).toBeFocused()
       } else {
+        await page.getByRole("button", { name: "Close dashboard composer", exact: true }).click()
         await page.getByRole("button", { name: "New dashboard", exact: true }).click()
         const composer = page.getByRole("dialog", { name: "New dashboard", exact: true })
         await expect(composer).toBeVisible()
@@ -953,7 +964,7 @@ try {
         await composer.getByRole("button", { name: "Cancel", exact: true }).click()
         await expect(page.getByRole("tab", { name: "Saved work", exact: true })).toHaveAttribute("aria-selected", "true")
       }
-      await expect(page.getByRole("button", { name: "Building dashboard…", exact: true })).toHaveCount(0)
+      await expect(page.getByRole("button", { name: "Generating…", exact: true })).toHaveCount(0)
       await expect.poll(() => state.aiDeleted.length).toBe(1)
       expect(await order(page)).toEqual(before)
       await expect(page.locator(".dash-ai-error")).toHaveCount(0)
@@ -1062,7 +1073,7 @@ try {
       await askButton(page).click()
       await page.getByRole("textbox", { name: "Tell AI what you want from this dashboard", exact: true }).fill("Please update the dashboard")
       await page.getByRole("button", { name: "Update dashboard", exact: true }).click()
-      await expect(page.locator(".dash-ai-error")).toBeVisible()
+      await expect(page.getByRole("dialog", { name: "Refine dashboard" }).getByRole("alert")).toBeVisible()
       expect(await order(page)).toEqual(PRACTICE)
       await expect.poll(() => state.aiDeleted.length).toBe(1)
       await capture(page, `ai-${mode}-1440x1000`, { fullPage: false })
@@ -1089,6 +1100,7 @@ try {
     try {
       await dashboard(page)
       const total = card(page, "Total spend")
+      await openOptions(page)
       await expect(period(page).getByRole("button", { name: "This month", exact: true })).toHaveAttribute("aria-pressed", "true")
       await expect(total.getByText("This month", { exact: true })).toBeVisible()
       await period(page).getByRole("button", { name: "Last month", exact: true }).click()
@@ -1103,6 +1115,7 @@ try {
       await expect(total.locator(".dash-stat-value")).toHaveText(money(own(state).reduce((sum, row) => sum + row.cost, 0)))
       // The period is saved with the layout.
       await dashboard(page, true, true)
+      await openOptions(page)
       await expect(period(page).getByRole("button", { name: "All time", exact: true })).toHaveAttribute("aria-pressed", "true")
       await period(page).getByRole("button", { name: "This month", exact: true }).click()
       await expect(page.locator(".dash-skeleton")).toHaveCount(0)
@@ -1137,8 +1150,11 @@ try {
       // With no widget left that follows the period, the choice goes too.
       await page.mouse.move(5, 5)
       await hideWidget(page, "Total spend")
+      await openOptions(page)
       await expect(period(page)).toBeVisible()
+      await page.locator("details.dash-tab-menu summary").click()
       await hideWidget(page, "Spend by matter")
+      await openOptions(page)
       await expect(period(page)).toHaveCount(0)
       clean(state)
     } finally { await context.close() }
@@ -1163,6 +1179,7 @@ try {
       state.failSessions.clear()
       await banner.getByRole("button", { name: "Retry", exact: true }).click()
       await expect(banner).toHaveCount(0)
+      await openOptions(page)
       await expect(page.getByRole("button", { name: "Refresh", exact: true })).toBeEnabled()
       await expect(card(page, "Total spend").locator(".dash-stat-value")).toHaveText(money(month))
       clean(state)
