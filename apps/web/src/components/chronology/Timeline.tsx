@@ -607,8 +607,12 @@ export default function ChronologyTimeline({
               }
             }}
           >
-            <summary>{undated.length} undated / ambiguous</summary>
+            <summary>{undated.length} not placed on timeline</summary>
             <div className="chronology-timeline-list">
+              <p>
+                These saved entries have unknown, ambiguous or unresolved relative dates. Source processing is shown
+                separately under Sources.
+              </p>
               {undated.map((event) => (
                 <button
                   key={event.id}

@@ -23,6 +23,14 @@ export function dateLabel(date: ChronologyDate) {
   const timezone = date.timezone && !text.toLowerCase().includes(date.timezone.toLowerCase()) ? ` ${date.timezone}` : ""
   return `${qualified}${qualifier && !text.toLowerCase().includes(qualifier) ? ` (${qualifier})` : ""}${time}${timezone}`
 }
+/** Long qualifications remain complete in the table's secondary description. */
+export function tableDateQualifier(date: ChronologyDate) {
+  return date.qualifier && date.qualifier.trim().length > 48 ? date.qualifier : undefined
+}
+export function tableDateLabel(date: ChronologyDate) {
+  return dateLabel(tableDateQualifier(date) ? { ...date, qualifier: undefined } : date)
+}
+
 export function eventEvidence(event: ChronologyEvent) {
   return event.accounts.flatMap((account) => account.evidence)
 }

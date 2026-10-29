@@ -361,6 +361,10 @@
 .chronology-swimlane-timeline .chronology-undated-events .chronology-timeline-list button {
   width: 100%;
 }
+.chronology-swimlane-timeline .chronology-undated-events .chronology-timeline-list p {
+  margin: 0 0 4px;
+  line-height: 1.5;
+}
 @media (max-width: 600px) {
   .chronology-swimlane-timeline .chronology-timeline-key {
     flex-basis: 100%;

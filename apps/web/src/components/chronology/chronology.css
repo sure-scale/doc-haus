@@ -1130,3 +1130,17 @@
     animation: none;
   }
 }
+
+/* Preserve the complete source qualification while keeping date cells scannable. */
+.chronology-workbench .chronology-table-date-qualifier {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  max-height: 2.8em;
+  margin-top: 4px;
+  color: var(--chronology-muted, #6b7180);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}

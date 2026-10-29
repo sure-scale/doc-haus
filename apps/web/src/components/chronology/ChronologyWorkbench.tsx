@@ -40,6 +40,8 @@ import {
   type ChronologyChatReference,
   chronologyPeople,
   dateLabel,
+  tableDateLabel,
+  tableDateQualifier,
   emptyFilters,
   eventEvidence,
   eventQualifications,
@@ -629,8 +631,21 @@ export default function ChronologyWorkbench({
                         data-event-id={event.id}
                         className={`${selectedId === event.id ? "is-selected" : ""}${event.hidden ? " is-hidden" : ""}`}
                       >
-                        <td>
-                          {dateLabel(event.date)}
+                        <td
+                          title={dateLabel(event.date)}
+                          aria-describedby={
+                            tableDateQualifier(event.date) ? `chronology-date-qualifier-${event.id}` : undefined
+                          }
+                        >
+                          {tableDateLabel(event.date)}
+                          {tableDateQualifier(event.date) && (
+                            <span
+                              id={`chronology-date-qualifier-${event.id}`}
+                              className="chronology-table-date-qualifier"
+                            >
+                              {tableDateQualifier(event.date)}
+                            </span>
+                          )}
                           {event.date.rangeKind === "duration" && (
                             <span className="chronology-table-qualification">Known period</span>
                           )}

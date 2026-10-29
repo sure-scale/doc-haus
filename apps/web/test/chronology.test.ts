@@ -4,6 +4,8 @@ import {
   chronologyChatContext,
   chronologyPeople,
   dateLabel,
+  tableDateLabel,
+  tableDateQualifier,
   emptyFilters,
   matchesChronology,
   simpleAddition,
@@ -90,6 +92,48 @@ describe("chronology lawyer view", () => {
     expect(dateLabel({ original: "by 12 May 2026", precision: "exact", start: "2026-05-12", qualifier: "by" })).toBe(
       "by 12 May 2026",
     )
+  })
+  test("table dates separate a long qualification while retaining its complete text", () => {
+    const date = {
+      original: "17 August",
+      precision: "ambiguous" as const,
+      qualifier: "year not stated in source · Full calendar date is not established; original wording retained.",
+      time: "09:15",
+      timezone: "UTC",
+    }
+    expect(tableDateLabel(date)).toBe("17 August (ambiguous date) · 09:15 UTC")
+    expect(tableDateQualifier(date)).toBe(date.qualifier)
+    expect(dateLabel(date)).toContain(date.qualifier)
+  })
+  test("table dates keep short temporal constraints inline and disclose long ones without paraphrasing", () => {
+    for (const qualifier of [
+      "by",
+      "before",
+      "within ten working days of notice",
+      "subject to written confirmation",
+      "date unknown",
+    ]) {
+      const date = { original: "the stated delivery date", precision: "relative" as const, qualifier }
+      expect(tableDateLabel(date)).toBe(dateLabel(date))
+      expect(tableDateQualifier(date)).toBeUndefined()
+    }
+    const qualifier =
+      "not earlier than the first working day following delivery, excluding any day on which the receiving office is closed"
+    const date = { original: "the stated delivery date", precision: "relative" as const, qualifier }
+    expect(tableDateLabel(date)).toBe("the stated delivery date (relative date)")
+    expect(tableDateQualifier(date)).toBe(qualifier)
+    expect(dateLabel(date)).toContain(qualifier)
+  })
+  test("table date disclosure preserves original partial, uncertain and timed wording", () => {
+    for (const date of [
+      { original: "August 2038", precision: "month" as const, start: "2038-08" },
+      { original: "06/07/38", precision: "ambiguous" as const },
+      { original: "spring or early summer", precision: "approximate" as const },
+      { original: "2038-08-17T09:15:00Z", precision: "exact" as const, time: "09:15:00Z", timezone: "UTC" },
+    ]) {
+      expect(tableDateLabel(date)).toBe(dateLabel(date))
+      expect(tableDateQualifier(date)).toBeUndefined()
+    }
   })
   test("person filters join only supported current aliases and keep ambiguous identities separate", () => {
     const named = {
