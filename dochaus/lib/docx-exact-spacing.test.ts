@@ -1,16 +1,17 @@
 import { expect, spyOn, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { unzipSync, zipSync, strFromU8, strToU8 } from "fflate"
+import { unzipSync, zipSync, strFromU8, strToU8, Zip, ZipPassThrough } from "fflate"
 import { renderMarkdownToDocx } from "./render"
 import { createDocxRevision, applyDocxParagraphEdits } from "./docx-amendments"
 import { exportDocxComments, readDocxComments } from "./docx-comments"
 import { docxodus } from "./docxodus"
 import { authorExactParagraphSpacing } from "./docx-exact-spacing"
 const sha = (bytes:Uint8Array) => createHash("sha256").update(bytes).digest("hex")
-test("original generated source refuses global style; narrowed synthetic source preserves paired bookmarks in either duplicate cell", async () => {
+test("original generated source and irrelevant-style variant preserve paired bookmarks in either duplicate cell", async () => {
   const raw=(await renderMarkdownToDocx("| Label | Value |\n| --- | --- |\n| A | Same |\n| B | Same |" )).bytes
   const original=await createDocxRevision(raw), rawRow=original.paragraphs.find(p=>p.text === "Same")!
-  await expect(authorExactParagraphSpacing(raw,{sourceSha256:sha(raw),paragraphHandle:rawRow.paragraph_handle,paragraphText:rawRow.text,tableContext:rawRow.table,spacingAfterPoints:6,author:"Synthetic Counsel"})).rejects.toThrow("unresolved_spacing")
+  const originalResult=await authorExactParagraphSpacing(raw,{sourceSha256:sha(raw),paragraphHandle:rawRow.paragraph_handle,paragraphText:rawRow.text,tableContext:rawRow.table,spacingAfterPoints:6,author:"Synthetic Counsel"})
+  expect(originalResult.afterDirect).toBe("120")
   const parts=unzipSync(raw)
   parts["word/styles.xml"]=strToU8(strFromU8(parts["word/styles.xml"]!).replace("<w:contextualSpacing />", ""))
   const source=zipSync(parts)
@@ -138,4 +139,93 @@ test("preserves prior same-author revision and separate comment through selectiv
     finally {s.close()}
   }
   expect(sha(source)).toBe(hash)
+})
+
+test("only the selected paragraph's proven style closure admits spacing", async () => {
+  const raw=(await renderMarkdownToDocx("| Label | Value |\n| --- | --- |\n| A | Same |\n| B | Same |")).bytes, parts=unzipSync(raw)
+  const body=strFromU8(parts["word/document.xml"]!), styles=strFromU8(parts["word/styles.xml"]!)
+  const target=[...body.matchAll(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g)].filter(m=>m[0].includes(">Same</w:t>"))[1]![0]
+  const direct=(xml:string) => body.replace(target,target.replace('<w:pPr>',`<w:pPr>${xml}`))
+  const normal='<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal" />'
+  const cases:[string,string,string,string][]=[
+    ["target contextual",direct('<w:contextualSpacing/>'),styles,"unresolved_spacing"],
+    ["target grid",direct('<w:snapToGrid/>'),styles,"unresolved_spacing"],
+    ["target numbering",direct('<w:numPr><w:numId w:val="1"/></w:numPr>'),styles,"unresolved_spacing"],
+    ["target afterLines",body.replace(target,target.replace('w:after="80"','w:after="80" w:afterLines="100"')),styles,"unresolved_spacing"],
+    ["defaults contextual",body,styles.replace('<w:pPrDefault><w:pPr>','<w:pPrDefault><w:pPr><w:contextualSpacing/>'),"unresolved_spacing"],
+    ["default style auto",body,styles.replace(normal,normal+'<w:pPr><w:spacing w:afterAutospacing="1"/></w:pPr>'),"unresolved_spacing"],
+    ["ancestor contextual",direct('<w:pStyle w:val="Heading2"/>'),styles.replace(normal,normal+'<w:pPr><w:contextualSpacing/></w:pPr>'),"unresolved_spacing"],
+    ["style numbering",body,styles.replace(normal,normal+'<w:pPr><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr>'),"unresolved_spacing"],
+    ["missing style",direct('<w:pStyle w:val="Missing"/>'),styles,"unresolved_spacing"],
+    ["cyclic style",body,styles.replace(normal,normal+'<w:basedOn w:val="Normal"/>'),"unresolved_spacing"],
+    ["default table style",body,styles.replace('</w:styles>','<w:style w:type="table" w:default="1" w:styleId="Grid"/></w:styles>'),"unresolved_spacing"],
+    ["explicit table style",body.replace('<w:tblPr>','<w:tblPr><w:tblStyle w:val="Grid"/>'),styles,"unsupported_table"],
+    ["section grid",body.replace('<w:sectPr>','<w:sectPr><w:docGrid w:linePitch="360"/>'),styles,"unresolved_spacing"],
+  ]
+  const session=(await docxodus()).openDocxSession(raw,{}), proto=Object.getPrototypeOf(session); session.close()
+  const setter=spyOn(proto,"setParagraphFormat")
+  try {
+    for (const [name,b,s,code] of cases) {
+      expect(b !== body || s !== styles,name).toBe(true)
+      const source=zipSync({...parts,"word/document.xml":strToU8(b),"word/styles.xml":strToU8(s)}), digest=sha(source)
+      const projection=await createDocxRevision(source,{pendingRevisions:"layer"}), row=projection.paragraphs.filter(p=>p.text === "Same")[1]!
+      expect(row,name).toBeDefined()
+      await expect(authorExactParagraphSpacing(source,{sourceSha256:digest,paragraphHandle:row.paragraph_handle,paragraphText:row.text,tableContext:row.table,spacingAfterPoints:6,author:"Synthetic Counsel"})).rejects.toThrow(`docx_exact_spacing:${code}`)
+      expect(setter).toHaveBeenCalledTimes(0); expect(sha(source)).toBe(digest)
+    }
+  } finally {setter.mockRestore()}
+})
+
+test("OPC authoritative part bindings and style references fail closed", async () => {
+  const source=(await renderMarkdownToDocx("| Label | Value |\n| --- | --- |\n| A | Same |\n| B | Same |")).bytes, parts=unzipSync(source), projection=await createDocxRevision(source)
+  const row=projection.paragraphs.filter(p=>p.text === "Same")[1]!, request={sourceSha256:sha(source),paragraphHandle:row.paragraph_handle,paragraphText:row.text,tableContext:row.table,spacingAfterPoints:6,author:"Synthetic Counsel"}
+  expect((await authorExactParagraphSpacing(source,request)).afterDirect).toBe("120")
+  const root="_rels/.rels", rels="word/_rels/document.xml.rels", types="[Content_Types].xml"
+  const original=(name:string)=>strFromU8(parts[name]!)
+  const r=original(root), d=original(rels), c=original(types)
+  const replace=(part:string,xml:string,changed:string,code:string) => ({part,xml,changed,code})
+  const cases=[
+    replace(root,r,r.replace('</Relationships>','<Relationship Id="strictRoot" Type="http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument" Target="word/document.xml"/></Relationships>'),"invalid_part_binding"),
+    replace(root,r,r.replace('Target="word/document.xml"','Target="word/other.xml"'),"invalid_part_binding"),
+    replace(root,r,r.replace('Target="word/document.xml"','Target="word/document.xml" TargetMode="External"'),"invalid_part_binding"),
+    replace(root,r,r.replace('Target="word/document.xml"','Target="word/%64ocument.xml"'),"invalid_part_binding"),
+    replace(rels,d,d.replace('</Relationships>','<Relationship Id="strictStyles" Type="http://purl.oclc.org/ooxml/officeDocument/relationships/styles" Target="styles.xml"/></Relationships>'),"invalid_part_binding"),
+    replace(rels,d,d.replace('</Relationships>','<Relationship Id="strictSettings" Type="http://purl.oclc.org/ooxml/officeDocument/relationships/settings" Target="settings.xml"/></Relationships>'),"invalid_part_binding"),
+    replace(rels,d,d.replace('Target="styles.xml"','Target="other.xml"'),"invalid_part_binding"),
+    replace(rels,d,d.replace('Target="settings.xml"','Target="../word/settings.xml"'),"invalid_part_binding"),
+    replace(rels,d,d.replace('Target="styles.xml"','Target="styles.xml" TargetMode="External"'),"invalid_part_binding"),
+    replace(rels,d,d.replace('</Relationships>','<Relationship Id="extra" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'),"invalid_part_binding"),
+    replace(rels,d,d.replace('Id="rId2"','Id="rId1"'),"invalid_relationships"),
+    replace(types,c,c.replace('application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml','application/xml'),"invalid_content_types"),
+    replace(types,c,c.replace('PartName="/word/settings.xml"','PartName="/word/Settings.xml"'),"invalid_content_types"),
+    replace(types,c,c.replace('PartName="/word/settings.xml"','PartName="/word//settings.xml"'),"invalid_content_types"),
+    replace("word/document.xml",original("word/document.xml"),original("word/document.xml").replace('<w:document ','<w:notDocument ').replace('</w:document>','</w:notDocument>'),"invalid_part_root"),
+    replace("word/settings.xml",original("word/settings.xml"),original("word/settings.xml").replace('<w:settings','<w:notSettings').replace('</w:settings>','</w:notSettings>'),"invalid_part_root"),
+    replace(types,c,c.replace('</Types>','<Override PartName="/word/styles.xml" ContentType="application/xml"/></Types>'),"invalid_content_types"),
+  ]
+  const session=(await docxodus()).openDocxSession(source,{}), proto=Object.getPrototypeOf(session);session.close(); const setter=spyOn(proto,"setParagraphFormat")
+  try {
+    for (const {part,xml,changed,code} of cases) {
+      expect(changed).not.toBe(xml); const bytes=zipSync({...parts,[part]:strToU8(changed)}), digest=sha(bytes)
+      await expect(authorExactParagraphSpacing(bytes,{...request,sourceSha256:digest})).rejects.toThrow(`docx_exact_spacing:${code}`)
+      expect(setter).toHaveBeenCalledTimes(0); expect(sha(bytes)).toBe(digest)
+    }
+    const body=original("word/document.xml"), target=[...body.matchAll(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g)].filter(m=>m[0].includes(">Same</w:t>"))[1]![0]
+    for (const style of ["<w:pStyle/>",'<w:pStyle w:val=""/>']) {
+      const changed=body.replace(target,target.replace("<w:pPr>",`<w:pPr>${style}`)); expect(changed).not.toBe(body)
+      const bytes=zipSync({...parts,"word/document.xml":strToU8(changed)}), digest=sha(bytes), view=await createDocxRevision(bytes), selected=view.paragraphs.filter(p=>p.text === "Same")[1]!
+      await expect(authorExactParagraphSpacing(bytes,{...request,sourceSha256:digest,paragraphHandle:selected.paragraph_handle,tableContext:selected.table})).rejects.toThrow("docx_exact_spacing:unresolved_spacing")
+      expect(setter).toHaveBeenCalledTimes(0); expect(sha(bytes)).toBe(digest)
+    }
+    const alias=zipSync({...parts,"word//styles.xml":parts["word/styles.xml"]!}), aliasHash=sha(alias)
+    await expect(authorExactParagraphSpacing(alias,{...request,sourceSha256:aliasHash})).rejects.toThrow("docx_exact_spacing:invalid_part_name")
+    expect(setter).toHaveBeenCalledTimes(0); expect(sha(alias)).toBe(aliasHash)
+    const duplicate=await new Promise<Uint8Array>((resolve,reject)=>{
+      const chunks:Uint8Array[]=[]; const zip=new Zip((error,data,final)=>{if(error)reject(error);else {chunks.push(data);if(final){const result=new Uint8Array(chunks.reduce((n,c)=>n+c.length,0));let offset=0;for(const c of chunks){result.set(c,offset);offset+=c.length}resolve(result)}}})
+      for (const [name,bytes] of [...Object.entries(parts),["word/styles.xml",parts["word/styles.xml"]!] as [string,Uint8Array]]) {const entry=new ZipPassThrough(name);zip.add(entry);entry.push(bytes,true)}
+      zip.end()
+    })
+    const digest=sha(duplicate); await expect(authorExactParagraphSpacing(duplicate,{...request,sourceSha256:digest})).rejects.toThrow("docx_exact_spacing:duplicate_part")
+    expect(setter).toHaveBeenCalledTimes(0); expect(sha(duplicate)).toBe(digest)
+  } finally {setter.mockRestore()}
 })

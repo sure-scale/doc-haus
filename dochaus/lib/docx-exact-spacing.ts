@@ -45,10 +45,63 @@ const same = (a: Node,b: Node) => canonical(a) === canonical(b)
 const serialize = (doc: Document) => strToU8(new XMLSerializer().serializeToString(doc))
 type Package = ReturnType<typeof unpack>
 function unpack(bytes: Uint8Array) {
+  const names = new Set<string>()
+  unzipSync(bytes,{filter: file => {
+    const name=file.name
+    requireProof(!name.includes("%") && !name.includes("\\") && !name.startsWith("/") && !name.replace(/\/$/,"").split("/").some(x => x === "" || x === "." || x === ".."),"invalid_part_name")
+    const folded=name.toLowerCase(); requireProof(!names.has(folded),"duplicate_part"); names.add(folded)
+    return false
+  }})
   const parts = unzipSync(bytes)
   requireProof(parts[BODY] && parts["word/settings.xml"],"missing_parts")
   const docs = Object.fromEntries(Object.entries(parts).filter(([n]) => /\.(xml|rels)$/.test(n)).map(([n,b]) => [n,parse(b)]))
-  return {parts,docs,body:docs[BODY]!}
+  const pkg={parts,docs,body:docs[BODY]!}
+  proveOpc(pkg)
+  return pkg
+}
+// Deliberately accept only the conventional transitional OPC bindings.
+// The ZIP filter above detects duplicate central names; it is not a general ZIP validator.
+function proveOpc(pkg: {parts:Record<string,Uint8Array>;docs:Record<string,Document>}) {
+  const REL="http://schemas.openxmlformats.org/package/2006/relationships", CT="http://schemas.openxmlformats.org/package/2006/content-types"
+  const OFFICE="http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
+  const relationships=(path:string) => {
+    const doc=pkg.docs[path], root=doc?.documentElement
+    requireProof(root?.namespaceURI === REL && root.localName === "Relationships","invalid_relationships")
+    const ids=new Set<string>()
+    return elements(root).map(el => {
+      requireProof(el.namespaceURI === REL && el.localName === "Relationship","invalid_relationships")
+      const id=el.getAttribute("Id"),type=el.getAttribute("Type"),target=el.getAttribute("Target"),mode=el.getAttribute("TargetMode")
+      requireProof(!!id && !!type && !!target && !ids.has(id) && (!mode || mode === "Internal" || mode === "External"),"invalid_relationships")
+      ids.add(id); return {type,target,mode}
+    })
+  }
+  const root=relationships("_rels/.rels"), document=relationships("word/_rels/document.xml.rels")
+  const strict="http://purl.oclc.org/ooxml/officeDocument/relationships/"
+  requireProof(![...root,...document].some(r => ["officeDocument","styles","settings"].some(name => r.type === strict+name)),"invalid_part_binding")
+  for (const [rels,type,target] of [[root,"officeDocument","word/document.xml"],[document,"styles","styles.xml"],[document,"settings","settings.xml"]] as const) {
+    const matches=rels.filter(r => r.type === OFFICE+type)
+    requireProof(matches.length === 1 && matches[0]!.target === target && (!matches[0]!.mode || matches[0]!.mode === "Internal"),"invalid_part_binding")
+  }
+  for (const [part,name] of [["word/document.xml","document"],["word/settings.xml","settings"]] as const) {
+    const element=pkg.docs[part]?.documentElement
+    requireProof(element?.namespaceURI === W && element.localName === name,"invalid_part_root")
+  }
+  const doc=pkg.docs["[Content_Types].xml"], rootTypes=doc?.documentElement
+  requireProof(rootTypes?.namespaceURI === CT && rootTypes.localName === "Types","invalid_content_types")
+  const overrides=new Map<string,{name:string;type:string}>(), defaults=new Set<string>()
+  for (const el of elements(rootTypes)) {
+    requireProof(el.namespaceURI === CT && ["Default","Override"].includes(el.localName),"invalid_content_types")
+    const type=el.getAttribute("ContentType"); requireProof(!!type,"invalid_content_types")
+    if (el.localName === "Default") {
+      const ext=el.getAttribute("Extension"), key=ext?.toLowerCase(); requireProof(!!key && !defaults.has(key),"invalid_content_types"); defaults.add(key)
+    } else {
+      const name=el.getAttribute("PartName"); requireProof(!!name && name.startsWith("/") && !name.includes("%") && !name.includes("\\") && !name.slice(1).split("/").some(x => x === "" || x === "." || x === ".."),"invalid_content_types")
+      const key=name.toLowerCase(); requireProof(!overrides.has(key),"invalid_content_types"); overrides.set(key,{name,type})
+    }
+  }
+  for (const [name,type] of [["/word/document.xml","document.main"],["/word/styles.xml","styles"],["/word/settings.xml","settings"]] as const) {
+    const row=overrides.get(name); requireProof(row?.name === name && row.type === `application/vnd.openxmlformats-officedocument.wordprocessingml.${type}+xml` && !!pkg.parts[name.slice(1)],"invalid_content_types")
+  }
 }
 function samePackage(a: Package,b: Package) {
   requireProof(JSON.stringify(Object.keys(a.parts).sort()) === JSON.stringify(Object.keys(b.parts).sort()),"inventory_changed")
@@ -118,14 +171,56 @@ function allocate(pkg: Package) {
   for (let n=0;n<=used.size && n<=2147483647;n++) if (!used.has(String(n))) return String(n)
   throw new Error("docx_exact_spacing:no_revision_id")
 }
+// Prove the declarations that can affect this paragraph, rather than treating
+// unrelated styles as active. This intentionally refuses unresolved cascades.
+function safeSpacingClosure(pkg: Package, para: Element, inTable: boolean) {
+  requireProof(!Object.keys(pkg.parts).some(name => /stylesWithEffects\.xml$/i.test(name)),"unresolved_spacing")
+  for (const [name,doc] of Object.entries(pkg.docs)) {
+    if (name.endsWith(".rels")) for (const el of Array.from(doc.getElementsByTagName("*")))
+      requireProof(!/stylesWithEffects$/i.test(el.getAttribute("Type") ?? ""),"unresolved_spacing")
+    requireProof(!all(doc,"docGrid").length,"unresolved_spacing")
+  }
+  const styles=pkg.docs["word/styles.xml"]
+  requireProof(styles && styles.documentElement.namespaceURI === W && styles.documentElement.localName === "styles","unresolved_spacing")
+  const root=styles.documentElement, defs=child(root,"docDefaults")
+  requireProof(defs.length <= 1,"unresolved_spacing")
+  const inspect=(node: Element) => {
+    for (const n of ["contextualSpacing","snapToGrid","numPr"]) requireProof(!all(node,n).length,"unresolved_spacing")
+    for (const n of all(node,"spacing")) requireProof(!n.hasAttributeNS(W,"afterAutospacing") && !n.hasAttributeNS(W,"afterLines"),"unresolved_spacing")
+  }
+  if (defs[0]) inspect(defs[0]); inspect(para)
+  const declarations=child(root,"style"), styleIds=new Map<string,Element>()
+  for (const style of declarations) {
+    const id=style.getAttributeNS(W,"styleId"); requireProof(!!id && !styleIds.has(id),"unresolved_spacing"); styleIds.set(id,style)
+  }
+  const isDefault=(style:Element) => {
+    if (!style.hasAttributeNS(W,"default")) return false
+    const value=style.getAttributeNS(W,"default"); requireProof(["0","1","true","false","on","off"].includes(value),"unresolved_spacing")
+    return ["1","true","on"].includes(value)
+  }
+  const defaults=declarations.filter(style => style.getAttributeNS(W,"type") === "paragraph" && isDefault(style))
+  requireProof(defaults.length === 1,"unresolved_spacing")
+  if (inTable) requireProof(!declarations.some(style => style.getAttributeNS(W,"type") === "table" && isDefault(style)),"unresolved_spacing")
+  const pp=ppr(para), refs=pp ? child(pp,"pStyle") : []
+  requireProof(refs.length <= 1,"unresolved_spacing")
+  let id=refs[0] ? refs[0].getAttributeNS(W,"val") : defaults[0]!.getAttributeNS(W,"styleId")
+  requireProof(!!id,"unresolved_spacing")
+  const seen=new Set<string>()
+  while (id) {
+    requireProof(!seen.has(id),"unresolved_spacing"); seen.add(id)
+    const style=styleIds.get(id); requireProof(style && style.getAttributeNS(W,"type") === "paragraph","unresolved_spacing")
+    inspect(style)
+    const bases=child(style,"basedOn"); requireProof(bases.length <= 1,"unresolved_spacing")
+    if (!bases.length) break
+    id=bases[0]!.getAttributeNS(W,"val"); requireProof(!!id,"unresolved_spacing")
+  }
+}
 export type ExactSpacingRequest = { sourceSha256: string; paragraphHandle: string; paragraphText: string; tableContext: DocxTableContext | null; spacingAfterPoints: number; author: string }
 export async function authorExactParagraphSpacing(input: Uint8Array, request: ExactSpacingRequest) {
   const source = new Uint8Array(input), pkg=unpack(source)
   requireProof(/^[a-f0-9]{64}$/.test(request.sourceSha256) && hash(source) === request.sourceSha256,"stale_source")
   requireProof(request.author.trim() && Number.isFinite(request.spacingAfterPoints) && request.spacingAfterPoints >= 0 && request.spacingAfterPoints <= 48 && Number.isInteger(request.spacingAfterPoints*20),"invalid_request")
   requireProof(!all(pkg.docs["word/settings.xml"]!,"documentProtection").length,"protected_document")
-  for (const doc of Object.values(pkg.docs)) for (const name of ["contextualSpacing","snapToGrid","docGrid"]) requireProof(!all(doc,name).length,"unresolved_spacing")
-  for (const doc of Object.values(pkg.docs)) for (const s of all(doc,"spacing")) requireProof(!s.hasAttributeNS(W,"afterAutospacing"),"unresolved_spacing")
   const opened=await openRevision(source,{pendingRevisions:"layer"})
   try {
     const indices=opened.revision.paragraphs.flatMap((p,i) => p.paragraph_handle === request.paragraphHandle ? [i] : [])
@@ -134,9 +229,9 @@ export async function authorExactParagraphSpacing(input: Uint8Array, request: Ex
     requireProof(view.text === request.paragraphText && JSON.stringify(view.table) === JSON.stringify(request.tableContext),"target_changed")
     requireProof(target.part === BODY && !target.pending && (!view.table || !view.table.unavailable_reason && view.table.row_span === 1 && view.table.column_span === 1 && view.table.vertical_merge === "none"),"unsupported_target")
     const ordinal=all(opened.documents[BODY]!,"p").indexOf(target.node), para=all(pkg.body,"p")[ordinal]
-    requireProof(ordinal>=0 && para,"target_missing"); protect(pkg.body,para)
+    requireProof(ordinal>=0 && para,"target_missing"); protect(pkg.body,para); safeSpacingClosure(pkg,para,!!view.table)
     const table=para.parentNode?.parentNode?.parentNode as Element | undefined
-    if (view.table) requireProof(table?.namespaceURI === W && table.localName === "tbl" && !all(table,"tblStyle").length,"unsupported_table")
+    if (view.table) requireProof(table?.namespaceURI === W && table.localName === "tbl" && !all(table,"tblStyle").length && !all(table,"tblStylePr").length,"unsupported_table")
     const old=ppr(para), before=spacing(para)?.getAttributeNS(W,"after") ?? null
     requireProof(old && spacing(para),"unsupported_empty_properties")
     const desired=request.spacingAfterPoints*20
