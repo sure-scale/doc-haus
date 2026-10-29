@@ -3,9 +3,9 @@
   container-type: inline-size;
   margin: 0 0 18px;
   padding: 18px 20px 12px;
-  border: 1px solid #e5e6e9;
+  border: 1px solid #d5dce7;
   border-radius: 8px;
-  background: #fff;
+  background: #f1f4f8;
   color: var(--chronology-ink, #182238);
 }
 .chronology-filters-panel .chronology-filter-primary,
@@ -106,9 +106,12 @@
 .chronology-workbench .chronology-filters-panel input:not([type="checkbox"]) {
   min-height: 44px;
   border-color: #dfe3e9;
-  background: #fff;
+  background-color: #fff;
   border-radius: 5px;
   font-size: 12px;
+}
+.chronology-workbench .chronology-filters-panel select {
+  padding-right: 32px;
 }
 .chronology-workbench .chronology-filters-panel .chronology-filter-dates button {
   min-height: 44px;
@@ -164,18 +167,23 @@
   }
 }
 @container (max-width: 480px) {
-  .chronology-filters-panel .chronology-filter-primary,
   .chronology-filters-panel .chronology-filter-secondary {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+  .chronology-filters-panel .chronology-filter-flags {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0 16px;
+  }
+}
+@container (max-width: 420px) {
+  .chronology-filters-panel .chronology-filter-primary {
     grid-template-columns: minmax(0, 1fr);
     gap: 14px;
   }
   .chronology-filters-panel .chronology-filter-dates {
     grid-template-columns: minmax(0, 1fr);
     gap: 12px;
-  }
-  .chronology-filters-panel .chronology-filter-flags {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0 16px;
   }
 }
 @media (max-width: 600px) {

@@ -144,7 +144,7 @@
   min-width: 0;
   max-width: 100%;
   color: #182238;
-  background: #fff;
+  background-color: #fff;
   border: 1px solid var(--chronology-line, #e6e5e7);
   border-radius: 5px;
   min-height: 37px;
@@ -250,7 +250,7 @@
   color: #946119;
 }
 .chronology-review-state {
-  white-space: normal;
+  white-space: nowrap;
   font-size: 11px;
   color: #805311;
 }
@@ -609,7 +609,7 @@
     flex-wrap: wrap;
   }
   .chronology-head > .chronology-inline {
-    width: 100%;
+    flex: 0 0 auto;
   }
   .chronology-event-table th:nth-child(1) {
     width: 20%;
@@ -864,7 +864,7 @@
     flex-wrap: wrap;
   }
   .chronology-search {
-    flex-basis: 100%;
+    flex-basis: 200px;
   }
   .chronology-counters {
     margin-bottom: 14px;
@@ -1143,4 +1143,28 @@
   font-size: 11px;
   line-height: 1.4;
   overflow-wrap: anywhere;
+}
+.chronology-workbench .chronology-event-table {
+  min-width: 680px;
+}
+.chronology-source-name > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chronology-table-scroll {
+  container-type: inline-size;
+}
+.chronology-workbench .chronology-table-scroll-hint {
+  position: sticky;
+  left: 0;
+  margin: 0 0 7px;
+  color: #687181;
+  font-size: 11px;
+}
+@container (min-width: 680px) {
+  .chronology-table-scroll-hint {
+    display: none;
+  }
 }

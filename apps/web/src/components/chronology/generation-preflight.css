@@ -1,0 +1,95 @@
+.chronology-dialog:has(.chronology-generation-footer) .chronology-dialog-body {
+  min-height: 0;
+}
+.chronology-dialog:has(.chronology-generation-footer) .chronology-dialog-footer {
+  flex: none;
+}
+.chronology-generation-preflight .chronology-generation-intro {
+  margin-bottom: 16px;
+}
+.chronology-generation-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 20px;
+  margin: 0 0 14px;
+}
+.chronology-generation-facts > div {
+  min-width: 0;
+}
+.chronology-generation-fact-wide {
+  grid-column: 1 / -1;
+}
+.chronology-generation-facts dt {
+  margin-bottom: 2px;
+  color: #697384;
+  font-size: 11px;
+}
+.chronology-generation-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.chronology-generation-preflight .chronology-generation-scope {
+  color: #5d6879;
+  font-size: 12px;
+}
+.chronology-generation-details {
+  border-top: 1px solid #ecebed;
+}
+.chronology-generation-details > summary {
+  min-height: 40px;
+  align-content: center;
+}
+.chronology-generation-details > p {
+  color: #5d6879;
+  font-size: 12px;
+}
+.chronology-generation-source-warning {
+  margin-left: 8px;
+  color: #95651f;
+  font-size: 11px;
+}
+.chronology-generation-preflight .chronology-generation-privilege {
+  margin-bottom: 0;
+  padding: 12px 14px 4px;
+}
+.chronology-generation-privilege legend {
+  padding-inline: 4px;
+  font-weight: 600;
+}
+.chronology-generation-preflight .chronology-generation-privilege > p {
+  margin-bottom: 10px;
+  color: #5d6879;
+  font-size: 12px;
+}
+.chronology-generation-privilege .chronology-check {
+  min-height: 44px;
+  margin: 8px 0;
+}
+.chronology-generation-choice-detail {
+  display: block;
+  color: #5d6879;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.chronology-generation-footer {
+  padding: 14px 24px 18px;
+  border-top: 1px solid #e6e5e7;
+  background: #fff;
+}
+.chronology-generation-footer > p {
+  margin: 0 0 12px;
+  color: #5d6879;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.chronology-generation-footer .chronology-form-actions {
+  margin: 0;
+}
+@media (max-width: 520px) {
+  .chronology-generation-footer {
+    padding: 12px 16px 16px;
+  }
+  .chronology-generation-details > summary {
+    min-height: 44px;
+  }
+}

@@ -5,10 +5,12 @@ export default function ChronologyDialog({
   title,
   onClose,
   children,
+  footer,
 }: {
   title: string
   onClose: () => void
   children: ReactNode
+  footer?: ReactNode
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
   useModalFocus(dialog)
@@ -30,6 +32,7 @@ export default function ChronologyDialog({
       <div>
         <ModalHeader title={title} onClose={onClose} />
         <div className="chronology-dialog-body">{children}</div>
+        {footer && <div className="chronology-dialog-footer">{footer}</div>}
       </div>
     </dialog>
   )

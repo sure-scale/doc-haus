@@ -49,6 +49,7 @@ import {
   type ChronologyFilters,
 } from "./model"
 import "./chronology.css"
+import "./generation-preflight.css"
 export default function ChronologyWorkbench({
   matterId,
   title,
@@ -597,6 +598,9 @@ export default function ChronologyWorkbench({
                 />
               )}
               <div className="chronology-table-scroll" tabIndex={0} role="region" aria-label="Chronology events">
+                <p className="chronology-table-scroll-hint">
+                  Scroll for more columns <span aria-hidden="true">↔</span>
+                </p>
                 <table className="chronology-event-table">
                   <thead>
                     <tr>
@@ -679,7 +683,7 @@ export default function ChronologyWorkbench({
                                     eventEvidence(event).find((evidence) => evidence.documentName === name)?.sourceKind
                                   }
                                 />
-                                <span>{name}</span>
+                                <span title={name}>{name}</span>
                               </span>
                             ))}
                           {new Set(eventEvidence(event).map((evidence) => evidence.documentName)).size > 2 && (
@@ -814,88 +818,17 @@ export default function ChronologyWorkbench({
                 : "Generate chronology"
           }
           onClose={() => setGeneration(undefined)}
-        >
-          {error && (
-            <p role="alert" className="chronology-warning">
-              {error}
-            </p>
-          )}
-          {loadingPreflight ? (
-            <p role="status">Inspecting the authorised source set…</p>
-          ) : preflight ? (
-            <>
-              <p>{preflight.workExplanation}</p>
-              <p>
-                {generation === "initial"
-                  ? "This first build covers the authorised matter."
-                  : "Only new, changed, or unfinished source sections normally need processing. Unchanged completed sections are reused."}{" "}
-                Every run starts with a fresh privilege choice.
-              </p>
-              <p>
-                <strong>Scope:</strong> every eligible source in this matter. Display filters do not restrict
-                processing.
-              </p>
-              {!preflight.model && (
-                <p className="chronology-warning">Connect an AI provider in setup before building the chronology.</p>
-              )}
-              {preflight.model && (
+          footer={
+            <div className="chronology-generation-footer">
+              {preflight && (
                 <p>
-                  <strong>Configured model:</strong> {preflight.model.providerID} · {preflight.model.modelID}
+                  {generation === "initial"
+                    ? "Usable results are saved as an unreviewed draft. Stop or resume without losing completed work."
+                    : generation === "resume" && state?.run?.mode === "initial"
+                      ? "New events are saved unreviewed. Changes to saved entries wait for review; completed work is kept."
+                      : "Saved events and lawyer decisions change only after you review a proposal."}
                 </p>
               )}
-              <p>
-                <strong>Source set:</strong> {preflight.sources.length} sources · approximately{" "}
-                {preflight.estimatedSections} bounded source sections. This section count estimates the work, not a
-                token or price quote. See native session usage where available; no fixed price is assumed.
-              </p>
-              <p>
-                <strong>Client framing:</strong> {preflight.framing}
-                {!preflight.framingKnown ? " — unknown framing; the account stays neutral." : ""}
-              </p>
-              <details open>
-                <summary>Included sources ({preflight.sources.length})</summary>
-                <ul className="chronology-included-sources">
-                  {preflight.sources.map((source) => (
-                    <li key={source.sourceId}>
-                      <strong>{source.documentName}</strong> · {source.extraction}
-                      {source.kind === "supplied-chronology" ? " · supplied chronology, original preserved" : ""}
-                      {source.detail && <p>{source.detail}</p>}
-                    </li>
-                  ))}
-                </ul>
-              </details>
-              <fieldset>
-                <legend>Fresh privilege choice for this run</legend>
-                <p>
-                  No choice is carried over from an earlier run. A model's flag is not a lawyer's privilege
-                  determination.
-                </p>
-                {(
-                  [
-                    { value: "all-cleared", label: "All cleared — all included sources are cleared for this use" },
-                    { value: "mixed", label: "Mixed — keep privilege uncertainty visible for every event" },
-                    { value: "stop", label: "Stop — screen the sources before extraction" },
-                  ] as const
-                ).map((choice) => (
-                  <label className="chronology-check" key={choice.value}>
-                    <input
-                      type="radio"
-                      name="chronology-privilege"
-                      value={choice.value}
-                      checked={privilege === choice.value}
-                      onChange={() => setPrivilege(choice.value)}
-                    />
-                    {choice.label}
-                  </label>
-                ))}
-              </fieldset>
-              <p className="chronology-notice">
-                {generation === "initial"
-                  ? "Usable first results are saved directly as an unreviewed draft. You can stop and resume without discarding completed work."
-                  : generation === "resume" && state?.run?.mode === "initial"
-                    ? "This resumes the first draft. New usable events are saved unreviewed; proposed changes to saved entries wait for review. Completed work is kept."
-                    : "AI changes are staged as proposals. Your saved events and lawyer decisions are preserved until you review the changes."}
-              </p>
               <div className="chronology-form-actions">
                 <button type="button" onClick={() => setGeneration(undefined)}>
                   Cancel
@@ -903,10 +836,13 @@ export default function ChronologyWorkbench({
                 <button
                   type="button"
                   className="primary"
-                  disabled={busy || !privilege || (privilege !== "stop" && !preflight.model)}
+                  disabled={
+                    busy || loadingPreflight || !preflight || !privilege || (privilege !== "stop" && !preflight.model)
+                  }
                   onClick={async () => {
                     if (
                       privilege &&
+                      preflight &&
                       state &&
                       (await perform(() => runChronology(matterId, state.revision, privilege, generation)))
                     )
@@ -918,13 +854,120 @@ export default function ChronologyWorkbench({
                     : busy
                       ? "Starting…"
                       : generation === "refresh"
-                        ? "Check sources and suggest updates"
+                        ? "Find updates"
                         : generation === "resume"
-                          ? "Resume unfinished work"
-                          : "Generate unreviewed draft"}
+                          ? "Continue build"
+                          : "Generate draft"}
                 </button>
               </div>
-            </>
+            </div>
+          }
+        >
+          {error && (
+            <p role="alert" className="chronology-warning">
+              {error}
+            </p>
+          )}
+          {loadingPreflight ? (
+            <p role="status">Inspecting the authorised source set…</p>
+          ) : preflight ? (
+            <div className="chronology-generation-preflight">
+              <p className="chronology-generation-intro">
+                {generation === "initial"
+                  ? "Create a source-linked account of the events in this matter."
+                  : generation === "resume"
+                    ? "Continue unfinished source reading and keep the work already completed."
+                    : "Check the matter's sources for events or accounts to add or update."}
+              </p>
+              {!preflight.model && (
+                <p className="chronology-warning">Connect an AI provider in setup before building the chronology.</p>
+              )}
+              <dl className="chronology-generation-facts">
+                <div>
+                  <dt>Sources</dt>
+                  <dd>{preflight.sources.length} included</dd>
+                </div>
+                <div>
+                  <dt>Source size</dt>
+                  <dd>About {preflight.estimatedSections} sections</dd>
+                </div>
+                {preflight.model && (
+                  <div className="chronology-generation-fact-wide">
+                    <dt>Configured model</dt>
+                    <dd>
+                      {preflight.model.providerID} · {preflight.model.modelID}
+                    </dd>
+                  </div>
+                )}
+                <div className="chronology-generation-fact-wide">
+                  <dt>Client framing</dt>
+                  <dd>
+                    {preflight.framing}
+                    {!preflight.framingKnown ? " — unknown framing; the account stays neutral." : ""}
+                  </dd>
+                </div>
+              </dl>
+              <p className="chronology-generation-scope">
+                Whole matter: every eligible source. Display filters do not restrict processing.
+              </p>
+              <details className="chronology-generation-details">
+                <summary>
+                  Included sources ({preflight.sources.length})
+                  {preflight.sources.some((source) => source.extraction !== "readable") && (
+                    <span className="chronology-generation-source-warning">
+                      {preflight.sources.filter((source) => source.extraction !== "readable").length} to check
+                    </span>
+                  )}
+                </summary>
+                <ul className="chronology-included-sources">
+                  {preflight.sources.map((source) => (
+                    <li key={source.sourceId}>
+                      <strong>{source.documentName}</strong> · {source.extraction}
+                      {source.kind === "supplied-chronology" ? " · supplied chronology, original preserved" : ""}
+                      {source.detail && <p>{source.detail}</p>}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+              <details className="chronology-generation-details">
+                <summary>How this works</summary>
+                <p>{preflight.workExplanation}</p>
+                <p>
+                  Unchanged completed sections are normally reused; an extraction upgrade may need one fresh reading.
+                  The reading estimate uses indexed text and is not a token or price quote. See session usage where
+                  available; no fixed price is assumed.
+                </p>
+              </details>
+              <fieldset className="chronology-generation-privilege">
+                <legend>Privilege check</legend>
+                <p>Choose for this run. An AI flag is not a lawyer's privilege determination.</p>
+                {(
+                  [
+                    {
+                      value: "all-cleared",
+                      label: "All cleared",
+                      detail: "All included sources are cleared for this use.",
+                    },
+                    { value: "mixed", label: "Mixed", detail: "Keep privilege uncertainty visible for every event." },
+                    { value: "stop", label: "Stop", detail: "Screen the sources before extraction." },
+                  ] as const
+                ).map((choice) => (
+                  <label className="chronology-check" key={choice.value}>
+                    <input
+                      type="radio"
+                      name="chronology-privilege"
+                      value={choice.value}
+                      checked={privilege === choice.value}
+                      onChange={() => setPrivilege(choice.value)}
+                    />
+                    <span>
+                      <strong>{choice.label}</strong>
+                      <span className="chronology-generation-choice-detail">{choice.detail}</span>
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+            </div>
           ) : (
             <p>Source inspection failed. Close this dialog, reload, and try again.</p>
           )}
@@ -1024,7 +1067,7 @@ function SourceDateDialog({
             Cancel
           </button>
           <button type="submit" className="primary" disabled={busy || !documentName || !date || !dateValid}>
-            Record date & propose affected changes
+            Record source date
           </button>
         </div>
       </form>

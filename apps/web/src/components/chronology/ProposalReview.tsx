@@ -325,6 +325,18 @@ export default function ProposalReview({
           <p className="update-review-evidence-note">
             A verified quotation confirms a text match, not that an account is true.
           </p>
+          {(proposal.events[0] ?? saved[0]) && (
+            <div className="update-review-assistance">
+              <button
+                type="button"
+                className="update-review-ask"
+                disabled={busy}
+                onClick={() => onAsk(proposal.events[0] ?? saved[0]!, proposal)}
+              >
+                Ask doc.haus
+              </button>
+            </div>
+          )}
           <div className="update-review-decision-area">
             <div className="update-review-decisions">
               <button
@@ -350,16 +362,6 @@ export default function ProposalReview({
               >
                 Skip for later
               </button>
-              {(proposal.events[0] ?? saved[0]) && (
-                <button
-                  type="button"
-                  className="update-review-ask"
-                  disabled={busy}
-                  onClick={() => onAsk(proposal.events[0] ?? saved[0]!, proposal)}
-                >
-                  Ask doc.haus
-                </button>
-              )}
             </div>
             <p>
               <strong>Accept</strong>{" "}

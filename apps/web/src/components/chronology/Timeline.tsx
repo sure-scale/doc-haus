@@ -1,7 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { createPortal } from "react-dom"
+import { createPortal, flushSync } from "react-dom"
 import type { ChronologyEvent } from "../../api/ingest/chronology"
-import { dateLabel } from "./model"
+import { dateLabel, tableDateLabel, tableDateQualifier } from "./model"
+import ChronologyDialog from "./Dialog"
 import "./timeline.css"
 
 const timestamp = (value?: string) => (value ? Date.parse(value) : NaN)
@@ -65,6 +66,32 @@ function periodMeaning(event: ChronologyEvent) {
   return event.date.rangeKind === "duration" ? `Known duration: ${interval}` : `Date uncertainty interval: ${interval}`
 }
 
+function groupDateLabel(events: ChronologyEvent[]) {
+  const bounds = events.flatMap((event) =>
+    [event.date.start, event.date.end]
+      .filter((value): value is string => Number.isFinite(timestamp(value)))
+      .map((value) => ({ value, date: event.date, time: timestamp(value) })),
+  )
+  const label = ({ value, date, time }: (typeof bounds)[number]) => {
+    const yearOnly = date.precision === "year" || /^\d{4}$/.test(value)
+    const monthOnly = date.precision === "month" || /^\d{4}-\d{2}$/.test(value)
+    const format: Intl.DateTimeFormatOptions = { year: "numeric", timeZone: "UTC" }
+    if (!yearOnly) format.month = "short"
+    if (!yearOnly && !monthOnly) format.day = "numeric"
+    return tableDateLabel({
+      ...date,
+      original: new Intl.DateTimeFormat(undefined, format).format(time),
+      time: undefined,
+      timezone: undefined,
+    })
+  }
+  const first = bounds.reduce((a, b) => (b.time < a.time ? b : a))
+  const last = bounds.reduce((a, b) => (b.time > a.time ? b : a))
+  const firstLabel = label(first),
+    lastLabel = label(last)
+  return firstLabel === lastLabel ? firstLabel : `${firstLabel} – ${lastLabel}`
+}
+
 function LaneIcon({ lane }: { lane: Lane }) {
   return (
     <svg
@@ -108,6 +135,8 @@ export default function ChronologyTimeline({
   onSelect: (event: ChronologyEvent) => void
 }) {
   const [zoom, setZoom] = useState(1)
+  const [unplottedOpen, setUnplottedOpen] = useState(false)
+  const [unplottedSearch, setUnplottedSearch] = useState("")
   const [cluster, setCluster] = useState<string[]>([])
   const [canvasWidth, setCanvasWidth] = useState(0)
   const sectionRef = useRef<HTMLElement>(null)
@@ -122,12 +151,14 @@ export default function ChronologyTimeline({
   const tooltipLeaveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const [tooltip, setTooltip] = useState<{ anchor: HTMLElement; ids: string[]; kind: "point" | "period" }>()
   const [tooltipPosition, setTooltipPosition] = useState<{ left: number; top: number }>()
+  const [hoverBridge, setHoverBridge] = useState<{ left: number; top: number; width: number; height: number }>()
   const cancelTooltipLeave = () => clearTimeout(tooltipLeaveTimer.current)
   const hideTooltip = () => {
     cancelTooltipLeave()
     pickerFocusedElement.current = null
     setTooltip(undefined)
     setTooltipPosition(undefined)
+    setHoverBridge(undefined)
     setCluster((current) => (current.length ? [] : current))
   }
   const showTooltip = (anchor: HTMLElement, ids: string[], kind: "point" | "period" = "point", force = false) => {
@@ -135,6 +166,7 @@ export default function ChronologyTimeline({
     cancelTooltipLeave()
     clusterTriggerRef.current = anchor instanceof HTMLButtonElement ? anchor : null
     setTooltipPosition(undefined)
+    setHoverBridge(undefined)
     setTooltip({ anchor, ids, kind })
   }
   const leaveTooltip = () => {
@@ -158,6 +190,10 @@ export default function ChronologyTimeline({
     [events],
   )
   const undated = events.filter((event) => !dated.includes(event))
+  const unplottedQuery = unplottedSearch.trim().toLocaleLowerCase()
+  const matchingUndated = undated.filter((event) =>
+    `${event.title} ${event.detail} ${dateLabel(event.date)}`.toLocaleLowerCase().includes(unplottedQuery),
+  )
   const occupiedLanes = useMemo(
     () => lanes.filter((lane) => dated.some((event) => eventLane(event) === lane.id)),
     [dated],
@@ -190,14 +226,32 @@ export default function ChronologyTimeline({
     const rect = bubble.getBoundingClientRect()
     const above = anchor.top - rect.height - gap
     const preferredTop = above >= top + gap ? above : anchor.bottom + gap
-    setTooltipPosition({
+    const position = {
       left:
         Math.max(
           left + gap,
           Math.min(anchor.left + anchor.width / 2 - rect.width / 2, left + width - rect.width - gap),
         ) / scale,
       top: Math.max(top + gap, Math.min(preferredTop, top + height - rect.height - gap)) / scale,
-    })
+    }
+    setTooltipPosition(position)
+    // Keep the real gap between a marker and its portalled preview hoverable.
+    const bubbleLeft = position.left * scale
+    const bubbleTop = position.top * scale
+    const bridgeTop = bubbleTop >= anchor.bottom ? anchor.bottom : bubbleTop + rect.height
+    const bridgeBottom = bubbleTop >= anchor.bottom ? bubbleTop : anchor.top
+    const bridgeLeft = Math.min(anchor.left, bubbleLeft)
+    const bridgeRight = Math.max(anchor.right, bubbleLeft + rect.width)
+    setHoverBridge(
+      bridgeBottom > bridgeTop
+        ? {
+            left: bridgeLeft / scale,
+            top: bridgeTop / scale,
+            width: (bridgeRight - bridgeLeft) / scale,
+            height: (bridgeBottom - bridgeTop) / scale,
+          }
+        : undefined,
+    )
     const escape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return
       event.preventDefault()
@@ -279,6 +333,13 @@ export default function ChronologyTimeline({
     }
     return result
   }, [dated, span, canvasWidth, plotWidth])
+  const hasPartialDates = dated.some((event) => event.date.precision !== "exact")
+  const hasScheduledEvents = dated.some((event) =>
+    event.accounts.some((account) => account.status === "scheduled" || account.status === "required"),
+  )
+  const periods = dated.filter(
+    (event) => Number.isFinite(timestamp(event.date.end)) && timestamp(event.date.end) >= timestamp(event.date.start),
+  )
   const selectedEvent = dated.find((event) => event.id === selected)
   const selectedStart = selectedEvent?.date.start
   useLayoutEffect(() => {
@@ -450,27 +511,21 @@ export default function ChronologyTimeline({
               {occupiedLanes.map((lane, index) => (
                 <div key={lane.id} className="chronology-swimlane-rule" style={{ top: `${91 + index * 50}px` }} />
               ))}
-              {dated
-                .filter(
-                  (event) =>
-                    Number.isFinite(timestamp(event.date.end)) &&
-                    timestamp(event.date.end) >= timestamp(event.date.start),
-                )
-                .map((event) => (
-                  <span
-                    key={event.id}
-                    className={`chronology-period lane-${eventLane(event)} ${event.date.rangeKind === "duration" ? "is-duration" : "is-uncertainty"}`}
-                    style={{
-                      left: `${position(event)}%`,
-                      top: `${62 + row(event) * 50}px`,
-                      width: `${Math.max(0.25, ((timestamp(event.date.end) - timestamp(event.date.start)) / span) * plotWidth)}%`,
-                    }}
-                    onPointerEnter={(pointer) => {
-                      if (pointer.pointerType !== "touch") showTooltip(pointer.currentTarget, [event.id], "period")
-                    }}
-                    onPointerLeave={leaveTooltip}
-                  />
-                ))}
+              {periods.map((event) => (
+                <span
+                  key={event.id}
+                  className={`chronology-period lane-${eventLane(event)} ${event.date.rangeKind === "duration" ? "is-duration" : "is-uncertainty"}`}
+                  style={{
+                    left: `${position(event)}%`,
+                    top: `${62 + row(event) * 50}px`,
+                    width: `${Math.max(0.25, ((timestamp(event.date.end) - timestamp(event.date.start)) / span) * plotWidth)}%`,
+                  }}
+                  onPointerEnter={(pointer) => {
+                    if (pointer.pointerType !== "touch") showTooltip(pointer.currentTarget, [event.id], "period")
+                  }}
+                  onPointerLeave={leaveTooltip}
+                />
+              ))}
               {selectedEvent && (
                 <div
                   className="chronology-selected-guide"
@@ -485,12 +540,12 @@ export default function ChronologyTimeline({
                   <button
                     key={group.map((item) => item.id).join(":")}
                     type="button"
-                    className={`chronology-timeline-point lane-${eventLane(event)}${active ? " is-selected" : ""}${event.date.precision !== "exact" ? " is-uncertain" : ""}${event.accounts.some((account) => account.status !== "reported") ? " is-scheduled" : ""}${group.length > 1 ? " is-cluster" : ""}`}
+                    className={`chronology-timeline-point lane-${eventLane(event)}${active ? " is-selected" : ""}${group.length === 1 && event.date.precision !== "exact" ? " is-uncertain" : ""}${group.length === 1 && event.accounts.some((account) => account.status === "scheduled" || account.status === "required") ? " is-scheduled" : ""}${group.length > 1 ? " is-cluster" : ""}`}
                     style={{ left: `${position(event)}%`, top: `${44 + row(event) * 50}px` }}
                     aria-pressed={active}
                     aria-label={
                       group.length > 1
-                        ? `${group.length} clustered events near ${dateLabel(event.date)}`
+                        ? `${group.length} grouped events: ${groupDateLabel(group)}; dates and event types may vary`
                         : `${dateLabel(event.date)}: ${event.title}`
                     }
                     aria-haspopup="dialog"
@@ -577,136 +632,204 @@ export default function ChronologyTimeline({
       )}
       <div className="chronology-timeline-footer">
         <div className="chronology-timeline-key" aria-label="Timeline date markers">
-          <span>
-            <i className="chronology-dot" /> Exact
-          </span>
-          <span>
-            <i className="chronology-dot is-uncertain" /> Partial / uncertain
-          </span>
-          <span>
-            <i className="chronology-duration-key" /> Known period
-          </span>
-          <span>
-            <i className="chronology-uncertainty-key" /> Uncertainty interval
-          </span>
-          <span>
-            <i className="chronology-scheduled-key" /> Scheduled / required
-          </span>
+          {dated.some((event) => event.date.precision === "exact") && (
+            <span>
+              <i className="chronology-dot" /> Exact date
+            </span>
+          )}
+          {hasPartialDates && (
+            <span>
+              <i className="chronology-dot is-uncertain" /> Partial / uncertain
+            </span>
+          )}
+          {groups.some((group) => group.length > 1) && (
+            <span>
+              <i className="chronology-grouped-key">2</i> Grouped events
+            </span>
+          )}
+          {periods.some((event) => event.date.rangeKind === "duration") && (
+            <span>
+              <i className="chronology-duration-key" /> Known period
+            </span>
+          )}
+          {periods.some((event) => event.date.rangeKind !== "duration") && (
+            <span>
+              <i className="chronology-uncertainty-key" /> Uncertainty interval
+            </span>
+          )}
+          {hasScheduledEvents && (
+            <span>
+              <i className="chronology-scheduled-key" /> Scheduled / required
+            </span>
+          )}
         </div>
         {undated.length > 0 && (
-          <details
-            className="chronology-undated-events"
-            onToggle={(toggle) => {
-              if (toggle.currentTarget.open) setCluster([])
-            }}
-            onKeyDown={(key) => {
-              if (key.key === "Escape") {
-                key.preventDefault()
-                key.currentTarget.open = false
-                key.currentTarget.querySelector("summary")?.focus({ preventScroll: true })
-              }
+          <button
+            type="button"
+            className="chronology-unplotted-trigger"
+            aria-haspopup="dialog"
+            onClick={() => {
+              hideTooltip()
+              setUnplottedSearch("")
+              setUnplottedOpen(true)
             }}
           >
-            <summary>{undated.length} not placed on timeline</summary>
-            <div className="chronology-timeline-list">
-              <p>
-                These saved entries have unknown, ambiguous or unresolved relative dates. Source processing is shown
-                separately under Sources.
-              </p>
-              {undated.map((event) => (
-                <button
-                  key={event.id}
-                  type="button"
-                  onClick={(click) => {
-                    click.currentTarget.closest("details")?.removeAttribute("open")
-                    onSelect(event)
-                  }}
-                >
-                  {event.title} · {dateLabel(event.date)}
-                </button>
-              ))}
-            </div>
-          </details>
+            {undated.length} not placed on timeline <span aria-hidden="true">↗</span>
+          </button>
         )}
       </div>
-      {tooltip &&
-        tooltipEvents.length > 0 &&
-        createPortal(
-          <div
-            ref={tooltipRef}
-            id={tooltipId}
-            role="dialog"
-            aria-label="Timeline events"
-            className="chronology-marker-popup"
-            style={{
-              left: tooltipPosition?.left ?? 0,
-              top: tooltipPosition?.top ?? 0,
-              visibility: tooltipPosition ? "visible" : "hidden",
-            }}
-            onPointerEnter={cancelTooltipLeave}
-            onPointerLeave={leaveTooltip}
-            onFocusCapture={(event) => {
-              pickerFocusedElement.current = event.target as HTMLElement
-            }}
-            onBlurCapture={(event) => {
-              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                pickerFocusedElement.current = null
-                if (event.relatedTarget !== tooltip.anchor) hideTooltip()
-              }
-            }}
-            onKeyDown={(key) => {
-              if (key.key !== "Tab") return
-              const buttons = [...key.currentTarget.querySelectorAll<HTMLButtonElement>("button")]
-              const first = buttons[0],
-                last = buttons[buttons.length - 1]
-              if (key.shiftKey && document.activeElement === first) {
-                key.preventDefault()
-                closeCluster()
-              } else if (!key.shiftKey && document.activeElement === last) {
-                key.preventDefault()
-                const controls = [
-                  ...(sectionRef.current?.querySelectorAll<HTMLElement>(
-                    'button:not(:disabled), summary, [tabindex="0"]',
-                  ) ?? []),
-                ].filter((element) => element.getClientRects().length && !element.closest("[inert]"))
-                const next = controls[controls.indexOf(tooltip.anchor) + 1]
-                hideTooltip()
-                if (next) next.focus({ preventScroll: true })
-                else restoreClusterFocus()
-              }
-            }}
-          >
-            <strong>{tooltipEvents.length > 1 ? `${tooltipEvents.length} nearby events` : "Timeline event"}</strong>
-            <span className="chronology-marker-popup-hint">Choose an event to view its evidence.</span>
-            <div
-              ref={clusterListRef}
-              role="group"
-              aria-label={tooltipEvents.length > 1 ? "Clustered events" : "Event preview"}
-              className="chronology-marker-popup-events"
-            >
-              {tooltipEvents.map((event) => (
+      {unplottedOpen && (
+        <ChronologyDialog title="Events not placed on the timeline" onClose={() => setUnplottedOpen(false)}>
+          <div className="chronology-unplotted-body">
+            <p className="chronology-unplotted-explanation">
+              These saved events have unknown, ambiguous or unresolved relative dates. Source processing is shown
+              separately under Sources.
+            </p>
+            <label className="chronology-unplotted-search">
+              <span className="chronology-sr-only">Search events not placed on the timeline</span>
+              <input
+                type="search"
+                placeholder="Search these events…"
+                value={unplottedSearch}
+                onChange={(change) => setUnplottedSearch(change.target.value)}
+              />
+            </label>
+            <p className="chronology-unplotted-count" role="status">
+              Showing {matchingUndated.length} of {undated.length} events
+            </p>
+            <div className="chronology-unplotted-list">
+              {matchingUndated.map((event) => (
                 <button
                   key={event.id}
                   type="button"
-                  className="chronology-marker-popup-event"
+                  className="chronology-unplotted-event"
                   onClick={() => {
-                    hideTooltip()
+                    // Release native modality and its focus trap before opening evidence.
+                    flushSync(() => setUnplottedOpen(false))
                     onSelect(event)
                   }}
                 >
-                  <span className="chronology-marker-popup-date">{dateLabel(event.date)}</span>
-                  <span className="chronology-marker-popup-title">{event.title}</span>
-                  <small>{eventMeaning(event)}</small>
-                  {periodMeaning(event) && (
-                    <small className="chronology-marker-popup-period">{periodMeaning(event)}</small>
+                  <span className="chronology-unplotted-date" title={dateLabel(event.date)}>
+                    {tableDateLabel(event.date)}
+                  </span>
+                  <span className="chronology-unplotted-title">{event.title}</span>
+                  <span className="chronology-unplotted-action" aria-hidden="true">
+                    →
+                  </span>
+                  {tableDateQualifier(event.date) && (
+                    <span className="chronology-unplotted-qualifier">{tableDateQualifier(event.date)}</span>
                   )}
                 </button>
               ))}
+              {matchingUndated.length === 0 && <p className="chronology-muted">No events match this search.</p>}
             </div>
-            <button type="button" className="chronology-marker-popup-close" onClick={closeCluster}>
-              Close event list
-            </button>
-          </div>,
+          </div>
+        </ChronologyDialog>
+      )}
+      {tooltip &&
+        tooltipEvents.length > 0 &&
+        createPortal(
+          <>
+            {hoverBridge && (
+              <div
+                className="chronology-marker-hover-bridge"
+                style={hoverBridge}
+                aria-hidden="true"
+                onPointerEnter={cancelTooltipLeave}
+                onPointerLeave={leaveTooltip}
+              />
+            )}
+            <div
+              ref={tooltipRef}
+              id={tooltipId}
+              role="dialog"
+              aria-label="Timeline events"
+              className="chronology-marker-popup"
+              style={{
+                left: tooltipPosition?.left ?? 0,
+                top: tooltipPosition?.top ?? 0,
+                visibility: tooltipPosition ? "visible" : "hidden",
+              }}
+              onPointerEnter={cancelTooltipLeave}
+              onPointerLeave={leaveTooltip}
+              onFocusCapture={(event) => {
+                pickerFocusedElement.current = event.target as HTMLElement
+              }}
+              onBlurCapture={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  pickerFocusedElement.current = null
+                  if (event.relatedTarget !== tooltip.anchor) hideTooltip()
+                }
+              }}
+              onKeyDown={(key) => {
+                if (key.key !== "Tab") return
+                const buttons = [...key.currentTarget.querySelectorAll<HTMLButtonElement>("button")]
+                const first = buttons[0],
+                  last = buttons[buttons.length - 1]
+                if (key.shiftKey && document.activeElement === first) {
+                  key.preventDefault()
+                  closeCluster()
+                } else if (!key.shiftKey && document.activeElement === last) {
+                  key.preventDefault()
+                  const controls = [
+                    ...(sectionRef.current?.querySelectorAll<HTMLElement>(
+                      'button:not(:disabled), summary, [tabindex="0"]',
+                    ) ?? []),
+                  ].filter((element) => element.getClientRects().length && !element.closest("[inert]"))
+                  const next = controls[controls.indexOf(tooltip.anchor) + 1]
+                  hideTooltip()
+                  if (next) next.focus({ preventScroll: true })
+                  else restoreClusterFocus()
+                }
+              }}
+            >
+              <div className="chronology-marker-popup-heading">
+                <strong>
+                  {tooltipEvents.length > 1 ? `${tooltipEvents.length} grouped events` : "Timeline event"}
+                </strong>
+                <button
+                  type="button"
+                  className="chronology-marker-popup-close"
+                  aria-label="Close event list"
+                  onClick={closeCluster}
+                >
+                  Close
+                </button>
+              </div>
+              {tooltipEvents.length > 1 && (
+                <span className="chronology-marker-popup-range">{groupDateLabel(tooltipEvents)}</span>
+              )}
+              <span className="chronology-marker-popup-hint">
+                {tooltipEvents.length > 1 ? "Dates and event types may vary. " : ""}Choose an event to view its
+                evidence.
+              </span>
+              <div
+                ref={clusterListRef}
+                role="group"
+                aria-label={tooltipEvents.length > 1 ? "Clustered events" : "Event preview"}
+                className="chronology-marker-popup-events"
+              >
+                {tooltipEvents.map((event) => (
+                  <button
+                    key={event.id}
+                    type="button"
+                    className="chronology-marker-popup-event"
+                    onClick={() => {
+                      hideTooltip()
+                      onSelect(event)
+                    }}
+                  >
+                    <span className="chronology-marker-popup-date">{dateLabel(event.date)}</span>
+                    <span className="chronology-marker-popup-title">{event.title}</span>
+                    <small>{eventMeaning(event)}</small>
+                    {periodMeaning(event) && (
+                      <small className="chronology-marker-popup-period">{periodMeaning(event)}</small>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>,
           document.body,
         )}
     </section>

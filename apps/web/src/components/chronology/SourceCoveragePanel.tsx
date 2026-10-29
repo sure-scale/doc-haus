@@ -89,8 +89,7 @@ export default function SourceCoveragePanel({
       )}
       <p className="source-coverage-context">
         {running && <strong>Building chronology. </strong>}
-        These statuses include work saved from earlier attempts. They are not a progress estimate for the current build;
-        an unfinished status does not mean that source is being read right now.
+        Saved coverage includes earlier attempts and does not show live reading progress.
       </p>
       {chronology.run?.errors.length ? (
         <section className="source-coverage-issues" aria-label="Processing issues">
@@ -217,14 +216,28 @@ export default function SourceCoveragePanel({
             in the matter.
           </p>
           <ul>
-            {chronology.gaps.map((gap, index) => (
+            {chronology.gaps.slice(0, 3).map((gap, index) => (
               <li key={index}>{gap}</li>
             ))}
           </ul>
+          {chronology.gaps.length > 3 && (
+            <details className="source-coverage-question-details">
+              <summary>Show all {chronology.gaps.length} references</summary>
+              <ul>
+                {chronology.gaps.slice(3).map((gap, index) => (
+                  <li key={index + 3}>{gap}</li>
+                ))}
+              </ul>
+            </details>
+          )}
         </section>
       )}
       <details className="source-coverage-method">
         <summary>How source processing works</summary>
+        <p>
+          These statuses include work saved from earlier attempts. They are not a progress estimate for the current
+          build; an unfinished status does not mean that source is being read right now.
+        </p>
         <p>
           The first build covers the whole authorised matter. Later checks normally process only new, changed, or
           unfinished source sections; unchanged completed sections are reused.

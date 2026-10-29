@@ -1,4 +1,5 @@
 .chronology-workbench .chronology-swimlane-timeline {
+  position: relative;
   margin: 2px 0 17px;
   padding: 0;
   border: 0;
@@ -241,9 +242,9 @@
   align-items: center;
 }
 .chronology-workbench .chronology-timeline-controls button {
-  min-width: 44px;
-  min-height: 44px;
-  padding: 0 12px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0 8px;
   border: 1px solid var(--timeline-grid);
   border-radius: 0;
   background: transparent;
@@ -257,31 +258,6 @@
 }
 .chronology-workbench .chronology-timeline-controls button:last-child {
   border-radius: 0 5px 5px 0;
-}
-.chronology-swimlane-timeline .chronology-undated-events {
-  font-size: 11px;
-  color: var(--muted, #7b808c);
-}
-.chronology-swimlane-timeline .chronology-undated-events > summary {
-  width: fit-content;
-  min-height: 44px;
-  align-content: center;
-  cursor: pointer;
-}
-.chronology-swimlane-timeline .chronology-timeline-list,
-.chronology-swimlane-timeline .chronology-timeline-cluster {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  padding-top: 8px;
-  max-height: 180px;
-  overflow: auto;
-}
-.chronology-workbench .chronology-swimlane-timeline .chronology-timeline-list button,
-.chronology-workbench .chronology-swimlane-timeline .chronology-timeline-cluster button {
-  min-height: 44px;
-  font-size: 12px;
-  text-align: left;
 }
 .chronology-workbench .chronology-swimlane-timeline button:focus-visible,
 .chronology-swimlane-timeline .chronology-timeline-scroll:focus-visible {
@@ -330,41 +306,6 @@
   position: relative;
   flex-wrap: wrap;
 }
-.chronology-swimlane-timeline .chronology-undated-events {
-  flex: none;
-}
-.chronology-swimlane-timeline .chronology-undated-events > summary {
-  min-height: 44px;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.chronology-swimlane-timeline .chronology-undated-events > summary::before {
-  content: "▸";
-}
-.chronology-swimlane-timeline .chronology-undated-events[open] > summary::before {
-  content: "▾";
-}
-.chronology-swimlane-timeline .chronology-undated-events .chronology-timeline-list {
-  position: absolute;
-  top: 100%;
-  right: 0;
-  width: min(400px, 100%);
-  padding: 8px;
-  box-sizing: border-box;
-  z-index: 6;
-  border: 1px solid #e6e5e7;
-  border-radius: 6px;
-  background: #fff;
-  box-shadow: 0 5px 20px #18223812;
-}
-.chronology-swimlane-timeline .chronology-undated-events .chronology-timeline-list button {
-  width: 100%;
-}
-.chronology-swimlane-timeline .chronology-undated-events .chronology-timeline-list p {
-  margin: 0 0 4px;
-  line-height: 1.5;
-}
 @media (max-width: 600px) {
   .chronology-swimlane-timeline .chronology-timeline-key {
     flex-basis: 100%;
@@ -381,7 +322,9 @@
   z-index: var(--z-popover, 60);
   box-sizing: border-box;
   width: max-content;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   overscroll-behavior: contain;
   padding: 10px;
   border: 1px solid #e3e6ec;
@@ -394,14 +337,21 @@
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
-.chronology-marker-popup > strong {
-  display: block;
-  padding-inline: 5px;
+.chronology-marker-popup-heading {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-left: 5px;
+}
+.chronology-marker-popup-heading > strong {
   font-size: 12px;
   font-weight: 600;
 }
 .chronology-marker-popup-hint {
   display: block;
+  flex: none;
   padding: 2px 5px 7px;
   color: #697383;
   font-size: 11px;
@@ -450,14 +400,179 @@
   border-top: 1px solid #eef0f3;
 }
 .chronology-marker-popup .chronology-marker-popup-close {
-  border-top: 1px solid #e3e6ec;
-  border-radius: 0;
+  flex: none;
+  width: auto;
+  padding: 0 6px;
   color: #697383;
   font-size: 11px;
 }
 
 .chronology-timeline-topbar {
+  position: absolute;
+  top: 20px;
+  right: 0;
+  z-index: 5;
+}
+.chronology-timeline-controls {
+  background: var(--panel, #fff);
+  border-radius: 5px;
+}
+.chronology-marker-popup-events {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.chronology-marker-popup-range {
+  flex: none;
+  padding: 0 5px 3px;
+  font-size: 11px;
+  color: #697383;
+}
+.chronology-marker-hover-bridge {
+  position: fixed;
+  z-index: var(--z-popover, 60);
+}
+.chronology-swimlane-timeline .chronology-grouped-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid #8d9aaa;
+  border-radius: 50%;
+  color: var(--text, #172238);
+  font-size: 9px;
+  font-style: normal;
+  line-height: 1;
+}
+@media (pointer: coarse) {
+  .chronology-timeline-topbar {
+    top: 14px;
+  }
+  .chronology-workbench .chronology-timeline-controls button {
+    position: relative;
+    min-width: 44px;
+    min-height: 44px;
+    border: 0;
+    background: transparent;
+  }
+  .chronology-workbench .chronology-timeline-controls button::before {
+    content: "";
+    position: absolute;
+    inset: 6px;
+    border: 1px solid var(--timeline-grid);
+    border-radius: 4px;
+    pointer-events: none;
+  }
+  .chronology-timeline-controls {
+    background: transparent;
+  }
+}
+
+/* The unplotted list shares the chronology modal and its native focus handling. */
+.chronology-workbench .chronology-unplotted-trigger {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--muted, #697383);
+  font-size: 11px;
+}
+.chronology-unplotted-trigger:hover {
+  text-decoration: underline;
+}
+.chronology-dialog:has(.chronology-unplotted-body) {
+  width: min(800px, calc(100vw - 28px));
+}
+.chronology-dialog:has(.chronology-unplotted-body) .chronology-dialog-body {
   display: flex;
-  justify-content: flex-end;
-  margin-bottom: 4px;
+  min-height: 0;
+  overflow: hidden;
+}
+.chronology-unplotted-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.chronology-unplotted-explanation {
+  flex: none;
+  color: #697383;
+}
+.chronology-unplotted-search {
+  display: block;
+  flex: none;
+}
+.chronology-unplotted-search input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+}
+.chronology-dialog-body .chronology-unplotted-count {
+  flex: none;
+  margin: 10px 0;
+  color: #697383;
+  font-size: 12px;
+}
+.chronology-unplotted-list {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.chronology-workbench .chronology-unplotted-event {
+  display: grid;
+  grid-template-columns: minmax(120px, 160px) minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px 16px;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 44px;
+  padding: 13px 8px;
+  border: 0;
+  border-bottom: 1px solid #e8ebf0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.chronology-workbench .chronology-unplotted-event:hover {
+  background: #eef3fc;
+}
+.chronology-unplotted-date {
+  color: #697383;
+  font-size: 12px;
+}
+.chronology-unplotted-title {
+  font-size: 13px;
+}
+.chronology-unplotted-action {
+  color: #3979e8;
+}
+.chronology-unplotted-qualifier {
+  grid-column: 1 / -1;
+  color: #697383;
+  font-size: 12px;
+}
+@media (max-width: 600px) {
+  .chronology-workbench .chronology-unplotted-event {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 3px 8px;
+  }
+  .chronology-unplotted-date {
+    grid-column: 1;
+  }
+  .chronology-unplotted-title {
+    grid-column: 1;
+  }
+  .chronology-unplotted-action {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    align-self: center;
+  }
 }

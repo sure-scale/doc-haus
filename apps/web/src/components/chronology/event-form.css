@@ -1,0 +1,41 @@
+.chronology-dialog:has(.chronology-event-form-actions) .chronology-dialog-body {
+  min-height: 0;
+}
+.chronology-dialog:has(.chronology-event-form-actions) .chronology-dialog-footer {
+  flex: none;
+}
+.chronology-dialog .chronology-event-form-actions {
+  margin-top: 0;
+  padding: 14px 24px 18px;
+  border-top: 1px solid #e6e5e7;
+  background: #fff;
+}
+.chronology-event-form-sources .chronology-event-form-account {
+  margin: 0;
+  padding: 12px 0;
+}
+.chronology-event-form-account + .chronology-event-form-account {
+  border-top: 1px solid #ecebed;
+}
+.chronology-event-form-account-content {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  overflow-wrap: anywhere;
+}
+.chronology-event-form-account-title {
+  font-weight: 600;
+}
+.chronology-event-form-account-source,
+.chronology-event-form-account-context {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.chronology-event-form-account-date {
+  margin-top: 3px;
+}
+@media (max-width: 520px) {
+  .chronology-dialog .chronology-event-form-actions {
+    padding: 12px 16px 16px;
+  }
+}

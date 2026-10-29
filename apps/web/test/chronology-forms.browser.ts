@@ -95,7 +95,7 @@ try {
   await page.getByRole("button", { name: "Open edit", exact: true }).click()
   const edit = page.getByRole("dialog", { name: "Edit event", exact: true })
   const date = edit.getByRole("textbox", { name: "Date", exact: true })
-  const confirm = edit.getByRole("button", { name: "Confirm event", exact: true })
+  const confirm = edit.getByRole("button", { name: "Save changes", exact: true })
   await expect(date).toHaveAttribute("placeholder", "dd/mm/yyyy")
   await expect(date).toHaveValue("06/05/2026")
   await date.fill("07052026")

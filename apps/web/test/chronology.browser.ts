@@ -14,7 +14,7 @@ const entry = path.join(directory, "harness.tsx")
 await Bun.write(
   entry,
   `
-import { createElement } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react")))}
+import { createElement, useState } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react")))}
 import { createRoot } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-dom/client")))}
 import Workbench from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/chronology/ChronologyWorkbench.tsx"))}
 import Sidebar from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/Sidebar.tsx"))}
@@ -22,20 +22,25 @@ import MatterHeader from ${JSON.stringify(path.resolve(import.meta.dir, "../src/
 import { setDocumentsCount } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/matter/documents-drawer.ts"))}
 import { MemoryRouter } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-router-dom")))}
 import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles.css"))}
+import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/primitives.css"))}
 import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/design-system.css"))}
 import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/design-shell.css"))}
 import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/modal-frost.css"))}
 setDocumentsCount(3)
-const workbench = createElement(Workbench, { matterId: 'fixture', title: 'Harbour equipment matter', documents: [{id: 1,name: 'Carrier note.md',doc_path: '/fixture/Carrier note.md',created_at: 0}], onState: () => {}, onAsk: context => { window.__context = context.text }, onClose: () => {} })
-const noop = () => {}, done = async () => {}
+const noop = () => {}, done = async () => {}, ask = context => { window.__context = context.text }
+function MatterPage() {
+const [actions, setActions] = useState([])
+const workbench = createElement(Workbench, { matterId: 'fixture', title: 'Harbour equipment matter', client: 'Synthetic laboratory owner', onActionsChange: setActions, documents: [{id: 1,name: 'Carrier note.md',doc_path: '/fixture/Carrier note.md',created_at: 0}], onState: noop, onAsk: ask, onClose: noop })
 const header = createElement(MatterHeader, {
-  matter: { id: 'fixture', title: 'Harbour equipment matter', dir: '/fixture', created_at: 0 }, jurisdictions: [], compact: true,
+  matter: { id: 'fixture', title: 'Harbour equipment matter', client: 'Synthetic laboratory owner', dir: '/fixture', created_at: 0 }, jurisdictions: [], compact: true, chronologyActions: actions,
   editingRef: false, setEditingRef: noop, draftRef: '', setDraftRef: noop, commitRef: done,
   editingClient: false, setEditingClient: noop, draftClient: '', setDraftClient: noop, commitClient: done,
   renaming: false, setRenaming: noop, draftTitle: '', setDraftTitle: noop, commitRename: done,
   patch: done, onEditConflicts: noop,
 })
-createRoot(document.getElementById('root')).render(createElement(MemoryRouter, { initialEntries: ['/matter/fixture?view=chronology'] }, createElement('div', { className: 'shell shell-matter' }, createElement(Sidebar, { onOpenSettings: () => {}, sessionsVersion: 0 }), createElement('main', { className: 'content' }, createElement('div', { className: 'container matter-container' }, header, createElement('div', { className: 'matter-body' }, workbench))))))
+return createElement('div', { className: 'shell shell-matter' }, createElement(Sidebar, { onOpenSettings: () => {}, sessionsVersion: 0 }), createElement('main', { className: 'content' }, createElement('div', { className: 'container matter-container' }, header, createElement('div', { className: 'matter-body' }, workbench))))
+}
+createRoot(document.getElementById('root')).render(createElement(MemoryRouter, { initialEntries: ['/matter/fixture?view=chronology'] }, createElement(MatterPage)))
 `,
 )
 const build = await Bun.build({
@@ -141,11 +146,12 @@ let state: Chronology = {
   suggestion: { status: "relevant", reason: "Dates and delivery accounts make a chronology useful." },
   history: [],
   framing: "Neutral",
-  gaps: [],
+  gaps: ["Access register", "Technical drawing", "Delivery docket", "Access register", "Test certificate"],
 }
 let runCalls = 0,
   decisions = 0,
-  forceConflict = false
+  forceConflict = false,
+  connectedModel = true
 const browser = await chromium.launch({
   headless: true,
   ...(process.env.PLAYWRIGHT_CHROMIUM_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } : {}),
@@ -184,7 +190,7 @@ try {
             estimatedSections: 2,
           },
         ],
-        model: { providerID: "scripted", modelID: "fixture" },
+        model: connectedModel ? { providerID: "scripted", modelID: "fixture" } : undefined,
         framing: "Unknown",
         framingKnown: false,
         estimatedSections: 2,
@@ -265,7 +271,11 @@ try {
   await expect(page.getByRole("heading", { name: "Fact chronology", exact: true })).toBeVisible()
   const zoomBox = await page.locator(".chronology-timeline-controls").boundingBox()
   const chartBox = await page.locator(".chronology-swimlane-chart").boundingBox()
-  assert.ok(zoomBox && chartBox && zoomBox.y + zoomBox.height <= chartBox.y, "zoom controls sit above the timeline")
+  assert.ok(
+    zoomBox && chartBox && zoomBox.y >= chartBox.y && zoomBox.y + zoomBox.height < chartBox.y + chartBox.height,
+    "compact zoom controls overlay the timeline itself",
+  )
+  assert.equal((await page.getByRole("button", { name: "Fit", exact: true }).boundingBox())!.height, 32)
   assert.ok(
     Math.abs(zoomBox!.x + zoomBox!.width - chartBox!.x - chartBox!.width) < 2,
     "zoom controls align to its right edge",
@@ -283,6 +293,16 @@ try {
   await expect(timelinePopup).toContainText("2026-05-06")
   await expect(timelinePopup).toContainText("Equipment collected")
   await expect(timelinePopup).toContainText("Exact date")
+  const bridge = page.locator(".chronology-marker-hover-bridge")
+  await expect(bridge).toBeVisible()
+  const gap = (await bridge.boundingBox())!,
+    anchor = (await collectionPoint.boundingBox())!
+  await page.mouse.move(anchor.x + anchor.width / 2, gap.y + gap.height / 2, { steps: 6 })
+  await page.waitForTimeout(240)
+  await expect(timelinePopup).toBeVisible()
+  const popup = (await timelinePopup.boundingBox())!
+  await page.mouse.move(popup.x + popup.width / 2, popup.y + 15, { steps: 6 })
+  await expect(timelinePopup).toBeVisible()
   await expect(detail).toHaveCount(0)
   assert.deepEqual(await canvasGeometry(), beforePreviewCanvas, "hover help does not resize or scroll the chronology")
   await page.keyboard.press("Escape")
@@ -325,6 +345,12 @@ try {
   await page.reload()
   await expect(page.locator(".chronology-event-table tbody tr")).toHaveCount(3)
   await page.getByRole("button", { name: /^Filter/ }).click()
+  assert.ok(
+    await page
+      .locator(".chronology-filters-panel select")
+      .evaluateAll((selects) => selects.every((select) => getComputedStyle(select).backgroundImage !== "none")),
+    "native filter choices retain their shared dropdown arrows",
+  )
   const filterColumns = await page.locator(".chronology-filter-primary > *").evaluateAll((fields) =>
     fields.map((field) => {
       const box = field.getBoundingClientRect()
@@ -398,6 +424,10 @@ try {
   await expect(sources.getByText("Text", { exact: true })).toBeVisible()
   await expect(sources.getByText("Recorded reading", { exact: true })).toBeVisible()
   await expect(sources).toContainText("2 saved entries")
+  const questions = sources.getByRole("region", { name: "Evidence questions to check", exact: true })
+  await expect(questions.locator("li:visible")).toHaveCount(3)
+  await questions.getByText("Show all 5 references", { exact: true }).click()
+  await expect(questions.locator("li:visible")).toHaveCount(5)
   await sources.getByText("How source processing works", { exact: true }).click()
   await expect(sources).toContainText("Display filters change only the events shown")
   await page.keyboard.press("Escape")
@@ -494,10 +524,10 @@ try {
   await expectSharedBackdrop()
   await edit.getByRole("textbox", { name: "Event", exact: true }).fill("Equipment collected and sealed")
   forceConflict = true
-  await edit.getByRole("button", { name: "Confirm event" }).click()
+  await edit.getByRole("button", { name: "Save changes" }).click()
   await expect(edit.getByRole("alert")).toContainText("changed elsewhere")
   assert.equal(state.events[0]!.title, "Equipment collected", "stale action not applied or replayed")
-  await edit.getByRole("button", { name: "Confirm event" }).click()
+  await edit.getByRole("button", { name: "Save changes" }).click()
   await expect(edit).toHaveCount(0)
   assert.equal(state.events[0]!.reviewed, false)
   await detail.getByRole("button", { name: "Close event evidence" }).click()
@@ -523,17 +553,50 @@ try {
   await page.getByRole("button", { name: "Check for source changes" }).click()
   const refresh = page.getByRole("dialog", { name: "Refresh chronology", exact: true })
   await expectSharedBackdrop()
+  await expect(refresh.locator("details[open]")).toHaveCount(0)
+  await expect(refresh.locator('input[type="radio"]:checked')).toHaveCount(0)
+  for (const width of [1440, 768, 375]) {
+    await page.setViewportSize({ width, height: 900 })
+    const primary = refresh.getByRole("button", { name: "Find updates", exact: true })
+    await expect(primary).toBeInViewport()
+    await expect(refresh.getByRole("button", { name: "Cancel", exact: true })).toBeInViewport()
+    await refresh.locator("summary").filter({ hasText: "Included sources" }).click()
+    await expect(refresh.getByText("Carrier note.md", { exact: true })).toBeVisible()
+    await expect(primary).toBeInViewport()
+    assert.equal(await refresh.locator(".chronology-dialog-body .chronology-dialog-footer").count(), 0)
+    await refresh.locator("summary").filter({ hasText: "Included sources" }).click()
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 })
   await expect(refresh).toContainText("Carrier note.md")
-  await expect(refresh.getByRole("button", { name: "Check sources and suggest updates" })).toBeDisabled()
+  await expect(refresh.getByRole("button", { name: "Find updates" })).toBeDisabled()
   await refresh.getByRole("radio", { name: /^Mixed/ }).check()
-  await refresh.getByRole("button", { name: "Check sources and suggest updates" }).click()
-  await expect(refresh).toHaveCount(0)
+  await refresh.getByRole("button", { name: "Find updates" }).click()
+  await expect(refresh)
+    .toHaveCount(0)
+    .catch(async (failure) => {
+      console.error("Refresh admission diagnostic", {
+        runCalls,
+        alerts: await refresh.getByRole("alert").allTextContents(),
+        errors,
+      })
+      throw failure
+    })
   assert.equal(runCalls, 1)
   await page.locator(".matter-actions-menu > summary").click()
   await page.getByRole("button", { name: "Check for source changes" }).click()
   await expect(refresh.getByRole("radio", { name: /^Mixed/ })).not.toBeChecked()
   await refresh.getByRole("button", { name: "Cancel", exact: true }).click()
   assert.equal(runCalls, 1)
+  connectedModel = false
+  await page.locator(".matter-actions-menu > summary").click()
+  await page.getByRole("button", { name: "Check for source changes" }).click()
+  await expect(refresh).toContainText("Connect an AI provider")
+  await refresh.getByRole("radio", { name: /^All cleared/ }).check()
+  await expect(refresh.getByRole("button", { name: "Find updates", exact: true })).toBeDisabled()
+  await refresh.getByRole("radio", { name: /^Stop/ }).check()
+  await expect(refresh.getByRole("button", { name: "Stop without extracting", exact: true })).toBeEnabled()
+  await refresh.getByRole("button", { name: "Cancel", exact: true }).click()
+  connectedModel = true
   const proposal: ChronologyProposal = {
     id: "proposal-new",
     kind: "addition",
@@ -687,7 +750,7 @@ try {
   state.events.push(event("far-date", "Later follow-up", "2026-12-20"))
   state.revision++
   await page.reload()
-  const clusterPoint = page.getByRole("button", { name: /clustered events near/ }).first()
+  const clusterPoint = page.getByRole("button", { name: /grouped events:/ }).first()
   await expect(clusterPoint).toBeVisible()
   assert.ok(
     await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1),
@@ -698,7 +761,7 @@ try {
     "long desktop record scrolls inside the workbench",
   )
   await clusterPoint.hover()
-  await expect(timelinePopup).toContainText("8 nearby events")
+  await expect(timelinePopup).toContainText("8 grouped events")
   await expect(timelinePopup.locator(".chronology-marker-popup-event")).toHaveCount(8)
   await expect(timelinePopup).toContainText("Independent occurrence")
   await expect(timelinePopup).toContainText("Choose an event to view its evidence.")
@@ -761,7 +824,7 @@ try {
   await expect.poll(overlappingTargets).toBe(false)
   await page.getByRole("button", { name: "Fit", exact: true }).click()
   await page
-    .getByRole("button", { name: /clustered events near/ })
+    .getByRole("button", { name: /grouped events:/ })
     .first()
     .click()
   await page.getByRole("searchbox", { name: "Search events and quotations" }).fill("absent phrase for empty view")
@@ -781,6 +844,20 @@ try {
   if (await collapse.isVisible()) await collapse.click()
   await page.getByRole("button", { name: "Expand sidebar", exact: true }).click()
   await expect(collapse).toBeVisible()
+  const heading = (await page.getByRole("heading", { name: "Fact chronology", exact: true }).boundingBox())!
+  const addButton = (await page.getByRole("button", { name: "+ Add event", exact: true }).boundingBox())!
+  assert.ok(
+    Math.min(heading.y + heading.height, addButton.y + addButton.height) - Math.max(heading.y, addButton.y) >
+      Math.min(heading.height, addButton.height) / 2,
+    `heading and Add event share a row: ${JSON.stringify({ heading, addButton })}`,
+  )
+  const search = (await page.getByRole("searchbox").boundingBox())!
+  const filterButton = (await page.getByRole("button", { name: /^Filter/ }).boundingBox())!
+  assert.ok(
+    Math.abs(search.y + search.height / 2 - filterButton.y - filterButton.height / 2) < 2,
+    `tablet search and Filter share a centered row: ${JSON.stringify({ search, filterButton })}`,
+  )
+  await expect(page.locator(".chronology-table-scroll-hint")).toBeVisible()
   await expect
     .poll(() =>
       page.locator(".chronology-date-grid > span").evaluateAll((labels) => {
@@ -829,15 +906,79 @@ try {
   state.revision++
   await page.reload()
   await page.setViewportSize({ width: 1440, height: 1000 })
-  const undated = page.locator(".chronology-undated-events")
-  await expect(undated.locator("summary")).toContainText("not placed on timeline")
-  await undated.locator("summary").click()
-  await expect(undated).toContainText("Source processing is shown separately under Sources.")
-  await undated.getByRole("button", { name: /Undated site observation/ }).click()
+  const undated = page.getByRole("button", { name: /not placed on timeline/ })
+  const unplacedDialog = page.getByRole("dialog", { name: "Events not placed on the timeline", exact: true })
+  for (const width of [1440, 375]) {
+    await page.setViewportSize({ width, height: 900 })
+    await undated.click()
+    await expectSharedBackdrop()
+    await expect(unplacedDialog).toContainText("Source processing is shown separately under Sources.")
+    const box = (await unplacedDialog.boundingBox())!
+    assert.ok(box.x >= 0 && box.x + box.width <= width)
+    if (width === 1440) assert.ok(box.width >= 700, "the unplaced-event modal is wider than a small popover")
+    const search = unplacedDialog.getByRole("searchbox", {
+      name: "Search events not placed on the timeline",
+      exact: true,
+    })
+    await expect(search).toHaveValue("")
+    await search.fill("unmatched phrase")
+    await expect(unplacedDialog).toContainText("No events match this search.")
+    await page.keyboard.press("Escape")
+    await expect(unplacedDialog).toHaveCount(0)
+    await expect(undated).toBeFocused()
+  }
+  await undated.click()
+  await expect(unplacedDialog.getByRole("searchbox")).toHaveValue("")
+  await unplacedDialog.getByRole("searchbox").fill("Date not supplied")
+  await expect(unplacedDialog).toContainText("Showing 1 of 1 events")
+  await unplacedDialog.getByRole("button", { name: /Undated site observation/ }).click()
+  await expect(unplacedDialog).toHaveCount(0)
+  assert.equal(state.events.find((event) => event.id === manual.id)!.reviewed, false)
   await expect(detail.getByText("Source not supplied. This entry was added by hand.", { exact: true })).toBeVisible()
   await page.setViewportSize({ width: 1440, height: 600 })
   await expect(detail.getByRole("button", { name: "Mark reviewed", exact: true })).toBeInViewport()
   await expect(detail.getByRole("button", { name: "Close event evidence" })).toBeInViewport()
+  await detail.getByRole("button", { name: "Close event evidence" }).click()
+  const month = event("partial-month", "Month-only source report", "2038-07")
+  month.date = month.accounts[0]!.date = { original: "July 2038", precision: "month", start: "2038-07" }
+  const day = event("same-month-day", "Dated source report", "2038-07-07")
+  const duration = event("actual-period", "Recorded operating period", "2038-08-04")
+  duration.date = duration.accounts[0]!.date = {
+    original: "4–8 August 2038",
+    precision: "exact",
+    start: "2038-08-04",
+    end: "2038-08-08",
+    rangeKind: "duration",
+  }
+  const interval = event("uncertain-interval", "Approximate dispatch", "2038-09-01")
+  interval.date = interval.accounts[0]!.date = {
+    original: "early September 2038",
+    precision: "approximate",
+    start: "2038-09-01",
+    end: "2038-09-10",
+    rangeKind: "uncertainty",
+  }
+  const scheduled = event("future-obligation", "Required inspection", "2038-10-03")
+  scheduled.accounts[0]!.status = "required"
+  state.events = [month, day, duration, interval, scheduled]
+  state.revision++
+  await page.setViewportSize({ width: 375, height: 900 })
+  await page.reload()
+  await expect(page.locator(".chronology-timeline-key")).toContainText("Known period")
+  await expect(page.locator(".chronology-timeline-key")).toContainText("Uncertainty interval")
+  await expect(page.locator(".chronology-period.is-duration")).toHaveCount(1)
+  await expect(page.locator(".chronology-period.is-uncertainty")).toHaveCount(1)
+  const partialCluster = page.getByRole("button", { name: /grouped events:/ }).first()
+  await partialCluster.click()
+  await expect(timelinePopup.locator(".chronology-marker-popup-range")).toContainText("Jul 2038")
+  await expect(timelinePopup.locator(".chronology-marker-popup-range")).not.toContainText("1 Jul")
+  const popupClose = timelinePopup.getByRole("button", { name: "Close event list", exact: true })
+  const closePosition = await popupClose.boundingBox()
+  await timelinePopup.locator(".chronology-marker-popup-events").evaluate((el) => {
+    el.scrollTop = el.scrollHeight
+  })
+  assert.deepEqual(await popupClose.boundingBox(), closePosition, "event-list scrolling leaves Close visible")
+  await popupClose.click()
   await page.emulateMedia({ reducedMotion: "reduce" })
   assert.deepEqual(errors, [])
   console.log(

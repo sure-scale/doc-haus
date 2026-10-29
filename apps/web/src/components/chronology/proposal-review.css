@@ -83,10 +83,11 @@
   align-items: center;
   margin-bottom: 20px;
 }
-.update-review-secondary-actions > button {
+.update-review .update-review-secondary-actions > button,
+.update-review .update-review-assistance > button {
   border: 0;
   background: transparent;
-  min-height: 36px;
+  min-height: 44px;
   padding: 5px 0;
   color: #314d70;
   font-size: 12px;
@@ -95,7 +96,7 @@
   text-underline-offset: 3px;
   box-shadow: none;
 }
-.update-review-secondary-actions .update-review-discard {
+.update-review .update-review-secondary-actions .update-review-discard {
   color: #717b8a;
   margin-left: auto;
 }
@@ -330,9 +331,6 @@
   color: #fff;
   box-shadow: none;
 }
-.update-review-decisions .update-review-ask {
-  margin-left: auto;
-}
 .update-review-decision-area > p {
   color: #717e8d;
   font-size: 11px;
@@ -348,7 +346,8 @@
   padding-top: 14px;
   border-top: 1px solid #edf0f3;
 }
-.update-review-footer > button {
+.update-review .update-review-footer > button {
+  min-height: 44px;
   font-size: 12px;
   padding: 7px 0;
   border: 0;
@@ -402,16 +401,13 @@
   .update-review-decisions .primary {
     grid-column: 1 / -1;
   }
-  .update-review-decisions .update-review-ask {
-    margin-left: 0;
-  }
   .update-review-decisions button,
   .update-review-source button,
   .update-review-secondary-actions > button,
   .update-review-footer > button {
     min-height: 44px;
   }
-  .update-review-secondary-actions .update-review-discard {
+  .update-review .update-review-secondary-actions .update-review-discard {
     margin-left: 0;
   }
   .update-review-decision-area {

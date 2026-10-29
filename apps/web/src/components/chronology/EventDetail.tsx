@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react"
+import { SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE } from "../../../../../dochaus/lib/chronology"
 import {
   chronologyNeedsAttention,
   type Chronology,
@@ -7,7 +8,7 @@ import {
   type ChronologyEvent,
   type ChronologyEvidence,
 } from "../../api/ingest/chronology"
-import { dateLabel, eventQualifications } from "./model"
+import { dateLabel, eventQualifications, tableDateLabel, tableDateQualifier } from "./model"
 import "./event-detail.css"
 import SourceIcon from "./SourceIcon"
 import useModalFocus from "../useModalFocus"
@@ -115,11 +116,14 @@ export default function EventDetail({
           {event.title}
         </h2>
         <div className="chronology-detail-meta">
-          <span className="chronology-detail-date">{dateLabel(event.date)}</span>
+          <span className="chronology-detail-date">{tableDateLabel(event.date)}</span>
           <span className={`chronology-detail-review ${event.reviewed ? "is-reviewed" : "is-pending"}`}>
             <span aria-hidden="true">{event.reviewed ? "✓" : "●"}</span> {event.reviewed ? "Reviewed" : "Unreviewed"}
           </span>
         </div>
+        {tableDateQualifier(event.date) && (
+          <p className="chronology-detail-date-qualifier">{tableDateQualifier(event.date)}</p>
+        )}
         <div className="chronology-tags">
           {chronologyNeedsAttention(event) && <span className="chronology-tag is-alert">Needs attention</span>}
           {eventQualifications(event).map((text) => (
@@ -148,7 +152,10 @@ export default function EventDetail({
             </p>
             {event.accounts.map((account) => (
               <article key={account.id} className="chronology-conflict-card">
-                <strong>{dateLabel(account.date)}</strong>
+                <strong>{tableDateLabel(account.date)}</strong>
+                {tableDateQualifier(account.date) && (
+                  <p className="chronology-detail-date-qualifier">{tableDateQualifier(account.date)}</p>
+                )}
                 {account.title !== event.title && <p>{account.title}</p>}
                 {account.detail && account.detail !== event.detail && <p>{account.detail}</p>}
                 <span className="chronology-muted">
@@ -197,7 +204,12 @@ export default function EventDetail({
                 )}
                 <div className="chronology-account-qualifications">
                   {(account.date.precision !== "exact" || dateLabel(account.date) !== dateLabel(event.date)) && (
-                    <span>Date in this source: {dateLabel(account.date)}</span>
+                    <span>
+                      Date in this source: {tableDateLabel(account.date)}
+                      {tableDateQualifier(account.date) && (
+                        <span className="chronology-detail-date-qualifier">{tableDateQualifier(account.date)}</span>
+                      )}
+                    </span>
                   )}
                   {account.date.rangeKind === "uncertainty" && <span>Uncertain date interval</span>}
                   {account.date.relative?.interpretation === "legal-interpretation" &&
@@ -246,16 +258,29 @@ export default function EventDetail({
                       {evidence.provenance === "source" ? " · Source document" : ""}
                     </p>
                     {evidence.provenance === "supplied-chronology" && (
-                      <p className="chronology-warning">
-                        Supplied chronology account. Original provenance may be unknown; this does not establish
-                        independent corroboration.
+                      <p
+                        role={evidence.issue === SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE ? "status" : undefined}
+                        className="chronology-warning"
+                      >
+                        {evidence.issue === SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE ? (
+                          <>{SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE} This does not establish independent corroboration.</>
+                        ) : (
+                          <>
+                            Supplied chronology account. Original provenance may be unknown; this does not establish
+                            independent corroboration.
+                          </>
+                        )}
                       </p>
                     )}
-                    {evidence.issue && (
-                      <p role="status" className="chronology-warning">
-                        {evidence.issue}
-                      </p>
-                    )}
+                    {evidence.issue &&
+                      !(
+                        evidence.provenance === "supplied-chronology" &&
+                        evidence.issue === SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE
+                      ) && (
+                        <p role="status" className="chronology-warning">
+                          {evidence.issue}
+                        </p>
+                      )}
                     <button type="button" onClick={() => onEvidence(evidence)}>
                       {evidence.freshness === "current" ? "View in document" : "Inspect current source"}
                     </button>

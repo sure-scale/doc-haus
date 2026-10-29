@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useId, useMemo, useState } from "react"
 import type { ChronologyAction, ChronologyDate, ChronologyEvent } from "../../api/ingest/chronology"
 import JurisdictionSelect from "../JurisdictionSelect"
 import ChronologyDialog from "./Dialog"
 import DateInput, { useChronologyDateFormat } from "./DateInput"
 import { formatDateInput, type DateInputFormat } from "./date-input"
-import { dateLabel, eventEvidence } from "./model"
+import { dateLabel, eventEvidence, tableDateLabel, tableDateQualifier } from "./model"
+import "./event-form.css"
 
 export default function EventForm({
   event,
@@ -25,6 +26,7 @@ export default function EventForm({
   onSave: (action: ChronologyAction) => Promise<boolean>
   onPreview: (action: ChronologyAction) => Promise<ChronologyEvent[] | undefined>
 }) {
+  const formId = useId()
   const format = useChronologyDateFormat()
   const [title, setTitle] = useState(event?.title ?? "")
   const [detail, setDetail] = useState(event?.detail ?? "")
@@ -92,8 +94,30 @@ export default function EventForm({
     </label>
   )
   return (
-    <ChronologyDialog title={label} onClose={onClose}>
+    <ChronologyDialog
+      title={label}
+      onClose={onClose}
+      footer={
+        <div className="chronology-form-actions chronology-event-form-actions">
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" form={formId} className="primary" disabled={!valid || busy}>
+            {busy
+              ? "Saving…"
+              : transformation && !currentPreview
+                ? "Preview changes"
+                : mode === "add"
+                  ? "Add event"
+                  : mode === "edit"
+                    ? "Save changes"
+                    : `Confirm ${mode}`}
+          </button>
+        </div>
+      }
+    >
       <form
+        id={formId}
         onSubmit={async (submit) => {
           submit.preventDefault()
           if (!valid) return
@@ -170,10 +194,10 @@ export default function EventForm({
                 />
               </label>
             </div>
-            <fieldset>
+            <fieldset className="chronology-event-form-sources">
               <legend>Sources for the first event</legend>
               {event!.accounts.map((account) => (
-                <label className="chronology-check" key={account.id}>
+                <label className="chronology-check chronology-event-form-account" key={account.id}>
                   <input
                     type="checkbox"
                     disabled={busy}
@@ -184,12 +208,17 @@ export default function EventForm({
                       )
                     }
                   />
-                  <span>
-                    {account.title} · {dateLabel(account.date)}
+                  <span className="chronology-event-form-account-content">
+                    <span className="chronology-event-form-account-title">{account.title}</span>
                     {account.evidence.length > 0 && (
-                      <span className="chronology-muted">
-                        {" "}
-                        · {account.evidence.map((evidence) => evidence.documentName).join(", ")}
+                      <span className="chronology-muted chronology-event-form-account-source">
+                        {account.evidence.map((evidence) => evidence.documentName).join(", ")}
+                      </span>
+                    )}
+                    <span className="chronology-event-form-account-date">{tableDateLabel(account.date)}</span>
+                    {tableDateQualifier(account.date) && (
+                      <span className="chronology-muted chronology-event-form-account-context">
+                        {tableDateQualifier(account.date)}
                       </span>
                     )}
                   </span>
@@ -242,18 +271,6 @@ export default function EventForm({
             <p>Previous records and source accounts are kept. Changed events need a fresh review.</p>
           </section>
         )}
-        <div className="chronology-form-actions">
-          <button type="button" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="submit" className="primary" disabled={!valid || busy}>
-            {busy
-              ? "Saving…"
-              : transformation && !currentPreview
-                ? "Preview changes"
-                : `Confirm ${mode === "merge" ? "merge" : mode === "split" ? "split" : "event"}`}
-          </button>
-        </div>
       </form>
     </ChronologyDialog>
   )

@@ -213,6 +213,13 @@
   font-size: 12px;
   margin: 5px 0;
 }
+.source-coverage .source-coverage-question-details {
+  margin-top: 10px;
+}
+.source-coverage .source-coverage-question-details summary {
+  font-size: 12px;
+  cursor: pointer;
+}
 .source-coverage .source-coverage-method {
   border-top: 1px solid #e7e9ed;
   padding-top: 16px;
@@ -269,6 +276,12 @@
   }
   .source-coverage .source-coverage-source-detail summary,
   .source-coverage .source-coverage-method summary,
+  .source-coverage .source-coverage-question-details summary {
+    min-height: 44px;
+    display: list-item;
+    padding: 12px 0;
+    box-sizing: border-box;
+  }
   .source-coverage .source-coverage-heading > button {
     min-height: 44px;
     display: flex;
