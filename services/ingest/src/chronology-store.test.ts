@@ -10,7 +10,7 @@ import {
   isSuppliedChronologyName,
   SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE,
 } from "../../../dochaus/lib/chronology"
-import { openDb, upsertDocument } from "./db"
+import { deleteDocument, insertChunk, openDb, upsertDocument } from "./db"
 import { liveText } from "../../../dochaus/lib/extract"
 import {
   actOnChronology,
@@ -39,6 +39,58 @@ function matter() {
   writeFileSync(path.join(dir, "matter.json"), "{}")
   return dir
 }
+test("newly indexed sources show extracted text separately from unread chronology work", () => {
+  const dir = matter(),
+    source = addSource(dir, "Receiving note.md", "The technician collected the sealed case.")
+  const before = readChronology(dir)
+  expect(projectChronologySources(dir).coverage[0]).toMatchObject({
+    uploaded: true,
+    textExtracted: false,
+    status: "pending",
+  })
+  const db = openDb(dir)
+  try {
+    insertChunk(db, {
+      documentId: Number(source.sourceId),
+      docPath: source.docPath,
+      docName: source.documentName,
+      section: "1",
+      structuralPath: "1",
+      party: "",
+      chunkIndex: 0,
+      text: "The technician collected the sealed case.\n",
+      charStart: 0,
+      charEnd: "The technician collected the sealed case.\n".length,
+      embedding: new Float32Array([1, 0]),
+      flagged: false,
+    })
+  } finally {
+    db.close()
+  }
+  const indexed = projectChronologySources(dir)
+  expect(indexed.coverage[0]).toMatchObject({
+    uploaded: true,
+    textExtracted: true,
+    status: "pending",
+    processedSections: [],
+    completedKeys: [],
+  })
+  expect(readChronology(dir)).toEqual(before)
+  mutateChronology(dir, before.revision, "save source snapshot", (state) => {
+    state.coverage = indexed.coverage
+  })
+  const removed = openDb(dir)
+  try {
+    deleteDocument(removed, source.docPath)
+  } finally {
+    removed.close()
+  }
+  expect(projectChronologySources(dir).coverage[0]).toMatchObject({
+    uploaded: false,
+    textExtracted: false,
+    status: "removed",
+  })
+})
 function addSource(
   dir: string,
   name = "Note.md",

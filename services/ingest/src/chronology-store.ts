@@ -438,15 +438,26 @@ export function newChronologyEvent(input: {
   }
 }
 
-type CurrentSource = { sourceId: string; documentName: string; version: string; docPath: string }
+type CurrentSource = {
+  sourceId: string
+  documentName: string
+  version: string
+  docPath: string
+  textExtracted: boolean
+}
 export function currentChronologySources(directory: string): CurrentSource[] {
   chronologyFile(directory)
   const db = openDb(directory)
   try {
-    const rows = db.query("SELECT id,name,doc_path FROM documents WHERE role='source'").all() as {
+    const rows = db
+      .query(
+        "SELECT id,name,doc_path,EXISTS(SELECT 1 FROM chunks WHERE document_id=documents.id AND length(trim(text))>0) AS text_extracted FROM documents WHERE role='source'",
+      )
+      .all() as {
       id: number
       name: string
       doc_path: string
+      text_extracted: number
     }[]
     const registered = rows.flatMap((row) => {
       if (!registeredDocumentName(row.name)) return []
@@ -466,6 +477,7 @@ export function currentChronologySources(directory: string): CurrentSource[] {
                 documentName: row.name,
                 docPath: target.docPath,
                 version: createHash("sha256").update(bytes).digest("hex"),
+                textExtracted: !!row.text_extracted,
               },
             ]
           : []
@@ -491,6 +503,7 @@ export function currentChronologySources(directory: string): CurrentSource[] {
                   documentName: name,
                   docPath: target.docPath,
                   version: createHash("sha256").update(bytes).digest("hex"),
+                  textExtracted: false,
                 },
               ]
             : []
@@ -549,13 +562,20 @@ export function projectChronologySources(directory: string, state = readChronolo
   for (const coverage of next.coverage) {
     const source = sources.find((s) => s.sourceId === coverage.sourceId && s.documentName === coverage.documentName)
     if (!source) {
+      coverage.uploaded = false
+      coverage.textExtracted = false
       coverage.status = "removed"
       if (!coverage.issues.includes("Source is no longer available."))
         coverage.issues.push("Source is no longer available.")
     } else if (source.version !== coverage.version) {
+      coverage.uploaded = true
+      coverage.textExtracted = source.textExtracted
       coverage.status = "pending"
       if (!coverage.issues.includes("Source changed; refresh required."))
         coverage.issues.push("Source changed; refresh required.")
+    } else {
+      coverage.uploaded = true
+      coverage.textExtracted ||= source.textExtracted
     }
   }
   for (const source of sources)
@@ -564,7 +584,7 @@ export function projectChronologySources(directory: string, state = readChronolo
         ...source,
         status: "pending",
         uploaded: true,
-        textExtracted: false,
+        textExtracted: source.textExtracted,
         sections: 0,
         processedSections: [],
         completedKeys: [],
