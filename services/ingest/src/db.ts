@@ -517,7 +517,8 @@ export function effectiveDocumentLinks(db: Database, name: string, links: Docume
   }
 }
 
-// Re-ingesting a document replaces its rows so the index never holds stale chunks.
+// Re-ingesting the same physical source keeps its registry identity while
+// replacing all index rows. A genuine delete/re-add still allocates a new id.
 export function upsertDocument(
   db: Database,
   docPath: string,
@@ -530,23 +531,27 @@ export function upsertDocument(
   if (getDocumentRole(db, docPath) === "deliverable")
     throw new Error(`Cannot replace generated deliverable ${name} with a source document.`)
   const previous = matchingDocumentRows(db, docPath)
-  const label = (db.query("SELECT label FROM documents WHERE name = ?").get(name) as { label: string | null } | null)?.label ?? null
-  const kept = effectiveDocumentLinks(db, name, links)
+  // Prefer the current physical spelling. Legacy aliases collapse onto that
+  // owner, or the oldest matching source when none uses the current spelling.
+  const owner = previous.find((row) => row.doc_path === docPath) ?? previous.toSorted((a, b) => a.id - b.id)[0]
+  const metadata = owner ? db.query("SELECT label, parent_name, attachments FROM documents WHERE id = ?").get(owner.id) as
+    { label: string | null; parent_name: string | null; attachments: string | null } | null : null
+  const label = metadata?.label ?? null
+  const kept = {
+    parent_name: links.parentName === undefined ? metadata?.parent_name ?? null : links.parentName,
+    attachments: links.attachments === undefined ? metadata?.attachments ?? null : links.attachments,
+  }
   previous.forEach((row) => {
     deleteDocumentIndexData(db, row.doc_path)
     db.run("UPDATE redlines SET doc_path = ?, doc_name = ? WHERE doc_path = ?", [docPath, name, row.doc_path])
-    db.run("DELETE FROM documents WHERE id = ?", [row.id])
+    if (row.id !== owner?.id) db.run("DELETE FROM documents WHERE id = ?", [row.id])
   })
-  const result = db.run("INSERT INTO documents (doc_path, name, created_at, injection_report, role, label, parent_name, attachments, extraction_quality) VALUES (?, ?, ?, ?, 'source', ?, ?, ?, ?)", [
-    docPath,
-    name,
-    createdAt,
-    injectionReport,
-    label,
-    kept.parent_name,
-    kept.attachments,
-    extractionQuality,
-  ])
+  const values = [docPath, name, createdAt, injectionReport, label, kept.parent_name, kept.attachments, extractionQuality]
+  if (owner) {
+    db.run("UPDATE documents SET doc_path = ?, name = ?, created_at = ?, injection_report = ?, role = 'source', label = ?, parent_name = ?, attachments = ?, extraction_quality = ?, rev = NULL WHERE id = ?", [...values, owner.id])
+    return owner.id
+  }
+  const result = db.run("INSERT INTO documents (doc_path, name, created_at, injection_report, role, label, parent_name, attachments, extraction_quality) VALUES (?, ?, ?, ?, 'source', ?, ?, ?, ?)", values)
   return Number(result.lastInsertRowid)
 }
 
