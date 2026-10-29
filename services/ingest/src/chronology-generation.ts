@@ -418,6 +418,9 @@ function explicitYearScope(source: string, at: number) {
   }
   return selected
 }
+function dateQualification(current: string | undefined, explanation: string) {
+  return [...(current?.split(" · ").filter((part) => part && part !== explanation) ?? []), explanation].join(" · ")
+}
 /** Normalize explicit calendar wording. A document's date alone is never a
  * year scope; short dates need their own full event passage or an explicit
  * year/period heading. Mixed/rollover context remains honestly unresolved. */
@@ -446,13 +449,10 @@ export function normaliseChronologyDate(
     delete date.start
     delete date.end
     date.precision = "ambiguous"
-    date.qualifier = [
-      ...new Set(
-        [date.qualifier, "A date range needs supported endpoints and a duration or uncertainty qualification."].filter(
-          Boolean,
-        ),
-      ),
-    ].join(" · ")
+    date.qualifier = dateQualification(
+      date.qualifier,
+      "A date range needs supported endpoints and a duration or uncertainty qualification.",
+    )
     return { date }
   }
   const numeric = /\b(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2}|\d{4})\b/.exec(date.original)
@@ -460,13 +460,10 @@ export function normaliseChronologyDate(
     delete date.start
     delete date.end
     date.precision = "ambiguous"
-    date.qualifier = [
-      ...new Set(
-        [date.qualifier, "Numeric date order or full year is not established; original wording retained."].filter(
-          Boolean,
-        ),
-      ),
-    ].join(" · ")
+    date.qualifier = dateQualification(
+      date.qualifier,
+      "Numeric date order or full year is not established; original wording retained.",
+    )
     return { date }
   }
   const mentions = writtenDates(date.original)
@@ -475,7 +472,7 @@ export function normaliseChronologyDate(
       delete date.start
       delete date.end
       date.precision = "ambiguous"
-      date.qualifier = [date.qualifier, INCOMPLETE_DATE_QUALIFIER].filter(Boolean).join(" · ")
+      date.qualifier = dateQualification(date.qualifier, INCOMPLETE_DATE_QUALIFIER)
     }
     return { date }
   }
@@ -503,15 +500,7 @@ export function normaliseChronologyDate(
     delete date.start
     delete date.end
     date.precision = "ambiguous"
-    date.qualifier = [
-      date.qualifier
-        ?.split(" · ")
-        .filter((s) => s !== INCOMPLETE_DATE_QUALIFIER)
-        .join(" · "),
-      INCOMPLETE_DATE_QUALIFIER,
-    ]
-      .filter(Boolean)
-      .join(" · ")
+    date.qualifier = dateQualification(date.qualifier, INCOMPLETE_DATE_QUALIFIER)
     return { date }
   }
   const normalized = `${year}-${String(mention.month).padStart(2, "0")}-${String(mention.day).padStart(2, "0")}`
@@ -528,9 +517,7 @@ export function normaliseChronologyDate(
       .filter((s) => s !== INCOMPLETE_DATE_QUALIFIER)
       .join(" · ") || undefined
   if (context)
-    date.qualifier = [date.qualifier, `Year established by source scope: ${context.quote.trim()}`]
-      .filter(Boolean)
-      .join(" · ")
+    date.qualifier = dateQualification(date.qualifier, `Year established by source scope: ${context.quote.trim()}`)
   return { date, ...(context ? { context } : {}) }
 }
 

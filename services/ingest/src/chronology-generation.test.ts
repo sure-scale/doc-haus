@@ -1041,6 +1041,26 @@ test("document dates, mixed-year accounts, rollover and numeric ambiguity cannot
   })
 })
 
+test("repeated date normalization retains custom qualifications without duplicating generated explanations", () => {
+  for (const original of ["07/08/2032", "11–13 October 2032", "9 January"]) {
+    const input = { original, precision: "exact" as const, qualifier: "The source account remains disputed." }
+    const once = normaliseChronologyDate(input).date
+    const twice = normaliseChronologyDate(once).date
+    expect(twice).toEqual(once)
+    expect(twice.qualifier).toStartWith(input.qualifier)
+    expect(twice.start).toBeUndefined()
+  }
+  const source = "# Year: 2033\nThe site visit was on 17 June."
+  const passage = "The site visit was on 17 June."
+  const once = normaliseChronologyDate(
+    { original: "17 June", precision: "ambiguous", qualifier: "Reported by the surveyor." },
+    source,
+    passage,
+    source.indexOf(passage),
+  )
+  expect(normaliseChronologyDate(once.date, source, passage, source.indexOf(passage))).toEqual(once)
+})
+
 test("static scope and evidential qualifications do not become events while genuine undated occurrences remain", () => {
   const staticQuote = "The facility contains a heat exchanger and two pressure vessels."
   const qualification = "This note does not establish the cause of the interruption."
