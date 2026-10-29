@@ -944,3 +944,16 @@
     box-sizing: border-box;
   }
 }
+/* A third matter surface can exceed a narrow rail's content width. Keep its
+   labelled controls intact and scroll the navigation, rather than the page. */
+@media (max-width: 720px) {
+  .shell-matter .sidebar .sidebar-surfaces {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    scroll-padding-inline: 4px;
+    padding-block: 3px;
+  }
+}

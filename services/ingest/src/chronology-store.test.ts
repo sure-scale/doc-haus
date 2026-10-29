@@ -3,7 +3,11 @@ import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "n
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { ChronologyAccount, ChronologyDate, ChronologyProposal } from "../../../dochaus/lib/chronology"
-import { chronologyCounters } from "../../../dochaus/lib/chronology"
+import {
+  chronologyCounters,
+  chronologyNeedsAttention,
+  supportedNameAssociationQuote,
+} from "../../../dochaus/lib/chronology"
 import { openDb, upsertDocument } from "./db"
 import { liveText } from "../../../dochaus/lib/extract"
 import {
@@ -20,6 +24,7 @@ import {
   stageChronologyProposals,
   verifyChronologyProposals,
   validChronologyDate,
+  validChronologyAccount,
 } from "./chronology-store"
 const dirs: string[] = []
 afterEach(() => {
@@ -562,4 +567,190 @@ test("stored and proposed dates retain real precision and distinguish intervals 
       rangeKind: "uncertainty",
     }),
   ).toBe(false)
+})
+
+test("lawyer source dates bind to source identity and bytes; replaced sources and stale proposals require reassertion", async () => {
+  const dir = matter(),
+    source = addSource(dir),
+    a = await account(dir)
+  const relative: ChronologyDate = {
+    original: "3 days after this note",
+    precision: "relative",
+    relative: {
+      expression: "3 days after this note",
+      anchorDocument: "Note.md",
+      offsetDays: 3,
+      interpretation: "document-stated",
+    },
+  }
+  let state = mutateChronology(dir, 0, "seed", (s) => {
+    s.events.push(
+      newChronologyEvent({
+        id: "relative",
+        title: "Response required",
+        detail: "Recorded requirement",
+        date: relative,
+        accounts: [a],
+      }),
+    )
+  })
+  state = actOnChronology(dir, state.revision, {
+    type: "source-date",
+    documentName: "Note.md",
+    date: "2025-05-06",
+  }) as typeof state
+  expect(state.sourceDates["Note.md"]).toMatchObject({ sourceId: source.sourceId, version: source.version })
+  expect(projectChronologySources(dir, state).sourceDates["Note.md"]!.freshness).toBe("current")
+  const oldProposal = state.proposals[0]!
+  writeFileSync(source.docPath, "The parcel was collected on 6 May 2025. Changed source version.")
+  expect(projectChronologySources(dir, state).sourceDates["Note.md"]!.freshness).toBe("stale")
+  expect(() => decideChronologyProposal(dir, state.revision, oldProposal.id, "accept")).toThrow(
+    "source date or its source changed",
+  )
+  state = actOnChronology(dir, state.revision, {
+    type: "source-date",
+    documentName: "Note.md",
+    date: "2025-05-06",
+  }) as typeof state
+  const renewed = state.proposals.find((p) => p.id !== oldProposal.id)!
+  expect(renewed).toBeDefined()
+  expect(renewed.sourceSetKey).not.toBe(oldProposal.sourceSetKey)
+  expect(() => decideChronologyProposal(dir, state.revision, oldProposal.id, "accept")).toThrow(
+    "source date or its source changed",
+  )
+  state = decideChronologyProposal(dir, state.revision, renewed.id, "accept")
+  expect(state.events[0]!.date.start).toBe("2025-05-09")
+  const db = openDb(dir)
+  try {
+    db.run("DELETE FROM documents WHERE id=?", [Number(source.sourceId)])
+    upsertDocument(db, source.docPath, "Note.md", 2, null)
+  } finally {
+    db.close()
+  }
+  expect(currentChronologySources(dir)[0]!.sourceId).not.toBe(source.sourceId)
+  expect(projectChronologySources(dir, state).sourceDates["Note.md"]!.freshness).toBe("stale")
+  rmSync(source.docPath)
+  expect(projectChronologySources(dir, state).sourceDates["Note.md"]!.freshness).toBe("unavailable")
+})
+
+test("legacy source dates remain inspectable but require a current source identity reassertion", () => {
+  const dir = matter()
+  addSource(dir)
+  const state = mutateChronology(dir, 0, "legacy date", (s) => {
+    s.sourceDates["Note.md"] = { date: "2025-05-06", actor: "Earlier local operator", at: 1 }
+  })
+  expect(readChronology(dir).sourceDates["Note.md"]!.date).toBe("2025-05-06")
+  expect(projectChronologySources(dir, state).sourceDates["Note.md"]).toMatchObject({
+    freshness: "stale",
+    date: "2025-05-06",
+  })
+})
+
+test("supported name variants require nonempty account-local verified evidence containing both names", async () => {
+  const dir = matter()
+  addSource(dir, "Note.md", "The parcel was collected on 6 May 2025. Maya Chen is also known as M. Chen.")
+  const a = await account(dir),
+    canonical = await liveText(path.join(dir, "Note.md"))
+  a.evidence[0]!.excerpt = canonical.trimEnd()
+  a.evidence[0]!.charStart = 0
+  a.evidence[0]!.charEnd = a.evidence[0]!.excerpt.length
+  a.nameAssociations = [
+    { name: "M. Chen", canonicalName: "Maya Chen", status: "supported", evidenceIds: [a.evidence[0]!.id] },
+  ]
+  expect(validChronologyAccount(a)).toBe(true)
+  expect(
+    validChronologyAccount({ ...a, nameAssociations: [{ ...a.nameAssociations[0]!, canonicalName: "Other Person" }] }),
+  ).toBe(false)
+  expect(validChronologyAccount({ ...a, nameAssociations: [{ ...a.nameAssociations[0]!, evidenceIds: [] }] })).toBe(
+    false,
+  )
+  expect(
+    validChronologyAccount({
+      ...a,
+      nameAssociations: [{ ...a.nameAssociations[0]!, evidenceIds: ["another-account-evidence"] }],
+    }),
+  ).toBe(false)
+  expect(validChronologyAccount({ ...a, nameAssociations: [{ ...a.nameAssociations[0]!, name: " " }] })).toBe(false)
+  expect(validChronologyAccount({ ...a, evidence: [{ ...a.evidence[0]!, verified: false }] })).toBe(false)
+  expect(validChronologyAccount({ ...a, nameAssociations: [{ ...a.nameAssociations[0]!, status: "uncertain" }] })).toBe(
+    true,
+  )
+})
+
+test("name association support distinguishes explicit aliases from co-occurrence, negation and a telephone call", () => {
+  expect(
+    supportedNameAssociationQuote(
+      "Northmere",
+      "Northmere Instrumentation Limited",
+      'Northmere Instrumentation Limited ("Northmere") received the device.',
+    ),
+  ).toBe(true)
+  expect(supportedNameAssociationQuote("M. Chen", "Maya Chen", "Maya Chen is also known as M. Chen.")).toBe(true)
+  expect(supportedNameAssociationQuote("M. Chen", "Maya Chen", "Maya Chen and M. Chen attended.")).toBe(false)
+  expect(supportedNameAssociationQuote("M. Chen", "Maya Chen", "Maya Chen called M. Chen.")).toBe(false)
+  expect(supportedNameAssociationQuote("M. Chen", "Maya Chen", "Maya Chen is not known as M. Chen.")).toBe(false)
+  expect(
+    supportedNameAssociationQuote(
+      "Northmere",
+      "Northmere Instrumentation Limited",
+      'It is false that Northmere Instrumentation Limited ("Northmere") signed.',
+    ),
+  ).toBe(false)
+})
+
+test("a separate changed anchor source flags a reviewed relative event even while its own evidence stays current", async () => {
+  const dir = matter()
+  addSource(dir)
+  const a = await account(dir)
+  const anchor = addSource(dir, "Anchor.md", "Source date: 6 May 2025.")
+  const relative: ChronologyDate = {
+    original: "3 days after the anchor note",
+    precision: "relative",
+    relative: {
+      expression: "3 days after the anchor note",
+      anchorDocument: "Anchor.md",
+      offsetDays: 3,
+      interpretation: "document-stated",
+    },
+  }
+  let state = mutateChronology(dir, 0, "seed", (s) => {
+    s.events.push(
+      newChronologyEvent({
+        id: "relative-separate-anchor",
+        title: "Response required",
+        detail: "Reported requirement",
+        date: relative,
+        accounts: [a],
+      }),
+    )
+  })
+  state = actOnChronology(dir, state.revision, {
+    type: "source-date",
+    documentName: "Anchor.md",
+    date: "2025-05-06",
+  }) as typeof state
+  state = decideChronologyProposal(dir, state.revision, state.proposals[0]!.id, "accept")
+  let projected = projectChronologySources(dir, state)
+  expect(projected.events[0]!.date.anchorFreshness).toBe("current")
+  expect(chronologyNeedsAttention(projected.events[0]!)).toBe(false)
+  writeFileSync(anchor.docPath, "Source date: 7 May 2025. Replaced anchor text.")
+  projected = projectChronologySources(dir, state)
+  expect(projected.events[0]!.accounts[0]!.evidence[0]!.freshness).toBe("current")
+  expect(projected.events[0]!.reviewed).toBe(true)
+  expect(projected.events[0]!.date.anchorFreshness).toBe("stale")
+  expect(chronologyNeedsAttention(projected.events[0]!)).toBe(true)
+  expect(readChronology(dir).events[0]!.date.anchorFreshness).toBeUndefined()
+  state = actOnChronology(dir, state.revision, {
+    type: "source-date",
+    documentName: "Anchor.md",
+    date: "2025-05-06",
+  }) as typeof state
+  expect(projectChronologySources(dir, state).events[0]!.date.anchorFreshness).toBe("stale")
+  const latest = state.proposals.findLast((p) => p.status === "pending")!
+  state = decideChronologyProposal(dir, state.revision, latest.id, "accept")
+  expect(projectChronologySources(dir, state).events[0]!.date.anchorFreshness).toBe("current")
+  rmSync(anchor.docPath)
+  projected = projectChronologySources(dir, state)
+  expect(projected.events[0]!.date.anchorFreshness).toBe("unavailable")
+  expect(chronologyNeedsAttention(projected.events[0]!)).toBe(true)
 })

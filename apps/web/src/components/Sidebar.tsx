@@ -234,7 +234,17 @@ export default function Sidebar({
       )}
 
       {matterId && (
-        <nav className="sidebar-surfaces" aria-label="Matter">
+        <nav
+          className="sidebar-surfaces"
+          aria-label="Matter"
+          onFocus={(event) => {
+            // Native focus can leave a partially visible link clipped in a
+            // horizontal rail. Reveal the whole target for keyboard users.
+            if (event.currentTarget.scrollWidth <= event.currentTarget.clientWidth) return
+            const target = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(".nav-item") : null
+            target?.scrollIntoView({ block: "nearest", inline: "nearest" })
+          }}
+        >
           <button
             type="button"
             className={`nav-item${drawer.open ? " active" : ""}`}

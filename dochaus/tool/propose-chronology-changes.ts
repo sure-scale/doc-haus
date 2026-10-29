@@ -17,6 +17,8 @@ const date = tool.schema.object({
       expression: tool.schema.string(),
       anchorDocument: tool.schema.string(),
       anchorDate: tool.schema.string().optional(),
+      anchorSourceId: tool.schema.string().optional(),
+      anchorVersion: tool.schema.string().optional(),
       offsetDays: tool.schema.number().optional(),
       calculation: tool.schema.string().optional(),
       interpretation: tool.schema.enum(["document-stated", "legal-interpretation"]).optional(),
@@ -47,6 +49,16 @@ const account = tool.schema.object({
   privilege: tool.schema.enum(["cleared", "uncertain", "privileged", "not-privileged"]),
   significance: tool.schema.enum(["key", "relevant", "background"]),
   people: tool.schema.array(tool.schema.string()),
+  nameAssociations: tool.schema
+    .array(
+      tool.schema.object({
+        name: tool.schema.string().min(1),
+        canonicalName: tool.schema.string().min(1),
+        status: tool.schema.enum(["supported", "uncertain"]),
+        evidenceIds: tool.schema.array(tool.schema.string()).min(1),
+      }),
+    )
+    .optional(),
   status: tool.schema.enum(["reported", "scheduled", "required"]),
   obligationId: tool.schema.string().optional(),
   gaps: tool.schema.array(tool.schema.string()),

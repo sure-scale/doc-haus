@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { ChronologyEvent, ChronologyProposal } from "../src/api/ingest/chronology"
 import {
   chronologyChatContext,
+  chronologyPeople,
   dateLabel,
   emptyFilters,
   matchesChronology,
@@ -53,6 +54,57 @@ const event: ChronologyEvent = {
   previousIds: [],
 }
 describe("chronology lawyer view", () => {
+  test("person filters join only supported current aliases and keep ambiguous identities separate", () => {
+    const named = {
+      ...event,
+      accounts: [
+        {
+          ...event.accounts[0]!,
+          people: ["M. Chen"],
+          nameAssociations: [
+            {
+              name: "M. Chen",
+              canonicalName: "Maya Chen",
+              status: "supported" as const,
+              evidenceIds: ["evidence"],
+            },
+          ],
+        },
+      ],
+    }
+    const other = { ...event, id: "other", accounts: [{ ...event.accounts[0]!, people: ["Maya Chen"] }] }
+    const linked = chronologyPeople([named, other])
+    expect(linked.options).toEqual(["Maya Chen"])
+    expect(matchesChronology(named, "", { ...emptyFilters, person: "Maya Chen" }, linked.canonical)).toBe(true)
+    const stale = {
+      ...named,
+      accounts: [
+        { ...named.accounts[0]!, evidence: [{ ...event.accounts[0]!.evidence[0]!, freshness: "stale" as const }] },
+      ],
+    }
+    expect(chronologyPeople([stale]).canonical("M. Chen")).toBe("M. Chen")
+    const uncertain = {
+      ...named,
+      accounts: [
+        {
+          ...named.accounts[0]!,
+          nameAssociations: [{ ...named.accounts[0]!.nameAssociations[0]!, status: "uncertain" as const }],
+        },
+      ],
+    }
+    expect(chronologyPeople([uncertain]).canonical("M. Chen")).toBe("M. Chen")
+    const collision = {
+      ...named,
+      id: "collision",
+      accounts: [
+        {
+          ...named.accounts[0]!,
+          nameAssociations: [{ ...named.accounts[0]!.nameAssociations[0]!, canonicalName: "Morgan Chen" }],
+        },
+      ],
+    }
+    expect(chronologyPeople([named, collision]).canonical("M. Chen")).toBe("M. Chen")
+  })
   test("date filters overlap partial dates and known periods without inventing event precision", () => {
     expect(matchesChronology(event, "", { ...emptyFilters, from: "2026-05-15", to: "2026-05-20" })).toBe(true)
     expect(matchesChronology(event, "", { ...emptyFilters, from: "2026-06-01" })).toBe(false)

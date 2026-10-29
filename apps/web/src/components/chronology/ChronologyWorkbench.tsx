@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   batchChronologyAdditions,
   chronologyAction,
@@ -28,6 +28,7 @@ import ProposalReview from "./ProposalReview"
 import ChronologyTimeline from "./Timeline"
 import {
   chronologyChatContext,
+  chronologyPeople,
   dateLabel,
   emptyFilters,
   eventEvidence,
@@ -223,9 +224,10 @@ export default function ChronologyWorkbench({
     }
   }
   const counters = state && chronologyCounters(state)
+  const people = useMemo(() => chronologyPeople(state?.events ?? []), [state?.events])
   const events = (state?.events ?? [])
     .filter((event) => !event.supersededBy?.length)
-    .filter((event) => matchesChronology(event, search, filters))
+    .filter((event) => matchesChronology(event, search, filters, people.canonical))
     .sort((a, b) => (a.date.start ?? "~~~~").localeCompare(b.date.start ?? "~~~~") || a.createdAt - b.createdAt)
   const activeFilterCount = Object.entries(filters).filter(([key, value]) =>
     key === "hidden" ? value !== "exclude" : !!value,
@@ -497,7 +499,11 @@ export default function ChronologyWorkbench({
               </p>
               {state.gaps.length > 0 && (
                 <div className="chronology-notice">
-                  <h3>Concrete evidence gaps</h3>
+                  <h3>Evidence questions to check</h3>
+                  <p className="chronology-muted">
+                    These source-level questions need checking against the whole record. A reference absent from one
+                    section may be supplied elsewhere in the matter.
+                  </p>
                   {state.gaps.map((gap, index) => (
                     <p key={index}>{gap}</p>
                   ))}
@@ -579,15 +585,9 @@ export default function ChronologyWorkbench({
                         onChange={(change) => setFilters({ ...filters, person: change.target.value })}
                       >
                         <option value="">All people</option>
-                        {[
-                          ...new Set(
-                            state.events.flatMap((event) => event.accounts.flatMap((account) => account.people)),
-                          ),
-                        ]
-                          .sort()
-                          .map((person) => (
-                            <option key={person}>{person}</option>
-                          ))}
+                        {people.options.map((person) => (
+                          <option key={person}>{person}</option>
+                        ))}
                       </select>
                     </label>
                     <label>
@@ -995,7 +995,15 @@ function SourceDateDialog({
           <input type="date" required value={date} onChange={(event) => setDate(event.target.value)} />
         </label>
         {chronology.sourceDates[documentName] && (
-          <p>Previously supplied by {chronology.sourceDates[documentName].actor}.</p>
+          <div>
+            <p>
+              Previously supplied by {chronology.sourceDates[documentName].actor} ·{" "}
+              {chronology.sourceDates[documentName].freshness ?? "version not confirmed"}.
+            </p>
+            {chronology.sourceDates[documentName].issue && (
+              <p className="chronology-warning">{chronology.sourceDates[documentName].issue}</p>
+            )}
+          </div>
         )}
         <div className="chronology-form-actions">
           <button type="button" onClick={onClose}>

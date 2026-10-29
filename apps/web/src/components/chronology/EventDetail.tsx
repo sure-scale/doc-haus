@@ -104,6 +104,7 @@ export default function EventDetail({
           <p>
             Anchor: {event.date.relative.anchorDocument} · {event.date.relative.anchorDate ?? "not established"}
           </p>
+          {event.date.anchorIssue && <p className="chronology-warning">{event.date.anchorIssue}</p>}
           {event.date.relative.calculation && <p>Calculation: {event.date.relative.calculation}</p>}
           <p>
             {event.date.relative.interpretation === "legal-interpretation"
@@ -139,10 +140,25 @@ export default function EventDetail({
               {account.attribution ? ` · ${account.attribution}` : ""}
             </p>
             <p>{account.detail}</p>
+            {account.date.anchorIssue && <p className="chronology-warning">{account.date.anchorIssue}</p>}
             <p className="chronology-muted">
               Significance: {account.significance} · Privilege: {account.privilege}
               {account.people.length ? ` · ${account.people.join(", ")}` : ""}
             </p>
+            {account.nameAssociations?.map((association, index) => (
+              <p key={index} className="chronology-muted">
+                Name association: {association.name} → {association.canonicalName} ·{" "}
+                {association.status === "uncertain"
+                  ? "Uncertain; kept separate in person filters. Review the supporting passage."
+                  : association.evidenceIds.every((id) =>
+                        account.evidence.some(
+                          (evidence) => evidence.id === id && evidence.verified && evidence.freshness === "current",
+                        ),
+                      )
+                    ? "Source-supported; person filters use this association unless another source assigns the same name differently."
+                    : "Support is stale or unavailable; kept separate in person filters."}
+              </p>
+            ))}
             {account.obligationId && (
               <p className="chronology-muted">
                 Linked obligation: {account.obligationId}. The original deadline is preserved.

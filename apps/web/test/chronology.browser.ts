@@ -17,9 +17,15 @@ await Bun.write(
 import { createElement } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react")))}
 import { createRoot } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-dom/client")))}
 import Workbench from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/chronology/ChronologyWorkbench.tsx"))}
+import Sidebar from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/Sidebar.tsx"))}
+import { setDocumentsCount } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/components/matter/documents-drawer.ts"))}
+import { MemoryRouter } from ${JSON.stringify(fileURLToPath(import.meta.resolve("react-router-dom")))}
 import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles.css"))}
 import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/design-system.css"))}
-createRoot(document.getElementById('root')).render(createElement(Workbench, { matterId: 'fixture', title: 'Harbour equipment matter', documents: [{id: 1,name: 'Carrier note.md',doc_path: '/fixture/Carrier note.md',created_at: 0}], onState: () => {}, onAsk: context => { window.__context = context }, onClose: () => {} }))
+import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/design-shell.css"))}
+setDocumentsCount(3)
+const workbench = createElement(Workbench, { matterId: 'fixture', title: 'Harbour equipment matter', documents: [{id: 1,name: 'Carrier note.md',doc_path: '/fixture/Carrier note.md',created_at: 0}], onState: () => {}, onAsk: context => { window.__context = context }, onClose: () => {} })
+createRoot(document.getElementById('root')).render(createElement(MemoryRouter, { initialEntries: ['/matter/fixture?view=chronology'] }, createElement('div', { className: 'shell shell-matter' }, createElement(Sidebar, { onOpenSettings: () => {}, sessionsVersion: 0 }), createElement('main', { className: 'content' }, createElement('div', { className: 'container matter-container' }, createElement('div', { className: 'matter-body' }, workbench))))))
 `,
 )
 const build = await Bun.build({
@@ -144,6 +150,14 @@ try {
       url = new URL(request.url())
     const reply = (body: unknown, status = 200) =>
       route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) })
+    if (url.pathname === "/matters/fixture" && request.method() === "GET")
+      return reply({
+        id: "fixture",
+        title: "Harbour equipment matter",
+        dir: "/fixture",
+        created_at: 0,
+        documents: [{ id: 1, name: "Carrier note.md", doc_path: "/fixture/Carrier note.md", created_at: 0 }],
+      })
     if (url.pathname.endsWith("/documents/text"))
       return reply({ text: `# Source\n\n${quote}\n\nArrival was reported two days later.` })
     if (url.pathname.endsWith("/documents/versions"))
@@ -218,6 +232,9 @@ try {
     }
     return reply({ error: `Unexpected ${request.method()} ${url.pathname}` }, 404)
   })
+  await page.route("http://engine.invalid/**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: [] }) }),
+  )
   await page.goto(server.url.href)
   const detail = page.getByRole("complementary", { name: "Event and evidence" })
   await expect(page.getByRole("heading", { name: "Fact chronology", exact: true })).toBeVisible()
@@ -323,6 +340,27 @@ try {
       await page.screenshot({ path: path.join(evidenceDirectory, `implementation-${width}.png`), fullPage: false })
     await detail.getByRole("button", { name: "Back to events" }).click()
     await expect(page.getByRole("searchbox")).toBeVisible()
+    assert.ok(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+      `table is locally scrollable at ${width}px`,
+    )
+    if (width === 375) {
+      const surfaces = page.locator(".sidebar-surfaces")
+      await surfaces.getByRole("link", { name: "Review table", exact: true }).focus()
+      const navBounds = await surfaces.boundingBox()
+      const reviewBounds = await surfaces.getByRole("link", { name: "Review table", exact: true }).boundingBox()
+      assert.ok(
+        navBounds &&
+          reviewBounds &&
+          reviewBounds.x >= navBounds.x &&
+          reviewBounds.x + reviewBounds.width <= navBounds.x + navBounds.width + 1,
+        "keyboard focus reveals the complete navigation control",
+      )
+      assert.ok(
+        await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+        "navigation scroll stays inside the shell",
+      )
+    }
   }
   await page.emulateMedia({ reducedMotion: "reduce" })
   assert.deepEqual(errors, [])

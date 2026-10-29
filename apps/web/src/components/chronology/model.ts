@@ -41,6 +41,8 @@ export function eventQualifications(event: ChronologyEvent) {
           : "Date approximate",
     )
   if (event.date.rangeKind === "uncertainty") values.push("Uncertain date interval")
+  if (event.date.anchorFreshness && event.date.anchorFreshness !== "current")
+    values.push("Source-date anchor needs checking")
   if (event.disputed) values.push("Conflict / dispute")
   if (eventEvidence(event).some((evidence) => evidence.freshness !== "current"))
     values.push("Stale or unavailable support")
@@ -78,11 +80,55 @@ export const emptyFilters: ChronologyFilters = {
   undated: false,
   hidden: "exclude",
 }
-export function matchesChronology(event: ChronologyEvent, search: string, filters: ChronologyFilters) {
+/** Associations belong to sourced accounts, never a fuzzy name match. Expired
+ * evidence and an alias naming more than one identity cannot join filters. */
+export function chronologyPeople(events: ChronologyEvent[]) {
+  const targets = new Map<string, Set<string>>()
+  const key = (name: string) => name.trim().toLocaleLowerCase()
+  for (const account of events.flatMap((event) => event.accounts)) {
+    for (const association of account.nameAssociations ?? []) {
+      if (
+        association.status !== "supported" ||
+        !association.evidenceIds.length ||
+        !association.evidenceIds.every((id) =>
+          account.evidence.some(
+            (evidence) => evidence.id === id && evidence.verified && evidence.freshness === "current",
+          ),
+        )
+      )
+        continue
+      const names = targets.get(key(association.name)) ?? new Set<string>()
+      names.add(association.canonicalName)
+      targets.set(key(association.name), names)
+    }
+  }
+  const canonical = (name: string) => {
+    const names = targets.get(key(name))
+    return names?.size === 1 ? [...names][0]! : name
+  }
+  return {
+    canonical,
+    options: [
+      ...new Set(events.flatMap((event) => event.accounts.flatMap((account) => account.people.map(canonical)))),
+    ].sort(),
+  }
+}
+export function matchesChronology(
+  event: ChronologyEvent,
+  search: string,
+  filters: ChronologyFilters,
+  canonicalPerson: (name: string) => string = (name) => name,
+) {
   if ((filters.hidden === "exclude" && event.hidden) || (filters.hidden === "only" && !event.hidden)) return false
   if (filters.document && !eventEvidence(event).some((evidence) => evidence.documentName === filters.document))
     return false
-  if (filters.person && !event.accounts.some((account) => account.people.includes(filters.person))) return false
+  if (
+    filters.person &&
+    !event.accounts.some((account) =>
+      account.people.some((name) => canonicalPerson(name) === canonicalPerson(filters.person)),
+    )
+  )
+    return false
   const earliest = event.date.start && periodBoundary(event.date.start, false)
   const latest = event.date.start && periodBoundary(event.date.end ?? event.date.start, true)
   if (filters.from && (!latest || latest < filters.from)) return false

@@ -5,7 +5,7 @@ import { withArtifactMutationLock } from "../../../dochaus/capabilities/artifact
 import { writeDurableJson } from "../../../dochaus/lib/durable-json"
 import { readRegularFile } from "../../../dochaus/lib/regular-file"
 import { verifyCitation } from "../../../dochaus/plugin/legal/citations"
-import { chronologyCalendarDayOffset } from "../../../dochaus/lib/chronology"
+import { chronologyCalendarDayOffset, supportedNameAssociationQuote } from "../../../dochaus/lib/chronology"
 import type {
   Chronology,
   ChronologyAccount,
@@ -49,6 +49,8 @@ export function validChronologyDate(x: unknown, depth = 0): x is ChronologyDate 
   for (const k of ["start", "end", "time", "timezone", "qualifier", "documentDate"])
     if (x[k] !== undefined && !text(x[k], 2000)) return false
   if (x.rangeKind !== undefined && !choices(x.rangeKind, ["duration", "uncertainty"])) return false
+  if (x.anchorFreshness !== undefined && !choices(x.anchorFreshness, ["current", "stale", "unavailable"])) return false
+  if (x.anchorIssue !== undefined && !text(x.anchorIssue)) return false
   for (const field of ["start", "end"])
     if (x[field] !== undefined && !validNormalizedDate(x[field] as string)) return false
   if (["undated", "ambiguous"].includes(x.precision as string) && (x.start !== undefined || x.end !== undefined))
@@ -68,6 +70,8 @@ export function validChronologyDate(x: unknown, depth = 0): x is ChronologyDate 
       !text(r.expression, 2000) ||
       !text(r.anchorDocument, 1000) ||
       (r.anchorDate !== undefined && !text(r.anchorDate, 2000)) ||
+      (r.anchorSourceId !== undefined && !text(r.anchorSourceId, 1000)) ||
+      (r.anchorVersion !== undefined && !text(r.anchorVersion, 1000)) ||
       (r.offsetDays !== undefined &&
         (!Number.isSafeInteger(r.offsetDays) || Math.abs(r.offsetDays as number) > 366000)) ||
       (r.calculation !== undefined && !text(r.calculation, 2000)) ||
@@ -117,6 +121,34 @@ export function validChronologyAccount(x: unknown): x is ChronologyAccount {
     choices(x.significance, ["key", "relevant", "background"]) &&
     choices(x.status, ["reported", "scheduled", "required"]) &&
     strings(x.people) &&
+    (x.nameAssociations === undefined ||
+      (Array.isArray(x.nameAssociations) &&
+        x.nameAssociations.every(
+          (association) =>
+            record(association) &&
+            text(association.name, 500) &&
+            !!association.name.trim() &&
+            text(association.canonicalName, 500) &&
+            !!association.canonicalName.trim() &&
+            choices(association.status, ["supported", "uncertain"]) &&
+            strings(association.evidenceIds) &&
+            new Set(association.evidenceIds).size === association.evidenceIds.length &&
+            association.evidenceIds.length > 0 &&
+            association.evidenceIds.every((id) =>
+              (x.evidence as ChronologyEvidence[]).some((evidence) => evidence.id === id),
+            ) &&
+            (association.status !== "supported" ||
+              (x.evidence as ChronologyEvidence[]).some(
+                (evidence) =>
+                  (association.evidenceIds as string[]).includes(evidence.id) &&
+                  evidence.verified &&
+                  supportedNameAssociationQuote(
+                    association.name as string,
+                    association.canonicalName as string,
+                    evidence.excerpt,
+                  ),
+              )),
+        ))) &&
     strings(x.gaps) &&
     (x.attribution === undefined || string(x.attribution)) &&
     (x.obligationId === undefined || string(x.obligationId))
@@ -193,7 +225,19 @@ export function validChronology(x: unknown): x is Chronology {
     new Set(x.proposals.map((p) => p.id)).size !== x.proposals.length
   )
     return false
-  if (!Object.values(x.sourceDates).every((d) => record(d) && string(d.date) && timestamp(d.at) && string(d.actor)))
+  if (
+    !Object.values(x.sourceDates).every(
+      (d) =>
+        record(d) &&
+        string(d.date) &&
+        timestamp(d.at) &&
+        string(d.actor) &&
+        ((d.sourceId === undefined && d.version === undefined) ||
+          (text(d.sourceId, 1000) && !!d.sourceId && text(d.version, 1000) && !!d.version)) &&
+        (d.freshness === undefined || choices(d.freshness, ["current", "stale", "unavailable"])) &&
+        (d.issue === undefined || string(d.issue)),
+    )
+  )
     return false
   if (
     !x.coverage.every(
@@ -330,6 +374,7 @@ export function mutateChronology(
       throw new ChronologyError("The chronology revision limit has been reached.", "chronology_unavailable", 423)
     const next = structuredClone(current)
     callback(next)
+    stripProjectedDateFreshness(next)
     if (JSON.stringify(next) === JSON.stringify(current)) return current
     next.revision = current.revision + 1
     if (!validChronology(next))
@@ -455,6 +500,29 @@ export function currentChronologySources(directory: string): CurrentSource[] {
 export function projectChronologySources(directory: string, state = readChronology(directory)): Chronology {
   const next = structuredClone(state)
   const sources = currentChronologySources(directory)
+  for (const [documentName, correction] of Object.entries(next.sourceDates)) {
+    const source = sources.find((source) => source.documentName === documentName)
+    if (!source) {
+      correction.freshness = "unavailable"
+      correction.issue =
+        "The dated source is no longer available. Reassert its date only after checking the current source."
+    } else if (
+      !correction.sourceId ||
+      correction.sourceId !== source.sourceId ||
+      correction.version !== source.version
+    ) {
+      correction.freshness = "stale"
+      correction.issue =
+        "This date belongs to an earlier or unbound source version. Check and reassert it before using it as a date anchor."
+    } else {
+      correction.freshness = "current"
+      delete correction.issue
+    }
+  }
+  for (const event of [...next.events, ...next.proposals.flatMap((proposal) => proposal.events)]) {
+    projectAnchorDate(event.date, next, sources)
+    for (const account of event.accounts) projectAnchorDate(account.date, next, sources)
+  }
   for (const event of [...next.events, ...next.proposals.flatMap((p) => p.events)])
     for (const account of event.accounts)
       for (const evidence of account.evidence) {
@@ -546,7 +614,14 @@ function assertCurrentProposalSources(directory: string, p: ChronologyProposal, 
       if (
         !relative ||
         state.sourceDates[relative.anchorDocument]?.date !== relative.anchorDate ||
-        !sources.some((source) => source.documentName === relative.anchorDocument)
+        !sources.some(
+          (source) =>
+            source.documentName === relative.anchorDocument &&
+            !!state.sourceDates[relative.anchorDocument]?.sourceId &&
+            source.sourceId === state.sourceDates[relative.anchorDocument]?.sourceId &&
+            source.version === state.sourceDates[relative.anchorDocument]?.version &&
+            p.sourceSetKey === `${source.sourceId}:${source.version}`,
+        )
       )
         throw new ChronologyError(
           "The source date or its source changed after this calculation was proposed. Review the latest source-date proposal.",
@@ -931,9 +1006,15 @@ export function actOnChronology(
       return
     }
     if (action.type === "source-date") {
-      if (!currentChronologySources(directory).some((s) => s.documentName === action.documentName))
-        throw new ChronologyError("Choose a source currently available in this matter.")
-      state.sourceDates[action.documentName] = { date: action.date, at: Date.now(), actor: "local operator" }
+      const source = currentChronologySources(directory).find((s) => s.documentName === action.documentName)
+      if (!source) throw new ChronologyError("Choose a source currently available in this matter.")
+      state.sourceDates[action.documentName] = {
+        date: action.date,
+        at: Date.now(),
+        actor: "local operator",
+        sourceId: source.sourceId,
+        version: source.version,
+      }
       for (const event of state.events) {
         const relative = event.date.relative
         if (
@@ -947,7 +1028,13 @@ export function actOnChronology(
         if (offset === undefined) continue
         const anchor = Date.parse(`${action.date}T00:00:00Z`)
         const result = new Date(anchor + offset * 86400000).toISOString().slice(0, 10)
-        if (event.date.start === result && relative.anchorDate === action.date) continue
+        if (
+          event.date.start === result &&
+          relative.anchorDate === action.date &&
+          relative.anchorSourceId === source.sourceId &&
+          relative.anchorVersion === source.version
+        )
+          continue
         const next = structuredClone(event)
         next.reviewed = false
         delete next.reviewedAt
@@ -958,11 +1045,14 @@ export function actOnChronology(
           relative: {
             ...relative,
             anchorDate: action.date,
+            anchorSourceId: source.sourceId,
+            anchorVersion: source.version,
             calculation: `${action.date} + ${relative.offsetDays} calendar days (lawyer-supplied source date)`,
           },
         }
         const p: ChronologyProposal = {
-          id: stableId("source-date", action.documentName, action.date, event.id),
+          id: stableId("source-date", action.documentName, action.date, source.sourceId, source.version, event.id),
+          sourceSetKey: `${source.sourceId}:${source.version}`,
           kind: "amendment",
           targetIds: [event.id],
           baseEventHashes: { [event.id]: chronologyEventHash(event) },
@@ -1170,4 +1260,53 @@ function validNormalizedDate(value: string) {
   if (value.length === 7) return true
   const date = new Date(`${value}T00:00:00Z`)
   return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value
+}
+
+function projectAnchorDate(date: ChronologyDate, state: Chronology, sources: CurrentSource[]) {
+  delete date.anchorFreshness
+  delete date.anchorIssue
+  const relative = date.relative
+  if (!relative) return
+  const correction = state.sourceDates[relative.anchorDocument]
+  if (!correction && !relative.anchorSourceId && !relative.anchorVersion) return
+  const current = sources.find((source) => source.documentName === relative.anchorDocument)
+  if (!current) {
+    date.anchorFreshness = "unavailable"
+    date.anchorIssue =
+      "The source supporting this relative-date anchor is unavailable. The saved date and historical review are preserved."
+    return
+  }
+  if (
+    !relative.anchorSourceId ||
+    relative.anchorSourceId !== current.sourceId ||
+    relative.anchorVersion !== current.version
+  ) {
+    date.anchorFreshness = "stale"
+    date.anchorIssue =
+      "The relative-date anchor belongs to an earlier or unbound source version. Review a fresh date proposal before relying on this calculation."
+    return
+  }
+  if (correction && (correction.freshness !== "current" || correction.date !== relative.anchorDate)) {
+    date.anchorFreshness = "stale"
+    date.anchorIssue =
+      "The lawyer-supplied source date changed or needs reassertion. Confirm the affected relative-date proposal."
+    return
+  }
+  date.anchorFreshness = "current"
+}
+function stripProjectedDateFreshness(state: Chronology) {
+  const strip = (date: ChronologyDate) => {
+    delete date.anchorFreshness
+    delete date.anchorIssue
+    if (date.correction) strip(date.correction.original)
+  }
+  for (const event of [...state.events, ...state.proposals.flatMap((proposal) => proposal.events)]) {
+    strip(event.date)
+    if (event.original) strip(event.original.date)
+    for (const account of event.accounts) strip(account.date)
+  }
+  for (const correction of Object.values(state.sourceDates)) {
+    delete correction.freshness
+    delete correction.issue
+  }
 }

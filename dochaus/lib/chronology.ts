@@ -11,10 +11,15 @@ export type ChronologyDate = {
   timezone?: string
   qualifier?: string
   documentDate?: string
+  /** Read projection only: freshness of a relative date's supporting anchor. */
+  anchorFreshness?: "current" | "stale" | "unavailable"
+  anchorIssue?: string
   relative?: {
     expression: string
     anchorDocument: string
     anchorDate?: string
+    anchorSourceId?: string
+    anchorVersion?: string
     offsetDays?: number
     calculation?: string
     interpretation?: "document-stated" | "legal-interpretation"
@@ -36,6 +41,12 @@ export type ChronologyEvidence = {
   sourceKind?: string
   issue?: string
 }
+export type ChronologyNameAssociation = {
+  name: string
+  canonicalName: string
+  status: "supported" | "uncertain"
+  evidenceIds: string[]
+}
 export type ChronologyAccount = {
   id: string
   title: string
@@ -46,6 +57,7 @@ export type ChronologyAccount = {
   privilege: "cleared" | "uncertain" | "privileged" | "not-privileged"
   significance: "key" | "relevant" | "background"
   people: string[]
+  nameAssociations?: ChronologyNameAssociation[]
   status: "reported" | "scheduled" | "required"
   obligationId?: string
   gaps: string[]
@@ -92,7 +104,7 @@ export type ChronologyProposal = {
   kind: "addition" | "amendment" | "conflict" | "removal" | "merge" | "split"
   targetIds: string[]
   baseEventHashes: Record<string, string>
-  /** Removal decisions expire when the authorised source set changes. */
+  /** Removal/source-date decisions expire when their source basis changes. */
   sourceSetKey?: string
   events: ChronologyEvent[]
   reason: string
@@ -138,7 +150,18 @@ export type Chronology = {
   events: ChronologyEvent[]
   coverage: ChronologyCoverage[]
   proposals: ChronologyProposal[]
-  sourceDates: Record<string, { date: string; at: number; actor: string }>
+  sourceDates: Record<
+    string,
+    {
+      date: string
+      at: number
+      actor: string
+      sourceId?: string
+      version?: string
+      freshness?: "current" | "stale" | "unavailable"
+      issue?: string
+    }
+  >
   suggestion: ChronologySuggestion
   run?: ChronologyRun
   history: ChronologyHistory[]
@@ -169,9 +192,13 @@ export type ChronologyDecision = "accept" | "keep" | "defer"
 export function chronologyNeedsAttention(event: ChronologyEvent) {
   return (
     event.disputed ||
+    (event.date.anchorFreshness !== undefined && event.date.anchorFreshness !== "current") ||
     (event.origin === "generated" && event.accounts.length === 0) ||
     event.accounts.some(
-      (a) => a.evidence.length === 0 || a.evidence.some((e) => !e.verified || e.freshness !== "current"),
+      (a) =>
+        (a.date.anchorFreshness !== undefined && a.date.anchorFreshness !== "current") ||
+        a.evidence.length === 0 ||
+        a.evidence.some((e) => !e.verified || e.freshness !== "current"),
     )
   )
 }
@@ -237,4 +264,44 @@ export function chronologyCalendarDayOffset(relative: NonNullable<ChronologyDate
     : numeric[1]!.split(/[ -]/).reduce((sum, word) => sum + (words[word] ?? NaN), 0)
   const days = count * (numeric[2] === "before" ? -1 : 1)
   return days === relative.offsetDays && Math.abs(days) <= 36525 ? days : undefined
+}
+
+/** Supported aliases need an explicit identity/defined-name phrase. Names
+ * merely appearing in one passage never establish that they are the same party. */
+export function supportedNameAssociationQuote(name: string, canonicalName: string, quote: string): boolean {
+  if (
+    !name.trim() ||
+    !canonicalName.trim() ||
+    name === canonicalName ||
+    !quote.includes(name) ||
+    !quote.includes(canonicalName)
+  )
+    return false
+  const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const whole = (value: string) => `(?<![\\p{L}\\p{N}_])${escape(value)}(?![\\p{L}\\p{N}_])`
+  for (const [from, to] of [
+    [name, canonicalName],
+    [canonicalName, name],
+  ]) {
+    const left = whole(from!),
+      right = whole(to!)
+    const defined = new RegExp(`${left}\\s*\\(\\s*(?:the\\s+)?["'“‘]${right}["'”’]\\s*\\)`, "iu")
+    const explicit = new RegExp(
+      `${left}\\s*[,;(]?\\s*(?:(?:(?:is|was|are|were)\\s+)?(?:(?:also|formerly|now|previously)\\s+)?(?:known\\s+as|referred\\s+to\\s+as|defined\\s+as)|(?:(?:is|was|are|were)\\s+|also\\s+)called|a\\.?k\\.?a\\.?|alias)\\s+["'“‘]?${right}`,
+      "iu",
+    )
+    for (const expression of [defined, explicit]) {
+      const match = expression.exec(quote)
+      if (!match) continue
+      const preceding = quote.slice(Math.max(0, match.index - 70), match.index)
+      if (
+        /\b(?:not|never|den(?:y|ies|ied)|disput(?:e|es|ed)|incorrect(?:ly)?|mistaken(?:ly)?|false|untrue)\b[^.!?;\n]{0,60}$/i.test(
+          preceding,
+        )
+      )
+        continue
+      return true
+    }
+  }
+  return false
 }

@@ -12,6 +12,7 @@ import {
   parseChronologyExtraction,
   resolveRelativeDate,
   assessChronology,
+  recentChronologyInstructions,
   type ChronologyGenerationDeps,
 } from "./chronology-generation"
 import { actOnChronology, decideChronologyProposal, readChronology } from "./chronology-store"
@@ -70,6 +71,7 @@ function fake(
 ): ChronologyGenerationDeps {
   let id = 0
   return {
+    engine: { fetch: (async () => Response.json({ data: [] })) as unknown as typeof fetch },
     sessions: {
       async createSession(input) {
         expect(input.permissions).toEqual([{ action: "*", resource: "*", effect: "deny" }])
@@ -302,11 +304,11 @@ test("date precision stays honest; only explicit supported calendar-day formulas
       interpretation: "document-stated",
     },
   })
-  resolveRelativeDate(date, { documentName: "Note.md" }, "2025-05-06", {})
+  resolveRelativeDate(date, { documentName: "Note.md", sourceId: "note", version: "current" }, "2025-05-06", {})
   expect(date.start).toBe("2025-05-09")
   const business = structuredClone(date)
   business.relative!.expression = "within 3 business days after"
-  resolveRelativeDate(business, { documentName: "Note.md" }, "2025-05-06", {})
+  resolveRelativeDate(business, { documentName: "Note.md", sourceId: "note", version: "current" }, "2025-05-06", {})
   expect(business.start).toBeUndefined()
   expect(() => parseChronologyExtraction('{"complete":false,"events":[]}')).toThrow("complete section reading")
 })
@@ -589,4 +591,205 @@ test("refresh reconciles against the current merged record rather than supersede
   expect(candidateIds).toContain(currentId)
   expect(candidateIds).not.toContain(previousId)
   expect(readChronology(dir).proposals[0]!.targetIds).toEqual([currentId])
+})
+
+function nativeChat(directory: string, readWords: () => string, observed: string[] = [], moved = false) {
+  const main = { id: "main-chat", location: { directory }, agent: "draft", time: { created: 1, updated: 10 } }
+  return (async (input: Parameters<typeof fetch>[0]) => {
+    const url = new URL(String(input))
+    observed.push(url.pathname + url.search)
+    if (url.pathname === "/api/session")
+      return Response.json({
+        data: [
+          { ...main, id: "internal", metadata: { dochaus_role: "chronology" }, agent: "chronology-extract" },
+          { ...main, id: "child", parentID: main.id },
+          { ...main, id: "lean", agent: "lean-intake" },
+          main,
+        ],
+      })
+    if (url.pathname === "/api/session/main-chat")
+      return Response.json({
+        data: moved ? { ...main, location: { directory: directory + "-different-matter" } } : main,
+      })
+    if (url.pathname === "/api/session/main-chat/message")
+      return Response.json({
+        data: [
+          {
+            id: "assistant",
+            type: "assistant",
+            time: { created: 5 },
+            content: [{ type: "text", text: "Assistant guesses must never become lawyer instructions." }],
+          },
+          {
+            id: "synthetic",
+            type: "synthetic",
+            time: { created: 4 },
+            text: "Internal continuation must never become lawyer instructions.",
+          },
+          { id: "lawyer", type: "user", time: { created: 3 }, text: readWords() },
+        ],
+      })
+    throw new Error("Unexpected native route: " + url.pathname)
+  }) as unknown as typeof fetch
+}
+
+test("recent matter instructions contain only real main-chat user admissions from bounded native reads", async () => {
+  const dir = matter(),
+    observed: string[] = []
+  const result = await recentChronologyInstructions(dir, {
+    fetch: nativeChat(dir, () => "Resolve the disputed shipment dates before the hearing.", observed),
+  })
+  expect(result).toEqual({ available: true, instructions: ["Resolve the disputed shipment dates before the hearing."] })
+  expect(observed.some((route) => route.includes("parentID=null") && route.includes("limit=32"))).toBe(true)
+  expect(observed.some((route) => route.includes("/message?type=user&limit=6"))).toBe(true)
+  expect(observed.some((route) => /\/(internal|child|lean)(?:\/|$)/.test(route))).toBe(false)
+})
+
+test("main-chat instruction changes enter relevance assessment content keys without importing assistant text", async () => {
+  const dir = matter()
+  let words = "Resolve disputed shipment dates before the hearing.",
+    calls = 0
+  const deps = fake((input) => {
+    calls++
+    expect(input.text).toContain(words)
+    expect(input.text).not.toContain("Assistant guesses")
+    return JSON.stringify({
+      status: words.includes("disputed") ? "relevant" : "irrelevant",
+      reason: "Assessment follows the latest recorded lawyer purpose.",
+    })
+  })
+  deps.engine = { fetch: nativeChat(dir, () => words) }
+  let state = await assessChronology(dir, deps)
+  expect(state.suggestion.status).toBe("relevant")
+  const oldKey = state.suggestion.assessedKey
+  await assessChronology(dir, deps)
+  expect(calls).toBe(1)
+  words = "This matter is only a prospective standard form template; there is no historical event question."
+  state = await assessChronology(dir, deps)
+  expect(calls).toBe(2)
+  expect(state.suggestion.assessedKey).not.toBe(oldKey)
+  expect(state.suggestion.status).toBe("irrelevant")
+})
+
+test("a conversation moved outside the matter is rejected before any globally addressed history read", async () => {
+  const dir = matter(),
+    observed: string[] = []
+  const result = await recentChronologyInstructions(dir, {
+    fetch: nativeChat(dir, () => "Foreign matter instructions", observed, true),
+  })
+  expect(result).toEqual({ available: false, instructions: [] })
+  expect(observed.some((route) => route.includes("/message"))).toBe(false)
+})
+
+test("source-explicit aliases cite verified passages while weak similarities stay uncertain and original names survive", async () => {
+  const dir = matter()
+  const quote =
+    'Northmere Instrumentation Limited ("Northmere") received the device on 6 May 2025. Alex Carman and A. Carmen attended.'
+  source(dir, "Names.md", quote)
+  const deps = fake(() =>
+    complete([
+      event("Device received", quote, {
+        people: ["Northmere", "Alex Carman", "A. Carmen"],
+        nameAssociations: [
+          { name: "Northmere", canonicalName: "Northmere Instrumentation Limited", status: "supported" },
+          { name: "A. Carmen", canonicalName: "Alex Carman", status: "supported" },
+          { name: "Northmere", canonicalName: "A fabricated organisation", status: "supported" },
+        ],
+      }),
+    ]),
+  )
+  await startChronologyRun(dir, { expectedRevision: 0, privilege: "mixed", mode: "initial" }, deps)
+  await awaitChronologyRun(dir)
+  const account = readChronology(dir).events[0]!.accounts[0]!
+  expect(account.people).toEqual(["Northmere", "Alex Carman", "A. Carmen"])
+  expect(account.nameAssociations).toHaveLength(2)
+  expect(account.nameAssociations![0]).toMatchObject({
+    name: "Northmere",
+    canonicalName: "Northmere Instrumentation Limited",
+    status: "supported",
+    evidenceIds: [account.evidence[0]!.id],
+  })
+  expect(account.nameAssociations![1]).toMatchObject({
+    name: "A. Carmen",
+    canonicalName: "Alex Carman",
+    status: "uncertain",
+  })
+})
+
+test("lawyer source dates anchor only their recorded source identity and byte version", () => {
+  const makeDate = () =>
+    parseChronologyDate({
+      original: "3 calendar days after this note",
+      precision: "relative",
+      relative: {
+        expression: "3 calendar days after",
+        anchorDocument: "Note.md",
+        offsetDays: 3,
+        interpretation: "document-stated",
+      },
+    })
+  const current = { documentName: "Note.md", sourceId: "current-source", version: "current-version" }
+  const correction = {
+    date: "2025-05-10",
+    at: 1,
+    actor: "local operator",
+    sourceId: current.sourceId,
+    version: current.version,
+  }
+  const bound = makeDate()
+  resolveRelativeDate(bound, current, "Response is due 3 calendar days after this note.", { "Note.md": correction })
+  expect(bound.start).toBe("2025-05-13")
+  expect(bound.relative).toMatchObject({ anchorSourceId: current.sourceId, anchorVersion: current.version })
+  for (const old of [
+    { ...correction, sourceId: "replaced-source" },
+    { ...correction, version: "old-version" },
+    { date: correction.date, at: 1, actor: "legacy operator" },
+  ]) {
+    const unresolved = makeDate()
+    unresolved.relative!.calculation = "An earlier calculation must not look current"
+    unresolved.relative!.anchorSourceId = "old-source"
+    unresolved.relative!.anchorVersion = "old-version"
+    resolveRelativeDate(unresolved, current, "Response is due 3 calendar days after this note.", { "Note.md": old })
+    expect(unresolved.start).toBeUndefined()
+    expect(unresolved.relative!.calculation).toBeUndefined()
+    expect(unresolved.relative!.anchorSourceId).toBeUndefined()
+    expect(unresolved.relative!.anchorVersion).toBeUndefined()
+  }
+})
+
+test("a changed source does not expose its stale lawyer-supplied date as a current extraction anchor", async () => {
+  const dir = matter(),
+    before = "A response is required 3 calendar days after this note."
+  source(dir, "Note.md", before)
+  let state = actOnChronology(dir, 0, {
+    type: "source-date",
+    documentName: "Note.md",
+    date: "2025-05-10",
+  }) as ReturnType<typeof readChronology>
+  const boundDate = state.sourceDates["Note.md"]!
+  const changed = before + " The source version was corrected without a stated source date."
+  writeFileSync(path.join(dir, "Note.md"), changed)
+  const deps = fake((input) => {
+    expect(input.text).toContain('"suppliedSourceDate":null')
+    return complete([
+      event("Response required", changed, {
+        status: "required",
+        date: {
+          original: "3 calendar days after this note",
+          precision: "relative",
+          relative: {
+            expression: "3 calendar days after",
+            anchorDocument: "Note.md",
+            offsetDays: 3,
+            interpretation: "document-stated",
+          },
+        },
+      }),
+    ])
+  })
+  await startChronologyRun(dir, { expectedRevision: state.revision, privilege: "mixed", mode: "initial" }, deps)
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.events[0]!.date.start).toBeUndefined()
+  expect(state.sourceDates["Note.md"]).toEqual(boundDate)
 })

@@ -57,11 +57,15 @@ export default tool({
           note: e.note,
           key: e.key,
           lawyerEdited: e.lawyerEdited,
+          previousIds: e.previousIds,
+          supersededBy: e.supersededBy,
           accounts: e.accounts.map((a) => ({
             id: a.id,
             date: a.date,
             status: a.status,
             privilege: a.privilege,
+            people: a.people,
+            nameAssociations: a.nameAssociations,
             evidence: a.evidence.map((s) => ({
               id: s.id,
               sourceId: s.sourceId,

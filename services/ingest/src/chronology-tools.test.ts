@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { Hono } from "hono"
 import { chronologyRoutes } from "./chronology-routes"
-import { currentChronologySources, readChronology } from "./chronology-store"
+import { actOnChronology, currentChronologySources, readChronology } from "./chronology-store"
 import { openDb } from "./db"
 import { liveText } from "../../../dochaus/lib/extract"
 import read from "../../../dochaus/tool/read-chronology"
@@ -187,4 +187,29 @@ test("independent Markdown overwrite and raw cached chronology reads are unavail
         args: { path: ".DOCHAUS/CHRONOLOGY.JSON" },
       }),
     ).rejects.toThrow("Use read-chronology")
+})
+
+test("chat discloses retained merge records and their current successor instead of implying independent events", async () => {
+  let state = readChronology(directory)
+  const first = state.events[0]!
+  state = actOnChronology(directory, state.revision, {
+    type: "add",
+    title: "Lawyer collection context",
+    detail: "",
+    date: { original: "Unknown", precision: "undated" },
+  }) as Chronology
+  const second = state.events.find((event) => event.id !== first.id)!
+  state = actOnChronology(directory, state.revision, {
+    type: "merge",
+    eventIds: [first.id, second.id],
+    title: "Collection and context",
+    detail: "",
+    date: first.date,
+  }) as Chronology
+  const current = state.events.find((event) => event.previousIds.includes(first.id))!
+  const result = await read.execute({ view: "events", limit: 10 }, ctx)
+  expect(typeof result).toBe("object")
+  const entries = typeof result === "object" ? JSON.parse(result.output).items : []
+  expect(entries.find((event: ChronologyEvent) => event.id === first.id).supersededBy).toEqual([current.id])
+  expect(entries.find((event: ChronologyEvent) => event.id === current.id).previousIds).toEqual([first.id, second.id])
 })
