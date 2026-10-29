@@ -87,6 +87,8 @@ async function open(state: ReturnType<typeof fixture>, width: number, height: nu
     if (method !== "GET") { state.unexpected.push(`${method} ${pathname}`); return route.abort() }
     if (pathname === "/auth/reuse") return reply({ sources: [] })
     if (pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
+    if (pathname === "/word/config") return reply({ available: false, origin: null, manifestUrl: null })
+    if (/^\/matters\/[^/]+\/documents\/word$/.test(pathname)) return reply({ documents: [] })
     if (pathname === "/setup") return reply({ version: 1, ready: true, completed: state.setup === "done" ? ["models", "research", "details"] : ["models", "research"], skipped: [], next: state.setup === "done" ? "done" : "details" })
     if (pathname === "/preferences") return reply({ ...DEFAULT_DRAFTING, attorney: "Alex Example", firm: "Example Partners LLP" })
     if (pathname === "/matters") {

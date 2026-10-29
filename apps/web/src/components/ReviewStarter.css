@@ -1,0 +1,10 @@
+.picker-panel.review-starter { width: 100%; max-width: 680px; }
+.review-starter-body { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; overflow-wrap: anywhere; }
+.review-starter-body p, .review-starter-body h3 { margin: 0; }
+.review-starter-body h3 { font-size: 1rem; }
+.review-starter-body section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.review-starter-body ul { margin: 0; padding-left: 1.5rem; overflow-wrap: anywhere; }
+.review-starter-question { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+.review-starter-question textarea { box-sizing: border-box; width: 100%; min-width: 0; resize: vertical; }
+.review-starter-question p { color: var(--muted); font-size: .875rem; }
+.review-starter-body .compare-actions { flex-wrap: wrap; }

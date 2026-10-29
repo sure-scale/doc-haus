@@ -28,7 +28,7 @@ export type GridCellData = {
 // Snapshot of the configured attorney when this comment was added. Older
 // comments, or comments made without a saved name, remain unattributed.
 export type GridCellComment = { id: string; text: string; at: number; author?: string }
-export type Grid = { columns: GridColumn[]; cells: Record<string, GridCellData> }
+export type Grid = { version?: number; columns: GridColumn[]; cells: Record<string, GridCellData> }
 
 export function cellKey(docName: string, columnId: string) {
   return `${docName}::${columnId}`
@@ -58,13 +58,24 @@ export async function getGrid(id: string): Promise<Grid> {
   return res.json()
 }
 
-export async function saveGrid(id: string, grid: Grid): Promise<void> {
+export class GridConflictError extends Error {
+  constructor(public current: Grid) {
+    super("This review table was changed elsewhere.")
+  }
+}
+
+export async function saveGrid(id: string, grid: Grid): Promise<Grid> {
   const res = await fetch(`${INGEST_URL}/matters/${id}/grid`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(grid),
   })
+  if (res.status === 409) {
+    const body = await res.json() as { grid: Grid }
+    throw new GridConflictError(body.grid)
+  }
   if (!res.ok) throw new Error(await ingestError(res, "Could not save the review grid"))
+  return res.json()
 }
 
 // The deterministic re-check pass for one negative cell: passages of that one

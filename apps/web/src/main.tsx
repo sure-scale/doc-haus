@@ -1,6 +1,6 @@
 import React from "react"
 import { createRoot } from "react-dom/client"
-import { BrowserRouter } from "react-router-dom"
+import { createBrowserRouter, RouterProvider } from "react-router-dom"
 import App from "./App"
 import "@fontsource/space-grotesk/500.css"
 import "@fontsource/space-grotesk/600.css"
@@ -32,11 +32,12 @@ import "./styles/launch-notice.css"
 import "./styles/contrast.css"
 import "./styles/modal-frost.css"
 
+// A data router lets the review table stop same-document navigation while it
+// has unsaved work. App retains its existing route tree and default basename.
+const router = createBrowserRouter([{ path: "*", element: <App /> }])
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     {/* URL-driven overlays (the review modal) must reopen in the same frame; the app has no Suspense to gain from transitions. */}
-    <BrowserRouter useTransitions={false}>
-      <App />
-    </BrowserRouter>
+    <RouterProvider router={router} useTransitions={false} />
   </React.StrictMode>,
 )
