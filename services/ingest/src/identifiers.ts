@@ -26,8 +26,9 @@ export type IdentifierRow = {
 // matches from then on. 2: values are read from each chunk's unwrapped source
 // slice, so a soft-wrap line break no longer splits a name. 3: `sources` keys
 // each document's rows, which a later extraction reuses while the document is
-// unchanged, and a collapsed row keeps its `surface`.
-export const IDENTIFIERS_SCHEMA_VERSION = 3
+// unchanged, and a collapsed row keeps its `surface`. 4: syntactic email
+// fallback recognises unlisted/new domain suffixes with exact source pointers.
+export const IDENTIFIERS_SCHEMA_VERSION = 4
 
 export type MatterIdentifiers = {
   schema_version: typeof IDENTIFIERS_SCHEMA_VERSION
@@ -95,6 +96,35 @@ type RegexExtractor = {
 }
 
 const moneyPattern = /\$\d[\d,]*(?:\.\d{2})?\b/g
+
+// Contact addresses are source text, not a prediction from an NLP TLD list.
+// Common unquoted dot-atom local parts and DNS labels cover new suffixes and
+// punycode; this does not claim delivery, DNS existence or full RFC validation.
+const emailPattern =
+  /[a-z0-9!#$%&'*+\/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+\/=?^_`{|}~-]+)*@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:xn--[a-z0-9](?:[a-z0-9-]{0,57}[a-z0-9])?|[a-z]{2,63})/gi
+
+function emailOccurrences(text: string) {
+  const matches = new Map<number, string>()
+  for (const match of text.matchAll(new RegExp(emailPattern.source, emailPattern.flags))) {
+    const value = match[0],
+      start = match.index,
+      end = start + value.length
+    if (value.length > 254 || value.lastIndexOf("@") > 64) continue
+    const before = text[start - 1] ?? "",
+      after = text[end] ?? ""
+    // Never salvage a partial mailbox from an invalid adjacent token, URL,
+    // path or repeated @/dot. Sentence punctuation and mailto: remain usable.
+    if (/[\p{L}\p{N}.!#$%&'*+\/=?^_`{|}~@-]/u.test(before) || /[\p{L}\p{N}_@/\\+?=#%&~-]/u.test(after)) continue
+    if (after === "." && /[\p{L}\p{N}_.-]/u.test(text[end + 1] ?? "")) continue
+    const tokenStart = text.slice(0, start).search(/\S*$/)
+    const tokenEnd = text.slice(end).search(/\s/)
+    const token = text.slice(tokenStart, tokenEnd === -1 ? text.length : end + tokenEnd)
+    if (/\b[a-z][a-z0-9+.-]*:\/\//i.test(token) || /^(?:["'<(\[])?www\.[^\s]*\//i.test(token)) continue
+    matches.set(start, value)
+  }
+  return matches
+}
+
 
 const organizationSequencePattern =
   /\b[A-Z][a-zA-Z']+(?:(?:\s+(?:of|the|and|for|&)?\s*[A-Z][a-zA-Z']+)){1,15}/g
@@ -188,7 +218,7 @@ function scanKey(chunks: IdentifierChunk[]) {
 function reusableRows(previous: MatterIdentifiers | undefined) {
   const reusable = new Map<string, IdentifierRow[]>()
   const sources: unknown = previous?.sources
-  if (!previous || !Array.isArray(previous.rows) || !Array.isArray(sources) || !sources.every(isSource)) return reusable
+  if (!previous || previous.schema_version !== IDENTIFIERS_SCHEMA_VERSION || !Array.isArray(previous.rows) || !Array.isArray(sources) || !sources.every(isSource)) return reusable
   const rowsByDocument = new Map(sources.map((source) => [source.document, [] as IdentifierRow[]]))
   if (rowsByDocument.size !== sources.length) return reusable
   for (const row of previous.rows) {
@@ -287,16 +317,29 @@ function collapseInitialMiddleVariants(rows: IdentifierRow[]): IdentifierRow[] {
 export function scanChunk(chunk: IdentifierChunk): IdentifierRow[] {
   const doc = nlp(chunk.text)
   const fromRegex = regexExtractors.flatMap((extractor) => extractFromRegex(chunk, extractor))
+  const emails = emailOccurrences(chunk.text),
+    seenEmails = new Set<number>()
   const fromCompromise = compromiseSelectors.flatMap((selector) =>
-    extractViaMatch(doc, selector, chunk),
+    extractViaMatch(doc, selector, chunk, emails, seenEmails),
   )
-  return [...fromRegex, ...fromCompromise]
+  const fallback = [...emails]
+    .filter(([offset]) => !seenEmails.has(offset))
+    .map(([offset, value]) => ({
+      type: "email" as const,
+      value,
+      source: chunk.document,
+      chunk_id: chunk.id,
+      ...locate(chunk, offset),
+    }))
+  return [...fromRegex, ...fromCompromise, ...fallback]
 }
 
 function extractViaMatch(
   doc: ReturnType<typeof nlp>,
   selector: CompromiseSelector,
   chunk: IdentifierChunk,
+  emails: Map<number, string>,
+  seenEmails: Set<number>,
 ): IdentifierRow[] {
   const view = doc.match(selector.match)
   const out: IdentifierRow[] = []
@@ -305,6 +348,10 @@ function extractViaMatch(
     if (!value) continue
     if (selector.filter && !selector.filter(value)) continue
     const offset = match.start ?? match.offset?.start ?? 0
+    if (selector.type === "email") {
+      if (emails.get(offset) !== value || seenEmails.has(offset)) continue
+      seenEmails.add(offset)
+    }
     out.push({
       type: selector.type,
       value,

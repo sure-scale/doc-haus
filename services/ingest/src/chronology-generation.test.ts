@@ -14,6 +14,7 @@ import {
   assessChronology,
   recentChronologyInstructions,
   chronologySources,
+  normaliseChronologyDate,
   type ChronologyGenerationDeps,
 } from "./chronology-generation"
 import { actOnChronology, decideChronologyProposal, mutateChronology, readChronology } from "./chronology-store"
@@ -54,6 +55,7 @@ function source(dir: string, name: string, body: string, quality?: string, role 
 }
 function event(title: string, quote: string, extra: Record<string, unknown> = {}) {
   return {
+    entryKind: "occurrence",
     title,
     detail: `The record reports ${title.toLowerCase()}.`,
     quote,
@@ -952,4 +954,221 @@ test("a provenance correction preserves unrelated evidence issues and stale conf
   }) as typeof state
   expect(() => decideChronologyProposal(dir, state.revision, proposal.id, "accept")).toThrow("current event changed")
   expect(readChronology(dir).events[0]!.title).toBe("New lawyer wording")
+})
+
+test("calendar normalization preserves qualifiers and resolves only explicit event or scoped years", () => {
+  expect(parseChronologyDate({ original: "by 17 February 2031", precision: "exact" })).toMatchObject({
+    start: "2031-02-17",
+    precision: "exact",
+    qualifier: "by",
+  })
+  const date = parseChronologyDate({ original: "9 September", precision: "exact" })
+  expect(date).toMatchObject({ precision: "ambiguous" })
+  expect(date.start).toBeUndefined()
+  const source =
+    "# Reporting year: 2031\nThe seal was replaced on 9 September.\n# Events in 2032\nThe seal was replaced on 9 September."
+  const first = normaliseChronologyDate(
+    date,
+    source,
+    "The seal was replaced on 9 September.",
+    source.indexOf("The seal"),
+  )
+  const last = normaliseChronologyDate(
+    date,
+    source,
+    "The seal was replaced on 9 September.",
+    source.lastIndexOf("The seal"),
+  )
+  expect(first.date.start).toBe("2031-09-09")
+  expect(first.context?.quote).toBe("# Reporting year: 2031")
+  expect(last.date.start).toBe("2032-09-09")
+  expect(last.context?.quote).toBe("# Events in 2032")
+  expect(
+    normaliseChronologyDate(
+      parseChronologyDate({ original: "12 August", precision: "ambiguous" }),
+      "",
+      "The board met on 12 August 2036.",
+    ).date.start,
+  ).toBe("2036-08-12")
+})
+
+test("document dates, mixed-year accounts, rollover and numeric ambiguity cannot invent a calendar year", () => {
+  const date = parseChronologyDate({ original: "9 January", precision: "exact", start: "2031-01-09" })
+  for (const [source, passage] of [
+    ["Date: 4 October 2031\nThe inspection happened on 9 January.", "The inspection happened on 9 January."],
+    ["# Year: 2031\nThe replacement is due on 9 January next year.", "The replacement is due on 9 January next year."],
+    [
+      "The earlier board met on 9 January 2030; the later board met on 9 January 2031.",
+      "The earlier board met on 9 January 2030; the later board met on 9 January 2031.",
+    ],
+  ])
+    expect(normaliseChronologyDate(date, source!, passage!, source!.indexOf(passage!)).date.start).toBeUndefined()
+  expect(parseChronologyDate({ original: "04/05/31", precision: "exact", start: "2031-04-05" })).toMatchObject({
+    precision: "ambiguous",
+  })
+  expect(parseChronologyDate({ original: "04/05/31", precision: "exact", start: "2031-04-05" }).start).toBeUndefined()
+  expect(
+    parseChronologyDate({ original: "Following the inspection", precision: "exact", start: "2031-01-01" }).start,
+  ).toBeUndefined()
+  expect(parseChronologyDate({ original: "17/02/2031", precision: "exact" }).start).toBe("2031-02-17")
+  expect(parseChronologyDate({ original: "12–14 August 2036", precision: "exact" })).toMatchObject({
+    precision: "ambiguous",
+  })
+  expect(parseChronologyDate({ original: "12–14 August 2036", precision: "exact" }).start).toBeUndefined()
+  expect(parseChronologyDate({ original: "Undated", precision: "undated" })).toEqual({
+    original: "Undated",
+    precision: "undated",
+  })
+})
+
+test("static scope and evidential qualifications do not become events while genuine undated occurrences remain", () => {
+  const staticQuote = "The facility contains a heat exchanger and two pressure vessels."
+  const qualification = "This note does not establish the cause of the interruption."
+  const actual = "The overnight guard reported that someone opened a valve; no date was recorded."
+  const parsed = parseChronologyExtraction(
+    JSON.stringify({
+      complete: true,
+      events: [
+        event("Equipment configuration", staticQuote, {
+          entryKind: "context",
+          date: { original: "Undated", precision: "undated" },
+        }),
+        event("Limits of note", qualification, {
+          entryKind: "qualification",
+          date: { original: "Undated", precision: "undated" },
+        }),
+        event("Valve opened", actual, { entryKind: "occurrence", date: { original: "Undated", precision: "undated" } }),
+      ],
+      gaps: [],
+    }),
+  )
+  expect(parsed.events).toHaveLength(1)
+  expect(parsed.events[0]!.title).toBe("Valve opened")
+  expect(parsed.events[0]!.date.precision).toBe("undated")
+  expect(parsed.nonEvents.map((item) => item.quote)).toEqual([staticQuote, qualification])
+})
+
+test("old completed contract reprocesses only affected sections and stages a display-date correction accepted through the real store", async () => {
+  const dir = matter(),
+    quote = "The technician replaced the pressure seal on 9 September."
+  source(dir, "Inspection.md", "# Events in 2034\n" + quote)
+  source(dir, "Other.md", "The overnight guard reported that someone opened a valve; no date was recorded.")
+  const undatedQuote = "The overnight guard reported that someone opened a valve; no date was recorded."
+  const model = fake((input) =>
+    input.agent === "chronology-match"
+      ? matchFirst(input.text)
+      : complete([
+          sectionText(input.text).includes(quote)
+            ? event("Pressure seal replaced", quote, { date: { original: "9 September", precision: "exact" } })
+            : event("Valve opened", undatedQuote, { date: { original: "Undated", precision: "undated" } }),
+        ]),
+  )
+  await startChronologyRun(dir, { expectedRevision: 0, privilege: "mixed", mode: "initial" }, model)
+  await awaitChronologyRun(dir)
+  let state = readChronology(dir)
+  const target = state.events.find((e) => e.title === "Pressure seal replaced")!,
+    otherKey = state.coverage.find((c) => c.documentName === "Other.md")!.completedKeys[0]!
+  state = mutateChronology(dir, state.revision, "legacy completed extraction fixture", (current) => {
+    const old = current.events.find((e) => e.id === target.id)!
+    old.date = { original: "9 September", precision: "ambiguous" }
+    old.accounts[0]!.date = structuredClone(old.date)
+    old.accounts[0]!.id = "legacy-ambiguous-account"
+    old.accounts[0]!.evidence = old.accounts[0]!.evidence.slice(0, 1)
+    old.note = "Lawyer note survives"
+    old.key = true
+    old.reviewed = true
+    current.coverage.find((c) => c.documentName === "Inspection.md")!.completedKeys = [
+      "previous-contract-completed-section",
+    ]
+  })
+  const before = structuredClone(state.events)
+  let extractionCalls = 0
+  const refresh = fake((input) => {
+    if (input.agent === "chronology-match") return matchFirst(input.text)
+    extractionCalls++
+    expect(input.text).toContain("Inspection.md")
+    return complete([event("Pressure seal replaced", quote, { date: { original: "9 September", precision: "exact" } })])
+  })
+  await startChronologyRun(dir, { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" }, refresh)
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(extractionCalls).toBe(1)
+  expect(state.events).toEqual(before)
+  expect(state.coverage.find((c) => c.documentName === "Other.md")!.completedKeys).toEqual([otherKey])
+  const proposal = state.proposals.find((p) => p.kind === "amendment" && p.targetIds.includes(target.id))!
+  expect(proposal.events[0]!.date.start).toBe("2034-09-09")
+  expect(proposal.events[0]!.accounts.at(-1)!.evidence.some((e) => e.excerpt === "# Events in 2034")).toBe(true)
+  state = decideChronologyProposal(dir, state.revision, proposal.id, "accept")
+  const accepted = state.events.find((e) => e.id === target.id)!
+  expect(accepted).toMatchObject({
+    date: { start: "2034-09-09", precision: "exact" },
+    note: "Lawyer note survives",
+    key: true,
+    reviewed: true,
+  })
+  expect(accepted.accounts.some((a) => a.id === "legacy-ambiguous-account" && a.date.precision === "ambiguous")).toBe(
+    true,
+  )
+  let replayCalls = 0
+  await startChronologyRun(
+    dir,
+    { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" },
+    fake(() => {
+      replayCalls++
+      throw new Error("Current complete section must be reused")
+    }),
+  )
+  await awaitChronologyRun(dir)
+  expect(replayCalls).toBe(0)
+})
+
+test("refresh proposes reversible static cleanup without hiding genuine undated background or saved work", async () => {
+  const dir = matter(),
+    staticQuote = "The facility contains a heat exchanger and two pressure vessels.",
+    actual = "The overnight guard reported that someone opened a valve; no date was recorded."
+  source(dir, "Operations.md", staticQuote + "\n" + actual)
+  const oldModel = fake((input) =>
+    input.agent === "chronology-match"
+      ? JSON.stringify({ eventId: null, relation: "independent" })
+      : complete([
+          event("Equipment configuration", staticQuote, { date: { original: "Undated", precision: "undated" } }),
+          event("Valve opened", actual, { date: { original: "Undated", precision: "undated" } }),
+        ]),
+  )
+  await startChronologyRun(dir, { expectedRevision: 0, privilege: "mixed", mode: "initial" }, oldModel)
+  await awaitChronologyRun(dir)
+  let state = readChronology(dir)
+  state = mutateChronology(dir, state.revision, "legacy extraction contract fixture", (current) => {
+    current.coverage[0]!.completedKeys = ["old-contract-section"]
+  })
+  const before = structuredClone(state.events)
+  const corrected = fake((input) =>
+    input.agent === "chronology-match"
+      ? JSON.stringify({ eventId: null, relation: "independent" })
+      : JSON.stringify({
+          complete: true,
+          events: [event("Valve opened", actual, { date: { original: "Undated", precision: "undated" } })],
+          nonEvents: [
+            {
+              quote: staticQuote,
+              reason: "This describes the equipment configuration, rather than an act that occurred.",
+            },
+          ],
+          gaps: [],
+        }),
+  )
+  await startChronologyRun(dir, { expectedRevision: state.revision, privilege: "mixed", mode: "refresh" }, corrected)
+  await awaitChronologyRun(dir)
+  state = readChronology(dir)
+  expect(state.events).toEqual(before)
+  expect(state.proposals).toHaveLength(1)
+  const removal = state.proposals[0]!,
+    staticId = before.find((e) => e.title === "Equipment configuration")!.id
+  expect(removal).toMatchObject({ kind: "removal", targetIds: [staticId] })
+  state = decideChronologyProposal(dir, state.revision, removal.id, "accept")
+  expect(state.events.find((e) => e.id === staticId)!.hidden).toBe(true)
+  expect(state.events.find((e) => e.title === "Valve opened")).toMatchObject({
+    hidden: false,
+    date: { precision: "undated" },
+  })
 })
