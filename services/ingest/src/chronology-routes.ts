@@ -1,4 +1,5 @@
 import { Hono } from "hono"
+import { getBunServer } from "hono/bun"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import type { ChronologyDecision } from "../../../dochaus/lib/chronology"
@@ -45,6 +46,10 @@ export function chronologyRoutes(resolveMatter: (id: string) => string) {
     c.json(await chronologyPreflight(resolveMatter(c.req.param("id")))),
   )
   app.post("/matters/:id/chronology/assess", async (c) => {
+    // A bounded model job can outlast Bun's HTTP idle timeout. Keep only
+    // this assessment response open; ordinary routes retain their limits.
+    const server = c.env ? getBunServer<Bun.Server<unknown>>(c) : undefined
+    server?.timeout?.(c.req.raw, 0)
     const dir = resolveMatter(c.req.param("id"))
     return c.json(projectChronologySources(dir, await assessChronology(dir)))
   })

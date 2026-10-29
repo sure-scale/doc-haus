@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from "bun:test"
+import { Hono } from "hono"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { chronologyRoutes } from "./chronology-routes"
-import { currentChronologySources, newChronologyEvent, readChronology } from "./chronology-store"
+import { currentChronologySources, mutateChronology, newChronologyEvent, readChronology } from "./chronology-store"
 import { liveText } from "../../../dochaus/lib/extract"
 import { openDb, upsertDocument } from "./db"
 const dirs: string[] = []
@@ -156,3 +157,33 @@ test("chat may stage supported content but cannot forge a saved reviewed event",
   expect(retry.status).toBe(200)
   expect(readChronology(directory).events).toHaveLength(1)
 })
+
+test("assessment responses survive slow delivery while other routes keep their idle limit", async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "chronology-http-idle-"))
+  dirs.push(directory)
+  writeFileSync(path.join(directory, "matter.json"), JSON.stringify({ title: "Synthetic timing review" }))
+  mutateChronology(directory, undefined, "synthetic setup", (state) => {
+    state.created = true
+  })
+  const app = new Hono()
+  app.use("*", async (_context, next) => {
+    await next()
+    // Exceed Bun's coarse socket timer as well as its one-second limit.
+    // This deterministic transport fixture never requests a model.
+    await Bun.sleep(12000)
+  })
+  app.route(
+    "/",
+    chronologyRoutes(() => directory),
+  )
+  const server = Bun.serve({ port: 0, idleTimeout: 1, fetch: app.fetch })
+  const url = `http://127.0.0.1:${server.port}/matters/synthetic/chronology`
+  try {
+    await expect(fetch(url)).rejects.toThrow()
+    const response = await fetch(url + "/assess", { method: "POST" })
+    expect(response.status).toBe(200)
+    expect((await response.json()).created).toBe(true)
+  } finally {
+    server.stop(true)
+  }
+}, 35000)
