@@ -1,0 +1,120 @@
+/* One quiet matter identity and one shared menu above the chronology. */
+.matter-container:has(.chronology-workbench) > .matter-page-head.is-chronology-compact {
+  position: relative;
+  min-height: 64px;
+  padding: 8px 30px;
+  gap: 12px;
+  align-items: center;
+  flex-direction: row;
+  background: #fcfbf9;
+  border-color: #e9e7e5;
+  z-index: var(--z-sticky, 10);
+}
+.matter-page-head.is-chronology-compact .matter-head {
+  flex: 1;
+  gap: 0;
+}
+.matter-page-head.is-chronology-compact .matter-breadcrumb {
+  width: 100%;
+}
+.matter-page-head.is-chronology-compact .matter-breadcrumb ol,
+.matter-page-head.is-chronology-compact .matter-breadcrumb-current {
+  gap: 9px;
+  align-items: center;
+}
+.matter-page-head.is-chronology-compact .matter-breadcrumb a {
+  min-height: 32px;
+  color: #687181;
+  font-size: 12px;
+  font-weight: 400;
+}
+.matter-page-head.is-chronology-compact .matter-breadcrumb-current > svg {
+  width: 12px;
+  height: 12px;
+  color: #8b929c;
+}
+.matter-container:has(.chronology-workbench) > .matter-page-head.is-chronology-compact h1 {
+  font: 400 13px/1.45 var(--font-sans, sans-serif);
+  letter-spacing: 0;
+}
+.matter-page-head.is-chronology-compact .matter-title {
+  min-height: 32px;
+  color: #505d71;
+}
+.matter-page-head.is-chronology-compact .matter-title-input {
+  font-size: 13px;
+  min-height: 32px;
+}
+.matter-page-head.is-chronology-compact .matter-title-pencil {
+  width: 12px;
+  height: 12px;
+}
+.matter-page-head.is-chronology-compact .chronology-matter-conflicts-status {
+  color: #99701f;
+  font-size: 10px;
+  flex: none;
+  max-width: 125px;
+  line-height: 1.5;
+}
+.matter-page-head.is-chronology-compact .matter-actions-menu-section .matter-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  margin: 0;
+  font-size: 12px;
+}
+.matter-page-head.is-chronology-compact .matter-actions-menu-section .matter-meta-sep {
+  display: none;
+}
+.matter-page-head.is-chronology-compact .matter-actions-menu-section .matter-meta > button,
+.matter-page-head.is-chronology-compact .matter-actions-menu-section .matter-meta > input,
+.matter-page-head.is-chronology-compact .matter-actions-menu-section .matter-meta > select,
+.matter-page-head.is-chronology-compact .matter-actions-menu-section .jx-trigger-bare {
+  width: 100%;
+  min-height: 36px;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.matter-page-head.is-chronology-compact .matter-actions-menu-section .matter-conflicts {
+  padding: 5px 8px;
+  border-radius: 5px;
+}
+.matter-page-head.is-chronology-compact :focus-visible {
+  outline: 2px solid #3979e8;
+  outline-offset: 2px;
+}
+@media (max-width: 1000px) {
+  .matter-container:has(.chronology-workbench) > .matter-page-head.is-chronology-compact {
+    gap: 8px;
+    padding-inline: 20px;
+  }
+}
+@media (max-width: 800px), (pointer: coarse) {
+  .matter-page-head.is-chronology-compact .matter-breadcrumb a,
+  .matter-page-head.is-chronology-compact .matter-title,
+  .matter-page-head.is-chronology-compact .matter-title-input,
+  .matter-page-head.is-chronology-compact .matter-actions-menu-section .matter-meta > button,
+  .matter-page-head.is-chronology-compact .matter-actions-menu-section .matter-meta > input,
+  .matter-page-head.is-chronology-compact .matter-actions-menu-section .matter-meta > select,
+  .matter-page-head.is-chronology-compact .matter-actions-menu-section .jx-trigger-bare {
+    min-height: 44px;
+  }
+}
+@media (max-width: 700px) {
+  .matter-container:has(.chronology-workbench) > .matter-page-head.is-chronology-compact {
+    flex-wrap: wrap;
+    gap: 0 8px;
+    padding: 6px 16px;
+  }
+  .matter-page-head.is-chronology-compact .matter-head {
+    flex-basis: 100%;
+  }
+  .matter-page-head.is-chronology-compact .chronology-matter-conflicts-status {
+    margin-left: auto;
+  }
+  .matter-page-head.is-chronology-compact .matter-actions-menu {
+    margin-left: auto;
+  }
+}

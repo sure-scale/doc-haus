@@ -25,6 +25,8 @@ export function matterArtifactName(
   // A name every platform can hold; the write reports the name it used.
   const stem = safeFileName(name.slice(0, -".md".length))
   if (!stem) return { ok: false, message: "File name must include a non-empty basename." }
+  if (stem.toLowerCase() === "chronology")
+    return { ok: false, message: "Chronology is managed in the matter's Chronology workbench. Use read-chronology or propose-chronology-changes; existing chronology.md source files are preserved." }
   if (reservedMarkdownBasenames.has(stem))
     return {
       ok: false,

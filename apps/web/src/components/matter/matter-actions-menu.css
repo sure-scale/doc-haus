@@ -1,0 +1,94 @@
+.matter-actions-menu {
+  position: relative;
+  flex: none;
+  color: #29364a;
+  font-size: 12px;
+}
+.matter-actions-menu > summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  list-style: none;
+  cursor: pointer;
+  width: 44px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid #e2e4e8;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 23px;
+  line-height: 1;
+}
+.matter-actions-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.matter-actions-menu[open] > summary {
+  background: #edf1f8;
+}
+.matter-actions-menu-popup {
+  position: absolute;
+  z-index: 35;
+  right: 0;
+  top: calc(100% + 7px);
+  width: min(340px, calc(var(--viewport-inline, 100vw) - 24px));
+  max-height: min(var(--matter-menu-available, 75dvh), 640px);
+  overflow: auto;
+  padding: 7px;
+  border: 1px solid #e2e4e8;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 28px #1b24331c;
+  box-sizing: border-box;
+  white-space: normal;
+}
+.matter-actions-menu-items {
+  display: grid;
+  gap: 2px;
+}
+.matter-actions-menu-popup[data-side="above"] {
+  top: auto;
+  bottom: calc(100% + 7px);
+}
+.matter-actions-menu .matter-actions-menu-items > button {
+  display: block;
+  border: 0;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 11px;
+  border-radius: 4px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: #fff;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.matter-actions-menu .matter-actions-menu-items > button:hover {
+  background: #f0f3f8;
+}
+.matter-actions-menu .matter-actions-menu-items > button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.matter-actions-menu-section {
+  border-top: 1px solid #e8e9ed;
+  padding: 11px;
+  margin-top: 6px;
+}
+.matter-actions-menu-section > h2 {
+  margin: 0 0 8px;
+  font: 500 11px/1.5 var(--font-sans, sans-serif);
+  color: #79818e;
+}
+.matter-actions-menu :focus-visible {
+  outline: 2px solid #3979e8;
+  outline-offset: 2px;
+}
+@media (max-width: 800px), (pointer: coarse) {
+  .matter-actions-menu > summary {
+    height: 44px;
+  }
+  .matter-actions-menu .matter-actions-menu-items > button {
+    min-height: 44px;
+  }
+}

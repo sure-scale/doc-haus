@@ -16,6 +16,9 @@ agent/*.md
 !agent/agent-builder.md
 !agent/assumption-challenger.md
 !agent/chronology.md
+!agent/chronology-assess.md
+!agent/chronology-extract.md
+!agent/chronology-match.md
 !agent/client-summary.md
 !agent/compare.md
 !agent/dashboard.md

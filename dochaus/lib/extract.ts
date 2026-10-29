@@ -73,6 +73,8 @@ function quoteRegExp(quote: string) {
 // search-document call surfaces as failed to the model.
 async function extract(docPath: string, buffer: Buffer, unlabelled: () => void) {
   const name = docPath.toLowerCase()
+  if (name.endsWith(".md") || name.endsWith(".markdown"))
+    return new TextDecoder("utf-8", { fatal: true }).decode(buffer)
   if (name.endsWith(".pdf")) {
     // Citation verification must use the exact extractor chain used at ingest.
     // Ingest now prefers LiteParse/MarkItDown before unpdf; using unpdf alone

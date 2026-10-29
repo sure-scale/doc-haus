@@ -6,9 +6,13 @@ import { conflictsChip } from "../../api/ingest/conflicts"
 import { POSTURES, type Posture } from "../../api/ingest/preferences"
 import ClientCombobox from "../ClientCombobox"
 import { useClientNames } from "../../lib/clients"
+import "./chronology-matter-header.css"
+import MatterActionsMenu, { type MatterMenuAction } from "./MatterActionsMenu"
 
 /** The title-area fields one save changes; "" clears the matter's Posture. */
-export type MatterFields = Partial<Pick<Detail, "title" | "reference" | "jurisdictions" | "playbook" | "client">> & { posture?: Posture | "" }
+export type MatterFields = Partial<Pick<Detail, "title" | "reference" | "jurisdictions" | "playbook" | "client">> & {
+  posture?: Posture | ""
+}
 
 export default function MatterHeader({
   matter,
@@ -30,6 +34,9 @@ export default function MatterHeader({
   commitRename,
   patch,
   onEditConflicts,
+  onOpenChronology,
+  compact = false,
+  chronologyActions,
 }: {
   matter: Detail
   jurisdictions: Jurisdiction[]
@@ -50,6 +57,9 @@ export default function MatterHeader({
   commitRename: () => Promise<void>
   patch: (fields: MatterFields) => Promise<void>
   onEditConflicts: () => void
+  onOpenChronology?: () => void
+  compact?: boolean
+  chronologyActions?: MatterMenuAction[]
 }) {
   const chip = conflictsChip(matter.conflicts)
   const clientNames = useClientNames(editingClient)
@@ -131,15 +141,65 @@ export default function MatterHeader({
     </select>
   )
 
+  const metadata = (
+    <div className="matter-meta">
+      {refField}
+      <span className="matter-meta-sep" aria-hidden>
+        ·
+      </span>
+      {clientField}
+      <span className="matter-meta-sep" aria-hidden>
+        ·
+      </span>
+      {postureField}
+      <span className="matter-meta-sep" aria-hidden>
+        ·
+      </span>
+      <button
+        type="button"
+        className={`matter-conflicts is-${chip.tone}`}
+        title="Record the conflicts check"
+        aria-label={`${chip.text}. Record the conflicts check`}
+        onClick={onEditConflicts}
+      >
+        {chip.text}
+      </button>
+      <span className="matter-meta-sep" aria-hidden>
+        ·
+      </span>
+      <JurisdictionSelect
+        jurisdictions={jurisdictions}
+        selected={matter.jurisdictions ?? []}
+        onChange={(codes) => patch({ jurisdictions: codes })}
+        trigger={
+          (matter.jurisdictions?.length ?? 0) === 0 ? (
+            <span className="matter-meta-add">+ Jurisdiction</span>
+          ) : (
+            <span className="matter-jx-badges">
+              {matter.jurisdictions?.map((code) => (
+                <span key={code} className="matter-badge">
+                  <JurisdictionFlag code={code} />
+                  {jurisdictions.find((j) => j.code === code)?.name ?? code}
+                </span>
+              ))}
+            </span>
+          )
+        }
+      />
+    </div>
+  )
+
   // A permanent route back to the matter list, then one quiet line of facts: the matter number, the
   // client, the Posture and the jurisdictions, each a ghost "+ …" button (the Posture its firm
   // default) until set, then its chip.
   return (
-    <header className="page-head matter-page-head">
+    <header className={`page-head matter-page-head${compact ? " is-chronology-compact" : ""}`}>
       <div className="matter-head">
         <nav className="matter-breadcrumb" aria-label="Breadcrumb">
           <ol>
-            <li><Link to="/">Matters</Link></li>
+            <li>
+              <Link to="/">Matters</Link>
+            </li>
             <li className="matter-breadcrumb-current" aria-current="page">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
                 <path d="m9 5 7 7-7 7" />
@@ -170,7 +230,17 @@ export default function MatterHeader({
                     }}
                   >
                     {matter.title}
-                    <svg className="matter-title-pencil" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <svg
+                      className="matter-title-pencil"
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden
+                    >
                       <path d="M12 20h9" />
                       <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
                     </svg>
@@ -181,54 +251,33 @@ export default function MatterHeader({
           </ol>
         </nav>
 
-        <div className="matter-meta">
-          {refField}
-          <span className="matter-meta-sep" aria-hidden>
-            ·
-          </span>
-          {clientField}
-          <span className="matter-meta-sep" aria-hidden>
-            ·
-          </span>
-          {postureField}
-          <span className="matter-meta-sep" aria-hidden>
-            ·
-          </span>
-          <button
-            type="button"
-            className={`matter-conflicts is-${chip.tone}`}
-            title="Record the conflicts check"
-            aria-label={`${chip.text}. Record the conflicts check`}
-            onClick={onEditConflicts}
-          >
-            {chip.text}
-          </button>
-          <span className="matter-meta-sep" aria-hidden>
-            ·
-          </span>
-          <JurisdictionSelect
-            jurisdictions={jurisdictions}
-            selected={matter.jurisdictions ?? []}
-            onChange={(codes) => patch({ jurisdictions: codes })}
-            trigger={
-              (matter.jurisdictions?.length ?? 0) === 0 ? (
-                <span className="matter-meta-add">+ Jurisdiction</span>
-              ) : (
-                <span className="matter-jx-badges">
-                  {matter.jurisdictions?.map((code) => (
-                    <span key={code} className="matter-badge">
-                      <JurisdictionFlag code={code} />
-                      {jurisdictions.find((j) => j.code === code)?.name ?? code}
-                    </span>
-                  ))}
-                </span>
-              )
-            }
-          />
-        </div>
+        {!compact && metadata}
       </div>
 
+      {compact && chip.tone !== "ok" && (
+        <span className="chronology-matter-conflicts-status">
+          {chip.tone === "pending"
+            ? "Conflicts pending"
+            : chip.tone === "bypassed"
+              ? "Conflicts bypassed"
+              : "Conflicts not recorded"}
+        </span>
+      )}
+      {(onOpenChronology || chronologyActions) && (
+        <MatterActionsMenu
+          actions={
+            chronologyActions ??
+            (onOpenChronology ? [{ id: "open-chronology", label: "Open chronology", onSelect: onOpenChronology }] : [])
+          }
+        >
+          {compact && (
+            <section className="matter-actions-menu-section">
+              <h2>Matter details</h2>
+              {metadata}
+            </section>
+          )}
+        </MatterActionsMenu>
+      )}
     </header>
   )
 }
-

@@ -6,6 +6,8 @@ steps: 18
 color: info
 tools:
   "*": false
+  read-chronology: true
+  propose-chronology-changes: true
   read: true
   search-document: true
   read-document: true

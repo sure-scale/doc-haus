@@ -11,7 +11,7 @@ import { EXPLICIT_ONLY } from "../../agents"
 // One row in the assistant's reasoning timeline: a thinking block or a tool call.
 export type Step =
   | { kind: "reasoning"; text: string; done: boolean }
-  | { kind: "tool"; label: string; status: "running" | "done" | "error"; detail?: string; templateResult?: TemplateResult; children?: Step[] }
+  | { kind: "tool"; label: string; status: "running" | "done" | "error"; detail?: string; templateResult?: TemplateResult; children?: Step[]; chronologyResult?: { matterId: string; proposalIds: string[] } }
 
 // A redline/tracked-change a turn proposed: the clause delta plus a pointer back
 // to the document, so the assistant bubble can preview the red/green change and
@@ -242,7 +242,10 @@ function partsToSteps(parts: Part[], matter: string, pool?: Part[]): Step[] {
         /\.dochaus[\\/]profile\.md$/.test(input.filePath)
       )
         return [{ kind: "tool", label: "No practice profile on file", status: "done", detail }]
-      return [{ kind: "tool", label: emptyTemplates ? "No saved templates found" : stepLabel(p, matter), status, detail, children, ...(formatted ? { templateResult: formatted } : {}) }]
+      const meta = p.state.status === "completed" && p.tool === "propose-chronology-changes" ? p.state.metadata : undefined
+      const chronologyResult = meta && typeof meta.chronologyMatterId === "string" && Array.isArray(meta.chronologyProposalIds) && meta.chronologyProposalIds.every(id => typeof id === "string")
+        ? { matterId: meta.chronologyMatterId, proposalIds: meta.chronologyProposalIds as string[] } : undefined
+      return [{ kind: "tool", label: emptyTemplates ? "No saved templates found" : stepLabel(p, matter), status, detail, children, ...(formatted ? { templateResult: formatted } : {}), ...(chronologyResult ? { chronologyResult } : {}) }]
     }
     return []
   })

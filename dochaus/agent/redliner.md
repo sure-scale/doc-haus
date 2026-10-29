@@ -5,6 +5,8 @@ temperature: 0.2
 color: warning
 tools:
   "*": false
+  read-chronology: true
+  propose-chronology-changes: true
   read: true
   glob: true
   grep: true

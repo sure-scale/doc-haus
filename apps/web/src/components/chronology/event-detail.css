@@ -1,0 +1,469 @@
+/* Shared full-workspace frosting; the opaque evidence sheet never changes canvas flow. */
+.viewer-overlay.chronology-detail-overlay {
+  padding: 0;
+  align-items: stretch;
+  justify-content: flex-end;
+  overflow: hidden;
+}
+.chronology-detail-sheet {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(100%, clamp(500px, 38vw, 540px));
+  min-width: 0;
+  pointer-events: auto;
+  box-shadow: -8px 0 28px #18223718;
+  animation: chronology-evidence-enter var(--spring-effects-default-ms, 240ms) var(--spring-effects-default, ease-out)
+    both;
+}
+.chronology-detail-overlay.is-closing .chronology-detail-sheet {
+  pointer-events: none;
+  animation: chronology-evidence-exit var(--spring-effects-fast-ms, 150ms) var(--spring-effects-fast, ease-in) both;
+}
+.chronology-detail-overlay.is-compact .chronology-detail-sheet {
+  width: 100%;
+}
+@keyframes chronology-evidence-enter {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+@keyframes chronology-evidence-exit {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chronology-detail-overlay .chronology-detail-sheet,
+  .chronology-detail-overlay.is-closing .chronology-detail-sheet {
+    animation: none;
+  }
+}
+
+/* The evidence panel shares the chronology's paper, navy and quiet grey palette. */
+.chronology-workbench .chronology-evidence-panel {
+  --chronology-line: #e8e7e5;
+  --detail-ink: #182237;
+  --detail-muted: #727986;
+  color: var(--detail-ink);
+  background: #fff;
+  padding: 15px 18px 0 22px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  border-left: 1px solid var(--chronology-line);
+  font-size: 13px;
+}
+.chronology-evidence-panel .chronology-detail-top {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 22px;
+  padding-top: 2px;
+}
+.chronology-workbench .chronology-evidence-panel .chronology-detail-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: #596475;
+}
+.chronology-workbench .chronology-evidence-panel .chronology-star {
+  min-height: 30px;
+  width: 30px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: #687386;
+  font-size: 22px;
+}
+.chronology-workbench .chronology-evidence-panel .chronology-star[aria-pressed="true"] {
+  color: #aa792b;
+}
+.chronology-evidence-panel .chronology-detail-content {
+  overflow-wrap: anywhere;
+  flex: 1;
+  padding-bottom: 28px;
+}
+.chronology-evidence-panel .chronology-detail-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--detail-muted);
+  font-size: 11px;
+  margin: 0 0 13px;
+}
+.chronology-detail-source-icon {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  color: #4b6185;
+}
+.chronology-workbench .chronology-evidence-panel h2 {
+  color: var(--detail-ink);
+  font:
+    400 25px/1.23 Georgia,
+    "Times New Roman",
+    serif;
+  letter-spacing: -0.45px;
+  margin: 0 0 15px;
+}
+.chronology-evidence-panel .chronology-detail-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.chronology-evidence-panel .chronology-detail-date-qualifier {
+  display: block;
+  margin: 4px 0 10px;
+  color: #946923;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+.chronology-evidence-panel .chronology-detail-review {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  font-size: 11px;
+}
+.chronology-evidence-panel .chronology-detail-review.is-reviewed {
+  color: #237d75;
+}
+.chronology-evidence-panel .chronology-detail-review.is-pending {
+  color: #a56a17;
+}
+.chronology-evidence-panel .chronology-detail-review.is-pending span {
+  font-size: 10px;
+  color: #e8ad3e;
+}
+.chronology-evidence-panel .chronology-tags {
+  gap: 4px 7px;
+  margin-bottom: 12px;
+}
+.chronology-evidence-panel .chronology-tag {
+  background: #f0efed;
+  color: #686d78;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+.chronology-evidence-panel .chronology-tag.is-alert {
+  color: #91641e;
+  background: #fbf0db;
+}
+.chronology-evidence-panel .chronology-detail-description {
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 14px 0 0;
+}
+.chronology-evidence-panel section {
+  margin-top: 23px;
+}
+.chronology-workbench .chronology-evidence-panel h3 {
+  color: var(--detail-ink);
+  font-size: 13px;
+  font-weight: 550;
+  margin: 0 0 10px;
+}
+.chronology-workbench .chronology-evidence-panel h4 {
+  font-size: 12px;
+  font-weight: 550;
+  margin: 17px 0 6px;
+}
+.chronology-evidence-panel .chronology-conflict-card,
+.chronology-evidence-panel .chronology-evidence {
+  border: 1px solid var(--chronology-line);
+  background: #fffefd;
+  border-radius: 7px;
+  padding: 11px 13px;
+  margin: 10px 0;
+  box-shadow: 0 1px 2px #18223703;
+}
+.chronology-evidence-panel .chronology-conflict-card {
+  font-size: 12px;
+}
+.chronology-evidence-panel .chronology-conflict-card > strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.chronology-evidence-panel .chronology-conflict-card > .chronology-muted {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.chronology-evidence-panel .chronology-conflict-card p {
+  margin: 6px 0;
+}
+.chronology-evidence-panel .chronology-evidence-heading {
+  gap: 7px;
+  align-items: flex-start;
+}
+.chronology-evidence-panel .chronology-evidence-heading strong {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.chronology-evidence-panel .chronology-evidence-heading > span {
+  max-width: 38%;
+  color: #7b8290;
+  font-size: 10px;
+  text-align: right;
+  overflow-wrap: anywhere;
+  flex: 0 1 auto;
+}
+.chronology-evidence-panel .chronology-evidence blockquote {
+  color: #566071;
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 9px 0 9px 24px;
+}
+.chronology-evidence-panel .chronology-evidence-status {
+  font-size: 10px;
+  margin: 6px 0 3px;
+}
+.chronology-workbench .chronology-evidence-panel .chronology-evidence button {
+  color: #284977;
+  font-size: 11px;
+  min-height: 27px;
+}
+.chronology-evidence-panel .chronology-muted {
+  color: #737b88;
+}
+.chronology-evidence-panel .chronology-warning {
+  color: #946923;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.chronology-evidence-panel .chronology-account-qualifications {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: #946923;
+  font-size: 10px;
+}
+.chronology-evidence-panel .chronology-account-qualifications:empty {
+  display: none;
+}
+.chronology-evidence-panel .chronology-notice {
+  background: #fbf7ed;
+  border-color: #ebe1cd;
+}
+.chronology-evidence-panel .chronology-evidence-caveat {
+  font-size: 10px;
+  line-height: 1.5;
+  color: #7a808b;
+  margin: 17px 0 0;
+}
+.chronology-evidence-panel details {
+  font-size: 11px;
+}
+.chronology-evidence-panel summary {
+  cursor: pointer;
+  color: #677181;
+}
+.chronology-evidence-panel .chronology-source-attribution {
+  color: #596475;
+  font-size: 12px;
+  margin: 8px 0;
+}
+.chronology-evidence-panel .chronology-source-context {
+  border: 0;
+  margin: 10px 0 17px;
+  padding: 0;
+}
+.chronology-evidence-panel .chronology-source-context dl {
+  margin: 12px 0;
+}
+.chronology-evidence-panel .chronology-source-context dl > div {
+  margin: 10px 0;
+}
+.chronology-evidence-panel .chronology-source-context dt {
+  color: #687181;
+  font-size: 10px;
+}
+.chronology-evidence-panel .chronology-source-context dd {
+  margin: 2px 0 0;
+  color: #39465a;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.chronology-evidence-panel .chronology-date-context {
+  border-left: 2px solid #dedfdf;
+  padding-left: 12px;
+  font-size: 11px;
+}
+.chronology-evidence-panel .chronology-detail-footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 14px 0 10px;
+  margin-top: auto;
+  background: #fff;
+  border-top: 1px solid #eeece8;
+  z-index: 2;
+  flex-shrink: 0;
+}
+.chronology-workbench .chronology-evidence-panel .chronology-detail-footer > button {
+  font-size: 11px;
+  padding: 7px 9px;
+  min-height: 37px;
+  white-space: nowrap;
+  background: #fffefd;
+  border-color: #e4e4e3;
+}
+.chronology-workbench .chronology-evidence-panel .chronology-detail-footer > button.primary {
+  color: #fff;
+  background: #1c2638;
+  border-color: #1c2638;
+  flex: 1;
+}
+.chronology-evidence-panel .chronology-detail-footer > button.primary span {
+  margin-right: 5px;
+}
+.chronology-evidence-panel .chronology-more-actions {
+  position: static;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  flex: none;
+}
+.chronology-evidence-panel .chronology-more-actions > summary {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  list-style: none;
+  border: 1px solid #e4e4e3;
+  border-radius: 6px;
+  height: 37px;
+  width: 35px;
+  color: #253146;
+  font-size: 20px;
+  background: #fffefd;
+}
+.chronology-evidence-panel .chronology-more-actions > summary::-webkit-details-marker {
+  display: none;
+}
+.chronology-evidence-panel .chronology-more-actions[open] > summary {
+  background: #e9edf3;
+}
+.chronology-evidence-panel .chronology-more-actions-content {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 9px);
+  width: min(330px, 100%);
+  box-sizing: border-box;
+  max-height: min(65dvh, 550px);
+  overflow: auto;
+  padding: 16px;
+  background: #fffefd;
+  border: 1px solid #e0e1e4;
+  border-radius: 8px;
+  box-shadow: 0 8px 30px #1b243321;
+}
+.chronology-evidence-panel .chronology-more-actions-content button {
+  font-size: 11px;
+}
+.chronology-evidence-panel .chronology-more-actions-content form {
+  margin: 15px 0;
+}
+.chronology-evidence-panel .chronology-more-actions-content label {
+  display: block;
+  font-size: 12px;
+}
+.chronology-evidence-panel .chronology-more-actions-content textarea {
+  display: block;
+  width: 100%;
+  margin: 6px 0;
+  resize: vertical;
+  padding: 8px;
+  border: 1px solid #dce0e4;
+  border-radius: 5px;
+  font: inherit;
+  color: #182237;
+  background: white;
+}
+@media (max-width: 800px) {
+  .chronology-workbench .chronology-evidence-panel {
+    padding: 12px 16px 0;
+    border-left: 0;
+    height: 100%;
+    min-height: 0;
+    max-height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+  .chronology-workbench .chronology-evidence-panel h2 {
+    font-size: 28px;
+  }
+  .chronology-evidence-panel .chronology-detail-footer {
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+  .chronology-workbench .chronology-evidence-panel .chronology-detail-footer > button {
+    min-height: 44px;
+    font-size: 12px;
+    padding: 9px 12px;
+  }
+  .chronology-evidence-panel .chronology-more-actions > summary {
+    width: 44px;
+    height: 44px;
+  }
+  .chronology-evidence-panel .chronology-evidence blockquote {
+    font-size: 13px;
+  }
+  .chronology-workbench .chronology-evidence-panel .chronology-detail-close {
+    width: 44px;
+    min-height: 44px;
+  }
+  .chronology-evidence-panel .chronology-more-actions-content button {
+    min-height: 44px;
+  }
+}
+
+.chronology-evidence-panel .chronology-tag.is-conflict {
+  color: #a43a3f;
+  background: #f8e9e8;
+}
+@media (max-width: 800px) {
+  .chronology-workbench .chronology-evidence-panel .chronology-star {
+    min-height: 44px;
+    width: 44px;
+  }
+  .chronology-workbench .chronology-evidence-panel .chronology-evidence button {
+    min-height: 44px;
+  }
+  .chronology-workbench .chronology-evidence-panel summary {
+    min-height: 44px;
+  }
+}

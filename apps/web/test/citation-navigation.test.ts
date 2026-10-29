@@ -26,14 +26,14 @@ describe("source document resolution", () => {
   })
 
   test("does not hand unsupported formats or path-like names to the viewer", () => {
-    for (const name of ["terms.md", "notes.mbox", "../terms.docx", "sub/terms.docx", "sub\\terms.docx", "sub/instructions.eml"]) {
+    for (const name of ["notes.mbox", "../terms.docx", "sub/terms.docx", "sub\\terms.docx", "sub/instructions.eml"]) {
       expect(citationDocument({ ...citation, documentName: name }, [{ ...document, name }])).toBeUndefined()
     }
     expect(citationDocument({ ...citation, documentName: "terms.PDF" }, [{ ...document, name: "terms.PDF" }])?.name).toBe("terms.PDF")
   })
 
   test("opens emails and spreadsheets, which ingest indexes and the assistant cites", () => {
-    for (const name of ["Client instructions.eml", "Forwarded thread.msg", "Cap table.XLSX"]) {
+    for (const name of ["Client instructions.eml", "Forwarded thread.msg", "Cap table.XLSX", "Chronology.md", "Record.MARKDOWN"]) {
       expect(citationDocument({ ...citation, documentName: name, docPath: name }, [{ ...document, name }])?.name).toBe(name)
     }
   })
@@ -116,6 +116,13 @@ describe("cited sources of an answer", () => {
 })
 
 describe("citation passage matching", () => {
+  test("canonical text coordinates identify a repeated quotation and never reanchor a displaced range", () => {
+    const text = `${citation.excerpt}\nA later report follows.\n${citation.excerpt}`
+    const start = text.lastIndexOf(citation.excerpt)
+    expect(citationPassage(text, citation.excerpt, { charStart: start, charEnd: text.length })).toEqual({ status: "matched", start, end: text.length })
+    expect(citationPassage(text, citation.excerpt, { charStart: start - 1, charEnd: text.length - 1 })).toEqual({ status: "unavailable" })
+    expect(citationPassage(text, citation.excerpt)).toEqual({ status: "ambiguous" })
+  })
   test("maps normalized whitespace back to rendered text rather than using ingest offsets", () => {
     const text = "\nBefore\nPayment\u00a0 is due\n on delivery.\nAfter"
     const result = citationPassage(text, citation.excerpt)

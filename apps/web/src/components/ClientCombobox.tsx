@@ -28,6 +28,7 @@ export default function ClientCombobox({
   const [pos, setPos] = useState<CSSProperties>()
   const [stored, setStored] = useState<StoredClient[]>([])
   const field = useRef<HTMLInputElement>(null)
+  const list = useRef<HTMLUListElement>(null)
   const composing = useRef(false)
   // The caller's handlers from the latest render, so they run after a snap.
   const latest = useRef({ onBlur: input.onBlur, onKeyDown })
@@ -53,23 +54,58 @@ export default function ClientCombobox({
     }
   }, [])
 
-  // A fixed list in the input's dialog (or the body) so a scrolling dialog or
-  // header cannot clip it; offsets convert out of the appearance body zoom.
+  // A fixed portal escapes its header/dialog. Account for appearance zoom and
+  // the visual viewport so a mobile keyboard or lower anchor cannot hide options.
   useLayoutEffect(() => {
-    if (!shown || !field.current) return
-    const zoom = Number.parseFloat(getComputedStyle(document.body).zoom) || 1
-    const rect = field.current.getBoundingClientRect()
-    setPos({ left: rect.left / zoom, top: rect.bottom / zoom + 4, width: Math.max(rect.width / zoom, 200) })
+    if (!shown) return
+    const position = () => {
+      const anchor = field.current
+      const popup = list.current
+      if (!anchor || !popup) return
+      const zoom = Number.parseFloat(getComputedStyle(document.body).zoom) || 1
+      const viewport = window.visualViewport
+      const left = (viewport?.offsetLeft ?? 0) / zoom
+      const top = (viewport?.offsetTop ?? 0) / zoom
+      const width = (viewport?.width ?? window.innerWidth) / zoom
+      const height = (viewport?.height ?? window.innerHeight) / zoom
+      const inset = 8
+      const gap = 4
+      const rect = anchor.getBoundingClientRect()
+      const popupWidth = Math.min(Math.max(rect.width / zoom, 200), Math.max(0, width - inset * 2))
+      // Measure wrapping at the final width, independent of the previous clamp.
+      popup.style.width = `${popupWidth}px`
+      const style = getComputedStyle(popup)
+      const naturalHeight = Math.min(288, popup.scrollHeight + Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth))
+      const above = Math.max(0, Math.min(rect.top / zoom - gap, top + height - inset) - top - inset)
+      const below = Math.max(0, top + height - inset - Math.max(rect.bottom / zoom + gap, top + inset))
+      const openAbove = below < naturalHeight && above > below
+      const maxHeight = Math.min(288, openAbove ? above : below)
+      const popupHeight = Math.min(naturalHeight, maxHeight)
+      const preferredTop = openAbove ? rect.top / zoom - gap - popupHeight : rect.bottom / zoom + gap
+      setPos({
+        left: Math.max(left + inset, Math.min(rect.left / zoom, left + width - inset - popupWidth)),
+        top: Math.max(top + inset, Math.min(preferredTop, top + height - inset - popupHeight)),
+        width: popupWidth,
+        maxHeight,
+        boxSizing: "border-box",
+      })
+    }
+    position()
     const close = (event: Event) => {
-      if (!(event.target instanceof Node && document.getElementById(listId)?.contains(event.target))) setOpen(false)
+      if (event.target === window.visualViewport) return
+      if (!(event.target instanceof Node && list.current?.contains(event.target))) setOpen(false)
     }
     window.addEventListener("scroll", close, true)
-    window.addEventListener("resize", close)
+    window.addEventListener("resize", position)
+    window.visualViewport?.addEventListener("resize", position)
+    window.visualViewport?.addEventListener("scroll", position)
     return () => {
       window.removeEventListener("scroll", close, true)
-      window.removeEventListener("resize", close)
+      window.removeEventListener("resize", position)
+      window.visualViewport?.removeEventListener("resize", position)
+      window.visualViewport?.removeEventListener("scroll", position)
     }
-  }, [shown, listId, value])
+  }, [shown, listId, value, count])
 
   function pick(name: string) {
     onChange(name)
@@ -150,6 +186,7 @@ export default function ClientCombobox({
       {shown &&
         createPortal(
           <ul
+            ref={list}
             id={listId}
             role="listbox"
             aria-label="Existing clients"

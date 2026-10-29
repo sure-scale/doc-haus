@@ -69,6 +69,8 @@
     "update-agent": "ask",
     "delete-agent": "ask",
     "read-document": "allow",
+    "read-chronology": "allow",
+    "propose-chronology-changes": "allow",
     "read-record": "allow",
     "compare-versions": "allow",
     "python_run_python_code": "allow",

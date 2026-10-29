@@ -21,6 +21,7 @@ test("tracing on, off and failing yields identical model-visible requests, tool 
   await symlink(path.join(original, "node_modules"), path.join(repository, "node_modules"))
   await symlink(path.join(original, "services", "engine", "node_modules"), path.join(repository, "services", "engine", "node_modules"))
   await cp(path.join(original, "services", "engine", "src"), path.join(repository, "services", "engine", "src"), { recursive: true })
+  await cp(path.join(original, "release.json"), path.join(repository, "release.json"))
   for (const entry of await readdir(path.join(original, "dochaus"))) {
     if (["opencode.json", "plugin", ".env.local", ".env"].includes(entry)) continue
     await symlink(path.join(original, "dochaus", entry), path.join(repository, "dochaus", entry))

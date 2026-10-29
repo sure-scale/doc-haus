@@ -1,0 +1,40 @@
+.chat-chronology-proposals {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1rem;
+  margin: 1rem 0;
+  background: var(--surface, #fff);
+  overflow-wrap: anywhere;
+}
+.chat-chronology-proposals article + article {
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+  margin-top: 1rem;
+}
+.chat-chronology-proposals h3 {
+  font-size: 1rem;
+  margin: 0.7rem 0;
+}
+.chat-chronology-proposals button {
+  margin: 0.35rem;
+}
+.chat-chronology-proposals a {
+  display: inline-block;
+  margin: 0.35rem;
+}
+.chat-chronology-proposals blockquote {
+  white-space: pre-wrap;
+  border-left: 3px solid #17634f;
+  padding-left: 0.75rem;
+}
+.chat-chronology-entry {
+  margin: 0.5rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.chat-chronology-decisions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}

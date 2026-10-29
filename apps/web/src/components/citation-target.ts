@@ -13,12 +13,20 @@ export function citationDocument(citation: Pick<Citation, "documentName" | "docP
   return matches.length === 1 ? matches[0] : undefined
 }
 
-export type CitationFocus = Pick<Citation, "section" | "excerpt">
+export type CitationFocus = Pick<Citation, "section" | "excerpt"> & { charStart?: number; charEnd?: number }
 
-export function citationPassage(text: string, excerpt: string) {
+export function citationPassage(text: string, excerpt: string, canonicalRange?: { charStart?: number; charEnd?: number }) {
   const normalize = (value: string) => value.replace(/\s+/g, " ").trim()
   const needle = normalize(excerpt)
   if (!needle) return { status: "unavailable" as const }
+  if (canonicalRange?.charStart !== undefined || canonicalRange?.charEnd !== undefined) {
+    const { charStart, charEnd } = canonicalRange
+    // Only canonical extracted-text viewers use these offsets. A displaced
+    // range degrades instead of silently selecting a different occurrence.
+    if (!Number.isInteger(charStart) || !Number.isInteger(charEnd) || charStart! < 0 || charEnd! <= charStart! || charEnd! > text.length || normalize(text.slice(charStart, charEnd)) !== needle)
+      return { status: "unavailable" as const }
+    return { status: "matched" as const, start: charStart!, end: charEnd! }
+  }
   // Keep a map to the rendered text's positions. Ingest character offsets refer
   // to a different projection and cannot locate text in the DOCX HTML.
   const positions: number[] = []

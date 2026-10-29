@@ -483,7 +483,7 @@ export default function DocumentUpload({
           onFiles={onFiles}
           title={working > 0 ? `Uploading ${working} document${working === 1 ? "" : "s"}…` : "Upload documents"}
         />
-        <p>Drop Word, PDF, email, Excel or zip files here, or click to browse.</p>
+        <p>Drop Word, PDF, email, Excel, Markdown or zip files here, or click to browse.</p>
       </footer>
     </section>
   )
@@ -739,7 +739,7 @@ export function EmailRemoveConfirm({ name, removal, onRemove, onCancel }: {
 // format ingest cannot read is refused here, with the formats it can.
 export function newUpload(key: number, file: File): Upload {
   if (matterDocumentKind(file.name)) return { key, file, status: "queued" }
-  return { key, file, status: "failed", error: "Only Word (.docx), PDF, email (.eml, .msg), Excel (.xlsx) and zip (.zip) files can be added." }
+  return { key, file, status: "failed", error: "Only Word (.docx), PDF, email (.eml, .msg), Excel (.xlsx), Markdown (.md, .markdown) and zip (.zip) files can be added." }
 }
 
 // A same-name clash asks the lawyer what to do with the existing document; an
@@ -914,6 +914,8 @@ const DOCUMENT_TYPE_LABEL: Record<DocumentGlyph, string> = {
   msg: "Outlook email",
   xlsx: "Excel spreadsheet",
   zip: "Zip file",
+  md: "Markdown source",
+  markdown: "Markdown source",
   file: "File",
 }
 

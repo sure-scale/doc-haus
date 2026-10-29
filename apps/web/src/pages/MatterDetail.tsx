@@ -3,7 +3,16 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom"
 import type { CompareParams } from "../api/ingest/compare"
 import { humanizeError } from "../api/ingest/errors"
 import { getPreferences } from "../api/ingest/preferences"
-import { getMatter, listJurisdictions, listPlaybooks, MatterNotFound, renameMatter, type Jurisdiction, type MatterDetail as Detail, type Playbook } from "../api/ingest/matters"
+import {
+  getMatter,
+  listJurisdictions,
+  listPlaybooks,
+  MatterNotFound,
+  renameMatter,
+  type Jurisdiction,
+  type MatterDetail as Detail,
+  type Playbook,
+} from "../api/ingest/matters"
 import { listWorkflows, type CustomWorkflow } from "../api/ingest/library"
 import { createTemplateDraft } from "../api/ingest/template-drafts"
 import { disposeInstance, listAgents } from "../api/opencode/sessions"
@@ -18,6 +27,7 @@ import BlacklineViewer from "../components/BlacklineViewer"
 import ChatPanel from "../components/ChatPanel"
 import ReviewGrid from "../components/ReviewGrid"
 import MatterHeader, { type MatterFields } from "../components/matter/MatterHeader"
+import type { MatterMenuAction } from "../components/matter/MatterActionsMenu"
 import MatterRail from "../components/matter/MatterRail"
 import useDraftingStatus from "../components/drafting/useDraftingStatus"
 import useNeedsYouTitle from "../components/drafting/useNeedsYouTitle"
@@ -25,6 +35,10 @@ import { useToast } from "../components/Toast"
 import { WordDocumentsProvider } from "../components/WordDocuments"
 import useExit, { Exit } from "../components/useExit"
 import NotFound from "./NotFound"
+import ChronologyWorkbench from "../components/chronology/ChronologyWorkbench"
+import { assessChronology, getChronology, type Chronology } from "../api/ingest/chronology"
+import { setChronologyNavigation } from "../components/chronology/navigation"
+import type { ChronologyChatReference } from "../components/chronology/model"
 
 type Agent = { name: string; description?: string; mode?: string; hidden?: boolean }
 
@@ -37,7 +51,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   const navigate = useNavigate()
   // Documents is a drawer beside the rail, not a surface; the old
   // `view=documents` links open it over the chat.
-  const view = params.get("view") === "review" ? "review" : "chat"
+  const view = params.get("view") === "chronology" ? "chronology" : params.get("view") === "review" ? "review" : "chat"
   const drawer = useDocumentsDrawer()
   const [drawerShown, drawerClosing] = useExit(drawer.open)
   // A drawer already open as the matter loads is restored, not opened: it
@@ -56,6 +70,20 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   }, [params])
   const session = params.get("session") ?? undefined
   const [matter, setMatter] = useState<Detail>()
+  const [chronology, setChronology] = useState<Chronology>()
+  const [chronologyActions, setChronologyActions] = useState<MatterMenuAction[]>([])
+  const [chronologyReference, setChronologyReference] = useState<ChronologyChatReference>()
+  const [sourceRefresh, setSourceRefresh] = useState(0)
+  const chronologyMatter = useRef(id)
+  chronologyMatter.current = id
+  const receiveChronology = useCallback(
+    (next: Chronology) => {
+      if (chronologyMatter.current !== id) return
+      setChronology((current) => (current && current.revision > next.revision ? current : next))
+    },
+    [id],
+  )
+  useEffect(() => setChronologyNavigation(id, chronology), [id, chronology])
   // Why the matter could not be loaded: "missing" when ingest has no such matter
   // (deleted, or a mistyped link), otherwise the readable error.
   const [loadError, setLoadError] = useState<string>()
@@ -120,9 +148,12 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
     getMatter(id)
       .then((next) => {
         setMatter(next)
+        setSourceRefresh((value) => value + 1)
         setLoadError(undefined)
       })
-      .catch((e) => setLoadError(e instanceof MatterNotFound ? "missing" : humanizeError(e, "Could not load this matter.")))
+      .catch((e) =>
+        setLoadError(e instanceof MatterNotFound ? "missing" : humanizeError(e, "Could not load this matter.")),
+      )
   }
 
   useEffect(() => {
@@ -144,6 +175,54 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
     setDocumentsCount(documentCount)
   }, [documentCount])
   useEffect(() => () => setDocumentsCount(undefined), [])
+
+  // Reassess only after matter context or a completed upload batch changes.
+  // The server keys its bounded assessment by the actual instructions/sources.
+  const chronologyContextKey = matter
+    ? JSON.stringify([
+        matter.id,
+        matter.title,
+        matter.client,
+        matter.documents.map((document) => [document.id, document.name, document.created_at, document.quality]),
+      ])
+    : ""
+  useEffect(() => {
+    if (!id || !matter || !chronologyContextKey) return
+    let live = true
+    getChronology(id).then(
+      (next) => {
+        if (live) receiveChronology(next)
+      },
+      () => {},
+    )
+    assessChronology(id).then(
+      (next) => {
+        if (live) receiveChronology(next)
+      },
+      () => {},
+    )
+    return () => {
+      live = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, chronologyContextKey, sourceRefresh])
+  useEffect(() => {
+    setChronology(undefined)
+    setChronologyReference(undefined)
+    setChronologyNavigation(id)
+    return () => setChronologyNavigation()
+  }, [id])
+  useEffect(() => {
+    if (!id) return
+    const refreshChronology = () =>
+      assessChronology(id).then(receiveChronology, () => getChronology(id).then(receiveChronology, () => {}))
+    window.addEventListener("focus", refreshChronology)
+    if (!chat) refreshChronology()
+    return () => window.removeEventListener("focus", refreshChronology)
+  }, [id, !!chat, receiveChronology])
+  useEffect(() => {
+    if (view === "chronology") setDocumentsDrawer(false)
+  }, [view])
 
   useEffect(() => {
     if (!matter) return
@@ -235,13 +314,31 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
     if (!matter) return
     const next = { ...matter, ...fields }
     // The client and the Posture go only with their own edit, so another field's save never reverts a newer one.
-    const updated = await renameMatter(matter.id, next.title, next.reference, next.jurisdictions, next.playbook,
-      "client" in fields ? next.client : undefined, "posture" in fields ? next.posture : undefined).catch((e) => {
+    const updated = await renameMatter(
+      matter.id,
+      next.title,
+      next.reference,
+      next.jurisdictions,
+      next.playbook,
+      "client" in fields ? next.client : undefined,
+      "posture" in fields ? next.posture : undefined,
+    ).catch((e) => {
       toast("error", humanizeError(e, "Could not save the matter. Try again."))
       return undefined
     })
     if (!updated) return
-    setMatter((m) => m && { ...m, title: updated.title, reference: updated.reference, jurisdictions: updated.jurisdictions, playbook: updated.playbook, client: updated.client, posture: updated.posture })
+    setMatter(
+      (m) =>
+        m && {
+          ...m,
+          title: updated.title,
+          reference: updated.reference,
+          jurisdictions: updated.jurisdictions,
+          playbook: updated.playbook,
+          client: updated.client,
+          posture: updated.posture,
+        },
+    )
     onSessionsChanged()
   }
 
@@ -274,6 +371,8 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   return (
     <WordDocumentsProvider matterId={matter.id} onChanged={refresh}>
       <MatterHeader
+        compact={view === "chronology"}
+        chronologyActions={view === "chronology" ? chronologyActions : undefined}
         matter={matter}
         jurisdictions={jurisdictions}
         editingRef={editingRef}
@@ -292,14 +391,24 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
         setDraftTitle={setDraftTitle}
         commitRename={commitRename}
         patch={patch}
+        onOpenChronology={() => {
+          const next = new URLSearchParams(params)
+          next.set("view", "chronology")
+          setParams(next)
+        }}
         onEditConflicts={() => {
           // The attorney name pre-fills "by"; the dialog opens without it if preferences cannot load.
-          getPreferences().then((p) => setAttorney(p.attorney.trim() || undefined), () => {}).finally(() => setRecordingConflicts(true))
+          getPreferences()
+            .then(
+              (p) => setAttorney(p.attorney.trim() || undefined),
+              () => {},
+            )
+            .finally(() => setRecordingConflicts(true))
         }}
       />
 
       <div className="matter-body">
-        <div className="workspace">
+        <div className="workspace" style={view === "chronology" ? { display: "none" } : undefined}>
           <ChatPanel
             key={session ?? "new"}
             directory={matter.dir}
@@ -307,11 +416,18 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
             sessionID={session}
             created={createdRef.current === session}
             initialPrompt={params.get("prompt") ?? undefined}
-            onPromptSeated={() => setParams((current) => {
-              const next = new URLSearchParams(current)
-              next.delete("prompt")
-              return next
-            }, { replace: true })}
+            chronologyReference={chronologyReference}
+            onChronologyReferenceSeated={() => setChronologyReference(undefined)}
+            onPromptSeated={() =>
+              setParams(
+                (current) => {
+                  const next = new URLSearchParams(current)
+                  next.delete("prompt")
+                  return next
+                },
+                { replace: true },
+              )
+            }
             agent={agent}
             available={available}
             workflows={workflows}
@@ -349,22 +465,61 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
             feed={drafting}
           />
         </div>
+        {view === "chronology" && (
+          <ChronologyWorkbench
+            onActionsChange={setChronologyActions}
+            key={matter.id}
+            matterId={matter.id}
+            title={matter.title}
+            client={matter.client}
+            documents={matter.documents}
+            chronology={chronology}
+            initialEvent={params.get("event") ?? undefined}
+            initialProposal={params.get("proposal") ?? undefined}
+            onState={receiveChronology}
+            onClose={() => {
+              const next = new URLSearchParams(params)
+              next.delete("view")
+              next.delete("event")
+              next.delete("proposal")
+              setParams(next)
+            }}
+            onAsk={(reference) => {
+              if (reference.matterId !== matter.id) return
+              setChronologyReference(reference)
+              const next = new URLSearchParams(params)
+              next.delete("view")
+              next.delete("event")
+              next.delete("proposal")
+              setParams(next)
+            }}
+          />
+        )}
       </div>
 
-      <Exit when={view === "review"}>{() => (
-        <ReviewGrid matterId={matter.id} title={matter.title} directory={matter.dir} documents={matter.documents} onClose={() => {
-          const next = new URLSearchParams(params)
-          next.delete("view")
-          setParams(next, { replace: true })
-        }} onAsk={(prompt) => {
-          // Back to the open chat, keeping its conversation; the chat seats the
-          // question in an empty composer (see ChatPanel onPromptSeated).
-          const next = new URLSearchParams(params)
-          next.delete("view")
-          next.set("prompt", prompt)
-          setParams(next)
-        }} />
-      )}</Exit>
+      <Exit when={view === "review"}>
+        {() => (
+          <ReviewGrid
+            matterId={matter.id}
+            title={matter.title}
+            directory={matter.dir}
+            documents={matter.documents}
+            onClose={() => {
+              const next = new URLSearchParams(params)
+              next.delete("view")
+              setParams(next, { replace: true })
+            }}
+            onAsk={(prompt) => {
+              // Back to the open chat, keeping its conversation; the chat seats the
+              // question in an empty composer (see ChatPanel onPromptSeated).
+              const next = new URLSearchParams(params)
+              next.delete("view")
+              next.set("prompt", prompt)
+              setParams(next)
+            }}
+          />
+        )}
+      </Exit>
 
       {drawerShown && (
         <DocumentsDrawer
@@ -387,91 +542,106 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
 
       <MatterRail matter={matter} session={session} drafting={drafting.status} chat={chat} showStatusbar />
 
-      <Exit when={viewing}>{(viewing) => (
-        <DocumentViewer
-          key={viewing}
-          matterId={matter.id}
-          name={viewing}
-          focusId={focusRedline}
-          initialVersions={viewerVersions}
-          onClose={() => {
-            setViewing(undefined)
-            setViewerVersions(false)
-          }}
-          onCompareVersions={(params) => {
-            setReturnTo(viewing)
-            setViewing(undefined)
-            setFocusChange(undefined)
-            setBlackline(params)
-          }}
-          onChanged={refresh}
-          onConverted={(name) => setViewing(name)}
-          onCompare={
-            viewing.toLowerCase().endsWith(".docx")
-              ? () => {
-                  setComparing({ name: viewing, fromViewer: true })
-                  setViewing(undefined)
-                }
-              : undefined
-          }
-          onSaveTemplate={
-            viewing.toLowerCase().endsWith(".docx")
-              ? async () => {
-                  if (creatingTemplateRef.current) return
-                  creatingTemplateRef.current = true
-                  setCreatingTemplate(true)
-                  try {
-                    const draft = await createTemplateDraft(matter.id, viewing)
-                    navigate(`/templates?draft=${encodeURIComponent(draft.id)}`)
-                  } catch (error) {
-                    toast("error", humanizeError(error, "Could not start Template Builder."))
-                  } finally {
-                    creatingTemplateRef.current = false
-                    setCreatingTemplate(false)
+      <Exit when={viewing}>
+        {(viewing) => (
+          <DocumentViewer
+            key={viewing}
+            matterId={matter.id}
+            name={viewing}
+            focusId={focusRedline}
+            initialVersions={viewerVersions}
+            onClose={() => {
+              setViewing(undefined)
+              setViewerVersions(false)
+            }}
+            onCompareVersions={(params) => {
+              setReturnTo(viewing)
+              setViewing(undefined)
+              setFocusChange(undefined)
+              setBlackline(params)
+            }}
+            onChanged={refresh}
+            onConverted={(name) => setViewing(name)}
+            onCompare={
+              viewing.toLowerCase().endsWith(".docx")
+                ? () => {
+                    setComparing({ name: viewing, fromViewer: true })
+                    setViewing(undefined)
                   }
-                }
-              : undefined
-          }
-          creatingTemplate={creatingTemplate}
-        />
-      )}</Exit>
+                : undefined
+            }
+            onSaveTemplate={
+              viewing.toLowerCase().endsWith(".docx")
+                ? async () => {
+                    if (creatingTemplateRef.current) return
+                    creatingTemplateRef.current = true
+                    setCreatingTemplate(true)
+                    try {
+                      const draft = await createTemplateDraft(matter.id, viewing)
+                      navigate(`/templates?draft=${encodeURIComponent(draft.id)}`)
+                    } catch (error) {
+                      toast("error", humanizeError(error, "Could not start Template Builder."))
+                    } finally {
+                      creatingTemplateRef.current = false
+                      setCreatingTemplate(false)
+                    }
+                  }
+                : undefined
+            }
+            creatingTemplate={creatingTemplate}
+          />
+        )}
+      </Exit>
 
-      <Exit when={recordingConflicts}>{() => (
-        <ConflictsDialog
-          matterId={matter.id}
-          current={matter.conflicts}
-          attorney={attorney}
-          onSaved={(saved) => setMatter((m) => m && { ...m, conflicts: saved.conflicts })}
-          onClose={() => setRecordingConflicts(false)}
-        />
-      )}</Exit>
+      <Exit when={recordingConflicts}>
+        {() => (
+          <ConflictsDialog
+            matterId={matter.id}
+            current={matter.conflicts}
+            attorney={attorney}
+            onSaved={(saved) => setMatter((m) => m && { ...m, conflicts: saved.conflicts })}
+            onClose={() => setRecordingConflicts(false)}
+          />
+        )}
+      </Exit>
 
-      <Exit when={comparing}>{(comparing) => (
-        <CompareDialog
-          matterId={matter.id}
-          name={comparing.name}
-          documents={matter.documents}
-          onUploaded={refresh}
-          onClose={() => {
-            setComparing(undefined)
-            if (comparing.fromViewer) setViewing(comparing.name)
-          }}
-          onCompare={(params) => {
-            setComparing(undefined)
-            setFocusChange(undefined)
-            setBlackline(params)
-          }}
-        />
-      )}</Exit>
+      <Exit when={comparing}>
+        {(comparing) => (
+          <CompareDialog
+            matterId={matter.id}
+            name={comparing.name}
+            documents={matter.documents}
+            onUploaded={refresh}
+            onClose={() => {
+              setComparing(undefined)
+              if (comparing.fromViewer) setViewing(comparing.name)
+            }}
+            onCompare={(params) => {
+              setComparing(undefined)
+              setFocusChange(undefined)
+              setBlackline(params)
+            }}
+          />
+        )}
+      </Exit>
 
-      <Exit when={blackline}>{(blackline) => <BlacklineViewer matterId={matter.id} params={blackline} focus={focusChange} onClose={() => {
-        setBlackline(undefined)
-        if (!returnTo) return
-        setReturnTo(undefined)
-        setViewerVersions(true)
-        setFocusRedline(undefined)
-        setViewing(returnTo)
-      }} />}</Exit>
+      <Exit when={blackline}>
+        {(blackline) => (
+          <BlacklineViewer
+            matterId={matter.id}
+            params={blackline}
+            focus={focusChange}
+            onClose={() => {
+              setBlackline(undefined)
+              if (!returnTo) return
+              setReturnTo(undefined)
+              setViewerVersions(true)
+              setFocusRedline(undefined)
+              setViewing(returnTo)
+            }}
+          />
+        )}
+      </Exit>
     </WordDocumentsProvider>
   )
 }

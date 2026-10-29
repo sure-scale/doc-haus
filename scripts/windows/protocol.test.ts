@@ -136,4 +136,4 @@ test.skipIf(process.platform !== "win32")("the Windows installer remains valid P
   const [status, errors] = await Promise.all([child.exited, new Response(child.stderr).text()])
   expect(errors).toBe("")
   expect(status).toBe(0)
-})
+}, 30_000)

@@ -16,6 +16,13 @@ export default function JurisdictionSelect({
   triggerTitle = "Click to edit jurisdiction",
   id,
   practiceAreas = false,
+  multiple = true,
+  label: genericLabel,
+  searchLabel,
+  emptyLabel,
+  noResultsLabel = "No match.",
+  showCode = !practiceAreas,
+  allowClear = false,
   disabled = false,
   "aria-describedby": ariaDescribedBy,
 }: {
@@ -31,6 +38,13 @@ export default function JurisdictionSelect({
   id?: string
   // Reuse the same accessible popover for user-defined practice areas.
   practiceAreas?: boolean
+  multiple?: boolean
+  label?: string
+  searchLabel?: string
+  emptyLabel?: string
+  noResultsLabel?: string
+  showCode?: boolean
+  allowClear?: boolean
   disabled?: boolean
   "aria-describedby"?: string
 }) {
@@ -42,7 +56,9 @@ export default function JurisdictionSelect({
   const [pos, setPos] = useState({ top: 0, left: 0, width: 280, maxHeight: 360 })
   const ref = useRef<HTMLDivElement>(null)
   const popRef = useRef<HTMLDivElement>(null)
-  useEffect(() => { if (disabled) setOpen(false) }, [disabled])
+  useEffect(() => {
+    if (disabled) setOpen(false)
+  }, [disabled])
 
   useLayoutEffect(() => {
     if (!open) return
@@ -67,8 +83,11 @@ export default function JurisdictionSelect({
       const search = popover.querySelector<HTMLInputElement>(".jx-search")!
       const list = popover.querySelector<HTMLElement>(".jx-list")!
       const border = getComputedStyle(popover)
-      const naturalHeight = search.offsetHeight + Math.min(list.scrollHeight, Number.parseFloat(getComputedStyle(list).maxHeight))
-        + Number.parseFloat(border.borderTopWidth) + Number.parseFloat(border.borderBottomWidth)
+      const naturalHeight =
+        search.offsetHeight +
+        Math.min(list.scrollHeight, Number.parseFloat(getComputedStyle(list).maxHeight)) +
+        Number.parseFloat(border.borderTopWidth) +
+        Number.parseFloat(border.borderBottomWidth)
       const rect = anchor.getBoundingClientRect()
       const above = Math.max(0, Math.min(rect.top / zoom - gap, top + height - inset) - top - inset)
       const below = Math.max(0, top + height - inset - Math.max(rect.bottom / zoom + gap, top + inset))
@@ -123,34 +142,83 @@ export default function JurisdictionSelect({
   }
 
   function toggle(code: string) {
+    if (!multiple) {
+      onChange([code])
+      setOpen(false)
+      setFilter("")
+      ref.current?.querySelector("button")?.focus({ preventScroll: true })
+      return
+    }
     if (practiceAreas && !selected.includes(code) && selected.length >= 50) return
     onChange(selected.includes(code) ? selected.filter((c) => c !== code) : [...selected, code])
   }
 
   const term = filter.trim().toLowerCase()
   const custom = filter.normalize("NFC").replace(/\s+/gu, " ").trim()
-  const canAdd = practiceAreas && custom.length > 0 && custom.length <= 100 && !/[\p{Cc}\u2028\u2029]/u.test(filter)
-    && !jurisdictions.some((j) => j.name.toLocaleLowerCase() === custom.toLocaleLowerCase())
+  const canAdd =
+    practiceAreas &&
+    custom.length > 0 &&
+    custom.length <= 100 &&
+    !/[\p{Cc}\u2028\u2029]/u.test(filter) &&
+    !jurisdictions.some((j) => j.name.toLocaleLowerCase() === custom.toLocaleLowerCase())
   const visible = jurisdictions.filter(
     (j) => !term || j.name.toLowerCase().includes(term) || j.code.toLowerCase().includes(term),
   )
   const label =
     selected.length === 0
-      ? practiceAreas ? "Select practice areas" : "Jurisdiction (optional)"
+      ? (emptyLabel ?? (practiceAreas ? "Select practice areas" : "Jurisdiction (optional)"))
       : selected.length === 1
-        ? jurisdictions.find((j) => j.code === selected[0])?.name ?? selected[0]
+        ? (jurisdictions.find((j) => j.code === selected[0])?.name ?? selected[0])
         : `${selected.length} ${practiceAreas ? "practice areas" : "jurisdictions"}`
 
   return (
     <div className="jx-select" ref={ref}>
       {trigger ? (
-        <button id={id} disabled={disabled} aria-describedby={ariaDescribedBy} aria-expanded={open} aria-controls={open ? popoverId : undefined} type="button" className="jx-trigger-bare" onClick={toggleOpen} title={triggerTitle}>
+        <button
+          id={id}
+          disabled={disabled}
+          aria-describedby={ariaDescribedBy}
+          aria-label={genericLabel}
+          aria-expanded={open}
+          aria-controls={open ? popoverId : undefined}
+          type="button"
+          className="jx-trigger-bare"
+          onClick={toggleOpen}
+          title={genericLabel ?? triggerTitle}
+        >
           {trigger}
         </button>
       ) : (
-        <button id={id} disabled={disabled} aria-describedby={ariaDescribedBy} aria-expanded={open} aria-controls={open ? popoverId : undefined} type="button" className={`assistant-trigger jx-trigger${selected.length === 0 ? " is-empty" : ""}`} onClick={toggleOpen} title={practiceAreas ? "Select practice areas" : "Jurisdiction — steers reasoning and citation style"}>
+        <button
+          id={id}
+          disabled={disabled}
+          aria-describedby={ariaDescribedBy}
+          aria-label={genericLabel}
+          aria-expanded={open}
+          aria-controls={open ? popoverId : undefined}
+          type="button"
+          className={`assistant-trigger jx-trigger${selected.length === 0 ? " is-empty" : ""}`}
+          onClick={toggleOpen}
+          title={
+            genericLabel ??
+            (practiceAreas ? "Select practice areas" : "Jurisdiction — steers reasoning and citation style")
+          }
+        >
           <span className="assistant-trigger-label">{label}</span>
-          <svg className={`assistant-caret${open ? " open" : ""}`} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+          <svg
+            className={`assistant-caret${open ? " open" : ""}`}
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="m6 9 6 6 6-6" />
+          </svg>
         </button>
       )}
       {open &&
@@ -160,7 +228,7 @@ export default function JurisdictionSelect({
             id={popoverId}
             className="jx-popover"
             role="group"
-            aria-label={practiceAreas ? "Practice areas" : "Jurisdictions"}
+            aria-label={genericLabel ?? (practiceAreas ? "Practice areas" : "Jurisdictions")}
             onKeyDown={(event) => {
               if (event.key !== "Escape") return
               event.preventDefault()
@@ -173,27 +241,66 @@ export default function JurisdictionSelect({
             <input
               className="jx-search"
               autoFocus
-              aria-label={practiceAreas ? "Search or add practice areas" : "Search jurisdictions"}
-              placeholder={practiceAreas ? "Search or add practice areas" : "Search jurisdictions"}
+              aria-label={searchLabel ?? (practiceAreas ? "Search or add practice areas" : "Search jurisdictions")}
+              placeholder={searchLabel ?? (practiceAreas ? "Search or add practice areas" : "Search jurisdictions")}
               maxLength={practiceAreas ? 100 : undefined}
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
             />
             <div className="jx-list">
+              {!multiple && allowClear && (
+                <button
+                  type="button"
+                  className="jx-option"
+                  onClick={() => {
+                    onChange([])
+                    setOpen(false)
+                    setFilter("")
+                    ref.current?.querySelector("button")?.focus({ preventScroll: true })
+                  }}
+                >
+                  {emptyLabel ?? "Clear selection"}
+                </button>
+              )}
               {visible.length === 0 && !canAdd ? (
-                <p className="muted jx-empty">No match.</p>
+                <p className="muted jx-empty">{noResultsLabel}</p>
               ) : (
                 visible.map((j) => (
                   <label key={j.code} className={`jx-option${selected.includes(j.code) ? " selected" : ""}`}>
-                    <input type="checkbox" checked={selected.includes(j.code)} disabled={practiceAreas && selected.length >= 50 && !selected.includes(j.code)} onChange={() => toggle(j.code)} />
-                    {!practiceAreas && <JurisdictionFlag code={j.code} />}
+                    <input
+                      type={multiple ? "checkbox" : "radio"}
+                      name={multiple ? undefined : popoverId}
+                      checked={selected.includes(j.code)}
+                      disabled={practiceAreas && selected.length >= 50 && !selected.includes(j.code)}
+                      onClick={() => {
+                        // A checked radio does not emit change, but choosing it
+                        // again should still dismiss a single-choice picker.
+                        if (!multiple && selected.includes(j.code)) toggle(j.code)
+                      }}
+                      onChange={() => toggle(j.code)}
+                    />
+                    {!practiceAreas && !genericLabel && <JurisdictionFlag code={j.code} />}
                     <span className="jx-name">{j.name}</span>
-                    {!practiceAreas && <span className="jx-code">{j.code}</span>}
+                    {showCode && <span className="jx-code">{j.code}</span>}
                   </label>
                 ))
               )}
-              {canAdd && <button type="button" className="jx-option jx-add-custom" disabled={selected.length >= 50} onClick={() => { onChange([...selected, custom]); setFilter("") }}>Add “{custom}”</button>}
-              {practiceAreas && selected.length >= 50 && <p className="muted jx-empty">Maximum of 50 practice areas.</p>}
+              {canAdd && (
+                <button
+                  type="button"
+                  className="jx-option jx-add-custom"
+                  disabled={selected.length >= 50}
+                  onClick={() => {
+                    onChange([...selected, custom])
+                    setFilter("")
+                  }}
+                >
+                  Add “{custom}”
+                </button>
+              )}
+              {practiceAreas && selected.length >= 50 && (
+                <p className="muted jx-empty">Maximum of 50 practice areas.</p>
+              )}
             </div>
           </div>,
           ref.current?.closest("dialog") ?? document.body,

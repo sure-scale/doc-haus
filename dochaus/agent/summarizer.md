@@ -7,6 +7,8 @@ steps: 12
 color: success
 tools:
   "*": false
+  read-chronology: true
+  propose-chronology-changes: true
   read: true
   search-document: true
   cite: true

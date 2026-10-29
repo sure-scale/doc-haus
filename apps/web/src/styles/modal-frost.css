@@ -6,7 +6,7 @@
   -webkit-backdrop-filter: blur(6px);
 }
 
-dialog:is(.review-modal, .matter-edit, .launch-notice, .question-dialog, .telemetry-overlay)::backdrop,
+dialog:is(.review-modal, .matter-edit, .launch-notice, .question-dialog, .telemetry-overlay, .chronology-dialog)::backdrop,
 .design-conversation .question-dialog::backdrop {
   background: color-mix(in srgb, var(--panel) 62%, transparent);
   backdrop-filter: blur(6px);

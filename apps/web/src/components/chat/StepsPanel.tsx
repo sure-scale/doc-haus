@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import Markdown from "../markdown/Markdown"
 import { ToolOutput } from "../markdown/tool-output"
 import type { Step } from "./turn-model"
+import ChronologyProposalCard from "../ChronologyProposalCard"
 
 // The reasoning timeline: a collapsible panel of thinking blocks and tool calls,
 // each on a dotted timeline. It is the focus only while the model is still
@@ -15,11 +16,15 @@ export default function StepsPanel({ steps, busy, answered }: { steps: Step[]; b
   useEffect(() => setOpen(thinking), [thinking])
   if (steps.length === 0) return null
   return (
-    <details className="steps" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+    <><details className="steps" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary>{thinking ? "Working..." : `${steps.length} step${steps.length === 1 ? "" : "s"}`}</summary>
       <StepList steps={steps} busy={busy} />
-    </details>
+    </details>{chronologyResults(steps).map(result => <ChronologyProposalCard key={`${result.matterId}:${result.proposalIds.join('|')}`} {...result} />)}</>
   )
+}
+
+function chronologyResults(steps: Step[]): { matterId: string; proposalIds: string[] }[] {
+  return steps.flatMap(step => step.kind === 'tool' ? [...(step.chronologyResult ? [step.chronologyResult] : []), ...chronologyResults(step.children ?? [])] : [])
 }
 
 // One level of the timeline. Each tool step that spawned a subagent nests that

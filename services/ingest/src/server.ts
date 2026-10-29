@@ -1,3 +1,4 @@
+import { chronologyRoutes } from "./chronology-routes"
 import { dashboardRoutes } from "./dashboard"
 import { playbookLibraryRoutes } from "./playbook-library"
 import { clientRoutes } from "./clients"
@@ -206,6 +207,7 @@ app.route("/", updateRoutes(new RepoUpdater(updateRoot, updateRuntime), async ()
 }, () => managedUpdateOwner(updateRoot, updateRuntime)))
 
 app.route("/", documentLabelRoutes(matterDir))
+app.route("/", chronologyRoutes(matterDir))
 // The page a PDF citation's excerpt starts on, for the web viewer's #page=N.
 app.route("/", pdfPassageRoutes(matterDir))
 app.route("/", answerDraftRoutes(matterDir))
@@ -1896,6 +1898,7 @@ function combinedBlocked(directory: string, name: string): CombinedSkipReason | 
 const REVISION_ORIGINS = new Set<string>(["revision", "agent-edit", "redaction"])
 // The content type the document content routes serve a matter file under.
 function documentContentType(name: string) {
+  if (/\.(md|markdown)$/i.test(name)) return "text/plain; charset=utf-8"
   return name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 }
 function removedByRedaction(c: Context, version: Pick<VersionRow, "number">) {

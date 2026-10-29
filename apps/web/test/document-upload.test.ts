@@ -80,8 +80,8 @@ test("any other failed upload stays retryable and offers no replace choice", () 
 
 test("every format ingest reads can be added; any other file is refused before upload", () => {
   // Mirrors MATTER_DOCUMENT_EXTENSIONS in services/ingest/src/ingest.ts.
-  expect([...MATTER_DOCUMENT_EXTENSIONS]).toEqual([".docx", ".pdf", ".eml", ".msg", ".xlsx", ".zip"])
-  for (const [name, kind] of [["Agreement.docx", "docx"], ["Scan.PDF", "pdf"], ["Client instructions.eml", "eml"], ["Forwarded thread.MSG", "msg"], ["Cap table.XLSX", "xlsx"], ["Artwork files.ZIP", "zip"]] as const) {
+  expect([...MATTER_DOCUMENT_EXTENSIONS]).toEqual([".docx", ".pdf", ".eml", ".msg", ".xlsx", ".zip", ".md", ".markdown"])
+  for (const [name, kind] of [["Agreement.docx", "docx"], ["Scan.PDF", "pdf"], ["Client instructions.eml", "eml"], ["Forwarded thread.MSG", "msg"], ["Cap table.XLSX", "xlsx"], ["Artwork files.ZIP", "zip"], ["Chronology.md", "md"], ["Notes.MARKDOWN", "markdown"]] as const) {
     expect(matterDocumentKind(name)).toBe(kind)
     expect(newUpload(1, new File(["synthetic"], name))).toMatchObject({ key: 1, status: "queued" })
   }
@@ -91,22 +91,22 @@ test("every format ingest reads can be added; any other file is refused before u
     expect(matterDocumentKind(name)).toBeUndefined()
     expect(newUpload(2, new File(["synthetic"], name))).toMatchObject({
       status: "failed",
-      error: "Only Word (.docx), PDF, email (.eml, .msg), Excel (.xlsx) and zip (.zip) files can be added.",
+      error: "Only Word (.docx), PDF, email (.eml, .msg), Excel (.xlsx), Markdown (.md, .markdown) and zip (.zip) files can be added.",
     })
     expect(newUpload(2, new File(["synthetic"], name)).retryable).toBeUndefined()
   }
 })
 
 test("the picker offers every format and the list marks emails and spreadsheets with their own glyph", () => {
-  const documents: Document[] = ["Agreement.docx", "Scan.pdf", "Client instructions.eml", "Cap table.xlsx", "Forwarded thread.msg"].map((name, index) => ({
+  const documents: Document[] = ["Agreement.docx", "Scan.pdf", "Client instructions.eml", "Cap table.xlsx", "Forwarded thread.msg", "Chronology.md"].map((name, index) => ({
     id: index + 1, name, doc_path: `/matters/m/${name}`, created_at: index + 1, role: "source",
   }))
   const html = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {} }))
-  expect(html).toContain('accept=".docx,.pdf,.eml,.msg,.xlsx,.zip"')
-  expect(html).toContain("Drop Word, PDF, email, Excel or zip files here, or click to browse.")
+  expect(html).toContain('accept=".docx,.pdf,.eml,.msg,.xlsx,.zip,.md,.markdown"')
+  expect(html).toContain("Drop Word, PDF, email, Excel, Markdown or zip files here, or click to browse.")
   const glyphs = [...html.matchAll(/<span class="doc-type is-(\w+)" title="([^"]+)"[^>]*>([\s\S]*?)<\/span>/g)].map(([, kind, title, svg]) => ({ kind, title, svg }))
   expect(glyphs.map(({ kind, title }) => [kind, title])).toEqual([
-    ["msg", "Outlook email"], ["xlsx", "Excel spreadsheet"], ["eml", "Email"], ["pdf", "PDF document"], ["docx", "Word document"],
+    ["md", "Markdown source"], ["msg", "Outlook email"], ["xlsx", "Excel spreadsheet"], ["eml", "Email"], ["pdf", "PDF document"], ["docx", "Word document"],
   ])
   // Email and spreadsheet glyphs differ from the document glyph Word and PDF share.
   expect(new Set(glyphs.map(({ svg }) => svg)).size).toBe(3)

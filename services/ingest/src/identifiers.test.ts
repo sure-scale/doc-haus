@@ -458,3 +458,85 @@ describe("renderIdentifiersMarkdown", () => {
     expect(md).toContain("0 identifiers")
   })
 })
+
+
+describe("source-backed email identifiers independent of NLP suffix lists", () => {
+  test("recognises unlisted suffixes and deduplicates the same NLP occurrence while retaining real repetitions", async () => {
+    const chunk: IdentifierChunk = {
+      id: "email-c001",
+      document: "invented-contact-record",
+      text: [
+        "Contact <first.last+test@dept.example> or mailto:ops@studio.technology.",
+        "Repeat coordinator@example.com; then coordinator@example.com.",
+        "An international DNS spelling: qa+shift@lab.xn--p1ai.",
+        "A valid local part may start with www: www.support@dept.example.",
+      ].join("\n"),
+    }
+    const rows = (await extractIdentifiers([chunk])).rows.filter((row) => row.type === "email")
+    expect(rows.map((row) => row.value).toSorted()).toEqual(
+      [
+        "first.last+test@dept.example",
+        "ops@studio.technology",
+        "coordinator@example.com",
+        "coordinator@example.com",
+        "qa+shift@lab.xn--p1ai",
+        "www.support@dept.example",
+      ].toSorted(),
+    )
+    for (const row of rows) {
+      expect(row.source).toBe(chunk.document)
+      expect(chunk.text.split("\n")[row.line - 1]).toContain(row.value)
+      expect(row.context).toContain(row.value)
+    }
+  })
+  test("does not salvage partial mailboxes from malformed tokens or URL user-info and paths", async () => {
+    const chunk: IdentifierChunk = {
+      id: "noise-c001",
+      document: "invented-contact-noise",
+      text: [
+        "https://user@portal.example/path",
+        "https://portal.example/contact?email=user@dept.example",
+        "www.portal.example/contact@dept.example",
+        "user@example.com/path",
+        "first..last@example.com",
+        ".first@example.com",
+        "first@-dept.example",
+        "first@dept-.example",
+        "first@dept.example_more",
+        "first@dept.example..other",
+        "first@dept.example.123",
+        "first@@dept.example",
+      ].join("\n"),
+    }
+    expect((await extractIdentifiers([chunk])).rows.filter((row) => row.type === "email")).toEqual([])
+  })
+  test("email source pointers follow the wrapped reader file and an earlier extraction schema is refreshed", async () => {
+    const chunk: IdentifierChunk = {
+      id: "wrapped-c001",
+      document: "invented-wrapped-note",
+      text: "Contact avery.brook@linnet.example for the original record.",
+      file: { text: "Contact\navery.brook@linnet.example for the original record.", inserted: [] },
+    }
+    const full = await extractIdentifiers([chunk])
+    const row = full.rows.find((row) => row.type === "email")!
+    expect(row).toMatchObject({
+      value: "avery.brook@linnet.example",
+      line: 2,
+      context: "avery.brook@linnet.example for the original record.",
+    })
+    const previous = {
+      ...full,
+      schema_version: IDENTIFIERS_SCHEMA_VERSION - 1,
+      rows: full.rows.filter((row) => row.type !== "email"),
+    } as unknown as MatterIdentifiers
+    const scan = spyOn(identifiers, "scanChunk")
+    try {
+      const refreshed = await extractIdentifiers([chunk], previous)
+      expect(scan).toHaveBeenCalledTimes(1)
+      expect(refreshed.schema_version).toBe(IDENTIFIERS_SCHEMA_VERSION)
+      expect({ ...refreshed, generated_at: "" }).toEqual({ ...full, generated_at: "" })
+    } finally {
+      scan.mockRestore()
+    }
+  })
+})

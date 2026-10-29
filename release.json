@@ -1,5 +1,5 @@
 {
-  "version": 19,
-  "name": "2.0.17",
-  "notes": "Word add-in improvements, including simpler saving, opening matter documents directly in Word, and clearer version comparison."
+  "version": 20,
+  "name": "2.1.0",
+  "notes": "Build and review source-linked matter chronologies with a timeline, evidence excerpts, qualified dates and safe updates that preserve lawyer work. Create custom dashboards with live matter activity and charts. Start document-overview review tables and save review work more safely when changes overlap. Attach documents in library conversations, set optional firm practice areas, and use the streamlined setup and settings. Shared menus, overlays and approval controls are clearer and more consistent."
 }

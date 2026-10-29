@@ -1,0 +1,132 @@
+.design-conversation .chronology-composer-attachments {
+  flex: 1 1 100%;
+  order: -1;
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+.design-conversation .composer-footer:has(.chronology-reference) {
+  flex-wrap: wrap;
+}
+.chronology-reference {
+  min-width: 0;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border, #d7dfdb);
+  border-radius: 12px;
+  background: var(--surface, #fff);
+  color: var(--text, #172b23);
+  font-size: 0.85rem;
+  text-align: left;
+}
+.chronology-reference-heading {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+.chronology-reference-heading > div {
+  min-width: 0;
+}
+.chronology-reference-kind {
+  display: block;
+  color: var(--text-secondary, #58655e);
+  font-size: 0.72rem;
+  margin-bottom: 3px;
+}
+.chronology-reference strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.chronology-reference p {
+  margin: 4px 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.chronology-reference-heading p,
+.chronology-reference-evidence > p,
+.chronology-reference-snapshot {
+  color: var(--text-secondary, #58655e);
+  font-size: 0.78rem;
+}
+.chronology-reference-remove {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 1.3rem;
+  cursor: pointer;
+}
+.chronology-reference-remove:hover {
+  background: var(--surface-hover, #edf2ef);
+}
+.chronology-reference-qualifications {
+  color: var(--text-secondary, #58655e);
+}
+.chronology-reference-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  margin-top: 6px;
+}
+.chronology-reference-actions a {
+  color: var(--accent, #17634f);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.chronology-reference-actions a[aria-disabled="true"] {
+  opacity: 0.6;
+}
+.chronology-reference-actions span {
+  color: var(--text-secondary, #58655e);
+  font-size: 0.78rem;
+}
+.chronology-reference summary {
+  min-height: 36px;
+  display: list-item;
+  padding-top: 9px;
+  cursor: pointer;
+}
+.chronology-reference details[open] {
+  max-height: 300px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.chronology-reference-evidence {
+  border-top: 1px solid var(--border, #d7dfdb);
+  padding-top: 8px;
+  margin-top: 8px;
+}
+.chronology-reference blockquote {
+  margin: 7px 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border, #d7dfdb);
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chronology-reference :is(a, button, summary):focus-visible {
+  outline: 2px solid var(--accent, #17634f);
+  outline-offset: 3px;
+}
+@media (max-width: 600px) {
+  .chronology-reference {
+    padding: 10px;
+  }
+  .chronology-reference-remove {
+    width: 44px;
+    height: 44px;
+  }
+  .chronology-reference summary,
+  .chronology-reference-actions a {
+    min-height: 44px;
+  }
+  .chronology-reference-actions a {
+    display: inline-flex;
+    align-items: center;
+  }
+}
