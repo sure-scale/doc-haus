@@ -823,6 +823,11 @@ export default function ChronologyWorkbench({
               {!preflight.model && (
                 <p className="chronology-warning">Connect an AI provider in setup before building the chronology.</p>
               )}
+              {preflight.model && (
+                <p>
+                  <strong>Configured model:</strong> {preflight.model.providerID} · {preflight.model.modelID}
+                </p>
+              )}
               <p>
                 <strong>Source set:</strong> {preflight.sources.length} sources · approximately{" "}
                 {preflight.estimatedSections} bounded source sections. This section count estimates the work, not a
