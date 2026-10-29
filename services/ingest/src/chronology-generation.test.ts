@@ -674,6 +674,55 @@ test("main-chat instruction changes enter relevance assessment content keys with
   expect(state.suggestion.status).toBe("irrelevant")
 })
 
+test("overlapping relevance checks share one model job per unchanged context and still assess new sources", async () => {
+  const dir = matter()
+  source(dir, "Initial.md", "The collection timing is disputed.")
+  let release!: () => void,
+    entered!: () => void,
+    calls = 0
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const started = new Promise<void>((resolve) => {
+    entered = resolve
+  })
+  const deps = fake(async (input) => {
+    calls++
+    entered()
+    await gate
+    return JSON.stringify({ status: "relevant", reason: "The supplied record concerns timing." })
+  })
+  const initial = Array.from({ length: 4 }, () => assessChronology(dir, deps))
+  await started
+  await Bun.sleep(25)
+  const unchangedCalls = calls
+  source(dir, "Later.md", "A later account adds a different recorded date.")
+  const changed = assessChronology(dir, deps)
+  await Bun.sleep(25)
+  const changedCalls = calls
+  release()
+  await Promise.all([...initial, changed])
+  expect(unchangedCalls).toBe(1)
+  expect(changedCalls).toBe(2)
+  expect(readChronology(dir).suggestion.status).toBe("relevant")
+  expect(readChronology(dir).events).toHaveLength(0)
+  await assessChronology(dir, deps)
+  expect(calls).toBe(2)
+})
+
+test("a failed relevance job releases its in-flight request so a later explicit check can succeed", async () => {
+  const dir = matter()
+  source(dir, "Note.md", "A delivery account records disputed timing.")
+  let calls = 0
+  const deps = fake(() => {
+    if (++calls === 1) throw new Error("Synthetic provider failure")
+    return JSON.stringify({ status: "relevant", reason: "Timing is material." })
+  })
+  await expect(assessChronology(dir, deps)).rejects.toThrow("Synthetic provider failure")
+  expect((await assessChronology(dir, deps)).suggestion.status).toBe("relevant")
+  expect(calls).toBe(2)
+})
+
 test("a conversation moved outside the matter is rejected before any globally addressed history read", async () => {
   const dir = matter(),
     observed: string[] = []
