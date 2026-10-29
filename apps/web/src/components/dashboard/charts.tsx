@@ -21,10 +21,23 @@ function useTip() {
     const y = "clientY" in event ? event.clientY : event.top
     setTip({ x: x - bounds.left, y: y - bounds.top, content })
   }
-  const view = tip && (
-    <div className="dash-tip" role="tooltip" style={{ left: tip.x, top: tip.y }}>{tip.content}</div>
-  )
+  const view = tip && <TipBox x={tip.x} y={tip.y}>{tip.content}</TipBox>
   return { box, show, hide: () => setTip(undefined), view }
+}
+
+// A tooltip centred over its point, shifted in so it stays inside the dashboard.
+function TipBox({ x, y, children }: { x: number; y: number; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const element = ref.current
+    if (!element) return
+    element.style.removeProperty("--tip-shift")
+    const tip = element.getBoundingClientRect()
+    const area = element.closest(".dash")?.getBoundingClientRect() ?? { left: 0, right: document.documentElement.clientWidth }
+    const shift = tip.right > area.right ? area.right - tip.right : tip.left < area.left ? area.left - tip.left : 0
+    if (shift) element.style.setProperty("--tip-shift", `${shift}px`)
+  })
+  return <div ref={ref} className="dash-tip" role="tooltip" style={{ left: x, top: y }}>{children}</div>
 }
 
 function useSize<T extends HTMLElement>() {
@@ -388,9 +401,9 @@ export function AreaChart({ points, format, detail = format, label }: { points: 
         </svg>
       )}
       {current && active !== undefined && (
-        <div className="dash-tip" role="tooltip" style={{ left: x(active), top: y(current.value) }}>
+        <TipBox x={x(active)} y={y(current.value)}>
           <strong>{detail(current.value)}</strong> {current.label}
-        </div>
+        </TipBox>
       )}
     </div>
   )

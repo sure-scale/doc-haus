@@ -156,7 +156,7 @@ function topMatters(day: DaySpend) {
   if (!day.matters.length) return undefined
   const named = day.matters.slice(0, 2).map(({ matter, cost }) => `${matter.title} ${money(cost)}`)
   const more = day.matters.length - named.length
-  return [...named, ...(more > 0 ? [plural(more, "other matter")] : [])].join(" · ")
+  return [...named, ...(more > 0 ? [plural(more, "other matter")] : [])].join("; ")
 }
 
 function WeekWidget({ data, now }: WidgetContext) {

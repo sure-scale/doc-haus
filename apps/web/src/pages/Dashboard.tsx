@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type SyntheticEvent } from "react"
+import { createPortal } from "react-dom"
 import type { DraftingPreferences } from "../api/ingest/preferences"
 import type { SetupProgress } from "../api/ingest/setup"
 import PageBar from "../components/PageBar"
@@ -305,8 +306,9 @@ function WidgetMenu({ title, first, last, onMove, onHide }: { title: string; fir
   )
 }
 
-// "X hidden" with Undo, at the foot of the page. It waits while the pointer or
-// focus is on it, so there is time to reach Undo.
+// "X hidden" with Undo, at the foot of the window (portalled, so the page
+// column's width rules leave it alone). It waits while the pointer or focus is
+// on it, so there is time to reach Undo.
 function Snackbar({ text, onUndo, onDismiss }: { text: string; onUndo: () => void; onDismiss: () => void }) {
   const [held, setHeld] = useState(false)
   useEffect(() => {
@@ -314,7 +316,7 @@ function Snackbar({ text, onUndo, onDismiss }: { text: string; onUndo: () => voi
     const timer = setTimeout(onDismiss, 8000)
     return () => clearTimeout(timer)
   }, [held])
-  return (
+  return createPortal(
     <div
       className="dash-snackbar"
       onPointerEnter={() => setHeld(true)}
@@ -325,7 +327,8 @@ function Snackbar({ text, onUndo, onDismiss }: { text: string; onUndo: () => voi
       <span>{text}</span>
       <button type="button" className="dash-snackbar-action" onClick={onUndo}>Undo</button>
       <button type="button" className="dash-snackbar-close" onClick={onDismiss} aria-label="Dismiss" title="Dismiss">{icons.close}</button>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
