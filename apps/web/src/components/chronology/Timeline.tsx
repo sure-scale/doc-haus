@@ -79,16 +79,23 @@ export default function ChronologyTimeline({
   const [zoom, setZoom] = useState(1)
   const [cluster, setCluster] = useState<string[]>([])
   const [canvasWidth, setCanvasWidth] = useState(0)
+  const sectionRef = useRef<HTMLElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const clusterListRef = useRef<HTMLDivElement>(null)
   const clusterTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const pickerFocusedElement = useRef<HTMLElement | null>(null)
   const dated = useMemo(
     () =>
       events.filter((event) => Number.isFinite(timestamp(event.date.start)) && event.date.precision !== "ambiguous"),
     [events],
   )
   const undated = events.filter((event) => !dated.includes(event))
+  const occupiedLanes = useMemo(
+    () => lanes.filter((lane) => dated.some((event) => eventLane(event) === lane.id)),
+    [dated],
+  )
+  const clusterEvents = useMemo(() => dated.filter((event) => cluster.includes(event.id)), [dated, cluster])
   const bounds = dated
     .flatMap((event) => [timestamp(event.date.start), timestamp(event.date.end)])
     .filter(Number.isFinite)
@@ -109,7 +116,7 @@ export default function ChronologyTimeline({
   const inset = canvasWidth > 0 ? Math.min(50, Math.max(5, 2200 / canvasWidth)) : 5
   const plotWidth = 100 - 2 * inset
   const position = (event: ChronologyEvent) => inset + ((timestamp(event.date.start) - min) / span) * plotWidth
-  const row = (event: ChronologyEvent) => lanes.findIndex((lane) => lane.id === eventLane(event))
+  const row = (event: ChronologyEvent) => occupiedLanes.findIndex((lane) => lane.id === eventLane(event))
   const groups = useMemo(() => {
     const result: ChronologyEvent[][] = []
     for (const lane of lanes) {
@@ -146,13 +153,36 @@ export default function ChronologyTimeline({
     else if (x + 22 > right)
       viewport.scrollLeft = Math.min(viewport.scrollWidth - viewport.clientWidth, x + 30 - viewport.clientWidth)
   }, [selected, selectedStart, min, span, inset, plotWidth, canvasWidth, zoom])
+  const restoreClusterFocus = () => {
+    const trigger = clusterTriggerRef.current
+    const target = trigger?.isConnected
+      ? trigger
+      : (canvasRef.current?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]') ??
+        scrollRef.current ??
+        sectionRef.current?.querySelector<HTMLElement>("summary") ??
+        sectionRef.current)
+    target?.focus({ preventScroll: true })
+  }
+  useLayoutEffect(() => {
+    const focused = pickerFocusedElement.current
+    const lostPickerFocus = focused && !focused.isConnected && document.activeElement === document.body
+    if (cluster.length && !clusterEvents.length) {
+      pickerFocusedElement.current = null
+      setCluster([])
+      if (lostPickerFocus) restoreClusterFocus()
+    } else if (lostPickerFocus) {
+      pickerFocusedElement.current = null
+      clusterListRef.current?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true })
+    }
+  }, [cluster, clusterEvents])
   useEffect(() => {
     if (cluster.length)
       clusterListRef.current?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true })
   }, [cluster])
   const closeCluster = () => {
+    pickerFocusedElement.current = null
     setCluster([])
-    clusterTriggerRef.current?.focus({ preventScroll: true })
+    restoreClusterFocus()
   }
   const tickFormat = new Intl.DateTimeFormat(
     undefined,
@@ -160,18 +190,43 @@ export default function ChronologyTimeline({
       ? { month: "short", year: "numeric", timeZone: "UTC" }
       : { day: "numeric", month: "short", timeZone: "UTC" },
   )
-  const tickCount = max === min ? 1 : Math.min(6, Math.floor(span / DAY) + 1)
-  const ticks = Array.from({ length: tickCount }, (_, index) => ({
-    position: inset + (index / Math.max(1, tickCount - 1)) * plotWidth,
-    label: tickFormat.format(new Date(min + (span * index) / Math.max(1, tickCount - 1))),
+  const tickDates: number[] = []
+  if (span > 150 * DAY) {
+    const first = new Date(min)
+    const last = new Date(max)
+    const months = (last.getUTCFullYear() - first.getUTCFullYear()) * 12 + last.getUTCMonth() - first.getUTCMonth()
+    const step = Math.max(1, Math.ceil((months + 1) / 6))
+    let month = first.getUTCMonth()
+    if (Date.UTC(first.getUTCFullYear(), month, 1) < min) {
+      tickDates.push(min)
+      month += 1
+    }
+    for (
+      let date = Date.UTC(first.getUTCFullYear(), month, 1);
+      date <= max;
+      month += step, date = Date.UTC(first.getUTCFullYear(), month, 1)
+    )
+      tickDates.push(date)
+  } else {
+    const count = max === min ? 1 : Math.min(6, Math.floor(span / DAY) + 1)
+    for (let index = 0; index < count; index += 1) tickDates.push(min + (span * index) / Math.max(1, count - 1))
+  }
+  const ticks = tickDates.map((date) => ({
+    position: inset + ((date - min) / span) * plotWidth,
+    label: tickFormat.format(new Date(date)),
   }))
   return (
-    <section className="chronology-timeline chronology-swimlane-timeline" aria-label="Event timeline">
+    <section
+      ref={sectionRef}
+      tabIndex={-1}
+      className="chronology-timeline chronology-swimlane-timeline"
+      aria-label="Event timeline"
+    >
       <h2 className="chronology-sr-only">Timeline of the displayed events</h2>
       {dated.length > 0 ? (
         <div className="chronology-swimlane-chart">
           <div className="chronology-swimlane-labels" aria-hidden="true">
-            {lanes.map((lane) => (
+            {occupiedLanes.map((lane) => (
               <div key={lane.id} className={`chronology-swimlane-label lane-${lane.id}`}>
                 <LaneIcon lane={lane.id} />
                 <span>{lane.label}</span>
@@ -184,13 +239,17 @@ export default function ChronologyTimeline({
             tabIndex={0}
             aria-label="Timeline; scroll horizontally when zoomed"
           >
-            <div ref={canvasRef} className="chronology-timeline-canvas" style={{ width: `${100 * zoom}%` }}>
+            <div
+              ref={canvasRef}
+              className="chronology-timeline-canvas"
+              style={{ width: `${100 * zoom}%`, height: `${42 + occupiedLanes.length * 50}px` }}
+            >
               {ticks.map((tick, index) => (
                 <div key={index} className="chronology-date-grid" style={{ left: `${tick.position}%` }}>
                   <span>{tick.label}</span>
                 </div>
               ))}
-              {lanes.map((lane, index) => (
+              {occupiedLanes.map((lane, index) => (
                 <div key={lane.id} className="chronology-swimlane-rule" style={{ top: `${91 + index * 50}px` }} />
               ))}
               {dated
@@ -325,12 +384,18 @@ export default function ChronologyTimeline({
           </div>
         </details>
       )}
-      {cluster.length > 0 && (
+      {clusterEvents.length > 0 && (
         <div
           ref={clusterListRef}
           className="chronology-timeline-cluster"
           role="group"
           aria-label="Clustered events"
+          onFocusCapture={(event) => {
+            pickerFocusedElement.current = event.target as HTMLElement
+          }}
+          onBlurCapture={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) pickerFocusedElement.current = null
+          }}
           onKeyDown={(event) => {
             if (event.key === "Escape") {
               event.preventDefault()
@@ -338,20 +403,19 @@ export default function ChronologyTimeline({
             }
           }}
         >
-          {events
-            .filter((event) => cluster.includes(event.id))
-            .map((event) => (
-              <button
-                key={event.id}
-                type="button"
-                onClick={() => {
-                  onSelect(event)
-                  closeCluster()
-                }}
-              >
-                {dateLabel(event.date)} · {event.title}
-              </button>
-            ))}
+          {clusterEvents.map((event) => (
+            <button
+              key={event.id}
+              type="button"
+              onClick={() => {
+                pickerFocusedElement.current = null
+                setCluster([])
+                onSelect(event)
+              }}
+            >
+              {dateLabel(event.date)} · {event.title}
+            </button>
+          ))}
           <button type="button" onClick={closeCluster}>
             Close cluster
           </button>

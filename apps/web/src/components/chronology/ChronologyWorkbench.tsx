@@ -64,7 +64,7 @@ export default function ChronologyWorkbench({
   const [state, setState] = useState(chronology)
   const [selectedId, setSelectedId] = useState<string | undefined>(initialEvent)
   const [search, setSearch] = useState("")
-  const [sort, setSort] = useState("oldest")
+  const [sort, setSort] = useState("newest")
   const [filters, setFilters] = useState<ChronologyFilters>(emptyFilters)
   const [filterOpen, setFilterOpen] = useState(false)
   const [error, setError] = useState("")
@@ -279,9 +279,23 @@ export default function ChronologyWorkbench({
             + Add event
           </button>
           {state?.created && (
-            <button type="button" disabled={busy || running} onClick={() => void prepare("refresh")}>
-              Refresh from sources
-            </button>
+            <details className="chronology-workbench-menu">
+              <summary aria-label="Chronology actions" title="Chronology actions">
+                ···
+              </summary>
+              <div>
+                <button
+                  type="button"
+                  disabled={busy || running}
+                  onClick={(click) => {
+                    click.currentTarget.closest("details")?.removeAttribute("open")
+                    void prepare("refresh")
+                  }}
+                >
+                  Refresh from sources
+                </button>
+              </div>
+            </details>
           )}
         </div>
       </div>
@@ -730,7 +744,9 @@ export default function ChronologyWorkbench({
                             </button>
                             <div className="chronology-table-qualifications">
                               {eventQualifications(event).map((text) => (
-                                <span key={text}>{text}</span>
+                                <span key={text} className={text === "Conflict / dispute" ? "is-conflict" : undefined}>
+                                  {text}
+                                </span>
                               ))}
                             </div>
                           </td>

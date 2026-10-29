@@ -297,6 +297,7 @@ try {
     "Confirm the carrier name with the client.",
   )
   await detail.getByRole("button", { name: "Back to events" }).click()
+  await page.locator(".chronology-workbench-menu > summary").click()
   await page.getByRole("button", { name: "Refresh from sources" }).click()
   const refresh = page.getByRole("dialog", { name: "Refresh chronology", exact: true })
   await expect(refresh).toContainText("Carrier note.md")
@@ -305,6 +306,7 @@ try {
   await refresh.getByRole("button", { name: "Generate refresh proposals" }).click()
   await expect(refresh).toHaveCount(0)
   assert.equal(runCalls, 1)
+  await page.locator(".chronology-workbench-menu > summary").click()
   await page.getByRole("button", { name: "Refresh from sources" }).click()
   await expect(refresh.getByRole("radio", { name: /^Mixed/ })).not.toBeChecked()
   await refresh.getByRole("button", { name: "Cancel", exact: true }).click()
@@ -349,6 +351,14 @@ try {
     await expect(detail.getByRole("button", { name: "Back to events" })).toBeInViewport()
     await expect(detail.getByRole("button", { name: "Back to events" })).toBeInViewport()
     await expect(page.getByRole("searchbox")).not.toBeVisible()
+    for (const control of [
+      detail.getByRole("button", { name: "Back to events" }),
+      detail.getByRole("button", { name: "Mark as key event" }),
+      detail.getByRole("button", { name: "View in document", exact: true }).first(),
+    ]) {
+      const bounds = await control.boundingBox()
+      assert.ok(bounds && bounds.height >= 44, `evidence controls retain 44px targets at ${width}px`)
+    }
     assert.ok(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
       `page fits ${width}px`,
@@ -397,6 +407,67 @@ try {
   await expect(detail.getByRole("textbox", { name: "Optional review note" })).toBeFocused()
   await detail.locator(".chronology-more-actions > summary").click()
   await detail.getByRole("button", { name: "Back to events" }).click()
+  // Dense same-day events across source kinds remain selectable by cluster,
+  // rather than overlapping transparent hit areas that select a neighbour.
+  state.events = Array.from({ length: 24 }, (_, index) => {
+    const item = event(
+      `dense-${index}`,
+      `Independent occurrence ${index + 1}`,
+      `2026-05-${String(6 + (index % 5)).padStart(2, "0")}`,
+    )
+    item.accounts[0]!.evidence[0]!.sourceKind = ["email", "agreement", "file note"][index % 3]
+    return item
+  })
+  state.events.push(event("far-date", "Later follow-up", "2026-12-20"))
+  state.revision++
+  await page.reload()
+  const clusterPoint = page.getByRole("button", { name: /clustered events near/ }).first()
+  await expect(clusterPoint).toBeVisible()
+  await clusterPoint.click()
+  const cluster = page.getByRole("group", { name: "Clustered events", exact: true })
+  await expect(cluster.getByRole("button").first()).toBeFocused()
+  await page.keyboard.press("Escape")
+  await expect(cluster).toHaveCount(0)
+  await expect(clusterPoint).toBeFocused()
+  const overlappingTargets = () =>
+    page.locator(".chronology-timeline-point").evaluateAll((points) => {
+      const bounds = points.map((point) => ({
+        lane: [...point.classList].find((name) => name.startsWith("lane-")),
+        box: point.getBoundingClientRect(),
+      }))
+      return bounds.some((a, i) =>
+        bounds.some(
+          (b, j) => j > i && a.lane === b.lane && a.box.left < b.box.right - 1 && a.box.right > b.box.left + 1,
+        ),
+      )
+    })
+  await expect.poll(overlappingTargets).toBe(false)
+  await page.getByRole("button", { name: "Zoom in timeline", exact: true }).click()
+  await expect.poll(overlappingTargets).toBe(false)
+  await page.getByRole("button", { name: "Fit", exact: true }).click()
+  await page
+    .getByRole("button", { name: /clustered events near/ })
+    .first()
+    .click()
+  await page.getByRole("searchbox", { name: "Search events and quotations" }).fill("absent phrase for empty view")
+  await expect(page.getByRole("group", { name: "Clustered events", exact: true })).toHaveCount(0)
+  await expect(page.getByRole("searchbox")).toBeFocused()
+  await expect(page.getByText("No events match these display filters.", { exact: true })).toBeVisible()
+  const manual = event("manual-undated", "Undated site observation", "2026-05-06")
+  manual.date = { original: "Date not supplied", precision: "undated" }
+  manual.accounts = []
+  manual.origin = "manual"
+  state.events.push(manual)
+  state.revision++
+  await page.reload()
+  await page.getByRole("searchbox").fill("")
+  const undated = page.locator(".chronology-undated-events")
+  await undated.locator("summary").click()
+  await undated.getByRole("button", { name: /Undated site observation/ }).click()
+  await expect(detail.getByText("Source not supplied. This entry was added by hand.", { exact: true })).toBeVisible()
+  await page.setViewportSize({ width: 1440, height: 600 })
+  await expect(detail.getByRole("button", { name: "Mark reviewed", exact: true })).toBeInViewport()
+  await expect(detail.getByRole("button", { name: "Back to events" })).toBeInViewport()
   await page.emulateMedia({ reducedMotion: "reduce" })
   assert.deepEqual(errors, [])
   console.log(

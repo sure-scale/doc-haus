@@ -264,7 +264,8 @@
 }
 .chronology-swimlane-timeline .chronology-undated-events > summary {
   width: fit-content;
-  min-height: 24px;
+  min-height: 44px;
+  align-content: center;
   cursor: pointer;
 }
 .chronology-swimlane-timeline .chronology-timeline-list,

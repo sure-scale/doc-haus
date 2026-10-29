@@ -6,11 +6,12 @@
   color: var(--detail-ink);
   background: #fcfbf9;
   padding: 0 4px 0 24px;
-  position: relative;
-  align-self: stretch;
+  position: sticky;
+  top: 0;
+  align-self: start;
   display: flex;
   flex-direction: column;
-  min-height: 520px;
+  min-height: min(520px, calc(100dvh - 170px));
   max-height: calc(100dvh - 170px);
   min-width: 0;
   overflow-y: auto;
@@ -121,7 +122,7 @@
   margin: 14px 0 0;
 }
 .chronology-evidence-panel section {
-  margin-top: 28px;
+  margin-top: 23px;
 }
 .chronology-workbench .chronology-evidence-panel h3 {
   color: var(--detail-ink);
@@ -139,7 +140,7 @@
   border: 1px solid var(--chronology-line);
   background: #fffefd;
   border-radius: 7px;
-  padding: 13px 14px;
+  padding: 11px 13px;
   margin: 10px 0;
   box-shadow: 0 1px 2px #18223703;
 }
@@ -365,10 +366,27 @@
   .chronology-evidence-panel .chronology-evidence blockquote {
     font-size: 13px;
   }
-  .chronology-evidence-panel .chronology-detail-back {
+  .chronology-workbench .chronology-evidence-panel .chronology-detail-back {
     min-height: 44px;
   }
   .chronology-evidence-panel .chronology-more-actions-content button {
+    min-height: 44px;
+  }
+}
+
+.chronology-evidence-panel .chronology-tag.is-conflict {
+  color: #a43a3f;
+  background: #f8e9e8;
+}
+@media (max-width: 800px) {
+  .chronology-workbench .chronology-evidence-panel .chronology-star {
+    min-height: 44px;
+    width: 44px;
+  }
+  .chronology-workbench .chronology-evidence-panel .chronology-evidence button {
+    min-height: 44px;
+  }
+  .chronology-workbench .chronology-evidence-panel summary {
     min-height: 44px;
   }
 }

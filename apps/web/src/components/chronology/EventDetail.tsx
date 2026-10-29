@@ -85,7 +85,7 @@ export default function EventDetail({
         <div className="chronology-tags">
           {chronologyNeedsAttention(event) && <span className="chronology-tag is-alert">Needs attention</span>}
           {eventQualifications(event).map((text) => (
-            <span key={text} className="chronology-tag">
+            <span key={text} className={`chronology-tag${text === "Conflict / dispute" ? " is-conflict" : ""}`}>
               {text}
             </span>
           ))}
@@ -106,13 +106,12 @@ export default function EventDetail({
           <section className="chronology-conflicting-accounts">
             <h3>Conflicting accounts</h3>
             <p className="chronology-warning">
-              Unresolved dispute:{" "}
-              {event.dispute || "The source accounts conflict. Keep each account until the lawyer resolves it."}
+              Unresolved dispute: {event.dispute || "Competing source accounts remain unresolved."}
             </p>
             {event.accounts.map((account) => (
               <article key={account.id} className="chronology-conflict-card">
                 <strong>{dateLabel(account.date)}</strong>
-                <p>{account.title}</p>
+                {account.title !== event.title && <p>{account.title}</p>}
                 {account.detail && <p>{account.detail}</p>}
                 <span className="chronology-muted">
                   {account.evidence.map((evidence) => evidence.documentName).join(" · ") || "Source not supplied"}
@@ -151,7 +150,7 @@ export default function EventDetail({
           )}
           {event.accounts.map((account) => (
             <div key={account.id} className="chronology-source-account">
-              {event.accounts.length > 1 && <h4>{account.title}</h4>}
+              {event.accounts.length > 1 && account.title !== event.title && <h4>{account.title}</h4>}
               <div className="chronology-account-qualifications">
                 {(account.date.precision !== "exact" || dateLabel(account.date) !== dateLabel(event.date)) && (
                   <span>Source account date: {dateLabel(account.date)}</span>

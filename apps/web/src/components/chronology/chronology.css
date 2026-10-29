@@ -43,7 +43,7 @@
 .chronology-dialog button {
   cursor: pointer;
   font: inherit;
-  border: 1px solid var(--chronology-line, #dce4dc);
+  border: 1px solid var(--chronology-line, #e6e5e7);
   border-radius: 6px;
   padding: 7px 11px;
   min-height: 36px;
@@ -147,9 +147,9 @@
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  color: #242c28;
+  color: #182238;
   background: #fff;
-  border: 1px solid var(--chronology-line, #dce4dc);
+  border: 1px solid var(--chronology-line, #e6e5e7);
   border-radius: 5px;
   min-height: 37px;
   padding: 7px 9px;
@@ -170,7 +170,7 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   padding: 16px;
-  background: #f8faf7;
+  background: #f7f7f8;
   border: 1px solid var(--chronology-line);
   border-radius: 8px;
   margin-bottom: 16px;
@@ -205,7 +205,7 @@
   border-bottom: 1px solid var(--chronology-line);
 }
 .chronology-workbench td {
-  padding: 11px 10px;
+  padding: 9px 10px;
   vertical-align: top;
   border-bottom: 1px solid #ecebed;
   overflow-wrap: anywhere;
@@ -369,9 +369,9 @@
 .chronology-invitation,
 .chronology-run,
 .chronology-preview {
-  border: 1px solid var(--chronology-line, #dce4dc);
+  border: 1px solid var(--chronology-line, #e6e5e7);
   border-radius: 8px;
-  background: #f8faf7;
+  background: #f7f7f8;
   padding: 16px;
   margin: 12px 0 20px;
 }
@@ -379,7 +379,7 @@
   max-width: 760px;
   padding: 24px;
   margin: 24px 0;
-  background: #f8faf7;
+  background: #f7f7f8;
 }
 .chronology-notice {
   font-size: 12px;
@@ -485,7 +485,7 @@
   border-radius: 7px;
 }
 .chronology-proposal-comparison > div + div {
-  background: #f8faf7;
+  background: #f7f7f8;
 }
 .chronology-preview-event {
   padding-bottom: 16px;
@@ -497,9 +497,9 @@
   width: min(690px, calc(100vw - 28px));
   max-height: min(850px, calc(100dvh - 36px));
   padding: 0;
-  border: 1px solid #dce4dc;
+  border: 1px solid #e6e5e7;
   border-radius: 12px;
-  color: #242c28;
+  color: #182238;
   background: #fff;
   font: 13px/1.6 var(--font-sans, system-ui, sans-serif);
   box-shadow: 0 16px 80px #15291c33;
@@ -533,7 +533,7 @@
 .chronology-dialog fieldset,
 .chronology-workbench fieldset {
   min-width: 0;
-  border: 1px solid #dce4dc;
+  border: 1px solid #e6e5e7;
   padding: 12px;
   border-radius: 6px;
   margin: 16px 0;
@@ -581,7 +581,7 @@
   cursor: pointer;
   list-style: none;
   padding: 8px 10px;
-  border: 1px solid var(--border-soft, #dce4dc);
+  border: 1px solid var(--border-soft, #e6e5e7);
   border-radius: 5px;
 }
 .matter-chronology-actions > summary::-webkit-details-marker {
@@ -595,7 +595,7 @@
   white-space: nowrap;
   padding: 12px 16px;
   background: white;
-  border: 1px solid #dce4dc;
+  border: 1px solid #e6e5e7;
   border-radius: 5px;
   box-shadow: 0 6px 20px #15291c15;
 }
@@ -867,7 +867,7 @@
 @media (min-width: 801px) {
   .chronology-workbench.has-selection {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(310px, 32%);
+    grid-template-columns: minmax(0, 1fr) 370px;
     column-gap: 24px;
     align-content: start;
     padding-right: 18px;
@@ -950,4 +950,53 @@
   .matter-container:has(.chronology-workbench) > .matter-page-head {
     padding: 12px 20px;
   }
+}
+
+.chronology-workbench-menu {
+  position: relative;
+}
+.chronology-workbench-menu > summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  min-height: 36px;
+  border: 1px solid var(--chronology-line);
+  border-radius: 6px;
+  font-size: 20px;
+  list-style: none;
+  background: white;
+}
+.chronology-workbench-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.chronology-workbench-menu > div {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 6;
+  padding: 5px;
+  border: 1px solid var(--chronology-line);
+  border-radius: 6px;
+  background: white;
+  box-shadow: 0 5px 20px #18223812;
+  white-space: nowrap;
+}
+.chronology-workbench .chronology-workbench-menu button {
+  border: 0;
+  width: 100%;
+  text-align: left;
+}
+@media (max-width: 800px) {
+  .chronology-workbench-menu > summary {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+.chronology-workbench .chronology-event-table button.chronology-event-title:hover:not(:disabled) {
+  background: transparent;
+}
+.chronology-table-qualifications .is-conflict {
+  color: #b13b3e;
 }
