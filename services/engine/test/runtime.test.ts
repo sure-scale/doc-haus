@@ -39,6 +39,7 @@ test("sealed engine admits durable inputs without execution and scopes child cre
       if (Date.now() > deadline || engine.exitCode !== null) throw new Error("Engine did not start")
       await Bun.sleep(100)
     }
+    expect((await (await request("/api/info")).json()).version).toBe(JSON.parse(await readFile(path.join(repository, "release.json"), "utf8")).name)
     const duplicate = Bun.spawn([process.execPath, "run", "services/engine/src/server.ts"], {
       cwd: repository, env: { ...env, DOC_HAUS_ENGINE_PORT: "0" }, stdout: "ignore", stderr: "ignore",
     })
@@ -58,7 +59,7 @@ test("sealed engine admits durable inputs without execution and scopes child cre
     expect(child.data.parentID).toBe("ses_runtime_test")
     expect((await request("/api/dochaus/session", { parentID: "ses_runtime_test" }, path.join(workspace, "other"))).status).toBe(403)
     const entries = await (await request("/api/config")).json()
-    expect(entries.map((entry: { path: string }) => entry.path)).toEqual([
+    expect(entries.flatMap((entry: { path?: string }) => entry.path ? [entry.path] : [])).toEqual([
       path.join(repository, "dochaus", "opencode.json"), path.join(runtime, "config", "opencode", "opencode.json"), path.join(repository, "dochaus"),
     ])
     // Native SSE heartbeats are 15 seconds apart. Bun's default idle timeout
@@ -174,6 +175,7 @@ test("managed readiness precedes the same suspended native restart and release i
     await symlink(path.join(original, "node_modules"), path.join(repository, "node_modules"))
     await symlink(path.join(original, "services", "engine", "node_modules"), path.join(repository, "services", "engine", "node_modules"))
     await cp(path.join(original, "services", "engine", "src"), path.join(repository, "services", "engine", "src"), { recursive: true })
+    await cp(path.join(original, "release.json"), path.join(repository, "release.json"))
     await cp(path.join(original, "services", "engine", "script"), path.join(repository, "services", "engine", "script"), { recursive: true })
     for (const entry of await readdir(path.join(original, "dochaus"))) {
       if (["opencode.json", "plugin", ".env.local", ".env"].includes(entry)) continue
