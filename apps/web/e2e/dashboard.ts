@@ -671,6 +671,15 @@ try {
         await dashboard(page)
         expect(await order(page)).toEqual(EVERY)
         await expect(card(page, "Spend over time").locator(".dash-area svg")).toBeVisible()
+        if (width === 320 || width === 375) {
+          const calendar = card(page, "Activity").locator(".dash-calendar-scroll")
+          const newest = calendar.locator(".dash-cell").last()
+          await expect.poll(async () => {
+            const frame = await calendar.boundingBox()
+            const cell = await newest.boundingBox()
+            return !!frame && !!cell && cell.x >= frame.x && cell.x + cell.width <= frame.x + frame.width + 1
+          }).toBe(true)
+        }
         if (width === 1440) {
           const metrics = await Promise.all(["Total spend", "Average matter cost", "Average draft cost", "This week"].map((title) => card(page, title).boundingBox()))
           expect(metrics.every(Boolean)).toBe(true)
@@ -683,6 +692,18 @@ try {
           expect(Math.abs(recent!.y - spend!.y)).toBeLessThanOrEqual(1)
         }
         await capture(page, `practice-every-widget-${size}`)
+        if (width === 1440) {
+          const calendar = card(page, "Activity").locator(".dash-calendar-scroll")
+          const newest = calendar.locator(".dash-cell").last()
+          for (const phoneWidth of [375, 320]) {
+            await page.setViewportSize({ width: phoneWidth, height: 812 })
+            await expect.poll(async () => {
+              const frame = await calendar.boundingBox()
+              const cell = await newest.boundingBox()
+              return !!frame && !!cell && cell.x >= frame.x && cell.x + cell.width <= frame.x + frame.width + 1
+            }).toBe(true)
+          }
+        }
         clean(state)
       } finally { await context.close() }
     })

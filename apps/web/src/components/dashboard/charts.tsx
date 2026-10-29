@@ -217,8 +217,29 @@ export function ActivityCalendar({ counts, first, describe, label }: { counts: n
   // Start scrolled to today, as the newest weeks matter most on a narrow screen.
   useLayoutEffect(() => {
     const element = scroller.current
-    if (element) element.scrollLeft = element.scrollWidth
-  }, [counts.length, pitch])
+    if (!element || !counts.length) return
+    // The grid can initially measure wider than its final card. Wait until it
+    // actually overflows before positioning; never fight a user's scrolling.
+    let cancelled = false
+    const position = () => {
+      if (!cancelled && element.clientWidth > 0 && element.scrollWidth > element.clientWidth) {
+        element.scrollLeft = element.scrollWidth
+      }
+    }
+    const observer = new ResizeObserver(position)
+    const cancel = () => { cancelled = true; observer.disconnect() }
+    element.addEventListener("pointerdown", cancel, { once: true })
+    element.addEventListener("wheel", cancel, { once: true })
+    element.addEventListener("keydown", cancel, { once: true })
+    observer.observe(element)
+    position()
+    return () => {
+      observer.disconnect()
+      element.removeEventListener("pointerdown", cancel)
+      element.removeEventListener("wheel", cancel)
+      element.removeEventListener("keydown", cancel)
+    }
+  }, [counts.length, first])
   // Labels and shades are worked out once per data change, not on every
   // tooltip move.
   const days = useMemo(() => {
