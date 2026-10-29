@@ -4,6 +4,16 @@ import { Link, NavLink, useMatch, useNavigate, useSearchParams } from "react-rou
 import { deleteMatterSession, getMatter } from "../api/ingest/matters"
 import { listSessions } from "../api/opencode/sessions"
 import { matterClient } from "../api/opencode/client"
+import agentsIcon from "../assets/icons/agents.svg"
+import chevronLeftIcon from "../assets/icons/chevron-left.svg"
+import clientsIcon from "../assets/icons/clients.svg"
+import dashboardIcon from "../assets/icons/dashboard.svg"
+import mattersIcon from "../assets/icons/matters.svg"
+import playbooksIcon from "../assets/icons/playbooks.svg"
+import settingsIcon from "../assets/icons/settings.svg"
+import skillsIcon from "../assets/icons/skills.svg"
+import templatesIcon from "../assets/icons/templates.svg"
+import workflowsIcon from "../assets/icons/workflows.svg"
 import logo from "../assets/dochaus-logo.svg"
 import { toggleDocumentsDrawer, useDocumentsDrawer } from "./matter/documents-drawer"
 import { useToast } from "./Toast"
@@ -395,93 +405,44 @@ function IconDocsNav() {
   )
 }
 
+function NavIcon({ src }: { src: string }) {
+  return <img src={src} className="nav-icon" width="20" height="20" alt="" aria-hidden="true" draggable={false} />
+}
+
 function IconDashboard() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
-      <rect x="3" y="3" width="7.5" height="9" rx="2" />
-      <rect x="13.5" y="3" width="7.5" height="5" rx="2" />
-      <rect x="13.5" y="11" width="7.5" height="10" rx="2" />
-      <rect x="3" y="15" width="7.5" height="6" rx="2" />
-    </svg>
-  )
+  return <NavIcon src={dashboardIcon} />
 }
 
 function IconMatters() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-    </svg>
-  )
+  return <NavIcon src={mattersIcon} />
 }
 
 function IconClients() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
-      <circle cx="12" cy="8" r="4" />
-      <path d="M4 20a8 8 0 0 1 16 0" />
-    </svg>
-  )
+  return <NavIcon src={clientsIcon} />
 }
 
 function IconTemplates() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-      <rect x="4" y="3" width="16" height="18" rx="2" />
-      <path d="M8 7h8M8 11h8M8 15h5" />
-    </svg>
-  )
+  return <NavIcon src={templatesIcon} />
 }
 
 function IconWorkflows() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-      <circle cx="5" cy="12" r="2" />
-      <circle cx="19" cy="5" r="2" />
-      <circle cx="19" cy="19" r="2" />
-      <path d="M7 12h4l3-5" />
-      <path d="M11 12l3 5" />
-    </svg>
-  )
+  return <NavIcon src={workflowsIcon} />
 }
 
 function IconPlaybooks() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
-      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-    </svg>
-  )
+  return <NavIcon src={playbooksIcon} />
 }
 
 function IconSkills() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M21.42 10.922a1 1 0 0 0-.019-1.838L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.832l8.57 3.908a2 2 0 0 0 1.66 0z" />
-      <path d="M22 10v6" />
-      <path d="M6 12.5V16a6 3 0 0 0 12 0v-3.5" />
-    </svg>
-  )
+  return <NavIcon src={skillsIcon} />
 }
 
 function IconAgents() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-      <rect x="5" y="8" width="14" height="11" rx="2" />
-      <path d="M12 8V5" />
-      <circle cx="12" cy="4" r="1" />
-      <path d="M9 13h.01M15 13h.01" />
-      <path d="M5 12H3M21 12h-2" />
-    </svg>
-  )
+  return <NavIcon src={agentsIcon} />
 }
 
 function IconSettings() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
-  )
+  return <NavIcon src={settingsIcon} />
 }
 
 function IconTrash() {
@@ -495,8 +456,14 @@ function IconTrash() {
 
 function IconChevron({ right }: { right: boolean }) {
   return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-      <polyline points={right ? "9 18 15 12 9 6" : "15 18 9 12 15 6"} />
-    </svg>
+    <img
+      src={chevronLeftIcon}
+      className={`nav-chevron${right ? " is-right" : ""}`}
+      width="15"
+      height="15"
+      alt=""
+      aria-hidden="true"
+      draggable={false}
+    />
   )
 }
