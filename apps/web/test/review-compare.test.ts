@@ -51,6 +51,8 @@ test("the signature follows this column's answers and citations only", () => {
   const moved = grid()
   moved.cells[cellKey("Zeta.docx", "term")]!.citation!.charStart = 40
   expect(inputFor(moved).signature).not.toBe(before)
+  // A new version can move its document's row; the answers are unchanged.
+  expect((comparisonInputs(grid(), "term", rows.toReversed()) as ComparisonInput).signature).toBe(before)
 })
 
 test("needs two cited documents, caps at twelve and bounds each document's text", () => {

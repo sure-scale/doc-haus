@@ -149,7 +149,7 @@ function GridNavigationGuard({ canLeave, bypass }: { canLeave: () => boolean; by
 // `initialStarter` is a starter chosen before the table opened; it opens Add
 // questions with that starter chosen once the table can be edited, and
 // `onStarterSeated` clears it.
-export default function ReviewGrid({ matterId, title, directory, documents, documentsRevision, initialStarter, onStarterSeated, onClose, onAsk }: { matterId: string; title: string; directory: string; documents: Document[]; documentsRevision: number; initialStarter?: string; onStarterSeated?: () => void; onClose: () => void; onAsk?: (prompt: string) => void }) {
+export default function ReviewGrid({ matterId, title, directory, documents: matterDocuments, documentsRevision, initialStarter, onStarterSeated, onClose, onAsk }: { matterId: string; title: string; directory: string; documents: Document[]; documentsRevision: number; initialStarter?: string; onStarterSeated?: () => void; onClose: () => void; onAsk?: (prompt: string) => void }) {
   const closing = useContext(Closing)
   const dialog = useRef<HTMLDialogElement>(null)
   const detailDialog = useRef<HTMLDialogElement>(null)
@@ -163,6 +163,9 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   }
   const [grid, setGrid] = useState<Grid>({ columns: [], cells: {} })
   const gridRef = useRef<Grid>(grid)
+  // Rows keep the order documents were added in: a new version keeps its
+  // registry id but not its listing place, and a row that jumps reads as a new one.
+  const documents = useMemo(() => [...matterDocuments].sort((a, b) => a.id - b.id), [matterDocuments])
   const documentsRef = useRef(documents)
   documentsRef.current = documents
   const [error, setError] = useState<string>()

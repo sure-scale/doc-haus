@@ -39,8 +39,9 @@ export function comparisonInputs(grid: Grid, columnId: string, rows: ReviewRow[]
       const clipped = clip(answer, ANSWER_CHARS)
       return { name, answer: clipped, section: citation.section, excerpt: clip(citation.excerpt, DOCUMENT_CHARS - clipped.length) }
     }),
+    // Row order is not an input: the same answers in another order compare the same.
     signature: hashQuestion(JSON.stringify(cited.map(({ key, answer, citation }) =>
-      [key, answer, citation.docPath, citation.section, citation.charStart, citation.charEnd]))),
+      [key, answer, citation.docPath, citation.section, citation.charStart, citation.charEnd]).sort())),
   }
 }
 
