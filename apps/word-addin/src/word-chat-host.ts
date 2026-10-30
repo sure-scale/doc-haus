@@ -157,7 +157,7 @@ async function point(context: WordChatContext, range: WordChatRange, text: strin
 export class WordChatHost {
   private applied = new Map<string, { identity: string; authors: string[]; uncertain: boolean }>()
   private pending = new Map<string, { identity: string; promise: Promise<WordChatApplyResult> }>()
-  constructor(private word: WordChatWord = nativeWord(), private supports = supported, private nativeTextEnabled = false) {}
+  constructor(private word: WordChatWord = nativeWord(), private supports = supported, private nativeTextEnabled = true) {}
   private ready() {
     if (!this.supports("WordApi", "1.6")) throw new WordChatHostError("Reviewed amendments require a current Microsoft 365 version of Word. Chat and Save remain available.")
   }
@@ -352,10 +352,10 @@ export class WordChatHost {
       const eligibility = wordChatApplyEligibility(input.target, input.replacement, input.formatting, this.nativeTextEnabled)
       if (!eligibility.supported) throw new WordChatHostError(eligibility.reason)
       // Scoped OOXML imports may change numbering elsewhere in Word, even
-      // outside the reviewed range. They stay guarded; only the separate
-      // experimental text transport can be enabled explicitly by a test host.
+      // outside the reviewed range. They stay guarded; wording uses the
+      // separate native text executor rather than importing the artifact.
       const nativeFinalFormatting = input.formatting !== undefined
-      // Unqualified experimental transport: only enabled by an explicit test host.
+      // Granular native wording remains fenced by authored-hunk and fresh-scope checks.
       const nativeText = this.nativeTextEnabled && !nativeFinalFormatting && input.replacement !== input.target.text
       const mixed = input.formatting !== undefined && input.replacement !== input.target.text
       const afterParts = input.replacement.split("\r"), plan = wordChatApplyPlan(input.target, input.replacement, nativeFinalFormatting || mixed ? undefined : input.formatting)
@@ -491,10 +491,9 @@ export class WordChatHost {
     }
   }
 
-  /** Experimental and disabled by default. Word's text engine replaces the
-   * exact reviewed range with TrackAll active; Word attributes the revision to
-   * the current Word user. This is not an atomic compare-and-edit and does not
-   * yet have immediate-rendering, full-product or Windows qualification. */
+  /** Word replaces only the verified authored hunks with TrackAll active and
+   * attributes those revisions to the current Word user. All range discovery
+   * finishes before queuing writes; this is not an atomic compare-and-edit. */
   private async applyNativeText(context: WordChatContext, input: WordChatApplyInput, identity: string,
     fresh: Awaited<ReturnType<WordChatHost["importSnapshot"]>>, authored: WordChatAuthoredAmendment, expected: string[]): Promise<WordChatApplyResult> {
     const target = input.target, paragraph = target.paragraphs[0]!

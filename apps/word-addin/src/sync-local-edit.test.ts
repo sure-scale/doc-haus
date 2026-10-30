@@ -228,3 +228,15 @@ test("a missing proposal binding cannot begin or dispatch a Word edit", async ()
   await expect(f.sync.localEdit({ conversationId: "", turnId: "turn" }, async () => { writes++ })).rejects.toThrow("Review the proposal")
   expect(writes).toBe(0); expect(f.events).not.toContain("begin")
 })
+
+test("eligible single-paragraph wording enters the lease-bound native operation", async () => {
+  const text = "A clear obligation."
+  const target: WordChatTarget = { id: "wording-target", text, paragraphs: [{ id: "p", text }], startOffset: 0,
+    endOffset: text.length, saved: true, capturedAt: "2026-10-29T12:00:00Z" }
+  const proposal: WordChatProposal = { id: "wording", documentId: "document", before: text, after: "A specific obligation.",
+    explanation: "Reviewed change", openItems: [], target, createdAt: target.capturedAt }
+  const f = fixture(); await f.sync.start(); f.events.length = 0
+  await applyWordChatIfEligible(proposal, () => f.sync.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => { f.events.push("native-wording") }))
+  expect(f.events).toEqual(["inspect", "claim", "begin", "native-wording", "settle"])
+  expect(f.sync.snapshot().status).toBe("not-saved")
+})

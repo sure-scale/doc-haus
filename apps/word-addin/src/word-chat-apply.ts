@@ -3,19 +3,17 @@ import { validWordChatFormatting } from "../../../dochaus/lib/word-chat-amendmen
 
 export type WordChatApplyEligibility = { supported: true } | { supported: false; reason: string }
 
-/** Experimental native wording transport. It is deliberately not reachable
- * from the shipped pane: Word's text engine has been exercised on isolated
- * synthetic copies, but immediate rendering, the full Docxodus/Apply/sync
- * product path and Windows remain unqualified. */
+/** Native wording transport for ordinary single-paragraph changes. Exact
+ * authored hunks, formatting and fresh Word scope are verified by the host. */
 export function nativeWordChatTextEligible(target: WordChatTarget, replacement: string): boolean {
-  return replacement !== target.text && target.paragraphs.length === 1 &&
-    target.startOffset <= target.endOffset && !/[\r\n\t\v]/.test(replacement)
+  return replacement.length > 0 && target.text.length > 0 && replacement !== target.text && target.paragraphs.length === 1 &&
+    target.startOffset <= target.endOffset && !/[\r\n\t\v]/.test(target.text) && !/[\r\n\t\v]/.test(replacement)
 }
 
 /** Transport availability only. Live Word identity, target uniqueness,
  * protection, comments/revisions, formatting and the authored artifact must
  * still pass their existing checks before any mutation. */
-export function wordChatApplyEligibility(target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[], nativeText = false): WordChatApplyEligibility {
+export function wordChatApplyEligibility(target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[], nativeText = true): WordChatApplyEligibility {
   if (formatting !== undefined) {
     // Native paragraph properties remain the only enabled formatting transport.
     return replacement === target.text && validWordChatFormatting(target, formatting) &&

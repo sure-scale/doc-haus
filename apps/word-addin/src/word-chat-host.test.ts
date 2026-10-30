@@ -1106,3 +1106,16 @@ test("native wording preserves actual cell delimiters and uses the real backend 
   expect(text()).toBe("A specific obligation.\tOther cell.")
   expect(state.writes).toHaveLength(1)
 })
+
+test("the default host enables granular wording while explicit opt-out remains guarded", async () => {
+  const enabled = office(["A clear obligation."], false)
+  const defaultHost = new WordChatHost(enabled.word, () => true)
+  const target = (await defaultHost.selection())!
+  const input = { proposalId: "default-granular", target, replacement: target.text.replace("clear", "specific") }
+  expect((await defaultHost.apply({ ...input, author: enabled.author(input) })).status).toBe("applied")
+  const disabled = office(["A clear obligation."], false)
+  const oldTarget = (await disabled.nativeHost.selection())!
+  const oldInput = { proposalId: "explicit-opt-out", target: oldTarget, replacement: oldTarget.text.replace("clear", "specific") }
+  await expect(disabled.nativeHost.apply({ ...oldInput, author: disabled.author(oldInput) })).rejects.toThrow("cannot safely apply")
+  expect(disabled.state.writes).toHaveLength(0)
+})

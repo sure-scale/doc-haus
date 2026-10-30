@@ -866,7 +866,7 @@ test("formatting the final selected paragraph can be applied without asking for 
 test("unavailable Word transports retain review and refinement without offering an impossible Apply", async () => {
   const following = { id: "tail", text: "A separate clause remains." }
   const target: WordChatTarget = { ...passage, text: `${passage.text}\r${following.text}`, paragraphs: [...passage.paragraphs, following], endOffset: following.text.length }
-  for (const change of [proposal,
+  for (const change of [
     { ...proposal, before: target.text, after: `A new paragraph.\r${target.text}`, target },
     { ...proposal, before: target.text, after: `A new paragraph.\r${target.text}`, target, formatting: [{ paragraph: 0, spacingAfter: 6 }] },
     { ...proposal, before: target.text, after: target.text, target, formatting: [{ paragraph: 0, spacingAfter: 6 }] },
@@ -919,4 +919,28 @@ test("a reconstructed pane shows a confirmed proposal as applied", async () => {
     expect(f.root.querySelectorAll(".chat-proposal-actions button")).toHaveLength(0)
     expect(writes).toBe(0)
   } finally { f.restore() }
+})
+
+test("eligible ordinary wording offers Apply in the candidate pane", async () => {
+  let writes = 0
+  const f = fixture({ turns: [turn({ proposal })], host: {
+    applyEligibility: p => wordChatApplyEligibility(p.target, p.after, p.formatting), apply: async () => { writes++ },
+  } })
+  try {
+    await f.chat.ready
+    const card = f.root.querySelector(".chat-proposal")!
+    expect(card.querySelector(".chat-proposal-limit")).toBeNull()
+    const apply = [...card.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(button => button.textContent === "Apply")!
+    expect(apply.disabled).toBe(false)
+    apply.click(); await Promise.resolve(); await Promise.resolve()
+    expect(writes).toBe(1)
+  } finally { f.restore() }
+})
+
+test("wording eligibility refuses structural, empty and mixed formatting requests", () => {
+  expect(wordChatApplyEligibility(passage, "")).toMatchObject({ supported: false })
+  expect(wordChatApplyEligibility(passage, "Changed\rparagraph")).toMatchObject({ supported: false })
+  expect(wordChatApplyEligibility(passage, "Changed wording", [{ paragraph: 0, spacingAfter: 6 }])).toMatchObject({ supported: false })
+  const tabTarget = { ...passage, text: "One\tcell", paragraphs: [{ ...passage.paragraphs[0]!, text: "One\tcell" }], startOffset: 0, endOffset: 8 }
+  expect(wordChatApplyEligibility(tabTarget, "Another")).toMatchObject({ supported: false })
 })
