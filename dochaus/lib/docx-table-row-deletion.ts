@@ -6,6 +6,7 @@ import { docxodus } from "./docxodus"
 import { docxTableRowInsertionTargets } from "./docx-table-row-insertion"
 
 // Offline proof only. No route, proposal recorder or Word import uses deletion.
+const W14 = "http://schemas.microsoft.com/office/word/2010/wordml"
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", XML = "http://www.w3.org/XML/1998/namespace"
 const BODY = "word/document.xml", SETTINGS = "word/settings.xml"
 type Session = ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"]>
@@ -80,10 +81,13 @@ function storyRanges(doc: Document) {
   }
   return { extents, intervals }
 }
+// Word identity metadata is safe only in its defined hexadecimal form; the
+// inverse and resolution checks still require the original attributes to survive.
+const wordIdentity = (a: Attr) => a.namespaceURI === W14 && ["paraId", "textId"].includes(a.localName) && /^[0-9a-fA-F]{8}$/.test(a.value)
 function targetContent(pkg: Package, view: Target, ranges: ReturnType<typeof storyRanges>) {
   const { table, row } = rowAt(pkg.body, view)
   require(children(table, "tr").length > 1 && !all(row, "tblHeader").length, "sole_or_header_row_unsupported")
-  require(Array.from(row.attributes).every(a => a.namespaceURI === W && /^rsid(?:R|RPr|Del|Tr)$/.test(a.localName)), "unsupported_row_attributes")
+  require(Array.from(row.attributes).every(a => a.namespaceURI === W && /^rsid(?:R|RPr|Del|Tr)$/.test(a.localName) || wordIdentity(a)), "unsupported_row_attributes")
   const [start, end] = ranges.extents.get(row)!
   require(ranges.intervals.every(([a, b]) => b < start || a > end), "annotation_range_overlaps_target")
   require(!Object.values(pkg.docs).some(doc => ["vanish", "webHidden", "specVanish"].some(name => all(doc, name).length)), "hidden_content_unsupported")
@@ -108,7 +112,7 @@ function targetContent(pkg: Package, view: Target, ranges: ReturnType<typeof sto
     const paragraphs = children(cell, "p")
     require(paragraphs.length === 1, "multi_paragraph_cell_unsupported")
     const p = paragraphs[0]!
-    require(Array.from(p.attributes).every(a => a.namespaceURI === W && /^rsid(?:R|RPr|RDefault|Del)$/.test(a.localName) || a.namespaceURI === "http://schemas.microsoft.com/office/word/2010/wordml" && ["paraId", "textId"].includes(a.localName)), "unsupported_paragraph_attributes")
+    require(Array.from(p.attributes).every(a => a.namespaceURI === W && /^rsid(?:R|RPr|RDefault|Del)$/.test(a.localName) || wordIdentity(a)), "unsupported_paragraph_attributes")
     only(p, ["pPr", "r"])
     const pPr = children(p, "pPr")
     require(pPr.length <= 1 && (!pPr.length || !pPr[0]!.attributes.length), "unsupported_paragraph_properties")

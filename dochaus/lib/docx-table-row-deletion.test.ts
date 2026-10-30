@@ -149,3 +149,37 @@ test("the actual SDK mutation and selective decision both roll back when a callb
     } finally { mutation.mockRestore(); observation.mockRestore() }
   }
 })
+
+test("Word row and paragraph identity metadata survives tracked deletion and both decisions", async () => {
+  const W14 = "http://schemas.microsoft.com/office/word/2010/wordml"
+  const source = changed(fixture(true), doc => {
+    doc.documentElement!.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:w14", W14)
+    const target = doc.getElementsByTagNameNS(W, "tr")[1]!
+    target.setAttributeNS(W14, "w14:paraId", "1234ABCD")
+    target.setAttributeNS(W14, "w14:textId", "00ABCDEF")
+    const paragraph = direct(direct(target, "tc")[0]!, "p")[0]!
+    paragraph.setAttributeNS(W14, "w14:paraId", "ABCDEF12")
+    paragraph.setAttributeNS(W14, "w14:textId", "12345678")
+    const run = doc.createElementNS(W, "w:r"), properties = doc.createElementNS(W, "w:rPr"), underline = doc.createElementNS(W, "w:u"), text = doc.createElementNS(W, "w:t")
+    underline.setAttributeNS(W, "w:val", "single"); properties.appendChild(underline); run.appendChild(properties); text.appendChild(doc.createTextNode(" underline")); run.appendChild(text); paragraph.appendChild(run)
+  })
+  const target = rows(source)[1]!
+  // The previous row guard rejected any non-w attribute, including these IDs.
+  expect(Array.from(target.attributes).every(a => a.namespaceURI === W && /^rsid(?:R|RPr|Del|Tr)$/.test(a.localName))).toBe(false)
+  const request = await input(source)
+  expect((await docxTableRowDeletionTargets(source)).targets.some(t => t.target_handle === request.target_handle)).toBe(true)
+  const authored = await authorDocxTableRowDeletion(source, request), tracked = rows(authored.bytes)[1]!
+  for (const name of ["paraId", "textId"]) expect(tracked.getAttributeNS(W14, name)).toBe(target.getAttributeNS(W14, name))
+  expect(tracked.getElementsByTagNameNS(W, "b").length).toBe(1)
+  expect(tracked.getElementsByTagNameNS(W, "i").length).toBe(1)
+  expect(tracked.getElementsByTagNameNS(W, "u").length).toBe(1)
+  const altered = changed(authored.bytes, doc => doc.getElementsByTagNameNS(W, "tr")[1]!.setAttributeNS(W14, "w14:paraId", "FFFFFFFF"))
+  await expect(resolveDocxTableRowDeletion(source, altered, request, "accept")).rejects.toThrow("tracked_inverse_changed_source_row")
+  expect(body(await resolveDocxTableRowDeletion(source, authored.bytes, request, "accept")).documentElement!.toString()).toBe(expectedBody(source, 1))
+  expect(await resolveDocxTableRowDeletion(source, authored.bytes, request, "reject")).toEqual(source)
+  for (const [name, value] of [["paraId", "bad"], ["unknown", "12345678"]]) {
+    const invalid = changed(source, doc => doc.getElementsByTagNameNS(W, "tr")[1]!.setAttributeNS(W14, `w14:${name}`, value!))
+    const invalidRequest = await input(invalid)
+    expect((await docxTableRowDeletionTargets(invalid)).targets.some(t => t.target_handle === invalidRequest.target_handle)).toBe(false)
+  }
+})
