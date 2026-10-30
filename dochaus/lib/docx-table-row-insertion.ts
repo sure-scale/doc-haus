@@ -4,7 +4,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { z } from "zod"
 import { docxodus } from "./docxodus"
 
-// Offline shared proof only. No route, filesystem writer or Word import uses it.
+// Source-bound authoring proof; callers own review and persistence. Never import its output into live Word.
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const PT = "http://powertools.codeplex.com/2011"
 const BODY = "word/document.xml", SETTINGS = "word/settings.xml"
@@ -120,11 +120,44 @@ function deliver(source: Package, saved: Uint8Array, tracked: boolean) {
   }
   return zipSync(parts, { mtime: new Date(1980, 0, 1) })
 }
+// Only the styles inherited by this table and newly created default paragraphs
+// determine row semantics. Unused definitions remain protected package data.
+function safeRowStyles(styles: Document | undefined, table: Element) {
+  const definitions = styles ? children(styles.documentElement!, "style") : []
+  const truthy = (value: string | null) => value !== null && ["1", "true", "on"].includes(value)
+  const defaults = (type: string) => definitions.filter(s => s.getAttributeNS(W, "type") === type && truthy(s.getAttributeNS(W, "default")))
+  const tableDefaults = defaults("table"), paragraphDefaults = defaults("paragraph")
+  if (tableDefaults.length > 1 || paragraphDefaults.length > 1 ||
+    [...tableDefaults, ...paragraphDefaults].some(s => !s.getAttributeNS(W, "styleId"))) return false
+  if (styles && all(styles, "docDefaults").some(d => all(d, "numPr").length)) return false
+  const tblPr = children(table, "tblPr")
+  if (tblPr.length > 1) return false
+  const refs = tblPr.length ? children(tblPr[0]!, "tblStyle") : []
+  if (refs.length > 1) return false
+  const explicit = refs[0]?.getAttributeNS(W, "val")
+  if (refs.length && !explicit) return false
+  const chain = (type: string, id: string | null | undefined) => {
+    const seen = new Set<string>()
+    while (id) {
+      if (seen.has(id)) return false
+      seen.add(id)
+      const matches = definitions.filter(s => s.getAttributeNS(W, "styleId") === id)
+      if (matches.length !== 1 || matches[0]!.getAttributeNS(W, "type") !== type) return false
+      const style = matches[0]!
+      if (all(style, "numPr").length || type === "table" && all(style, "tblStylePr").length) return false
+      const bases = children(style, "basedOn")
+      if (bases.length > 1 || bases.length && !bases[0]!.getAttributeNS(W, "val")) return false
+      id = bases[0]?.getAttributeNS(W, "val")
+    }
+    return true
+  }
+  return chain("table", explicit ?? tableDefaults[0]?.getAttributeNS(W, "styleId")) &&
+    chain("paragraph", paragraphDefaults[0]?.getAttributeNS(W, "styleId"))
+}
 function locate(source: Package, session: Session, digest: string): Located[] {
   require(!Object.values(source.docs).some(doc => Array.from(doc.getElementsByTagName("*")).some(el => Array.from(el.attributes).some(a => a.namespaceURI === PT || a.value === PT))), "persisted_sdk_identity_unsupported")
   require(!all(source.settings, "documentProtection").length, "protected_document")
   const styles = source.docs["word/styles.xml"]
-  require(!styles || !["tblStylePr", "numPr"].some(name => all(styles, name).length) && !all(styles, "style").some(s => s.getAttributeNS(W, "type") === "table" && ["1", "true", "on"].includes(s.getAttributeNS(W, "default") ?? "")), "conditional_or_numbered_style_unsupported")
   const root = source.body.documentElement!, body = children(root, "body")
   require(body.length === 1, "invalid_body")
   const tables = children(body[0]!, "tbl")
@@ -138,10 +171,11 @@ function locate(source: Package, session: Session, digest: string): Located[] {
     const metadata = result.metadata
     require(same(standalone(table), standalone(parse(session.raw.getXml(id)).documentElement!, true)), "table_identity_changed")
     const rows = children(table, "tr"), grid = children(table, "tblGrid")
+    if (!safeRowStyles(styles, table)) continue
     if (kids(table).some(n => n.namespaceURI !== W || !["tblPr", "tblGrid", "tr"].includes(n.localName)) || grid.length !== 1 ||
       !rows.length || rows.length > 1000 || metadata.rows.length !== rows.length || !metadata.columns.length || metadata.columns.length > 32 ||
       metadata.columns.some(c => c.isVirtual || c.widthTwips <= 0) || children(grid[0]!, "gridCol").length !== metadata.columns.length ||
-      ["gridSpan", "vMerge", "hMerge", "gridBefore", "gridAfter", "wBefore", "wAfter", "tblStyle", "tblLook", "cnfStyle", "numPr", "sdt", "customXml", "altChunk"].some(n => all(table, n).length) ||
+      ["gridSpan", "vMerge", "hMerge", "gridBefore", "gridAfter", "wBefore", "wAfter", "cnfStyle", "numPr", "sdt", "customXml", "altChunk"].some(n => all(table, n).length) ||
       ["tblPr", "tblGrid", "trPr", "tcPr"].some(n => all(table, n).some(p => kids(p).some(e => /Change$/.test(e.localName) || ["ins", "del", "cellIns", "cellDel", "cellMerge"].includes(e.localName))))) continue
     const valid = rows.every((row, r) => {
       const cells = children(row, "tc"), meta = metadata.rows[r]!

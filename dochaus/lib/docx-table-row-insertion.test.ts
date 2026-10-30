@@ -76,10 +76,10 @@ test("source identity includes unchanged wording's formatting and exact opaque t
   await expect(authorDocxTableRowInsertion(source, { ...request, cells: ["One"] })).rejects.toThrow("target_or_cell_count_changed")
 })
 
-test("supported geometry control is admitted, while merges, nested tables, conditional styles and pending rows are unavailable", async () => {
+test("ordinary geometry and unused styles are admitted; merges, nested tables and pending rows are unavailable", async () => {
   expect((await docxTableRowInsertionTargets(fixture())).targets).toHaveLength(2)
   for (const kind of ["merged", "pending", "styled"]) expect((await docxTableRowInsertionTargets(fixture(kind))).targets).toEqual([])
-  await expect(docxTableRowInsertionTargets(fixture("conditional"))).rejects.toThrow("conditional_or_numbered_style_unsupported")
+  expect((await docxTableRowInsertionTargets(fixture("conditional"))).targets).toHaveLength(2)
   await expect(docxTableRowInsertionTargets(fixture("nested"))).rejects.toThrow("nested_or_wrapped_table_unsupported")
 })
 
@@ -223,4 +223,30 @@ test("a grouped decision failure rolls back earlier successful content decisions
   try { await expect(resolveDocxTableRowInsertion(source, authored.bytes, request, "reject")).rejects.toThrow("resolution_failed_rolled_back"); expect(calls).toBe(3); expect(rolledBack).toBe(true) }
   finally { fail.mockRestore(); observe.mockRestore() }
   expect(await resolveDocxTableRowInsertion(source, authored.bytes, request, "reject")).toEqual(source)
+})
+
+test("only effective table and default paragraph style chains govern row eligibility", async () => {
+  const source = fixture(), original = unzipSync(source)
+  const xmlPart = (name: string) => strFromU8(original[name]!)
+  const baseStyles = xmlPart("word/styles.xml")
+  const tableStyle = '<w:style w:type="table" w:default="1" w:styleId="TableNormal"/>'
+  const unused = '<w:style w:type="table" w:styleId="Unused"><w:tblStylePr w:type="firstRow"><w:rPr><w:b/></w:rPr></w:tblStylePr></w:style><w:style w:type="paragraph" w:styleId="UnusedList"><w:pPr><w:numPr><w:numId w:val="5"/></w:numPr></w:pPr></w:style>'
+  const make = (styles: string, doc = xmlPart("word/document.xml")) => zipSync({ ...original, "word/styles.xml":strToU8(styles), "word/document.xml":strToU8(doc) })
+  const look = xmlPart("word/document.xml").replace('<w:tblPr>', '<w:tblPr><w:tblLook w:val="04A0"/>')
+  const safe = make(baseStyles.replace('</w:styles>', `${tableStyle}${unused}</w:styles>`), look)
+  const before = new Uint8Array(safe), packet = await docxTableRowInsertionTargets(safe)
+  expect(packet.targets).toHaveLength(2)
+  const request: DocxTableRowInsertion = {source_sha256:packet.source_sha256,target_handle:packet.targets[1]!.target_handle,position:"after",cells:["Next", "Clause"],author:"Existing Editor"}
+  const authored = await authorDocxTableRowInsertion(safe, request)
+  expect(safe).toEqual(before)
+  expect(unzipSync(authored.bytes)["word/styles.xml"]).toEqual(unzipSync(safe)["word/styles.xml"])
+  expect(strFromU8(unzipSync(authored.bytes)["word/document.xml"]!)).toContain('<w:tblLook w:val="04A0"')
+  expect(await resolveDocxTableRowInsertion(safe, authored.bytes, request, "reject")).toEqual(safe)
+  const effectiveConditional = tableStyle.replace('/>', '><w:tblStylePr w:type="firstRow"><w:rPr><w:b/></w:rPr></w:tblStylePr></w:style>')
+  const missing = tableStyle.replace('/>', '><w:basedOn w:val="Missing"/></w:style>')
+  const cycle = tableStyle.replace('/>', '><w:basedOn w:val="TableNormal"/></w:style>')
+  for (const unsafe of [effectiveConditional, missing, cycle])
+    expect((await docxTableRowInsertionTargets(make(baseStyles.replace('</w:styles>', `${unsafe}</w:styles>`), look))).targets).toEqual([])
+  const numberedDefault = baseStyles.replace('<w:name w:val="Normal"/>','<w:name w:val="Normal"/><w:pPr><w:numPr><w:numId w:val="5"/></w:numPr></w:pPr>')
+  expect((await docxTableRowInsertionTargets(make(numberedDefault, look))).targets).toEqual([])
 })
