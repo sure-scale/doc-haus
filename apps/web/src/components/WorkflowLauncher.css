@@ -12,7 +12,10 @@
 .workflow-launcher-choice input:focus, .workflow-launcher-choice input:focus-visible { outline: none; }
 .workflow-launcher-choice-name { display: block; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
 .workflow-launcher-choice-reason { display: block; margin-top: 2px; color: var(--text-secondary); font-size: .8rem; line-height: 1.45; }
-.workflow-launcher-choice-reason strong { color: var(--accent); font-weight: 600; }
+/* Beside the preview, Recommended takes its own line above its reason; the
+   " · " between them is still read out. */
+.workflow-launcher-choice-reason strong { display: block; color: var(--accent); font-weight: 600; }
+.workflow-launcher-choice-sep { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); white-space: nowrap; }
 .workflow-launcher-preview { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; padding-left: var(--space-6); border-left: 1px solid var(--border); line-height: 1.55; overflow-wrap: anywhere; }
 .workflow-launcher-preview p, .workflow-launcher-preview h3 { margin: 0; }
 .workflow-launcher-preview section { display: flex; flex-direction: column; gap: var(--space-2); }
@@ -24,5 +27,7 @@
 @media (max-width: 640px) {
   .workflow-launcher-body { grid-template-columns: minmax(0, 1fr); gap: var(--space-5); min-height: 0; padding: var(--space-4); }
   .workflow-launcher-preview { padding: var(--space-5) 0 0; border-left: 0; border-top: 1px solid var(--border); }
+  .workflow-launcher-choice-reason strong { display: inline; }
+  .workflow-launcher-choice-sep { position: static; width: auto; height: auto; clip-path: none; }
   .workflow-launcher-actions.compare-actions { padding-inline: var(--space-4); }
 }

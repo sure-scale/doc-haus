@@ -171,7 +171,8 @@ try {
       // One document: chat leads with its workflow preselected, so the review table does not compete as Recommended.
       assert.deepEqual(await dialog.locator("legend").allTextContents(), ["In chat", "Review table"])
       await expect(dialog.getByRole("radio", { name: "Full review" })).toBeChecked()
-      await expect(dialog.getByRole("radio", { name: /^Add questions/ })).toHaveAccessibleName("Add questions")
+      // The review table's entry is named for the starter Start opens with, as chat's are for their workflows.
+      await expect(dialog.getByRole("radio", { name: /^Document overview/ })).toHaveAccessibleName("Document overview")
       assert.equal(await dialog.getByText("Recommended", { exact: false }).count(), 0, "no Recommended beside a preselected workflow")
       await expect(dialog.getByRole("region", { name: "About Full review" })).toContainText("Reads every document in the matter")
       await expect(dialog.getByRole("button", { name: "Start" })).toHaveClass(/primary/)
@@ -179,8 +180,8 @@ try {
       assert.equal(await fits(page), true, "the dialog fits its width")
       await shot("launcher-workflow")
       // Highlighting entries only changes the preview.
-      await dialog.getByRole("radio", { name: /^Add questions/ }).check()
-      await expect(dialog.getByRole("region", { name: "About Add questions" })).toContainText("Suggest questions with AI")
+      await dialog.getByRole("radio", { name: /^Document overview/ }).check()
+      await expect(dialog.getByRole("region", { name: "About Document overview" })).toContainText("Suggest questions with AI")
       await dialog.getByRole("radio", { name: "Full review" }).check()
       await page.waitForTimeout(300)
       assert.deepEqual([sessions, prompts], [0, []], "nothing runs before Start")
@@ -190,18 +191,18 @@ try {
       assert.equal(sessions, 1, "a matter workflow opens one new conversation")
     })
 
-    await check("a review table starts from the chat's Workflows dialog on Add questions, recommended starter chosen", size, async (page, shot) => {
+    await check("a review table starts from the chat's Workflows dialog on its recommended starter, chosen in Add questions", size, async (page, shot) => {
       await open(page, "/matter/pair?view=chat")
       await openLauncher(page)
       const dialog = launcher(page)
       // Two of the lawyer's own documents: the review table leads, recommended and highlighted.
       assert.deepEqual(await dialog.locator("legend").allTextContents(), ["Review table", "In chat"])
-      const review = dialog.getByRole("radio", { name: /^Add questions/ })
+      const review = dialog.getByRole("radio", { name: /^Compare agreements/ })
       await expect(review).toBeChecked()
       await expect(review).toBeFocused()
       await expect(review).toHaveAccessibleName(/Recommended · 2 source documents in this matter/)
       // The preview names every way the table's Add questions offers, AI included.
-      const preview = dialog.getByRole("region", { name: "About Add questions" })
+      const preview = dialog.getByRole("region", { name: "About Compare agreements" })
       for (const text of ["Ask the same questions of every document", "Document overview: 3 questions", "Compare agreements: 5 questions, with a fictional example", "Suggest questions with AI", "with Compare agreements selected", "no AI runs until you choose"]) await expect(preview).toContainText(text)
       assert.equal(await dialog.locator("button.primary").count(), 1, "one primary action")
       assert.equal(await fits(page), true, "the dialog fits its width")

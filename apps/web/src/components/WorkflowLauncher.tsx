@@ -47,7 +47,9 @@ function Launcher({ options, documents = [], onLaunch, onStartReview, closing, o
   const [selected, setSelected] = useState(() => reviewFirst ? "review" : `workflow:${options[0].name}`)
   const workflow = options.find((w) => selected === `workflow:${w.name}`)
   const reviewing = review && selected === "review"
-  const recommendedName = REVIEW_STARTERS.find((s) => s.id === recommended.id)?.name
+  // The review table's entry is named for the starter Start opens with, as the
+  // chat's entries are named for their workflows.
+  const recommendedName = REVIEW_STARTERS.find((s) => s.id === recommended.id)?.name ?? "Review table"
 
   function start() {
     onClose()
@@ -60,7 +62,7 @@ function Launcher({ options, documents = [], onLaunch, onStartReview, closing, o
       <input type="radio" name={`${ids}-choice`} value={key} checked={selected === key} autoFocus={selected === key} onChange={() => setSelected(key)} />
       <span>
         <span className="workflow-launcher-choice-name">{name}</span>
-        {reason && <span className="workflow-launcher-choice-reason"><strong>Recommended</strong> · {reason}</span>}
+        {reason && <span className="workflow-launcher-choice-reason"><strong>Recommended</strong><span className="workflow-launcher-choice-sep"> · </span>{reason}</span>}
       </span>
     </label>
   )
@@ -75,7 +77,7 @@ function Launcher({ options, documents = [], onLaunch, onStartReview, closing, o
       <fieldset key="review" className="workflow-launcher-group">
         <legend>Review table</legend>
         {/* Recommended only where it leads; beside a preselected chat workflow it would compete. */}
-        {choice("review", "Add questions", severalSources ? recommended.reason : undefined)}
+        {choice("review", recommendedName, severalSources ? recommended.reason : undefined)}
       </fieldset>
     ),
   ]
@@ -86,7 +88,7 @@ function Launcher({ options, documents = [], onLaunch, onStartReview, closing, o
         <ModalHeader title="Workflows" onClose={onClose} />
         <div className="workflow-launcher-body">
           <div className="workflow-launcher-list">{reviewFirst ? groups.reverse() : groups}</div>
-          <section className="workflow-launcher-preview" aria-label={`About ${reviewing ? "Add questions" : workflow?.label}`}>
+          <section className="workflow-launcher-preview" aria-label={`About ${reviewing ? recommendedName : workflow?.label}`}>
             {reviewing ? (
               <>
                 <p>Ask the same questions of every document in this matter and see the answers side by side, each with its source.</p>
