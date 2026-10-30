@@ -23,7 +23,7 @@ import { citationDocument } from "./citation-target"
 import { WordWarning } from "./WordDocuments"
 import useReviewGridPresence from "./useReviewGridPresence"
 import ReviewStarter from "./ReviewStarter"
-import { normaliseStarterQuestion } from "../review-starters"
+import { normaliseStarterQuestion, REVIEW_STARTERS } from "../review-starters"
 import FillPreview from "./FillPreview"
 import { CompareSummary, FilterSummary, ReviewToolbar } from "./ReviewAttention"
 import { MARKER_LOOK, MarkerGlyph, ReviewMarker } from "./ReviewMarker"
@@ -111,7 +111,9 @@ function GridNavigationGuard({ canLeave, bypass }: { canLeave: () => boolean; by
 
 // `documentsRevision` changes whenever the matter's documents may have changed
 // (an upload, a new version, a Word save), so cited excerpts are checked again.
-export default function ReviewGrid({ matterId, title, directory, documents, documentsRevision, onClose, onAsk }: { matterId: string; title: string; directory: string; documents: Document[]; documentsRevision: number; onClose: () => void; onAsk?: (prompt: string) => void }) {
+// `initialStarter` is a starter chosen before the table opened; it opens the
+// chooser once the table can be edited, and `onStarterSeated` clears it.
+export default function ReviewGrid({ matterId, title, directory, documents, documentsRevision, initialStarter, onStarterSeated, onClose, onAsk }: { matterId: string; title: string; directory: string; documents: Document[]; documentsRevision: number; initialStarter?: string; onStarterSeated?: () => void; onClose: () => void; onAsk?: (prompt: string) => void }) {
   const closing = useContext(Closing)
   const dialog = useRef<HTMLDialogElement>(null)
   const detailDialog = useRef<HTMLDialogElement>(null)
@@ -149,7 +151,20 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     compareAbort.current = controller
     return () => controller.abort()
   }, [])
-  const [starterOpen, setStarterOpen] = useState(false)
+  const [starterOpen, setStarterOpen] = useState<{ starter?: string; step?: "choose" | "questions" }>()
+  // An arriving starter opens once, preselected; a table that already has
+  // questions goes straight to the new questions, which are appended. An
+  // unknown starter is dropped.
+  const seatedStarter = useRef<string>(undefined)
+  useEffect(() => {
+    if (!initialStarter || !canEdit || seatedStarter.current === initialStarter) return
+    seatedStarter.current = initialStarter
+    onStarterSeated?.()
+    if (!REVIEW_STARTERS.some((starter) => starter.id === initialStarter)) return
+    setError(undefined)
+    setStarterOpen({ starter: initialStarter, step: gridRef.current.columns.length ? "questions" : "choose" })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialStarter, canEdit])
   const [fillPreview, setFillPreview] = useState<Array<{ docName: string; column: { id: string; question: string } }>>()
   const [checkingFill, setCheckingFill] = useState(false)
   // Filter and search change only what is shown. Rows and columns with a match
@@ -826,7 +841,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
           onFilter={setFilter}
           query={query}
           onQuery={setQuery}
-          onStarter={() => { setError(undefined); setStarterOpen(true) }}
+          onStarter={() => { setError(undefined); setStarterOpen({}) }}
           onFill={() => { setError(undefined); setFillPreview(fillTargets()) }}
           onReviewNext={reviewNext}
           onExport={exportAs}
@@ -837,7 +852,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
         {error && <p role="alert">{error}</p>}
         {saveProblem && <div role="alert"><p>{saveProblem}</p><p>Export the table above or download your local copy before reloading the saved table.</p><button type="button" onClick={downloadPending}>Download unsaved copy</button> <button type="button" disabled={reloading} onClick={reloadGrid}>{reloading ? "Reloading…" : "Reload saved table"}</button></div>}
 
-        {starterOpen && <ReviewStarter matterName={title} documents={documents} existingQuestions={grid.columns.map((column) => column.question)} problem={saveProblem ?? error} onCancel={() => setStarterOpen(false)} onConfirm={addStarterQuestions} />}
+        {starterOpen && <ReviewStarter matterName={title} documents={documents} existingQuestions={grid.columns.map((column) => column.question)} problem={saveProblem ?? error} initialStarter={starterOpen.starter} initialStep={starterOpen.step} onCancel={() => setStarterOpen(undefined)} onConfirm={addStarterQuestions} />}
         {fillPreview && <FillPreview targets={fillPreview} checking={checkingFill} onCancel={() => setFillPreview(undefined)} onConfirm={confirmFill} />}
 
         {grid.columns.length === 0 && (

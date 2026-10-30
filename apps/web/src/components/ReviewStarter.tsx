@@ -10,21 +10,26 @@ type Step = "choose" | "example" | "questions"
 // Choose a starter (its example is optional), then review its questions and
 // append them to the table. Nothing is written and no model runs before Add
 // questions; answers wait for Fill.
-export default function ReviewStarter({ matterName, documents, existingQuestions, problem, onCancel, onConfirm }: {
+export default function ReviewStarter({ matterName, documents, existingQuestions, problem, initialStarter, initialStep = "choose", onCancel, onConfirm }: {
   matterName: string
   documents: readonly Pick<Document, "name" | "role">[]
   existingQuestions: string[]
   problem?: string
+  // A starter chosen before the table opened (from the chat's Workflows dialog
+  // or the Workflows page). A table with questions opens at its questions step.
+  initialStarter?: string
+  initialStep?: "choose" | "questions"
   onCancel: () => void
   onConfirm: (questions: string[]) => Promise<boolean>
 }) {
   const titleId = useId()
   const [recommended] = useState(() => recommendStarter(documents))
-  const [chosenId, setChosenId] = useState(recommended.id)
-  const [step, setStep] = useState<Step>("choose")
+  const [chosenId, setChosenId] = useState(initialStarter ?? recommended.id)
+  const [step, setStep] = useState<Step>(initialStep)
   const starter = REVIEW_STARTERS.find((item) => item.id === chosenId)!
   // The questions being edited, kept while the lawyer steps back to the same starter.
-  const [draft, setDraft] = useState<{ starter: string; questions: { id: number; question: string }[] }>()
+  const [draft, setDraft] = useState<{ starter: string; questions: { id: number; question: string }[] } | undefined>(() =>
+    initialStep === "questions" ? { starter: starter.id, questions: starter.questions.map((question, id) => ({ id, question })) } : undefined)
   const questions = draft?.questions ?? []
   const setQuestions = (update: (current: { id: number; question: string }[]) => { id: number; question: string }[]) =>
     setDraft((current) => current && { ...current, questions: update(current.questions) })
