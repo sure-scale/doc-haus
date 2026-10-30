@@ -9,6 +9,7 @@ import { getPreferences } from "../api/ingest/preferences"
 import { getMatter } from "../api/ingest/matters"
 import type { Document } from "../api/ingest/documents"
 import { createSession, getMessages, sendPrompt } from "../api/opencode/sessions"
+import { getModelConcurrency } from "../api/opencode/config"
 import { matterClient, type Client } from "../api/opencode/client"
 import ModalHeader from "./ModalHeader"
 import { reviewCsv, reviewDocx, reviewExport, reviewXlsx } from "./review-export"
@@ -30,8 +31,6 @@ import FillPreview from "./FillPreview"
 // empty or stale cells recompute, and `reviewed` cells are frozen. A cell left
 // without a citation gets exactly one re-check of its own document as part of
 // the same computation (api/review-recheck).
-
-const POOL = 5 // concurrent cell extractions; the engine handles one prompt each
 
 // A source check answers for the citation it was asked about, so a cell whose
 // citation has since been recomputed shows no verdict until it is checked.
@@ -400,8 +399,8 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
     })
   }
 
-  // Run a set of (document, column) targets through a small concurrency pool so a
-  // large grid does not open hundreds of sessions at once.
+  // The local pool avoids opening more sessions than the saved request limit;
+  // the engine also enforces that limit across this and other operations.
   async function fill(targets: Array<{ docName: string; column: { id: string; question: string } }>) {
     if (targets.length === 0 || !loaded || saveState.current.blocked) return
     setError(undefined)
@@ -435,7 +434,8 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
         }
       }
     }
-    await Promise.all(Array.from({ length: Math.min(POOL, targets.length) }, worker))
+    const width = await getModelConcurrency()
+    await Promise.all(Array.from({ length: Math.min(width, targets.length) }, worker))
   }
 
   function fillTargets() {

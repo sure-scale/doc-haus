@@ -11,6 +11,7 @@ import { checklistProducerInputs } from "./checklist-source-context"
 import { matterSourceBasis, snapshotRead, withSourceSnapshot } from "./quotes"
 import { readLeanJson, shortHash, writeLeanText } from "./state"
 import { providerStopKind } from "../../lib/provider-stop"
+import { workflowConcurrency } from "./model-concurrency"
 
 const itemRecordSchema = z.object({ id: z.string(), item: checklistItemSchema, assignment: checklistComparisonAssignmentSchema.optional() })
 const sourceResultSchema = z.object({
@@ -194,10 +195,10 @@ function extractionInputs(directory: string, deps: ChecklistJobDeps) {
   return jobs.map(job => ({ ...job, input_sha: shortHash(JSON.stringify(["checklist-extraction-1", deps.model, basis, buildChecklistProducerPrompt(job.input)]), 40) }))
 }
 
-/** Runs `work` over `jobs`, at most four at a time. */
+/** Runs `work` over `jobs` using the configured workflow pool size. */
 export async function parallel<T>(jobs: T[], work: (job: T, index: number) => Promise<void>) {
   const next = { index: 0 }
-  await Promise.all(Array.from({ length: Math.min(4, jobs.length) }, async () => {
+  await Promise.all(Array.from({ length: Math.min(workflowConcurrency(), jobs.length) }, async () => {
     for (;;) {
       const index = next.index++
       if (index >= jobs.length) return
