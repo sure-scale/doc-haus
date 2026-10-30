@@ -390,7 +390,7 @@ try {
   const sideDetail = page.locator(".picker-panel").filter({ hasText: "The law of Scotland." })
   await sideDetail.locator(".review-comment").getByText("Unattributed", { exact: true }).waitFor()
   await sideDetail.getByText("Source changed", { exact: true }).waitFor()
-  assert.match((await sideDetail.locator(".review-source-check").textContent())!, /no longer contains this excerpt\. It has changed since this answer/)
+  assert.match((await sideDetail.locator(".review-source-check").textContent())!, /has changed since this answer and no longer contains this excerpt\. Re-run this cell to answer from the current text\.$/, "an unreviewed cell names its own next step")
   await page.keyboard.press("Escape")
   await sideDetail.waitFor({ state: "detached" })
   console.log("PASS a cell whose excerpt is no longer in its document reads degraded in the grid and its detail")
