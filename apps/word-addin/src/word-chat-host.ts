@@ -637,14 +637,28 @@ export class WordChatHost {
     const adjacent = fresh.projection ? [] : fresh.adjacent.map(p => ({ before: p.ooxml, after: context.document.getParagraphByUniqueLocalId(p.id).getRange("Whole").getOoxml() }))
     await context.sync()
     let authors: string[] = []
+    let failedStage: string | undefined
     let verificationError: unknown
-    let confirmed = context.document.changeTrackingMode === fresh.tracking && context.document.trackFormatting === fresh.trackFormatting &&
-      JSON.stringify(all.items.map(p => p.uniqueLocalId)) === JSON.stringify(fresh.ids) && current.value === input.target.text
+    let checking = "format-projection"
+    // Preserve the original short-circuit order: later checks do not run once
+    // an earlier predicate has failed. Codes contain no document information.
+    let confirmed = context.document.changeTrackingMode === fresh.tracking
+    if (!confirmed) failedStage = "format-tracking-mode"
+    if (confirmed && context.document.trackFormatting !== fresh.trackFormatting) { confirmed = false; failedStage = "format-tracking-property" }
+    if (confirmed && JSON.stringify(all.items.map(p => p.uniqueLocalId)) !== JSON.stringify(fresh.ids)) { confirmed = false; failedStage = "format-paragraph-identity" }
+    if (confirmed && current.value !== input.target.text) { confirmed = false; failedStage = "format-current-text" }
     try {
       const projection = bodyXml ? projectNativeWordChatBody(bodyXml.value, all.items.map(p => ({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel}))) : undefined
       const observed = projection ? projection.scope(input.target.paragraphs.map((_, i) => fresh.index + i)) : xml!.value
+      checking = "format-authored-verification"
       authors = verifiedNativeWordChatFormatting(fresh.ooxml, authored.ooxml, observed, formatting, inserted)
-      confirmed &&= projection && fresh.projection ? projection.geometry === fresh.projection.geometry && projection.paragraphs.every((p, i) => p.id === fresh.projection!.paragraphs[i]?.id && p.path === fresh.projection!.paragraphs[i]?.path) && fresh.adjacent.every(p => { const i = projection.paragraphs.findIndex(q => q.id === p.id); return i >= 0 && sameWordChatParagraphContent(p.ooxml, projection.scope([i])) }) : adjacent.every(p => sameWordChatParagraphContent(p.before, p.after.value))
+      checking = "format-geometry"
+      if (confirmed && projection && fresh.projection && projection.geometry !== fresh.projection.geometry) { confirmed = false; failedStage = checking }
+      checking = "format-paragraph-paths"
+      if (confirmed && projection && fresh.projection && !projection.paragraphs.every((p, i) => p.id === fresh.projection!.paragraphs[i]?.id && p.path === fresh.projection!.paragraphs[i]?.path)) { confirmed = false; failedStage = checking }
+      checking = "format-neighbours"
+      if (confirmed && !(projection && fresh.projection ? fresh.adjacent.every(p => { const i = projection.paragraphs.findIndex(q => q.id === p.id); return i >= 0 && sameWordChatParagraphContent(p.ooxml, projection.scope([i])) }) : adjacent.every(p => sameWordChatParagraphContent(p.before, p.after.value)))) { confirmed = false; failedStage = checking }
+      checking = "format-revisions"
       const signature = (change: TrackedChange) => JSON.stringify([change.author, change.type, change.text])
       const prior = new Map<string, number>()
       for (const change of fresh.changes) prior.set(signature(change), (prior.get(signature(change)) ?? 0) + 1)
@@ -653,10 +667,14 @@ export class WordChatHost {
         if (count) { prior.set(key, count - 1); return false }
         return true
       })
-      confirmed &&= ![...prior.values()].some(Boolean) && (expectedFormatCount === 0 || added.length > 0) &&
-        added.every(change => change.type === "Formatted" && authors.includes(change.author))
-    } catch (error) { confirmed = false; verificationError = error }
-    if (!confirmed) throw new WordChatHostError("Word changed the formatting, but could not confirm the reviewed tracked markup. Inspect it and use Undo if needed. Do not apply this proposal again.", "unchanged", verificationError === undefined ? undefined : { cause: verificationError })
+      if (confirmed && [...prior.values()].some(Boolean)) { confirmed = false; failedStage = "format-prior-revisions" }
+      if (confirmed && expectedFormatCount !== 0 && added.length === 0) { confirmed = false; failedStage = "format-missing-revision" }
+      if (confirmed && !added.every(change => change.type === "Formatted" && authors.includes(change.author))) { confirmed = false; failedStage = "format-new-revisions" }
+    } catch (error) { confirmed = false; failedStage ??= checking; verificationError = error }
+    if (!confirmed) {
+      const detail = new Error(failedStage ?? "format-verification", verificationError === undefined ? undefined : { cause: verificationError })
+      throw new WordChatHostError("Word changed the formatting, but could not confirm the reviewed tracked markup. Inspect it and use Undo if needed. Do not apply this proposal again.", "uncertain", { cause: detail })
+    }
     if (authored.wording) authors = [...new Set(["doc.haus", ...authors])]
     this.applied.set(input.proposalId, { identity, authors, uncertain: false })
     return { status: "applied", tracked: true, saved: false, authors, target: { ...input.target, id: crypto.randomUUID(), saved: false, capturedAt: new Date().toISOString() } }

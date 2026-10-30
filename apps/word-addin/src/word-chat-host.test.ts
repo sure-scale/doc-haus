@@ -624,8 +624,13 @@ test("projected native formatting rejects a neighboring paragraph property chang
       state.afterSync = undefined
     }
   }
-  await expect(host.apply({ proposalId:"format-neighbor-properties", target, replacement:target.text,
-    formatting:[{paragraph:target.paragraphs.length - 1,spacingAfter:6}] })).rejects.toMatchObject({mutationState:"uncertain"})
+  const input = { proposalId:"format-neighbor-properties", target, replacement:target.text,
+    formatting:[{paragraph:target.paragraphs.length - 1,spacingAfter:6}] }
+  let failure: unknown
+  try { await host.apply(input) } catch (error) { failure = error }
+  expect(failure).toMatchObject({mutationState:"uncertain", cause: { mutationState:"uncertain", cause: { message:"format-neighbours" } }})
+  expect(state.nativeFormatting).toHaveLength(1)
+  await expect(host.apply(input)).rejects.toMatchObject({mutationState:"uncertain", message:expect.stringContaining("may already contain")})
   expect(state.nativeFormatting).toHaveLength(1)
 })
 
@@ -637,8 +642,10 @@ test("projected native formatting rejects a missing property revision", async ()
       state.afterSync = undefined
     }
   }
-  await expect(host.apply({ proposalId:"format-missing-carrier", target, replacement:target.text,
-    formatting:[{paragraph:target.paragraphs.length - 1,spacingAfter:6}] })).rejects.toMatchObject({mutationState:"uncertain"})
+  let failure: unknown
+  try { await host.apply({ proposalId:"format-missing-carrier", target, replacement:target.text,
+    formatting:[{paragraph:target.paragraphs.length - 1,spacingAfter:6}] }) } catch (error) { failure = error }
+  expect(failure).toMatchObject({mutationState:"uncertain", cause: { mutationState:"uncertain", cause: { message:"format-authored-verification", cause: expect.any(Error) } }})
   expect(state.nativeFormatting).toHaveLength(1)
 })
 
