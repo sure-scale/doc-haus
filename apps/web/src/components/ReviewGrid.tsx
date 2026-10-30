@@ -807,6 +807,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   const detailDiffers = detailCompared?.label === "differs" && !(inWalk && walkReason && walkEntry?.marker?.state === "differs") ? detailCompared.reason : undefined
   // The header's one quiet line on its comparison: the summary, which opens the
   // differing cells, or why there is none and, where one can run, a compare.
+  // While cells fill it waits: the comparison follows the fill.
   const compareLine = (col: GridColumn) => {
     const input = compareInputs.get(col.id)
     if (!input) return null
@@ -814,11 +815,12 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     if (comparing.has(col.id)) return <p className="review-compare-note">Comparing answers…</p>
     const fresh = comparisonOf(col)
     if (fresh) return <CompareSummary comparison={fresh} onOpen={(docName) => openDetail(docName, col.id)} />
+    if (running > 0) return null
     const failed = compareFailed.has(col.id)
     return (
       <p className="review-compare-note">
         {failed ? "Could not compare · " : col.comparison ? "Comparison out of date · " : ""}
-        <button type="button" className="linklike" disabled={!canEdit || running > 0} title="One AI call compares the cited answers across documents" onClick={() => void compareColumns([col.id], saveState.current.epoch)}>
+        <button type="button" className="linklike" disabled={!canEdit} title="One AI call compares the cited answers across documents" onClick={() => void compareColumns([col.id], saveState.current.epoch)}>
           {failed || col.comparison ? "Compare again" : "Compare answers"}
         </button>
       </p>

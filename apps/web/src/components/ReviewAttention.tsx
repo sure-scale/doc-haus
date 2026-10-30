@@ -284,7 +284,7 @@ export function ReviewToolbar({ model, checking, running, comparing, primary, fi
   // One slot, so a primary button keeps its node (and focus) as its action changes.
   const main = primary?.kind === "export" ? exportButton(true)
     : primary?.kind === "start" ? <button key="primary" type="button" className="primary review-primary" disabled={startDisabled} onClick={onStarter}>Use a starter</button>
-    : primary?.kind === "fill" ? <button key="primary" type="button" className="primary review-primary" disabled={fillDisabled} onClick={onFill}>{fillBlanks ? "Fill" : "Refresh"} {plural(fillCount, "cell")}</button>
+    : primary?.kind === "fill" ? <button key="primary" type="button" className="primary review-primary" disabled={fillDisabled} onClick={onFill}>{running > 0 ? "Filling…" : `${fillBlanks ? "Fill" : "Refresh"} ${plural(fillCount, "cell")}`}</button>
     : primary?.kind === "reviewNext" ? <button key="primary" type="button" className="primary review-primary" onClick={onReviewNext}>Review next</button>
     : null
   return (

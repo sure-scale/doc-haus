@@ -760,7 +760,15 @@ try {
   await primary.click()
   const fillDialog = page.getByRole("dialog", { name: "Review fill" })
   await fillDialog.getByText(/After filling, AI compares each question's cited answers across documents, one AI call per question\./).waitFor()
+  const fillHeld: import("@playwright/test").Route[] = []
+  onExtraction = route => void fillHeld.push(route)
   await fillDialog.getByRole("button", { name: "Start fill" }).click()
+  // While cells fill, the primary keeps one steady label and no compare is offered.
+  await toolbar.getByText(/^Extracting/).waitFor()
+  assert.equal(await primary.textContent(), "Filling…")
+  assert.equal(await head.getByRole("button", { name: /^Compare/ }).count(), 0, "no compare is offered while cells fill")
+  onExtraction = route => void route.fulfill({ status: 204 })
+  await Promise.all(fillHeld.splice(0).map(route => route.fulfill({ status: 204 })))
   await toolbar.getByText("Comparing 1 question", { exact: true }).waitFor()
   assert.equal(await toolbar.getByText(/Extracting/).count(), 0, "comparing is counted apart from extracting")
   await head.getByText("Comparing answers…", { exact: true }).waitFor()
