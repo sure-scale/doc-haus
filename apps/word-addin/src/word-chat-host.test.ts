@@ -1543,10 +1543,10 @@ test("native inline formatting confirms tracked markup and fences an uncertain w
   for (const corrupt of [false, true]) {
     const { state, nativeHost } = office(["abcd"], true)
     const marker = '<w:bookmarkStart w:id="4" w:name="place"/>'
-    state.paragraphXml.set("paragraph-0", `<w:p><w:r><w:t>ab</w:t></w:r>${marker}<w:r><w:t>cd</w:t></w:r></w:p>`)
+    state.paragraphXml.set("paragraph-0", `<w:p><w:r><w:t>ab</w:t></w:r>${marker}<w:r><w:t>cd</w:t></w:r><w:bookmarkEnd w:id="4"/></w:p>`)
     const target = (await nativeHost.selection())!
     const run = (text: string, id: number, author: string) => `<w:r><w:rPr><w:b/><w:rPrChange w:id="${id}" w:author="${author}" w:date="2026-01-01T00:00:00Z"><w:rPr/></w:rPrChange></w:rPr><w:t>${text}</w:t></w:r>`
-    const para = (author: string, anchor = marker) => `<w:p>${run("ab", 8, author)}${anchor}${run("cd", 9, author)}</w:p>`
+    const para = (author: string, anchor = marker) => `<w:p>${run("ab", 8, author)}${anchor}${run("cd", 9, author)}<w:bookmarkEnd w:id="4"/></w:p>`
     state.inlineAfter = para("Native user", corrupt ? "" : marker)
     const input = {proposalId:"inline",target,replacement:target.text,inlineFormatting:{bold:true},author:async () => ({kind:"inline_format" as const,proposalId:"inline",target,inlineFormatting:{bold:true}})}
     if (corrupt) {

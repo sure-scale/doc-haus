@@ -87,6 +87,7 @@ export function projectNativeWordChatBody(xml: string, inventory: Array<{ id: st
   }
   replaceParagraphs(skeleton)
   return {
+    ooxml: xml,
     paragraphs: nodes.map((n, i) => ({ id: inventory[i]!.id, text: inventory[i]!.text, path: n.path, nesting: n.nesting, xml: serializer.serializeToString(n.node) })),
     geometry: JSON.stringify(canonical(skeleton, true)),
     /** Preserve every package dependency while scoping the main body to bound paragraphs. */
@@ -823,6 +824,46 @@ export function assertNativeWordChatInlineDependencies(before: string, after: st
   }
 }
 
+/** Native review IDs may be reassigned, but remain unique within the story. */
+export function assertNativeInlineWordChatRevisionIds(xml: string) {
+  const main = parse(xml,16_000_000).get(MAIN)!
+  const ids = ["ins","del","rPrChange","pPrChange"].flatMap(name => Array.from(main.getElementsByTagNameNS(W,name)).map(node => node.getAttributeNS(W,"id")))
+  if (ids.some(id => !id || !/^\d+$/.test(id)) || new Set(ids).size !== ids.length) throw new Error("inline_revision_id_collision")
+}
+
+/** Match prior formatting carriers by full payload, changing only the old ID.
+ * The subsequent paragraph/target comparison still verifies their positions. */
+function normalizeInlinePriorFormatIds(original: Element, current: Element): boolean {
+  const revisions = (paragraph: Element, names: string[]) => names.flatMap(name => Array.from(paragraph.getElementsByTagNameNS(W,name)))
+  const allNames = ["ins", "del", "rPrChange", "pPrChange"]
+  for (const paragraph of [original,current]) {
+    const ids = revisions(paragraph,allNames).map(node => node.getAttributeNS(W,"id"))
+    if (ids.some(id => !id || !/^\d+$/.test(id)) || new Set(ids).size !== ids.length) return false
+  }
+  const old = revisions(original,["rPrChange","pPrChange"]), now = revisions(current,["rPrChange","pPrChange"])
+  const signature = (node: Element) => { const clone = node.cloneNode(true) as Element; clone.removeAttributeNS(W,"id"); return JSON.stringify(canonical(clone)) }
+  const used = new Set<Element>()
+  for (const prior of old) {
+    const matches = now.filter(node => !used.has(node) && signature(node) === signature(prior))
+    if (matches.length !== 1) return false
+    const match = matches[0]!, attr = prior.getAttributeNodeNS(W,"id")!
+    const name = attr.name
+    prior.removeAttributeNS(W,"id"); prior.setAttributeNS(W,name,match.getAttributeNS(W,"id")!)
+    used.add(match)
+  }
+  return true
+}
+
+/** Inline-only unchanged paragraph comparator; no comment IDs are omitted. */
+export function sameNativeInlineWordChatParagraph(before: string, after: string): boolean {
+  const fail = () => { throw new Error("invalid paragraph") }
+  const parser = () => new DOMParser({errorHandler:{warning:fail,error:fail,fatalError:fail}})
+  const original = parser().parseFromString(before,"application/xml").documentElement
+  const current = parser().parseFromString(after,"application/xml").documentElement
+  if (!original || !current || original.namespaceURI !== W || current.namespaceURI !== W || original.localName !== "p" || current.localName !== "p") return false
+  return normalizeInlinePriorFormatIds(original,current) && normalizeNativeRevisionIds([current],[original]) && JSON.stringify(canonical(original,true)) === JSON.stringify(canonical(current,true))
+}
+
 /** Check the captured source before the native font operation. */
 export function assertNativeWordChatInlineTarget(captured: string, target: WordChatTarget, formatting: WordChatInlineFormat) {
   const paragraphs = content(parse(captured),true,true).nodes
@@ -861,7 +902,7 @@ export function verifiedNativeWordChatInlineFormatting(captured: string, observe
   stripSessionIds(original); stripSessionIds(current)
   // Map the old IDs to the observed ones, so the verifier checks new carrier
   // collisions against the IDs actually present in Word after the operation.
-  if (!normalizeNativeRevisionIds([current],[original])) throw new Error("inline_prior_revision_changed")
+  if (!normalizeInlinePriorFormatIds(original,current) || !normalizeNativeRevisionIds([current],[original])) throw new Error("inline_prior_revision_changed")
   const actual = verifyWordChatInlineFormatting(original,current,target,formatting,undefined,effectiveProof)
   if (!actual.revisions.length) throw new Error("inline_missing_revision")
   return [...new Set(actual.revisions.map(change => change.author))]

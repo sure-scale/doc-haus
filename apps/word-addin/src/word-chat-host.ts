@@ -1,9 +1,10 @@
 import type { WordChatAuthoredAmendment, WordChatPreparedAmendment, WordChatParagraphFormat, WordChatInlineFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget, WordChatTableRowInsertionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { validWordChatFormatting, validWordChatInlineFormatting, targetWordChatAmendment, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatTableCaptureCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody, verifyNativeWordChatRowRemainder, verifyReviewedWordChatRowOracle, assertNativeWordChatInlineTarget, assertNativeWordChatInlineDependencies, verifiedNativeWordChatInlineFormatting, sameNativeProjectedWordChatParagraph } from "./word-chat-host-ooxml"
+import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody, verifyNativeWordChatRowRemainder, verifyReviewedWordChatRowOracle, assertNativeWordChatInlineTarget, assertNativeWordChatInlineDependencies, verifiedNativeWordChatInlineFormatting, sameNativeInlineWordChatParagraph, assertNativeInlineWordChatRevisionIds } from "./word-chat-host-ooxml"
 import type { WordChatAuthoredTableRow } from "../../../dochaus/lib/word-chat-contract"
 import { prepareNativeRow, queueNativeRow, type NativeRowContext } from "./word-chat-native-row"
 import { verifyNativeWordChatAddedRow } from "./word-chat-native-row-verification"
+import { normalizeNativeWordChatCommentIds as normalizeNativeWordChatAnnotationIds } from "./word-chat-native-comments"
 import { DOMParser } from "@xmldom/xmldom"
 import { wordChatApplyEligibility } from "./word-chat-apply"
 
@@ -557,6 +558,9 @@ export class WordChatHost {
     if (!eligibility.supported) throw new WordChatHostError(eligibility.reason)
     const capture = (context: WordChatContext) => this.importSnapshot(context, input.target, true, false, false, true, true, true)
     const initial = await this.word.run(capture)
+    if (!initial.projection) throw captureMismatch("Word could not capture the document for formatting.")
+    assertNativeInlineWordChatRevisionIds(initial.projection.ooxml)
+    normalizeNativeWordChatAnnotationIds(initial.projection.ooxml, initial.projection.ooxml)
     const plan = await input.author({ooxml: initial.ooxml})
     if (!("kind" in plan) || plan.kind !== "inline_format" || plan.proposalId !== input.proposalId || JSON.stringify(plan.target) !== JSON.stringify(input.target) || JSON.stringify(plan.inlineFormatting) !== JSON.stringify(format)) throw new WordChatHostError("The prepared inline change does not match the reviewed proposal. Your document is unchanged.")
     try { assertNativeWordChatInlineTarget(initial.ooxml, input.target, format) }
@@ -595,9 +599,11 @@ export class WordChatHost {
         const bodyXml = context.document.body.getRange("Whole").getOoxml()
         writeFont.load("bold,italic,underline")
         await context.sync()
-        const observed = projectNativeWordChatBody(bodyXml.value, all.items.map(p => ({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})))
+        assertNativeInlineWordChatRevisionIds(bodyXml.value)
+        const verifiedAnnotations = normalizeNativeWordChatAnnotationIds(final.projection.ooxml, bodyXml.value)
+        const observed = projectNativeWordChatBody(verifiedAnnotations, all.items.map(p => ({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})))
         if (context.document.changeTrackingMode !== final.tracking || context.document.trackFormatting !== final.trackFormatting || !sameNativeProjectionGeometry(final.projection, observed)) throw new Error("inline_geometry_or_tracking")
-        if (!observed.paragraphs.every((p, i) => i === final.index || sameNativeProjectedWordChatParagraph(final.projection!.paragraphs[i]!.xml, p.xml))) throw new Error("inline_unchanged_paragraph")
+        if (!observed.paragraphs.every((p, i) => i === final.index || sameNativeInlineWordChatParagraph(final.projection!.paragraphs[i]!.xml, p.xml))) throw new Error("inline_unchanged_paragraph")
         if ((format.bold !== undefined && writeFont.bold !== format.bold) || (format.italic !== undefined && writeFont.italic !== format.italic) || (format.underline !== undefined && writeFont.underline !== (format.underline ? "Single" : "None"))) throw new Error("inline_effective_font")
         assertNativeWordChatInlineDependencies(final.ooxml, observed.scope([final.index]))
         const authors = verifiedNativeWordChatInlineFormatting(final.ooxml, observed.scope([final.index]), input.target, format, { bold: writeFont.bold ?? undefined, italic: writeFont.italic ?? undefined, underline: writeFont.underline === "Single" ? true : writeFont.underline === "None" ? false : undefined })

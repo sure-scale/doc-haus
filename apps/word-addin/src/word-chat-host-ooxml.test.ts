@@ -419,3 +419,35 @@ test("inline formatting preserves exact formatting definition parts", async () =
   expect(()=>assertNativeWordChatInlineDependencies(before,before.replace('application/xml','text/xml'))).toThrow()
   expect(()=>assertNativeWordChatInlineDependencies(before,before.replace('>blue<','>red<'))).toThrow()
 })
+
+test("inline unchanged paragraph matches prior formatting revisions only by exact payload and position", async () => {
+  const {sameNativeInlineWordChatParagraph: same} = await import("./word-chat-host-ooxml")
+  const change = (id:string, author="Prior", date="2026-01-01T00:00:00Z", old="") => `<w:rPrChange w:id="${id}" w:author="${author}" w:date="${date}"><w:rPr>${old}</w:rPr></w:rPrChange>`
+  const para = (id:string, author="Prior", date="2026-01-01T00:00:00Z", old="") => `<w:p xmlns:w="${W}"><w:r><w:rPr><w:b/>${change(id,author,date,old)}</w:rPr><w:t>Prior</w:t></w:r><w:r><w:t>Tail</w:t></w:r></w:p>`
+  const before=para("8"), after=para("9")
+  expect(same(before,after)).toBe(true)
+  expect(same(before,para("9","Other"))).toBe(false)
+  expect(same(before,para("9","Prior","2026-01-02T00:00:00Z"))).toBe(false)
+  expect(same(before,para("9","Prior","2026-01-01T00:00:00Z","<w:i/>"))).toBe(false)
+  expect(same(before,after.replace('<w:t>Prior</w:t>','<w:t>Changed</w:t>'))).toBe(false)
+  expect(same(before,after.replace('<w:r><w:t>Tail</w:t></w:r>','<w:ins w:id="9" w:author="Prior"><w:r><w:t>Tail</w:t></w:r></w:ins>'))).toBe(false)
+})
+
+test("inline target retains prior formatting outside selection through ID reassignment", async () => {
+  const {verifiedNativeWordChatInlineFormatting: verify} = await import("./word-chat-host-ooxml")
+  const prior = (id:string) => `<w:rPrChange w:id="${id}" w:author="Prior" w:date="2026-01-01T00:00:00Z"><w:rPr/></w:rPrChange>`
+  const fresh = '<w:rPrChange w:id="8" w:author="Native" w:date="2026-01-01T00:01:00Z"><w:rPr/></w:rPrChange>'
+  const para = (id:string, newProps="") => `<w:p><w:r><w:rPr><w:b/>${prior(id)}</w:rPr><w:t>Old</w:t></w:r><w:r><w:rPr>${newProps}</w:rPr><w:t>Target</w:t></w:r></w:p>`
+  const before=flat(para("8")), after=flat(para("9",`<w:i/>${fresh}`)), target={id:"t",text:"Target",paragraphs:[{id:"p",text:"OldTarget"}],startOffset:3,endOffset:9,capturedAt:"now",saved:false}
+  expect(verify(before,after,target,{italic:true},{italic:true})).toEqual(["Native"])
+  expect(()=>verify(before,after.replace('w:author="Prior"','w:author="Other"'),target,{italic:true},{italic:true})).toThrow()
+  expect(()=>verify(before,after.replace('w:id="9"','w:id="8"'),target,{italic:true},{italic:true})).toThrow()
+})
+
+test("inline review IDs remain unique across the whole main story", async () => {
+  const { assertNativeInlineWordChatRevisionIds: verify } = await import("./word-chat-host-ooxml")
+  const prior = '<w:p><w:ins w:id="3" w:author="Earlier" w:date="2026-01-01T00:00:00Z"><w:r><w:t>Earlier</w:t></w:r></w:ins></w:p>'
+  const next = '<w:p><w:r><w:rPr><w:b/><w:rPrChange w:id="4" w:author="Native" w:date="2026-01-01T00:00:00Z"><w:rPr/></w:rPrChange></w:rPr><w:t>Target</w:t></w:r></w:p>'
+  expect(() => verify(flat(prior+next))).not.toThrow()
+  expect(() => verify(flat(prior+next.replace('w:id="4"','w:id="3"')))).toThrow("inline_revision_id_collision")
+})
