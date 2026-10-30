@@ -79,7 +79,7 @@ export default function ReviewAddMenu({ disabled, items }: { disabled: boolean; 
       const next = event.relatedTarget as Node | null
       if (open && next && !root.current?.contains(next)) setOpen(false)
     }}>
-      <button ref={trigger} className="review-add-button" type="button" disabled={disabled} aria-label="Add questions" title="Add questions" aria-expanded={open} aria-controls={id} onClick={() => setOpen((value) => !value)}>
+      <button ref={trigger} className="review-add-button" type="button" disabled={disabled} aria-label="Ways to add questions" title="Ways to add questions" aria-expanded={open} aria-controls={id} onClick={() => setOpen((value) => !value)}>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
       </button>
       <div id={id} ref={panel} className="review-add-menu" role="group" aria-label="Add questions" hidden={!open} style={place}>

@@ -97,7 +97,7 @@ try {
   const compareChoice = chooser.getByRole("radio", { name: /^Compare agreements/ })
   const reviewFill = page.getByRole("dialog", { name: /^Fill \d+ cells?\?$/ })
   // A table without questions has Add questions as its primary; otherwise starters open from the + menu.
-  const addButton = page.locator(".review-table").getByRole("button", { name: "Add questions", exact: true })
+  const addButton = page.locator(".review-table").getByRole("button", { name: "Ways to add questions", exact: true })
   const primary = page.locator(".review-toolbar .review-primary")
   const open = async (query: string) => { await page.goto(`${server.url.href}${query}`); await addButton.waitFor() }
   const showChooser = async () => {
@@ -397,10 +397,10 @@ try {
   const rerun = openRow.getByRole("button", { name: "Re-run this cell", exact: true })
   await page.mouse.move(0, 0)
   await expect.poll(() => opacity(reviewedRow.getByRole("button", { name: "Unlock", exact: true }))).toBe("1")
-  await expect(reviewedRow.getByRole("button", { name: "1 comments on First.docx: Existing question?", exact: true })).toBeVisible()
+  await expect(reviewedRow.getByRole("button", { name: "1 comment on First.docx: Existing question?", exact: true })).toBeVisible()
   await expect.poll(() => opacity(markReviewed)).toBe("0")
   assert.equal(await opacity(rerun), "0", "an unreviewed cell's re-run is quiet at rest")
-  assert.equal(await openRow.getByRole("button", { name: /comments on/ }).count(), 0, "a cell without comments shows no comment button")
+  assert.equal(await openRow.getByRole("button", { name: /comments? on/ }).count(), 0, "a cell without comments shows no comment button")
   await openRow.locator(".review-cell").hover()
   await expect.poll(() => opacity(markReviewed)).toBe("1")
   await expect.poll(() => opacity(rerun)).toBe("1")

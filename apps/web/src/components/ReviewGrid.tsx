@@ -106,8 +106,11 @@ const without = (set: ReadonlySet<string>, id: string) => {
 const reviewRows = (documents: Document[]): ReviewRow[] => documents.map((doc) => ({ name: doc.name, docPath: doc.doc_path }))
 
 // File names wrap at separators, never mid-word: before a dot, after - or _.
+// The last word keeps its extension, wrapping inside only when it cannot fit a line alone.
 function FileName({ name }: { name: string }) {
-  return <>{name.split(/(?=\.)|(?<=[-_])/).flatMap((part, i) => i ? [<wbr key={i} />, part] : [part])}</>
+  const parts = (text: string, at: string) => text.split(/(?=\.)|(?<=[-_])/).flatMap((part, i) => i ? [<wbr key={`${at}${i}`} />, part] : [part])
+  const end = name.lastIndexOf(" ") + 1
+  return <>{parts(name.slice(0, end), "a")}<span className="review-file-end">{parts(name.slice(end), "b")}</span></>
 }
 
 // Cell actions use the same 24px stroke icons as Add column.
@@ -201,7 +204,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialStarter, canEdit])
   // The question dialog: adding a column when `id` is absent. Removing a column
-  // hands focus to Add questions once the dialog and the column are gone.
+  // hands focus to the + button once the dialog and the column are gone.
   const [questionEdit, setQuestionEdit] = useState<{ id?: string }>()
   const focusAdd = useRef(false)
   useLayoutEffect(() => {
@@ -852,7 +855,16 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   // names the AI comparison; the action keeps to one unbroken phrase.
   const compareLine = (col: GridColumn) => {
     const input = compareInputs.get(col.id)
-    if (!input) return null
+    if (!input) {
+      // A filled column with fewer than two answers cited to their own document has nothing to compare; it says so.
+      const hash = hashQuestion(col.question)
+      if (col.compare === false || documents.length < 2 || running > 0 || documents.some((doc) => needsFill(grid.cells[cellKey(doc.name, col.id)], hash))) return null
+      const cited = documents.filter((doc) => {
+        const cell = grid.cells[cellKey(doc.name, col.id)]
+        return cell?.citation && cell.questionHash === hash && citesRow(cell.citation, { name: doc.name, docPath: doc.doc_path })
+      }).length
+      return <p className="review-compare-note">No AI comparison: {cited ? "only one cited answer" : "no cited answers"}</p>
+    }
     if (input === "too_many") return <p className="review-compare-note">No AI comparison: more than {MAX_COMPARE_DOCUMENTS} documents</p>
     if (comparing.has(col.id)) return <p className="review-compare-note">Comparing with AI…</p>
     const fresh = comparisonOf(col)
@@ -861,7 +873,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     const failed = compareFailed.has(col.id)
     return (
       <p className="review-compare-note">
-        {failed ? "Could not compare · " : col.comparison ? "AI comparison out of date · " : ""}
+        {failed ? "Could not compare. " : col.comparison ? "AI comparison out of date. " : ""}
         <button type="button" className="linklike" disabled={!canEdit} title={COMPARE_HELP} onClick={() => void compareColumns([col.id], saveState.current.epoch)}>
           {failed ? "Try again" : col.comparison ? "Compare again" : "Compare with AI"}
         </button>
@@ -970,8 +982,10 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                     const check = sourceCheck(key, cell)
                     // The inset bar takes the marker's tone: a changed source is a warning, a missing or foreign one danger.
                     const degraded = !!check && DEGRADED.includes(check) && !!entry.marker
+                    // A reviewed cell with a marker takes the marker's bar, not the reviewed one; its padlock says it is locked.
+                    const flagged = cell?.status === "reviewed" && !!entry.marker
                     return (
-                      <td key={col.id} className={`review-cell${cell?.status === "reviewed" ? " reviewed" : ""}${degraded ? ` degraded is-${MARKER_LOOK[entry.marker!.state].tone}` : ""}${dimmed ? " is-dimmed" : ""}`}>
+                      <td key={col.id} className={`review-cell${cell?.status === "reviewed" ? " reviewed" : ""}${degraded ? " degraded" : ""}${flagged ? " is-flagged" : ""}${degraded || flagged ? ` is-${MARKER_LOOK[entry.marker!.state].tone}` : ""}${dimmed ? " is-dimmed" : ""}`}>
                         {!cell ? (
                           <button
                             className="review-cell-fill"
@@ -1005,7 +1019,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                               {!!cell.comments?.length && (
                                 <button
                                   className="icon-btn review-note"
-                                  aria-label={`${cell.comments.length} comments on ${doc.name}: ${col.question}`}
+                                  aria-label={`${cell.comments.length} ${cell.comments.length === 1 ? "comment" : "comments"} on ${doc.name}: ${col.question}`}
                                   title={cell.comments.map((c) => `${c.author || "Unattributed"}: ${c.text}`).join("\n")}
                                   onClick={() => openDetail(doc.name, col.id)}
                                 >

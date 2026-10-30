@@ -244,8 +244,8 @@ try {
   await table.getByRole("rowheader", { name: /Supply terms\.docx/ }).getByText("Text may be incomplete or garbled").waitFor()
   assert.equal(putVersions.length, 0, "opening the grid must not write it")
   // No comments, no comment button: the first comment is added in the answer detail (below).
-  assert.equal(await page.getByRole("row", { name: /^Supply terms\.docx/ }).getByRole("button", { name: /comments on/ }).count(), 0, "a cell without comments shows no comment button")
-  assert.equal(await page.getByRole("row", { name: /^Side letter\.docx/ }).getByRole("button", { name: /^1 comments on Side letter\.docx/ }).count(), 1, "a commented cell shows its count")
+  assert.equal(await page.getByRole("row", { name: /^Supply terms\.docx/ }).getByRole("button", { name: /comments? on/ }).count(), 0, "a cell without comments shows no comment button")
+  assert.equal(await page.getByRole("row", { name: /^Side letter\.docx/ }).getByRole("button", { name: /^1 comment on Side letter\.docx/ }).count(), 1, "a commented cell shows its count")
   // Keep the first save in flight while the lawyer makes a second change.
   holdPut = true
   const firstPut = page.waitForRequest(request => request.url().endsWith("/grid") && request.method() === "PUT")
@@ -528,12 +528,12 @@ try {
 
   // Questions are added, edited and removed in one dialog. A column without
   // answers goes at once; one with answers asks first and says what goes with
-  // it, and Escape steps back to the question. Focus lands on Add questions.
+  // it, and Escape steps back to the question. Focus lands on the + button.
   storedGrid = structuredClone(grid)
   storedGrid.cells["Old note.docx::c1"]!.status = "reviewed"
   await page.goto(server.url.href)
   const focusedOn = (name: string) => page.waitForFunction(label => document.activeElement?.getAttribute("aria-label") === label || document.activeElement?.textContent === label, name)
-  await page.getByRole("table", { name: "Document review" }).getByRole("button", { name: "Add questions", exact: true }).click()
+  await page.getByRole("table", { name: "Document review" }).getByRole("button", { name: "Ways to add questions", exact: true }).click()
   await page.getByRole("button", { name: "Write a question" }).click()
   const adder = page.getByRole("dialog", { name: "Add question" })
   await page.waitForFunction(() => document.activeElement?.tagName === "TEXTAREA" && document.activeElement.closest("dialog")?.getAttribute("aria-label") === "Add question")
@@ -544,11 +544,11 @@ try {
   await adder.waitFor({ state: "detached" })
   const added = page.getByRole("button", { name: "Edit question: What is the notice period?" })
   await added.waitFor()
-  await focusedOn("Add questions")
+  await focusedOn("Ways to add questions")
   await added.click()
   await page.getByRole("dialog", { name: "Edit question" }).getByRole("button", { name: "Remove column" }).click()
   await added.waitFor({ state: "detached" })
-  await focusedOn("Add questions")
+  await focusedOn("Ways to add questions")
   const header = page.getByRole("button", { name: "Edit question: What is the governing law?" })
   await header.click()
   const editor = page.getByRole("dialog", { name: "Edit question" })
@@ -563,7 +563,7 @@ try {
   await editor.getByRole("button", { name: "Remove column" }).click()
   await confirm.getByRole("button", { name: "Remove column" }).click()
   await header.waitFor({ state: "detached" })
-  await focusedOn("Add questions")
+  await focusedOn("Ways to add questions")
   for (let attempt = 0; storedGrid.columns.length && attempt < 100; attempt++) await new Promise(resolve => setTimeout(resolve, 20))
   assert.deepEqual(storedGrid.columns, [])
   assert.deepEqual(storedGrid.cells, {})
@@ -597,7 +597,7 @@ try {
     await page.getByText("Extracting 1").waitFor({ state: "detached" })
     if (action === "none" || action === "comment") {
       await row.getByRole("button", { name: "New extracted answer" }).waitFor()
-      if (action === "comment") await row.getByRole("button", { name: /^1 comments/ }).waitFor()
+      if (action === "comment") await row.getByRole("button", { name: /^1 comment on/ }).waitFor()
     } else if (action === "delete") {
       assert.equal(await page.getByRole("button", { name: /New extracted answer/ }).count(), 0)
       assert.equal(storedGrid.columns.length, 0)
@@ -921,13 +921,13 @@ try {
   // quiet Compare again. A failed compare stores nothing, stays quiet and offers Try again.
   await page.getByRole("row", { name: /^Old note\.docx/ }).getByTitle("Re-run this cell").click()
   await page.getByRole("row", { name: /^Old note\.docx/ }).getByRole("button", { name: "New extracted answer" }).waitFor()
-  await head.getByText("AI comparison out of date ·", { exact: false }).waitFor()
+  await head.getByText("AI comparison out of date.", { exact: false }).waitFor()
   assert.equal(await differsMarker.count(), 0, "an out-of-date comparison marks nothing")
   assert.equal(compareSessions.length, 1, "a single cell's Refresh does not compare")
   compareReply = "not a comparison"
   holdCompare = false
   await head.getByRole("button", { name: "Compare again", exact: true }).click()
-  await head.getByText("Could not compare ·", { exact: false }).waitFor()
+  await head.getByText("Could not compare.", { exact: false }).waitFor()
   assert.equal(await page.getByRole("alert").count(), 0, "a failed compare raises no alert")
   assert.equal(storedGrid.columns[0]!.comparison?.comparedAt, stored?.comparedAt, "a failed compare stores nothing")
   compareReply = replyFor([[["Supply terms.docx"], "English law governs."], [["Side letter.docx"], "Scots law governs."]], "The two cited answers choose different laws.")

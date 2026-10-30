@@ -149,7 +149,7 @@ async function exercise(width: number, height: number) {
     const gridDialog = page.getByRole("dialog", { name: `Review table — ${matter.title}` })
     await expect(gridDialog).toBeVisible()
     // Starters open from the + menu in the header row.
-    const addButton = gridDialog.locator(".review-table").getByRole("button", { name: "Add questions", exact: true })
+    const addButton = gridDialog.locator(".review-table").getByRole("button", { name: "Ways to add questions", exact: true })
     const openStarters = async () => {
       await addButton.click()
       await page.getByRole("group", { name: "Add questions" }).getByRole("button", { name: "Use a starter", exact: true }).click()
@@ -202,7 +202,7 @@ async function exercise(width: number, height: number) {
     await expect(gridDialog).toBeVisible()
     await expect(gridDialog.getByRole("button", { name: "Edit question: What is the main topic?" })).toBeVisible()
     await expect(gridDialog.getByText("Invoices are payable within 30 days of receipt.")).toBeVisible()
-    await expect(gridDialog.getByRole("button", { name: "1 comments on Services agreement.docx: When is payment due?" })).toBeVisible()
+    await expect(gridDialog.getByRole("button", { name: "1 comment on Services agreement.docx: When is payment due?" })).toBeVisible()
     await openStarters()
     await chooseOverview()
     await expect(starter).toContainText("Already in the table")

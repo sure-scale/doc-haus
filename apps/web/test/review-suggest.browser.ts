@@ -95,7 +95,7 @@ try {
 
   await page.goto(server.url.href)
   const table = page.getByRole("table", { name: "Document review" })
-  const add = table.getByRole("button", { name: "Add questions", exact: true })
+  const add = table.getByRole("button", { name: "Ways to add questions", exact: true })
   const menu = page.getByRole("group", { name: "Add questions" })
   const focused = () => page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.trim())
   await add.waitFor()
@@ -130,14 +130,14 @@ try {
   await expect(about).toContainText("Not the documents' text")
   await page.keyboard.press("Escape")
   await expect(chooser).toHaveCount(0)
-  assert.equal(await focused(), "Add questions", "closing the chooser returns focus to the + button")
+  assert.equal(await focused(), "Ways to add questions", "closing the chooser returns focus to the + button")
   await add.click()
   await menu.getByRole("button", { name: "Write a question" }).click()
   const writer = page.getByRole("dialog", { name: "Add question" })
   await expect(writer).toBeVisible()
   await page.keyboard.press("Escape")
   await expect(writer).toHaveCount(0)
-  assert.equal(await focused(), "Add questions")
+  assert.equal(await focused(), "Ways to add questions")
   assert.equal(sessions.length, 0, "opening the menu and chooser calls no model")
   console.log("PASS the + menu opens, moves and closes by keyboard, and each choice opens its dialog and returns focus")
 
@@ -227,7 +227,7 @@ try {
     ["What must each party deliver, and by when?", undefined],
     ["Which law governs this document?", undefined],
   ])
-  assert.equal(await focused(), "Add questions", "adding returns focus to the + button")
+  assert.equal(await focused(), "Ways to add questions", "adding returns focus to the + button")
   assert.equal(sessions.length, 4)
   assert.ok(sessions.every(session => session.deleted), "every suggest session is deleted")
   assert.deepEqual(otherEngineCalls, [], "nothing else reaches the engine before Fill")
