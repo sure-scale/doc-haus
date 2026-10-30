@@ -1,7 +1,16 @@
 import type { WordChatInlineFormat, WordChatParagraphFormat, WordChatProposal, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion } from "../../../dochaus/lib/word-chat-amendment-contract"
 
 export type WordChatApplyEligibility = { supported: true } | { supported: false; reason: string }
+
+/** Explicit reviewed mark deletion, distinct from clearing paragraph text. */
+export function nativeWordChatParagraphDeletionEligible(target: WordChatTarget, replacement: string, action: unknown, formatting?: WordChatParagraphFormat[], inlineFormatting?: WordChatInlineFormat): boolean {
+  const snapshot = { text: target.paragraphs.map(p => p.text).join("\r"), paragraphs: target.paragraphs,
+    selection: target, saved: target.saved, capturedAt: target.capturedAt, truncated: false }
+  const canonical = targetWordChatAmendment(snapshot, target.text)
+  return !!canonical && canonical.startOffset === target.startOffset && canonical.endOffset === target.endOffset &&
+    validWordChatParagraphDeletion(snapshot, canonical, replacement, action, formatting, inlineFormatting)
+}
 
 /** A complete unchanged anchor followed by one new paragraph. The live host
  * independently verifies its structure and resolves its native identity. */
@@ -28,7 +37,10 @@ export function nativeWordChatTextEligible(target: WordChatTarget, replacement: 
 /** Transport availability only. Live Word identity, target uniqueness,
  * protection, comments/revisions, formatting and the authored artifact must
  * still pass their existing checks before any mutation. */
-export function wordChatApplyEligibility(target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[], nativeText = true, inlineFormatting?: WordChatInlineFormat): WordChatApplyEligibility {
+export function wordChatApplyEligibility(target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[], nativeText = true, inlineFormatting?: WordChatInlineFormat, paragraphAction?: WordChatProposal["paragraphAction"]): WordChatApplyEligibility {
+  if (paragraphAction !== undefined) return nativeText && nativeWordChatParagraphDeletionEligible(target, replacement, paragraphAction, formatting, inlineFormatting)
+    ? { supported: true }
+    : { supported: false, reason: "Review deletion of one complete paragraph, with its paragraph mark, before applying it." }
   if (inlineFormatting !== undefined) {
     const snapshot = { text: target.paragraphs.map(p => p.text).join("\r"), paragraphs: target.paragraphs, selection: target,
       saved: target.saved, capturedAt: target.capturedAt, truncated: false }
@@ -54,7 +66,7 @@ export function wordChatApplyEligibility(target: WordChatTarget, replacement: st
 /** Refuse known-unavailable transport before the caller claims editing, records
  * a native BEGIN or marks the Word buffer changed. Recheck even for cached UI. */
 export async function applyWordChatIfEligible<T>(proposal: WordChatProposal, apply: () => Promise<T>): Promise<T> {
-  const eligibility = wordChatApplyEligibility(proposal.target, proposal.after, proposal.formatting, true, proposal.inlineFormatting)
+  const eligibility = wordChatApplyEligibility(proposal.target, proposal.after, proposal.formatting, true, proposal.inlineFormatting, proposal.paragraphAction)
   if (!eligibility.supported) throw Object.assign(new Error(eligibility.reason), { mutationState: "unchanged" as const })
   return apply()
 }

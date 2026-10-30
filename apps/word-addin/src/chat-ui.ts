@@ -4,7 +4,7 @@ import { wordChatApplyPlan, wordChatTargetCurrent } from "../../../dochaus/lib/w
 import { ChatRequestError, type WordChatApi } from "./chat-client"
 import { nativeEventSession, subscribeNativeChatStream } from "../../../dochaus/lib/native-chat-stream"
 import type { WordChatApplyEligibility } from "./word-chat-apply"
-import { nativeWordChatParagraphInsertionEligible } from "./word-chat-apply"
+import { nativeWordChatParagraphInsertionEligible, nativeWordChatParagraphDeletionEligible } from "./word-chat-apply"
 
 export type ChatHost = {
   documentName: string
@@ -310,10 +310,13 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     const plan = wordChatApplyPlan(proposal.target, proposal.after, proposal.formatting)
     const eligibility = host.applyEligibility(proposal)
     const insertion = nativeWordChatParagraphInsertionEligible(proposal.target, proposal.after, formatting, inlineFormatting)
-    const unavailable = !eligibility.supported ? eligibility.reason : !plan.supported && !insertion ? plan.reason : undefined
-    const card = document.createElement("section"); card.className = "chat-proposal"; card.setAttribute("aria-label", (formatting || inlineFormatting) && !wordingChanged ? "Formatting to review" : "Amendment to review")
-    card.append(line("h3", wordingChanged ? "Review amendment" : "Review formatting"))
-    if (wordingChanged) {
+    const deletion = nativeWordChatParagraphDeletionEligible(proposal.target, proposal.after, proposal.paragraphAction, formatting, inlineFormatting)
+    const unavailable = !eligibility.supported ? eligibility.reason : !plan.supported && !insertion && !deletion ? plan.reason : undefined
+    const card = document.createElement("section"); card.className = "chat-proposal"; card.setAttribute("aria-label", deletion ? "Paragraph deletion to review" : (formatting || inlineFormatting) && !wordingChanged ? "Formatting to review" : "Amendment to review")
+    card.append(line("h3", deletion ? "Review deletion" : wordingChanged ? "Review amendment" : "Review formatting"))
+    if (deletion) {
+      card.append(line("pre", displayWordText(proposal.before), "chat-before"), line("p", "Delete this paragraph, including its paragraph mark.", "chat-message-meta"))
+    } else if (wordingChanged) {
       const before = document.createElement("details"); before.className = "chat-format-target"
       before.append(line("summary", "Before"), line("pre", displayWordText(proposal.before), "chat-before"))
       card.append(before, line("h4", "After"), line("pre", displayWordText(proposal.after), "chat-after"))

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
 
 test("inline formatting binds exact native UTF-16 targets without trusting model offsets", () => {
   const text = "Keep 😀 terms and terms."
@@ -201,4 +201,23 @@ test("paragraph insertion binds a unique complete native paragraph and literal n
   expect(validWordChatParagraphInsertion({...context,paragraphs:[{id:"native",text:"changed"}]},target,text+"\rAdded")).toBe(false)
   const repeated={...context,text:text+"\r"+text,paragraphs:[{id:"a",text},{id:"b",text}]}
   expect(targetWordChatAmendment(repeated,text)).toBeUndefined()
+})
+
+
+test("paragraph deletion requires explicit action and one unique complete native paragraph",()=>{
+  const text="A complete paragraph.", paragraph={id:"native",text}, snapshot:WordChatSnapshot={text,paragraphs:[paragraph],capturedAt:"now",saved:false,truncated:false}
+  const target=targetWordChatAmendment(snapshot,text)!
+  expect(validWordChatParagraphDeletion(snapshot,target,"","delete")).toBe(true)
+  expect(validWordChatParagraphDeletion(snapshot,target,"",undefined)).toBe(false)
+  expect(validWordChatParagraphDeletion(snapshot,target,"","clear")).toBe(false)
+  expect(validWordChatParagraphDeletion(snapshot,target,"changed","delete")).toBe(false)
+  expect(validWordChatParagraphDeletion(snapshot,target,"","delete",[{paragraph:0,style:"Normal"}])).toBe(false)
+  expect(validWordChatParagraphDeletion(snapshot,target,"","delete",undefined,{bold:true})).toBe(false)
+  const partial=targetWordChatAmendment(snapshot,"complete")!
+  expect(validWordChatParagraphDeletion(snapshot,partial,"","delete")).toBe(false)
+  expect(validWordChatParagraphDeletion({...snapshot,paragraphs:[{id:"native",text:"changed"}]},target,"","delete")).toBe(false)
+  expect(targetWordChatAmendment({...snapshot,text:text+"\r"+text,paragraphs:[paragraph,{id:"second",text}]},text)).toBeUndefined()
+  const selected={...snapshot,selection:{...target,id:"selection"}}
+  const resolved=targetWordChatAmendment(selected,text)!
+  expect(validWordChatParagraphDeletion(selected,resolved,"","delete")).toBe(true)
 })

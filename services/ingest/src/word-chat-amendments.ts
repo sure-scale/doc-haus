@@ -1,6 +1,6 @@
 import { authorWordChatTarget } from "../../../dochaus/lib/docx-flat-opc"
 import type { WordChatPreparedAmendment, WordChatProposal, WordChatSnapshot, WordChatTableRowInsertionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatTableRowInsertion } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatTableRowInsertion } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { authorDocxTableRowInsertion, docxTableRowInsertionTargets, type DocxTableRowInsertion } from "../../../dochaus/lib/docx-table-row-insertion"
 import { parseZip } from "../../../dochaus/lib/zip"
 
@@ -12,6 +12,15 @@ export { MAX_WORD_AMENDMENT_OOXML_BYTES, WordAmendmentError, WordFormattingError
  * resolve its stored proposal and current editing lease before calling this.
  * Neither this function nor the shared Docxodus writer publishes a version. */
 export async function authorWordChatAmendment(ooxml: string, proposal: WordChatProposal): Promise<WordChatPreparedAmendment> {
+  if (proposal.paragraphAction !== undefined) {
+    if (!proposal.id || proposal.before !== proposal.target.text) throw new Error("word_proposal_changed")
+    const target = proposal.target, snapshot = {text:target.paragraphs.map(p => p.text).join("\r"), paragraphs:target.paragraphs,
+      selection:target, capturedAt:target.capturedAt, saved:target.saved, truncated:false}
+    const canonical = targetWordChatAmendment(snapshot,target.text)
+    if (!canonical || canonical.startOffset !== target.startOffset || canonical.endOffset !== target.endOffset ||
+      !validWordChatParagraphDeletion(snapshot,canonical,proposal.after,proposal.paragraphAction,proposal.formatting,proposal.inlineFormatting)) throw new Error("word_proposal_changed")
+    return {kind:"paragraph_delete",proposalId:proposal.id,target:structuredClone(target)}
+  }
   if (proposal.inlineFormatting === undefined && proposal.id && proposal.before === proposal.target.text) {
     const target = proposal.target, snapshot = {text:target.paragraphs.map(p => p.text).join("\r"), paragraphs:target.paragraphs,
       selection:target, capturedAt:target.capturedAt, saved:target.saved, truncated:false}

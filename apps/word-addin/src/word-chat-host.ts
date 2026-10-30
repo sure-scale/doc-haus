@@ -1,4 +1,4 @@
-import type { WordChatAuthoredAmendment, WordChatPreparedAmendment, WordChatParagraphFormat, WordChatInlineFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget, WordChatTableRowInsertionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatAuthoredAmendment, WordChatPreparedAmendment, WordChatParagraphFormat, WordChatInlineFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget, WordChatTableRowInsertionProposal, WordChatProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { validWordChatFormatting, validWordChatInlineFormatting, targetWordChatAmendment, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatTableCaptureCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody, verifyNativeWordChatRowRemainder, verifyReviewedWordChatRowOracle, assertNativeWordChatInlineTarget, assertNativeWordChatInlineDependencies, verifiedNativeWordChatInlineFormatting, sameNativeInlineWordChatParagraph, assertNativeInlineWordChatRevisionIds } from "./word-chat-host-ooxml"
 import type { WordChatAuthoredTableRow } from "../../../dochaus/lib/word-chat-contract"
@@ -6,14 +6,15 @@ import { prepareNativeRow, queueNativeRow, type NativeRowContext } from "./word-
 import { verifyNativeWordChatAddedRow } from "./word-chat-native-row-verification"
 import { normalizeNativeWordChatCommentIds as normalizeNativeWordChatAnnotationIds } from "./word-chat-native-comments"
 import { assertNativeWordChatParagraphInsertionTarget, verifyNativeWordChatParagraphInsertion } from "./word-chat-native-paragraph-insert"
+import { assertNativeWordChatParagraphDeletionTarget, verifyNativeWordChatParagraphDeletion } from "./word-chat-native-paragraph-delete"
 import { DOMParser } from "@xmldom/xmldom"
-import { nativeWordChatParagraphInsertionEligible, wordChatApplyEligibility } from "./word-chat-apply"
+import { nativeWordChatParagraphInsertionEligible, nativeWordChatParagraphDeletionEligible, wordChatApplyEligibility } from "./word-chat-apply"
 
 type ClientResult<T> = { value: T }
 type Collection<T> = { items: T[]; load(properties: string): void }
 type TrackedChange = { author: string; type: string; text: string }
 type NativeTable = { rowCount: number; isUniform: boolean; values: string[][]; load(properties: string): void; getCell(row: number, column: number): { body: { paragraphs: Collection<Paragraph> } } }
-type Paragraph = { text: string; uniqueLocalId: string; tableNestingLevel: number; styleBuiltIn: string; isListItem?: boolean; spaceBefore: number; spaceAfter: number; lineSpacing: number; load(properties: string): void; getRange(location?: string): WordChatRange; insertParagraph?(text: string, location: "After"): Paragraph }
+type Paragraph = { text: string; uniqueLocalId: string; tableNestingLevel: number; styleBuiltIn: string; isListItem?: boolean; spaceBefore: number; spaceAfter: number; lineSpacing: number; load(properties: string): void; getRange(location?: string): WordChatRange; insertParagraph?(text: string, location: "After"): Paragraph; delete?(): void }
 type WordChatRange = {
   text: string
   font?: { bold: boolean | null; italic: boolean | null; underline: string | null; load(properties: string): void }
@@ -52,7 +53,7 @@ export type WordChatContext = {
 }
 export type WordChatWord = { run<T>(callback: (context: WordChatContext) => Promise<T>): Promise<T> }
 export type WordChatApplyResult = { status: "applied" | "already-applied"; tracked: true; saved: false; authors: string[]; target?: WordChatTarget }
-export type WordChatApplyInput = { proposalId: string; target: WordChatTarget; replacement: string; formatting?: WordChatParagraphFormat[]; inlineFormatting?: WordChatInlineFormat; author: (snapshot: { ooxml: string }) => Promise<WordChatPreparedAmendment>; mayDispatch?: () => boolean }
+export type WordChatApplyInput = { proposalId: string; target: WordChatTarget; replacement: string; formatting?: WordChatParagraphFormat[]; inlineFormatting?: WordChatInlineFormat; paragraphAction?: WordChatProposal["paragraphAction"]; author: (snapshot: { ooxml: string }) => Promise<WordChatPreparedAmendment>; mayDispatch?: () => boolean }
 export class WordChatHostError extends Error {
   constructor(message: string, readonly mutationState: "unchanged" | "uncertain" = "unchanged", options?: ErrorOptions) { super(message, options); this.name = "WordChatHostError" }
 }
@@ -367,7 +368,7 @@ export class WordChatHost {
     if (typeof input.author !== "function") throw new WordChatHostError("Reconnect to doc.haus to author this amendment before applying it. Your document is unchanged.")
     if (!input.proposalId || typeof input.replacement !== "string" || input.replacement.length > LIMIT || input.replacement === input.target.text && input.formatting === undefined && input.inlineFormatting === undefined)
       throw new WordChatHostError("Prepare and review a change before applying it.")
-    const identity = JSON.stringify([input.target, input.replacement, input.formatting, input.inlineFormatting])
+    const identity = JSON.stringify([input.target, input.replacement, input.formatting, input.inlineFormatting, input.paragraphAction])
     const pending = this.pending.get(input.proposalId)
     if (pending) {
       if (pending.identity !== identity) throw new WordChatHostError("This proposal has different wording. Prepare a fresh proposal.")
@@ -380,7 +381,9 @@ export class WordChatHost {
       return { status: "already-applied", tracked: true, saved: false, authors: observed.authors }
     }
     const insertion = this.nativeTextEnabled && nativeWordChatParagraphInsertionEligible(input.target, input.replacement, input.formatting, input.inlineFormatting)
-    const promise = input.inlineFormatting !== undefined ? this.applyInlineOnce(input, identity) : insertion ? this.applyParagraphInsertionOnce(input, identity) : this.applyOnce(input, identity)
+    if (input.paragraphAction !== undefined && (!this.nativeTextEnabled || !nativeWordChatParagraphDeletionEligible(input.target, input.replacement, input.paragraphAction, input.formatting, input.inlineFormatting)))
+      throw new WordChatHostError("Review deletion of one complete paragraph before applying it. Your document is unchanged.")
+    const promise = input.paragraphAction !== undefined ? this.applyParagraphDeletionOnce(input, identity) : input.inlineFormatting !== undefined ? this.applyInlineOnce(input, identity) : insertion ? this.applyParagraphInsertionOnce(input, identity) : this.applyOnce(input, identity)
     this.pending.set(input.proposalId, { identity, promise })
     try { return await promise } finally { this.pending.delete(input.proposalId) }
   }
@@ -547,6 +550,60 @@ export class WordChatHost {
     const nearby = projection ? [index - 1, index + target.paragraphs.length].filter(i => i >= 0 && i < ids.length).map(i => ({ id:ids[i]!, ooxml:projection.scope([i]) })) : adjacent.map(p => ({ id:p.id, ooxml:p.xml.value }))
     return { range, selected, ooxml: scoped, ids, index, nesting: paragraphs.map(p => p.tableNestingLevel), adjacent: nearby, projection, tracking: context.document.changeTrackingMode, trackFormatting: formatting ? context.document.trackFormatting : undefined,
       changes: bodyChanges.items.map(change => ({ author: change.author, type: change.type, text: change.text })) }
+  }
+
+  private async applyParagraphDeletionOnce(input: WordChatApplyInput, identity: string): Promise<WordChatApplyResult> {
+    const capture = async (context: WordChatContext) => {
+      const snapshot = await this.importSnapshot(context, input.target, false, false, false, false, true, true)
+      if (!snapshot.projection) throw captureMismatch("Word could not capture the paragraph to delete.")
+      const index = assertNativeWordChatParagraphDeletionTarget(snapshot.projection, input.target)
+      const anchor = context.document.getParagraphByUniqueLocalId(input.target.paragraphs[0]!.id)
+      const following = context.document.getParagraphByUniqueLocalId(snapshot.projection.paragraphs[index + 1]!.id)
+      anchor.load("styleBuiltIn,isListItem"); following.load("styleBuiltIn,isListItem")
+      const current = context.document.body.getRange("Content").getReviewedText("Current")
+      await context.sync()
+      if ([anchor, following].some(p => p.styleBuiltIn !== "Normal" || p.isListItem !== false))
+        throw new WordChatHostError("This paragraph boundary uses heading or list formatting. Your document is unchanged.")
+      const span = input.target.text + "\r", at = current.value.indexOf(span)
+      if (at < 0 || at > 0 && current.value[at - 1] !== "\r" || current.value.indexOf(span, at + 1) !== -1)
+        throw captureMismatch("Word could not uniquely confirm the paragraph and its following boundary.")
+      return { ...snapshot, current: current.value, expected: current.value.slice(0, at) + current.value.slice(at + span.length) }
+    }
+    const initial = await this.word.run(capture)
+    const plan = await input.author({ ooxml: initial.ooxml })
+    if (!("kind" in plan) || plan.kind !== "paragraph_delete" || plan.proposalId !== input.proposalId ||
+      JSON.stringify(plan.target) !== JSON.stringify(input.target))
+      throw new WordChatHostError("The prepared deletion does not match the reviewed proposal. Your document is unchanged.")
+    return this.word.run(async context => {
+      const fresh = await capture(context)
+      if (!sameWordChatTargetSnapshot(initial.ooxml, fresh.ooxml) || initial.current !== fresh.current ||
+        !sameNativeProjectionGeometry(initial.projection!, fresh.projection!))
+        throw captureMismatch("The paragraph or its boundary changed during review.")
+      const paragraph = context.document.getParagraphByUniqueLocalId(input.target.paragraphs[0]!.id)
+      if (typeof paragraph.delete !== "function") throw new WordChatHostError("Word cannot delete this paragraph. Your document is unchanged.")
+      if (input.mayDispatch && !input.mayDispatch()) throw new WordChatHostError("The Word pane closed before the change was applied. Your document is unchanged.")
+      this.applied.set(input.proposalId, { identity, authors: [], uncertain: true })
+      try {
+        context.document.changeTrackingMode = "TrackAll"
+        paragraph.delete()
+        context.document.changeTrackingMode = fresh.tracking
+        await context.sync()
+        context.document.load("changeTrackingMode")
+        const all = context.document.body.paragraphs
+        all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+        const body = context.document.body.getRange("Whole").getOoxml()
+        const current = context.document.body.getRange("Content").getReviewedText("Current")
+        await context.sync()
+        if (context.document.changeTrackingMode !== fresh.tracking || current.value !== fresh.expected)
+          throw new Error("paragraph_delete_current")
+        const observed = projectNativeWordChatBody(body.value, all.items.map(p => ({ id: p.uniqueLocalId, text: p.text, tableNestingLevel: p.tableNestingLevel })))
+        const authors = verifyNativeWordChatParagraphDeletion(fresh.projection!, observed, input.target)
+        this.applied.set(input.proposalId, { identity, authors, uncertain: false })
+        return { status: "applied", tracked: true, saved: false, authors }
+      } catch (cause) {
+        throw new WordChatHostError("Word may contain the deletion, but could not confirm its tracked changes. Inspect it and use Undo if needed. Do not apply this proposal again.", "uncertain", { cause })
+      }
+    })
   }
 
   private async applyParagraphInsertionOnce(input: WordChatApplyInput, identity: string): Promise<WordChatApplyResult> {
@@ -990,7 +1047,7 @@ export const captureWordChatSelection = () => host().selection()
 export const applyReviewedProposal = (proposal: import("../../../dochaus/lib/word-chat-amendment-contract").WordChatProposal,
   author: WordChatApplyInput["author"], mayDispatch?: () => boolean) => {
   if (proposal.before !== proposal.target.text) throw new WordChatHostError("Review a fresh amendment before applying it.")
-  return host().apply({proposalId: proposal.id,target: proposal.target,replacement: proposal.after,formatting: proposal.formatting,inlineFormatting: proposal.inlineFormatting,author,mayDispatch})
+  return host().apply({proposalId: proposal.id,target: proposal.target,replacement: proposal.after,formatting: proposal.formatting,inlineFormatting: proposal.inlineFormatting,paragraphAction:proposal.paragraphAction,author,mayDispatch})
 }
 
 export const applyReviewedTableRow = (proposal: WordChatTableRowInsertionProposal, exportCurrent: () => Promise<Uint8Array>,

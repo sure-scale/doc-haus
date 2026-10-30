@@ -1132,3 +1132,27 @@ test("cleared segmented answers show only their running, stopped or error state"
     } finally { f.restore() }
   }
 })
+
+test("paragraph deletion review shows the text and mark decision then consumes its controls", async () => {
+  let calls=0
+  const deletion:WordChatProposal={...proposal,after:"",paragraphAction:"delete"}
+  const f=fixture({turns:[turn({kind:"amendment",proposal:deletion})],host:{
+    apply:async p=>{expect(p.paragraphAction).toBe("delete");calls++},
+    applyEligibility:p=>wordChatApplyEligibility(p.target,p.after,p.formatting,true,p.inlineFormatting,p.paragraphAction),
+  }})
+  try {
+    await f.chat.ready
+    const card=f.root.querySelector('[aria-label="Paragraph deletion to review"]')!
+    expect(card.textContent).toContain(proposal.before)
+    expect(card.textContent).toContain("including its paragraph mark")
+    expect(card.querySelector(".chat-after")).toBeNull()
+    const apply=[...card.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="Apply")!
+    expect(apply).toBeDefined()
+    apply.click();await Bun.sleep(0)
+    expect(calls).toBe(1)
+    expect(card.isConnected).toBe(false)
+    expect(f.root.querySelector(".chat-proposal-actions")).toBeNull()
+    expect(f.root.textContent).toContain("Applied in Word")
+    apply.click();expect(calls).toBe(1)
+  }finally{f.restore()}
+})

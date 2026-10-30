@@ -60,6 +60,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false, wholeOoxmlTrailingParagraph: false,
     inlineBold: false, inlineAfter: "", inlineWrites: 0,
     paragraphInsertions: 0, corruptParagraphInsertion: false, insertedParagraphStyle: "Normal",
+    paragraphDeletions: 0, corruptParagraphDeletion: false, wrongDeletionCurrent: false,
     nativeFormatting: [] as string[], dropNativeFormatting: false, terminalBodyMark: false, cellWholeExpandsRow: false, refuseEmptyContentXml: false,
     omitContentProperties: false, paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
   }
@@ -251,7 +252,8 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
         const mark = properties && Array.from(properties.childNodes).find(n => n.nodeType === 1 && (n as Element).namespaceURI === WORD_XML && (n as Element).localName === "rPr")
         return mark && Array.from(mark.childNodes).some(n => n.nodeType === 1 && (n as Element).namespaceURI === WORD_XML && (n as Element).localName === "del")
       }
-      return { value: complete ? paragraphs.filter(p => !deletedMark(p)).map(p => p.text).join(state.separator) : this.text }
+      return { value: state.paragraphDeletions && state.wrongDeletionCurrent && this.start === 0 && this.end === text().length ? "Wrong current document" :
+        complete ? paragraphs.filter(p => !deletedMark(p)).map(p => p.text).join(state.separator) : this.text }
     }
     getComments() { return collection(state.comments.filter(([start, end]) => intersects(this.start, this.end, start, end)).map((_, index) => ({ author: "Commenter", content: `Comment ${index + 1}`, resolved: false }))) }
     getTrackedChanges() {
@@ -316,6 +318,28 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       if (location === "Start") return new Range(at.start, at.start)
       if (location === "End") return new Range(at.end, at.end)
       return new Range(at.start, at.end + (location === "Whole" ? 1 : 0), false, state.cellWholeExpandsRow && Boolean(p.inTable) && location === "Whole", location === "Content")
+    },
+    delete() {
+      queue.push(() => {
+        state.paragraphDeletions++
+        const stamp = 'w:author="Native user" w:date="2026-01-01T00:00:00Z"'
+        const oldXml = state.paragraphXml.get(p.id) ?? `<w:p><w:r><w:t xml:space="preserve">${escapeXml(p.text)}</w:t></w:r></w:p>`
+        const doc = new DOMParser().parseFromString(flatOpc(oldXml), "application/xml")
+        const block = doc.getElementsByTagNameNS(WORD_XML, "p")[0]!
+        const originalRun = block.getElementsByTagNameNS(WORD_XML, "r")[0]!.cloneNode(true) as Element
+        const originalText = originalRun.getElementsByTagNameNS(WORD_XML, "t")[0]!
+        const deletedText = doc.createElementNS(WORD_XML, "w:delText")
+        for (const attr of Array.from(originalText.attributes)) deletedText.setAttributeNS(attr.namespaceURI, attr.name, attr.value)
+        deletedText.textContent = p.text + (state.corruptParagraphDeletion ? "wrong" : "")
+        originalRun.replaceChild(deletedText, originalText)
+        while (block.firstChild) block.removeChild(block.firstChild)
+        const markup = `<w:p><w:pPr><w:rPr><w:del w:id="1" ${stamp}/></w:rPr></w:pPr><w:del w:id="2" ${stamp}>${new XMLSerializer().serializeToString(originalRun)}</w:del></w:p>`
+        const deleted = new DOMParser().parseFromString(flatOpc(markup), "application/xml").getElementsByTagNameNS(WORD_XML, "p")[0]!
+        for (const child of Array.from(deleted.childNodes)) block.appendChild(doc.importNode(child, true))
+        state.paragraphXml.set(p.id, new XMLSerializer().serializeToString(block))
+        p.text = ""
+        state.saved = false
+      })
     },
     insertParagraph(value: string, location: string) {
       if (location !== "After") throw new Error("Unsupported insertion location")
@@ -1644,4 +1668,44 @@ test("native paragraph insertion reports uncertainty when inserted style differs
   await expect(nativeHost.apply(input)).rejects.toMatchObject({mutationState:"uncertain"})
   await expect(nativeHost.apply(input)).rejects.toMatchObject({mutationState:"uncertain"})
   expect(state.paragraphInsertions).toBe(1)
+})
+
+test("explicit paragraph deletion tracks text and mark, preserves the following paragraph and never replays", async () => {
+  for (const tracking of ["Off", "TrackAll"]) for (const corrupt of ["none", "markup", "current"]) {
+    const {state,nativeHost}=office(["An existing obligation.","A following provision."],true)
+    state.tracking=tracking
+    state.selection=[0,"An existing obligation.".length]
+    const target=(await nativeHost.selection())!
+    state.corruptParagraphDeletion=corrupt==="markup"
+    state.wrongDeletionCurrent=corrupt==="current"
+    const input={proposalId:"delete-paragraph",target,replacement:"",paragraphAction:"delete" as const,
+      author:async () => ({kind:"paragraph_delete" as const,proposalId:"delete-paragraph",target})}
+    if(corrupt==="none") {
+      expect((await nativeHost.apply(input)).status).toBe("applied")
+      expect((await nativeHost.apply(input)).status).toBe("already-applied")
+      expect(state.paragraphs.map(p=>[p.id,p.text])).toEqual([["paragraph-0",""],["paragraph-1","A following provision."]])
+    } else {
+      await expect(nativeHost.apply(input)).rejects.toMatchObject({mutationState:"uncertain"})
+      await expect(nativeHost.apply(input)).rejects.toMatchObject({mutationState:"uncertain"})
+    }
+    expect(state.paragraphDeletions).toBe(1)
+    expect(state.tracking).toBe(tracking)
+    expect(state.modeChanges).toEqual(["TrackAll",tracking])
+  }
+})
+
+test("paragraph deletion rejects a forged prepared action and final boundary without writing", async () => {
+  const {state,nativeHost}=office(["An existing obligation.","A following provision."],true)
+  state.selection=[0,"An existing obligation.".length]
+  const target=(await nativeHost.selection())!
+  await expect(nativeHost.apply({proposalId:"delete-bound",target,replacement:"",paragraphAction:"delete",
+    author:async () => ({kind:"paragraph_delete" as const,proposalId:"other",target})})).rejects.toMatchObject({mutationState:"unchanged"})
+  expect(state.paragraphDeletions).toBe(0)
+  const final=office(["Only paragraph."],true)
+  const last=(await final.nativeHost.selection())!
+  let authorCalls=0
+  await expect(final.nativeHost.apply({proposalId:"final",target:last,replacement:"",paragraphAction:"delete",
+    author:async()=>{authorCalls++;return {kind:"paragraph_delete" as const,proposalId:"final",target:last}}})).rejects.toThrow()
+  expect(authorCalls).toBe(0)
+  expect(final.state.paragraphDeletions).toBe(0)
 })

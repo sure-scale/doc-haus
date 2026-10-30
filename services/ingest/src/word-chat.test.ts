@@ -1322,3 +1322,51 @@ test("paragraph insertion prepare uses stored reviewed proposal and existing lea
     settleWordNativeOperation(db,owner,seq+1,"insert-prepare","not-dispatched"); clearWordEditLease(db,owner.document); db.close()
   }
 })
+
+test("explicit paragraph deletion remains distinct from clearing text through review and prepare",async()=>{
+  const id=await newConversation(), text=context.text
+  const request=(extra:object={})=>post("send",{conversationId:id,scope:"document",text:"Remove this paragraph",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context,...extra})
+  const output=(proposal:object,extra:object={})=>{modelStructuredRawOutput=JSON.stringify({answerParts:[{type:"text",text:"Prepared."}],proposal,...extra})}
+  let turn:WordChatTurn
+  try {
+    output({before:text,after:"",paragraphAction:"delete",explanation:"Remove paragraph",openItems:[]})
+    turn=(await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(turn.proposal?.paragraphAction).toBe("delete")
+    const contract = JSON.parse(sessionContext(turn.id).split("\n").at(-2)!).responseContract
+    expect(contract).toContain('set proposal.paragraphAction to "delete"')
+    expect(contract).toContain("To clear wording while keeping the paragraph, omit paragraphAction")
+    const reviewer=[...sessions.values()].find(session=>session.parentID===turn.id && session.metadata.type==="word-chat-review")!
+    expect(sessionContext(reviewer.id)).toContain('"paragraphAction":"delete"')
+    const refined=(await (await request({proposal:turn.proposal,context:{...context,capturedAt:"later"}})).json() as {turn:WordChatTurn}).turn
+    expect(refined.proposal?.target).toEqual(turn.proposal!.target); expect(refined.proposal?.paragraphAction).toBe("delete")
+    expect((await request({proposal:turn.proposal,context:{...context,text:"changed",paragraphs:[{id:"11",text:"changed"}]}})).status).toBe(409)
+    for (const bad of [
+      {before:text,after:"",paragraphAction:"clear"}, {before:text,after:"change",paragraphAction:"delete"},
+      {before:text,after:"",paragraphAction:"delete",formatting:[{paragraph:0,style:"Normal"}]},
+      {before:text,after:"",paragraphAction:"delete",inlineFormatting:{bold:true}},
+      {before:"Tuesday",after:"",paragraphAction:"delete"},
+    ]) { output(bad); const result=(await (await request()).json() as {turn:WordChatTurn}).turn; expect(result.proposal).toBeUndefined() }
+    output({before:text,after:""},{paragraphAction:"delete"})
+    expect((await (await request()).json() as {turn:WordChatTurn}).turn.proposal).toBeUndefined()
+    output({before:text,after:"",explanation:"Clear wording",openItems:[]})
+    const clear=(await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(clear.proposal?.paragraphAction).toBeUndefined(); expect(clear.proposal?.after).toBe("")
+  } finally {modelStructuredRawOutput=undefined}
+  const current=readCurrentVersion(directory,"Draft.docx")!,db=openDb(directory)
+  db.run("INSERT OR IGNORE INTO word_grants(token_hash,document_id,origin,issued_version,created_at) VALUES (?,?,?,?,?)",[auth.grant.token_hash,auth.grant.document_id,auth.grant.origin,auth.grant.issued_version,Date.now()])
+  const owner=claimWordEditLease(db,{document:auth.grant.document_id,tokenHash:auth.grant.token_hash,session:"delete-prepare-session"})
+  const seq=(db.query("SELECT native_sequence FROM word_edit_leases WHERE document_id = ?").get(owner.document) as {native_sequence:number}).native_sequence
+  beginWordNativeOperation(db,owner,seq,"delete-prepare",undefined,{conversationId:id,turnId:turn.id})
+  const preparing=new Hono(); installWordChat(preparing,()=>auth,{fetch:transport,engineURL:"http://synthetic.invalid"})
+  const headers={"content-type":"application/json","x-dochaus-word-session":owner.session,"x-dochaus-word-lease":owner.generation,"x-dochaus-word-base-version":current.current.id}
+  const prepare=()=>preparing.request("/word/chat/prepare",{method:"POST",headers,body:JSON.stringify({conversationId:id,turnId:turn.id,ooxml:"current capture",proposal:{...turn.proposal,paragraphAction:"clear"}})})
+  try {
+    const result=await prepare(); expect(result.status).toBe(200)
+    expect(await result.json()).toEqual({kind:"paragraph_delete",proposalId:turn.proposal!.id,target:turn.proposal!.target})
+    db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",["other-turn",owner.document])
+    expect((await prepare()).status).toBe(409)
+  } finally {
+    db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",[turn.id,owner.document])
+    settleWordNativeOperation(db,owner,seq+1,"delete-prepare","not-dispatched");clearWordEditLease(db,owner.document);db.close()
+  }
+})

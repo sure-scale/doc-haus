@@ -32,6 +32,7 @@ test("the same evidence receives the selected answer or independent-review contr
 test("amendment contract permits mixed wording and layout without deciding unsupported matters", () => {
   const contract = conversationResponseContract("amendment")
   expect(contract).toContain("requested wording and layout together")
+  expect(contract).not.toContain("paragraphAction")
   expect(contract).toContain("resulting complete paragraphs")
   expect(contract).toContain("Put formatting inside proposal.formatting, never at the top level")
   expect(contract).toContain('"openItems":["unresolved item"]')

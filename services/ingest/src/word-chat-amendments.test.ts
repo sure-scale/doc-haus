@@ -50,3 +50,15 @@ test("paragraph insertion plan preserves the reviewed new paragraph Normal style
   plan.formatting[0]!.style="Title"
   expect(proposal.formatting![0]!.style).toBe("Normal")
 })
+
+
+test("explicit paragraph deletion prepares a source-bound command without importing DOCX",async()=>{
+  const text="A full paragraph.",target={id:"selection",text,paragraphs:[{id:"native",text}],startOffset:0,endOffset:text.length,capturedAt:"now",saved:false}
+  const proposal:WordChatProposal={id:"reviewed",documentId:"document",before:text,after:"",paragraphAction:"delete",target,explanation:"Remove",openItems:[],createdAt:"now"}
+  const plan=await authorWordChatAmendment("unused",proposal)
+  expect(plan).toEqual({kind:"paragraph_delete",proposalId:"reviewed",target})
+  if (!("kind" in plan)) throw Error("Expected plan")
+  plan.target.paragraphs[0]!.text="changed"; expect(proposal.target.paragraphs[0]!.text).toBe(text)
+  for (const bad of [{...proposal,after:"new"},{...proposal,paragraphAction:"clear" as never},{...proposal,formatting:[{paragraph:0,style:"Normal" as const}]},{...proposal,inlineFormatting:{bold:true}},{...proposal,target:{...target,startOffset:1}}])
+    await expect(authorWordChatAmendment("unused",bad)).rejects.toThrow("word_proposal_changed")
+})

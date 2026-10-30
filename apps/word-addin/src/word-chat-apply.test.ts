@@ -19,6 +19,17 @@ test("inline formatting eligibility accepts exact partial and whole-paragraph sp
   expect(wordChatApplyEligibility(whole, whole.text, undefined, true, { underline: false })).toEqual({ supported: true })
 })
 
+test("paragraph mark deletion needs an explicit action on the complete reviewed paragraph", () => {
+  const whole = { ...target, text: "Alpha beta", startOffset: 0, endOffset: 10 }
+  expect(wordChatApplyEligibility(whole, "", undefined, true, undefined, "delete").supported).toBe(true)
+  expect(wordChatApplyEligibility(whole, "").supported).toBe(false)
+  expect(wordChatApplyEligibility(target, "", undefined, true, undefined, "delete").supported).toBe(false)
+  expect(wordChatApplyEligibility(whole, "changed", undefined, true, undefined, "delete").supported).toBe(false)
+  expect(wordChatApplyEligibility(whole, "", [{paragraph:0,style:"Normal"}], true, undefined, "delete").supported).toBe(false)
+  expect(wordChatApplyEligibility(whole, "", undefined, true, {bold:true}, "delete").supported).toBe(false)
+  expect(wordChatApplyEligibility(whole, "", undefined, false, undefined, "delete").supported).toBe(false)
+})
+
 test("native paragraph insertion requires a complete unchanged anchor and one new paragraph", () => {
   const whole = { ...target, text: "Alpha beta", startOffset: 0, endOffset: 10 }
   expect(wordChatApplyEligibility(whole, "Alpha beta\rNew paragraph.").supported).toBe(true)
