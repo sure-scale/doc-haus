@@ -65,6 +65,25 @@ test("row card applies once and disables all review actions while pending", asyn
   } finally { finish(); f.restore() }
 })
 
+test("native paragraph insertion review offers Apply without the legacy import boundary warning", async () => {
+  let calls = 0
+  const inserted = { ...proposal, after: `${proposal.before}\rA new independent obligation.` }
+  const f = fixture({ turns: [turn({ kind: "amendment", proposal: inserted })], host: {
+    apply: async () => { calls++ },
+    applyEligibility: p => wordChatApplyEligibility(p.target, p.after, p.formatting, true, p.inlineFormatting),
+  } })
+  try {
+    await f.chat.ready
+    expect(f.root.textContent).toContain("A new independent obligation.")
+    expect(f.root.textContent).not.toContain("paragraph restructuring")
+    const apply = [...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(b => b.textContent === "Apply")!
+    expect(apply).toBeDefined()
+    apply.click(); await Bun.sleep(0)
+    expect(calls).toBe(1)
+    expect(f.root.querySelector(".chat-proposal-actions")).toBeNull()
+  } finally { f.restore() }
+})
+
 test("row uncertainty, prior application, unavailable callback and pending review never offer a retry", async () => {
   let calls = 0
   const uncertain = fixture({turns:[turn({kind:"amendment",rowProposal})],host:{applyRow:async () => {calls++; throw Object.assign(new Error("uncertain"),{mutationState:"uncertain"})}}})

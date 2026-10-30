@@ -19,6 +19,16 @@ test("inline formatting eligibility accepts exact partial and whole-paragraph sp
   expect(wordChatApplyEligibility(whole, whole.text, undefined, true, { underline: false })).toEqual({ supported: true })
 })
 
+test("native paragraph insertion requires a complete unchanged anchor and one new paragraph", () => {
+  const whole = { ...target, text: "Alpha beta", startOffset: 0, endOffset: 10 }
+  expect(wordChatApplyEligibility(whole, "Alpha beta\rNew paragraph.").supported).toBe(true)
+  expect(wordChatApplyEligibility(target, "beta\rNew paragraph.").supported).toBe(false)
+  expect(wordChatApplyEligibility(whole, "Changed anchor\rNew paragraph.").supported).toBe(false)
+  expect(wordChatApplyEligibility(whole, "Alpha beta\rNew paragraph.\rAnother paragraph.").supported).toBe(false)
+  expect(wordChatApplyEligibility(whole, "Alpha beta\rNew paragraph.", undefined, false).supported).toBe(false)
+  expect(wordChatApplyEligibility(whole, "Alpha beta\rNew paragraph.", [{ paragraph: 0, spacingAfter: 6 }]).supported).toBe(false)
+})
+
 test("inline formatting eligibility refuses changed wording, malformed properties, mixed formatting, and mismatched native offsets", () => {
   expect(wordChatApplyEligibility(target, "changed", undefined, true, { bold: true }).supported).toBe(false)
   expect(wordChatApplyEligibility(target, target.text, undefined, true, { bold: "true" } as never).supported).toBe(false)

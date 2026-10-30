@@ -116,7 +116,13 @@ export type WordChatInlineFormattingPlan = {
   target: WordChatTarget
   inlineFormatting: WordChatInlineFormat
 }
-export type WordChatPreparedAmendment = WordChatAuthoredAmendment | WordChatInlineFormattingPlan
+export type WordChatParagraphInsertionPlan = {
+  kind: "paragraph_insert"
+  proposalId: string
+  target: WordChatTarget
+  text: string
+}
+export type WordChatPreparedAmendment = WordChatAuthoredAmendment | WordChatInlineFormattingPlan | WordChatParagraphInsertionPlan
 export type WordChatParagraphFormat = {
   /** Zero-based index within the resulting complete paragraphs. */
   paragraph: number
@@ -135,6 +141,21 @@ export type WordChatAuthoredAmendment = {
   author: "doc.haus"
   formatting?: WordChatParagraphFormat[]
   wording?: { ooxml: string; unformattedOoxml?: string; revisions: WordChatAuthoredAmendment["revisions"] }
+}
+
+/** Bind one literal inserted paragraph to a uniquely resolved complete source paragraph. */
+export function validWordChatParagraphInsertion(snapshot: WordChatSnapshot, target: WordChatTarget, replacement: unknown, formatting?: unknown, inlineFormatting?: unknown): boolean {
+  if (!snapshot || !target || !Array.isArray(snapshot.paragraphs) || !Array.isArray(target.paragraphs) || target.paragraphs.length !== 1 ||
+    typeof target.text !== "string" || !target.text.trim() || !wellFormedWordChatCell(target.text) ||
+    target.startOffset !== 0 || target.endOffset !== target.paragraphs[0]?.text.length || target.text !== target.paragraphs[0]?.text ||
+    !wordChatTargetCurrent(snapshot,target) || snapshot.selection && !wordChatTargetCurrent(snapshot,snapshot.selection) ||
+    formatting !== undefined || inlineFormatting !== undefined || typeof replacement !== "string" || !replacement.startsWith(target.text + "\r")) return false
+  const inserted = replacement.slice(target.text.length + 1)
+  if (!inserted.trim() || inserted.length > 24_000 || !wellFormedWordChatCell(inserted) || /[\u0000-\u001f\u007f]/.test(inserted)) return false
+  const resolved = targetWordChatAmendment(snapshot,target.text)
+  return !!resolved && resolved.id === target.id && resolved.capturedAt === target.capturedAt && resolved.saved === target.saved &&
+    resolved.startOffset === target.startOffset && resolved.endOffset === target.endOffset && resolved.paragraphs.length === 1 &&
+    resolved.paragraphs[0]!.id === target.paragraphs[0]!.id && resolved.paragraphs[0]!.text === target.paragraphs[0]!.text
 }
 
 /** Bind inline properties to the unique resolved native paragraph and UTF-16

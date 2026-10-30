@@ -1,7 +1,17 @@
 import type { WordChatInlineFormat, WordChatParagraphFormat, WordChatProposal, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion } from "../../../dochaus/lib/word-chat-amendment-contract"
 
 export type WordChatApplyEligibility = { supported: true } | { supported: false; reason: string }
+
+/** A complete unchanged anchor followed by one new paragraph. The live host
+ * independently verifies its structure and resolves its native identity. */
+export function nativeWordChatParagraphInsertionEligible(target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[], inlineFormatting?: WordChatInlineFormat): boolean {
+  const snapshot = { text: target.paragraphs.map(p => p.text).join("\r"), paragraphs: target.paragraphs,
+    selection: target, saved: target.saved, capturedAt: target.capturedAt, truncated: false }
+  const canonical = targetWordChatAmendment(snapshot, target.text)
+  return !!canonical && canonical.startOffset === target.startOffset && canonical.endOffset === target.endOffset &&
+    validWordChatParagraphInsertion(snapshot, canonical, replacement, formatting, inlineFormatting)
+}
 
 /** Native wording transport for ordinary single-paragraph changes. Exact
  * authored hunks, formatting and fresh Word scope are verified by the host. */
@@ -35,6 +45,7 @@ export function wordChatApplyEligibility(target: WordChatTarget, replacement: st
       ? { supported: true }
       : { supported: false, reason: "Word cannot safely apply this formatting change yet. Make it directly in Word." }
   }
+  if (nativeText && nativeWordChatParagraphInsertionEligible(target, replacement)) return { supported: true }
   if (nativeText && nativeWordChatTextEligible(target, replacement)) return { supported: true }
   if (replacement === target.text) return { supported: false, reason: "Choose a wording, formatting or structural change to apply." }
   return { supported: false, reason: "Word cannot safely apply this change yet. Make it directly in Word." }

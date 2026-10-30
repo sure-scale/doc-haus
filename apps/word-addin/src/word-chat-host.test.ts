@@ -59,6 +59,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     nativeRevisions: [] as Array<{ start: number; end: number; author: string; type: string; text: string }>,
     extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false, wholeOoxmlTrailingParagraph: false,
     inlineBold: false, inlineAfter: "", inlineWrites: 0,
+    paragraphInsertions: 0, corruptParagraphInsertion: false,
     nativeFormatting: [] as string[], dropNativeFormatting: false, terminalBodyMark: false, cellWholeExpandsRow: false, refuseEmptyContentXml: false,
     omitContentProperties: false, paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
   }
@@ -315,6 +316,28 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       if (location === "Start") return new Range(at.start, at.start)
       if (location === "End") return new Range(at.end, at.end)
       return new Range(at.start, at.end + (location === "Whole" ? 1 : 0), false, state.cellWholeExpandsRow && Boolean(p.inTable) && location === "Whole", location === "Content")
+    },
+    insertParagraph(value: string, location: string) {
+      if (location !== "After") throw new Error("Unsupported insertion location")
+      queue.push(() => {
+        const index = state.paragraphs.indexOf(p), oldId = p.id
+        const oldXml = state.paragraphXml.get(oldId) ?? `<w:p><w:r><w:t>${escapeXml(p.text)}</w:t></w:r></w:p>`
+        const stamp = 'w:author="Native user" w:date="2026-01-01T00:00:00Z"'
+        state.paragraphInsertions++
+        p.id = `retained-${state.paragraphInsertions}`
+        state.paragraphs.splice(index + 1, 0, { id: oldId, text: value })
+        state.paragraphXml.delete(oldId)
+        const left = new DOMParser().parseFromString(flatOpc(oldXml), "application/xml").getElementsByTagNameNS(WORD_XML, "p")[0]!
+        left.setAttributeNS("http://schemas.microsoft.com/office/word/2010/wordml", "w14:paraId", "00000003")
+        const properties = left.ownerDocument!.createElementNS(WORD_XML, "w:pPr")
+        const marker = new DOMParser().parseFromString(flatOpc(`<w:p><w:pPr><w:rPr><w:ins w:id="1" ${stamp}/></w:rPr></w:pPr></w:p>`), "application/xml").getElementsByTagNameNS(WORD_XML, "rPr")[0]!
+        properties.appendChild(left.ownerDocument!.importNode(marker, true))
+        left.insertBefore(properties, left.firstChild)
+        state.paragraphXml.set(p.id, new XMLSerializer().serializeToString(left))
+        state.paragraphXml.set(oldId, `<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="00000001"><w:ins w:id="2" ${stamp}><w:r><w:t>${escapeXml(state.corruptParagraphInsertion ? value + "wrong" : value)}</w:t></w:r></w:ins></w:p>`)
+        state.saved = false
+      })
+      return paragraph(p)
     },
     insertAnnotations(set: unknown) {
       const id = `annotation-${++state.annotationCounter}`
@@ -1572,4 +1595,39 @@ test("inline plan binding refuses forgery and satisfied native font is a no-op",
   expect((await nativeHost.apply(noOp)).status).toBe("applied")
   expect(state.inlineWrites).toBe(0)
   expect((await nativeHost.apply(noOp)).status).toBe("already-applied")
+})
+
+test("native paragraph insertion restores tracking and never repeats a dispatched operation", async () => {
+  for (const tracking of ["Off", "TrackAll"]) for (const corrupt of [false, true]) {
+    const { state, nativeHost } = office(["An existing obligation."], true)
+    state.tracking = tracking
+    state.paragraphXml.set("paragraph-0", '<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="00000001"><w:r><w:t>An existing obligation.</w:t></w:r></w:p>')
+    const target = (await nativeHost.selection())!
+    state.corruptParagraphInsertion = corrupt
+    const input = { proposalId: "paragraph-insertion", target, replacement: `${target.text}\rA new obligation.`,
+      author: async () => ({ kind: "paragraph_insert" as const, proposalId: "paragraph-insertion", target, text: "A new obligation." }) }
+    if (corrupt) {
+      await expect(nativeHost.apply(input)).rejects.toMatchObject({ mutationState: "uncertain" })
+      await expect(nativeHost.apply(input)).rejects.toMatchObject({ mutationState: "uncertain" })
+    } else {
+      expect((await nativeHost.apply(input)).status).toBe("applied")
+      expect((await nativeHost.apply(input)).status).toBe("already-applied")
+      expect(state.paragraphs.map(p => p.text)).toEqual(["An existing obligation.", "A new obligation."])
+    }
+    expect(state.paragraphInsertions).toBe(1)
+    expect(state.tracking).toBe(tracking)
+    expect(state.modeChanges).toEqual(["TrackAll", tracking])
+  }
+})
+
+test("native paragraph insertion refuses an altered prepared command before dispatch", async () => {
+  const { state, nativeHost } = office(["An existing obligation."], true)
+  state.paragraphXml.set("paragraph-0", '<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="00000001"><w:r><w:t>An existing obligation.</w:t></w:r></w:p>')
+  const target = (await nativeHost.selection())!
+  let prepared = 0
+  await expect(nativeHost.apply({ proposalId: "paragraph-bound", target, replacement: `${target.text}\rReviewed wording.`,
+    author: async () => { prepared++; return { kind: "paragraph_insert" as const, proposalId: "paragraph-bound", target, text: "Different wording." } } })).rejects.toMatchObject({ mutationState: "unchanged" })
+  expect(prepared).toBe(1)
+  expect(state.paragraphInsertions).toBe(0)
+  expect(state.modeChanges).toEqual([])
 })

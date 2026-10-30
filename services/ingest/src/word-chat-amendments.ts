@@ -1,6 +1,6 @@
 import { authorWordChatTarget } from "../../../dochaus/lib/docx-flat-opc"
 import type { WordChatPreparedAmendment, WordChatProposal, WordChatSnapshot, WordChatTableRowInsertionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatTableRowInsertion } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatTableRowInsertion } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { authorDocxTableRowInsertion, docxTableRowInsertionTargets, type DocxTableRowInsertion } from "../../../dochaus/lib/docx-table-row-insertion"
 import { parseZip } from "../../../dochaus/lib/zip"
 
@@ -12,6 +12,14 @@ export { MAX_WORD_AMENDMENT_OOXML_BYTES, WordAmendmentError, WordFormattingError
  * resolve its stored proposal and current editing lease before calling this.
  * Neither this function nor the shared Docxodus writer publishes a version. */
 export async function authorWordChatAmendment(ooxml: string, proposal: WordChatProposal): Promise<WordChatPreparedAmendment> {
+  if (proposal.inlineFormatting === undefined && proposal.formatting === undefined && proposal.id && proposal.before === proposal.target.text) {
+    const target = proposal.target, snapshot = {text:target.paragraphs.map(p => p.text).join("\r"), paragraphs:target.paragraphs,
+      selection:target, capturedAt:target.capturedAt, saved:target.saved, truncated:false}
+    const canonical = targetWordChatAmendment(snapshot,target.text)
+    if (canonical && canonical.startOffset === target.startOffset && canonical.endOffset === target.endOffset &&
+      validWordChatParagraphInsertion(snapshot,canonical,proposal.after))
+      return {kind:"paragraph_insert",proposalId:proposal.id,target:structuredClone(target),text:proposal.after.slice(proposal.before.length + 1)}
+  }
   if (proposal.inlineFormatting !== undefined) {
     if (!proposal.id || proposal.before !== proposal.target.text || proposal.after !== proposal.before || proposal.formatting !== undefined)
       throw new Error("word_proposal_changed")

@@ -5,14 +5,15 @@ import type { WordChatAuthoredTableRow } from "../../../dochaus/lib/word-chat-co
 import { prepareNativeRow, queueNativeRow, type NativeRowContext } from "./word-chat-native-row"
 import { verifyNativeWordChatAddedRow } from "./word-chat-native-row-verification"
 import { normalizeNativeWordChatCommentIds as normalizeNativeWordChatAnnotationIds } from "./word-chat-native-comments"
+import { assertNativeWordChatParagraphInsertionTarget, verifyNativeWordChatParagraphInsertion } from "./word-chat-native-paragraph-insert"
 import { DOMParser } from "@xmldom/xmldom"
-import { wordChatApplyEligibility } from "./word-chat-apply"
+import { nativeWordChatParagraphInsertionEligible, wordChatApplyEligibility } from "./word-chat-apply"
 
 type ClientResult<T> = { value: T }
 type Collection<T> = { items: T[]; load(properties: string): void }
 type TrackedChange = { author: string; type: string; text: string }
 type NativeTable = { rowCount: number; isUniform: boolean; values: string[][]; load(properties: string): void; getCell(row: number, column: number): { body: { paragraphs: Collection<Paragraph> } } }
-type Paragraph = { text: string; uniqueLocalId: string; tableNestingLevel: number; styleBuiltIn: string; spaceBefore: number; spaceAfter: number; lineSpacing: number; load(properties: string): void; getRange(location?: string): WordChatRange }
+type Paragraph = { text: string; uniqueLocalId: string; tableNestingLevel: number; styleBuiltIn: string; isListItem?: boolean; spaceBefore: number; spaceAfter: number; lineSpacing: number; load(properties: string): void; getRange(location?: string): WordChatRange; insertParagraph?(text: string, location: "After"): Paragraph }
 type WordChatRange = {
   text: string
   font?: { bold: boolean | null; italic: boolean | null; underline: string | null; load(properties: string): void }
@@ -378,7 +379,8 @@ export class WordChatHost {
       if (observed.identity !== identity) throw new WordChatHostError("This proposal has different wording. Prepare a fresh proposal.")
       return { status: "already-applied", tracked: true, saved: false, authors: observed.authors }
     }
-    const promise = input.inlineFormatting !== undefined ? this.applyInlineOnce(input, identity) : this.applyOnce(input, identity)
+    const insertion = this.nativeTextEnabled && nativeWordChatParagraphInsertionEligible(input.target, input.replacement, input.formatting, input.inlineFormatting)
+    const promise = input.inlineFormatting !== undefined ? this.applyInlineOnce(input, identity) : insertion ? this.applyParagraphInsertionOnce(input, identity) : this.applyOnce(input, identity)
     this.pending.set(input.proposalId, { identity, promise })
     try { return await promise } finally { this.pending.delete(input.proposalId) }
   }
@@ -545,6 +547,52 @@ export class WordChatHost {
     const nearby = projection ? [index - 1, index + target.paragraphs.length].filter(i => i >= 0 && i < ids.length).map(i => ({ id:ids[i]!, ooxml:projection.scope([i]) })) : adjacent.map(p => ({ id:p.id, ooxml:p.xml.value }))
     return { range, selected, ooxml: scoped, ids, index, nesting: paragraphs.map(p => p.tableNestingLevel), adjacent: nearby, projection, tracking: context.document.changeTrackingMode, trackFormatting: formatting ? context.document.trackFormatting : undefined,
       changes: bodyChanges.items.map(change => ({ author: change.author, type: change.type, text: change.text })) }
+  }
+
+  private async applyParagraphInsertionOnce(input: WordChatApplyInput, identity: string): Promise<WordChatApplyResult> {
+    const capture = async (context: WordChatContext) => {
+      const anchor = context.document.getParagraphByUniqueLocalId(input.target.paragraphs[0]!.id)
+      anchor.load("styleBuiltIn,isListItem")
+      await context.sync()
+      if (anchor.styleBuiltIn !== "Normal" || anchor.isListItem !== false)
+        throw new WordChatHostError("This insertion point uses heading or list formatting. Your document is unchanged.")
+      return this.importSnapshot(context, input.target, false, false, false, false, true, true)
+    }
+    const initial = await this.word.run(capture)
+    if (!initial.projection) throw captureMismatch("Word could not capture the insertion point.")
+    assertNativeWordChatParagraphInsertionTarget(initial.projection, input.target)
+    const plan = await input.author({ ooxml: initial.ooxml })
+    if (!("kind" in plan) || plan.kind !== "paragraph_insert" || plan.proposalId !== input.proposalId ||
+      JSON.stringify(plan.target) !== JSON.stringify(input.target) || input.replacement !== `${input.target.text}\r${plan.text}`)
+      throw new WordChatHostError("The prepared paragraph does not match the reviewed proposal. Your document is unchanged.")
+    return this.word.run(async context => {
+      const fresh = await capture(context)
+      if (!fresh.projection || !sameWordChatTargetSnapshot(initial.ooxml, fresh.ooxml) ||
+        !sameNativeProjectionGeometry(initial.projection!, fresh.projection)) throw captureMismatch("The insertion point changed during review.")
+      assertNativeWordChatParagraphInsertionTarget(fresh.projection, input.target)
+      const anchor = context.document.getParagraphByUniqueLocalId(input.target.paragraphs[0]!.id)
+      if (typeof anchor.insertParagraph !== "function") throw new WordChatHostError("Word cannot insert this paragraph. Your document is unchanged.")
+      if (input.mayDispatch && !input.mayDispatch()) throw new WordChatHostError("The Word pane closed before the change was applied. Your document is unchanged.")
+      this.applied.set(input.proposalId, { identity, authors: [], uncertain: true })
+      try {
+        context.document.changeTrackingMode = "TrackAll"
+        anchor.insertParagraph(plan.text, "After")
+        context.document.changeTrackingMode = fresh.tracking
+        await context.sync()
+        context.document.load("changeTrackingMode")
+        const all = context.document.body.paragraphs
+        all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+        const bodyXml = context.document.body.getRange("Whole").getOoxml()
+        await context.sync()
+        if (context.document.changeTrackingMode !== fresh.tracking) throw new Error("paragraph_insert_tracking")
+        const observed = projectNativeWordChatBody(bodyXml.value, all.items.map(p => ({ id: p.uniqueLocalId, text: p.text, tableNestingLevel: p.tableNestingLevel })))
+        const authors = verifyNativeWordChatParagraphInsertion(fresh.projection, observed, input.target, plan.text)
+        this.applied.set(input.proposalId, { identity, authors, uncertain: false })
+        return { status: "applied", tracked: true, saved: false, authors }
+      } catch (cause) {
+        throw new WordChatHostError("Word may contain the new paragraph, but could not confirm its tracked changes. Inspect it and use Undo if needed. Do not apply this proposal again.", "uncertain", { cause })
+      }
+    })
   }
 
   private async applyInlineOnce(input: WordChatApplyInput, identity: string): Promise<WordChatApplyResult> {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
 
 test("inline formatting binds exact native UTF-16 targets without trusting model offsets", () => {
   const text = "Keep 😀 terms and terms."
@@ -184,4 +184,19 @@ test("a selected multiline occurrence is exact and stays pinned when a later sel
   value.paragraphs[2]!.text = "Later local text"
   expect(target.paragraphs.map(p => [p.id,p.text])).toEqual([["third","Lead first words"],["fourth","Last words tail"]])
   expect([target.startOffset,target.endOffset]).toEqual([5,10])
+})
+
+
+test("paragraph insertion binds a unique complete native paragraph and literal new text", () => {
+  const text="Existing paragraph.", context: WordChatSnapshot={text,paragraphs:[{id:"native",text}],capturedAt:"now",saved:false,truncated:false}
+  const target=targetWordChatAmendment(context,text)!
+  expect(validWordChatParagraphInsertion(context,target,text+"\rAdded 😀 paragraph.")).toBe(true)
+  for (const after of [text+"\r",text+"\r  ",text+"\rOne\rTwo",text+"\rOne\tTwo",text+"\r\ud800", "Changed\rAdded"]) expect(validWordChatParagraphInsertion(context,target,after)).toBe(false)
+  expect(validWordChatParagraphInsertion(context,target,text+"\rAdded",[{paragraph:0,style:"Normal"}])).toBe(false)
+  expect(validWordChatParagraphInsertion(context,target,text+"\rAdded",undefined,{bold:true})).toBe(false)
+  const partial=targetWordChatAmendment(context,"paragraph.")!
+  expect(validWordChatParagraphInsertion(context,partial,partial.text+"\rAdded")).toBe(false)
+  expect(validWordChatParagraphInsertion({...context,paragraphs:[{id:"native",text:"changed"}]},target,text+"\rAdded")).toBe(false)
+  const repeated={...context,text:text+"\r"+text,paragraphs:[{id:"a",text},{id:"b",text}]}
+  expect(targetWordChatAmendment(repeated,text)).toBeUndefined()
 })

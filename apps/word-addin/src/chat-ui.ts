@@ -4,6 +4,7 @@ import { wordChatApplyPlan, wordChatTargetCurrent } from "../../../dochaus/lib/w
 import { ChatRequestError, type WordChatApi } from "./chat-client"
 import { nativeEventSession, subscribeNativeChatStream } from "../../../dochaus/lib/native-chat-stream"
 import type { WordChatApplyEligibility } from "./word-chat-apply"
+import { nativeWordChatParagraphInsertionEligible } from "./word-chat-apply"
 
 export type ChatHost = {
   documentName: string
@@ -308,7 +309,8 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     const wordingChanged = proposal.before !== proposal.after
     const plan = wordChatApplyPlan(proposal.target, proposal.after, proposal.formatting)
     const eligibility = host.applyEligibility(proposal)
-    const unavailable = !plan.supported ? plan.reason : !eligibility.supported ? eligibility.reason : undefined
+    const insertion = nativeWordChatParagraphInsertionEligible(proposal.target, proposal.after, formatting, inlineFormatting)
+    const unavailable = !eligibility.supported ? eligibility.reason : !plan.supported && !insertion ? plan.reason : undefined
     const card = document.createElement("section"); card.className = "chat-proposal"; card.setAttribute("aria-label", (formatting || inlineFormatting) && !wordingChanged ? "Formatting to review" : "Amendment to review")
     card.append(line("h3", wordingChanged ? "Review amendment" : "Review formatting"))
     if (wordingChanged) {

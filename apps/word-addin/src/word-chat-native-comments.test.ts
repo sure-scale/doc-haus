@@ -10,6 +10,13 @@ test("comment IDs map only with exact matching anchors and comment payload",()=>
   expect(()=>normalize(before,outside)).toThrow()
 })
 
+test("comments without optional rsid attributes retain their payload and anchors",()=>{
+ const without=(xml:string)=>xml.replaceAll(' w:rsidR="00112233"',"").replaceAll(' w:rsidRDefault="00112233"',"")
+ const before=without(input("1")),after=without(input("2"))
+ expect(normalize(before,after)).toContain('w:commentRangeStart w:id="1"')
+ expect(()=>normalize(before,after.replace('Existing comment','Changed comment'))).toThrow()
+})
+
 
 test("bookmark remaps preserve name and actual character range across run splits",()=>{
  const base=input("1").replace('<w:commentRangeStart w:id="1"/>','<w:bookmarkStart w:id="0" w:name="Existing"/><w:commentRangeStart w:id="1"/>').replace('<w:commentRangeEnd w:id="1"/>','<w:commentRangeEnd w:id="1"/><w:bookmarkEnd w:id="0"/>')

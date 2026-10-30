@@ -1292,3 +1292,30 @@ test("native amendment admission validates the reviewed turn again after the art
     expect((db.query("SELECT native_sequence FROM word_edit_leases WHERE document_id = ?").get(owner.document) as { native_sequence: number }).native_sequence).toBe(sequence + 1)
   } finally { engineHook = undefined; clearWordEditLease(db, owner.document); db.close() }
 })
+
+test("paragraph insertion prepare uses stored reviewed proposal and existing lease fence", async () => {
+  const id=await newConversation(), text=context.text, inserted="A further obligation."
+  modelStructuredRawOutput=JSON.stringify({answerParts:[{type:"text",text:"Prepared."}],proposal:{before:text,after:text+"\r"+inserted,explanation:"Add paragraph",openItems:[]}})
+  let turn:WordChatTurn
+  try { turn=(await (await post("send",{conversationId:id,scope:"document",text:"Add a paragraph",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context})).json() as {turn:WordChatTurn}).turn }
+  finally { modelStructuredRawOutput=undefined }
+  expect(turn.proposal?.after).toBe(text+"\r"+inserted)
+  const current=readCurrentVersion(directory,"Draft.docx")!, db=openDb(directory)
+  db.run("INSERT OR IGNORE INTO word_grants(token_hash,document_id,origin,issued_version,created_at) VALUES (?,?,?,?,?)",[auth.grant.token_hash,auth.grant.document_id,auth.grant.origin,auth.grant.issued_version,Date.now()])
+  const owner=claimWordEditLease(db,{document:auth.grant.document_id,tokenHash:auth.grant.token_hash,session:"insert-prepare-session"})
+  const seq=(db.query("SELECT native_sequence FROM word_edit_leases WHERE document_id = ?").get(owner.document) as {native_sequence:number}).native_sequence
+  beginWordNativeOperation(db,owner,seq,"insert-prepare",undefined,{conversationId:id,turnId:turn.id})
+  const preparing=new Hono(); installWordChat(preparing,()=>auth,{fetch:transport,engineURL:"http://synthetic.invalid"})
+  const headers={"content-type":"application/json","x-dochaus-word-session":owner.session,"x-dochaus-word-lease":owner.generation,"x-dochaus-word-base-version":current.current.id}
+  const prepare=(extra:object={})=>preparing.request("/word/chat/prepare",{method:"POST",headers,body:JSON.stringify({conversationId:id,turnId:turn.id,ooxml:"current capture",...extra})})
+  try {
+    const response=await prepare({proposal:{...turn.proposal,after:text+"\rForged"}})
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({kind:"paragraph_insert",proposalId:turn.proposal!.id,target:turn.proposal!.target,text:inserted})
+    db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",["other-turn",owner.document])
+    expect((await prepare()).status).toBe(409)
+  } finally {
+    db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",[turn.id,owner.document])
+    settleWordNativeOperation(db,owner,seq+1,"insert-prepare","not-dispatched"); clearWordEditLease(db,owner.document); db.close()
+  }
+})

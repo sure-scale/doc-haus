@@ -27,3 +27,14 @@ test("inline preparation cannot turn malformed properties or expanded wording in
     {...reviewed,target:{...reviewed.target,endOffset:17}},
   ]) await expect(authorWordChatAmendment("",changed)).rejects.toThrow("word_proposal_changed")
 })
+
+
+test("paragraph insertion preparation returns a copy of the bound reviewed native plan", async () => {
+  const text="Existing paragraph.", target={id:"host-id",text,paragraphs:[{id:"native",text}],startOffset:0,endOffset:text.length,capturedAt:"now",saved:false}
+  const reviewed:WordChatProposal={id:"reviewed",documentId:"document",before:text,after:text+"\rAdded literal paragraph.",target,explanation:"Add",openItems:[],createdAt:"now"}
+  const plan=await authorWordChatAmendment("unused native capture",reviewed)
+  expect(plan).toEqual({kind:"paragraph_insert",proposalId:"reviewed",target,text:"Added literal paragraph."})
+  if (!("kind" in plan)) throw new Error("Expected native plan")
+  plan.target.paragraphs[0]!.text="changed"
+  expect(reviewed.target.paragraphs[0]!.text).toBe(text)
+})

@@ -25,7 +25,7 @@ function parse(xml:string) {
 }
 function normalizedComment(comment:Element) {
   const copy=comment.cloneNode(true) as Element;copy.removeAttributeNS(W,"id")
-  for(const p of Array.from(copy.getElementsByTagNameNS(W,"p")))for(const name of ["rsidR","rsidRDefault"]){const value=p.getAttributeNS(W,name);if(value!==null){if(!/^[0-9a-fA-F]{8}$/.test(value))return fail();p.removeAttributeNS(W,name)}}
+  for(const p of Array.from(copy.getElementsByTagNameNS(W,"p")))for(const name of ["rsidR","rsidRDefault"]){const value=p.getAttributeNS(W,name);if(p.hasAttributeNS(W,name)){if(!/^[0-9a-fA-F]{8}$/.test(value))return fail();p.removeAttributeNS(W,name)}}
   return JSON.stringify(canonical(copy))
 }
 function graph(parts:Map<string,Element>) {
