@@ -67,6 +67,10 @@ function citesOwnRow(key: string, citation: Citation, documents: Document[]) {
   return citesRow(citation, { name, docPath: documents.find((doc) => doc.name === name)?.doc_path })
 }
 
+// Ingest roots each section path at Doc(<file>) for the model; the dialog
+// already names the document, so it shows the sections only.
+const sectionPath = (path?: string) => path?.startsWith("Doc(") ? path.split(" › ").slice(1).join(" › ") : path
+
 // The chat question for one cell: its question, answer and recorded citation,
 // prefilled for the lawyer to edit and send. It carries what the run recorded;
 // the assistant does not re-derive the answer from scratch.
@@ -1052,7 +1056,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                           {check && !walkExplains(check) && <span className={`review-source-badge is-${check}`}>{SOURCE_BADGE[check]}</span>}
                         </div>
                         {degradedCitation(citation.documentName)}
-                        {citation.structuralPath && <div className="review-source-path">{citation.structuralPath}</div>}
+                        {sectionPath(citation.structuralPath) && <div className="review-source-path">{sectionPath(citation.structuralPath)}</div>}
                         <div className="excerpt">{citation.excerpt}</div>
                         {detail && <p className="review-source-check">{detail}</p>}
                       </div>

@@ -33,7 +33,7 @@ const grid: Grid = {
   cells: {
     "Supply terms.docx::c1": {
       answer: "The law of England and Wales.",
-      citation: { documentName: "Supply terms.docx", docPath: "Supply terms.docx", section: "12", structuralPath: "Supply terms › §12 Governing law", excerpt, charStart: 48, charEnd: 106 },
+      citation: { documentName: "Supply terms.docx", docPath: "Supply terms.docx", section: "12", structuralPath: "Doc(Supply terms.docx) › §12 Governing law", excerpt, charStart: 48, charEnd: 106 },
       status: "filled",
       questionHash: "unused",
     },
@@ -384,7 +384,8 @@ try {
   // highlighted; Escape returns to the same cell's detail, focus on the citation.
   await answer.click()
   await detail.getByText("Verified", { exact: true }).waitFor()
-  await detail.getByText("Supply terms › §12 Governing law", { exact: true }).waitFor()
+  // The dialog names the document once; its path shows the sections only.
+  await detail.getByText("§12 Governing law", { exact: true }).waitFor()
   await detail.locator(".review-source").getByText("cited text may be incomplete or garbled").waitFor()
   const source = detail.getByRole("button", { name: "Open Supply terms.docx at section 12", exact: true })
   await source.click()
@@ -406,7 +407,7 @@ try {
   // Asking hands chat the cell's question, answer and recorded citation.
   await detail.getByRole("button", { name: "Ask about this answer in chat", exact: true }).click()
   const asked = await page.evaluate(() => (window as unknown as { asked?: string }).asked ?? "")
-  for (const part of ["Question: What is the governing law?", "Answer: The law of England and Wales.", "Cited source: Supply terms.docx § 12 (Supply terms › §12 Governing law)", `Excerpt: "${excerpt}"`, "Source check: Verified."])
+  for (const part of ["Question: What is the governing law?", "Answer: The law of England and Wales.", "Cited source: Supply terms.docx § 12 (Doc(Supply terms.docx) › §12 Governing law)", `Excerpt: "${excerpt}"`, "Source check: Verified."])
     assert.ok(asked.includes(part), `the chat question should carry "${part}"`)
   console.log("PASS asking about a cell hands chat its question, answer and citation")
 
