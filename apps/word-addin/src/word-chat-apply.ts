@@ -1,7 +1,18 @@
-import type { WordChatInlineFormat, WordChatParagraphFormat, WordChatProposal, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatInlineFormat, WordChatListCapture, WordChatParagraphFormat, WordChatProposal, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatListInsertion } from "../../../dochaus/lib/word-chat-amendment-contract"
 
 export type WordChatApplyEligibility = { supported: true } | { supported: false; reason: string }
+
+export function nativeWordChatListInsertionEligible(target: WordChatTarget, replacement: string, action: unknown, list?: WordChatListCapture,
+  formatting?: WordChatParagraphFormat[], inlineFormatting?: WordChatInlineFormat): boolean {
+  if (!list) return false
+  const paragraphs = list.members.map(p => ({ id: p.id, text: p.text }))
+  const snapshot = { text: paragraphs.map(p => p.text).join("\r"), paragraphs, list, selection: target,
+    saved: target.saved, capturedAt: target.capturedAt, truncated: false }
+  const canonical = targetWordChatAmendment(snapshot, target.text)
+  return !!canonical && canonical.startOffset === target.startOffset && canonical.endOffset === target.endOffset &&
+    validWordChatListInsertion(snapshot, canonical, replacement, action, formatting, inlineFormatting)
+}
 
 /** Explicit reviewed mark deletion, distinct from clearing paragraph text. */
 export function nativeWordChatParagraphDeletionEligible(target: WordChatTarget, replacement: string, action: unknown, formatting?: WordChatParagraphFormat[], inlineFormatting?: WordChatInlineFormat): boolean {
@@ -37,7 +48,10 @@ export function nativeWordChatTextEligible(target: WordChatTarget, replacement: 
 /** Transport availability only. Live Word identity, target uniqueness,
  * protection, comments/revisions, formatting and the authored artifact must
  * still pass their existing checks before any mutation. */
-export function wordChatApplyEligibility(target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[], nativeText = true, inlineFormatting?: WordChatInlineFormat, paragraphAction?: WordChatProposal["paragraphAction"]): WordChatApplyEligibility {
+export function wordChatApplyEligibility(target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[], nativeText = true, inlineFormatting?: WordChatInlineFormat, paragraphAction?: WordChatProposal["paragraphAction"], list?: WordChatListCapture): WordChatApplyEligibility {
+  if (paragraphAction === "append_list_item") return nativeText && nativeWordChatListInsertionEligible(target, replacement, paragraphAction, list, formatting, inlineFormatting)
+    ? { supported: true }
+    : { supported: false, reason: "Prepare a new item at the end of the captured automatic list before applying it." }
   if (paragraphAction !== undefined) return nativeText && nativeWordChatParagraphDeletionEligible(target, replacement, paragraphAction, formatting, inlineFormatting)
     ? { supported: true }
     : { supported: false, reason: "Review deletion of one complete paragraph, with its paragraph mark, before applying it." }
@@ -66,7 +80,7 @@ export function wordChatApplyEligibility(target: WordChatTarget, replacement: st
 /** Refuse known-unavailable transport before the caller claims editing, records
  * a native BEGIN or marks the Word buffer changed. Recheck even for cached UI. */
 export async function applyWordChatIfEligible<T>(proposal: WordChatProposal, apply: () => Promise<T>): Promise<T> {
-  const eligibility = wordChatApplyEligibility(proposal.target, proposal.after, proposal.formatting, true, proposal.inlineFormatting, proposal.paragraphAction)
+  const eligibility = wordChatApplyEligibility(proposal.target, proposal.after, proposal.formatting, true, proposal.inlineFormatting, proposal.paragraphAction, proposal.list)
   if (!eligibility.supported) throw Object.assign(new Error(eligibility.reason), { mutationState: "unchanged" as const })
   return apply()
 }

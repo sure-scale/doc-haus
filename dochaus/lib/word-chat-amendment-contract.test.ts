@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatListInsertion, wordChatListCaptureCurrent, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
 
 test("inline formatting binds exact native UTF-16 targets without trusting model offsets", () => {
   const text = "Keep 😀 terms and terms."
@@ -220,4 +220,20 @@ test("paragraph deletion requires explicit action and one unique complete native
   const selected={...snapshot,selection:{...target,id:"selection"}}
   const resolved=targetWordChatAmendment(selected,text)!
   expect(validWordChatParagraphDeletion(selected,resolved,"","delete")).toBe(true)
+})
+
+
+test("decimal list capture and insertion bind the full contiguous sequence and last item",()=>{
+  const paragraphs=[{id:"one",text:"First"},{id:"two",text:"Second"}]
+  const list={id:7,format:"decimal" as const,members:paragraphs.map((p,i)=>({...p,level:0,label:`${i+1}.`}))}
+  const snapshot:WordChatSnapshot={text:"First\rSecond",paragraphs,capturedAt:"now",saved:false,truncated:false,list}
+  const target=targetWordChatAmendment(snapshot,"Second")!
+  expect(wordChatListCaptureCurrent(snapshot,list)).toBe(true)
+  expect(validWordChatListInsertion(snapshot,target,"Second\rThird","append_list_item")).toBe(true)
+  expect(validWordChatListInsertion(snapshot,target,"Second\rThird","append_list_item",[{paragraph:1,style:"Normal"}])).toBe(false)
+  expect(validWordChatListInsertion(snapshot,target,"Second\rThird","delete")).toBe(false)
+  expect(validWordChatListInsertion(snapshot,target,"Second\rThird\rFourth","append_list_item")).toBe(false)
+  expect(validWordChatListInsertion(snapshot,targetWordChatAmendment(snapshot,"First")!,"First\rThird","append_list_item")).toBe(false)
+  for(const bad of [{...list,members:[list.members[0]!,{...list.members[1]!,id:"one"}]},{...list,members:[list.members[0]!,{...list.members[1]!,level:1}]},{...list,members:[list.members[0]!,{...list.members[1]!,label:"3."}]},{...list,extra:true}]) expect(wordChatListCaptureCurrent(snapshot,bad)).toBe(false)
+  expect(wordChatListCaptureCurrent({...snapshot,paragraphs:[paragraphs[0]!,{id:"middle",text:"other"},paragraphs[1]!]},list)).toBe(false)
 })

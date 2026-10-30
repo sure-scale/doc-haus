@@ -79,7 +79,7 @@ async function main(): Promise<void> {
       watchSelection: watchWordChatSelection,
       openAttachments: options => openChatAttachments(chat, options),
       sourceUrl: source => source.provenance === "saved-version" ? `${link.origin}/matter/${encodeURIComponent(link.matter)}?view=documents` : undefined,
-      applyEligibility: proposal => wordChatApplyEligibility(proposal.target, proposal.after, proposal.formatting, true, proposal.inlineFormatting, proposal.paragraphAction),
+      applyEligibility: proposal => wordChatApplyEligibility(proposal.target, proposal.after, proposal.formatting, true, proposal.inlineFormatting, proposal.paragraphAction, proposal.list),
       async applyRow(proposal, request) {
         if (sync.snapshot().busy) throw new Error("Wait for the current Save to finish, then Apply.")
         return sync.localEdit({ conversationId: request.conversationId, turnId: request.turnId }, async identity => {

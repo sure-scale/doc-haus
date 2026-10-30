@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { authorWordChatAmendment } from "./word-chat-amendments"
-import type { WordChatProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { targetWordChatAmendment, type WordChatProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
 
 function proposal(): WordChatProposal {
   return { id:"reviewed-proposal", documentId:"document", before:"terms", after:"terms", explanation:"Remove emphasis", openItems:[], createdAt:"now",
@@ -61,4 +61,18 @@ test("explicit paragraph deletion prepares a source-bound command without import
   plan.target.paragraphs[0]!.text="changed"; expect(proposal.target.paragraphs[0]!.text).toBe(text)
   for (const bad of [{...proposal,after:"new"},{...proposal,paragraphAction:"clear" as never},{...proposal,formatting:[{paragraph:0,style:"Normal" as const}]},{...proposal,inlineFormatting:{bold:true}},{...proposal,target:{...target,startOffset:1}}])
     await expect(authorWordChatAmendment("unused",bad)).rejects.toThrow("word_proposal_changed")
+})
+
+
+test("list plan requires the admitted snapshot and preserves its binding",async()=>{
+  const text="Second", paragraph={id:"b",text}, list={id:3,format:"decimal" as const,members:[{id:"a",text:"First",level:0,label:"1."},{...paragraph,level:0,label:"2."}]}
+  const target={id:"b",text,paragraphs:[paragraph],startOffset:0,endOffset:text.length,capturedAt:"now",saved:false}
+  const snapshot={text:"First\rSecond",paragraphs:[{id:"a",text:"First"},paragraph],capturedAt:"now",saved:false,truncated:false,list}
+  const resolved=targetWordChatAmendment(snapshot,text)!
+  const proposal:WordChatProposal={id:"reviewed",documentId:"doc",before:text,after:text+"\rThird",target:resolved,paragraphAction:"append_list_item",list,explanation:"Add",openItems:[],createdAt:"now"}
+  const plan=await authorWordChatAmendment("current capture",proposal,snapshot)
+  expect(plan).toEqual({kind:"list_insert",proposalId:"reviewed",target:resolved,text:"Third",list})
+  await expect(authorWordChatAmendment("current capture",proposal)).rejects.toThrow("word_proposal_changed")
+  await expect(authorWordChatAmendment("current capture",proposal,{...snapshot,list:{...list,id:4}})).rejects.toThrow("word_proposal_changed")
+  await expect(authorWordChatAmendment("current capture",{...proposal,after:text+"\rThird\rFourth"},snapshot)).rejects.toThrow("word_proposal_changed")
 })

@@ -1370,3 +1370,36 @@ test("explicit paragraph deletion remains distinct from clearing text through re
     settleWordNativeOperation(db,owner,seq+1,"delete-prepare","not-dispatched");clearWordEditLease(db,owner.document);db.close()
   }
 })
+
+
+test("reviewed decimal list append is server bound through preparation and rejects forged list authority",async()=>{
+  const id=await newConversation(), text=context.text
+  const list={id:3,format:"decimal" as const,members:[{...context.paragraphs[0]!,level:0,label:"1."}]}
+  const listContext={...context,list}
+  const request=(extra:object={})=>post("send",{conversationId:id,scope:"document",text:"Append an item",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context:listContext,...extra})
+  const output=(extra:object={})=>{modelStructuredRawOutput=JSON.stringify({answerParts:[{type:"text",text:"Prepared."}],proposal:{before:text,after:text+"\rAnother item",paragraphAction:"append_list_item",explanation:"Add",openItems:[],...extra}})}
+  let turn:WordChatTurn
+  try {
+    output(); turn=(await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(turn.proposal?.list).toEqual(list)
+    expect(sessionContext(turn.id)).toContain('append_list_item')
+    const reviewer=[...sessions.values()].find(s=>s.parentID===turn.id && s.metadata.type==="word-chat-review")!
+    expect(sessionContext(reviewer.id)).toContain('append_list_item')
+    expect((await request({proposal:turn.proposal,context:{...listContext,list:{...list,id:4}}})).status).toBe(409)
+    output({list}); expect((await (await request()).json() as {turn:WordChatTurn}).turn.proposal).toBeUndefined()
+    output({formatting:[{paragraph:1,style:"Normal"}]}); expect((await (await request()).json() as {turn:WordChatTurn}).turn.proposal).toBeUndefined()
+  } finally {modelStructuredRawOutput=undefined}
+  const current=readCurrentVersion(directory,"Draft.docx")!,db=openDb(directory)
+  db.run("INSERT OR IGNORE INTO word_grants(token_hash,document_id,origin,issued_version,created_at) VALUES (?,?,?,?,?)",[auth.grant.token_hash,auth.grant.document_id,auth.grant.origin,auth.grant.issued_version,Date.now()])
+  const owner=claimWordEditLease(db,{document:auth.grant.document_id,tokenHash:auth.grant.token_hash,session:"list-prepare-session"})
+  const seq=(db.query("SELECT native_sequence FROM word_edit_leases WHERE document_id = ?").get(owner.document) as {native_sequence:number}).native_sequence
+  beginWordNativeOperation(db,owner,seq,"list-prepare",undefined,{conversationId:id,turnId:turn.id})
+  const app=new Hono(); installWordChat(app,()=>auth,{fetch:transport,engineURL:"http://synthetic.invalid"})
+  const headers={"content-type":"application/json","x-dochaus-word-session":owner.session,"x-dochaus-word-lease":owner.generation,"x-dochaus-word-base-version":current.current.id}
+  const prepare=()=>app.request("/word/chat/prepare",{method:"POST",headers,body:JSON.stringify({conversationId:id,turnId:turn.id,ooxml:"current capture",proposal:{...turn.proposal,list:{...list,id:99}}})})
+  try {
+    const response=await prepare(); expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({kind:"list_insert",proposalId:turn.proposal!.id,target:turn.proposal!.target,text:"Another item",list})
+    db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",["other",owner.document]); expect((await prepare()).status).toBe(409)
+  } finally {db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",[turn.id,owner.document]);settleWordNativeOperation(db,owner,seq+1,"list-prepare","not-dispatched");clearWordEditLease(db,owner.document);db.close()}
+})

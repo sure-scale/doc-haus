@@ -18,6 +18,28 @@ export type WordChatSnapshot = {
   selection?: WordChatTarget
   /** Host-captured candidate geometry; the native executor must revalidate it. */
   table?: WordChatTableCapture
+  list?: WordChatListCapture
+}
+/** Host-captured simple automatic decimal list; native identity is never model-authored. */
+export type WordChatListCapture = { id: number; format: "decimal"; members: Array<{ id: string; text: string; level: number; label: string }> }
+export function wordChatListCaptureCurrent(snapshot: WordChatSnapshot, value: unknown): value is WordChatListCapture {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const list = value as WordChatListCapture
+  if (Object.keys(list).some(k => !["id", "format", "members"].includes(k)) || !Number.isSafeInteger(list.id) || list.id < 0 || list.format !== "decimal" ||
+    !Array.isArray(list.members) || !list.members.length || list.members.length > 1000) return false
+  const ids = new Set<string>()
+  let totalText = 0
+  for (const [index, member] of list.members.entries()) {
+    if (!member || typeof member !== "object" || Array.isArray(member) || Object.keys(member).some(k => !["id", "text", "level", "label"].includes(k)) ||
+      typeof member.id !== "string" || !member.id || ids.has(member.id) || typeof member.text !== "string" || member.text.length > 24_000 ||
+      member.level !== 0 || member.label !== `${index + 1}.`) return false
+    ids.add(member.id)
+    totalText += member.text.length
+    if (totalText > 24_000) return false
+  }
+  const at = snapshot.paragraphs.findIndex(p => p.id === list.members[0]!.id)
+  return at >= 0 && snapshot.paragraphs.filter(p => ids.has(p.id)).length === list.members.length &&
+    list.members.every((m, i) => snapshot.paragraphs[at + i]?.id === m.id && snapshot.paragraphs[at + i]?.text === m.text)
 }
 /** One paragraph per cell in a simple, unmerged, top-level table. The table
  * index and paragraph IDs come from Word, never from the model. */
@@ -103,7 +125,9 @@ export type WordChatProposal = {
   target: WordChatTarget
   createdAt: string
   /** Explicitly remove the paragraph mark as well as its text. */
-  paragraphAction?: "delete"
+  paragraphAction?: "delete" | "append_list_item"
+  /** Captured by the host and attached by the server for list insertion only. */
+  list?: WordChatListCapture
   /** Optional reviewed paragraph properties, indexed against the resulting text. */
   formatting?: WordChatParagraphFormat[]
   /** Optional reviewed character properties on the exact captured span. */
@@ -126,7 +150,8 @@ export type WordChatParagraphInsertionPlan = {
   formatting?: WordChatParagraphFormat[]
 }
 export type WordChatParagraphDeletionPlan = { kind: "paragraph_delete"; proposalId: string; target: WordChatTarget }
-export type WordChatPreparedAmendment = WordChatAuthoredAmendment | WordChatInlineFormattingPlan | WordChatParagraphInsertionPlan | WordChatParagraphDeletionPlan
+export type WordChatListInsertionPlan = { kind: "list_insert"; proposalId: string; target: WordChatTarget; text: string; list: WordChatListCapture }
+export type WordChatPreparedAmendment = WordChatListInsertionPlan | WordChatAuthoredAmendment | WordChatInlineFormattingPlan | WordChatParagraphInsertionPlan | WordChatParagraphDeletionPlan
 export type WordChatParagraphFormat = {
   /** Zero-based index within the resulting complete paragraphs. */
   paragraph: number
@@ -162,6 +187,14 @@ export function validWordChatParagraphInsertion(snapshot: WordChatSnapshot, targ
   return !!resolved && resolved.id === target.id && resolved.capturedAt === target.capturedAt && resolved.saved === target.saved &&
     resolved.startOffset === target.startOffset && resolved.endOffset === target.endOffset && resolved.paragraphs.length === 1 &&
     resolved.paragraphs[0]!.id === target.paragraphs[0]!.id && resolved.paragraphs[0]!.text === target.paragraphs[0]!.text
+}
+
+/** An explicit list action is bound to the last captured complete member. */
+export function validWordChatListInsertion(snapshot: WordChatSnapshot, target: WordChatTarget, replacement: unknown, action: unknown, formatting?: unknown, inlineFormatting?: unknown): boolean {
+  const list = snapshot?.list
+  return action === "append_list_item" && formatting === undefined && inlineFormatting === undefined &&
+    wordChatListCaptureCurrent(snapshot, list) && list.members.at(-1)!.id === target?.paragraphs?.[0]?.id &&
+    list.members.at(-1)!.text === target?.text && validWordChatParagraphInsertion(snapshot, target, replacement)
 }
 
 /** An explicit action distinguishes removing the paragraph mark from clearing text. */

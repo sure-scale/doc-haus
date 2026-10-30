@@ -30,6 +30,19 @@ test("paragraph mark deletion needs an explicit action on the complete reviewed 
   expect(wordChatApplyEligibility(whole, "", undefined, false, undefined, "delete").supported).toBe(false)
 })
 
+test("automatic list insertion binds its end and cannot fall through to ordinary insertion", () => {
+  const whole = { ...target, text: "Alpha beta", startOffset: 0, endOffset: 10 }
+  const list = { id: 17, format: "decimal" as const, members: [{ id: "earlier", text: "Earlier clause", level: 0, label: "1." },
+    { id: "p", text: whole.text, level: 0, label: "2." }] }
+  const after = whole.text + "\rNext clause."
+  expect(wordChatApplyEligibility(whole, after, undefined, true, undefined, "append_list_item", list).supported).toBe(true)
+  for (const changed of [undefined, { ...list, members: [...list.members].reverse() }, { ...list, members: [{ ...list.members[1]!, label: "1." }, { ...list.members[0]!, label: "2." }] }])
+    expect(wordChatApplyEligibility(whole, after, undefined, true, undefined, "append_list_item", changed).supported).toBe(false)
+  expect(wordChatApplyEligibility(whole, after, [{paragraph:1,style:"Normal"}], true, undefined, "append_list_item", list).supported).toBe(false)
+  expect(wordChatApplyEligibility(whole, after, undefined, true, {bold:true}, "append_list_item", list).supported).toBe(false)
+  expect(wordChatApplyEligibility(whole, after, undefined, false, undefined, "append_list_item", list).supported).toBe(false)
+})
+
 test("native paragraph insertion requires a complete unchanged anchor and one new paragraph", () => {
   const whole = { ...target, text: "Alpha beta", startOffset: 0, endOffset: 10 }
   expect(wordChatApplyEligibility(whole, "Alpha beta\rNew paragraph.").supported).toBe(true)

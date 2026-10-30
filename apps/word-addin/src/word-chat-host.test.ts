@@ -60,6 +60,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false, wholeOoxmlTrailingParagraph: false,
     inlineBold: false, inlineAfter: "", inlineWrites: 0,
     paragraphInsertions: 0, corruptParagraphInsertion: false, insertedParagraphStyle: "Normal",
+    listInsertions: 0, listOriginal: "", listBadFont: false, listBadMarkup: false,
     paragraphDeletions: 0, corruptParagraphDeletion: false, wrongDeletionCurrent: false,
     nativeFormatting: [] as string[], dropNativeFormatting: false, terminalBodyMark: false, cellWholeExpandsRow: false, refuseEmptyContentXml: false,
     omitContentProperties: false, paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
@@ -86,7 +87,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
   class Range {
     constructor(public start: number, public end: number, public bodyWhole = false, public cellWhole = false, public paragraphContent = false, public bodyExport = false) { ranges.add(this) }
     get text() { return (text() + "\r").slice(this.start, this.end) }
-    get font() { return { load() {}, get bold() { return state.inlineBold }, set bold(value: boolean | null) { queue.push(() => { state.inlineWrites++; state.inlineBold = Boolean(value); if (state.inlineAfter) state.paragraphXml.set("paragraph-0", state.inlineAfter) }) }, italic: false, underline: "None" } }
+    get font() { return { load() {}, get bold() { return state.inlineBold }, set bold(value: boolean | null) { queue.push(() => { state.inlineWrites++; state.inlineBold = Boolean(value); if (state.inlineAfter) state.paragraphXml.set("paragraph-0", state.inlineAfter) }) }, italic: false, underline: "None", name:"Arial", size:11, get color() { return state.listBadFont && state.listInsertions ? "#FF0000" : "#000000" } } }
     get paragraphs() {
       return collection(state.paragraphs.filter((p) => {
         const at = position(p.id)
@@ -243,7 +244,8 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       if (this.paragraphContent && state.omitContentProperties) body = body.replace(/<w:pPr>[\s\S]*?<\/w:pPr>/g, "")
       return { value: !state.writes.length && state.xml !== undefined ? state.xml : flatOpc(body + (state.wholeOoxmlTrailingParagraph && whole ? "<w:p/>" : ""), state.extraParts) }
     }
-    getReviewedText() {
+    getReviewedText(version?: string) {
+      if (version === "Original" && state.listInsertions && this.start === 0 && this.end === text().length) return {value:state.listOriginal}
       const paragraphs = state.paragraphs.filter(p => { const at = position(p.id); return this.start <= at.start && at.end <= this.end })
       const complete = paragraphs.length && position(paragraphs[0]!.id).start === this.start && position(paragraphs.at(-1)!.id).end === this.end
       const deletedMark = (p: NativeParagraph) => {
@@ -299,12 +301,33 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     get text() { return p.text }, get uniqueLocalId() { return p.id },
     get style() { return p.style ?? "Normal" }, get styleBuiltIn() { return p.styleBuiltIn ?? "Normal" },
     set styleBuiltIn(value: string) { setFormat(p, "style", value) },
+    get spaceBefore() { return 0 }, get spaceAfter() { return 10 }, get lineSpacing() { return 12 }, get leftIndent() { return 18 }, get firstLineIndent() { return -18 },
     set spaceBefore(value: number) { setFormat(p, "before", String(value * 20)) },
     set spaceAfter(value: number) { setFormat(p, "after", String(value * 20)) },
     set lineSpacing(value: number) { setFormat(p, "line", String(value * 20)) },
     get outlineLevel() { return p.outlineLevel ?? 10 }, get isListItem() { return Boolean(p.list) },
     get tableNestingLevel() { return p.inTable ? 1 : 0 },
-    get list() { if (!p.list) throw new Error("ItemNotFound"); return { id: p.list.id, load() {} } },
+    get list() {
+      if (!p.list) throw new Error("ItemNotFound")
+      const id=p.list.id
+      return { id, load() {}, get paragraphs() { return collection(state.paragraphs.filter(q => q.list?.id === id).map(paragraph)) }, insertParagraph(value:string,location:string) {
+        if (location !== "End") throw new Error("invalid location")
+        queue.push(() => {
+          const last=state.paragraphs.filter(q => q.list?.id===id).at(-1)!, index=state.paragraphs.indexOf(last), oldId=last.id
+          state.listOriginal=text(); state.listInsertions++
+          const source=state.paragraphXml.get(oldId)!, doc=new DOMParser().parseFromString(flatOpc(source),"application/xml"), left=doc.getElementsByTagNameNS(WORD_XML,"p")[0]!
+          const oldParaId=left.getAttributeNS("http://schemas.microsoft.com/office/word/2010/wordml","paraId")
+          left.setAttributeNS("http://schemas.microsoft.com/office/word/2010/wordml","w14:paraId","00000009")
+          const pp=left.getElementsByTagNameNS(WORD_XML,"pPr")[0]!, marker=doc.createElementNS(WORD_XML,"w:rPr"), ins=doc.createElementNS(WORD_XML,"w:ins")
+          ins.setAttributeNS(WORD_XML,"w:id","11"); ins.setAttributeNS(WORD_XML,"w:author","Native user"); ins.setAttributeNS(WORD_XML,"w:date","2026-01-01T00:00:00Z"); marker.appendChild(ins);pp.appendChild(marker)
+          last.id="retained-list"; state.paragraphXml.delete(oldId);state.paragraphXml.set(last.id,new XMLSerializer().serializeToString(left))
+          state.paragraphs.splice(index+1,0,{id:oldId,text:value,list:{id,level:0,label:`${state.paragraphs.filter(q=>q.list?.id===id).length+1}.`}})
+          state.paragraphXml.set(oldId,`<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="${oldParaId}"><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="5"/></w:numPr></w:pPr><w:ins w:id="12" w:author="Native user" w:date="2026-01-01T00:00:00Z"><w:r><w:t>${escapeXml(state.listBadMarkup ? value+"wrong" : value)}</w:t></w:r></w:ins></w:p>`)
+          state.saved=false
+        }); return paragraph(p)
+      } }
+    },
+    get listItemOrNullObject() { if (!p.list) return undefined; return {level:p.list.level,listString:p.list.label,siblingIndex:state.paragraphs.filter(q=>q.list?.id===p.list!.id).indexOf(p),load(){}} },
     get listItem() { if (!p.list) throw new Error("ItemNotFound"); return { level: p.list.level, listString: p.list.label, load() {} } },
     load(properties: string) {
       state.paragraphLoads.push({ id: p.id, properties })
@@ -1726,4 +1749,46 @@ test("paragraph operations classify preflight, author and fresh-capture failures
     await expect(nativeHost.apply(input)).rejects.toMatchObject({mutationState:"unchanged"})
     expect(state.paragraphInsertions).toBe(0); expect(state.paragraphDeletions).toBe(0); expect(state.modeChanges).toEqual([])
   }
+})
+
+test("native list append binds the list and checks tracked formatting without replay", async () => {
+  for (const tracking of ["Off", "TrackAll"]) for (const failure of ["none", "markup", "font", "forged", "lost"] as const) {
+    const {state,nativeHost}=office(["Existing list item."],true)
+    state.tracking=tracking
+    state.paragraphs[0]!.list={id:0,level:0,label:"1."}
+    state.paragraphXml.set("paragraph-0",'<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="00000001"><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="5"/></w:numPr></w:pPr><w:r><w:t>Existing list item.</w:t></w:r></w:p>')
+    state.extraParts='<pkg:part pkg:name="/word/numbering.xml"><pkg:xmlData><w:numbering><w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="5"><w:abstractNumId w:val="7"/></w:num></w:numbering></pkg:xmlData></pkg:part>'
+    const snapshot=await nativeHost.capture(), list=snapshot.list!
+    expect(list?.members.map(m=>m.label)).toEqual(["1."])
+    const target=(await nativeHost.selection())!
+    state.listBadFont=failure==="font";state.listBadMarkup=failure==="markup";state.throwAfterWrite=failure==="lost"
+    const input={proposalId:"list-test",target,replacement:target.text+"\rAdded item.",paragraphAction:"append_list_item" as const,list,
+      author:async()=>({kind:"list_insert" as const,proposalId:failure==="forged"?"other":"list-test",target,text:"Added item.",list})}
+    if (failure === "none") {
+      expect((await nativeHost.apply(input)).status).toBe("applied")
+      expect((await nativeHost.apply(input)).status).toBe("already-applied")
+    } else {
+      expect(await nativeHost.apply(input).catch(e=>e.mutationState)).toBe(failure==="forged"?"unchanged":"uncertain")
+      if (failure !== "forged") expect(await nativeHost.apply(input).catch(e=>e.mutationState)).toBe("uncertain")
+    }
+    expect(state.listInsertions).toBe(failure==="forged"?0:1)
+    expect(state.tracking).toBe(tracking)
+    expect(state.modeChanges).toEqual(failure==="forged"?[]:["TrackAll",tracking])
+  }
+})
+
+test("list capture refuses ambiguous lists and dispatch refuses a stale list", async () => {
+  const {state,nativeHost}=office(["One.","Other."],true)
+  state.paragraphs[0]!.list={id:5,level:0,label:"1."};state.paragraphs[1]!.list={id:6,level:0,label:"1."}
+  const p=(id:string,num:number,text:string)=>`<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="${id}"><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="${num}"/></w:numPr></w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`
+  state.paragraphXml.set("paragraph-0",p("00000001",5,"One."));state.paragraphXml.set("paragraph-1",p("00000002",6,"Other."))
+  state.extraParts='<pkg:part pkg:name="/word/numbering.xml"><pkg:xmlData><w:numbering><w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="5"><w:abstractNumId w:val="7"/></w:num><w:num w:numId="6"><w:abstractNumId w:val="7"/></w:num></w:numbering></pkg:xmlData></pkg:part>'
+  expect((await nativeHost.capture()).list).toBeUndefined()
+  const selected=await nativeHost.capture(true), list=selected.list!, target=selected.selection!
+  expect(list.id).toBe(5)
+  const input={proposalId:"stale-list",target,replacement:target.text+"\rAdded.",paragraphAction:"append_list_item" as const,list,
+    author:async()=>{state.paragraphs[0]!.list!.label="2.";return {kind:"list_insert" as const,proposalId:"stale-list",target,text:"Added.",list}}}
+  expect(await nativeHost.apply(input).catch(e=>e.mutationState)).toBe("unchanged")
+  expect(state.listInsertions).toBe(0)
+  expect(state.modeChanges).toEqual([])
 })

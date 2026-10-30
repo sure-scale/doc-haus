@@ -1156,3 +1156,26 @@ test("paragraph deletion review shows the text and mark decision then consumes i
     apply.click();expect(calls).toBe(1)
   }finally{f.restore()}
 })
+
+test("automatic list review displays the next label and consumes the single approved append", async () => {
+  let calls=0
+  const append:WordChatProposal={...proposal,after:proposal.before+"\rA further obligation.",paragraphAction:"append_list_item",
+    list:{id:17,format:"decimal",members:[{id:passage.paragraphs[0]!.id,text:passage.text,level:0,label:"1."}]}}
+  const f=fixture({turns:[turn({kind:"amendment",proposal:append})],host:{
+    apply:async p=>{expect(p.list).toEqual(append.list);calls++},
+    applyEligibility:p=>wordChatApplyEligibility(p.target,p.after,p.formatting,true,p.inlineFormatting,p.paragraphAction,p.list),
+  }})
+  try {
+    await f.chat.ready
+    const card=f.root.querySelector('[aria-label="List item to review"]')!
+    expect(card.textContent).toContain("Add list item")
+    expect(card.querySelector(".chat-after")?.textContent).toBe("2. A further obligation.")
+    expect(card.textContent).toContain("automatic list")
+    const apply=[...card.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="Apply")!
+    apply.click();await Bun.sleep(0)
+    expect(calls).toBe(1)
+    expect(f.root.querySelector(".chat-proposal-actions")).toBeNull()
+    expect(f.root.textContent).toContain("Applied in Word")
+    apply.click();expect(calls).toBe(1)
+  }finally{f.restore()}
+})

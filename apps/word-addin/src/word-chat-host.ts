@@ -1,4 +1,4 @@
-import type { WordChatAuthoredAmendment, WordChatPreparedAmendment, WordChatParagraphFormat, WordChatInlineFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget, WordChatTableRowInsertionProposal, WordChatProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatAuthoredAmendment, WordChatPreparedAmendment, WordChatParagraphFormat, WordChatInlineFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget, WordChatTableRowInsertionProposal, WordChatProposal, WordChatListCapture } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { validWordChatFormatting, validWordChatInlineFormatting, targetWordChatAmendment, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatTableCaptureCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody, verifyNativeWordChatRowRemainder, verifyReviewedWordChatRowOracle, assertNativeWordChatInlineTarget, assertNativeWordChatInlineDependencies, verifiedNativeWordChatInlineFormatting, sameNativeInlineWordChatParagraph, assertNativeInlineWordChatRevisionIds } from "./word-chat-host-ooxml"
 import type { WordChatAuthoredTableRow } from "../../../dochaus/lib/word-chat-contract"
@@ -7,17 +7,21 @@ import { verifyNativeWordChatAddedRow } from "./word-chat-native-row-verificatio
 import { normalizeNativeWordChatCommentIds as normalizeNativeWordChatAnnotationIds } from "./word-chat-native-comments"
 import { assertNativeWordChatParagraphInsertionTarget, verifyNativeWordChatParagraphInsertion } from "./word-chat-native-paragraph-insert"
 import { assertNativeWordChatParagraphDeletionTarget, verifyNativeWordChatParagraphDeletion } from "./word-chat-native-paragraph-delete"
+import { assertNativeWordChatListInsertionTarget, verifyNativeWordChatListInsertion } from "./word-chat-native-list-insert"
+import { nativeWordChatDecimalList } from "./word-chat-native-list-context"
 import { DOMParser } from "@xmldom/xmldom"
-import { nativeWordChatParagraphInsertionEligible, nativeWordChatParagraphDeletionEligible, wordChatApplyEligibility } from "./word-chat-apply"
+import { nativeWordChatParagraphInsertionEligible, nativeWordChatParagraphDeletionEligible, nativeWordChatListInsertionEligible, wordChatApplyEligibility } from "./word-chat-apply"
 
 type ClientResult<T> = { value: T }
 type Collection<T> = { items: T[]; load(properties: string): void }
 type TrackedChange = { author: string; type: string; text: string }
 type NativeTable = { rowCount: number; isUniform: boolean; values: string[][]; load(properties: string): void; getCell(row: number, column: number): { body: { paragraphs: Collection<Paragraph> } } }
-type Paragraph = { text: string; uniqueLocalId: string; tableNestingLevel: number; styleBuiltIn: string; isListItem?: boolean; spaceBefore: number; spaceAfter: number; lineSpacing: number; load(properties: string): void; getRange(location?: string): WordChatRange; insertParagraph?(text: string, location: "After"): Paragraph; delete?(): void }
+type NativeList = { id: number; paragraphs?: Collection<Paragraph>; load(properties: string): void; insertParagraph?(text: string, location: "End"): Paragraph }
+type NativeListItem = { level: number; listString: string; siblingIndex: number; load(properties: string): void }
+type Paragraph = { list?: NativeList; listItemOrNullObject?: NativeListItem; leftIndent?: number; firstLineIndent?: number; text: string; uniqueLocalId: string; tableNestingLevel: number; styleBuiltIn: string; isListItem?: boolean; spaceBefore: number; spaceAfter: number; lineSpacing: number; load(properties: string): void; getRange(location?: string): WordChatRange; insertParagraph?(text: string, location: "After"): Paragraph; delete?(): void }
 type WordChatRange = {
   text: string
-  font?: { bold: boolean | null; italic: boolean | null; underline: string | null; load(properties: string): void }
+  font?: { bold: boolean | null; italic: boolean | null; underline: string | null; name?: string | null; size?: number | null; color?: string | null; load(properties: string): void }
   paragraphs: Collection<Paragraph>
   load(properties: string): void
   getRange(location?: string): WordChatRange
@@ -28,7 +32,7 @@ type WordChatRange = {
   insertText(text: string, location: "Before" | "After" | "Start" | "End" | "Replace"): WordChatRange
   delete(): void
   getOoxml(): ClientResult<string>
-  getReviewedText(version: "Current"): ClientResult<string>
+  getReviewedText(version: "Current" | "Original"): ClientResult<string>
   getComments(): Collection<{ author: string; content: string; resolved: boolean }>
   getTrackedChanges(): Collection<TrackedChange>
 }
@@ -53,7 +57,7 @@ export type WordChatContext = {
 }
 export type WordChatWord = { run<T>(callback: (context: WordChatContext) => Promise<T>): Promise<T> }
 export type WordChatApplyResult = { status: "applied" | "already-applied"; tracked: true; saved: false; authors: string[]; target?: WordChatTarget }
-export type WordChatApplyInput = { proposalId: string; target: WordChatTarget; replacement: string; formatting?: WordChatParagraphFormat[]; inlineFormatting?: WordChatInlineFormat; paragraphAction?: WordChatProposal["paragraphAction"]; author: (snapshot: { ooxml: string }) => Promise<WordChatPreparedAmendment>; mayDispatch?: () => boolean }
+export type WordChatApplyInput = { proposalId: string; target: WordChatTarget; replacement: string; formatting?: WordChatParagraphFormat[]; inlineFormatting?: WordChatInlineFormat; paragraphAction?: WordChatProposal["paragraphAction"]; list?: WordChatListCapture; author: (snapshot: { ooxml: string }) => Promise<WordChatPreparedAmendment>; mayDispatch?: () => boolean }
 export class WordChatHostError extends Error {
   constructor(message: string, readonly mutationState: "unchanged" | "uncertain" = "unchanged", options?: ErrorOptions) { super(message, options); this.name = "WordChatHostError" }
 }
@@ -184,6 +188,10 @@ export class WordChatHost {
           const table = await this.readTableCapture(snapshot)
           if (table && new TextEncoder().encode(JSON.stringify({ ...snapshot, table })).length <= SNAPSHOT_BYTES) snapshot.table = table
         } catch { /* Optional geometry must never prevent ordinary chat. */ }
+        try {
+          const list = await this.readListCapture(snapshot)
+          if (list && new TextEncoder().encode(JSON.stringify({ ...snapshot, list })).length <= SNAPSHOT_BYTES) snapshot.list = list
+        } catch { /* Optional list context must never prevent ordinary chat. */ }
       }
       return snapshot
     }
@@ -193,6 +201,51 @@ export class WordChatHost {
       // Read current text in a fresh Office batch; never substitute a saved copy.
       return this.readSnapshot(false, false)
     }
+  }
+  private async observeNativeLists(context: WordChatContext, projection: ReturnType<typeof projectNativeWordChatBody>, selected?: string[]): Promise<WordChatListCapture[]> {
+    const all = context.document.body.paragraphs
+    all.load("items/text,items/uniqueLocalId,items/tableNestingLevel,items/styleBuiltIn,items/isListItem")
+    await context.sync()
+    if (all.items.length !== projection.paragraphs.length || all.items.some((p,i) => p.uniqueLocalId !== projection.paragraphs[i]!.id || p.text !== projection.paragraphs[i]!.text || p.tableNestingLevel !== projection.paragraphs[i]!.nesting)) throw captureMismatch("The Word list changed during capture.")
+    const items = all.items.filter(p => p.isListItem === true)
+    for (const p of items) {
+      if (!p.list?.paragraphs || !p.listItemOrNullObject) throw new Error("list_api_unavailable")
+      p.list.load("id"); p.listItemOrNullObject.load("level,listString,siblingIndex")
+      p.list.paragraphs!.load("items/text,items/uniqueLocalId,items/tableNestingLevel,items/styleBuiltIn,items/isListItem")
+    }
+    if (!items.length) return []
+    await context.sync()
+    const groups = new Map<number, Paragraph[]>()
+    for (const p of items) {
+      const list = p.list!, id = list.id
+      if (!Number.isSafeInteger(id) || id < 0) throw new Error("list_id_invalid")
+      const existing = groups.get(id) ?? []; existing.push(p); groups.set(id, existing)
+    }
+    const eligibleGroups = [...groups.entries()].filter(([, members]) => !selected || selected.every(id => members.some(p => p.uniqueLocalId === id)))
+    if (eligibleGroups.length !== 1) return []
+    const captures: WordChatListCapture[] = []
+    for (const [id, members] of eligibleGroups) {
+      const nativeMembers = members[0]!.list!.paragraphs!.items
+      if (nativeMembers.length !== members.length || nativeMembers.some((p,i) => p.uniqueLocalId !== members[i]!.uniqueLocalId || p.text !== members[i]!.text)) continue
+      const capture: WordChatListCapture = { id, format:"decimal", members: members.map(p => ({id:p.uniqueLocalId,text:p.text,level:p.listItemOrNullObject!.level,label:p.listItemOrNullObject!.listString})) }
+      if (members.some((p,i) => p.tableNestingLevel !== 0 || p.styleBuiltIn !== "Normal" || p.listItemOrNullObject!.level !== 0 || p.listItemOrNullObject!.siblingIndex !== i || p.listItemOrNullObject!.listString !== `${i + 1}.`) || !nativeWordChatDecimalList(projection,capture)) continue
+      captures.push(capture)
+    }
+    return captures
+  }
+
+  private async readListCapture(snapshot: WordChatSnapshot): Promise<WordChatListCapture | undefined> {
+    return this.word.run(async context => {
+      const all = context.document.body.paragraphs, xml = context.document.body.getRange("Whole").getOoxml()
+      all.load("items/text,items/uniqueLocalId,items/tableNestingLevel")
+      await context.sync()
+      if (all.items.length !== snapshot.paragraphs.length || all.items.some((p,i) => p.uniqueLocalId !== snapshot.paragraphs[i]!.id || p.text !== snapshot.paragraphs[i]!.text)) return
+      const projection = projectNativeWordChatBody(xml.value,all.items.map(p => ({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})))
+      const selected = snapshot.selection?.paragraphs.map(p => p.id)
+      const lists = await this.observeNativeLists(context,projection,selected)
+      const matches = selected ? lists.filter(l => selected.every(id => l.members.some(p => p.id === id))) : lists
+      return matches.length === 1 ? matches[0] : undefined
+    })
   }
   private async readTableCapture(snapshot: WordChatSnapshot): Promise<WordChatTableCapture | undefined> {
     return this.word.run(async context => {
@@ -368,7 +421,7 @@ export class WordChatHost {
     if (typeof input.author !== "function") throw new WordChatHostError("Reconnect to doc.haus to author this amendment before applying it. Your document is unchanged.")
     if (!input.proposalId || typeof input.replacement !== "string" || input.replacement.length > LIMIT || input.replacement === input.target.text && input.formatting === undefined && input.inlineFormatting === undefined)
       throw new WordChatHostError("Prepare and review a change before applying it.")
-    const identity = JSON.stringify([input.target, input.replacement, input.formatting, input.inlineFormatting, input.paragraphAction])
+    const identity = JSON.stringify([input.target, input.replacement, input.formatting, input.inlineFormatting, input.paragraphAction, input.list])
     const pending = this.pending.get(input.proposalId)
     if (pending) {
       if (pending.identity !== identity) throw new WordChatHostError("This proposal has different wording. Prepare a fresh proposal.")
@@ -381,9 +434,11 @@ export class WordChatHost {
       return { status: "already-applied", tracked: true, saved: false, authors: observed.authors }
     }
     const insertion = this.nativeTextEnabled && nativeWordChatParagraphInsertionEligible(input.target, input.replacement, input.formatting, input.inlineFormatting)
-    if (input.paragraphAction !== undefined && (!this.nativeTextEnabled || !nativeWordChatParagraphDeletionEligible(input.target, input.replacement, input.paragraphAction, input.formatting, input.inlineFormatting)))
+    if (input.paragraphAction === "append_list_item" && (!this.nativeTextEnabled || !nativeWordChatListInsertionEligible(input.target, input.replacement, input.paragraphAction, input.list, input.formatting, input.inlineFormatting)))
+      throw new WordChatHostError("Review a supported existing-list insertion before applying it. Your document is unchanged.")
+    if (input.paragraphAction !== undefined && input.paragraphAction !== "append_list_item" && (!this.nativeTextEnabled || !nativeWordChatParagraphDeletionEligible(input.target, input.replacement, input.paragraphAction, input.formatting, input.inlineFormatting)))
       throw new WordChatHostError("Review deletion of one complete paragraph before applying it. Your document is unchanged.")
-    const promise = input.paragraphAction !== undefined ? this.applyParagraphDeletionOnce(input, identity) : input.inlineFormatting !== undefined ? this.applyInlineOnce(input, identity) : insertion ? this.applyParagraphInsertionOnce(input, identity) : this.applyOnce(input, identity)
+    const promise = input.paragraphAction === "append_list_item" ? this.applyListInsertionOnce(input, identity) : input.paragraphAction !== undefined ? this.applyParagraphDeletionOnce(input, identity) : input.inlineFormatting !== undefined ? this.applyInlineOnce(input, identity) : insertion ? this.applyParagraphInsertionOnce(input, identity) : this.applyOnce(input, identity)
     this.pending.set(input.proposalId, { identity, promise })
     try { return await promise } finally { this.pending.delete(input.proposalId) }
   }
@@ -550,6 +605,78 @@ export class WordChatHost {
     const nearby = projection ? [index - 1, index + target.paragraphs.length].filter(i => i >= 0 && i < ids.length).map(i => ({ id:ids[i]!, ooxml:projection.scope([i]) })) : adjacent.map(p => ({ id:p.id, ooxml:p.xml.value }))
     return { range, selected, ooxml: scoped, ids, index, nesting: paragraphs.map(p => p.tableNestingLevel), adjacent: nearby, projection, tracking: context.document.changeTrackingMode, trackFormatting: formatting ? context.document.trackFormatting : undefined,
       changes: bodyChanges.items.map(change => ({ author: change.author, type: change.type, text: change.text })) }
+  }
+
+  private async applyListInsertionOnce(input: WordChatApplyInput, identity: string): Promise<WordChatApplyResult> {
+    try {
+      if (!input.list) throw captureMismatch("Word could not bind the reviewed list.")
+      const metrics = (p: Paragraph, font: NonNullable<WordChatRange["font"]>) => {
+        const values = [font.bold,font.italic,font.underline,font.name,font.size,font.color,p.spaceBefore,p.spaceAfter,p.lineSpacing,p.leftIndent,p.firstLineIndent]
+        if (typeof font.bold !== "boolean" || typeof font.italic !== "boolean" || typeof font.underline !== "string" || typeof font.name !== "string" || !font.name || typeof font.color !== "string" || !font.color || typeof font.size !== "number" || !Number.isFinite(font.size) || values.slice(6).some(x => typeof x !== "number" || !Number.isFinite(x))) throw new Error("list_effective_format_unavailable")
+        return values
+      }
+      const capture = async (context: WordChatContext) => {
+        const snap = await this.importSnapshot(context,input.target,false,false,false,false,true,true)
+        if (!snap.projection) throw captureMismatch("Word could not capture the reviewed list.")
+        assertNativeWordChatListInsertionTarget(snap.projection,input.target)
+        const lists = await this.observeNativeLists(context,snap.projection,[input.target.paragraphs[0]!.id])
+        if (lists.length !== 1 || JSON.stringify(lists[0]) !== JSON.stringify(input.list)) throw captureMismatch("The reviewed list changed.")
+        const anchor = context.document.getParagraphByUniqueLocalId(input.target.paragraphs[0]!.id)
+        anchor.load("styleBuiltIn,isListItem,spaceBefore,spaceAfter,lineSpacing,leftIndent,firstLineIndent")
+        const font = anchor.getRange("Content").font
+        if (!font) throw new Error("list_font_unavailable")
+        font.load("bold,italic,underline,name,size,color")
+        const current = context.document.body.getRange("Content").getReviewedText("Current"), original = context.document.body.getRange("Content").getReviewedText("Original")
+        const all = context.document.body.paragraphs, xml = context.document.body.getRange("Whole").getOoxml()
+        all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+        await context.sync()
+        const final = projectNativeWordChatBody(xml.value,all.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})))
+        if (!sameNativeProjectionGeometry(snap.projection,final) || !sameWordChatTargetSnapshot(snap.projection.ooxml,final.ooxml) || !nativeWordChatDecimalList(final,lists[0]!)) throw captureMismatch("The list or document changed during capture.")
+        if (anchor.styleBuiltIn !== "Normal" || anchor.isListItem !== true) throw captureMismatch("The reviewed list formatting changed.")
+        const span = input.target.text, at = current.value.indexOf(span)
+        if (at < 0 || at > 0 && current.value[at-1] !== "\r" || at+span.length < current.value.length && current.value[at+span.length] !== "\r" || current.value.indexOf(span,at+1) !== -1) throw captureMismatch("Word could not uniquely confirm the list boundary.")
+        return {...snap,projection:final,current:current.value,original:original.value,at,format:metrics(anchor,font)}
+      }
+      const initial = await this.word.run(capture)
+      const plan = await input.author({ooxml:initial.ooxml})
+      if (!("kind" in plan) || plan.kind !== "list_insert" || plan.proposalId !== input.proposalId || JSON.stringify(plan.target) !== JSON.stringify(input.target) || JSON.stringify(plan.list) !== JSON.stringify(input.list) || input.replacement !== `${input.target.text}\r${plan.text}`) throw captureMismatch("The prepared list insertion differs from the reviewed change.")
+      return await this.word.run(async context => {
+        const fresh = await capture(context)
+        if (!sameWordChatTargetSnapshot(initial.projection.ooxml,fresh.projection.ooxml) || !sameNativeProjectionGeometry(initial.projection,fresh.projection) || initial.current !== fresh.current || initial.original !== fresh.original || JSON.stringify(initial.format) !== JSON.stringify(fresh.format)) throw captureMismatch("The list changed during review.")
+        const anchor = context.document.getParagraphByUniqueLocalId(input.target.paragraphs[0]!.id), list = anchor.list
+        if (!list || typeof list.insertParagraph !== "function") throw captureMismatch("Word cannot insert into this list.")
+        if (input.mayDispatch && !input.mayDispatch()) throw new WordChatHostError("The Word pane closed before the change was applied. Your document is unchanged.")
+        this.applied.set(input.proposalId,{identity,authors:[],uncertain:true})
+        try {
+          context.document.changeTrackingMode = "TrackAll"
+          list.insertParagraph(plan.text,"End")
+          context.document.changeTrackingMode = fresh.tracking
+          await context.sync()
+          context.document.load("changeTrackingMode")
+          const all = context.document.body.paragraphs, body = context.document.body.getRange("Whole").getOoxml(), current = context.document.body.getRange("Content").getReviewedText("Current"), original = context.document.body.getRange("Content").getReviewedText("Original")
+          all.load("items/uniqueLocalId,items/text,items/tableNestingLevel,items/styleBuiltIn,items/isListItem,items/spaceBefore,items/spaceAfter,items/lineSpacing,items/leftIndent,items/firstLineIndent")
+          await context.sync()
+          const expected = fresh.current.slice(0,fresh.at + input.target.text.length) + "\r" + plan.text + fresh.current.slice(fresh.at + input.target.text.length)
+          if (context.document.changeTrackingMode !== fresh.tracking || current.value !== expected || original.value !== fresh.original) throw new Error("list_reviewed_text")
+          const observed = projectNativeWordChatBody(body.value,all.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})))
+          const authors = verifyNativeWordChatListInsertion(fresh.projection,observed,input.target,plan.text)
+          const inserted = all.items[fresh.index + 1]
+          if (!inserted || inserted.styleBuiltIn !== "Normal" || inserted.isListItem !== true) throw new Error("list_style")
+          const font = inserted.getRange("Content").font
+          if (!font) throw new Error("list_font_unavailable")
+          font.load("bold,italic,underline,name,size,color")
+          const lists = await this.observeNativeLists(context,observed,[inserted.uniqueLocalId])
+          await context.sync()
+          const expectedMembers = input.list!.members
+          if (lists.length !== 1 || lists[0]!.id !== input.list!.id || lists[0]!.members.length !== expectedMembers.length+1 || lists[0]!.members.some((member,i) => i < expectedMembers.length-1 ? JSON.stringify(member) !== JSON.stringify(expectedMembers[i]) : i === expectedMembers.length-1 ? member.text !== input.target.text || member.id === input.target.paragraphs[0]!.id || member.level !== 0 || member.label !== `${i+1}.` : member.id !== input.target.paragraphs[0]!.id || member.text !== plan.text || member.level !== 0 || member.label !== `${i+1}.`) || JSON.stringify(metrics(inserted,font)) !== JSON.stringify(fresh.format)) throw new Error("list_members_or_format")
+          this.applied.set(input.proposalId,{identity,authors,uncertain:false})
+          return {status:"applied",tracked:true,saved:false,authors}
+        } catch(cause) { throw new WordChatHostError("Word may contain the new list item, but could not confirm its tracked changes. Inspect it and use Undo if needed. Do not apply this proposal again.","uncertain",{cause}) }
+      })
+    } catch(error) {
+      if (this.applied.get(input.proposalId)?.uncertain) { if (error instanceof WordChatHostError && error.mutationState === "uncertain") throw error; throw new WordChatHostError("Word may already contain this change. Inspect it and use Undo if needed.","uncertain",{cause:error}) }
+      failure(error,"Word could not prepare the reviewed list insertion. Your document is unchanged.")
+    }
   }
 
   private async applyParagraphDeletionOnce(input: WordChatApplyInput, identity: string): Promise<WordChatApplyResult> {
@@ -1063,7 +1190,7 @@ export const captureWordChatSelection = () => host().selection()
 export const applyReviewedProposal = (proposal: import("../../../dochaus/lib/word-chat-amendment-contract").WordChatProposal,
   author: WordChatApplyInput["author"], mayDispatch?: () => boolean) => {
   if (proposal.before !== proposal.target.text) throw new WordChatHostError("Review a fresh amendment before applying it.")
-  return host().apply({proposalId: proposal.id,target: proposal.target,replacement: proposal.after,formatting: proposal.formatting,inlineFormatting: proposal.inlineFormatting,paragraphAction:proposal.paragraphAction,author,mayDispatch})
+  return host().apply({proposalId: proposal.id,target: proposal.target,replacement: proposal.after,formatting: proposal.formatting,inlineFormatting: proposal.inlineFormatting,paragraphAction:proposal.paragraphAction,list:proposal.list,author,mayDispatch})
 }
 
 export const applyReviewedTableRow = (proposal: WordChatTableRowInsertionProposal, exportCurrent: () => Promise<Uint8Array>,
