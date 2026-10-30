@@ -58,9 +58,9 @@ export function comparePrompt(input: ComparisonInput) {
   ].join("\n\n")
 }
 
-const QUOTES = /["“”]/
+const QUOTES = /["“”„«»]/
 
-// Strict: every compared document exactly once, short reasons with no quotation
+// Strict: every compared document exactly once, a short summary and reasons with no quotation
 // (excerpts shown come from stored citations). Anything else is no result. The
 // one unique largest group of 2 or more is consistent and the rest differ; a
 // single group is all consistent; a tie or all singletons all differ.
@@ -73,7 +73,7 @@ export function readComparison(text: string, input: Pick<ComparisonInput, "docum
   }
   if (!reply || typeof reply !== "object" || !("groups" in reply) || !Array.isArray(reply.groups) || !("summary" in reply) || typeof reply.summary !== "string") return undefined
   const summary = reply.summary.trim()
-  if (summary.length > 200) return undefined
+  if (summary.length > 200 || QUOTES.test(summary)) return undefined
   const names = new Set(input.documents.map(d => d.name))
   const seen = new Set<string>()
   const groups: Array<{ documents: string[]; reason: string }> = []
@@ -105,7 +105,7 @@ export async function compareColumn(client: Client, input: ComparisonInput, sign
   const config = await getConfig()
   signal.throwIfAborted()
   const model = modelSpec({ model: config.small_model ?? config.model })
-  if (!model) throw new Error("Choose a fast model in Settings before comparing answers.")
+  if (!model) throw new Error("Choose a model in Settings before comparing answers.")
   const sessionID = `ses_${crypto.randomUUID().replaceAll("-", "")}`
   let settled = false
   try {

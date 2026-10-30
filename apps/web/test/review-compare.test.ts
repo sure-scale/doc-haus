@@ -83,6 +83,8 @@ test("rejects any reply that misplaces a document, quotes, or overruns its limit
     reply([[["A", "B"], "x".repeat(141)], [["C"], "Other"]]),
     reply([[["A", "B"], ""], [["C"], "Other"]]),
     reply([[["A", "B", "C"], "Same"]], "x".repeat(201)),
+    reply([[["A", "B", "C"], "Same"]], 'All say "three years"'),
+    reply([[["A", "B", "C"], "Same"]], "All say «three years»"),
     "The documents mostly agree.",
   ]) expect(readComparison(text, three)).toBeUndefined()
 })
