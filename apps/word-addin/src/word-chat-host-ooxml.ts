@@ -616,6 +616,21 @@ export function sameWordChatTargetSnapshot(before: string, after: string): boole
   return sameWordChatParagraphContent(before, after)
 }
 
+/** Compare the complete native main story, including tables and section layout. */
+export function sameNativeWordChatBodySnapshot(before: string, after: string): boolean {
+  try {
+    const body = (xml: string) => {
+      const data = elements(parse(xml, 16_000_000).get(MAIN)!).filter(node => node.namespaceURI === PKG && node.localName === "xmlData")
+      if (data.length !== 1 || elements(data[0]!).length !== 1) throw new Error("Invalid main story")
+      const document = elements(data[0]!)[0]!
+      const bodies = elements(document).filter(node => node.namespaceURI === W && node.localName === "body")
+      if (document.namespaceURI !== W || document.localName !== "document" || bodies.length !== 1) throw new Error("Invalid main story")
+      return canonical(bodies[0]!, true)
+    }
+    return JSON.stringify(body(before)) === JSON.stringify(body(after))
+  } catch { return false }
+}
+
 function singleParagraphRuns(xml: string, version: "Current" | "Original") {
   const nodes = content(parse(xml), true, true).nodes
   if (nodes.length !== 1) throw new Error("Expected one reviewed paragraph")

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { reviewedWordChatInlineControl, importedWordChatDifference, reviewedMixedWordChatArtifact, sameWordChatOoxml, sameNativeWordChatParagraphContent, sameWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatReplacementFormatting, uniformWordChatFormatting, verifiedNativeWordChatFormatting, wordChatOoxmlDifference } from "./word-chat-host-ooxml"
+import { reviewedWordChatInlineControl, importedWordChatDifference, reviewedMixedWordChatArtifact, sameWordChatOoxml, sameNativeWordChatParagraphContent, sameWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatReplacementFormatting, sameWordChatTargetSnapshot, sameNativeWordChatBodySnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, wordChatOoxmlDifference } from "./word-chat-host-ooxml"
 import { reviewedWordChatParagraphFormatting } from "../../../dochaus/lib/word-chat-formatting-ooxml"
 import { DOMParser } from "@xmldom/xmldom"
 
@@ -9,6 +9,16 @@ const styles = '<w:styles><w:style w:type="paragraph" w:styleId="Normal"><w:pPr>
 function flat(paragraph = '<w:p><w:r><w:t>Reviewed text.</w:t></w:r></w:p>', dependency = styles, padding = "0") {
   return `<pkg:package xmlns:pkg="${PKG}" xmlns:w="${W}"><pkg:part pkg:name="/word/document.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"><pkg:xmlData><w:document><w:body>${paragraph}</w:body></w:document></pkg:xmlData></pkg:part>${dependency ? `<pkg:part pkg:name="/word/styles.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml" pkg:padding="${padding}"><pkg:xmlData>${dependency}</pkg:xmlData></pkg:part>` : ""}</pkg:package>`
 }
+
+test("native whole-body snapshot compares mixed structure and protected content", () => {
+  const body = '<w:p><w:pPr><w:spacing w:after="120"/></w:pPr><w:r><w:t>Unrelated</w:t></w:r><w:ins w:id="3" w:author="Prior"><w:r><w:t>Old revision</w:t></w:r></w:ins></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:sectPr><w:pgSz w:w="12000"/></w:sectPr>'
+  const source = flat(body)
+  expect(() => sameWordChatTargetSnapshot(source, source)).toThrow()
+  expect(sameNativeWordChatBodySnapshot(source, source)).toBe(true)
+  for (const changed of [body.replace('Unrelated', 'Changed'), body.replace('w:after="120"', 'w:after="240"'), body.replace('</w:tr>', '<w:tc><w:p/></w:tc></w:tr>'), body.replace('w:author="Prior"', 'w:author="Other"'), body.replace('w:w="12000"', 'w:w="13000"')])
+    expect(sameNativeWordChatBodySnapshot(source, flat(changed))).toBe(false)
+  expect(sameNativeWordChatBodySnapshot(source, '<invalid')).toBe(false)
+})
 
 test("native body projection binds table order and retains real empty paragraph and properties", async () => {
   const { projectNativeWordChatBody } = await import("./word-chat-host-ooxml")
