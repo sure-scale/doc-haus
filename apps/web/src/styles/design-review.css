@@ -38,7 +38,12 @@
 .review-progress-key { display: grid; gap: var(--space-1); min-width: 180px; padding-block: 2px; }
 .review-progress-scope { margin-bottom: 2px; opacity: .8; }
 .review-progress-key-row { display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: var(--space-2); }
-.review-progress-key-count { padding-left: var(--space-4); font-variant-numeric: tabular-nums; }
+/* The markers that put cells in Needs attention, lightened to read on the inverse tooltip surface. */
+.review-progress-key-markers { display: inline-flex; gap: 6px; padding-left: var(--space-4); }
+.review-progress-key-markers .review-glyph.is-danger { color: color-mix(in srgb, var(--danger) 55%, var(--md-sys-color-inverse-on-surface)); }
+.review-progress-key-markers .review-glyph.is-warn { color: color-mix(in srgb, var(--warn) 55%, var(--md-sys-color-inverse-on-surface)); }
+.review-progress-key-markers .review-glyph.is-muted { color: color-mix(in srgb, var(--muted) 55%, var(--md-sys-color-inverse-on-surface)); }
+.review-progress-key-markers .review-glyph.is-info { color: color-mix(in srgb, var(--info) 55%, var(--md-sys-color-inverse-on-surface)); }
 /* A light edge, so every swatch stands off the inverse tooltip surface. */
 .review-progress-swatch { width: 10px; height: 10px; border-radius: 3px; box-shadow: 0 0 0 1px color-mix(in srgb, var(--md-sys-color-inverse-on-surface) 45%, transparent); }
 

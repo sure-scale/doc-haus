@@ -879,9 +879,10 @@ try {
   const fillHeld: import("@playwright/test").Route[] = []
   onExtraction = route => void fillHeld.push(route)
   await fillDialog.getByRole("button", { name: "Start fill" }).click()
-  // While cells fill, the primary keeps one steady label and no compare is offered.
+  // While cells fill, the status counts them, answers already in are the one next step, and no compare is offered.
   await toolbar.getByText(/^Extracting/).waitFor()
-  assert.equal(await primary.textContent(), "Filling…")
+  assert.equal(await primary.textContent(), "Review next")
+  assert.equal(await toolbar.getByRole("button", { name: "Review next" }).count(), 1, "one Review next while cells fill")
   assert.equal(await head.getByRole("button", { name: /^Compare/ }).count(), 0, "no compare is offered while cells fill")
   onExtraction = route => void route.fulfill({ status: 204 })
   await Promise.all(fillHeld.splice(0).map(route => route.fulfill({ status: 204 })))

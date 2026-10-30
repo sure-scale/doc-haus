@@ -59,7 +59,7 @@ const sourceSignature = (c: Citation) => JSON.stringify([c.documentName, c.excer
 // support this row's answer, whatever its own document says.
 type SourceVerdict = SourceCheck | "other_document"
 const DEGRADED: SourceVerdict[] = ["not_found", "missing", "other_document"]
-const SOURCE_BADGE: Record<SourceVerdict, string> = { verified: "Verified", reanchored: "Re-anchored", not_found: "Source changed", missing: "Source missing", other_document: "Other document" }
+const SOURCE_BADGE: Record<SourceVerdict, string> = { verified: "Verified", reanchored: "Re-anchored", not_found: "Source changed", missing: "Source missing", other_document: "Cites another document" }
 const SOURCE_DETAIL: Record<SourceVerdict, string> = {
   verified: "The excerpt matches the document at the recorded position.",
   reanchored: "The excerpt is still in the document, but at a different position from the one recorded. The document may have changed since this answer.",
@@ -926,8 +926,8 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
           fillBlanks={fillBlanks}
           startDisabled={!canEdit || running > 0}
           fillDisabled={!canEdit || running > 0}
-          canExport={documents.length > 0 && grid.columns.length > 0}
-          searchable={attention.cells.size > 0}
+          canExport={attention.progress.answered > 0}
+          searchable={attention.progress.answered > 0}
           filters={filters}
           onFilters={setFilters}
           query={query}

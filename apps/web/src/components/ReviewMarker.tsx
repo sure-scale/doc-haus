@@ -5,13 +5,14 @@ import { Tooltip } from "./Tooltip"
 // word carry the state; colour is a second cue, never the only one. The legend
 // in Needs attention draws the same shapes.
 
-type Shape = "cross" | "triangle" | "dot" | "ring" | "diamond"
+type Shape = "cross" | "triangle" | "dot" | "ring" | "dash" | "diamond"
 export const MARKER_LOOK: Record<MarkerState, { shape: Shape; tone: "danger" | "warn" | "muted" | "info" }> = {
   other_document: { shape: "cross", tone: "danger" },
   source_missing: { shape: "triangle", tone: "danger" },
   source_changed: { shape: "triangle", tone: "warn" },
   question_changed: { shape: "dot", tone: "warn" },
   no_citation: { shape: "ring", tone: "muted" },
+  not_addressed: { shape: "dash", tone: "muted" },
   differs: { shape: "diamond", tone: "info" },
 }
 const SHAPES: Record<Shape, React.ReactNode> = {
@@ -19,6 +20,7 @@ const SHAPES: Record<Shape, React.ReactNode> = {
   triangle: <path d="M5 1 9.3 8.7H.7Z" fill="currentColor" />,
   dot: <circle cx="5" cy="5" r="3.6" fill="currentColor" />,
   ring: <circle cx="5" cy="5" r="3.3" fill="none" stroke="currentColor" strokeWidth="1.5" />,
+  dash: <path d="M1.5 5h7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />,
   diamond: <path d="M5 .7 9.3 5 5 9.3.7 5Z" fill="currentColor" />,
 }
 

@@ -37,7 +37,9 @@ test("counts and denominators cover only the current documents and questions", (
   expect(result.progress).toEqual({ documents: 2, questions: 2, answered: 3, reviewed: 1 })
   expect(result.cells.size).toBe(4)
   expect(result.attention).toBe(1)
-  expect(result.counts.no_citation).toBe(1)
+  // Not found and No source are separate states, each with its own count.
+  expect(result.counts.not_addressed).toBe(1)
+  expect(result.counts.no_citation).toBe(0)
   expect(result.counts.unreviewed).toBe(2)
   expect(result.queue.map((entry) => entry.key)).toEqual([cellKey(lease, law.id), cellKey(supply, term.id)])
 })
@@ -54,7 +56,7 @@ test("each cell shows the highest-priority marker and lists the rest", () => {
     const entry = result.cells.get(cellKey(doc, col.id))!
     return [entry.marker?.word, ...entry.further.map((note) => note.word)]
   }
-  expect(view(supply, law)).toEqual(["Other document", "Question changed", "Differs"])
+  expect(view(supply, law)).toEqual(["Cites another document", "Question changed", "Differs"])
   expect(view(supply, term)).toEqual(["Question changed", "Not found"])
   expect(view(lease, law)).toEqual(["No source", "Differs"])
   expect(view(lease, term)).toEqual(["Source changed", "Question changed"])
@@ -77,8 +79,8 @@ test("Review next takes markers by priority, then unreviewed cells, ties in tabl
     source: (key) => ({ [cellKey(supply, pay.id)]: "missing", [cellKey(lease, law.id)]: "not_found" } as Record<string, SourceVerdict>)[key] ?? "verified",
   })
   expect(result.queue).toEqual([
-    { key: cellKey(supply, pay.id), docName: supply, columnId: pay.id, reason: "The cited document is no longer in the matter." },
-    { key: cellKey(lease, law.id), docName: lease, columnId: law.id, reason: "The document no longer contains the cited excerpt. Check the answer against the current text." },
+    { key: cellKey(supply, pay.id), docName: supply, columnId: pay.id, reason: "The cited document is no longer in the matter. Unlock to refresh." },
+    { key: cellKey(lease, law.id), docName: lease, columnId: law.id, reason: "The document no longer contains the cited excerpt. Re-run this cell to answer from the current text." },
     { key: cellKey(supply, term.id), docName: supply, columnId: term.id, reason: "The answer has no cited passage in this document." },
     { key: cellKey(supply, law.id), docName: supply, columnId: law.id, reason: "Not reviewed yet." },
   ])

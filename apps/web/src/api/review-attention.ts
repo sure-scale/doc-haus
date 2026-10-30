@@ -6,7 +6,7 @@ import { NOT_ADDRESSED } from "./review-recheck"
 // count, progress, the Review next order and the toolbar's primary action.
 
 export type SourceVerdict = SourceCheck | "other_document"
-export type MarkerState = "other_document" | "source_changed" | "source_missing" | "question_changed" | "no_citation" | "differs"
+export type MarkerState = "other_document" | "source_changed" | "source_missing" | "question_changed" | "no_citation" | "not_addressed" | "differs"
 export type CellState = MarkerState | "unfilled" | "unreviewed" | "source_unchecked"
 export type AttentionFilter = MarkerState | "unreviewed"
 export type StateNote<S extends CellState = CellState> = { state: S; word: string; reason: string }
@@ -43,9 +43,9 @@ export type AttentionInput = {
   differs?: (docName: string, column: GridColumn) => string | undefined
 }
 
-const RANK: Record<MarkerState, number> = { other_document: 0, source_changed: 1, source_missing: 1, question_changed: 2, no_citation: 3, differs: 4 }
+const RANK: Record<MarkerState, number> = { other_document: 0, source_changed: 1, source_missing: 1, question_changed: 2, no_citation: 3, not_addressed: 3, differs: 4 }
 const UNREVIEWED_RANK = 5
-const FILTERS: AttentionFilter[] = ["other_document", "source_changed", "source_missing", "question_changed", "no_citation", "differs", "unreviewed"]
+const FILTERS: AttentionFilter[] = ["other_document", "source_changed", "source_missing", "question_changed", "no_citation", "not_addressed", "differs", "unreviewed"]
 const isMarker = (state: CellState): state is MarkerState => state in RANK
 const notAddressed = (answer: string) => answer.trim().replace(/\.$/, "").toLowerCase() === NOT_ADDRESSED.toLowerCase()
 
@@ -54,18 +54,19 @@ function notes(cell: GridCellData | undefined, checking: boolean, differs?: stri
   return {
     unfilled: ["Not filled", "No answer yet."],
     unreviewed: ["Not reviewed", "Not reviewed yet."],
-    other_document: ["Other document", `The cited passage is from another document, so it does not support this answer. ${reviewed ? "Unlock to refresh." : "Re-run this cell to answer from this document."}`],
-    source_changed: ["Source changed", "The document no longer contains the cited excerpt. Check the answer against the current text."],
-    source_missing: ["Source missing", "The cited document is no longer in the matter."],
+    other_document: ["Cites another document", `The cited passage is from another document, so it does not support this answer. ${reviewed ? "Unlock to refresh." : "Re-run this cell to answer from this document."}`],
+    source_changed: ["Source changed", `The document no longer contains the cited excerpt. ${reviewed ? "Unlock to refresh." : "Re-run this cell to answer from the current text."}`],
+    source_missing: ["Source missing", `The cited document is no longer in the matter. ${reviewed ? "Unlock to refresh." : "Re-run this cell to answer from this document."}`],
     source_unchecked: checking ? ["Checking source", "Checking the excerpt against the document."] : ["Source not checked", "The excerpt could not be checked against the document."],
     question_changed: ["Question changed", reviewed ? "Question changed after review. Unlock to refresh." : "Question changed since this answer. Re-run this cell to update it."],
-    no_citation: cell && notAddressed(cell.answer) ? ["Not found", "The document does not appear to address this question."] : ["No source", "The answer has no cited passage in this document."],
+    no_citation: ["No source", "The answer has no cited passage in this document."],
+    not_addressed: ["Not found", "The document does not appear to address this question."],
     differs: ["Differs", differs || "This answer differs from the other documents."],
   }
 }
 
 // States in marker priority order, so the first marker-class state is the marker.
-// No source and Differs describe the answer itself, so reviewing settles them;
+// No source, Not found and Differs describe the answer itself, so reviewing settles them;
 // the others say the reviewed answer may no longer hold.
 function cellStates(key: string, cell: GridCellData | undefined, questionHash: string, differs: string | undefined, input: AttentionInput): CellState[] {
   if (!cell) return ["unfilled"]
@@ -79,7 +80,7 @@ function cellStates(key: string, cell: GridCellData | undefined, questionHash: s
     else if (!verdict) states.push("source_unchecked")
   }
   if (cell.questionHash !== questionHash) states.push("question_changed")
-  if (open && !cell.citation) states.push("no_citation")
+  if (open && !cell.citation) states.push(notAddressed(cell.answer) ? "not_addressed" : "no_citation")
   if (open && differs !== undefined) states.push("differs")
   return states
 }
@@ -119,13 +120,8 @@ export function reviewAttention(input: AttentionInput): ReviewAttention {
 /** Each filter's word and meaning for the legend, in the cells' own vocabulary: the reason's first sentence, without a cell's next step. */
 export function legend(): Array<StateNote<AttentionFilter>> {
   const plain = notes(undefined, false)
-  const [notFound, notFoundReason] = notes({ answer: NOT_ADDRESSED, status: "filled", questionHash: "" }, false).no_citation
   const meaning = (reason: string) => reason.split(/(?<=\.) /)[0]
-  return FILTERS.map((state) => ({
-    state,
-    word: plain[state][0],
-    reason: meaning(plain[state][1]) + (state === "no_citation" ? ` ${notFound} means ${notFoundReason[0].toLowerCase()}${notFoundReason.slice(1)}` : ""),
-  }))
+  return FILTERS.map((state) => ({ state, word: plain[state][0], reason: meaning(plain[state][1]) }))
 }
 
 /**

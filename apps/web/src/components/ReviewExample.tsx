@@ -9,7 +9,7 @@ import ReviewSetupDialog from "./ReviewSetupDialog"
 // marker and reason, the answer and the cited passage. No model, no matter, no writes.
 
 const marker = (answer: StarterExampleAnswer) =>
-  !answer.citation ? { state: "no_citation" as const, word: "Not found", reason: "The document does not appear to address this question." }
+  !answer.citation ? { state: "not_addressed" as const, word: "Not found", reason: "The document does not appear to address this question." }
   : answer.comparison === "differs" ? { state: "differs" as const, word: "Differs", reason: answer.reason } : undefined
 
 export default function ReviewExample({ questions, example }: { questions: readonly StarterQuestion[]; example: StarterExample }) {

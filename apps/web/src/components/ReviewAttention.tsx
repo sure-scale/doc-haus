@@ -63,9 +63,10 @@ function useDisclosure(items: string) {
       event.preventDefault()
       controls[(at + (event.key === "ArrowDown" ? 1 : controls.length - 1)) % controls.length]?.focus()
     },
+    // A press on a row's words moves focus to the enclosing dialog, not away.
     onBlur: (event: React.FocusEvent) => {
       const next = event.relatedTarget as Node | null
-      if (open && next && !root.current?.contains(next)) setOpen(false)
+      if (open && next && !root.current?.contains(next) && !next.contains(root.current)) setOpen(false)
     },
   }
   return { open, setOpen, trigger, panel, rootProps, panelStyle: shift ? { right: -shift } : undefined }
@@ -91,13 +92,17 @@ function progressParts(model: ReviewAttention) {
 
 // A thin segmented bar and one short line. The bar's name gives every count in
 // words; hover or focus shows its key, with the table's documents and questions.
+// The key names each colour, and the markers that make a cell need attention;
+// the line and the Filter carry the counts. Before any answer there is nothing
+// to count, so the line gives the table's size.
 function ProgressBar({ model }: { model: ReviewAttention }) {
   const { documents, questions } = model.progress
   const scope = `${plural(documents, "document")} · ${plural(questions, "question")}`
   const total = model.cells.size
-  if (!total) return <span className="review-summary">{scope}</span>
+  if (!model.progress.answered) return <span className="review-summary">{scope}</span>
   const parts = progressParts(model)
   const reviewed = parts.find((part) => part.part === "reviewed")?.count ?? 0
+  const markers = legend().flatMap((note) => note.state !== "unreviewed" && model.counts[note.state] > 0 ? [note.state] : [])
   const name = `Review progress, ${plural(total, "cell")} in ${plural(documents, "document")} and ${plural(questions, "question")}: ${parts.map((part) => `${part.count} ${part.spoken(part.count)}`).join(", ")}`
   const key = (
     <span className="review-progress-key">
@@ -106,20 +111,21 @@ function ProgressBar({ model }: { model: ReviewAttention }) {
         <span key={part.part} className="review-progress-key-row">
           <span className={`review-progress-swatch is-${part.part}`} aria-hidden="true" />
           <span>{part.word}</span>
-          <span className="review-progress-key-count">{part.count}</span>
+          {part.part === "attention" && <span className="review-progress-key-markers">{markers.map((state) => <MarkerGlyph key={state} state={state} />)}</span>}
         </span>
       ))}
     </span>
   )
+  // The key keeps clear of the whole toolbar when it cannot sit beside the line it explains.
   return (
-    <span className="review-progress">
-      <Tooltip label={key} describes={false}>
+    <Tooltip label={key} describes={false} around=".review-toolbar">
+      <span className="review-progress">
         <span className="review-progress-bar" role="img" aria-label={name} tabIndex={0}>
           {parts.map((part) => <span key={part.part} className={`review-progress-part is-${part.part}`} style={{ flexGrow: part.count }} />)}
         </span>
-      </Tooltip>
-      <span className="review-summary" aria-hidden="true">{reviewed === total ? "All reviewed" : `${reviewed} of ${total} reviewed`}</span>
-    </span>
+        <span className="review-summary" aria-hidden="true">{reviewed === total ? "All reviewed" : `${reviewed} of ${total} reviewed`}</span>
+      </span>
+    </Tooltip>
   )
 }
 
@@ -201,7 +207,7 @@ function FilterMenu({ model, checking, filters, onFilters }: { model: ReviewAtte
           {rows.map((note) => {
             const marker = note.state !== "unreviewed"
             return (
-              <Tooltip key={note.state} label={note.reason} describes={false}>
+              <Tooltip key={note.state} label={note.reason} describes={false} around=".review-filter-menu">
                 <label className={`review-filter-option${marker ? "" : " is-unreviewed"}`}>
                   <input type="checkbox" checked={filters.includes(note.state)} aria-label={marker ? `${note.word}, ${plural(model.counts[note.state], "cell")}` : note.word} aria-describedby={`${id}-${note.state}`} onChange={(event) => toggle(note.state, event.target.checked)} />
                   {marker ? <MarkerGlyph state={note.state as MarkerState} /> : <span className="review-glyph" aria-hidden="true" />}
@@ -383,6 +389,8 @@ export function ReviewToolbar({ model, checking, running, comparing, primary, fi
 }) {
   // One slot, so a primary button keeps its node (and focus) as its action changes.
   // With every cell reviewed, Export is the next step in words; before then it is an icon.
+  // While a Fill runs the status counts it, and answers already in are the next step.
+  const reviewNext = primary?.kind === "reviewNext" || (primary?.kind === "fill" && running > 0 && model.queue.length > 0)
   const main = primary?.kind === "export" ? (
     <SplitButton
       key="primary"
@@ -398,8 +406,8 @@ export function ReviewToolbar({ model, checking, running, comparing, primary, fi
     />
   )
     : primary?.kind === "start" ? <button key="primary" type="button" className="primary review-primary" disabled={startDisabled} onClick={onStarter}>Add questions</button>
+    : reviewNext ? <button key="primary" type="button" className="primary review-primary" onClick={onReviewNext}>Review next</button>
     : primary?.kind === "fill" ? <button key="primary" type="button" className="primary review-primary" disabled={fillDisabled} onClick={onFill}>{running > 0 ? "Filling…" : `${fillBlanks ? "Fill" : "Refresh"} ${plural(fillCount, "cell")}`}</button>
-    : primary?.kind === "reviewNext" ? <button key="primary" type="button" className="primary review-primary" onClick={onReviewNext}>Review next</button>
     : null
   const busy = running > 0 || comparing > 0 || !!notice
   return (
@@ -417,7 +425,7 @@ export function ReviewToolbar({ model, checking, running, comparing, primary, fi
         {primary?.kind !== "export" && canExport && <ExportMenu onExport={onExport} />}
         {/* The next steps wrap as one group, so the primary never sits alone. */}
         <div className="review-toolbar-steps">
-          {primary?.kind !== "reviewNext" && model.queue.length > 0 && <button key="next" type="button" className="ghost" onClick={onReviewNext}>Review next</button>}
+          {!reviewNext && model.queue.length > 0 && <button key="next" type="button" className="ghost" onClick={onReviewNext}>Review next</button>}
           {main}
         </div>
       </div>
