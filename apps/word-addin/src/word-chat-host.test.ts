@@ -37,7 +37,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     nativeRevisions: [] as Array<{ start: number; end: number; author: string; type: string; text: string }>,
     extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false, wholeOoxmlTrailingParagraph: false,
     nativeFormatting: [] as string[], dropNativeFormatting: false, terminalBodyMark: false, cellWholeExpandsRow: false, refuseEmptyContentXml: false,
-    paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
+    omitContentProperties: false, paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
   }
   const text = () => state.paragraphs.map((p) => p.text).join(state.separator)
   const position = (id: string) => {
@@ -59,7 +59,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
   const collection = <T>(items: T[]) => ({ items, load() {} })
   const ranges = new Set<Range>()
   class Range {
-    constructor(public start: number, public end: number, public bodyWhole = false, public cellWhole = false, public paragraphContent = false) { ranges.add(this) }
+    constructor(public start: number, public end: number, public bodyWhole = false, public cellWhole = false, public paragraphContent = false, public bodyExport = false) { ranges.add(this) }
     get text() { return (text() + "\r").slice(this.start, this.end) }
     get paragraphs() {
       return collection(state.paragraphs.filter((p) => {
@@ -207,7 +207,15 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
         return `<w:p>${result}${run(text().slice(cursor, bounds.end))}</w:p>`
       }
       if (this.cellWhole) return { value: flatOpc(`<w:tbl><w:tr>${state.paragraphs.filter(p => p.inTable).map(p => `<w:tc>${markup(paragraph(p))}</w:tc>`).join("")}</w:tr></w:tbl><w:p/>`, state.extraParts) }
-      return { value: !state.writes.length && state.xml !== undefined ? state.xml : flatOpc(paragraphs.map(markup).join("") + (state.wholeOoxmlTrailingParagraph && whole ? "<w:p/>" : ""), state.extraParts) }
+      let body = paragraphs.map(markup).join("")
+      if (this.bodyExport && state.paragraphs.some(p => p.inTable)) {
+        body = ""; let cells: string[] = []
+        const flush = () => { if (cells.length) { body += `<w:tbl><w:tr>${cells.join("")}</w:tr></w:tbl>`; cells = [] } }
+        for (const p of state.paragraphs) { if (p.inTable) cells.push(`<w:tc>${markup(paragraph(p))}</w:tc>`); else { flush(); body += markup(paragraph(p)) } }
+        flush()
+      }
+      if (this.paragraphContent && state.omitContentProperties) body = body.replace(/<w:pPr>[\s\S]*?<\/w:pPr>/g, "")
+      return { value: !state.writes.length && state.xml !== undefined ? state.xml : flatOpc(body + (state.wholeOoxmlTrailingParagraph && whole ? "<w:p/>" : ""), state.extraParts) }
     }
     getReviewedText() {
       const paragraphs = state.paragraphs.filter(p => { const at = position(p.id); return this.start <= at.start && at.end <= this.end })
@@ -301,7 +309,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       getSelection: () => new Range(state.selection[0]!, state.selection[1]!),
       getParagraphByUniqueLocalId(id: string) { return paragraph(position(id).p) },
       getAnnotationById(id: string) { return { delete() { state.annotations.delete(id) } } },
-      body: { get text() { return text() }, load() {}, get paragraphs() { return collection(state.paragraphs.map(paragraph)) }, getRange(location?: string) { const whole = state.terminalBodyMark && location !== "Content"; return new Range(0, text().length + (whole ? 1 : 0), whole) } },
+      body: { get text() { return text() }, load() {}, get paragraphs() { return collection(state.paragraphs.map(paragraph)) }, getRange(location?: string) { const whole = state.terminalBodyMark && location !== "Content"; return new Range(0, text().length + (whole ? 1 : 0), whole, false, false, location === "Whole") } },
       onAnnotationClicked: event("annotation"), onParagraphChanged: event("change"), onParagraphAdded: event("add"), onParagraphDeleted: event("delete"),
     },
     async sync() {
@@ -1359,4 +1367,49 @@ test("native cell wording rejects an XML-only formatting change in a neighbour",
   await expect(host.apply({ proposalId: "cell-neighbour-change", target, replacement: target.text.replace("clear", "specific") })).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("could not confirm") })
   expect(state.paragraphs.map(p => p.text)).toEqual(["Previous cell.", "A specific obligation.", "Next cell."])
   expect(state.writes).toHaveLength(1)
+})
+
+test("native wording preserves faithful body, list and styled-cell properties when Content omits them", async () => {
+  for (const kind of ["body", "list", "cell"]) {
+    const { state, nativeHost, word } = office(["A clear obligation.", "Other paragraph."], true)
+    state.omitContentProperties = true
+    if (kind === "cell") { state.paragraphs[0]!.inTable = true; state.separator = "\t" }
+    const properties = kind === "list" ? '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr><w:spacing w:after="120"/>' : kind === "cell" ? '<w:pStyle w:val="Heading1"/><w:spacing w:after="180"/>' : '<w:spacing w:before="80"/>'
+    const xml = `<w:p><w:pPr>${properties}</w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>A clear obligation.</w:t></w:r></w:p>`
+    state.paragraphXml.set("paragraph-0", xml)
+    await word.run(async context => { const content = context.document.getParagraphByUniqueLocalId("paragraph-0").getRange("Content").getOoxml(); await context.sync(); expect(content.value).not.toContain("<w:pPr>") })
+    const target = (await nativeHost.selection())!, replacement = target.text.replace("clear", "specific"), proposalId = `faithful-${kind}`
+    let authoredInput = "", authoredParagraph = ""
+    state.afterSync = () => { if (state.writes.length) { state.paragraphXml.set("paragraph-0", authoredParagraph); state.afterSync = undefined } }
+    const input = { proposalId, target, replacement, author: async ({ ooxml }: { ooxml:string }) => {
+      authoredInput = ooxml; const result = await authorWordChatTarget(ooxml, target, replacement)
+      const doc = new DOMParser().parseFromString(result.ooxml, "application/xml")
+      authoredParagraph = new XMLSerializer().serializeToString(doc.getElementsByTagNameNS(WORD_XML, "p")[0]!)
+      return { ...result, proposalId }
+    } }
+    expect((await nativeHost.apply(input)).status).toBe("applied")
+    expect(authoredInput).toContain(properties)
+    expect(state.paragraphXml.get("paragraph-0")).toContain("spacing")
+    expect(state.paragraphXml.get("paragraph-0")).toContain("w:b")
+    expect((await nativeHost.apply(input)).status).toBe("already-applied")
+    expect(state.writes).toHaveLength(1)
+  }
+})
+
+test("native wording refuses faithful property drift before writing and fences postwrite corruption", async () => {
+  for (const phase of ["author", "postwrite"]) {
+    const { state, nativeHost } = office(["A clear obligation.", "Other paragraph."], true)
+    const xml = '<w:p><w:pPr><w:spacing w:after="120"/></w:pPr><w:r><w:t>A clear obligation.</w:t></w:r></w:p>'
+    state.paragraphXml.set("paragraph-0", xml)
+    const target = (await nativeHost.selection())!, replacement = target.text.replace("clear", "specific"), proposalId = `faithful-drift-${phase}`
+    const input = { proposalId, target, replacement, author: async ({ ooxml }: { ooxml:string }) => {
+      const result = { ...await authorWordChatTarget(ooxml, target, replacement), proposalId }
+      if (phase === "author") state.paragraphXml.set("paragraph-0", xml.replace('w:after="120"', 'w:after="240"'))
+      return result
+    } }
+    if (phase === "postwrite") state.afterSync = () => { if (state.writes.length) { state.paragraphXml.set("paragraph-0", xml.replace("clear", "specific").replace('w:after="120"', 'w:after="240"')); state.afterSync = undefined } }
+    await expect(nativeHost.apply(input)).rejects.toMatchObject({ mutationState: phase === "author" ? "unchanged" : "uncertain" })
+    expect(state.writes).toHaveLength(phase === "author" ? 0 : 1)
+    if (phase === "postwrite") { await expect(nativeHost.apply(input)).rejects.toThrow("may already contain"); expect(state.writes).toHaveLength(1) }
+  }
 })

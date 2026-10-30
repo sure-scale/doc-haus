@@ -89,6 +89,11 @@ const protectedContent = new Set([
 ])
 const children = (node: Node) => Array.from(node.childNodes).filter(child => child.nodeType === 1) as Element[]
 
+function sameNativeProjectionGeometry(a: ReturnType<typeof projectNativeWordChatBody>, b: ReturnType<typeof projectNativeWordChatBody>) {
+  return a.geometry === b.geometry && a.paragraphs.length === b.paragraphs.length &&
+    a.paragraphs.every((p, i) => p.id === b.paragraphs[i]?.id && p.path === b.paragraphs[i]?.path)
+}
+
 /** getOoxml exports a Flat OPC package, including unrelated parts and a final
  * body-level section layout even for one selected word. Inspect only selected
  * main-document content. A section break inside a paragraph remains protected;
@@ -294,7 +299,7 @@ export class WordChatHost {
 
   /** Complete paragraphs form the import transport. The approved edit still
    * names only target.text/startOffset/endOffset, checked in both authored views. */
-  private async importSnapshot(context: WordChatContext, target: WordChatTarget, formatting = false, wordingImport = false, insertedMarks = false, allowNativeCell = false, faithfulFormat = false) {
+  private async importSnapshot(context: WordChatContext, target: WordChatTarget, formatting = false, wordingImport = false, insertedMarks = false, allowNativeCell = false, faithfulProjection = false) {
     const { range: selected, paragraphs } = await this.resolve(context, target, allowNativeCell)
     const all = context.document.body.paragraphs
     all.load("items/uniqueLocalId")
@@ -304,19 +309,19 @@ export class WordChatHost {
     // A cell Whole export may include the row, the target and a trailing paragraph.
     const neighbours: Array<{ id: string; range: WordChatRange }> = [all.items[at - 1], all.items[at + target.paragraphs.length]]
       .filter((p): p is Paragraph => Boolean(p)).map(p => ({ id: p.uniqueLocalId, range: p.getRange(allowNativeCell ? "Content" : "Whole") }))
-    // Native formatting uses the bound whole-story projection below. Legacy
+    // Native formatting and wording use the bound whole-story projection below. Legacy
     // import paths retain their existing scoped Content export.
     const content = paragraphs[0]!.getRange("Content").expandTo(paragraphs.at(-1)!.getRange("Content"))
     const range = formatting && !wordingImport ? paragraphs[0]!.getRange("Whole").expandTo(paragraphs.at(-1)!.getRange("Whole")) : content
     // Every preservation baseline comes from this final read batch. Context
     // discovery yields to Word and must never leave an earlier XML snapshot as
     // the authority for a later complete-paragraph replacement.
-    const xml = faithfulFormat ? undefined : content.getOoxml(), bodyXml = faithfulFormat ? context.document.body.getRange("Whole").getOoxml() : undefined, comments = range.getComments(), revisions = range.getTrackedChanges()
+    const xml = faithfulProjection ? undefined : content.getOoxml(), bodyXml = faithfulProjection ? context.document.body.getRange("Whole").getOoxml() : undefined, comments = range.getComments(), revisions = range.getTrackedChanges()
     comments.load("items"); revisions.load("items/author,items/type")
     const current = paragraphs.map(paragraph => paragraph.getRange("Content").getReviewedText("Current"))
     context.document.load(formatting ? "changeTrackingMode,trackFormatting" : "changeTrackingMode")
-    all.load(faithfulFormat ? "items/uniqueLocalId,items/text,items/tableNestingLevel" : "items/uniqueLocalId")
-    const adjacent = faithfulFormat ? [] : neighbours.map(p => ({ id: p.id, xml: p.range.getOoxml() }))
+    all.load(faithfulProjection ? "items/uniqueLocalId,items/text,items/tableNestingLevel" : "items/uniqueLocalId")
+    const adjacent = faithfulProjection ? [] : neighbours.map(p => ({ id: p.id, xml: p.range.getOoxml() }))
     const bodyChanges = context.document.body.getRange().getTrackedChanges()
     bodyChanges.load("items/author,items/type,items/text")
     selected.load("text")
@@ -324,7 +329,7 @@ export class WordChatHost {
     await context.sync()
     const finalIds = all.items.map(p => p.uniqueLocalId)
     const finalAt = finalIds.indexOf(target.paragraphs[0]!.id)
-    if (faithfulFormat && (finalAt !== at || JSON.stringify([finalIds[finalAt - 1], finalIds[finalAt + target.paragraphs.length]].filter((id): id is string => id !== undefined)) !== JSON.stringify(neighbours.map(p => p.id))))
+    if (faithfulProjection && (finalAt !== at || JSON.stringify([finalIds[finalAt - 1], finalIds[finalAt + target.paragraphs.length]].filter((id): id is string => id !== undefined)) !== JSON.stringify(neighbours.map(p => p.id))))
       throw captureMismatch("The paragraphs beside this review changed during capture.")
     let projection: ReturnType<typeof projectNativeWordChatBody> | undefined
     try { projection = bodyXml ? projectNativeWordChatBody(bodyXml.value, all.items.map(p => ({ id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel }))) : undefined }
@@ -351,7 +356,7 @@ export class WordChatHost {
     const index = ids.indexOf(target.paragraphs[0]!.id)
     if (index < 0 || target.paragraphs.some((p, offset) => ids[index + offset] !== p.id))
       throw captureMismatch("The reviewed paragraphs changed identity or order during capture.")
-    if (formatting && !faithfulFormat && JSON.stringify([ids[index - 1], ids[index + target.paragraphs.length]].filter((id): id is string => id !== undefined)) !== JSON.stringify(adjacent.map(p => p.id)))
+    if (formatting && !faithfulProjection && JSON.stringify([ids[index - 1], ids[index + target.paragraphs.length]].filter((id): id is string => id !== undefined)) !== JSON.stringify(adjacent.map(p => p.id)))
       throw captureMismatch("The paragraphs beside this review changed during capture.")
     const nearby = projection ? [index - 1, index + target.paragraphs.length].filter(i => i >= 0 && i < ids.length).map(i => ({ id:ids[i]!, ooxml:projection.scope([i]) })) : adjacent.map(p => ({ id:p.id, ooxml:p.xml.value }))
     return { range, selected, ooxml: scoped, ids, index, nesting: paragraphs.map(p => p.tableNestingLevel), adjacent: nearby, projection, tracking: context.document.changeTrackingMode, trackFormatting: formatting ? context.document.trackFormatting : undefined,
@@ -377,7 +382,7 @@ export class WordChatHost {
       if (mixed && (!validWordChatFormatting(input.target, input.formatting, input.replacement) || plan.structure?.kind === "delete")) throw new WordChatHostError("This change needs a smaller reviewed amendment. Your Word document is unchanged.")
       const expected = plan.paragraphs
       const formatting = input.formatting !== undefined
-      const snapshot = await this.word.run(context => this.importSnapshot(context, input.target, formatting || wordingImport, wordingImport, false, nativeText, formatting && !mixed))
+      const snapshot = await this.word.run(context => this.importSnapshot(context, input.target, formatting || wordingImport, wordingImport, false, nativeText, (nativeText || formatting && !mixed)))
       // Shared Docxodus authoring is read-only. No Office proxy or canonical
       // write is kept pending while that service authors the reviewed result.
       const authored = await input.author({ ooxml: snapshot.ooxml })
@@ -407,9 +412,9 @@ export class WordChatHost {
         })
       }
       return await this.word.run(async context => {
-        const fresh = await this.importSnapshot(context, input.target, formatting || wordingImport, wordingImport, false, nativeText, formatting && !mixed)
+        const fresh = await this.importSnapshot(context, input.target, formatting || wordingImport, wordingImport, false, nativeText, nativeText || formatting && !mixed)
         if (nativeText) {
-          if (JSON.stringify(snapshot.nesting) !== JSON.stringify(fresh.nesting) || !sameWordChatTargetSnapshot(snapshot.ooxml, fresh.ooxml))
+          if (JSON.stringify(snapshot.nesting) !== JSON.stringify(fresh.nesting) || !sameWordChatTargetSnapshot(snapshot.ooxml, fresh.ooxml) || !snapshot.projection || !fresh.projection || !sameNativeProjectionGeometry(snapshot.projection, fresh.projection))
             throw new WordChatHostError("This paragraph changed while doc.haus prepared the amendment. Prepare and review it again; your Word changes are safe.")
           return this.applyNativeText(context, input, identity, fresh, authored, expected)
         }
@@ -538,10 +543,14 @@ export class WordChatHost {
     const bodyRange = context.document.body.getRange("Content")
     const prefix = bodyRange.getRange("Start").expandTo(paragraphRange.getRange("Start")).getReviewedText("Current")
     const suffix = paragraphRange.getRange("End").expandTo(bodyRange.getRange("End")).getReviewedText("Current")
-    const targetXml = context.document.getParagraphByUniqueLocalId(paragraph.id).getRange("Content").getOoxml()
-    const adjacent = fresh.adjacent.map(item => ({ id:item.id, before:item.ooxml, after:context.document.getParagraphByUniqueLocalId(item.id).getRange("Content").getOoxml() }))
+    const all = context.document.body.paragraphs
+    all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+    const bodyXml = context.document.body.getRange("Whole").getOoxml()
     await context.sync()
-    if (!sameWordChatTargetSnapshot(targetXml.value, fresh.ooxml)) throw captureMismatch("Word returned different XML for the reviewed paragraph before the change.")
+    const pre = projectNativeWordChatBody(bodyXml.value, all.items.map(p => ({ id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel })))
+    if (!fresh.projection || !sameNativeProjectionGeometry(fresh.projection, pre) || !sameWordChatTargetSnapshot(pre.scope([at]), fresh.ooxml) ||
+        !fresh.adjacent.every(item => { const i = pre.paragraphs.findIndex(p => p.id === item.id); return i >= 0 && sameWordChatParagraphContent(item.ooxml, pre.scope([i])) }))
+      throw captureMismatch("Word returned different XML for the reviewed paragraph or its neighbours before the change.")
     if (before.current !== prefix.value + paragraph.text + suffix.value) throw captureMismatch("Word returned inconsistent surrounding document text.")
     const expectedText = prefix.value + expectedParagraph + suffix.value
     const signature = (change: { author: string; type: string; text: string }) => JSON.stringify([change.author, change.type, change.text])
@@ -562,9 +571,12 @@ export class WordChatHost {
     await context.sync()
     context.document.load("changeTrackingMode")
     const after = await this.documentState(context)
-    const targetAfter = context.document.getParagraphByUniqueLocalId(paragraph.id).getRange("Content").getOoxml()
-    const adjacentAfter = adjacent.map(item => ({ id:item.id, after:context.document.getParagraphByUniqueLocalId(item.id).getRange("Content").getOoxml() }))
+    const afterAll = context.document.body.paragraphs
+    afterAll.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+    const afterBodyXml = context.document.body.getRange("Whole").getOoxml()
     await context.sync()
+    const post = projectNativeWordChatBody(afterBodyXml.value, afterAll.items.map(p => ({ id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel })))
+    const targetAfter = post.scope([at])
     const remaining = new Map(prior)
     const added = after.changes.filter(change => {
       const key = signature(change), count = remaining.get(key) ?? 0
@@ -581,9 +593,9 @@ export class WordChatHost {
     const confirmed = context.document.changeTrackingMode === fresh.tracking && sameParagraphs && after.current === expectedText && priorPreserved && added.length > 0 &&
       added.every(change => ["Added", "Deleted"].includes(change.type) && Boolean(change.author)) &&
       JSON.stringify(texts(added, "Added")) === JSON.stringify(texts(wanted, "Added")) && JSON.stringify(texts(added, "Deleted")) === JSON.stringify(texts(wanted, "Deleted")) &&
-      sameWordChatParagraphProperties(fresh.ooxml, targetAfter.value) &&
-      sameWordChatHunkFormatting(fresh.ooxml, targetAfter.value, hunks) &&
-      adjacent.every((item, index) => sameWordChatParagraphContent(item.before, adjacentAfter[index]!.after.value)) &&
+      sameNativeProjectionGeometry(pre, post) && sameWordChatParagraphProperties(pre.scope([at]), targetAfter) &&
+      sameWordChatHunkFormatting(pre.scope([at]), targetAfter, hunks) &&
+      fresh.adjacent.every(item => { const i = post.paragraphs.findIndex(p => p.id === item.id); return i >= 0 && sameWordChatParagraphContent(pre.scope([i]), post.scope([i])) }) &&
       JSON.stringify(after.comments) === JSON.stringify(before.comments)
     if (!confirmed) throw new WordChatHostError("Word applied the wording, but could not confirm that only the reviewed passage and tracked markup changed. Inspect it and use Undo if needed. Do not apply this proposal again.")
     this.applied.set(input.proposalId, { identity, authors, uncertain: false })
