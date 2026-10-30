@@ -255,7 +255,7 @@ export class WordChatHost {
   private async documentState(context: WordChatContext): Promise<WordChatDocumentState> {
     const body = context.document.body, all = body.paragraphs
     all.load("items/text,items/uniqueLocalId,items/styleBuiltIn,items/spaceBefore,items/spaceAfter,items/lineSpacing")
-    const current = body.getRange().getReviewedText("Current")
+    const current = body.getRange("Content").getReviewedText("Current")
     const changes = body.getRange().getTrackedChanges()
     changes.load("items/author,items/type,items/text")
     const comments = body.getRange().getComments()
@@ -527,7 +527,7 @@ export class WordChatHost {
     const expectedParagraph = paragraph.text.slice(0, target.startOffset) + input.replacement + paragraph.text.slice(target.endOffset)
     // Preserve Word's real story delimiters (including table cell/row marks),
     // rather than reconstructing body text from paragraph names joined by CR.
-    const bodyRange = context.document.body.getRange()
+    const bodyRange = context.document.body.getRange("Content")
     const prefix = bodyRange.getRange("Start").expandTo(paragraphRange.getRange("Start")).getReviewedText("Current")
     const suffix = paragraphRange.getRange("End").expandTo(bodyRange.getRange("End")).getReviewedText("Current")
     const targetXml = context.document.getParagraphByUniqueLocalId(paragraph.id).getRange("Content").getOoxml()

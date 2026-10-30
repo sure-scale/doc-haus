@@ -36,7 +36,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     driftInsertedRanges: false, renewImportedIds: false, omitNewRevisions: false, authorCalls: 0, duringAuthor: undefined as undefined | (() => void | Promise<void>),
     nativeRevisions: [] as Array<{ start: number; end: number; author: string; type: string; text: string }>,
     extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false, wholeOoxmlTrailingParagraph: false,
-    nativeFormatting: [] as string[], dropNativeFormatting: false,
+    nativeFormatting: [] as string[], dropNativeFormatting: false, terminalBodyMark: false,
     paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
   }
   const text = () => state.paragraphs.map((p) => p.text).join(state.separator)
@@ -59,7 +59,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
   const collection = <T>(items: T[]) => ({ items, load() {} })
   const ranges = new Set<Range>()
   class Range {
-    constructor(public start: number, public end: number) { ranges.add(this) }
+    constructor(public start: number, public end: number, public bodyWhole = false) { ranges.add(this) }
     get text() { return (text() + "\r").slice(this.start, this.end) }
     get paragraphs() {
       return collection(state.paragraphs.filter((p) => {
@@ -70,7 +70,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     load() {}
     getRange(location = "Whole") {
       if (location === "Start") return new Range(this.start, this.start)
-      if (location === "End") return new Range(this.end, this.end)
+      if (location === "End") return new Range(this.bodyWhole ? this.end - 1 : this.end, this.bodyWhole ? this.end - 1 : this.end)
       return new Range(this.start, this.end)
     }
     expandTo(other: Range) { return new Range(Math.min(this.start, other.start), Math.max(this.end, other.end)) }
@@ -299,7 +299,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       getSelection: () => new Range(state.selection[0]!, state.selection[1]!),
       getParagraphByUniqueLocalId(id: string) { return paragraph(position(id).p) },
       getAnnotationById(id: string) { return { delete() { state.annotations.delete(id) } } },
-      body: { get text() { return text() }, load() {}, get paragraphs() { return collection(state.paragraphs.map(paragraph)) }, getRange() { return new Range(0, text().length) } },
+      body: { get text() { return text() }, load() {}, get paragraphs() { return collection(state.paragraphs.map(paragraph)) }, getRange(location?: string) { const whole = state.terminalBodyMark && location !== "Content"; return new Range(0, text().length + (whole ? 1 : 0), whole) } },
       onAnnotationClicked: event("annotation"), onParagraphChanged: event("change"), onParagraphAdded: event("add"), onParagraphDeleted: event("delete"),
     },
     async sync() {
@@ -1246,4 +1246,24 @@ test("ordinary wording does not read the unloaded desktop formatting-tracking pr
   expect((await host.apply({ proposalId, target, replacement,
     author: async ({ ooxml }) => ({ ...await authorWordChatTarget(ooxml, target, replacement), proposalId }) })).status).toBe("applied")
   expect(fixture.text()).toBe("Alpha new beta remains.")
+})
+
+
+test("native wording uses body content when whole body has a terminal paragraph mark", async () => {
+  const { state, host } = office(["A clear obligation.", "Unrelated text."], true)
+  state.terminalBodyMark = true
+  const target = (await host.selection())!
+  const result = await host.apply({ proposalId: "body-terminal-mark", target, replacement: target.text.replace("clear", "specific") })
+  expect(result.status).toBe("applied")
+  expect(state.paragraphs[0]!.text).toBe("A specific obligation.")
+})
+
+
+test("body content comparison still refuses unrelated changes after dispatch", async () => {
+  const { state, host } = office(["A clear obligation.", "Unrelated text."], true)
+  state.terminalBodyMark = true
+  const target = (await host.selection())!
+  state.afterSync = () => { if (state.writes.length) { state.paragraphs[1]!.text = "Changed text."; state.afterSync = undefined } }
+  await expect(host.apply({ proposalId: "body-outside-change", target, replacement: target.text.replace("clear", "specific") })).rejects.toThrow("could not confirm")
+  expect(state.writes).toHaveLength(1)
 })
