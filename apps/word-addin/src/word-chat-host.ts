@@ -47,7 +47,7 @@ export type WordChatWord = { run<T>(callback: (context: WordChatContext) => Prom
 export type WordChatApplyResult = { status: "applied" | "already-applied"; tracked: true; saved: false; authors: string[]; target?: WordChatTarget }
 export type WordChatApplyInput = { proposalId: string; target: WordChatTarget; replacement: string; formatting?: WordChatParagraphFormat[]; author: (snapshot: { ooxml: string }) => Promise<WordChatAuthoredAmendment>; mayDispatch?: () => boolean }
 export class WordChatHostError extends Error {
-  constructor(message: string, readonly mutationState: "unchanged" | "uncertain" = "unchanged") { super(message); this.name = "WordChatHostError" }
+  constructor(message: string, readonly mutationState: "unchanged" | "uncertain" = "unchanged", options?: ErrorOptions) { super(message, options); this.name = "WordChatHostError" }
 }
 const LIMIT = 24_000
 const PARAGRAPH_LIMIT = 64
@@ -73,7 +73,7 @@ function nativeWord(): WordChatWord {
   return word
 }
 function supported(name: string, version: string) { return window.Office?.context.requirements.isSetSupported(name, version) ?? false }
-function failure(error: unknown, fallback: string): never { if (error instanceof WordChatHostError) throw error; throw new WordChatHostError(fallback) }
+function failure(error: unknown, fallback: string): never { if (error instanceof WordChatHostError) throw error; throw new WordChatHostError(fallback, "unchanged", { cause: error }) }
 
 const wordNamespaces = new Set([
   "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -491,7 +491,7 @@ export class WordChatHost {
     } catch (error) {
       const fallback = "Word could not complete the authored amendment. Inspect the clause before preparing a fresh proposal; your existing work has not been replaced by a saved copy."
       if (this.applied.get(input.proposalId)?.uncertain)
-        throw new WordChatHostError(error instanceof WordChatHostError ? error.message : fallback, "uncertain")
+        throw new WordChatHostError(error instanceof WordChatHostError ? error.message : fallback, "uncertain", { cause: error })
       failure(error, fallback)
     }
   }

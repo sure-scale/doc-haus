@@ -32,7 +32,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     paragraphXml: new Map<string, string>(), comments: [] as Array<[number, number]>, revisions: [] as Array<[number, number]>, xml: undefined as string | undefined,
     selected: 0, highlights: 0, outside: false, annotationCounter: 0,
     annotations: new Map<string, unknown>(), handlers: new Map<string, Set<(args: never) => void>>(),
-    throwAfterWrite: false, corruptWrite: false, afterSync: undefined as undefined | (() => void),
+    throwAfterWrite: false, syncFailure: undefined as Error | undefined, corruptWrite: false, afterSync: undefined as undefined | (() => void),
     driftInsertedRanges: false, renewImportedIds: false, omitNewRevisions: false, authorCalls: 0, duringAuthor: undefined as undefined | (() => void | Promise<void>),
     nativeRevisions: [] as Array<{ start: number; end: number; author: string; type: string; text: string }>,
     extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false, wholeOoxmlTrailingParagraph: false,
@@ -307,7 +307,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       state.syncBatchSizes.push(writes.length)
       for (const write of writes) write()
       state.afterSync?.()
-      if (state.throwAfterWrite && writes.length) throw new Error("lost native response")
+      if (state.throwAfterWrite && writes.length) throw state.syncFailure ?? new Error("lost native response")
     },
   } as WordChatContext
   const word = { async run<T>(first: unknown, second?: (context: WordChatContext) => Promise<T>) { return (second ?? first as (context: WordChatContext) => Promise<T>)(context) } } as WordChatWord
@@ -1265,5 +1265,22 @@ test("body content comparison still refuses unrelated changes after dispatch", a
   const target = (await host.selection())!
   state.afterSync = () => { if (state.writes.length) { state.paragraphs[1]!.text = "Changed text."; state.afterSync = undefined } }
   await expect(host.apply({ proposalId: "body-outside-change", target, replacement: target.text.replace("clear", "specific") })).rejects.toThrow("could not confirm")
+  expect(state.writes).toHaveLength(1)
+})
+
+
+test("native dispatch error remains the cause of an uncertain failure and cannot replay", async () => {
+  const { state, host } = office(["A clear obligation."], true)
+  const target = (await host.selection())!
+  const nativeError = Object.assign(new Error("native sync failed"), { code: "GeneralException" })
+  state.throwAfterWrite = true; state.syncFailure = nativeError
+  const input = { proposalId: "native-cause", target, replacement: target.text.replace("clear", "specific") }
+  let caught: unknown
+  try { await host.apply(input) } catch (error) { caught = error }
+  expect(caught).toBeInstanceOf(WordChatHostError)
+  expect((caught as WordChatHostError).mutationState).toBe("uncertain")
+  expect((caught as WordChatHostError).cause).toBe(nativeError)
+  expect(state.writes).toHaveLength(1)
+  await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("may already contain") })
   expect(state.writes).toHaveLength(1)
 })
