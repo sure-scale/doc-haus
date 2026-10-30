@@ -32,7 +32,7 @@
 .review-starter-body .review-starter-step > .compare-actions, .review-starter-body > .compare-actions { position: sticky; bottom: calc(-1 * var(--space-5)); z-index: 2; margin: 0 calc(-1 * var(--space-5)) calc(-1 * var(--space-5)); padding: var(--space-3) var(--space-5); border-top: 1px solid var(--border); background: var(--panel); }
 
 /* Choose: a short list beside a preview of the highlighted starter. */
-.review-starter-choose { display: grid; grid-template-columns: minmax(176px, 220px) minmax(0, 1fr); gap: var(--space-6); align-items: start; padding-block: var(--space-1); }
+.review-starter-choose { display: grid; grid-template-columns: minmax(200px, 256px) minmax(0, 1fr); gap: var(--space-6); align-items: start; padding-block: var(--space-1); }
 .review-starter-choices { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; margin: 0; padding: 0; border: 0; }
 .review-starter-choice { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); cursor: pointer; transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out); }
 .review-starter-choice:hover { background: var(--panel-hover); }
@@ -40,13 +40,18 @@
 .review-starter-choice:has(input:focus-visible) { outline: 2px solid var(--md-sys-state-focus, var(--accent)); outline-offset: 2px; }
 .review-starter-choice input { flex: none; margin: 2px 0 0; }
 .review-starter-choice input:focus, .review-starter-choice input:focus-visible { outline: none; }
-.review-starter-choice-name { display: block; font-weight: 600; line-height: 1.4; }
-.review-starter-choice-reason { display: block; margin-top: 2px; color: var(--text-secondary); font-size: .8rem; line-height: 1.45; }
-.review-starter-choice-reason strong { color: var(--accent); font-weight: 600; }
+.review-starter-choice-name { display: block; font-weight: 600; line-height: 1.4; text-wrap: balance; }
+.review-starter-choice-reason { display: block; margin-top: 2px; color: var(--text-secondary); font-size: .8rem; line-height: 1.45; text-wrap: balance; }
+/* Beside the preview, Recommended takes its own line above its reason; the
+   " · " between them is still read out. */
+.review-starter-choice-reason strong { display: block; color: var(--accent); font-weight: 600; }
+.review-starter-choice-sep { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); white-space: nowrap; }
 .review-starter-body .review-starter-preview { gap: var(--space-3); padding-left: var(--space-6); border-left: 1px solid var(--border); line-height: 1.55; }
 .review-starter-body .review-starter-example-link { align-self: flex-start; min-height: 0; font-weight: 600; }
 @media (max-width: 640px) {
   .review-starter-choose { grid-template-columns: minmax(0, 1fr); gap: var(--space-5); }
+  .review-starter-choice-reason strong { display: inline; }
+  .review-starter-choice-sep { position: static; width: auto; height: auto; clip-path: none; }
   .review-starter-body .review-starter-preview { padding: var(--space-5) 0 0; border-left: 0; border-top: 1px solid var(--border); }
 }
 
@@ -79,20 +84,22 @@
 .review-starter-question textarea:hover:not(:disabled):not(:focus) { border-color: var(--border-strong); }
 .review-starter-question button.ghost { min-height: 34px; margin-right: calc(-1 * var(--space-2)); padding: var(--space-1) var(--space-2); font-size: .875rem; }
 .review-starter-question p { grid-column: 2; padding-inline: 11px; color: var(--muted); font-size: .85rem; }
-/* An AI suggestion beside a starter's questions carries its tag until it is edited or added. */
-.review-starter-question.is-suggested { grid-template-columns: 1.5rem minmax(0, 1fr) auto auto; }
-.review-starter-tag { align-self: start; margin-top: 7px; padding: 0 6px; border: 1px solid currentColor; border-radius: var(--radius-sm); color: var(--info); font-size: .75rem; font-weight: 600; line-height: 1.45; white-space: nowrap; }
+/* An AI suggestion beside a starter's questions carries its tag, under its
+   field so every field keeps one width, until it is edited or added. */
+.review-starter-question.is-suggested .review-starter-tag { grid-column: 2; grid-row: 2; justify-self: start; margin-left: 11px; }
+.review-starter-tag { align-self: start; padding: 0 6px; border: 1px solid currentColor; border-radius: var(--radius-sm); color: var(--info); font-size: .75rem; font-weight: 600; line-height: 1.45; white-space: nowrap; }
 .review-starter-body .review-starter-more { align-self: flex-start; min-height: 0; margin-top: var(--space-1); font-weight: 600; }
 .review-starter-body .review-starter-scope { margin-top: var(--space-2); color: var(--text-secondary); font-size: .875rem; }
-.review-starter-body .review-starter-summary { margin-top: calc(-1 * var(--space-1)); color: var(--text-secondary); font-size: .875rem; }
+/* What Add questions does, in the sticky footer between Back and Cancel; on a
+   phone, on its own line above the buttons. */
+.review-starter-body .compare-actions > .review-starter-summary { order: 1; flex: 1 1 0; min-width: 0; align-self: center; color: var(--text-secondary); font-size: .875rem; text-align: right; text-wrap: pretty; }
+.review-starter-body .compare-actions:has(> .review-starter-summary) > button:not(.review-starter-back) { order: 2; }
 @media (pointer: coarse) {
   .review-starter-question label { padding-top: 11px; }
   .review-starter-question textarea { padding-block: 10px; }
-  .review-starter-tag { margin-top: 11px; }
 }
 @media (max-width: 640px) {
-  .review-starter-question.is-suggested { grid-template-columns: 1.5rem minmax(0, 1fr) auto; }
-  .review-starter-question.is-suggested .review-starter-tag { grid-column: 2; grid-row: 2; justify-self: start; margin-top: 0; }
+  .review-starter-body .compare-actions > .review-starter-summary { order: -1; flex-basis: 100%; text-align: left; }
 }
 
 /* Describe: the lawyer's words, what the AI reads, and a calm wait. */

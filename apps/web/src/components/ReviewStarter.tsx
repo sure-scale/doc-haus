@@ -195,7 +195,7 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
                     <input type="radio" name={`${titleId}-starter`} value={item.id} checked={item.id === chosenId} aria-describedby={item.id === chosenId ? `${titleId}-purpose` : undefined} onChange={() => setChosenId(item.id)} />
                     <span>
                       <span className="review-starter-choice-name">{item.name}</span>
-                      {item.id === recommendedId ? <span className="review-starter-choice-reason"><strong>Recommended</strong> · {recommended.reason}</span>
+                      {item.id === recommendedId ? <span className="review-starter-choice-reason"><strong>Recommended</strong><span className="review-starter-choice-sep"> · </span>{recommended.reason}</span>
                         : inTable.has(item.id) && <span className="review-starter-choice-reason">Already in the table</span>}
                     </span>
                   </label>
@@ -281,7 +281,7 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
 
         {step === "questions" && (
           <>
-            <p>{draft?.source === AI ? "AI suggested these questions from your description. " : ""}Edit or remove these questions before adding them; existing questions and answers stay as they are.</p>
+            <p>{draft?.source === AI ? "AI suggested these questions from your description. " : ""}Edit or remove these questions before adding them{existingQuestions.length > 0 ? "; existing questions and answers stay as they are." : "."}</p>
             <ol className="review-starter-questions" aria-label="Questions to add">
               {entries.map((item, index) => {
                 const field = `${titleId}-question-${item.id}`
@@ -307,11 +307,12 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
             </ol>
             {suggest && <button type="button" className="linklike review-starter-more" disabled={saving} onClick={() => describe("questions")}>Suggest more with AI</button>}
             <p className="review-starter-scope">{names.length ? `${documentCount}: ${names.join(", ")}` : "Add documents to this matter before adding questions."}</p>
-            {!additions.length ? <p className="review-starter-summary">No new questions to add. Edit a question or cancel.</p>
-              : names.length > 0 && <p className="review-starter-summary">Adds {additions.length} {additions.length === 1 ? "question" : "questions"} · {names.length * additions.length} {names.length * additions.length === 1 ? "cell" : "cells"} to fill. No AI runs until you choose Fill.</p>}
             {error && <p className="compare-error" role="alert">{error}</p>}
             {error && problem && <p role="alert">{problem}</p>}
+            {/* What Add questions does sits beside it, in view however long the list. */}
             <div className="compare-actions">
+              {!additions.length ? <p className="review-starter-summary">No new questions to add. Edit a question or cancel.</p>
+                : names.length > 0 && <p className="review-starter-summary">Adds {additions.length} {additions.length === 1 ? "question" : "questions"} · {names.length * additions.length} {names.length * additions.length === 1 ? "cell" : "cells"} to fill. No AI runs until you choose Fill.</p>}
               <button type="button" className="ghost review-starter-back" onClick={() => setStep("choose")} disabled={saving}>Back</button>
               <button ref={cancel} type="button" className="ghost" onClick={close} disabled={saving}>Cancel</button>
               <button type="button" className="primary" disabled={saving || !names.length || !additions.length} onClick={() => void confirm()}>{saving ? "Adding…" : "Add questions"}</button>
