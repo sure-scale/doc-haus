@@ -86,7 +86,9 @@ function GridNavigationGuard({ canLeave, bypass }: { canLeave: () => boolean; by
   return null
 }
 
-export default function ReviewGrid({ matterId, title, directory, documents, onClose, onAsk }: { matterId: string; title: string; directory: string; documents: Document[]; onClose: () => void; onAsk?: (prompt: string) => void }) {
+// `documentsRevision` changes whenever the matter's documents may have changed
+// (an upload, a new version, a Word save), so cited excerpts are checked again.
+export default function ReviewGrid({ matterId, title, directory, documents, documentsRevision, onClose, onAsk }: { matterId: string; title: string; directory: string; documents: Document[]; documentsRevision: number; onClose: () => void; onAsk?: (prompt: string) => void }) {
   const closing = useContext(Closing)
   const dialog = useRef<HTMLDialogElement>(null)
   const detailDialog = useRef<HTMLDialogElement>(null)
@@ -142,8 +144,9 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
     : []), [grid.cells, documents])
   // An edit invalidates the verdict in the same render, before the next effect
   // starts. Late replies remain tied to the document round they actually checked.
-  const sourcesKey = JSON.stringify([matterId, sourceRound, sources])
-  const sourceCheckFailed = sourceChecks?.key === sourcesKey && sourceChecks.failed
+  const sourcesKey = JSON.stringify([matterId, sourceRound, documentsRevision, sources])
+  // Each round re-checks every cited cell, so while one runs no cell has a verdict.
+  const checkingSources = sources.length > 0 && sourceChecks?.key !== sourcesKey
   const sourceEntry = (key: string, cell: GridCellData | undefined): { signature: string; check?: SourceVerdict } | undefined => {
     if (cell?.citation && !citesOwnRow(key, cell.citation, documents)) return { signature: sourceSignature(cell.citation), check: "other_document" }
     const entry = sourceChecks?.key === sourcesKey ? sourceChecks.checks[key] : undefined
@@ -773,7 +776,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                       <p className="review-source-check">
                         {check
                           ? <><span className={`review-source-badge is-${check}`}>{SOURCE_BADGE[check]}</span> {SOURCE_DETAIL[check]}</>
-                          : sourceCheckFailed || entry ? "The excerpt could not be checked against the document." : "Checking the excerpt against the document…"}
+                          : checkingSources ? "Checking the excerpt against the document…" : "The excerpt could not be checked against the document."}
                       </p>
                     </div>
                   )

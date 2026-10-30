@@ -504,6 +504,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
             title={matter.title}
             directory={matter.dir}
             documents={matter.documents}
+            documentsRevision={sourceRefresh}
             onClose={() => {
               const next = new URLSearchParams(params)
               next.delete("view")
