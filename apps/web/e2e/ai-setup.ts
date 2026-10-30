@@ -122,6 +122,7 @@ async function fixture(name: string, width: number, onboarding = false, cloud = 
       return reply(state.config)
     }
     if (pathname === "/api/dochaus/concurrency-test" && method === "POST") return reply({ model: state.config.model, requested: body.count, succeeded: body.count, failed: 0, peak: body.count, elapsed_ms: 1000, errors: [] })
+    if (pathname === "/dashboard/tabs" && method === "PUT") return reply({ state: body.state, revision: Number(body.revision) + 1 })
     if (method !== "GET" && !(pathname === "/api/dochaus/provider-test" && method === "POST")) {
       unexpected.push(`${name}: ${method} ${pathname}`)
       return route.abort()
