@@ -200,7 +200,7 @@ try {
       await expect(compare).toBeFocused()
       await expect(compare).toHaveAccessibleName(/Recommended · 2 source documents in this matter/)
       const preview = dialog.getByRole("region", { name: "About Compare agreements" })
-      for (const text of ["Compare the key terms", "Inputs", "Output", "this is not a complete legal review", "check the 5 questions"]) await expect(preview).toContainText(text)
+      for (const text of ["Compare the key terms", "Inputs", "Output", "this is not a complete legal review", "this starter's 5 questions"]) await expect(preview).toContainText(text)
       assert.equal(await fits(page), true, "the dialog fits its width")
       await shot("launcher-starter")
       // The lawyer's choice, not the recommendation, is what the table opens with.
@@ -220,7 +220,7 @@ try {
       await expect(table(page, "Supply review")).toBeHidden()
       assert.equal(await param(page, "view"), null)
       await go(page, "/matter/pair?view=review")
-      await expect(table(page, "Supply review").getByRole("button", { name: "Start with a starter" })).toBeEnabled()
+      await expect(table(page, "Supply review").getByRole("button", { name: "Use a starter" })).toBeEnabled()
       await page.waitForTimeout(400)
       await expect(chooser(page)).toBeHidden()
     })
@@ -267,7 +267,7 @@ try {
 
   await check("an unknown starter is ignored and removed", wide, async (page) => {
     await open(page, "/matter/pair?view=review&starter=missing-v1")
-    await expect(table(page, "Supply review").getByRole("button", { name: "Start with a starter" })).toBeEnabled()
+    await expect(table(page, "Supply review").getByRole("button", { name: "Use a starter" })).toBeEnabled()
     await expect.poll(() => param(page, "starter")).toBeNull()
     await page.waitForTimeout(300)
     await expect(chooser(page)).toBeHidden()

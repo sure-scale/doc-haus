@@ -54,7 +54,6 @@
 .review-example-answer { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
 .review-example-cell .review-cite { font-size: .78rem; }
 .review-example-cell .review-marker { margin-left: 0; padding: 0; min-height: 20px; }
-.review-example-consistent { margin: 0; color: var(--muted); font-size: .85rem; }
 
 /* Questions: a numbered list. Each question edits in place on one line and
    grows only when it wraps; Remove's word ends on the content edge. */

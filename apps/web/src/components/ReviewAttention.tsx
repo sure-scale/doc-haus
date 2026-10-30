@@ -279,7 +279,7 @@ export function ReviewToolbar({ model, checking, running, comparing, primary, fi
   )
   // One slot, so a primary button keeps its node (and focus) as its action changes.
   const main = primary?.kind === "export" ? exportButton(true)
-    : primary?.kind === "start" ? <button key="primary" type="button" className="primary review-primary" disabled={startDisabled} onClick={onStarter}>Start with a starter</button>
+    : primary?.kind === "start" ? <button key="primary" type="button" className="primary review-primary" disabled={startDisabled} onClick={onStarter}>Use a starter</button>
     : primary?.kind === "fill" ? <button key="primary" type="button" className="primary review-primary" disabled={fillDisabled} onClick={onFill}>{fillBlanks ? "Fill" : "Refresh"} {plural(fillCount, "cell")}</button>
     : primary?.kind === "reviewNext" ? <button key="primary" type="button" className="primary review-primary" onClick={onReviewNext}>Review next</button>
     : null
@@ -288,7 +288,7 @@ export function ReviewToolbar({ model, checking, running, comparing, primary, fi
       <div className="review-status">
         <ProgressLine progress={model.progress} />
         {running > 0 && <span className="review-running" role="status">Extracting {running}</span>}
-        {comparing > 0 && <span className="review-running" role="status">Comparing {comparing}</span>}
+        {comparing > 0 && <span className="review-running" role="status">Comparing {plural(comparing, "question")}</span>}
         {/* Always present, so screen readers announce the text when it appears. */}
         <span className="review-notice" role="status">{notice}</span>
       </div>

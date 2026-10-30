@@ -97,7 +97,7 @@ try {
   const compareChoice = chooser.getByRole("radio", { name: /^Compare agreements/ })
   const reviewFill = page.getByRole("dialog", { name: "Review fill" })
   // A starter is the primary action of a table without questions, and a quiet one otherwise.
-  const starterButton = page.getByRole("button", { name: /^(Use a starter|Start with a starter)$/ })
+  const starterButton = page.getByRole("button", { name: /^Use a starter$/ })
   const primary = page.locator(".review-toolbar .review-primary")
   const open = async (query: string) => { await page.goto(`${server.url.href}${query}`); await starterButton.waitFor() }
   const showChooser = async () => { await starterButton.click(); await expect(chooser).toBeVisible() }
@@ -163,7 +163,7 @@ try {
   await expect(example).toBeVisible()
   await expect(differsCell).toBeFocused()
   await example.locator(".review-example-cell button", { hasText: "Not found" }).first().click()
-  await expect(answerDetail.locator(".review-walk-why")).toContainText("The agreement does not appear to address this question.")
+  await expect(answerDetail.locator(".review-walk-why")).toContainText("The document does not appear to address this question.")
   await expect(answerDetail.getByRole("region", { name: "Source" })).toHaveCount(0)
   await answerDetail.getByRole("button", { name: "Close" }).click()
   await expect(answerDetail).toHaveCount(0)
@@ -240,8 +240,9 @@ try {
   assert.equal(puts, 1)
   await open("?matter=two")
   await expect(primary).toHaveCount(1)
-  await expect(primary).toHaveText("Start with a starter")
-  await expect(page.getByRole("button", { name: "Use a starter", exact: true })).toHaveCount(0)
+  await expect(primary).toHaveText("Use a starter")
+  // The primary is the only starter button: no quiet duplicate beside it.
+  await expect(page.getByRole("button", { name: "Use a starter", exact: true })).toHaveCount(1)
   await showStarter()
   assert.deepEqual(grids.two, empty)
   await starter.getByRole("button", { name: "Cancel" }).click()

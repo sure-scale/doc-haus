@@ -22,7 +22,7 @@ export const REVIEW_STARTERS: readonly ReviewStarterDefinition[] = [
     name: "Document overview",
     purpose: "Start a review table with questions about each document in this matter.",
     inputs: "All documents in this matter and this starter's questions.",
-    output: "A review table for answers and sources for each document and question.",
+    output: "A review table with an answer and source for each document and question. After Fill, answers that differ between documents are marked.",
     limits: "Answers may be missing or incomplete. Check the sources and tailor the questions to your matter; this is not a complete legal review.",
     questions: [
       "What is the purpose of this document?",

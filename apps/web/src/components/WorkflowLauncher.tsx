@@ -88,7 +88,7 @@ function Launcher({ options, documents = [], onLaunch, onStartReview, closing, o
             {starter ? (
               <>
                 <StarterSummary starter={starter} />
-                <p className="workflow-launcher-note">Start opens the review table, where you check the {starter.questions.length} questions before they are added. No answers are filled until you choose Fill.</p>
+                <p className="workflow-launcher-note">Start opens the review table at this starter&apos;s {starter.questions.length} questions, which you check before they are added. No answers are filled until you choose Fill.</p>
               </>
             ) : workflow && (
               <>

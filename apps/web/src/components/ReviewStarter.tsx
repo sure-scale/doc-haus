@@ -127,7 +127,7 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
             <ol className="review-starter-questions" aria-label="Questions to add">
               {entries.map((item, index) => {
                 const field = `${titleId}-question-${item.id}`
-                const note = item.duplicate ? "Already in the table or repeated above; this question will not be added. Edit or remove it to continue."
+                const note = item.duplicate ? "Already in the table or listed above, so it will not be added."
                   : !item.question ? "Empty questions will not be added." : undefined
                 return (
                   <li className="review-starter-question" key={item.id}>

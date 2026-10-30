@@ -3,7 +3,7 @@ import { createPortal } from "react-dom"
 import { UNSAFE_DataRouterContext, useBlocker } from "react-router-dom"
 import { computeCell, describeRecheck, needsFill, recheckOutcome } from "../api/review-recheck"
 import { citesRow, type ReviewRow } from "../api/review-answer"
-import { compareColumn, comparisonInputs } from "../api/review-compare"
+import { compareColumn, comparisonInputs, MAX_COMPARE_DOCUMENTS } from "../api/review-compare"
 import { matches, primaryAction, reviewAttention, type AttentionFilter, type QueueEntry } from "../api/review-attention"
 import { cellKey, checkCellSources, getGrid, GridConflictError, hashQuestion, recheckPassages, saveGrid, type Grid, type GridCellData, type GridColumn, type SourceCheck } from "../api/ingest/grid"
 import { humanizeError } from "../api/ingest/errors"
@@ -53,13 +53,13 @@ const sourceSignature = (c: Citation) => JSON.stringify([c.documentName, c.excer
 // support this row's answer, whatever its own document says.
 type SourceVerdict = SourceCheck | "other_document"
 const DEGRADED: SourceVerdict[] = ["not_found", "missing", "other_document"]
-const SOURCE_BADGE: Record<SourceVerdict, string> = { verified: "Verified", reanchored: "Re-anchored", not_found: "Source changed", missing: "Source missing", other_document: "Cites another document" }
+const SOURCE_BADGE: Record<SourceVerdict, string> = { verified: "Verified", reanchored: "Re-anchored", not_found: "Source changed", missing: "Source missing", other_document: "Other document" }
 const SOURCE_DETAIL: Record<SourceVerdict, string> = {
   verified: "The excerpt matches the document at the recorded position.",
   reanchored: "The excerpt is still in the document, but at a different position from the one recorded. The document may have changed since this answer.",
   not_found: "The document no longer contains this excerpt. It has changed since this answer; check the answer against the current text.",
   missing: "This document is no longer in the matter, so the excerpt cannot be checked.",
-  other_document: "The cited passage is from another document, so it does not support this answer for this document. Refresh the cell to answer from this document.",
+  other_document: "The cited passage is from another document, so it does not support this answer for this document. Refresh the cell to answer from this document; a reviewed cell must be unlocked first.",
 }
 // Cell keys are `<row document>::<column id>`; column ids never contain "::".
 function citesOwnRow(key: string, citation: Citation, documents: Document[]) {
@@ -810,7 +810,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   const compareLine = (col: GridColumn) => {
     const input = compareInputs.get(col.id)
     if (!input) return null
-    if (input === "too_many") return <p className="review-compare-note">Too many documents to compare</p>
+    if (input === "too_many") return <p className="review-compare-note">Not compared: more than {MAX_COMPARE_DOCUMENTS} documents</p>
     if (comparing.has(col.id)) return <p className="review-compare-note">Comparing answers…</p>
     const fresh = comparisonOf(col)
     if (fresh) return <CompareSummary comparison={fresh} onOpen={(docName) => openDetail(docName, col.id)} />

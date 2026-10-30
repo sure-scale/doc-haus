@@ -8,7 +8,7 @@ import ReviewSetupDialog from "./ReviewSetupDialog"
 // marker and reason, the answer and the cited passage. No model, no matter, no writes.
 
 const marker = (answer: StarterExampleAnswer) =>
-  !answer.citation ? { state: "no_citation" as const, word: "Not found", reason: "The agreement does not appear to address this question." }
+  !answer.citation ? { state: "no_citation" as const, word: "Not found", reason: "The document does not appear to address this question." }
   : answer.comparison === "differs" ? { state: "differs" as const, word: "Differs", reason: answer.reason } : undefined
 
 export default function ReviewExample({ questions, example }: { questions: readonly string[]; example: StarterExample }) {
@@ -19,7 +19,7 @@ export default function ReviewExample({ questions, example }: { questions: reado
   return (
     <div className="review-example">
       <p className="review-example-note">{example.note}</p>
-      <p className="review-example-hint">Answers without a marker are consistent across the agreements. Select an answer to see its source.</p>
+      <p className="review-example-hint">In this example, answers without a marker agree with the other agreements. Select an answer to see its source.</p>
       <div className="review-scroll review-example-scroll" role="region" aria-label="Example review table" tabIndex={0}>
         <table className="review-table review-example-table" style={{ minWidth: 180 + questions.length * 168 }}>
           <thead>
@@ -67,7 +67,6 @@ export default function ReviewExample({ questions, example }: { questions: reado
           <section className="review-detail-section" aria-labelledby={`${ids}-answer`}>
             <h3 className="review-detail-label" id={`${ids}-answer`}>Answer</h3>
             <p className="review-detail-answer">{open.answer}</p>
-            {!openMark && <p className="review-example-consistent">AI comparison: Consistent with the other agreements.</p>}
           </section>
           {open.citation && (
             <section className="review-detail-section" aria-labelledby={`${ids}-source`}>
