@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from "react"
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react"
 
 // App-wide toasts: transient notifications stacked top-centre. Type sets the
 // left-border color — success/green, warning/amber, info/blue, error/red — over
@@ -17,20 +17,32 @@ let counter = 0
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
+  const timers = useRef(new Set<ReturnType<typeof setTimeout>>())
+  useEffect(() => () => {
+    for (const timer of timers.current) clearTimeout(timer)
+    timers.current.clear()
+  }, [])
+  const schedule = useCallback((callback: () => void, delay: number) => {
+    const timer = setTimeout(() => {
+      timers.current.delete(timer)
+      callback()
+    }, delay)
+    timers.current.add(timer)
+  }, [])
   // Two-phase dismiss: mark the toast leaving so the exit transition plays,
   // then drop it once the animation has run.
   const dismiss = useCallback((id: number) => {
     setToasts((list) => list.map((t) => (t.id === id ? { ...t, leaving: true } : t)))
-    setTimeout(() => setToasts((list) => list.filter((t) => t.id !== id)), 180)
-  }, [])
+    schedule(() => setToasts((list) => list.filter((t) => t.id !== id)), 180)
+  }, [schedule])
   const notify = useCallback(
     (type: ToastType, message: string) => {
       const id = ++counter
       setToasts((list) => [...list, { id, type, message }])
       // Errors linger longer; they tend to carry something the user must read.
-      setTimeout(() => dismiss(id), type === "error" ? 8000 : 5000)
+      schedule(() => dismiss(id), type === "error" ? 8000 : 5000)
     },
-    [dismiss],
+    [dismiss, schedule],
   )
 
   return (
