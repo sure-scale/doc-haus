@@ -1453,3 +1453,79 @@ test("native wording refuses faithful property drift before writing and fences p
     if (phase === "postwrite") { await expect(nativeHost.apply(input)).rejects.toThrow("may already contain"); expect(state.writes).toHaveLength(1) }
   }
 })
+
+test("row author failure is unchanged and simultaneous requests do not dispatch twice", async () => {
+  let runs = 0, calls = 0, release!: () => void
+  const word = { async run() { runs++; throw Error("must not dispatch") } } as WordChatWord
+  const host = new WordChatHost(word, () => true)
+  const proposal = { kind: "table_row_insert" as const, id: "row-1", documentId: "doc", explanation: "Append", openItems: [], createdAt: "now", position: "end" as const,
+    table: { tableIndex: 0, rows: [[{id:"a",text:"A"},{id:"b",text:"B"}]] }, cells: ["C", "D"] }
+  const author = async () => { calls++; await new Promise<void>(resolve => { release = resolve }); throw Error("author failed") }
+  const first = host.applyRow(proposal, async () => new Uint8Array([1]), author)
+  const second = host.applyRow(proposal, async () => new Uint8Array([1]), author)
+  const results = Promise.allSettled([first, second])
+  await Promise.resolve(); release()
+  for (const result of await results) { expect(result.status).toBe("rejected"); if (result.status === "rejected") expect(result.reason).toMatchObject({ mutationState: "unchanged" }) }
+  expect(calls).toBe(1); expect(runs).toBe(0)
+})
+
+test("tampered row oracle refuses before opening a Word mutation batch", async () => {
+  let runs = 0
+  const word = { async run() { runs++; throw Error("must not dispatch") } } as WordChatWord
+  const host = new WordChatHost(word, () => true)
+  const proposal = { kind: "table_row_insert" as const, id: "row-2", documentId: "doc", explanation: "Append", openItems: [], createdAt: "now", position: "end" as const,
+    table: { tableIndex: 0, rows: [[{id:"a",text:"A"}]] }, cells: ["B"] }
+  await expect(host.applyRow(proposal, async () => new Uint8Array([1]), async () => ({ kind: "table_row_insert", proposalId: "wrong" } as never))).rejects.toMatchObject({ mutationState:"unchanged" })
+  expect(runs).toBe(0)
+})
+
+async function nativeRowOrchestrationFixture(lostSync = false) {
+  const { zipSync, strToU8 } = await import("fflate")
+  const writerPath = new URL("../../../dochaus/lib/docx-table-row-insertion.ts", import.meta.url).href
+  const { docxTableRowInsertionTargets, authorDocxTableRowInsertion } = await import(writerPath)
+  const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  const old = '<w:tr><w:tc><w:tcPr/><w:p><w:r><w:t>Old</w:t></w:r></w:p></w:tc><w:tc><w:tcPr/><w:p><w:r><w:t>Old two</w:t></w:r></w:p></w:tc></w:tr>'
+  const tableXml = (extra = "") => `<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid>${old}${extra}</w:tbl>`
+  const source = zipSync({
+    "[Content_Types].xml": strToU8('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>'),
+    "_rels/.rels": strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="main" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`),
+    "word/_rels/document.xml.rels": strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="settings" Type="${R}/settings" Target="settings.xml"/></Relationships>`),
+    "word/settings.xml": strToU8(`<w:settings xmlns:w="${WORD_XML}"/>`),
+    "word/document.xml": strToU8(`<w:document xmlns:w="${WORD_XML}"><w:body>${tableXml()}<w:sectPr/></w:body></w:document>`),
+  })
+  const packet = await docxTableRowInsertionTargets(source)
+  const table = { tableIndex: 0, rows: [[{ id: "a", text: "Old" }, { id: "b", text: "Old two" }]] }
+  const proposal = { kind:"table_row_insert" as const, id:"native-row", documentId:"doc", explanation:"Add", openItems:["Disclosed"], createdAt:"now", position:"end" as const, table, cells:["New", "Value"] }
+  const writerRequest = { source_sha256:packet.source_sha256, target_handle:packet.targets[0]!.target_handle, position:"after" as const, cells:proposal.cells, author:"doc.haus" }
+  const authored = await authorDocxTableRowInsertion(source, writerRequest)
+  const oracle = { kind:"table_row_insert" as const, proposalId:proposal.id, sourceSha256:packet.source_sha256, table, cells:proposal.cells, author:"doc.haus" as const, writerRequest, authoredBase64:btoa(Array.from(authored.bytes as Uint8Array, x=>String.fromCharCode(x)).join("")), revisions:authored.revisions }
+  const stamp = 'w:author="Reviewer" w:date="2026-01-01T00:00:00Z"'
+  const cell = (text:string, mark:number, content:number) => `<w:tc><w:tcPr/><w:p><w:pPr><w:rPr><w:ins w:id="${mark}" ${stamp}/></w:rPr></w:pPr><w:ins w:id="${content}" ${stamp}><w:r><w:t>${text}</w:t></w:r></w:ins></w:p></w:tc>`
+  const addedXml = `<w:tr><w:trPr><w:ins w:id="1" ${stamp}/></w:trPr>${cell("New",2,3)}${cell("Value",4,5)}</w:tr>`
+  let applied = false, queued = false, rowWrites = 0, exports = 0
+  const para = (id:string,text:string) => ({ uniqueLocalId:id, text, tableNestingLevel:1, styleBuiltIn:"Normal", spaceBefore:0, spaceAfter:0, lineSpacing:12, load() {}, getRange() { return {font:{bold:false,italic:false,underline:"None",load(){}}} } })
+  const oldParas = [para("a","Old"),para("b","Old two")], newParas = [para("c","New"),para("d","Value")]
+  const collection = <T>(items:T[]) => ({items,load() {}})
+  const nativeTable = { get rowCount() { return applied ? 2 : 1 }, isUniform:true, get values() { return applied ? [["Old","Old two"],["New","Value"]] : [["Old","Old two"]] }, load() {},
+    getCell(row:number,col:number) { return {body:{paragraphs:collection([row ? newParas[col]! : oldParas[col]!]), insertText() { return {font:{bold:true,italic:true,underline:"Single",load(){}}} }}} },
+    addRows() { queued = true; rowWrites++ }, }
+  const body = { get paragraphs() { return collection(applied ? [...oldParas,...newParas] : oldParas) }, tables:collection([nativeTable]),
+    getRange() { return {getOoxml() {return {value:flatOpc(tableXml(applied ? addedXml : ""))}}, getReviewedText() {return {value:applied ? "Old\rOld two\rNew\rValue" : "Old\rOld two"}}, getTrackedChanges() {return collection([])}, getComments() {return collection([])} } } }
+  const document = {body, changeTrackingMode:"Off", trackFormatting:false, load() {}, getParagraphByUniqueLocalId(id:string) {return [...oldParas,...newParas].find(p=>p.uniqueLocalId===id)!} }
+  const word = {async run(fn:(context:unknown)=>Promise<unknown>) {return fn({document, async sync() { if (queued) {queued=false; applied=true; if (lostSync) throw Error("lost final sync") } }})}} as WordChatWord
+  return {host:new WordChatHost(word,()=>true), proposal, exportCurrent:async()=>{exports++;return source}, author:async()=>oracle, counts:()=>({rowWrites,exports})}
+}
+
+test("native row confirms once and a duplicate does not re-export or append", async () => {
+  const f = await nativeRowOrchestrationFixture()
+  expect(await f.host.applyRow(f.proposal, f.exportCurrent, f.author)).toEqual({status:"applied",tracked:true,saved:false,authors:["Reviewer"]})
+  expect((await f.host.applyRow(f.proposal, f.exportCurrent, f.author)).status).toBe("already-applied")
+  expect(f.counts()).toEqual({rowWrites:1,exports:1})
+})
+
+test("lost native row mutation sync is uncertain and cannot replay", async () => {
+  const f = await nativeRowOrchestrationFixture(true)
+  await expect(f.host.applyRow(f.proposal, f.exportCurrent, f.author)).rejects.toMatchObject({mutationState:"uncertain"})
+  await expect(f.host.applyRow(f.proposal, f.exportCurrent, f.author)).rejects.toMatchObject({mutationState:"uncertain"})
+  expect(f.counts()).toEqual({rowWrites:1,exports:1})
+})

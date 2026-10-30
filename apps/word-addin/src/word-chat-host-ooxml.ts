@@ -1,3 +1,6 @@
+import { unzipSync } from "fflate"
+import type { WordChatAuthoredTableRow } from "../../../dochaus/lib/word-chat-contract"
+import type { WordChatTableRowInsertionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { validWordChatFormatting, type WordChatAuthoredAmendment, type WordChatParagraphFormat, type WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { reviewedWordChatParagraphFormatting, wordChatParagraphFormatChanged } from "../../../dochaus/lib/word-chat-formatting-ooxml"
@@ -181,6 +184,71 @@ export function verifyNativeWordChatRowRemainder(
   }
   if (JSON.stringify(canonical(oldBody,true)) !== JSON.stringify(canonical(newBody,true))) return fail()
   return { addedParagraphIds: addedIds, carrierMap: old.map((item,i) => ({path:item.path, type:item.node.localName, before:oldIdsAll[i]!, after:currentIds[i]!})) }
+}
+
+/** Verify the reviewed SDK oracle only; never import its bytes into Word. */
+export async function verifyReviewedWordChatRowOracle(source: Uint8Array, oracle: WordChatAuthoredTableRow, proposal: WordChatTableRowInsertionProposal) {
+  const fail = (): never => { throw new Error("Reviewed row oracle mismatch") }
+  const max = 16 * 1024 * 1024, aggregate = 64 * 1024 * 1024
+  if (!(source instanceof Uint8Array) || !source.length || source.length > max || !oracle || !proposal || oracle.kind !== "table_row_insert" || proposal.kind !== "table_row_insert" || proposal.position !== "end" || oracle.proposalId !== proposal.id || oracle.author !== "doc.haus" || JSON.stringify(oracle.table) !== JSON.stringify(proposal.table) || JSON.stringify(oracle.cells) !== JSON.stringify(proposal.cells)) return fail()
+  const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", source))).map(x => x.toString(16).padStart(2,"0")).join("")
+  const req = oracle.writerRequest
+  if (oracle.sourceSha256 !== digest || !req || req.source_sha256 !== digest || req.position !== "after" || req.author !== oracle.author || !req.target_handle || JSON.stringify(req.cells) !== JSON.stringify(proposal.cells)) return fail()
+  const encoded = oracle.authoredBase64
+  if (typeof encoded !== "string" || !encoded.length || encoded.length > Math.ceil(max/3)*4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) return fail()
+  let decoded: string
+  try { decoded = atob(encoded) } catch { return fail() }
+  if (!decoded.length || decoded.length > max || btoa(decoded) !== encoded) return fail()
+  const unpack = (bytes: Uint8Array) => {
+    let size=0, count=0; const names=new Set<string>()
+    try { return unzipSync(bytes,{filter(entry) { if (++count > 4096 || names.has(entry.name) || entry.originalSize > max || (size += entry.originalSize) > aggregate) throw Error("archive limit"); names.add(entry.name); return true }}) } catch { return fail() }
+  }
+  const a=unpack(source), b=unpack(Uint8Array.from(decoded,c=>c.charCodeAt(0))), keys=Object.keys(a).sort()
+  if (JSON.stringify(keys)!==JSON.stringify(Object.keys(b).sort()) || !a["word/document.xml"] || !a["word/settings.xml"]) return fail()
+  for (const k of keys) if (k!=="word/document.xml" && k!=="word/settings.xml" && (a[k]!.length!==b[k]!.length || a[k]!.some((v,i)=>v!==b[k]![i]))) return fail()
+  const parsePart = (bytes:Uint8Array) => {
+    const reject = () => { throw Error("invalid XML") }
+    const doc=new DOMParser({errorHandler:{warning:reject,error:reject,fatalError:reject}}).parseFromString(new TextDecoder("utf-8",{fatal:true}).decode(bytes),"application/xml")
+    if (doc.doctype || !doc.documentElement) return fail()
+    return doc
+  }
+  const sa=parsePart(a["word/settings.xml"]!), sb=parsePart(b["word/settings.xml"]!)
+  for (const [doc,required] of [[sa,false],[sb,true]] as const) {
+    const marks=Array.from(doc.getElementsByTagNameNS(W,"trackRevisions"))
+    if (marks.length>1 || required && marks.length!==1 || marks.some(m=>m.parentNode!==doc.documentElement || m.childNodes.length || Array.from(m.attributes).some(x=>x.namespaceURI!==W || x.localName!=="val" || !["1","true","on"].includes(x.value)))) return fail()
+    for (const m of marks) m.parentNode!.removeChild(m)
+  }
+  if (JSON.stringify(canonical(sa.documentElement))!==JSON.stringify(canonical(sb.documentElement))) return fail()
+  const da=parsePart(a["word/document.xml"]!), db=parsePart(b["word/document.xml"]!)
+  const direct=(e:Element,n:string)=>elements(e).filter(x=>x.namespaceURI===W && x.localName===n)
+  const ab=Array.from(da.getElementsByTagNameNS(W,"body")), bb=Array.from(db.getElementsByTagNameNS(W,"body"))
+  if (ab.length!==1 || bb.length!==1) return fail()
+  const at=direct(ab[0]!,"tbl"), bt=direct(bb[0]!,"tbl"), table=proposal.table
+  if (!table || !Number.isSafeInteger(table.tableIndex) || table.tableIndex<0 || at.length!==bt.length || table.tableIndex>=at.length || !table.rows.length || !proposal.cells.length || proposal.cells.length>32) return fail()
+  const old=direct(at[table.tableIndex]!,"tr"), target=bt[table.tableIndex]!, next=direct(target,"tr")
+  if (old.length!==table.rows.length || next.length!==old.length+1) return fail()
+  for (let i=0;i<old.length;i++) { const cells=direct(old[i]!,"tc"), expected=table.rows[i]!; if (cells.length!==proposal.cells.length || expected.length!==cells.length || cells.some((c,j)=>text(c,"Current")!==expected[j]!.text)) return fail() }
+  const row=next.at(-1)!, cells=direct(row,"tc"), ref=direct(old.at(-1)!,"tc"), carriers:Element[]=[]
+  const only=(e:Element,names:string[]) => elements(e).every(x=>x.namespaceURI===W && names.includes(x.localName))
+  const mark=(e:Element) => { if (e.namespaceURI!==W || e.localName!=="ins" || !/^(0|[1-9]\d*)$/.test(e.getAttributeNS(W,"id")??"") || e.getAttributeNS(W,"author")!=="doc.haus" || !e.getAttributeNS(W,"date") || Array.from(e.attributes).some(a=>a.namespaceURI!==W || !["id","author","date"].includes(a.localName))) return fail(); carriers.push(e) }
+  const rp=direct(row,"trPr"), rm=rp.length===1?direct(rp[0]!,"ins"):[]
+  if (row.attributes.length || !only(row,["trPr","tc"]) || cells.length!==proposal.cells.length || rp.length!==1 || rp[0]!.attributes.length || elements(rp[0]!).length!==1 || rm.length!==1 || rm[0]!.childNodes.length) return fail()
+  mark(rm[0]!)
+  const cleanNodes = (node: Element): boolean => Array.from(node.childNodes).every(child => child.nodeType === 1 ? cleanNodes(child as Element) : child.nodeType === 3 && (node.namespaceURI === W && node.localName === "t" || !child.nodeValue?.trim()))
+  if (!cleanNodes(row)) return fail()
+  for (let i=0;i<cells.length;i++) {
+    const c=cells[i]!, p=direct(c,"p"), cp=direct(c,"tcPr"), op=direct(ref[i]!,"tcPr")
+    if (c.attributes.length || !only(c,["tcPr","p"]) || p.length!==1 || p[0]!.attributes.length || cp.length!==op.length || cp.length>1 || cp.length && JSON.stringify(canonical(cp[0]!))!==JSON.stringify(canonical(op[0]!)) || text(c,"Current")!==proposal.cells[i]) return fail()
+    const pp=direct(p[0]!,"pPr"), pr=pp.length===1?direct(pp[0]!,"rPr"):[], pm=pr.length===1?direct(pr[0]!,"ins"):[]
+    if (!only(p[0]!,["pPr","ins"]) || pp.length!==1 || pp[0]!.attributes.length || elements(pp[0]!).length!==1 || pr.length!==1 || pr[0]!.attributes.length || elements(pr[0]!).length!==1 || pm.length!==1 || pm[0]!.childNodes.length) return fail()
+    mark(pm[0]!)
+    for (const ins of direct(p[0]!,"ins")) { mark(ins); if (!only(ins,["r"])) return fail(); for (const run of direct(ins,"r")) { const ts=direct(run,"t"); if (run.attributes.length || ts.length!==1 || elements(run).length!==1 || elements(ts[0]!).length || Array.from(ts[0]!.childNodes).some(n=>n.nodeType!==3) || Array.from(ts[0]!.attributes).some(a=>a.namespaceURI!=="http://www.w3.org/XML/1998/namespace" || a.localName!=="space" || a.value!=="preserve")) return fail() } }
+  }
+  const ids=carriers.map(c=>c.getAttributeNS(W,"id")!), oldIds=new Set(Array.from(da.getElementsByTagNameNS(W,"*")).flatMap(e=>e.hasAttributeNS(W,"id")?[e.getAttributeNS(W,"id")!.replace(/^\+?0+(?=\d)/, "")]:[]))
+  if (new Set(ids).size!==ids.length || ids.some(id=>oldIds.has(id))) return fail()
+  target.removeChild(row)
+  if (JSON.stringify(canonical(da.documentElement))!==JSON.stringify(canonical(db.documentElement))) return fail()
+  return {sourceSha256:digest,cells:[...proposal.cells]}
 }
 
 function content(parts: Map<string, Element>, table: boolean, section: boolean) {

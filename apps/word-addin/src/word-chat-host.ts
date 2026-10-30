@@ -1,6 +1,9 @@
-import type { WordChatAuthoredAmendment, WordChatParagraphFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { validWordChatFormatting, wordChatApplyPlan, wordChatTableCaptureCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody } from "./word-chat-host-ooxml"
+import type { WordChatAuthoredAmendment, WordChatParagraphFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget, WordChatTableRowInsertionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { validWordChatFormatting, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatTableCaptureCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody, verifyNativeWordChatRowRemainder, verifyReviewedWordChatRowOracle } from "./word-chat-host-ooxml"
+import type { WordChatAuthoredTableRow } from "../../../dochaus/lib/word-chat-contract"
+import { prepareNativeRow, queueNativeRow, type NativeRowContext } from "./word-chat-native-row"
+import { verifyNativeWordChatAddedRow } from "./word-chat-native-row-verification"
 import { DOMParser } from "@xmldom/xmldom"
 import { wordChatApplyEligibility } from "./word-chat-apply"
 
@@ -376,6 +379,94 @@ export class WordChatHost {
     const promise = this.applyOnce(input, identity)
     this.pending.set(input.proposalId, { identity, promise })
     try { return await promise } finally { this.pending.delete(input.proposalId) }
+  }
+
+  async applyRow(proposal: WordChatTableRowInsertionProposal, exportCurrent: () => Promise<Uint8Array>,
+    author: (bytes: Uint8Array) => Promise<WordChatAuthoredTableRow>, mayDispatch?: () => boolean): Promise<WordChatApplyResult> {
+    this.ready()
+    if (!this.supports("WordApiDesktop", "1.4")) throw new WordChatHostError("Appending a reviewed row requires a supported desktop version of Word.")
+    const rows = proposal?.table?.rows
+    const snapshot: WordChatSnapshot = { text: "", paragraphs: Array.isArray(rows) ? rows.flat() : [], saved: false, capturedAt: "", truncated: false, table: proposal?.table }
+    if (!validWordChatTableRowInsertion(snapshot, proposal) || typeof exportCurrent !== "function" || typeof author !== "function") throw new WordChatHostError("Review a complete table row before applying it. Your document is unchanged.")
+    const identity = JSON.stringify(proposal), pending = this.pending.get(proposal.id), observed = this.applied.get(proposal.id)
+    if (pending) {
+      if (pending.identity !== identity) throw new WordChatHostError("This proposal has changed. Prepare a fresh proposal.")
+      return pending.promise
+    }
+    if (observed) {
+      if (observed.uncertain) throw new WordChatHostError("Word may already contain this row. Inspect it and use Undo if needed before preparing a fresh proposal.", "uncertain")
+      if (observed.identity !== identity) throw new WordChatHostError("This proposal has changed. Prepare a fresh proposal.")
+      return { status: "already-applied", tracked: true, saved: false, authors: observed.authors }
+    }
+    const promise = this.applyRowOnce(proposal, identity, exportCurrent, author, mayDispatch)
+    this.pending.set(proposal.id, { identity, promise })
+    try { return await promise } finally { this.pending.delete(proposal.id) }
+  }
+
+  private async applyRowOnce(proposal: WordChatTableRowInsertionProposal, identity: string, exportCurrent: () => Promise<Uint8Array>,
+    author: (bytes: Uint8Array) => Promise<WordChatAuthoredTableRow>, mayDispatch?: () => boolean): Promise<WordChatApplyResult> {
+    try {
+      const source = await exportCurrent()
+      if (!(source instanceof Uint8Array) || !source.length || source.length > 16 * 1024 * 1024) throw new WordChatHostError("The current Word document is too large or unavailable to prepare this row. Your document is unchanged.")
+      const oracle = await author(source)
+      await verifyReviewedWordChatRowOracle(source, oracle, proposal)
+      return await this.word.run(async context => {
+        if (!context.document.body.tables) throw new WordChatHostError("Word cannot read the reviewed table. Your document is unchanged.")
+        const native = context as unknown as NativeRowContext, prepared = await prepareNativeRow(native, proposal.table)
+        const before = await this.documentState(context), all = context.document.body.paragraphs
+        all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+        const body = context.document.body.getRange("Whole").getOoxml()
+        await context.sync()
+        const inventory = all.items.map(p => ({ id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel }))
+        const projection = projectNativeWordChatBody(body.value, inventory)
+        const fail = () => { throw new Error("Invalid table XML") }
+        const xml = new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(body.value, "application/xml")
+        const parts = Array.from(xml.getElementsByTagNameNS(packageNamespace, "part")).filter(p => p.getAttributeNS(packageNamespace, "name") === "/word/document.xml")
+        const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", bodies = parts.length === 1 ? Array.from(parts[0]!.getElementsByTagNameNS(W, "body")) : []
+        if (bodies.length !== 1) throw captureMismatch("Word returned a different table structure.")
+        const bodyChildren = children(bodies[0]!), tables = bodyChildren.filter(e => e.namespaceURI === W && e.localName === "tbl"), table = tables[proposal.table.tableIndex]
+        if (!table) throw captureMismatch("Word returned a different table structure.")
+        const tableChildren = children(table), rows = tableChildren.filter(e => e.namespaceURI === W && e.localName === "tr")
+        if (rows.length !== proposal.table.rows.length || tableChildren.some(e => e.namespaceURI !== W || !["tblPr", "tblGrid", "tr"].includes(e.localName))) throw captureMismatch("Word returned a different table structure.")
+        for (const [ri, row] of rows.entries()) {
+          const rowChildren = children(row), cells = rowChildren.filter(e => e.namespaceURI === W && e.localName === "tc")
+          if (cells.length !== proposal.cells.length || rowChildren.some(e => e.namespaceURI !== W || !["trPr", "tc"].includes(e.localName)) || ["gridBefore", "gridAfter"].some(n => row.getElementsByTagNameNS(W,n).length)) throw captureMismatch("Word returned a different table structure.")
+          for (const [ci, cell] of cells.entries()) {
+            const cellChildren = children(cell), paragraphs = cellChildren.filter(e => e.namespaceURI === W && e.localName === "p")
+            if (paragraphs.length !== 1 || cellChildren.some(e => e.namespaceURI !== W || !["tcPr", "p"].includes(e.localName)) || ["gridSpan", "vMerge", "hMerge"].some(n => cell.getElementsByTagNameNS(W,n).length)) throw captureMismatch("Word returned an unsupported table structure.")
+            const path = `body/tbl[${bodyChildren.indexOf(table)}]/tr[${tableChildren.indexOf(row)}]/tc[${rowChildren.indexOf(cell)}]/p[${cellChildren.indexOf(paragraphs[0]!)}]`, expected = proposal.table.rows[ri]![ci]!, found = projection.paragraphs.filter(p => p.path === path)
+            if (found.length !== 1 || found[0]!.id !== expected.id || found[0]!.text !== expected.text) throw captureMismatch("Word returned a different reviewed table.")
+          }
+        }
+        if (mayDispatch && !mayDispatch()) throw new WordChatHostError("The Word pane closed before the row was applied. Your document is unchanged.")
+        this.applied.set(proposal.id, { identity, authors: [], uncertain: true })
+        queueNativeRow(native, prepared, proposal.cells)
+        await context.sync()
+        context.document.load("changeTrackingMode,trackFormatting")
+        prepared.table.load("rowCount,isUniform,values")
+        const added = proposal.cells.map((_, col) => { const paragraphs = prepared.table.getCell(prepared.rowCount, col).body.paragraphs; paragraphs.load("items/text,items/uniqueLocalId,items/tableNestingLevel"); return paragraphs })
+        const afterAll = context.document.body.paragraphs
+        afterAll.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+        const afterXml = context.document.body.getRange("Whole").getOoxml()
+        await context.sync()
+        const fonts = added.map(collection => {
+          if (collection.items.length !== 1) throw new Error("Unexpected new cell paragraphs")
+          const range = context.document.getParagraphByUniqueLocalId(collection.items[0]!.uniqueLocalId).getRange("Content") as WordChatRange & { font: { bold: boolean; italic: boolean; underline: string; load(properties: string): void } }
+          range.font.load("bold,italic,underline"); return range.font
+        })
+        const after = await this.documentState(context)
+        if (context.document.changeTrackingMode !== prepared.tracking || context.document.trackFormatting !== prepared.trackFormatting || !prepared.table.isUniform || prepared.table.rowCount !== prepared.rowCount + 1 || prepared.table.values.length !== prepared.rowCount + 1 || prepared.table.values.some(row => row.length !== prepared.width) || added.some((collection, i) => collection.items[0]!.text !== proposal.cells[i] || collection.items[0]!.tableNestingLevel !== 1) || fonts.some(font => font.bold !== false || font.italic !== false || font.underline !== "None") || JSON.stringify(before.comments) !== JSON.stringify(after.comments)) throw new Error("Native row confirmation failed")
+        const afterInventory = afterAll.items.map(p => ({ id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel }))
+        const remainder = verifyNativeWordChatRowRemainder(body.value, afterXml.value, inventory, afterInventory, proposal.table, proposal.cells)
+        if (remainder.addedParagraphIds.some((id, i) => id !== added[i]!.items[0]!.uniqueLocalId)) throw new Error("Native row identity mismatch")
+        const authors = verifyNativeWordChatAddedRow(body.value, afterXml.value, proposal.table, proposal.cells)
+        this.applied.set(proposal.id, { identity, authors, uncertain: false })
+        return { status: "applied", tracked: true, saved: false, authors }
+      })
+    } catch (error) {
+      if (this.applied.get(proposal.id)?.uncertain) throw new WordChatHostError("Word may have applied the row, but its tracked result could not be confirmed. Inspect it and use Undo if needed; do not apply it again.", "uncertain", { cause: error })
+      failure(error, "Word could not prepare the reviewed row. Your document is unchanged.")
+    }
   }
 
   /** Complete paragraphs form the import transport. The approved edit still
@@ -771,3 +862,6 @@ export const applyReviewedProposal = (proposal: import("../../../dochaus/lib/wor
   if (proposal.before !== proposal.target.text) throw new WordChatHostError("Review a fresh amendment before applying it.")
   return host().apply({proposalId: proposal.id,target: proposal.target,replacement: proposal.after,formatting: proposal.formatting,author,mayDispatch})
 }
+
+export const applyReviewedTableRow = (proposal: WordChatTableRowInsertionProposal, exportCurrent: () => Promise<Uint8Array>,
+  author: (bytes: Uint8Array) => Promise<WordChatAuthoredTableRow>, mayDispatch?: () => boolean) => host().applyRow(proposal, exportCurrent, author, mayDispatch)

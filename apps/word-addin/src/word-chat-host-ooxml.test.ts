@@ -324,3 +324,52 @@ test("native row remainder checks bound geometry and all-depth prior revisions",
   for (const drift of [after.replace('>Prior<','>Wrong<'),after.replace('w:author="Earlier"','w:author="Other"'),after.replace('2026-01-01','2026-01-02'),after.replace('<w:b/>','<w:i/>'),after.replace('w:id="13"','w:id="12"'),after.replace('w:w="2400"','w:w="2300"'),after.replace(inserted,inserted+inserted),after.replace('>New<','>Other<')]) expect(() => check(drift)).toThrow()
   expect(() => check(after,[afterInv[0]!,afterInv[2]!,afterInv[1]!,...afterInv.slice(3)])).toThrow()
 })
+
+
+test("reviewed row oracle verifies the authored package and rejects tampering", async () => {
+  const {zipSync,strToU8,strFromU8,unzipSync} = await import("fflate")
+  const rowWriterPath = new URL("../../../dochaus/lib/docx-table-row-insertion.ts", import.meta.url).href
+  const {docxTableRowInsertionTargets,authorDocxTableRowInsertion} = await import(rowWriterPath)
+  const {verifyReviewedWordChatRowOracle: verify} = await import("./word-chat-host-ooxml")
+const ROW_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+const xml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+const p = (text: string) => `<w:p><w:r><w:t>${xml(text)}</w:t></w:r></w:p>`
+const cell = (content: string, props = "") => `<w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/>${props}</w:tcPr>${content}</w:tc>`
+const row = (content: string, props = "") => `<w:tr><w:trPr>${props}</w:trPr>${content}</w:tr>`
+function fixture(kind = "simple") {
+  const stamp = 'w:author="Existing Editor" w:date="2026-01-01T00:00:00Z"'
+  const retained = `<w:p><w:bookmarkStart w:id="40" w:name="_dh_source"/><w:commentRangeStart w:id="2"/><w:del w:id="100" ${stamp}><w:r><w:delText>Five</w:delText></w:r></w:del><w:ins w:id="101" ${stamp}><w:r><w:t>Ten</w:t></w:r></w:ins><w:commentRangeEnd w:id="2"/><w:r><w:commentReference w:id="2"/></w:r><w:bookmarkEnd w:id="40"/></w:p>`
+  const format = `<w:p><w:r><w:rPr><w:b/><w:rPrChange w:id="102" ${stamp}><w:rPr/></w:rPrChange></w:rPr><w:t>Prior bold</w:t></w:r><w:hyperlink r:id="link"><w:r><w:t>link</w:t></w:r></w:hyperlink><w:fldSimple w:instr=" DATE "><w:r><w:t>Fixed cache</w:t></w:r></w:fldSimple></w:p>`
+  const rows = kind === "merged" ? row(cell(p("Merged"), '<w:gridSpan w:val="2"/>'))
+    : row(cell(p("Reference")) + cell(retained), kind === "pending" ? `<w:ins w:id="103" ${stamp}/>` : "") + row(cell(format) + cell(p("Right")))
+  const table = `<w:tbl><w:tblPr>${kind === "styled" ? '<w:tblStyle w:val="Conditional"/>' : ""}</w:tblPr><w:tblGrid>${'<w:gridCol w:w="2400"/>'.repeat(2)}</w:tblGrid>${rows}</w:tbl>`
+  const body = kind === "nested" ? `<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="4800"/></w:tblGrid>${row(cell(p("Outer") + table))}</w:tbl>` : table
+  return zipSync({
+    "[Content_Types].xml": strToU8('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/><Override PartName="/word/comments.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml"/></Types>'),
+    "_rels/.rels": strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="main" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`),
+    "word/_rels/document.xml.rels": strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="styles" Type="${R}/styles" Target="styles.xml"/><Relationship Id="settings" Type="${R}/settings" Target="settings.xml"/><Relationship Id="comments" Type="${R}/comments" Target="comments.xml"/><Relationship Id="link" Type="${R}/hyperlink" Target="https://example.com" TargetMode="External"/></Relationships>`),
+    "word/styles.xml": strToU8(`<w:styles xmlns:w="${ROW_W}"><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>${kind === "conditional" ? '<w:style w:type="table" w:styleId="Conditional"><w:tblStylePr w:type="firstRow"><w:rPr><w:b/></w:rPr></w:tblStylePr></w:style>' : ""}</w:styles>`),
+    "word/settings.xml": strToU8(`<w:settings xmlns:w="${ROW_W}"/>`),
+    "word/comments.xml": strToU8(`<w:comments xmlns:w="${ROW_W}"><w:comment w:id="2" w:author="Commenter"><w:p><w:r><w:t>Keep original comment.</w:t></w:r></w:p></w:comment></w:comments>`),
+    "word/document.xml": strToU8(`<w:document xmlns:w="${ROW_W}" xmlns:r="${R}"><w:body>${p("Before")}${body}${p("After")}<w:sectPr/></w:body></w:document>`),
+  }, { mtime: new Date(1980, 0, 1) })
+}
+
+  const source=fixture(), packet=await docxTableRowInsertionTargets(source), target=packet.targets[1]!
+  const table={tableIndex:0,rows:[[{id:"a",text:"Reference"},{id:"b",text:"Ten"}],[{id:"c",text:"Prior boldlinkFixed cache"},{id:"d",text:"Right"}]]}
+  const proposal={kind:"table_row_insert" as const,id:"p",documentId:"d",explanation:"Add",openItems:[],createdAt:"now",position:"end" as const,table,cells:["New","Value"]}
+  const writerRequest={source_sha256:packet.source_sha256,target_handle:target.target_handle,position:"after" as const,cells:proposal.cells,author:"doc.haus"}
+  const authored=await authorDocxTableRowInsertion(source,writerRequest)
+  const encode=(bytes:Uint8Array)=>btoa(Array.from(bytes,x=>String.fromCharCode(x)).join(""))
+  const oracle={kind:"table_row_insert" as const,proposalId:"p",sourceSha256:packet.source_sha256,table,cells:proposal.cells,author:"doc.haus" as const,writerRequest,authoredBase64:encode(authored.bytes),revisions:authored.revisions}
+  expect((await verify(source,oracle,proposal)).cells).toEqual(proposal.cells)
+  await expect(verify(source,{...oracle,proposalId:"other"},proposal)).rejects.toThrow()
+  await expect(verify(source,{...oracle,sourceSha256:"0".repeat(64)},proposal)).rejects.toThrow()
+  await expect(verify(source,{...oracle,writerRequest:{...writerRequest,position:"before" as "after"}},proposal)).rejects.toThrow()
+  await expect(verify(source,oracle,{...proposal,cells:["Wrong","Value"]})).rejects.toThrow()
+  for (const name of ["word/document.xml","word/styles.xml","word/settings.xml"]) {
+    const parts=unzipSync(authored.bytes), value=strFromU8(parts[name]!)
+    parts[name]=strToU8(name==="word/document.xml"?value.replace("Reference","Changed"):value.replace(name==="word/styles.xml"?"Normal":"trackRevisions",name==="word/styles.xml"?"Changed":"differentSetting"))
+    await expect(verify(source,{...oracle,authoredBase64:encode(zipSync(parts))},proposal)).rejects.toThrow()
+  }
+})

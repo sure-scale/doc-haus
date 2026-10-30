@@ -3,13 +3,14 @@ import { Window } from "happy-dom"
 import { mountWordChat, type ChatHost } from "./chat-ui"
 import { ChatRequestError, type WordChatApi, type ChatAction } from "./chat-client"
 import type { WordChatSend, WordChatTurn } from "../../../dochaus/lib/word-chat-contract"
-import type { WordChatProposal, WordChatSnapshot, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatProposal, WordChatSnapshot, WordChatTableRowInsertionProposal, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import type { V2Event } from "@opencode/client"
 import { wordChatApplyEligibility } from "./word-chat-apply"
 
 const passage: WordChatTarget = { id: "target-one", text: "Payment within 14 days.", paragraphs: [{ id: "paragraph-one", text: "Payment within 14 days." }], startOffset: 0, endOffset: 23, capturedAt: "2026-10-28T12:00:00Z", saved: false }
 const context: WordChatSnapshot = { text: passage.text, paragraphs: passage.paragraphs, saved: false, capturedAt: passage.capturedAt, truncated: false }
 const proposal: WordChatProposal = { id: "proposal-one", documentId: "document-one", before: passage.text, after: "Payment within 30 days.", explanation: "A longer payment period.", openItems: ["Confirm the intended period."], target: passage, createdAt: passage.capturedAt }
+const rowProposal: WordChatTableRowInsertionProposal = {kind:"table_row_insert",id:"row-one",documentId:"document-one",position:"end",table:{tableIndex:0,rows:[[{id:"cell-1",text:"Fee"},{id:"cell-2",text:"Ten"}]]},cells:["Tax","Five"],explanation:"Add the agreed item.",openItems:[],createdAt:passage.capturedAt}
 function turn(input: Partial<WordChatTurn> = {}): WordChatTurn { return { id: "turn-one", conversationId: "conversation-one", requestId: "request-one", kind: "chat", scope: "document", text: "Explain payment", answer: "Payment is due in 14 days.", status: "complete", sources: [], attachments: [], createdAt: 1, ...input } }
 function fixture(overrides: { request?: (action: ChatAction, input: object) => Promise<unknown>; upload?: (conversationId: string, file: File, mode: "request" | "matter") => Promise<unknown>; events?: WordChatApi["events"]; turns?: WordChatTurn[]; host?: Partial<ChatHost>; storage?: Pick<Storage, "getItem" | "setItem"> } = {}) {
   const page = new Window({ url: "https://localhost:4612/word-addin/pane.html" })
@@ -42,6 +43,70 @@ function fixture(overrides: { request?: (action: ChatAction, input: object) => P
     restore() { chat.dispose(); ["window", "document"].forEach((key, index) => { if (previous[index]) Object.defineProperty(globalThis, key, previous[index]!); else delete (globalThis as unknown as Record<string, unknown>)[key] }); page.happyDOM.abort() },
   }
 }
+
+test("row card applies once and disables all review actions while pending", async () => {
+  let finish!: () => void, calls = 0
+  const waiting = new Promise<void>(resolve => { finish = resolve })
+  const f = fixture({turns:[turn({kind:"amendment",rowProposal}),turn({id:"other",proposal})],host:{applyRow:async () => {calls++; await waiting}}})
+  try {
+    await f.chat.ready
+    const card = f.root.querySelector('[aria-label="Table row to review"]')!
+    expect(card.textContent).toContain("Add row"); expect(card.textContent).toContain("End of table 1")
+    expect(card.textContent).toContain("First row: Fee · Ten")
+    expect(card.textContent).toContain("Column 1"); expect(card.textContent).toContain("Tax")
+    const apply = [...card.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === "Apply")!
+    apply.click(); apply.click()
+    expect(calls).toBe(1)
+    expect([...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].every(b => b.disabled)).toBe(true)
+    finish(); await Bun.sleep(0)
+    expect(f.root.textContent).toContain("Applied in Word. Save when you’re ready.")
+    expect(f.root.querySelector('[aria-label="Table row to review"] .chat-proposal-actions')).toBeNull()
+    apply.click(); expect(calls).toBe(1)
+  } finally { finish(); f.restore() }
+})
+
+test("row uncertainty, prior application, unavailable callback and pending review never offer a retry", async () => {
+  let calls = 0
+  const uncertain = fixture({turns:[turn({kind:"amendment",rowProposal})],host:{applyRow:async () => {calls++; throw Object.assign(new Error("uncertain"),{mutationState:"uncertain"})}}})
+  try {
+    await uncertain.chat.ready
+    const apply = [...uncertain.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(b => b.textContent === "Apply")!
+    apply.click(); await Bun.sleep(0); apply.click()
+    expect(calls).toBe(1); expect(uncertain.root.textContent).toContain("Check the change in Word")
+    expect(uncertain.root.querySelector(".chat-proposal-actions")).toBeNull()
+  } finally { uncertain.restore() }
+  const prior = fixture({turns:[turn({kind:"amendment",rowProposal,proposalApplied:true})],host:{applyRow:async () => {calls++}}})
+  try { await prior.chat.ready; expect(prior.root.textContent).toContain("Previously applied in Word."); expect(prior.root.querySelector(".chat-proposal-actions")).toBeNull() } finally { prior.restore() }
+  const unavailable = fixture({turns:[turn({kind:"amendment",rowProposal})]})
+  try { await unavailable.chat.ready; expect(unavailable.root.textContent).toContain("not available in this Word session"); expect([...unavailable.root.querySelectorAll(".chat-proposal-actions button")].some(b => b.textContent === "Apply")).toBe(false) } finally { unavailable.restore() }
+  const pending = fixture({turns:[turn({kind:"amendment",status:"running",rowProposal})],host:{applyRow:async () => {calls++}}})
+  try { await pending.chat.ready; expect(pending.root.querySelector('[aria-label="Table row to review"]')).toBeNull() } finally { pending.restore() }
+  const disposed = fixture({turns:[turn({kind:"amendment",rowProposal})],host:{applyRow:async () => {calls++}}})
+  try {
+    await disposed.chat.ready
+    const apply = [...disposed.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(b => b.textContent === "Apply")!
+    const beforeDisposeClick = calls
+    disposed.chat.dispose(); apply.click(); expect(calls).toBe(beforeDisposeClick)
+  } finally { disposed.restore() }
+})
+
+test("row refinement sends the pinned proposal and preserves a draft if capture fails", async () => {
+  let fail = true
+  const f = fixture({turns:[turn({kind:"amendment",rowProposal})],host:{capture:async () => {if (fail) throw Error("Word unavailable"); return structuredClone(context)}}})
+  try {
+    await f.chat.ready
+    const refine = [...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(b => b.textContent === "Refine")!
+    refine.click(); expect(f.get("chips").textContent).toContain("Refining row")
+    expect(f.get<HTMLTextAreaElement>("message").placeholder).toContain("row")
+    await f.send("Use a different amount")
+    expect(f.get<HTMLTextAreaElement>("message").value).toBe("Use a different amount")
+    expect(f.calls.some(call => call.action === "send")).toBe(false)
+    fail = false; await f.send("Use a different amount")
+    const sent = f.calls.find(call => call.action === "send")!.input as WordChatSend
+    expect(sent.rowProposal).toEqual(rowProposal); expect(sent.proposal).toBeUndefined(); expect(sent.kind).toBe("amendment")
+    expect(sent.context.selection).toBeUndefined(); expect(f.get("chips").textContent).not.toContain("Refining row")
+  } finally { f.restore() }
+})
 
 test("scope, history and New share the composer row; attachments retain draft and exact optional context without settings", async () => {
   const f = fixture()
