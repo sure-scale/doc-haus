@@ -116,7 +116,21 @@ test("grid save validates the version, questions and cell structure", () => {
   expect(gridRequest({ ...valid, version: -1 })).toBeUndefined()
   expect(gridRequest({ ...valid, columns: [valid.columns[0], valid.columns[0]] })).toBeUndefined()
   expect(gridRequest({ ...valid, cells: { "a.docx::q": { answer: "Yes", status: "unknown", questionHash: "q" } } })).toBeUndefined()
+  const comparison = { questionHash: "q", inputs: "s", cells: { "a.docx": { label: "differs", reason: "Fixed cap." } }, summary: "One differs.", comparedAt: 1 }
+  const compared = { ...valid, columns: [{ ...valid.columns[0]!, comparison }] }
+  expect(gridRequest(compared)).toEqual(compared as Grid)
+  for (const bad of [{ ...comparison, cells: { "a.docx": { label: "unclear", reason: "?" } } }, { ...comparison, cells: { "a.docx": { label: "differs", reason: "x".repeat(141) } } }, { ...comparison, summary: undefined }])
+    expect(gridRequest({ ...valid, columns: [{ ...valid.columns[0]!, comparison: bad }] })).toBeUndefined()
 })
+
+test("a new comparison beside a reviewed answer saves", () => withMatter((dir) => {
+  const cell = { answer: "Reviewed answer", status: "reviewed" as const, questionHash: "q" }
+  expect(writeGrid(dir, { version: 0, columns: [{ id: "q", question: "Question?" }], cells: { "a.docx::q": cell } }).ok).toBe(true)
+  const current = readGrid(dir)
+  const comparison = { questionHash: "q", inputs: "s", cells: { "a.docx": { label: "consistent" as const, reason: "Same cap." } }, summary: "All consistent.", comparedAt: 1 }
+  expect(writeGrid(dir, { ...current, columns: [{ id: "q", question: "Question?", comparison }] }).ok).toBe(true)
+  expect(readGrid(dir).cells["a.docx::q"]).toEqual(cell)
+}))
 
 // Identity of a passage as the first extraction's search returned it.
 function seenPassages(dir: string, name: string, clauses: string[][], indexes: number[]) {
