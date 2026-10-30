@@ -81,8 +81,7 @@
 .review-running { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .review-running > span { overflow: hidden; text-overflow: ellipsis; }
 .review-running::before { flex: none; content: ""; width: 12px; height: 12px; border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: step-spin .7s linear infinite; }
-.review-hint { margin: 0 0 var(--space-4); color: var(--muted); font-size: .9rem; }
-.review > .review-toolbar, .review > .review-filter-summary, .review > .review-hint, .review > [role="alert"] { flex-shrink: 0; }
+.review > .review-toolbar, .review > .review-filter-summary, .review > [role="alert"] { flex-shrink: 0; }
 .review-scroll-frame { position: relative; display: flex; flex-direction: column; min-height: 0; }
 .review-scroll { min-height: 0; max-height: none; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); scrollbar-width: thin; }
 .review-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }

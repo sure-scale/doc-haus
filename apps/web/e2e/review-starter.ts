@@ -148,7 +148,12 @@ async function exercise(width: number, height: number) {
     await page.getByRole("link", { name: "Review table", exact: true }).click()
     const gridDialog = page.getByRole("dialog", { name: `Review table — ${matter.title}` })
     await expect(gridDialog).toBeVisible()
-    const starterButton = gridDialog.getByRole("button", { name: "Use a starter" })
+    // Starters open from the + menu in the header row.
+    const addButton = gridDialog.locator(".review-table").getByRole("button", { name: "Add questions", exact: true })
+    const openStarters = async () => {
+      await addButton.click()
+      await page.getByRole("group", { name: "Add questions" }).getByRole("button", { name: "Use a starter", exact: true }).click()
+    }
     // The chooser comes first and recommends from source documents only.
     const chooser = page.getByRole("dialog", { name: "Add questions" })
     const starter = page.getByRole("dialog", { name: "Document overview" })
@@ -158,8 +163,7 @@ async function exercise(width: number, height: number) {
       await chooser.getByRole("button", { name: "Continue" }).click()
       await expect(starter).toBeVisible()
     }
-    await starterButton.focus()
-    await page.keyboard.press("Enter")
+    await openStarters()
     await expect(chooser).toBeVisible()
     await expect(chooser.getByRole("radio", { name: /^Compare agreements/ })).toBeChecked()
     await expect(chooser).toContainText("Recommended · 2 source documents in this matter")
@@ -179,10 +183,10 @@ async function exercise(width: number, height: number) {
     await page.screenshot({ path: `${evidence}/starter-${width}.png` })
     await page.keyboard.press("Escape")
     await expect(starter).toHaveCount(0)
-    await expect(starterButton).toBeFocused()
+    await expect(addButton).toBeFocused()
     expect(state.writes).toHaveLength(0)
 
-    await starterButton.click()
+    await openStarters()
     await chooseOverview()
     await starter.getByRole("textbox", { name: "Question 1", exact: true }).fill("What is the main topic?")
     await starter.getByRole("button", { name: "Remove question 2" }).click()
@@ -199,7 +203,7 @@ async function exercise(width: number, height: number) {
     await expect(gridDialog.getByRole("button", { name: "Edit question: What is the main topic?" })).toBeVisible()
     await expect(gridDialog.getByText("Invoices are payable within 30 days of receipt.")).toBeVisible()
     await expect(gridDialog.getByRole("button", { name: "1 comments on Services agreement.docx: When is payment due?" })).toBeVisible()
-    await starterButton.click()
+    await openStarters()
     await chooseOverview()
     await expect(starter).toContainText("Already in the table")
     await starter.getByRole("button", { name: "Cancel" }).click()

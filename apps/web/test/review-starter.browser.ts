@@ -96,11 +96,15 @@ try {
   const overviewChoice = chooser.getByRole("radio", { name: /^Document overview/ })
   const compareChoice = chooser.getByRole("radio", { name: /^Compare agreements/ })
   const reviewFill = page.getByRole("dialog", { name: "Review fill" })
-  // A starter is the primary action of a table without questions, and a quiet one otherwise.
-  const starterButton = page.getByRole("button", { name: /^Use a starter$/ })
+  // A table without questions has Add questions as its primary; otherwise starters open from the + menu.
+  const addButton = page.locator(".review-table").getByRole("button", { name: "Add questions", exact: true })
   const primary = page.locator(".review-toolbar .review-primary")
-  const open = async (query: string) => { await page.goto(`${server.url.href}${query}`); await primary.waitFor() }
-  const showChooser = async () => { await starterButton.click(); await expect(chooser).toBeVisible() }
+  const open = async (query: string) => { await page.goto(`${server.url.href}${query}`); await addButton.waitFor() }
+  const showChooser = async () => {
+    await addButton.click()
+    await page.getByRole("group", { name: "Add questions" }).getByRole("button", { name: "Use a starter", exact: true }).click()
+    await expect(chooser).toBeVisible()
+  }
   const showStarter = async () => {
     await showChooser()
     await overviewChoice.check()
@@ -111,7 +115,7 @@ try {
   await open("?matter=one")
   await expect(primary).toHaveCount(1)
   await expect(primary).toHaveText("Fill 1 cell")
-  await expect(page.getByRole("button", { name: "Use a starter", exact: true })).toBeVisible()
+  await expect(addButton).toBeVisible()
   const toolbar = page.locator(".review-toolbar")
   assert.equal(await toolbar.evaluate((node) => node.scrollWidth <= node.clientWidth + 1), true, "the toolbar wraps within a 400px viewport")
 
@@ -243,8 +247,8 @@ try {
   await open("?matter=two")
   await expect(primary).toHaveCount(1)
   await expect(primary).toHaveText("Add questions")
-  // The primary is the only way in: no quiet duplicate beside it.
-  await expect(page.getByRole("button", { name: "Add questions", exact: true })).toHaveCount(1)
+  // The primary is the toolbar's only way in: no quiet duplicate beside it.
+  await expect(page.locator(".review-toolbar").getByRole("button", { name: "Add questions", exact: true })).toHaveCount(1)
   await primary.click()
   await expect(chooser).toBeVisible()
   await overviewChoice.check()

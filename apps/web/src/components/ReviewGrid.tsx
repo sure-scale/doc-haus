@@ -932,9 +932,6 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
           )
         })()}
 
-        {grid.columns.length === 0 && (
-          <p className="review-hint">Use + to add a question for every document.</p>
-        )}
         <ReviewScroll>
           {/* Column widths are the stylesheet's: the Document column narrows on small screens. */}
           <table className={`review-table${grid.columns.length === 0 ? " is-empty" : ""}`} style={shownColumns.length ? { minWidth: `calc(var(--review-doc-w) + var(--review-add-w) + ${shownColumns.length} * var(--review-answer-w))` } : undefined} aria-label="Document review">
