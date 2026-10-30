@@ -191,7 +191,7 @@ try {
       await f.page.getByRole("button", { name: "Settings", exact: true }).click()
       const dialog = f.page.getByRole("dialog", { name: "Settings", exact: true })
       const slider = dialog.getByRole("slider", { name: "Request limit" })
-      await expect(slider).toHaveAttribute("aria-valuetext", "5 requests")
+      await expect(slider).toHaveAttribute("aria-valuetext", "50 requests")
       const alignment = await slider.evaluate(input => {
         const bounds = input.getBoundingClientRect()
         const labels = [...input.parentElement!.querySelectorAll(".settings-concurrency-stops span")]
@@ -234,7 +234,9 @@ try {
       const dialog = f.page.getByRole("dialog", { name: "Settings", exact: true })
       await dialog.getByLabel("Fast model", { exact: true }).selectOption("fixture-models/fast")
       const slider = dialog.getByRole("slider", { name: "Request limit" })
+      await expect(slider).toBeEnabled()
       await slider.focus(); await f.page.keyboard.press("End")
+      await expect(slider).toHaveAttribute("aria-valuetext", "100 requests")
       await dialog.getByRole("button", { name: "Test and save", exact: true }).click()
       await expect(dialog.getByText("AI setup saved.", { exact: true })).toBeVisible()
       expect(f.state.config.small_model).toBe("fixture-models/fast")
@@ -248,7 +250,9 @@ try {
       const dialog = f.page.getByRole("dialog", { name: "Settings", exact: true })
       await dialog.getByLabel("Fast model", { exact: true }).selectOption("fixture-models/fast")
       const slider = dialog.getByRole("slider", { name: "Request limit" })
+      await expect(slider).toBeEnabled()
       await slider.focus(); await f.page.keyboard.press("End")
+      await expect(slider).toHaveAttribute("aria-valuetext", "100 requests")
       f.state.limitSaveFailures = 1
       await dialog.getByRole("button", { name: "Test and save", exact: true }).click()
       await expect(dialog.getByText("AI setup was saved, but the request limit could not be saved. Try again.")).toBeVisible()

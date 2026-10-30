@@ -75,14 +75,14 @@ prompt. Authentication failures during assistant work also show the prompt.
 After reconnecting, return to the draft and choose Continue when ready.
 
 Settings → AI setup → Concurrent AI requests limits simultaneous model requests
-across the installation. The default is 4; choose a whole number from 1 to 100.
+across the installation. The default is 50; choose a slider value from 1 to 100.
 Requests above the limit wait for a free place. Changing the limit does not stop
 requests already in progress. A workflow already underway may retain its initial
 worker count until its next batch.
 
 Test sends the selected number of short, independent requests to the saved primary
-model. It reports successful and failed requests and the peak overlap observed in
-doc.haus. The test uses provider allowance and may incur charges; it runs only
+model. It reports successful and failed requests. The test uses provider
+allowance and may incur charges; it runs only
 when selected and its result is not a guarantee of future capacity.
 
 New installations default to Entire web; existing saved research choices are

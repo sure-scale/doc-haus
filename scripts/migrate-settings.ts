@@ -17,7 +17,7 @@ export function migrateSettings(input: { source: string; runtime: string; apply?
     try { validateSettingsPatch(patch); Object.assign(migrated, mergeSettings(migrated, patch)); fields.push(label) }
     catch { skipped.push(label) }
   }
-  for (const key of ["model", "small_model", "disabled_providers"]) if (source[key] !== undefined) candidate({ [key]: source[key] }, key)
+  for (const key of ["model", "small_model", "model_concurrency", "disabled_providers"]) if (source[key] !== undefined) candidate({ [key]: source[key] }, key)
   for (const [id, agent] of Object.entries(source.agent ?? {})) for (const key of ["model", "disable"]) if (agent[key] !== undefined) candidate({ agent: { [id]: { [key]: agent[key] } } }, `agent.${id}.${key}`)
   const skills = source.permission?.skill
   if (typeof skills === "object" && skills !== null && !Array.isArray(skills)) for (const [id, action] of Object.entries(skills)) if (id !== "*") candidate({ permission: { skill: { [id]: action } } }, `permission.skill.${id}`)

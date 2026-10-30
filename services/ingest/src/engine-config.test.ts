@@ -43,7 +43,7 @@ test("fresh install has no implicit generation model", () => { fixture(); expect
 
 test("concurrency is a persisted whole number from 1 to 100", () => {
   fixture()
-  expect(readEngineSettings().model_concurrency).toBe(5)
+  expect(readEngineSettings().model_concurrency).toBe(50)
   patchEngineConfig({ model_concurrency: 4 })
   expect(readEngineSettings().model_concurrency).toBe(5)
   for (const value of [1, 50, 100]) {
