@@ -878,7 +878,9 @@ try {
   assert.equal(await primary.textContent(), "Fill 4 cells")
   await primary.click()
   const fillDialog = page.getByRole("dialog", { name: "Fill 4 cells?" })
-  await fillDialog.getByText("After filling, AI compares the cited answers across documents: one AI call for each question with two or more cited answers.", { exact: false }).waitFor()
+  // The compare step is one plain sentence; its calls and skips sit behind the "i".
+  await fillDialog.getByText("After filling, AI compares each question's answers across documents.", { exact: false }).waitFor()
+  await fillDialog.getByRole("img", { name: "One AI call for each question with two or more cited answers. Questions with fewer are skipped." }).waitFor()
   const fillHeld: import("@playwright/test").Route[] = []
   onExtraction = route => void fillHeld.push(route)
   await fillDialog.getByRole("button", { name: "Start fill" }).click()
@@ -1021,8 +1023,11 @@ try {
   await partiesDialog.getByText(partiesQuestion).first().waitFor()
   const partiesItems = partiesDialog.getByRole("listitem").filter({ hasText: partiesQuestion })
   assert.deepEqual(await partiesDialog.locator(".fill-preview-note").allTextContents(), Array(await partiesItems.count()).fill("Not compared"), "the Fill preview marks the question it will not compare, and only that one")
-  await partiesDialog.getByText("After filling, AI compares the cited answers across documents: one AI call for each question with two or more cited answers.", { exact: false }).waitFor()
-  await partiesDialog.getByText("It skips questions marked Not compared.", { exact: false }).waitFor()
+  await partiesDialog.getByText("After filling, AI compares each question's answers across documents.", { exact: false }).waitFor()
+  await partiesDialog.getByRole("img", { name: "One AI call for each question with two or more cited answers. Questions with fewer are skipped, and so are questions marked Not compared." }).waitFor()
+  // The mark says why on hover or focus.
+  await partiesDialog.locator(".fill-preview-note").first().focus()
+  await page.getByRole("tooltip", { name: "Answers to this question are expected to differ by document, so AI does not compare them." }).waitFor()
   await partiesDialog.getByRole("button", { name: "Start fill" }).click()
   await head.getByRole("button", { name: /^AI comparison: 1 of \d+ differs/ }).waitFor()
   await toolbar.getByText(/Comparing|^Filling \d/).waitFor({ state: "detached" })
