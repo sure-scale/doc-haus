@@ -61,7 +61,7 @@ function prefill(provider: Provider | undefined, integration: IntegrationInfo | 
   return { ...emptyDraft(), options, choice: choice?.value ?? "", answer: methodDefaults(choice?.method) }
 }
 
-export default function AISetup({ mode = "settings", reconnectProvider, phase = "provider", onPhaseChange, onProgress, onSaved, extraDirty = false, extraBusy = false, onSaveExtra }: {
+export default function AISetup({ mode = "settings", reconnectProvider, phase = "provider", onPhaseChange, onProgress, onSaved, extraDirty = false, extraBusy = false, capacityTested = false, onSaveExtra }: {
   mode?: "settings" | "onboarding"
   reconnectProvider?: string
   phase?: SetupPhase
@@ -70,6 +70,7 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   onSaved: () => void | Promise<void>
   extraDirty?: boolean
   extraBusy?: boolean
+  capacityTested?: boolean
   onSaveExtra?: () => Promise<void>
 }) {
   const client = useMemo(settingsClient, [])
@@ -315,9 +316,9 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
     catch { setContinuePending(true); setError("AI setup was saved. Setup progress could not be updated. Continue again to retry that step.") }
   }
   async function saveExtra() {
-    if (!extraDirty || !onSaveExtra || busy || extraBusy) return
+    if ((!extraDirty && !capacityTested) || busy || extraBusy) return
     setSaving(true); setBusy(true); setError("")
-    try { await onSaveExtra(); await onSaved() }
+    try { if (extraDirty) await onSaveExtra?.(); await onSaved() }
     catch { setError("Could not save the request limit. Your changes are still here. Try again.") }
     finally { setSaving(false); setBusy(false) }
   }
@@ -344,6 +345,7 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   }
 
   const show = (section: SetupPhase) => mode === "settings" || phase === section
+  const saveOnly = !aiDirty && (extraDirty || capacityTested)
   const sourceOptions = Object.fromEntries((CLOUD_SETUPS.find(item => item.ids.includes(provider))?.fields ?? []).map(field => [field.key,
     typeof config.provider?.[provider]?.options?.[field.key] === "string" ? "Prefilled from this installation" : selected?.host?.options[field.key] ? "Prefilled from server detection" : "Default",
   ]))
@@ -401,7 +403,7 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
       {saved && <p role="status">AI setup saved.</p>}
       <SettingsFooter tab="ai"><div className="ai-setup-actions">
         {mode === "onboarding" && <button type="button" className="onboarding-back" disabled={busy} onClick={() => onPhaseChange?.("models")}>Back to models</button>}
-        {mode === "onboarding" ? <button type="button" className="primary" disabled={busy || (!saved && (!choiceValid || !configured || saveUnconfirmed))} onClick={() => void (saved ? continueAfterSave() : runTests(true))}>{saving ? "Saving…" : busy ? "Testing connection…" : saved ? "Continue" : "Test and continue"}</button> : <button type="button" className="primary" disabled={busy || extraBusy || (extraDirty && !aiDirty ? false : !choiceValid || !configured || saved || saveUnconfirmed)} onClick={() => void (extraDirty && !aiDirty ? saveExtra() : runTests(true))}>{saving ? "Saving…" : busy ? "Testing connection…" : extraDirty && !aiDirty ? "Save" : "Test and save"}</button>}
+        {mode === "onboarding" ? <button type="button" className="primary" disabled={busy || (!saved && (!choiceValid || !configured || saveUnconfirmed))} onClick={() => void (saved ? continueAfterSave() : runTests(true))}>{saving ? "Saving…" : busy ? "Testing connection…" : saved ? "Continue" : "Test and continue"}</button> : <button type="button" className="primary" disabled={busy || extraBusy || (saveOnly ? false : !choiceValid || !configured || saved || saveUnconfirmed)} onClick={() => void (saveOnly ? saveExtra() : runTests(true))}>{saving ? "Saving…" : busy ? "Testing connection…" : saveOnly ? "Save" : "Test and save"}</button>}
       </div></SettingsFooter>
     </section>}
   </div>

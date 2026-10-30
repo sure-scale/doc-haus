@@ -50,7 +50,7 @@ try {
   assert.equal(await page.locator("#busy").textContent(), "true")
   await held!.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ model: "fixture/model", requested: 10, succeeded: 8, failed: 2, peak: 9, elapsed_ms: 3400, errors: [{ kind: "unavailable", count: 2 }] }) })
   await page.getByText("8 of 10 requests succeeded; 2 failed.").waitFor()
-  assert.ok(await page.getByText("Peak overlapping requests in doc.haus: 9.", { exact: false }).isVisible())
+  assert.equal(await page.getByText("Peak overlapping requests", { exact: false }).count(), 0)
   assert.ok(await page.getByText("Connection unavailable: 2").isVisible())
   assert.equal(await page.locator("#busy").textContent(), "false")
   await page.getByRole("button", { name: "Test request capacity" }).click()

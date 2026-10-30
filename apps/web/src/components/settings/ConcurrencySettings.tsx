@@ -9,7 +9,7 @@ const failureLabel: Record<string, string> = { auth: "Sign-in error", model: "Mo
 
 export type ConcurrencySettingsHandle = { save: () => Promise<void> }
 
-const ConcurrencySettings = forwardRef<ConcurrencySettingsHandle, { onBusy: (busy: boolean) => void; onDirty: (dirty: boolean) => void; disabled?: boolean }>(function ConcurrencySettings({ onBusy, onDirty, disabled = false }, ref) {
+const ConcurrencySettings = forwardRef<ConcurrencySettingsHandle, { onBusy: (busy: boolean) => void; onDirty: (dirty: boolean) => void; onTested?: () => void; disabled?: boolean }>(function ConcurrencySettings({ onBusy, onDirty, onTested, disabled = false }, ref) {
   const inputId = useId()
   const [saved, setSaved] = useState<number>()
   const [value, setValue] = useState("")
@@ -62,7 +62,7 @@ const ConcurrencySettings = forwardRef<ConcurrencySettingsHandle, { onBusy: (bus
     try {
       if (changed) await persist(limit)
       setNotice(`Testing ${limit} requests using your saved primary model…`)
-      setResult(await testConcurrency(limit)); setNotice("")
+      setResult(await testConcurrency(limit)); setNotice(""); onTested?.()
     }
     catch (failure) { setNotice(""); setError(message(failure, "The test could not be completed.")) }
     finally { setBusy(false); onBusy(false) }
@@ -92,8 +92,6 @@ const ConcurrencySettings = forwardRef<ConcurrencySettingsHandle, { onBusy: (bus
     {error && <p role="alert" className="settings-hint settings-warning">{error} {saved === undefined && <button type="button" className="btn-sm" onClick={() => void load()}>Retry</button>}</p>}
     {result && <div role="status" className="settings-hint">
       <p>{result.succeeded} of {result.requested} requests succeeded; {result.failed} failed.</p>
-      <p>Peak overlapping requests in doc.haus: {result.peak}. Elapsed: {(result.elapsed_ms / 1000).toFixed(1)} seconds.</p>
-      <p>Model: {result.model}</p>
       {result.errors.length > 0 && <ul>{result.errors.map(({ kind, count }) => <li key={kind}>{failureLabel[kind] ?? "Other error"}: {count}</li>)}</ul>}
     </div>}
   </section>
