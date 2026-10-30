@@ -125,31 +125,46 @@
 .review-detail-modal { inset: 0; width: var(--viewport-inline); height: var(--viewport-block); max-width: none; max-height: none; margin: 0; padding: var(--space-6); border: 0; color: inherit; background: var(--overlay-scrim); }
 .review-detail-modal:not([open]) { display: none; }
 .review-detail-modal::backdrop { background: transparent; }
-.review-detail-modal .picker-panel { width: min(680px, 100%); }
-.review-detail-answer { margin: 0 0 var(--space-4); font-size: 1rem; line-height: 1.7; }
-.review-ask { display: flex; justify-content: flex-start; margin-top: var(--space-4); }
-.review-comments { display: flex; flex-direction: column; gap: var(--space-3); margin-top: var(--space-6); padding-top: var(--space-5); border-top: 1px solid var(--border); }
+/* The cell detail: one left edge for header, body and footer, and labelled
+   sections (answer, source, comments) with even spacing between them. */
+.review-detail-modal .picker-panel { width: min(680px, 100%); max-width: none; }
+.review-detail-modal .viewer-bar { align-items: flex-start; padding-block: var(--space-4); }
+.review-detail-modal .viewer-bar-actions { min-height: 40px; }
+.review-detail-question { overflow-wrap: anywhere; }
+.review-detail-body { gap: var(--space-5); padding: var(--space-5); }
+.review-detail-section { display: flex; flex-direction: column; gap: var(--space-2); }
+.review-detail-label { margin: 0; color: var(--text-secondary); font: var(--md-sys-typescale-label-medium); }
+.review-detail-answer { margin: 0; font-size: 1rem; line-height: 1.7; }
+.review-detail-body .citation { margin: 0; }
+.review-source-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.review-source-head .review-source-badge { margin-left: auto; }
+.review-ask { align-self: flex-start; min-height: 0; }
+.review-comments { display: flex; flex-direction: column; gap: var(--space-3); padding-top: var(--space-5); border-top: 1px solid var(--border); }
 .review-comment { padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--md-sys-color-surface-container-low); }
 .review-comment-meta { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); font-size: .8rem; font-variant-numeric: tabular-nums; }
 .review-comment-meta > span { min-width: 0; overflow-wrap: anywhere; }
 .review-comment-text { font-size: .95rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
-.review-comment-compose { display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--space-2); }
-.review-comment-compose textarea { flex: 1 1 220px; min-height: 80px; resize: vertical; }
-.review-comment-compose button { margin-left: auto; }
+.review-comment-compose { display: flex; flex-direction: column; gap: var(--space-2); }
+.review-comment-compose textarea { width: 100%; min-height: 64px; resize: vertical; }
+.review-comment-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-4); }
+.review-comment-actions small { flex: 1 1 200px; }
+.review-comment-actions button { margin-left: auto; }
 
 /* Review next: the reason and place in the walk above the answer, and one
    row of moves under the panel. Tone repeats the cell's marker; words carry it. */
 .review-walk-position { color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.review-walk-why { --walk-tone: var(--border-strong); margin: 0 0 var(--space-4); padding: var(--space-3) var(--space-4); border-left: 3px solid var(--walk-tone); border-radius: var(--radius-md); background: var(--md-sys-color-surface-container-low); }
+.review-walk-why { --walk-tone: var(--border-strong); display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3) var(--space-4); border-left: 3px solid var(--walk-tone); border-radius: var(--radius-md); background: var(--md-sys-color-surface-container-low); }
 .review-walk-why.is-danger { --walk-tone: var(--danger); }
 .review-walk-why.is-warn { --walk-tone: var(--warn); }
 .review-walk-why.is-info { --walk-tone: var(--info); }
 .review-walk-why.is-muted { --walk-tone: var(--muted); }
-.review-walk-doc { display: block; margin-bottom: var(--space-1); color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; }
 .review-walk-why p { margin: 0; font-size: .92rem; line-height: 1.55; }
-.review-walk-why strong { margin-right: var(--space-1); font-weight: 600; }
-.review-walk-bar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3); border-top: 1px solid var(--border); }
-.review-walk-previous { margin-right: auto; }
+.review-walk-why .review-walk-word { display: flex; align-items: center; gap: var(--space-2); color: var(--walk-tone); font-weight: 600; }
+.review-walk-why.is-muted .review-walk-word { color: var(--text-secondary); }
+.review-walk-reviewed { margin: 0; color: var(--text-secondary); font-size: .85rem; }
+.review-walk-bar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3) var(--space-5); border-top: 1px solid var(--border); }
+/* Pulled out by its own padding, so its word lines up with the content edge. */
+.review-walk-previous { margin-right: auto; margin-left: calc(-1 * var(--space-4)); }
 .review-walk-hint { flex: 1 1 0; min-width: 0; color: var(--muted); font-size: .8rem; line-height: 1.4; }
 
 /* Severity and finding status always remain readable words. Tone is a second
@@ -182,6 +197,12 @@
   .review-toolbar-actions { justify-content: flex-start; width: 100%; margin-left: 0; }
   .review-toolbar .matter-search { flex: 1 1 100%; max-width: none; }
   .review-detail-modal { padding: var(--space-3); }
+  .review-detail-body { padding: var(--space-4); }
+  .review-detail-modal .viewer-bar, .review-walk-bar { padding-inline: var(--space-4); }
+  /* The next step takes its own full-width row under Previous and Skip. */
+  .review-walk-bar .review-walk-next { flex: 1 0 100%; }
+  .review-source-head .review-source-badge { margin-left: 0; }
+  .review-walk-skip { margin-right: calc(-1 * var(--space-4)); }
 }
 @media (pointer: coarse) {
   .review-cell-actions .icon-btn, .review-col-x, .review-add-button, .issues > summary { min-height: max(44px, calc(44px / var(--ui-scale))); }

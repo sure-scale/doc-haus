@@ -1,4 +1,4 @@
-import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { UNSAFE_DataRouterContext, useBlocker } from "react-router-dom"
 import { computeCell, describeRecheck, needsFill, recheckOutcome } from "../api/review-recheck"
@@ -25,7 +25,7 @@ import ReviewStarter from "./ReviewStarter"
 import { normaliseStarterQuestion } from "../review-starters"
 import FillPreview from "./FillPreview"
 import { FilterSummary, ReviewToolbar } from "./ReviewAttention"
-import { MARKER_LOOK, ReviewMarker } from "./ReviewMarker"
+import { MARKER_LOOK, MarkerGlyph, ReviewMarker } from "./ReviewMarker"
 
 // Tabular review: rows are the matter's documents, columns are natural-language
 // questions, each cell is an extracted answer with a source citation. The grid is
@@ -145,6 +145,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   // table leaves the walk. `walkDone` counts finished walks for their status.
   const [walk, setWalk] = useState<{ entries: QueueEntry[]; at: number }>()
   const [walkDone, setWalkDone] = useState(0)
+  const detailIds = useId()
   const inWalk = !!walk && walk.entries[walk.at]?.key === detailKey
   const walkAt = inWalk ? walk.at : -1
   // A comment being written belongs to this cell, so the walk waits for it.
@@ -862,50 +863,61 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
           >
             <div className="picker-panel" onClick={(e) => e.stopPropagation()}>
               <ModalHeader
-                title={detailShown.question}
+                title={<span className="viewer-title-text"><span className="review-detail-question">{detailShown.question}</span><span className="viewer-title-meta">{detailShown.docName}</span></span>}
                 actions={inWalk && <span className="review-walk-position">{walk.at + 1} of {walk.entries.length}</span>}
                 onClose={() => setDetail(undefined)}
               />
-              <div className="picker-body">
-                {inWalk && (
-                  <div className={`review-walk-why${walkEntry?.marker ? ` is-${MARKER_LOOK[walkEntry.marker.state].tone}` : ""}`}>
-                    <span className="review-walk-doc">{detailShown.docName}</span>
-                    <p>{walkReason ? <><strong>Why this cell</strong> {walkReason}</> : "Reviewed."}</p>
+              <div className="picker-body review-detail-body">
+                {/* In the walk, a flagged cell leads with its marker, in the
+                    table's own words; a plain unreviewed cell needs no reason. */}
+                {inWalk && walkReason && walkEntry?.marker && (
+                  <div className={`review-walk-why is-${MARKER_LOOK[walkEntry.marker.state].tone}`}>
+                    <p className="review-walk-word"><MarkerGlyph state={walkEntry.marker.state} />{walkEntry.marker.word}{walkEntry.marker.state === "differs" && <span className="review-ai-tag">AI</span>}</p>
+                    <p>{walkReason}</p>
                   </div>
                 )}
-                <p className="review-detail-answer">{detailCell.answer}</p>
-                {detailCell.recheck && <p className="review-recheck-detail">{describeRecheck(detailCell.recheck)}</p>}
+                {inWalk && !walkReason && <p className="review-walk-reviewed">Reviewed</p>}
+                <section className="review-detail-section" aria-labelledby={`${detailIds}-answer`}>
+                  <h3 className="review-detail-label" id={`${detailIds}-answer`}>Answer</h3>
+                  <p className="review-detail-answer">{detailCell.answer}</p>
+                  {detailCell.recheck && <p className="review-recheck-detail">{describeRecheck(detailCell.recheck)}</p>}
+                </section>
                 {detailCell.citation && detailKey && (() => {
                   const citation = detailCell.citation
                   const entry = sourceEntry(detailKey, detailCell)
                   const check = entry?.check
                   const label = `[${citation.documentName} § ${citation.section}]`
+                  // The badge sits beside the reference; its sentence below says
+                  // what the check found, unless the walk's reason already does.
+                  const detail = check ? (walkExplains(check) ? undefined : SOURCE_DETAIL[check])
+                    : checkingSources ? "Checking the excerpt against the document…" : "The excerpt could not be checked against the document."
                   return (
-                    <div className={`citation review-source${check && DEGRADED.includes(check) ? ` degraded is-${check}` : ""}`}>
-                      {citationDocument(citation, documents) ? (
-                        <button ref={sourceLink} type="button" className="ref" aria-label={`Open ${citation.documentName} at section ${citation.section}`} onClick={() => setViewing(detailKey)}>
-                          {label}
-                        </button>
-                      ) : <div className="ref">{label}<span className="muted"> — Source unavailable in this matter</span></div>}
-                      {degradedCitation(citation.documentName)}
-                      {citation.structuralPath && <div className="review-source-path">{citation.structuralPath}</div>}
-                      <div className="excerpt">{citation.excerpt}</div>
-                      <p className="review-source-check">
-                        {check
-                          ? <><span className={`review-source-badge is-${check}`}>{SOURCE_BADGE[check]}</span>{!walkExplains(check) && <> {SOURCE_DETAIL[check]}</>}</>
-                          : checkingSources ? "Checking the excerpt against the document…" : "The excerpt could not be checked against the document."}
-                      </p>
-                    </div>
+                    <section className="review-detail-section" aria-labelledby={`${detailIds}-source`}>
+                      <h3 className="review-detail-label" id={`${detailIds}-source`}>Source</h3>
+                      <div className={`citation review-source${check && DEGRADED.includes(check) ? ` degraded is-${check}` : ""}`}>
+                        <div className="review-source-head">
+                          {citationDocument(citation, documents) ? (
+                            <button ref={sourceLink} type="button" className="ref" aria-label={`Open ${citation.documentName} at section ${citation.section}`} onClick={() => setViewing(detailKey)}>
+                              {label}
+                            </button>
+                          ) : <div className="ref">{label}<span className="muted"> — Source unavailable in this matter</span></div>}
+                          {check && <span className={`review-source-badge is-${check}`}>{SOURCE_BADGE[check]}</span>}
+                        </div>
+                        {degradedCitation(citation.documentName)}
+                        {citation.structuralPath && <div className="review-source-path">{citation.structuralPath}</div>}
+                        <div className="excerpt">{citation.excerpt}</div>
+                        {detail && <p className="review-source-check">{detail}</p>}
+                      </div>
+                    </section>
                   )
                 })()}
                 {onAsk && (
-                  <div className="review-ask">
-                    <button type="button" onClick={() => { if (canLeaveGrid()) allowNavigation(() => onAsk(cellQuestion(detailShown.docName, detailShown.question, detailCell, detailKey ? sourceCheck(detailKey, detailCell) : undefined))) }}>
-                      Ask about this answer in chat
-                    </button>
-                  </div>
+                  <button type="button" className="linklike review-ask" onClick={() => { if (canLeaveGrid()) allowNavigation(() => onAsk(cellQuestion(detailShown.docName, detailShown.question, detailCell, detailKey ? sourceCheck(detailKey, detailCell) : undefined))) }}>
+                    Ask about this answer in chat
+                  </button>
                 )}
-                <div className="review-comments">
+                <section className="review-comments" aria-labelledby={`${detailIds}-comments`}>
+                  <h3 className="review-detail-label" id={`${detailIds}-comments`}>Comments</h3>
                   {(detailCell.comments ?? []).map((c) => (
                     <div key={c.id} className="review-comment">
                       <div className="review-comment-meta">
@@ -917,9 +929,10 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                       <div className="review-comment-text">{c.text}</div>
                     </div>
                   ))}
-                  <small className="muted">Comments use the attorney name in Settings → Drafting.</small>
                   <div className="review-comment-compose">
                     <textarea
+                      rows={2}
+                      aria-describedby={`${detailIds}-signed`}
                       value={draft}
                       readOnly={commentSaving || !canEdit}
                       aria-label="Add a comment"
@@ -932,11 +945,14 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                         }
                       }}
                     />
-                    <button className={!inWalk || composing ? "primary" : undefined} onClick={addComment} disabled={!canEdit || !draft.trim() || commentSaving}>
-                      {commentSaving ? "Adding comment…" : "Add comment"}
-                    </button>
+                    <div className="review-comment-actions">
+                      <small className="muted" id={`${detailIds}-signed`}>Comments use the attorney name in Settings → Drafting.</small>
+                      <button className={!inWalk || composing ? "primary" : undefined} onClick={addComment} disabled={!canEdit || !draft.trim() || commentSaving}>
+                        {commentSaving ? "Adding comment…" : "Add comment"}
+                      </button>
+                    </div>
                   </div>
-                </div>
+                </section>
               </div>
               {/* One next step: Mark reviewed while the cell is open, else Next.
                   A reviewed cell is never unlocked or refilled from here. */}
