@@ -131,6 +131,12 @@ try {
   let onExtraction: ((route: import("@playwright/test").Route) => void) | undefined
   const extractionWaits: import("@playwright/test").Route[] = []
   let extractionStarts = 0
+  // Review-compare sessions: each minted id, its held wait and its deletion.
+  const compareSessions: string[] = []
+  const compareDeleted: string[] = []
+  const compareWaits: import("@playwright/test").Route[] = []
+  let holdCompare = false
+  let compareReply = ""
   const putVersions: number[] = []
   const save = (route: import("@playwright/test").Route) => {
     const incoming = route.request().postDataJSON() as Grid
@@ -192,6 +198,22 @@ try {
     const url = new URL(route.request().url())
     const key = `${route.request().method()} ${url.pathname}`
     const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) })
+    const compared = compareSessions.find(id => url.pathname.includes(`/session/${id}`))
+    if (key === "POST /api/session" && (route.request().postDataJSON() as { agent?: string }).agent === "review-compare") {
+      const id = (route.request().postDataJSON() as { id: string }).id
+      compareSessions.push(id)
+      return json({ data: { id, location: { directory: "/matters/supplier-review" } } })
+    }
+    if (compared) {
+      if (key.endsWith("/prompt")) return json({ data: { id: "msg_compare", type: "user", sessionID: compared, time: { created: 1 }, payload: { text: "compare" }, delivery: "queue" } })
+      if (key.endsWith("/wait")) { if (holdCompare) { compareWaits.push(route); return } return route.fulfill({ status: 204 }) }
+      if (key.endsWith("/interrupt")) return json({ interrupted: true })
+      if (key.startsWith("GET") && key.endsWith("/message")) return json({ data: [
+        { type: "assistant", id: "msg_groups", agent: "review-compare", model: { providerID: "test", id: "model" }, finish: "stop", time: { created: 1, completed: 2 }, content: [{ type: "text", text: compareReply }] },
+        { type: "idle", id: "msg_idle", outcome: "succeeded", time: { created: 3 } },
+      ], cursor: {} })
+      if (key === `DELETE /api/session/${compared}`) { compareDeleted.push(compared); return route.fulfill({ status: 204 }) }
+    }
     if (key === "POST /api/session") { extractionStarts++; return json({ data: { id: "ses_grid", location: { directory: "/matters/supplier-review" } } }) }
     if (/^POST \/api\/session\/ses_grid\/(agent|model)$/.test(key)) return route.fulfill({ status: 204 })
     if (key === "POST /api/session/ses_grid/prompt") return json({ data: { id: "msg_user", type: "user", sessionID: "ses_grid", time: { created: 1 }, payload: { text: "test" }, delivery: "queue" } })
@@ -701,6 +723,144 @@ try {
   await search.fill("")
   holdChecks = walkHeldChecks
   console.log("PASS Review next walks the queue in one detail, never re-locks a changed question and hands back to the toolbar")
+
+  // A reviewed Fill compares each filled question's cited answers once, in a
+  // hidden review-compare session that is deleted afterwards. The result is
+  // stored on the column only; a fresh one marks the differing cell, its header
+  // sums it up and its detail says why. The side letter's source is verified
+  // here, so Differs is its marker.
+  const comparedGrid = () => {
+    const next = structuredClone(grid)
+    for (const cell of Object.values(next.cells)) cell.questionHash = hashQuestion(grid.columns[0]!.question)
+    return next
+  }
+  const replyFor = (groups: Array<[string[], string]>, summary: string) =>
+    JSON.stringify({ groups: groups.map(([documents, reason]) => ({ documents, reason })), summary })
+  const threeWay = replyFor([[["Supply terms.docx", "Old note.docx"], "English law governs."], [["Side letter.docx"], "Scots law governs, not English law."]],
+    "Two documents choose English law; the side letter chooses Scots law.")
+  const heldCompare = async () => {
+    for (let attempt = 0; !compareWaits.length && attempt < 250; attempt++) await new Promise(resolve => setTimeout(resolve, 20))
+    assert.ok(compareWaits.length, "a compare session should be waiting")
+    return compareWaits.shift()!
+  }
+  const compareHeldChecks = holdChecks
+  holdChecks = false
+  sourceChecks["Side letter.docx::c1"] = "verified"
+  storedGrid = comparedGrid()
+  onExtraction = route => void route.fulfill({ status: 204 })
+  holdCompare = true
+  compareReply = threeWay
+  await page.goto(server.url.href + "?pool")
+  const head = page.locator("thead th").filter({ hasText: "What is the governing law?" })
+  const sideRow = page.getByRole("row", { name: /^Side letter\.docx/ })
+  const differsMarker = sideRow.locator(".review-marker", { hasText: "Differs" })
+  await head.getByRole("button", { name: "Compare answers", exact: true }).waitFor()
+  assert.equal(compareSessions.length, 0, "opening the table compares nothing")
+  assert.equal(await primary.textContent(), "Fill 4 cells")
+  await primary.click()
+  const fillDialog = page.getByRole("dialog", { name: "Review fill" })
+  await fillDialog.getByText(/After filling, AI compares each question's cited answers across documents, one AI call per question\./).waitFor()
+  await fillDialog.getByRole("button", { name: "Start fill" }).click()
+  await toolbar.getByText("Comparing 1", { exact: true }).waitFor()
+  assert.equal(await toolbar.getByText(/Extracting/).count(), 0, "comparing is counted apart from extracting")
+  await head.getByText("Comparing answers…", { exact: true }).waitFor()
+  const firstCompare = await heldCompare()
+  assert.equal(compareSessions.length, 1, "one compare for the one filled question")
+  assert.equal(await primary.count(), 1)
+  await firstCompare.fulfill({ status: 204 })
+  const summary = head.getByRole("button", { name: /^1 of \d+ differs/ })
+  await summary.waitFor()
+  await toolbar.getByText(/Comparing/).waitFor({ state: "detached" })
+  await differsMarker.waitFor()
+  assert.equal(await page.getByRole("row", { name: /^Supply terms\.docx/ }).locator(".review-marker", { hasText: "Differs" }).count(), 0, "a consistent answer gets no marker")
+  await page.waitForTimeout(100)
+  assert.deepEqual(compareDeleted, compareSessions, "the compare session is deleted afterwards")
+  const stored = storedGrid.columns[0]!.comparison
+  assert.equal(stored?.cells["Side letter.docx"]?.label, "differs")
+  assert.equal(stored?.questionHash, hashQuestion(grid.columns[0]!.question))
+  assert.equal(JSON.stringify(storedGrid.cells).includes("differs"), false, "the comparison is stored on the column, never in a cell")
+  assert.equal(await primary.count(), 1)
+  assert.equal(await primary.textContent(), "Review next")
+
+  // The header summary opens the AI summary and the differing cells.
+  await summary.click()
+  const comparison = head.getByRole("group", { name: "AI comparison" })
+  await comparison.getByText("Two documents choose English law; the side letter chooses Scots law.").waitFor()
+  await page.keyboard.press("ArrowDown")
+  assert.equal(await comparison.getByRole("button", { name: /^Side letter\.docx/ }).evaluate(element => element === document.activeElement), true, "arrow keys move into the differing cells")
+  const compareCloses = await closes()
+  await page.keyboard.press("Escape")
+  await comparison.waitFor({ state: "hidden" })
+  assert.equal(await summary.evaluate(element => element === document.activeElement), true, "Escape returns focus to the summary")
+  assert.equal(await closes(), compareCloses, "Escape closes only the popover")
+  await summary.click()
+  await comparison.getByRole("button", { name: /^Side letter\.docx/ }).click()
+  const compareDetail = detailModal.locator(".picker-panel")
+  await compareDetail.getByText("AI comparison: Differs — Scots law governs, not English law.", { exact: true }).waitFor()
+  await page.keyboard.press("Escape")
+  await detailModal.waitFor({ state: "detached" })
+  assert.equal(await summary.evaluate(element => element === document.activeElement), true, "closing the cell returns to the summary")
+  await page.getByRole("row", { name: /^Supply terms\.docx/ }).getByRole("button", { name: /^The law of England and Wales\./ }).click()
+  await compareDetail.locator(".review-detail-answer").waitFor()
+  assert.equal(await compareDetail.getByText(/^AI comparison/).count(), 0, "a consistent cell's detail says nothing about the comparison")
+  await page.keyboard.press("Escape")
+  await detailModal.waitFor({ state: "detached" })
+  console.log("PASS a reviewed Fill compares the question once, marks the differing cell and deletes the session")
+
+  // A changed answer puts the comparison out of date: no Differs marker, and a
+  // quiet Compare again. A failed compare stores nothing and stays quiet.
+  await page.getByRole("row", { name: /^Old note\.docx/ }).getByTitle("Re-run this cell").click()
+  await page.getByRole("row", { name: /^Old note\.docx/ }).getByRole("button", { name: "New extracted answer" }).waitFor()
+  await head.getByText("Comparison out of date ·", { exact: false }).waitFor()
+  assert.equal(await differsMarker.count(), 0, "an out-of-date comparison marks nothing")
+  assert.equal(compareSessions.length, 1, "a single cell's Refresh does not compare")
+  compareReply = "not a comparison"
+  holdCompare = false
+  await head.getByRole("button", { name: "Compare again", exact: true }).click()
+  await head.getByText("Could not compare ·", { exact: false }).waitFor()
+  assert.equal(await page.getByRole("alert").count(), 0, "a failed compare raises no alert")
+  assert.equal(storedGrid.columns[0]!.comparison?.comparedAt, stored?.comparedAt, "a failed compare stores nothing")
+  compareReply = replyFor([[["Supply terms.docx"], "English law governs."], [["Side letter.docx"], "Scots law governs."]], "The two cited answers choose different laws.")
+  await head.getByRole("button", { name: "Compare again", exact: true }).click()
+  await head.getByRole("button", { name: /^2 of \d+ differ\b/ }).waitFor()
+  await differsMarker.waitFor()
+  await page.waitForTimeout(100)
+  assert.equal(compareSessions.length, 3)
+  assert.deepEqual(compareDeleted, compareSessions, "every compare session is deleted, failed ones included")
+  console.log("PASS a changed answer puts the comparison out of date; Compare again runs once and fails quietly")
+
+  // An answer that changes while its question is compared drops the result,
+  // leaving the column uncompared. Extracting and comparing are counted apart.
+  storedGrid = comparedGrid()
+  holdCompare = true
+  compareReply = threeWay
+  await page.goto(server.url.href + "?pool")
+  await head.getByRole("button", { name: "Compare answers", exact: true }).waitFor()
+  await primary.click()
+  await fillDialog.getByRole("button", { name: "Start fill" }).click()
+  await toolbar.getByText("Comparing 1", { exact: true }).waitFor()
+  const midCompare = await heldCompare()
+  const supplyRow = page.getByRole("row", { name: /^Supply terms\.docx/ })
+  const releaseExtraction = new Promise<import("@playwright/test").Route>(resolve => { onExtraction = resolve })
+  await supplyRow.getByTitle("Re-run this cell").click()
+  const heldRefresh = await releaseExtraction
+  await toolbar.getByText("Extracting 1", { exact: true }).waitFor()
+  await toolbar.getByText("Comparing 1", { exact: true }).waitFor()
+  assert.equal(await primary.count(), 1)
+  await heldRefresh.fulfill({ status: 204 })
+  await supplyRow.getByRole("button", { name: "New extracted answer" }).waitFor()
+  await midCompare.fulfill({ status: 204 })
+  await toolbar.getByText(/Comparing/).waitFor({ state: "detached" })
+  await page.waitForTimeout(150)
+  assert.equal(storedGrid.columns[0]!.comparison, undefined, "a result for answers that have since changed is dropped")
+  assert.equal(await differsMarker.count(), 0)
+  await head.getByRole("button", { name: "Compare answers", exact: true }).waitFor()
+  assert.deepEqual(compareDeleted, compareSessions)
+  holdCompare = false
+  onExtraction = undefined
+  sourceChecks["Side letter.docx::c1"] = "not_found"
+  holdChecks = compareHeldChecks
+  console.log("PASS a comparison is dropped when an answer changes while it runs")
 
   storedGrid = structuredClone(grid)
   extractionWaits.length = 0

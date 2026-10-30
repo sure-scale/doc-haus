@@ -2,9 +2,10 @@ import { useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal } from "react-dom"
 import { UNSAFE_DataRouterContext, useBlocker } from "react-router-dom"
 import { computeCell, describeRecheck, needsFill, recheckOutcome } from "../api/review-recheck"
-import { citesRow } from "../api/review-answer"
+import { citesRow, type ReviewRow } from "../api/review-answer"
+import { compareColumn, comparisonInputs } from "../api/review-compare"
 import { matches, primaryAction, reviewAttention, type AttentionFilter, type QueueEntry } from "../api/review-attention"
-import { cellKey, checkCellSources, getGrid, GridConflictError, hashQuestion, recheckPassages, saveGrid, type Grid, type GridCellData, type SourceCheck } from "../api/ingest/grid"
+import { cellKey, checkCellSources, getGrid, GridConflictError, hashQuestion, recheckPassages, saveGrid, type Grid, type GridCellData, type GridColumn, type SourceCheck } from "../api/ingest/grid"
 import { humanizeError } from "../api/ingest/errors"
 import { getPreferences } from "../api/ingest/preferences"
 import { getMatter } from "../api/ingest/matters"
@@ -24,7 +25,7 @@ import useReviewGridPresence from "./useReviewGridPresence"
 import ReviewStarter from "./ReviewStarter"
 import { normaliseStarterQuestion } from "../review-starters"
 import FillPreview from "./FillPreview"
-import { FilterSummary, ReviewToolbar } from "./ReviewAttention"
+import { CompareSummary, FilterSummary, ReviewToolbar } from "./ReviewAttention"
 import { MARKER_LOOK, MarkerGlyph, ReviewMarker } from "./ReviewMarker"
 
 // Tabular review: rows are the matter's documents, columns are natural-language
@@ -36,6 +37,8 @@ import { MARKER_LOOK, MarkerGlyph, ReviewMarker } from "./ReviewMarker"
 // the same computation (api/review-recheck).
 
 const POOL = 5 // concurrent cell extractions; the engine handles one prompt each
+const COMPARE_POOL = 2 // concurrent column comparisons after a Fill
+const COMPARE_TIMEOUT = 120_000
 
 // The walk's next step in the detail: its primary, else whichever move is left.
 const walkControl = (modal: HTMLElement | null) =>
@@ -81,6 +84,19 @@ function cellQuestion(docName: string, question: string, cell: GridCellData, che
   ].join("\n")
 }
 
+// A column's stored comparison counts only while it answers this question about
+// these answers; otherwise it is out of date and shows no Differs markers.
+function freshComparison(column: GridColumn | undefined, input: ReturnType<typeof comparisonInputs>) {
+  const comparison = column?.comparison
+  return comparison && typeof input === "object" && comparison.questionHash === input.questionHash && comparison.inputs === input.signature ? comparison : undefined
+}
+const without = (set: ReadonlySet<string>, id: string) => {
+  const next = new Set(set)
+  next.delete(id)
+  return next
+}
+const reviewRows = (documents: Document[]): ReviewRow[] => documents.map((doc) => ({ name: doc.name, docPath: doc.doc_path }))
+
 // The production app uses a data router. Keep this separate so component-only
 // harnesses without a router can still mount the review table.
 function GridNavigationGuard({ canLeave, bypass }: { canLeave: () => boolean; bypass: React.RefObject<boolean> }) {
@@ -123,6 +139,16 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   const otherWindow = useReviewGridPresence(directory, matterId)
   const canEdit = loaded && !saveProblem
   const [running, setRunning] = useState(0) // cells currently extracting
+  // Columns being compared, queued ones included, and those whose last
+  // comparison failed. Neither is stored; in-flight comparisons stop on unmount.
+  const [comparing, setComparing] = useState<ReadonlySet<string>>(new Set())
+  const [compareFailed, setCompareFailed] = useState<ReadonlySet<string>>(new Set())
+  const compareAbort = useRef<AbortController>(undefined)
+  useEffect(() => {
+    const controller = new AbortController()
+    compareAbort.current = controller
+    return () => controller.abort()
+  }, [])
   const [starterOpen, setStarterOpen] = useState(false)
   const [fillPreview, setFillPreview] = useState<Array<{ docName: string; column: { id: string; question: string } }>>()
   const [checkingFill, setCheckingFill] = useState(false)
@@ -514,6 +540,56 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     await Promise.all(Array.from({ length: Math.min(POOL, targets.length) }, worker))
   }
 
+  // Compare one column's cited answers. The result is written only if the table
+  // still holds the answers that were sent; otherwise the comparison stays out
+  // of date. It is stored on the column, never in a cell.
+  async function compareOne(columnId: string, epoch: number) {
+    const unmounted = compareAbort.current?.signal
+    if (!unmounted || unmounted.aborted || saveState.current.epoch !== epoch || saveState.current.blocked) return
+    const sent = gridRef.current.columns.find((col) => col.id === columnId)
+    const input = comparisonInputs(gridRef.current, columnId, reviewRows(documentsRef.current))
+    if (typeof input !== "object" || freshComparison(sent, input)) return
+    setCompareFailed((failed) => without(failed, columnId))
+    try {
+      const result = await compareColumn(client, input, AbortSignal.any([AbortSignal.timeout(COMPARE_TIMEOUT), unmounted]))
+      if (unmounted.aborted) return
+      if (!result) {
+        setCompareFailed((failed) => new Set(failed).add(columnId))
+        return
+      }
+      const current = gridRef.current
+      const column = current.columns.find((col) => col.id === columnId)
+      const now = comparisonInputs(current, columnId, reviewRows(documentsRef.current))
+      if (saveState.current.epoch !== epoch || saveState.current.blocked || !column || column.question !== input.question || typeof now !== "object" || now.signature !== input.signature) return
+      await commit({ ...current, columns: current.columns.map((col) => (col.id === columnId ? { ...col, comparison: result } : col)) })
+    } catch {
+      if (!unmounted.aborted) setCompareFailed((failed) => new Set(failed).add(columnId))
+    }
+  }
+
+  // Each column with two or more cited answers and no up-to-date comparison,
+  // through a pool of two; a column above the document cap is not compared.
+  async function compareColumns(columnIds: string[], epoch: number) {
+    const ids = columnIds.filter((id) => {
+      const input = comparisonInputs(gridRef.current, id, reviewRows(documentsRef.current))
+      return typeof input === "object" && !freshComparison(gridRef.current.columns.find((col) => col.id === id), input)
+    })
+    if (!ids.length) return
+    setComparing((current) => new Set([...current, ...ids]))
+    let next = 0
+    const worker = async () => {
+      while (next < ids.length) {
+        const id = ids[next++]
+        try {
+          await compareOne(id, epoch)
+        } finally {
+          setComparing((current) => without(current, id))
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(COMPARE_POOL, ids.length) }, worker))
+  }
+
   function fillTargets() {
     const current = gridRef.current
     return documentsRef.current.flatMap((doc) =>
@@ -564,7 +640,8 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
         return
       }
       setFillPreview(undefined)
-      void fill(current)
+      // Only a reviewed Fill compares; a single cell's Fill or Refresh does not.
+      void fill(current).then(() => compareColumns([...new Set(current.map((target) => target.column.id))], epoch))
     } catch (e) {
       setError(humanizeError(e, "Could not check the saved table. Try again before filling."))
       setFillPreview(undefined)
@@ -626,7 +703,13 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
         .catch((e) => setError(humanizeError(e, "Could not build the Word export. Try again.")))
   }
 
-  const attention = reviewAttention({ rows: documents.map((doc) => doc.name), columns: grid.columns, cells: grid.cells, source: sourceCheck, checkingSources })
+  const compareInputs = useMemo(() => new Map(grid.columns.map((col) => [col.id, comparisonInputs(grid, col.id, reviewRows(documents))])), [grid, documents])
+  const comparisonOf = (column: GridColumn) => freshComparison(column, compareInputs.get(column.id))
+  const differs = (docName: string, column: GridColumn) => {
+    const compared = comparisonOf(column)?.cells[docName]
+    return compared?.label === "differs" ? compared.reason : undefined
+  }
+  const attention = reviewAttention({ rows: documents.map((doc) => doc.name), columns: grid.columns, cells: grid.cells, source: sourceCheck, checkingSources, differs })
   // The same cells fillTargets() would compute, counted from this render.
   const fillCount = documents.reduce((count, doc) => count + grid.columns.filter((col) => needsFill(grid.cells[cellKey(doc.name, col.id)], hashQuestion(col.question))).length, 0)
   const fillBlanks = documents.some((doc) => grid.columns.some((col) => !grid.cells[cellKey(doc.name, col.id)]))
@@ -686,6 +769,29 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   // A degraded source is always the cell's marker, which the walk's reason
   // already explains, so the citation keeps only its badge.
   const walkExplains = (check: SourceVerdict) => inWalk && !!walkReason && DEGRADED.includes(check)
+  // The open cell's comparison, unless the walk's reason already gives it.
+  const detailColumn = detailShown && grid.columns.find((col) => col.id === detailShown.columnId)
+  const detailCompared = detailColumn && comparisonOf(detailColumn)?.cells[detailShown.docName]
+  const detailDiffers = detailCompared?.label === "differs" && !(inWalk && walkReason && walkEntry?.marker?.state === "differs") ? detailCompared.reason : undefined
+  // The header's one quiet line on its comparison: the summary, which opens the
+  // differing cells, or why there is none and, where one can run, a compare.
+  const compareLine = (col: GridColumn) => {
+    const input = compareInputs.get(col.id)
+    if (!input) return null
+    if (input === "too_many") return <p className="review-compare-note">Too many documents to compare</p>
+    if (comparing.has(col.id)) return <p className="review-compare-note">Comparing answers…</p>
+    const fresh = comparisonOf(col)
+    if (fresh) return <CompareSummary comparison={fresh} onOpen={(docName) => openDetail(docName, col.id)} />
+    const failed = compareFailed.has(col.id)
+    return (
+      <p className="review-compare-note">
+        {failed ? "Could not compare · " : col.comparison ? "Comparison out of date · " : ""}
+        <button type="button" className="linklike" disabled={!canEdit || running > 0} title="One AI call compares the cited answers across documents" onClick={() => void compareColumns([col.id], saveState.current.epoch)}>
+          {failed || col.comparison ? "Compare again" : "Compare answers"}
+        </button>
+      </p>
+    )
+  }
 
   return createPortal(
     <dialog
@@ -708,6 +814,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
           model={attention}
           checking={checkingSources}
           running={running}
+          comparing={comparing.size}
           primary={primary}
           fillCount={fillCount}
           fillBlanks={fillBlanks}
@@ -751,6 +858,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                         ×
                       </button>
                     </div>
+                    {compareLine(col)}
                   </th>
                 ))}
                 <th className="review-add-col" scope="col">
@@ -880,6 +988,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                 <section className="review-detail-section" aria-labelledby={`${detailIds}-answer`}>
                   <h3 className="review-detail-label" id={`${detailIds}-answer`}>Answer</h3>
                   <p className="review-detail-answer">{detailCell.answer}</p>
+                  {detailDiffers && <p className="review-compare-detail"><MarkerGlyph state="differs" /><span>AI comparison: Differs — {detailDiffers}</span></p>}
                   {detailCell.recheck && <p className="review-recheck-detail">{describeRecheck(detailCell.recheck)}</p>}
                 </section>
                 {detailCell.citation && detailKey && (() => {

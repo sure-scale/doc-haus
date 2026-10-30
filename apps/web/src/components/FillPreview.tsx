@@ -14,7 +14,7 @@ export default function FillPreview({ targets, checking, onCancel, onConfirm }: 
   return (
     <ReviewSetupDialog title="Review fill" onClose={close}>
           <p><strong>{targets.length} {targets.length === 1 ? "cell" : "cells"}</strong> will be processed across {documents.length} {documents.length === 1 ? "document" : "documents"}.</p>
-          <p>Fill uses AI for each cell and may use AI again to re-check an answer. Review the answers and their sources.</p>
+          <p>Fill uses AI for each cell and may use AI again to re-check an answer. After filling, AI compares each question's cited answers across documents, one AI call per question. Review the answers and their sources.</p>
           {documents.map((document) => (
             <section key={document}>
               <h3>{document}</h3>

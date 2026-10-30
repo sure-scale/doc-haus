@@ -75,6 +75,28 @@
 .review-col-q { min-height: 24px; font-weight: 650; }
 .review-col-q:hover, .review-answer:hover { border: 0; background: transparent; color: var(--accent); box-shadow: none; transform: none; }
 .review-col-x { flex-shrink: 0; }
+/* The column's answer comparison: one quiet line under the question, on its
+   left edge, opening a small disclosure with the AI summary and the differing
+   cells. Words and the Differs shape carry it; tone is the second cue. */
+.review-compare-note { margin: var(--space-1) 0 0; padding-block: calc((24px - 1.5em) / 2); color: var(--muted); font-size: .78rem; font-weight: 500; line-height: 1.5; }
+.review-compare-note .linklike { min-height: 0; font-size: inherit; font-weight: 600; line-height: inherit; }
+.review-compare { margin-top: var(--space-1); }
+/* Above the sticky document column's header while its comparison is open. */
+.review-table thead th:has(.review-compare-trigger[aria-expanded="true"]) { z-index: 4; }
+.review-compare-trigger { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; margin-left: calc(-1 * var(--space-1)); padding: 0 var(--space-1); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); box-shadow: none; font-size: .78rem; font-weight: 600; transform: none; }
+.review-compare-trigger.has-differs { color: var(--info); }
+.review-compare-trigger:hover:not(:disabled) { border: 0; background: var(--panel-hover); }
+.review-compare-trigger .review-ai-tag { margin-left: 0; }
+.review-compare-trigger svg:last-child { flex: none; color: var(--muted); }
+.review-compare-trigger[aria-expanded="true"] svg:last-child { transform: rotate(180deg); }
+.review-compare-menu { position: fixed; z-index: var(--z-popover); display: flex; flex-direction: column; gap: 2px; width: min(360px, calc(var(--viewport-inline) - 32px)); max-height: min(360px, 50vh); padding: 6px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); box-shadow: var(--shadow-md); }
+.review-compare-menu[hidden] { display: none; }
+.review-compare-summary { margin: 0; padding: var(--space-2) var(--space-3); color: var(--text); font-size: .85rem; font-weight: 500; line-height: 1.5; }
+.review-compare-menu button { display: grid; grid-template-columns: 12px 1fr; align-items: center; gap: 2px var(--space-3); width: 100%; min-height: 40px; padding: var(--space-2) var(--space-3); border: 0; border-radius: calc(var(--radius-md) - 6px); background: transparent; color: var(--text); box-shadow: none; font-size: .85rem; font-weight: 600; text-align: left; white-space: normal; transform: none; }
+.review-compare-menu button:hover:not(:disabled) { border: 0; background: var(--panel-hover); }
+.review-compare-menu button small { grid-column: 2; color: var(--text-secondary); font-size: .78rem; font-weight: 400; line-height: 1.45; }
+.review-compare-detail { display: flex; align-items: flex-start; gap: var(--space-2); margin: 0; color: var(--text-secondary); font-size: .9rem; line-height: 1.55; }
+.review-compare-detail > .review-glyph { flex: none; margin-top: calc((1.55em - 10px) / 2); }
 .review-cell.reviewed { background: var(--accent-tint); box-shadow: inset 3px 0 0 var(--accent); }
 /* Outside the active filter or search: still in place, quieter. */
 .review-cell.is-dimmed > * { opacity: .45; }
@@ -210,7 +232,7 @@
   .review-cell-actions .icon-btn, .review-col-x, .review-add-button, .issues > summary { min-height: max(44px, calc(44px / var(--ui-scale))); }
   .review-cell-actions .icon-btn, .review-col-x, .review-add-button { min-width: max(44px, calc(44px / var(--ui-scale))); }
   .review-table .review-add-col { width: 68px; min-width: 68px; }
-  .review-col-q { min-height: max(44px, calc(44px / var(--ui-scale))); }
+  .review-col-q, .review-compare-trigger { min-height: max(44px, calc(44px / var(--ui-scale))); }
 }
 @media (prefers-reduced-motion: reduce) {
   .review-running::before { animation: none; }

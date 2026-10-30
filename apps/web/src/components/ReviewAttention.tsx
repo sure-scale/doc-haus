@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react"
+import type { GridColumnComparison } from "../api/ingest/grid"
 import { legend, type AttentionFilter, type MarkerState, type PrimaryAction, type ReviewAttention, type ReviewProgress } from "../api/review-attention"
 import { MarkerGlyph } from "./ReviewMarker"
 import { SplitButton } from "./SplitButton"
@@ -145,10 +146,104 @@ function NeedsAttention({ model, checking, filter, onFilter }: { model: ReviewAt
   )
 }
 
-export function ReviewToolbar({ model, checking, running, primary, fillCount, fillBlanks, startDisabled, fillDisabled, canExport, searchable, filter, onFilter, query, onQuery, onStarter, onFill, onReviewNext, onExport, notice }: {
+// A column header's comparison, in a word, as a disclosure: the AI summary and
+// each differing document, which opens that cell. Escape returns focus to the
+// trigger; arrows move between the documents.
+export function CompareSummary({ comparison, onOpen }: { comparison: GridColumnComparison; onOpen: (docName: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const root = useRef<HTMLDivElement>(null)
+  const trigger = useRef<HTMLButtonElement>(null)
+  const panel = useRef<HTMLDivElement>(null)
+  const id = useId()
+  const differing = Object.entries(comparison.cells).filter(([, cell]) => cell.label === "differs")
+  const total = Object.keys(comparison.cells).length
+  const label = differing.length ? `${differing.length} of ${total} ${differing.length === 1 ? "differs" : "differ"}` : "Consistent"
+  const [place, setPlace] = useState<{ top: number; left: number }>()
+
+  // Fixed, so the table's scroll area cannot clip it: under the trigger, kept
+  // inside the viewport. Scrolling or resizing closes it.
+  useLayoutEffect(() => {
+    if (!open || !panel.current || !trigger.current) return
+    const zoom = parseFloat(getComputedStyle(document.body).zoom) || 1
+    const anchor = trigger.current.getBoundingClientRect()
+    const width = panel.current.getBoundingClientRect().width
+    const wide = document.documentElement.clientWidth
+    setPlace({ top: (anchor.bottom + 6) / zoom, left: Math.max(16, Math.min(anchor.left - 4, wide - 16 - width)) / zoom })
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    const away = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false) }
+    const moved = (event: Event) => { if (!panel.current?.contains(event.target as Node)) setOpen(false) }
+    const resized = () => setOpen(false)
+    document.addEventListener("pointerdown", away)
+    window.addEventListener("scroll", moved, true)
+    window.addEventListener("resize", resized)
+    return () => {
+      document.removeEventListener("pointerdown", away)
+      window.removeEventListener("scroll", moved, true)
+      window.removeEventListener("resize", resized)
+    }
+  }, [open])
+
+  return (
+    <div
+      ref={root}
+      className="review-compare"
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && open) {
+          event.preventDefault()
+          event.stopPropagation()
+          setOpen(false)
+          trigger.current?.focus()
+        } else if ((event.key === "ArrowDown" || event.key === "ArrowUp") && open && differing.length) {
+          const buttons = [...panel.current!.querySelectorAll<HTMLButtonElement>("button")]
+          const at = buttons.indexOf(document.activeElement as HTMLButtonElement)
+          if (at < 0 && event.key === "ArrowUp") return
+          event.preventDefault()
+          buttons[(at + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length]?.focus()
+        }
+      }}
+      onBlur={(event) => {
+        const next = event.relatedTarget as Node | null
+        if (open && next && !root.current?.contains(next)) setOpen(false)
+      }}
+    >
+      <button ref={trigger} type="button" className={`review-compare-trigger${differing.length ? " has-differs" : ""}`} aria-label={`${label}, AI comparison`} aria-expanded={open} aria-controls={id} onClick={() => setOpen((value) => !value)}>
+        {differing.length > 0 && <MarkerGlyph state="differs" />}
+        {label}
+        <span className="review-ai-tag">AI</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+      </button>
+      <div id={id} ref={panel} className="review-compare-menu" role="group" aria-label="AI comparison" hidden={!open} style={place}>
+        <p className="review-compare-summary">{comparison.summary}<span className="review-ai-tag">AI</span></p>
+        {differing.map(([docName, cell], index) => (
+          <button
+            key={docName}
+            type="button"
+            aria-describedby={`${id}-${index}`}
+            onClick={() => {
+              setOpen(false)
+              trigger.current?.focus()
+              onOpen(docName)
+            }}
+          >
+            <MarkerGlyph state="differs" />
+            <span>{docName}</span>
+            <small id={`${id}-${index}`} aria-hidden="true">{cell.reason}</small>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export function ReviewToolbar({ model, checking, running, comparing, primary, fillCount, fillBlanks, startDisabled, fillDisabled, canExport, searchable, filter, onFilter, query, onQuery, onStarter, onFill, onReviewNext, onExport, notice }: {
   model: ReviewAttention
   checking: boolean
   running: number
+  // Columns whose answers are being compared after a Fill.
+  comparing: number
   primary?: PrimaryAction
   fillCount: number
   // Whether any target is blank; otherwise every target is an answer to refresh.
@@ -193,6 +288,7 @@ export function ReviewToolbar({ model, checking, running, primary, fillCount, fi
       <div className="review-status">
         <ProgressLine progress={model.progress} />
         {running > 0 && <span className="review-running" role="status">Extracting {running}</span>}
+        {comparing > 0 && <span className="review-running" role="status">Comparing {comparing}</span>}
         {/* Always present, so screen readers announce the text when it appears. */}
         <span className="review-notice" role="status">{notice}</span>
       </div>
