@@ -36,7 +36,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     driftInsertedRanges: false, renewImportedIds: false, omitNewRevisions: false, authorCalls: 0, duringAuthor: undefined as undefined | (() => void | Promise<void>),
     nativeRevisions: [] as Array<{ start: number; end: number; author: string; type: string; text: string }>,
     extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false, wholeOoxmlTrailingParagraph: false,
-    nativeFormatting: [] as string[], dropNativeFormatting: false, terminalBodyMark: false,
+    nativeFormatting: [] as string[], dropNativeFormatting: false, terminalBodyMark: false, cellWholeExpandsRow: false,
     paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
   }
   const text = () => state.paragraphs.map((p) => p.text).join(state.separator)
@@ -59,7 +59,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
   const collection = <T>(items: T[]) => ({ items, load() {} })
   const ranges = new Set<Range>()
   class Range {
-    constructor(public start: number, public end: number, public bodyWhole = false) { ranges.add(this) }
+    constructor(public start: number, public end: number, public bodyWhole = false, public cellWhole = false) { ranges.add(this) }
     get text() { return (text() + "\r").slice(this.start, this.end) }
     get paragraphs() {
       return collection(state.paragraphs.filter((p) => {
@@ -205,6 +205,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
         }
         return `<w:p>${result}${run(text().slice(cursor, bounds.end))}</w:p>`
       }
+      if (this.cellWhole) return { value: flatOpc(`<w:tbl><w:tr>${state.paragraphs.filter(p => p.inTable).map(p => `<w:tc>${markup(paragraph(p))}</w:tc>`).join("")}</w:tr></w:tbl><w:p/>`, state.extraParts) }
       return { value: !state.writes.length && state.xml !== undefined ? state.xml : flatOpc(paragraphs.map(markup).join("") + (state.wholeOoxmlTrailingParagraph && whole ? "<w:p/>" : ""), state.extraParts) }
     }
     getReviewedText() {
@@ -280,7 +281,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       const at = position(p.id)
       if (location === "Start") return new Range(at.start, at.start)
       if (location === "End") return new Range(at.end, at.end)
-      return new Range(at.start, at.end + (location === "Whole" ? 1 : 0))
+      return new Range(at.start, at.end + (location === "Whole" ? 1 : 0), false, state.cellWholeExpandsRow && Boolean(p.inTable) && location === "Whole")
     },
     insertAnnotations(set: unknown) {
       const id = `annotation-${++state.annotationCounter}`
@@ -1282,5 +1283,32 @@ test("native dispatch error remains the cause of an uncertain failure and cannot
   expect((caught as WordChatHostError).cause).toBe(nativeError)
   expect(state.writes).toHaveLength(1)
   await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("may already contain") })
+  expect(state.writes).toHaveLength(1)
+})
+
+
+test("native cell wording verifies neighbouring paragraph content when Whole expands the row", async () => {
+  const { state, host } = office(["Previous cell.", "A clear obligation.", "Next cell."], true)
+  state.separator = "\t"; state.cellWholeExpandsRow = true
+  for (const p of state.paragraphs) p.inTable = true
+  const start = state.paragraphs[0]!.text.length + 1
+  state.selection = [start, start + state.paragraphs[1]!.text.length]
+  const target = (await host.selection())!
+  expect((await host.apply({ proposalId: "cell-whole-row", target, replacement: target.text.replace("clear", "specific") })).status).toBe("applied")
+  expect(state.paragraphs.map(p => p.text)).toEqual(["Previous cell.", "A specific obligation.", "Next cell."])
+})
+
+
+test("native cell wording rejects an XML-only formatting change in a neighbour", async () => {
+  const { state, host } = office(["Previous cell.", "A clear obligation.", "Next cell."], true)
+  state.separator = "\t"; state.cellWholeExpandsRow = true
+  for (const p of state.paragraphs) p.inTable = true
+  const start = state.paragraphs[0]!.text.length + 1
+  state.selection = [start, start + state.paragraphs[1]!.text.length]
+  const target = (await host.selection())!
+  state.paragraphXml.set("paragraph-2", "<w:p><w:r><w:t>Next cell.</w:t></w:r></w:p>")
+  state.afterSync = () => { if (state.writes.length) { state.paragraphXml.set("paragraph-2", "<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>Next cell.</w:t></w:r></w:p>"); state.afterSync = undefined } }
+  await expect(host.apply({ proposalId: "cell-neighbour-change", target, replacement: target.text.replace("clear", "specific") })).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("could not confirm") })
+  expect(state.paragraphs.map(p => p.text)).toEqual(["Previous cell.", "A specific obligation.", "Next cell."])
   expect(state.writes).toHaveLength(1)
 })

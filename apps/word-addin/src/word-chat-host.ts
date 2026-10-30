@@ -301,8 +301,10 @@ export class WordChatHost {
     await context.sync()
     const at = all.items.findIndex(p => p.uniqueLocalId === target.paragraphs[0]!.id)
     if (at < 0) throw captureMismatch("Word could not locate the reviewed paragraph among the document’s current paragraphs.")
+    // A cell Whole export may include the row, the target and a trailing paragraph;
+    // Content isolates each neighbour while retaining its paragraph properties.
     const neighbours: Array<{ id: string; range: WordChatRange }> = [all.items[at - 1], all.items[at + target.paragraphs.length]]
-      .filter((p): p is Paragraph => Boolean(p)).map(p => ({ id: p.uniqueLocalId, range: p.getRange("Whole") }))
+      .filter((p): p is Paragraph => Boolean(p)).map(p => ({ id: p.uniqueLocalId, range: p.getRange(allowNativeCell ? "Content" : "Whole") }))
     // Content exports the exact paragraphs and all their pPr. Word's Whole
     // export can add a synthetic trailing paragraph after the final mark.
     // Only formatting replacement owns that mark; never discard exported
@@ -531,7 +533,7 @@ export class WordChatHost {
     const prefix = bodyRange.getRange("Start").expandTo(paragraphRange.getRange("Start")).getReviewedText("Current")
     const suffix = paragraphRange.getRange("End").expandTo(bodyRange.getRange("End")).getReviewedText("Current")
     const targetXml = context.document.getParagraphByUniqueLocalId(paragraph.id).getRange("Content").getOoxml()
-    const adjacent = fresh.adjacent.map(item => ({ id:item.id, before:item.ooxml, after:context.document.getParagraphByUniqueLocalId(item.id).getRange("Whole").getOoxml() }))
+    const adjacent = fresh.adjacent.map(item => ({ id:item.id, before:item.ooxml, after:context.document.getParagraphByUniqueLocalId(item.id).getRange("Content").getOoxml() }))
     await context.sync()
     if (!sameWordChatTargetSnapshot(targetXml.value, fresh.ooxml)) throw captureMismatch("Word returned different XML for the reviewed paragraph before the change.")
     if (before.current !== prefix.value + paragraph.text + suffix.value) throw captureMismatch("Word returned inconsistent surrounding document text.")
@@ -555,7 +557,7 @@ export class WordChatHost {
     context.document.load("changeTrackingMode")
     const after = await this.documentState(context)
     const targetAfter = context.document.getParagraphByUniqueLocalId(paragraph.id).getRange("Content").getOoxml()
-    const adjacentAfter = adjacent.map(item => ({ id:item.id, after:context.document.getParagraphByUniqueLocalId(item.id).getRange("Whole").getOoxml() }))
+    const adjacentAfter = adjacent.map(item => ({ id:item.id, after:context.document.getParagraphByUniqueLocalId(item.id).getRange("Content").getOoxml() }))
     await context.sync()
     const remaining = new Map(prior)
     const added = after.changes.filter(change => {
