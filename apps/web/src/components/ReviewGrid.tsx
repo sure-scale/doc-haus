@@ -1071,7 +1071,10 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                   const citation = detailCell.citation
                   const entry = sourceEntry(detailKey, detailCell)
                   const check = entry?.check
-                  const label = `[${citation.documentName} ${citationLabel(citation)}]`
+                  // The dialog title names the row's document, so the heading is the
+                  // section path; another document's passage also names that document.
+                  const section = sectionPath(citation.structuralPath) || citationLabel(citation)
+                  const label = citesRow(citation, { name: detailShown.docName, docPath: documents.find((doc) => doc.name === detailShown.docName)?.doc_path }) ? section : `${citation.documentName} · ${section}`
                   // The badge sits beside the reference; its sentence below says
                   // what the check found, unless the walk's reason already does.
                   // Another document's passage has no badge: the red edge and
@@ -1089,7 +1092,6 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                           {check && check !== "other_document" && !walkExplains(check) && <span className={`review-source-badge is-${check}`}>{SOURCE_BADGE[check]}</span>}
                         </div>
                         {degradedCitation(citation.documentName)}
-                        {sectionPath(citation.structuralPath) && <div className="review-source-path">{sectionPath(citation.structuralPath)}</div>}
                         <div className="excerpt">{citation.excerpt}</div>
                         {detail && <p className="review-source-check">{detail}</p>}
                         {available && (

@@ -136,7 +136,6 @@
 .review-cell.degraded.is-warn { box-shadow: inset 3px 0 0 var(--warn); }
 .review-source.degraded { border-left-color: var(--danger); }
 .review-source.degraded.is-not_found { border-left-color: var(--warn); }
-.review-source-path { margin-top: var(--space-1); color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
 .review-source-check { margin: var(--space-2) 0 0; color: var(--text-secondary); font-size: .85rem; line-height: 1.5; }
 .review-source-badge { display: inline-block; flex: none; margin-right: var(--space-1); padding: 0 var(--space-2); border: 1px solid var(--accent-border); border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-size: .75rem; font-weight: 600; white-space: nowrap; }
 .review-source-badge:is(.is-reanchored, .is-not_found) { border-color: var(--warn-border); background: var(--warn-soft); color: var(--warn); }
