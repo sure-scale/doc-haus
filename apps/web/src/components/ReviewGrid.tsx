@@ -138,8 +138,9 @@ function GridNavigationGuard({ canLeave, bypass }: { canLeave: () => boolean; by
 
 // `documentsRevision` changes whenever the matter's documents may have changed
 // (an upload, a new version, a Word save), so cited excerpts are checked again.
-// `initialStarter` is a starter chosen before the table opened; it opens at its
-// questions once the table can be edited, and `onStarterSeated` clears it.
+// `initialStarter` is a starter chosen before the table opened; it opens Add
+// questions with that starter chosen once the table can be edited, and
+// `onStarterSeated` clears it.
 export default function ReviewGrid({ matterId, title, directory, documents, documentsRevision, initialStarter, onStarterSeated, onClose, onAsk }: { matterId: string; title: string; directory: string; documents: Document[]; documentsRevision: number; initialStarter?: string; onStarterSeated?: () => void; onClose: () => void; onAsk?: (prompt: string) => void }) {
   const closing = useContext(Closing)
   const dialog = useRef<HTMLDialogElement>(null)
@@ -180,15 +181,15 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     compareAbort.current = controller
     return () => controller.abort()
   }, [])
-  const [starterOpen, setStarterOpen] = useState<{ starter?: string; step?: "choose" | "describe" | "questions" }>()
+  const [starterOpen, setStarterOpen] = useState<{ starter?: string; step?: "choose" | "describe" }>()
   // The last description used to suggest questions, offered again while the table is open.
   const [suggestDescription, setSuggestDescription] = useState("")
   // One disclosed call on the description, the documents' names and the chosen questions.
   const suggest: SuggestQuestions = (description, existing, signal) =>
     suggestQuestions(client, { description, documents: documentsRef.current.map((doc) => doc.name), existing }, signal)
-  // An arriving starter opens once, at its questions: the lawyer already chose
-  // it, and Back returns to the chooser. A table that already has questions
-  // appends them. An unknown starter is dropped.
+  // An arriving starter opens Add questions once, with it chosen, so its
+  // example and AI suggestions are still on offer. A table that already has
+  // questions appends them. An unknown starter is dropped.
   const seatedStarter = useRef<string>(undefined)
   useEffect(() => {
     if (!initialStarter || !canEdit || seatedStarter.current === initialStarter) return
@@ -196,7 +197,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     onStarterSeated?.()
     if (!REVIEW_STARTERS.some((starter) => starter.id === initialStarter)) return
     setError(undefined)
-    setStarterOpen({ starter: initialStarter, step: "questions" })
+    setStarterOpen({ starter: initialStarter })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialStarter, canEdit])
   // The question dialog: adding a column when `id` is absent. Removing a column

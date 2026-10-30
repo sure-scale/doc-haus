@@ -28,9 +28,10 @@ type Entry = { kind: "workflow"; workflow: WorkflowMeta | CustomWorkflow } | { k
 // directory (there is no matter to scope to), pinned to the workflow-builder agent.
 // "Use" opens a matter picker; picking a matter navigates to its chat with the
 // workflow agent pinned and the launch prompt prefilled — the lawyer reviews and
-// sends, nothing auto-runs. Review-table starters are listed below; "Use" lands
-// in the matter's table with the starter chosen, and nothing is added until the
-// lawyer confirms its questions.
+// sends, nothing auto-runs. Review-table starters are listed below; "Use" opens
+// the matter table's Add questions with the starter chosen, where its example and
+// AI suggestions are on offer too, and nothing is added until the lawyer confirms
+// the questions.
 export default function Workflows() {
   const [params, setParams] = useSearchParams()
   const session = params.get("session") ?? undefined
@@ -76,7 +77,7 @@ export default function Workflows() {
 
   // Picking a matter lands in its chat with the workflow agent pinned and the
   // launch prompt prefilled — the lawyer reviews and sends; nothing auto-runs. A
-  // starter lands in the matter's review table with that starter chosen.
+  // starter opens the matter's review table at Add questions, with it chosen.
   function openInMatter(entry: Entry, m: Matter) {
     setUsing(undefined)
     if (entry.kind === "starter") navigate(`/matter/${m.id}?view=review&starter=${encodeURIComponent(entry.starter.id)}`)
@@ -239,7 +240,7 @@ export default function Workflows() {
         )}
         <section className="workflow-starters" aria-labelledby={startersHeading}>
           <h3 id={startersHeading}>Review table</h3>
-          <p className="muted">Start a matter's review table with a set of questions. You check the questions before they are added, and no answers are filled until you choose Fill.</p>
+          <p className="muted">Ready-made questions for a matter's review table. Use opens the table's Add questions with the starter chosen, where you can also see an example or have AI suggest questions. No answers are filled until you choose Fill.</p>
           <ul className="matter-list">
             {REVIEW_STARTERS.map((starter) => (
               <li

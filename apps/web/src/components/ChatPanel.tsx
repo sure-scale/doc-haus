@@ -149,7 +149,7 @@ export default function ChatPanel({
   // Surfaces that don't offer workflows omit it; the launcher's own options guard hides it.
   workflows?: WorkflowMeta[]
   // Opens the matter's review table with a starter chosen; the matter chat adds
-  // the review-table starters to the Workflows dialog through it.
+  // the review table to the Workflows dialog through it.
   onStartReview?: (starter: string) => void
   // The firm playbooks available to bind to this matter, plus the currently-bound
   // one and its setter — surfaced as a composer control alongside the assistant

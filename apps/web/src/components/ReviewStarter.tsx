@@ -35,9 +35,9 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
   existingQuestions: string[]
   problem?: string
   // A starter chosen before the table opened (from the chat's Workflows dialog
-  // or the Workflows page), which opens at its questions step.
+  // or the Workflows page), which the chooser opens with.
   initialStarter?: string
-  initialStep?: "choose" | "describe" | "questions"
+  initialStep?: "choose" | "describe"
   // Without it, the chooser offers the starters only.
   suggest?: SuggestQuestions
   // The last description, offered again; each one used is passed back.
@@ -55,8 +55,7 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
   const ai = chosenId === AI
   const starter = REVIEW_STARTERS.find((item) => item.id === chosenId)
   // The questions being edited, kept while the lawyer steps back to the same choice.
-  const [draft, setDraft] = useState<{ source: string; questions: Draft[] } | undefined>(() =>
-    initialStep === "questions" && starter ? { source: starter.id, questions: draftOf(starter) } : undefined)
+  const [draft, setDraft] = useState<{ source: string; questions: Draft[] }>()
   const questions = draft?.questions ?? []
   const setQuestions = (update: (current: Draft[]) => Draft[]) =>
     setDraft((current) => current && { ...current, questions: update(current.questions) })

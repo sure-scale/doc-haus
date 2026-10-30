@@ -1,8 +1,9 @@
 // Run from apps/web: bun test/review-starter-handoff.browser.ts
 // The real matter page and Workflows page in Chromium, with the engine's and
-// ingest's HTTP and event stream mocked: starting a review-table starter from the
-// chat's Workflows dialog or the Workflows page lands in the matter's table with
-// that starter chosen, and only Start runs anything. Synthetic data only.
+// ingest's HTTP and event stream mocked: starting a review table from the chat's
+// Workflows dialog or the Workflows page lands on the table's Add questions with
+// the starter chosen and its example and AI suggestions still on offer, and
+// nothing runs before the lawyer's own Start, Suggest or Fill. Synthetic data only.
 // Set REVIEW_HANDOFF_SCREENSHOTS=<directory> to save each state before it is checked.
 import assert from "node:assert/strict"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
@@ -167,10 +168,10 @@ try {
       await open(page, "/matter/solo?view=chat")
       await openLauncher(page)
       const dialog = launcher(page)
-      // One document: chat leads with its workflow preselected, so no starter competes as Recommended.
+      // One document: chat leads with its workflow preselected, so the review table does not compete as Recommended.
       assert.deepEqual(await dialog.locator("legend").allTextContents(), ["In chat", "Review table"])
       await expect(dialog.getByRole("radio", { name: "Full review" })).toBeChecked()
-      await expect(dialog.getByRole("radio", { name: /^Document overview/ })).toHaveAccessibleName("Document overview")
+      await expect(dialog.getByRole("radio", { name: /^Add questions/ })).toHaveAccessibleName("Add questions")
       assert.equal(await dialog.getByText("Recommended", { exact: false }).count(), 0, "no Recommended beside a preselected workflow")
       await expect(dialog.getByRole("region", { name: "About Full review" })).toContainText("Reads every document in the matter")
       await expect(dialog.getByRole("button", { name: "Start" })).toHaveClass(/primary/)
@@ -178,8 +179,8 @@ try {
       assert.equal(await fits(page), true, "the dialog fits its width")
       await shot("launcher-workflow")
       // Highlighting entries only changes the preview.
-      await dialog.getByRole("radio", { name: /^Compare agreements/ }).check()
-      await expect(dialog.getByRole("region", { name: "About Compare agreements" })).toContainText("Inputs")
+      await dialog.getByRole("radio", { name: /^Add questions/ }).check()
+      await expect(dialog.getByRole("region", { name: "About Add questions" })).toContainText("Suggest questions with AI")
       await dialog.getByRole("radio", { name: "Full review" }).check()
       await page.waitForTimeout(300)
       assert.deepEqual([sessions, prompts], [0, []], "nothing runs before Start")
@@ -189,37 +190,45 @@ try {
       assert.equal(sessions, 1, "a matter workflow opens one new conversation")
     })
 
-    await check("a starter starts from the chat's Workflows dialog and lands in the table, chosen", size, async (page, shot) => {
+    await check("a review table starts from the chat's Workflows dialog on Add questions, recommended starter chosen", size, async (page, shot) => {
       await open(page, "/matter/pair?view=chat")
       await openLauncher(page)
       const dialog = launcher(page)
-      // Two of the lawyer's own documents: the comparison leads, recommended and highlighted.
+      // Two of the lawyer's own documents: the review table leads, recommended and highlighted.
       assert.deepEqual(await dialog.locator("legend").allTextContents(), ["Review table", "In chat"])
-      const compare = dialog.getByRole("radio", { name: /^Compare agreements/ })
-      await expect(compare).toBeChecked()
-      await expect(compare).toBeFocused()
-      await expect(compare).toHaveAccessibleName(/Recommended · 2 source documents in this matter/)
-      const preview = dialog.getByRole("region", { name: "About Compare agreements" })
-      for (const text of ["Compare the key terms", "Inputs", "Output", "this is not a complete legal review", "this starter's 5 questions"]) await expect(preview).toContainText(text)
+      const review = dialog.getByRole("radio", { name: /^Add questions/ })
+      await expect(review).toBeChecked()
+      await expect(review).toBeFocused()
+      await expect(review).toHaveAccessibleName(/Recommended · 2 source documents in this matter/)
+      // The preview names every way the table's Add questions offers, AI included.
+      const preview = dialog.getByRole("region", { name: "About Add questions" })
+      for (const text of ["Ask the same questions of every document", "Document overview: 3 questions", "Compare agreements: 5 questions, with a fictional example", "Suggest questions with AI", "with Compare agreements selected", "no AI runs until you choose"]) await expect(preview).toContainText(text)
+      assert.equal(await dialog.locator("button.primary").count(), 1, "one primary action")
       assert.equal(await fits(page), true, "the dialog fits its width")
       await shot("launcher-starter")
-      // The lawyer's choice, not the recommendation, is what the table opens with.
-      await dialog.getByRole("radio", { name: /^Document overview/ }).check()
       await dialog.getByRole("button", { name: "Start" }).click()
-      // Already chosen and previewed, so the table opens at that starter's questions.
-      const questions = page.getByRole("dialog", { name: "Document overview" })
-      await expect(questions.getByRole("list", { name: "Questions to add" })).toBeVisible()
+      // The table's own chooser, not a step past it: the recommended starter chosen,
+      // its example and the AI option on offer, Continue the one primary.
+      const choose = chooser(page)
+      await expect(choose.getByRole("radio", { name: /^Compare agreements/ })).toBeChecked()
+      await expect(choose.getByRole("radio", { name: /^Compare agreements/ })).toHaveAccessibleName(/Recommended/)
+      await expect(choose.getByRole("button", { name: "See example" })).toBeVisible()
+      await expect(choose.getByRole("radio", { name: /^Suggest questions with AI/ })).toBeVisible()
+      await expect(choose.locator("button.primary")).toHaveText("Continue")
       await expect.poll(() => param(page, "starter")).toBeNull()
       assert.equal(await param(page, "view"), "review")
       await page.waitForTimeout(300)
-      await shot("arrival-questions")
-      // Back reaches the chooser with the choice kept and not second-guessed.
-      await questions.getByRole("button", { name: "Back" }).click()
-      await expect(chooser(page).getByRole("radio", { name: /^Document overview/ })).toBeChecked()
-      assert.equal(await chooser(page).getByText("Recommended", { exact: false }).count(), 0, "the chosen starter is not second-guessed")
+      await shot("arrival-chooser")
+      // Choosing AI here asks for a description; nothing is suggested until the lawyer asks.
+      await choose.getByRole("radio", { name: /^Suggest questions with AI/ }).check()
+      await choose.getByRole("button", { name: "Continue" }).click()
+      await expect(page.getByRole("dialog", { name: "Suggest questions with AI" }).getByRole("textbox")).toBeFocused()
+      await page.waitForTimeout(300)
       assert.deepEqual([sessions, prompts, puts], [0, [], 0], "nothing runs or saves on arrival")
       // Consumed once: closing and reopening the table does not reopen the chooser.
-      await chooser(page).getByRole("button", { name: "Cancel" }).click()
+      const describe = page.getByRole("dialog", { name: "Suggest questions with AI" })
+      await describe.getByRole("button", { name: "Cancel" }).click()
+      await expect(describe).toBeHidden()
       await table(page, "Supply review").getByRole("button", { name: "Close" }).click()
       await expect(table(page, "Supply review")).toBeHidden()
       assert.equal(await param(page, "view"), null)
@@ -250,8 +259,17 @@ try {
       await section.locator(".list-row", { hasText: "Document overview" }).getByRole("button", { name: "Use" }).click()
       const picker = page.getByRole("dialog", { name: 'Use "Document overview" in a matter' })
       await picker.getByRole("button", { name: /Supply review/ }).click()
-      await expect(page.getByRole("dialog", { name: "Document overview" }).getByRole("list", { name: "Questions to add" })).toBeVisible()
+      // The table's Add questions, with the lawyer's choice kept and not second-guessed.
+      const choose = chooser(page)
+      await expect(choose.getByRole("radio", { name: /^Document overview/ })).toBeChecked()
+      assert.equal(await choose.getByText("Recommended", { exact: false }).count(), 0, "the chosen starter is not second-guessed")
+      await expect(choose.getByRole("radio", { name: /^Suggest questions with AI/ })).toBeVisible()
       await expect.poll(() => where(page)).toBe("/matter/pair?view=review")
+      await page.waitForTimeout(300)
+      await shot("workflows-arrival-chooser")
+      await choose.getByRole("button", { name: "Continue" }).click()
+      await expect(page.getByRole("dialog", { name: "Document overview" }).getByRole("list", { name: "Questions to add" })).toBeVisible()
+      assert.deepEqual([sessions, prompts, puts], [0, [], 0], "nothing runs or saves before Add questions")
     })
   }
 
@@ -279,8 +297,10 @@ try {
     await expect(chooser(page)).toBeHidden()
   })
 
-  await check("a table with questions opens at the starter's questions, which are appended", wide, async (page) => {
+  await check("a table with questions opens Add questions with the starter chosen, whose questions are appended", wide, async (page) => {
     await open(page, "/matter/asked?view=review&starter=compare-agreements-v1")
+    await expect(chooser(page).getByRole("radio", { name: /^Compare agreements/ })).toBeChecked()
+    await chooser(page).getByRole("button", { name: "Continue" }).click()
     const questions = page.getByRole("dialog", { name: "Compare agreements" })
     await expect(questions.getByRole("list", { name: "Questions to add" })).toBeVisible()
     await expect(questions.getByRole("textbox")).toHaveCount(5)

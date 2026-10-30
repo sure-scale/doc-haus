@@ -2,8 +2,7 @@ import type { ReviewStarterDefinition } from "../review-starters"
 import "./StarterSummary.css"
 
 // What a review-table starter sets up, read before it is used: the Workflows
-// page's View, the composer's Workflows dialog and the table's starter chooser
-// show the same definition.
+// page's View and the table's starter chooser show the same definition.
 // `purposeId` lets a chooser describe its selected option with the purpose.
 export default function StarterSummary({ starter, questions = false, purposeId }: { starter: ReviewStarterDefinition; questions?: boolean; purposeId?: string }) {
   return (
