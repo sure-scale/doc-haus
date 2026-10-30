@@ -5,11 +5,10 @@ import path from "node:path"
 import { buildChecklistRefinementContext } from "./checklist-refinement-context"
 const roots: string[] = [], workspace = process.env.WORKSPACE_ROOT
 afterEach(() => { roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true }));if (workspace === undefined) delete process.env.WORKSPACE_ROOT;else process.env.WORKSPACE_ROOT = workspace })
-function fixture() {
+function fixture(texts = ["# Custody\n\nKeep records, unless the owner directs otherwise.\n\n", "# Returns\n\nPropose a receipt, subject to confirmation."]) {
   const dir = mkdtempSync(path.join(tmpdir(), "refinement-units-"));roots.push(dir)
   const put = (file: string, value: unknown) => { mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });writeFileSync(path.join(dir, file), typeof value === "string" ? value : JSON.stringify(value)) }
   put(".dochaus/lean/plan.json", { schema: "dochaus.lean.plan/1", documents: [{ id: "d1", file: "agreement.docx", title: "Agreement", purpose: "Record terms", parts: [{ heading: "Terms", scope: "Terms" }] }] });put(".dochaus/lean/request.md", "Review original sources; preserve conditional proposals.\n")
-  const texts = ["# Custody\n\nKeep records, unless the owner directs otherwise.\n\n", "# Returns\n\nPropose a receipt, subject to confirmation."]
   const text = texts.join("");put("sources/guide.txt", text + "\n");const document = { document: "guide.txt", extracted_text: "sources/guide.txt", characters: text.length, chunks: texts.map((quote, i) => ({ id: `guide-c${i + 1}`, heading_path: [quote.split("\n")[0]], start_char: i ? texts[0].length : 0, end_char: i ? text.length : texts[0].length })) }
   put("source-index.json", { sources: [document] });put("source-map.json", { documents: [document] })
   const item = { check: "Check source-supported concerns.", basis: "directive", source_refs: [{ document: "guide.txt", locator: "Custody", quote: "Keep records, unless the owner directs otherwise." }], qualifications: ["Preserve all conditions."], target: { document: "d1", role: "Agreement", treatment: "operative" } }
@@ -25,6 +24,10 @@ test("local quote selects its region, cross-boundary and whole-source citations 
   const f = fixture();expect(buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "cited_sources" }).units.map(unit => unit.id)).toEqual(["guide-c1"])
   f.item.source_refs[0].quote = "owner directs otherwise.\n\n# Returns";f.save();expect(buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "cited_sources" }).units).toHaveLength(2)
   f.item.source_refs[0].quote = f.text;f.save();const result = buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "cited_sources" });expect(result.units.map(unit => unit.passages[0].quote)).toEqual(f.texts)
+})
+test("a quote with or without the source's Markdown bold marks selects the same unit", () => {
+  const f = fixture(["# Custody\n\n**Keep records,** unless the owner directs otherwise.\n\n", "# Returns\n\nPropose a receipt, subject to confirmation."])
+  for (const quote of ["**Keep records,** unless the owner", "Keep records, unless the owner"]) { f.item.source_refs[0].quote = quote;f.save();expect(buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "cited_sources" }).units.map(unit => unit.id)).toEqual(["guide-c1"]) }
 })
 test("unknown source, altered quote, gapped map and missing map fail instead of dropping source coverage", () => {
   const f = fixture();f.item.source_refs[0].document = "missing.txt";f.save();expect(() => buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "cited_sources" })).toThrow("unavailable")

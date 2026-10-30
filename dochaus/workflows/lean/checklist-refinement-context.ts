@@ -88,12 +88,17 @@ function readMap(directory: string) {
   return JSON.parse(bytes.toString("utf8"))
 }
 
+// Matches as verifyQuote does: the source as written first, then with Markdown
+// escapes and bold marks removed, so a quote copying either form is located.
 function quoteRanges(text: string, quote: string) {
-  const haystack = normalizeWithMap(text, { unescapeMarkdown: true }), needle = normalizeWithMap(quote).text
+  const needle = normalizeWithMap(quote).text
   if (!needle) return []
-  const spans: { start: number; end: number }[] = []
-  for (let index = haystack.text.indexOf(needle); index >= 0; index = haystack.text.indexOf(needle, index + 1)) spans.push({ start: haystack.map[index]!, end: haystack.map[index + needle.length - 1]! + 1 })
-  return spans
+  for (const options of [{}, { unescapeMarkdown: true }]) {
+    const haystack = normalizeWithMap(text, options), spans: { start: number; end: number }[] = []
+    for (let index = haystack.text.indexOf(needle); index >= 0; index = haystack.text.indexOf(needle, index + 1)) spans.push({ start: haystack.map[index]!, end: haystack.map[index + needle.length - 1]! + 1 })
+    if (spans.length) return spans
+  }
+  return []
 }
 
 function splitRange(id: string, text: string, start: number, end: number, inherited: string[]): Range[] {

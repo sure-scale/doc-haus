@@ -141,6 +141,8 @@ describe("lean elided quotation matching", () => {
       const quote = "The supplier shall deliver the goods … Payment is due in full on delivery"
       expect(issues(directory, quote, source)).toEqual([near(quote, OMITTED, source)])
       expect(issues(directory, "… Payment is due in full on delivery", source)).toEqual([])
+      writeFileSync(path.join(root, ".playbooks", "playbook-supply-terms", "SKILL.md"), TERMS.replace("Payment is due", "**Payment is due**"))
+      expect(issues(directory, "Payment is due in full on delivery", source)).toEqual([])
     } finally {
       if (workspace === undefined) delete process.env.WORKSPACE_ROOT
       else process.env.WORKSPACE_ROOT = workspace

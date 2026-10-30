@@ -41,6 +41,14 @@ test("whitespace gaps retain source offsets and existing normalization including
   expect(check('"Alpha". Beta changed delta').found).toBe(false)
 })
 
+test("Markdown bold marks in the source are not part of the quoted words", () => {
+  const text = "- **Notice Period:** thirty days after delivery of the notice"
+  const check = fixture([chunk(text, 0, "first")])
+  expect(check("Notice Period: thirty days after delivery")).toMatchObject({ found: true, hits: [{ charStart: 0, charEnd: text.length }] })
+  expect(check("Notice Period: sixty days after delivery").found).toBe(false)
+  expect(fixture([chunk("a literal \\*\\*Notice", 0, "first")])("a literal **Notice").found).toBe(true)
+})
+
 test("chunks stored with an extra newline past a split section keep the next heading whole", () => {
   // Chunks ingested before the chunker stopped counting one newline past a
   // split section: the section's last chunk ends with "\n" where the next

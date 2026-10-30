@@ -28,9 +28,10 @@ export function normalize(text: string) {
 const MARKDOWN_ESCAPABLE = /^[!-\/:-@\[-`{-~]$/
 
 /** Normalized text plus, for each output character, its raw offset. With
- * `unescapeMarkdown`, a backslash before ASCII punctuation is dropped (source
- * side only: a quote is never unescaped, so a quote's own backslash still has to
- * be in the source). */
+ * `unescapeMarkdown`, a backslash before ASCII punctuation is dropped and
+ * Markdown bold marks (`**Term:**`) are skipped, so a quote of the words
+ * matches (source side only: a quote is never unescaped, so a quote's own
+ * backslash still has to be in the source). An escaped `\*` stays literal. */
 export function normalizeWithMap(raw: string, options: { unescapeMarkdown?: boolean } = {}) {
   let out = ""
   const map: number[] = []
@@ -38,6 +39,10 @@ export function normalizeWithMap(raw: string, options: { unescapeMarkdown?: bool
   for (let i = 0; i < raw.length; i++) {
     const ch = raw[i]!
     if (options.unescapeMarkdown && ch === "\\" && MARKDOWN_ESCAPABLE.test(raw[i + 1] ?? "")) continue
+    if (options.unescapeMarkdown && ch === "*" && raw[i + 1] === "*" && raw[i - 1] !== "\\") {
+      while (raw[i + 1] === "*") i++
+      continue
+    }
     if (/\s/.test(ch)) {
       if (out.length > 0 && spaceAt === -1) spaceAt = i
       continue
@@ -90,8 +95,9 @@ export function verifyQuote(args: {
 }): VerifyQuoteResult {
   const needle = normalize(args.quote)
   const playbook = boundPlaybook(args.directory)
+  const policyChunks = playbook?.text ? [{ section: "Playbook", text: playbook.text, char_start: 0, char_end: playbook.text.length }] : []
   const policyHits = playbook?.text && needle && (!args.document || args.document === playbook.source_id)
-    ? findHits(playbook.source_id, [{ section: "Playbook", text: playbook.text, char_start: 0, char_end: playbook.text.length }], needle, {}) ?? []
+    ? findHits(playbook.source_id, policyChunks, needle, {}) ?? findHits(playbook.source_id, policyChunks, needle, { unescapeMarkdown: true }) ?? []
     : []
   if (args.document?.startsWith("playbook:")) return policyHits.length
     ? { found: true, hits: policyHits }
