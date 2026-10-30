@@ -165,7 +165,7 @@ try {
       { name: "Supply terms.docx" }, { name: "Side letter.docx" }, { name: "Old note.docx" },
       ...(page.url().endsWith("?pool") ? Array.from({ length: 4 }, (_, i) => ({ name: `Extra ${i}.docx` })) : []),
     ] })
-    if (url.pathname === "/engine/config") return json({ model: "test/model" })
+    if (url.pathname === "/engine/config") return json({ model: "test/model", model_concurrency: 3 })
     if (url.pathname === "/matters/matter-grid/grid/recheck") return json({ citations: [], passages: "", scope: { passages: 0, read: 0, candidates: 0, reread: 0, terms: [], channels: [] } })
     if (url.pathname === "/matters/matter-grid/grid/sources") {
       const cells = (request.postDataJSON() as { cells: { key: string }[] }).cells
@@ -522,9 +522,9 @@ try {
   await page.goto(server.url.href + "?pool")
   await page.getByRole("button", { name: "Fill empty" }).click()
   await page.getByRole("dialog", { name: "Review fill" }).getByRole("button", { name: "Start fill" }).click()
-  for (let attempt = 0; extractionWaits.length < 5 && attempt < 250; attempt++) await new Promise(resolve => setTimeout(resolve, 20))
-  assert.equal(extractionWaits.length, 5, "five extraction jobs should be in flight")
-  assert.equal(extractionStarts, 5, "the extraction pool should hold the remaining work")
+  for (let attempt = 0; extractionWaits.length < 3 && attempt < 250; attempt++) await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(extractionWaits.length, 3, "the saved limit controls extraction jobs in flight")
+  assert.equal(extractionStarts, 3, "the extraction pool should hold the remaining work")
   storedGrid = { ...storedGrid, version: (storedGrid.version ?? 0) + 1 }
   page.once("dialog", dialog => dialog.accept("Conflicting question"))
   await page.getByRole("button", { name: "Edit question: What is the governing law?" }).click()
@@ -534,7 +534,7 @@ try {
   await page.getByRole("button", { name: "Edit question: What is the governing law?" }).waitFor()
   await Promise.all(extractionWaits.map(route => route.fulfill({ status: 204 })))
   await page.getByText(/Extracting/).waitFor({ state: "detached" })
-  assert.equal(extractionStarts, 5, "queued targets from the old table must not start after reload")
+  assert.equal(extractionStarts, 3, "queued targets from the old table must not start after reload")
   assert.equal(await page.getByRole("button", { name: /New extracted answer/ }).count(), 0)
   console.log("PASS reloading cancels queued extraction targets and ignores in-flight results")
 

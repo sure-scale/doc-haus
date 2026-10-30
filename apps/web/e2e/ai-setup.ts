@@ -38,6 +38,7 @@ async function fixture(name: string, width: number, onboarding = false, cloud = 
     ready: !onboarding,
     failFast: false,
     saveFailures: 0,
+    limitSaveFailures: 0,
     progressFailures: 0,
     modelLoadFailures: 0,
     catalogLag: 0,
@@ -115,6 +116,13 @@ async function fixture(name: string, width: number, onboarding = false, cloud = 
       if (method === "PUT") state.preferences = { ...state.preferences, ...body }
       return reply(state.preferences)
     }
+    if (pathname === "/engine/config" && method === "PATCH") {
+      if (state.limitSaveFailures > 0) { state.limitSaveFailures--; return reply({ error: "Synthetic limit save failed." }, 503) }
+      state.config = { ...state.config, ...body }
+      return reply(state.config)
+    }
+    if (pathname === "/api/dochaus/concurrency-test" && method === "POST") return reply({ model: state.config.model, requested: body.count, succeeded: body.count, failed: 0, peak: body.count, elapsed_ms: 1000, errors: [] })
+    if (pathname === "/dashboard/tabs" && method === "PUT") return reply({ state: body.state, revision: Number(body.revision) + 1 })
     if (method !== "GET" && !(pathname === "/api/dochaus/provider-test" && method === "POST")) {
       unexpected.push(`${name}: ${method} ${pathname}`)
       return route.abort()
@@ -142,6 +150,7 @@ async function fixture(name: string, width: number, onboarding = false, cloud = 
       ...(cloud ? [{ id: "google-vertex", name: "Google Vertex AI", methods: [], connections: [] }] : []),
     ] })
     if (pathname === "/matters" || pathname === "/clients") return reply([])
+    if (pathname === "/dashboard/tabs") return reply({ state: null, revision: 0 })
     if (pathname === "/templates") return reply({ dir: "/fixture/templates", templates: [] })
     if (pathname === "/playbooks/library") return reply({ dir: "/fixture/playbooks", playbooks: [] })
     if (pathname === "/jurisdictions") return reply([{ code: "england-wales", name: "England and Wales" }])
@@ -176,6 +185,83 @@ async function hitTarget(control: Locator, minimum = 40) {
 }
 
 try {
+  for (const width of [1440, 390]) await scenario(`Concurrency slider saves and tests at ${width}px`, async () => {
+    const f = await fixture(`concurrency-slider-${width}`, width)
+    try {
+      await f.page.getByRole("button", { name: "Settings", exact: true }).click()
+      const dialog = f.page.getByRole("dialog", { name: "Settings", exact: true })
+      const slider = dialog.getByRole("slider", { name: "Request limit" })
+      await expect(slider).toHaveAttribute("aria-valuetext", "50 requests")
+      const alignment = await slider.evaluate(input => {
+        const bounds = input.getBoundingClientRect()
+        const labels = [...input.parentElement!.querySelectorAll(".settings-concurrency-stops span")]
+        return labels.map((label, index) => {
+          const rect = label.getBoundingClientRect()
+          return Math.abs(rect.left + rect.width / 2 - (bounds.left + 8 + (bounds.width - 16) * index / 8))
+        })
+      })
+      expect(Math.max(...alignment)).toBeLessThan(1)
+      await slider.focus()
+      await f.page.keyboard.press("Home")
+      for (const value of [1, 3, 5, 10, 20, 30, 50, 80, 100]) {
+        await expect(slider).toHaveAttribute("aria-valuetext", `${value} requests`)
+        if (value !== 100) await f.page.keyboard.press("ArrowRight")
+      }
+      await f.page.keyboard.press("ArrowLeft")
+      await expect(slider).toHaveAttribute("aria-valuetext", "80 requests")
+      await expect(dialog.getByRole("button", { name: "Save limit" })).toHaveCount(0)
+      await dialog.getByRole("button", { name: "Save", exact: true }).click()
+      await expect.poll(() => f.state.config.model_concurrency).toBe(80)
+      expect(f.tests()).toHaveLength(0)
+      await dialog.getByRole("button", { name: "Test request capacity" }).click()
+      await expect(dialog.getByText("80 of 80 requests succeeded; 0 failed.")).toBeVisible()
+      await expect(dialog.getByText("Peak overlapping requests", { exact: false })).toHaveCount(0)
+      await expect(dialog.getByText("Model: fixture-models/primary", { exact: false })).toHaveCount(0)
+      expect(f.requests.filter(item => item.path === "/engine/config" && item.method === "PATCH").at(-1)?.body).toEqual({ model_concurrency: 80 })
+      expect(f.requests.filter(item => item.path === "/api/dochaus/concurrency-test").at(-1)?.body).toEqual({ count: 80 })
+      await dialog.getByRole("button", { name: "Save", exact: true }).click()
+      expect(f.tests()).toHaveLength(0)
+      await dialog.getByLabel("Fast model", { exact: true }).selectOption("fixture-models/fast")
+      await expect(dialog.getByRole("button", { name: "Test and save", exact: true })).toBeEnabled()
+      await expect(dialog.getByText("Testing saves the selected limit first", { exact: false })).toHaveCount(0)
+      await noOverflow(f.page)
+    } finally { await f.context.close() }
+  })
+  await scenario("AI setup saves the request limit with model changes", async () => {
+    const f = await fixture("concurrency-with-model", 1440)
+    try {
+      await f.page.getByRole("button", { name: "Settings", exact: true }).click()
+      const dialog = f.page.getByRole("dialog", { name: "Settings", exact: true })
+      await dialog.getByLabel("Fast model", { exact: true }).selectOption("fixture-models/fast")
+      const slider = dialog.getByRole("slider", { name: "Request limit" })
+      await expect(slider).toBeEnabled()
+      await slider.focus(); await f.page.keyboard.press("End")
+      await expect(slider).toHaveAttribute("aria-valuetext", "100 requests")
+      await dialog.getByRole("button", { name: "Test and save", exact: true }).click()
+      await expect(dialog.getByText("AI setup saved.", { exact: true })).toBeVisible()
+      expect(f.state.config.small_model).toBe("fixture-models/fast")
+      expect(f.state.config.model_concurrency).toBe(100)
+    } finally { await f.context.close() }
+  })
+  await scenario("Request limit can be retried after a partial AI setup save", async () => {
+    const f = await fixture("concurrency-save-retry", 1440)
+    try {
+      await f.page.getByRole("button", { name: "Settings", exact: true }).click()
+      const dialog = f.page.getByRole("dialog", { name: "Settings", exact: true })
+      await dialog.getByLabel("Fast model", { exact: true }).selectOption("fixture-models/fast")
+      const slider = dialog.getByRole("slider", { name: "Request limit" })
+      await expect(slider).toBeEnabled()
+      await slider.focus(); await f.page.keyboard.press("End")
+      await expect(slider).toHaveAttribute("aria-valuetext", "100 requests")
+      f.state.limitSaveFailures = 1
+      await dialog.getByRole("button", { name: "Test and save", exact: true }).click()
+      await expect(dialog.getByText("AI setup was saved, but the request limit could not be saved. Try again.")).toBeVisible()
+      expect(f.requests.filter(item => item.path === "/engine/provider-setup")).toHaveLength(1)
+      await dialog.getByRole("button", { name: "Save", exact: true }).click()
+      await expect.poll(() => f.state.config.model_concurrency).toBe(100)
+      expect(f.requests.filter(item => item.path === "/engine/provider-setup")).toHaveLength(1)
+    } finally { await f.context.close() }
+  })
   for (const width of [1440, 390]) await scenario(`Settings prepares, tests and saves exact models at ${width}px`, async () => {
     const f = await fixture(`settings-${width}`, width)
     try {
@@ -336,7 +422,7 @@ try {
       await dialog.getByRole("button", { name: /^Save and finish/ }).click()
       await expect(dialog).toHaveCount(0)
       // Finishing setup from the matters list lands on the dashboard.
-      await expect(f.page).toHaveURL(/\/dashboard$/)
+      await expect(f.page).toHaveURL(/\/dashboard\?tab=setup$/)
       expect(f.state.completed).toEqual(["models", "research", "details"])
       expect(f.state.preferences).toMatchObject({ attorney: "Fixture Counsel", firm: "Fixture Practice" })
     } finally { await f.context.close() }

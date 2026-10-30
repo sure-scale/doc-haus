@@ -1,7 +1,7 @@
 import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
-import { isRemovedProvider, isSettingsObject, mergeSettings, readEffectiveSettings, readSettingsFile, settingsPaths, type EngineSettings } from "../../engine/src/effective-settings"
+import { isRemovedProvider, isSettingsObject, mergeSettings, modelConcurrency, readEffectiveSettings, readSettingsFile, settingsPaths, type EngineSettings } from "../../engine/src/effective-settings"
 
 export function readEngineConfig(): EngineSettings { return readEffectiveSettings() }
 export const engineConfigFile = () => settingsPaths().overrides
@@ -61,7 +61,8 @@ const cloudOptions: Record<string, string[]> = {
 
 export function validateSettingsPatch(patch: unknown): Record<string, unknown> {
   const value = object(patch)
-  keys(value, ["model", "small_model", "disabled_providers", "provider", "agent", "permission"])
+  keys(value, ["model", "small_model", "model_concurrency", "disabled_providers", "provider", "agent", "permission"])
+  if ("model_concurrency" in value && (!Number.isInteger(value.model_concurrency) || (value.model_concurrency as number) < 1 || (value.model_concurrency as number) > 100)) throw new Error("Concurrency must be a whole number from 1 to 100.")
   for (const key of ["model", "small_model"]) if (key in value) model(value[key])
   if ("disabled_providers" in value && value.disabled_providers !== null) {
     if (!Array.isArray(value.disabled_providers)) throw new Error("Disabled providers must be a list of provider IDs.")
@@ -133,6 +134,7 @@ export function setAgentDisabled(name: string, disabled: boolean) {
 export function readEngineSettings(): EngineSettings {
   const effective = readEngineConfig()
   const result: EngineSettings = {}
+  result.model_concurrency = modelConcurrency(effective)
   for (const key of ["model", "small_model", "disabled_providers"]) if (effective[key] !== undefined) result[key] = effective[key]
   if (effective.agent) result.agent = Object.fromEntries(Object.entries(effective.agent).flatMap(([id, entry]) => {
     const fields = Object.fromEntries(Object.entries(entry).filter(([key]) => ["model", "disable"].includes(key)))

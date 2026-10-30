@@ -1,10 +1,12 @@
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { dataPaths } from "./data-paths"
+import { DEFAULT_MODEL_CONCURRENCY, nearestModelConcurrency } from "../../../dochaus/lib/model-concurrency-presets"
 
 export type EngineSettings = {
   model?: string
   small_model?: string
+  model_concurrency?: number
   disabled_providers?: string[]
   agent?: Record<string, Record<string, unknown>>
   permission?: Record<string, unknown>
@@ -15,6 +17,12 @@ export type EngineSettings = {
 // This product restriction is independent of saved model choices and credentials.
 // The distinct opencode-go provider and the native OpenCode engine remain supported.
 export function isRemovedProvider(id: string | undefined): boolean { return id === "opencode" }
+
+export function modelConcurrency(settings: EngineSettings): number {
+  const value = settings.model_concurrency === undefined ? DEFAULT_MODEL_CONCURRENCY : settings.model_concurrency
+  if (!Number.isInteger(value) || value < 1 || value > 100) throw new Error("Saved concurrency setting must be a whole number from 1 to 100.")
+  return nearestModelConcurrency(value)
+}
 
 export const settingsRepository = path.resolve(import.meta.dir, "../../..")
 export function settingsPaths(repository = settingsRepository, environment = process.env) {
@@ -53,6 +61,7 @@ export function readSettingsFile(file: string): EngineSettings {
 export function readEffectiveSettings(paths = settingsPaths()): EngineSettings {
   const effective = mergeSettings(readSettingsFile(paths.shipped), readSettingsFile(paths.overrides))
   for (const key of ["model", "small_model"]) if (effective[key] !== undefined && (typeof effective[key] !== "string" || !/^[^\s/]+\/[^\s]+$/.test(effective[key] as string))) throw new Error("Saved model settings are invalid. Select a provider and model in Settings.")
+  modelConcurrency(effective)
   effective.disabled_providers = [...new Set([...(Array.isArray(effective.disabled_providers) ? effective.disabled_providers : []), "opencode"])]
   return effective
 }

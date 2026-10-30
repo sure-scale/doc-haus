@@ -145,6 +145,38 @@
   text-overflow: ellipsis;
 }
 
+.settings-concurrency-slider {
+  min-width: 0;
+}
+
+.settings-concurrency-slider output {
+  display: block;
+  font-weight: 600;
+}
+
+.settings-concurrency-slider input {
+  display: block;
+  width: 100%;
+  margin: var(--space-2) 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--accent);
+}
+
+.settings-concurrency-stops {
+  position: relative;
+  height: 1.4em;
+  margin: 0 8px;
+  color: var(--muted);
+  font-size: .75rem;
+}
+
+.settings-concurrency-stops span {
+  position: absolute;
+  transform: translateX(-50%);
+}
+
 .settings-field-control > .settings-hint {
   max-width: none;
 }
