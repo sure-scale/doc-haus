@@ -517,12 +517,13 @@ try {
 
   // Questions are added, edited and removed in one dialog. A column without
   // answers goes at once; one with answers asks first and says what goes with
-  // it, and Escape steps back to the question. Focus lands on Add column.
+  // it, and Escape steps back to the question. Focus lands on Add questions.
   storedGrid = structuredClone(grid)
   storedGrid.cells["Old note.docx::c1"]!.status = "reviewed"
   await page.goto(server.url.href)
   const focusedOn = (name: string) => page.waitForFunction(label => document.activeElement?.getAttribute("aria-label") === label || document.activeElement?.textContent === label, name)
-  await page.getByRole("button", { name: "Add column" }).click()
+  await page.getByRole("table", { name: "Document review" }).getByRole("button", { name: "Add questions", exact: true }).click()
+  await page.getByRole("button", { name: "Write a question" }).click()
   const adder = page.getByRole("dialog", { name: "Add question" })
   await page.waitForFunction(() => document.activeElement?.tagName === "TEXTAREA" && document.activeElement.closest("dialog")?.getAttribute("aria-label") === "Add question")
   assert.equal(await adder.getByRole("button", { name: "Add", exact: true }).isDisabled(), true)
@@ -532,11 +533,11 @@ try {
   await adder.waitFor({ state: "detached" })
   const added = page.getByRole("button", { name: "Edit question: What is the notice period?" })
   await added.waitFor()
-  await focusedOn("Add column")
+  await focusedOn("Add questions")
   await added.click()
   await page.getByRole("dialog", { name: "Edit question" }).getByRole("button", { name: "Remove column" }).click()
   await added.waitFor({ state: "detached" })
-  await focusedOn("Add column")
+  await focusedOn("Add questions")
   const header = page.getByRole("button", { name: "Edit question: What is the governing law?" })
   await header.click()
   const editor = page.getByRole("dialog", { name: "Edit question" })
@@ -551,7 +552,7 @@ try {
   await editor.getByRole("button", { name: "Remove column" }).click()
   await confirm.getByRole("button", { name: "Remove column" }).click()
   await header.waitFor({ state: "detached" })
-  await focusedOn("Add column")
+  await focusedOn("Add questions")
   for (let attempt = 0; storedGrid.columns.length && attempt < 100; attempt++) await new Promise(resolve => setTimeout(resolve, 20))
   assert.deepEqual(storedGrid.columns, [])
   assert.deepEqual(storedGrid.cells, {})

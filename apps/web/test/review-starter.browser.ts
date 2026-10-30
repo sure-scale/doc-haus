@@ -89,7 +89,7 @@ try {
     return route.fulfill({ status: 500, body: "Unexpected model call" })
   })
   // Each step names the dialog: the chooser, a starter's example, then its questions.
-  const chooser = page.getByRole("dialog", { name: "Choose a starter" })
+  const chooser = page.getByRole("dialog", { name: "Add questions" })
   const example = page.getByRole("dialog", { name: "Example: Compare agreements" })
   const starter = page.getByRole("dialog", { name: "Document overview" })
   const compare = page.getByRole("dialog", { name: "Compare agreements" })

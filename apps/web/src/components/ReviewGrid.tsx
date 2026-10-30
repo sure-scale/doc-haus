@@ -4,6 +4,7 @@ import { UNSAFE_DataRouterContext, useBlocker } from "react-router-dom"
 import { computeCell, describeRecheck, needsFill, recheckOutcome } from "../api/review-recheck"
 import { citationLabel, citesRow, type ReviewRow } from "../api/review-answer"
 import { compareColumn, comparisonInputs, MAX_COMPARE_DOCUMENTS } from "../api/review-compare"
+import { suggestQuestions } from "../api/review-suggest"
 import { matches, primaryAction, reviewAttention, type AttentionFilter, type QueueEntry } from "../api/review-attention"
 import { cellKey, checkCellSources, getGrid, GridConflictError, hashQuestion, recheckPassages, saveGrid, type Grid, type GridCellData, type GridColumn, type SourceCheck } from "../api/ingest/grid"
 import { humanizeError } from "../api/ingest/errors"
@@ -22,7 +23,8 @@ import DocumentViewer from "./DocumentViewer"
 import { citationDocument } from "./citation-target"
 import { WordWarning } from "./WordDocuments"
 import useReviewGridPresence from "./useReviewGridPresence"
-import ReviewStarter from "./ReviewStarter"
+import ReviewStarter, { type SuggestQuestions } from "./ReviewStarter"
+import ReviewAddMenu from "./ReviewAddMenu"
 import { normaliseStarterQuestion, REVIEW_STARTERS } from "../review-starters"
 import FillPreview from "./FillPreview"
 import ReviewQuestion from "./ReviewQuestion"
@@ -178,7 +180,12 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     compareAbort.current = controller
     return () => controller.abort()
   }, [])
-  const [starterOpen, setStarterOpen] = useState<{ starter?: string; step?: "choose" | "questions" }>()
+  const [starterOpen, setStarterOpen] = useState<{ starter?: string; step?: "choose" | "describe" | "questions" }>()
+  // The last description used to suggest questions, offered again while the table is open.
+  const [suggestDescription, setSuggestDescription] = useState("")
+  // One disclosed call on the description, the documents' names and the chosen questions.
+  const suggest: SuggestQuestions = (description, existing, signal) =>
+    suggestQuestions(client, { description, documents: documentsRef.current.map((doc) => doc.name), existing }, signal)
   // An arriving starter opens once, at its questions: the lawyer already chose
   // it, and Back returns to the chooser. A table that already has questions
   // appends them. An unknown starter is dropped.
@@ -193,7 +200,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialStarter, canEdit])
   // The question dialog: adding a column when `id` is absent. Removing a column
-  // hands focus to Add column once the dialog and the column are gone.
+  // hands focus to Add questions once the dialog and the column are gone.
   const [questionEdit, setQuestionEdit] = useState<{ id?: string }>()
   const focusAdd = useRef(false)
   useLayoutEffect(() => {
@@ -713,7 +720,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     }
   }
 
-  // A starter question keeps its compare flag on its new column; an existing
+  // A starter or suggested question keeps its compare flag on its new column; an existing
   // column with the same question is left as it is.
   async function addStarterQuestions(questions: Array<{ question: string; compare?: false }>) {
     const state = saveState.current
@@ -723,7 +730,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
       const matter = await getMatter(matterId)
       if (state.epoch !== epoch) return false
       if (!sameDocuments(matter.documents)) {
-        setError("The matter's documents changed. Close the review table and reload the matter before adding the starter.")
+        setError("The matter's documents changed. Close the review table and reload the matter before adding questions.")
         return false
       }
     } catch (e) {
@@ -740,7 +747,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
       return true
     })
     if (!unique.length || unique.length !== questions.length || !documentsRef.current.length) {
-      setError("Questions or documents changed. Review the starter and try again.")
+      setError("Questions or documents changed. Review the questions and try again.")
       return false
     }
     return commit({ ...gridRef.current, columns: [...gridRef.current.columns, ...unique.map(({ question, compare }) => ({ id: crypto.randomUUID(), question, ...(compare === false && { compare }) }))] })
@@ -904,7 +911,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
         {error && <p role="alert">{error}</p>}
         {saveProblem && <div role="alert"><p>{saveProblem}</p><p>Export the table above or download your local copy before reloading the saved table.</p><button type="button" onClick={downloadPending}>Download unsaved copy</button> <button type="button" disabled={reloading} onClick={reloadGrid}>{reloading ? "Reloading…" : "Reload saved table"}</button></div>}
 
-        {starterOpen && <ReviewStarter documents={documents} existingQuestions={grid.columns.map((column) => column.question)} problem={saveProblem ?? error} initialStarter={starterOpen.starter} initialStep={starterOpen.step} onCancel={() => setStarterOpen(undefined)} onConfirm={addStarterQuestions} />}
+        {starterOpen && <ReviewStarter documents={documents} existingQuestions={grid.columns.map((column) => column.question)} problem={saveProblem ?? error} initialStarter={starterOpen.starter} initialStep={starterOpen.step} suggest={suggest} description={suggestDescription} onDescription={setSuggestDescription} onCancel={() => setStarterOpen(undefined)} onConfirm={addStarterQuestions} />}
         {fillPreview && <FillPreview targets={fillPreview} checking={checkingFill} onCancel={() => setFillPreview(undefined)} onConfirm={confirmFill} />}
         {questionEdit && (() => {
           const column = questionEdit.id ? grid.columns.find((c) => c.id === questionEdit.id) : undefined
@@ -944,11 +951,11 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                   </th>
                 ))}
                 <th className="review-add-col" scope="col">
-                  <button className="review-add-button" type="button" disabled={!canEdit} onClick={() => setQuestionEdit({})} aria-label="Add column" title="Add column">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" aria-hidden="true">
-                      <path d="M12 5v14M5 12h14" />
-                    </svg>
-                  </button>
+                  <ReviewAddMenu disabled={!canEdit} items={[
+                    { label: "Write a question", hint: "Ask one question of every document", onSelect: () => setQuestionEdit({}) },
+                    { label: "Use a starter", hint: "Start from a ready-made set of questions", onSelect: () => { setError(undefined); setStarterOpen({}) } },
+                    { label: "Suggest with AI", hint: "Describe what you want to find out", onSelect: () => { setError(undefined); setStarterOpen({ step: "describe" }) } },
+                  ]} />
                 </th>
               </tr>
             </thead>

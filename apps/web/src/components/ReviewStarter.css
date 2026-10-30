@@ -72,12 +72,29 @@
 .review-starter-question textarea:hover:not(:disabled):not(:focus) { border-color: var(--border-strong); }
 .review-starter-question button.ghost { min-height: 34px; margin-right: calc(-1 * var(--space-2)); padding: var(--space-1) var(--space-2); font-size: .875rem; }
 .review-starter-question p { grid-column: 2; padding-inline: 11px; color: var(--muted); font-size: .85rem; }
+/* An AI suggestion carries its tag until it is added. */
+.review-starter-question.is-suggested { grid-template-columns: 1.5rem minmax(0, 1fr) auto auto; }
+.review-starter-tag { align-self: start; margin-top: 7px; padding: 0 6px; border: 1px solid currentColor; border-radius: var(--radius-sm); color: var(--info); font-size: .75rem; font-weight: 600; line-height: 1.45; white-space: nowrap; }
+.review-starter-body .review-starter-more { align-self: flex-start; min-height: 0; margin-top: var(--space-1); font-weight: 600; }
 .review-starter-body .review-starter-scope { margin-top: var(--space-2); color: var(--text-secondary); font-size: .875rem; }
 .review-starter-body .review-starter-summary { margin-top: calc(-1 * var(--space-1)); color: var(--text-secondary); font-size: .875rem; }
 @media (pointer: coarse) {
   .review-starter-question label { padding-top: 11px; }
   .review-starter-question textarea { padding-block: 10px; }
+  .review-starter-tag { margin-top: 11px; }
 }
+@media (max-width: 640px) {
+  .review-starter-question.is-suggested { grid-template-columns: 1.5rem minmax(0, 1fr) auto; }
+  .review-starter-question.is-suggested .review-starter-tag { grid-column: 2; grid-row: 2; justify-self: start; margin-top: 0; }
+}
+
+/* Describe: the lawyer's words, what the AI reads, and a calm wait. */
+.review-suggest-input { min-height: 6.5em; }
+.review-starter-body .review-suggest-error { color: var(--text-secondary); font-size: .875rem; }
+.review-suggest-error .linklike { min-height: 0; font-size: inherit; font-weight: 600; line-height: inherit; }
+.review-starter-body .review-suggest-running { display: inline-flex; align-items: center; gap: var(--space-2); margin-right: auto; color: var(--text-secondary); font-size: .875rem; }
+.review-suggest-running::before { content: ""; flex: none; width: 12px; height: 12px; border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: step-spin .7s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .review-suggest-running::before { animation: none; } }
 
 @media (max-width: 700px) {
   .review-table.review-example-table .review-doc-col { width: 148px; }

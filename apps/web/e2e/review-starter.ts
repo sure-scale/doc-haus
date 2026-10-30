@@ -150,7 +150,7 @@ async function exercise(width: number, height: number) {
     await expect(gridDialog).toBeVisible()
     const starterButton = gridDialog.getByRole("button", { name: "Use a starter" })
     // The chooser comes first and recommends from source documents only.
-    const chooser = page.getByRole("dialog", { name: "Choose a starter" })
+    const chooser = page.getByRole("dialog", { name: "Add questions" })
     const starter = page.getByRole("dialog", { name: "Document overview" })
     const chooseOverview = async () => {
       await expect(chooser).toBeVisible()

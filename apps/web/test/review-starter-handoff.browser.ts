@@ -154,7 +154,7 @@ const go = (page: Page, to: string) => page.evaluate((to) => (window as unknown 
 // Nothing scrolls sideways inside a dialog panel.
 const fits = (page: Page) => page.locator(".picker-panel").evaluateAll((panels) => panels.every((panel) => [panel, ...panel.querySelectorAll("*")].every((node) => node.scrollWidth <= node.clientWidth + 1 || getComputedStyle(node).overflowX === "visible")))
 const launcher = (page: Page) => page.getByRole("dialog", { name: "Workflows" })
-const chooser = (page: Page) => page.getByRole("dialog", { name: "Choose a starter" })
+const chooser = (page: Page) => page.getByRole("dialog", { name: "Add questions" })
 const table = (page: Page, title: string) => page.getByRole("dialog", { name: `Review table — ${title}` })
 const openLauncher = async (page: Page) => {
   await page.getByRole("button", { name: "Workflows", exact: true }).click()
