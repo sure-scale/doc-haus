@@ -25,6 +25,8 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
   const titleId = useId()
   const [recommended] = useState(() => recommendStarter(documents))
   const [chosenId, setChosenId] = useState(initialStarter ?? recommended.id)
+  // A starter the lawyer already chose is not second-guessed with a Recommended beside it.
+  const recommendedId = !initialStarter || initialStarter === recommended.id ? recommended.id : undefined
   const [step, setStep] = useState<Step>(initialStep)
   const starter = REVIEW_STARTERS.find((item) => item.id === chosenId)!
   // The questions being edited, kept while the lawyer steps back to the same starter.
@@ -92,7 +94,7 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
                     <input type="radio" name={`${titleId}-starter`} value={item.id} checked={item.id === chosenId} aria-describedby={item.id === chosenId ? `${titleId}-purpose` : undefined} onChange={() => setChosenId(item.id)} />
                     <span>
                       <span className="review-starter-choice-name">{item.name}</span>
-                      {item.id === recommended.id && <span className="review-starter-choice-reason"><strong>Recommended</strong> · {recommended.reason}</span>}
+                      {item.id === recommendedId && <span className="review-starter-choice-reason"><strong>Recommended</strong> · {recommended.reason}</span>}
                     </span>
                   </label>
                 ))}

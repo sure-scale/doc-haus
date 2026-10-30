@@ -208,6 +208,7 @@ try {
       await dialog.getByRole("button", { name: "Start" }).click()
       await expect(chooser(page)).toBeVisible()
       await expect(chooser(page).getByRole("radio", { name: /^Document overview/ })).toBeChecked()
+      assert.equal(await chooser(page).getByText("Recommended", { exact: false }).count(), 0, "the chosen starter is not second-guessed")
       await expect.poll(() => param(page, "starter")).toBeNull()
       assert.equal(await param(page, "view"), "review")
       await page.waitForTimeout(300)
