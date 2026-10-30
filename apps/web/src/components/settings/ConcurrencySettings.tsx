@@ -3,13 +3,18 @@ import { getConfig, patchConfig } from "../../api/opencode/config"
 import { testConcurrency, type ConcurrencyTestResult } from "../../api/opencode/concurrency"
 import { FieldRow } from "./controls"
 
-const PRESETS = [1, 3, 5, 10, 20, 30, 40, 50, 60, 80, 100]
+const PRESETS = [1, 3, 5, 10, 20, 30, 50, 80, 100]
+// Preserve the position of a previously saved custom value between its neighbours.
+function sliderPosition(value: number) {
+  const upper = PRESETS.findIndex(option => option >= value)
+  if (upper <= 0) return upper < 0 ? PRESETS.length - 1 : 0
+  return upper - 1 + (value - PRESETS[upper - 1]) / (PRESETS[upper] - PRESETS[upper - 1])
+}
 const message = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback
 const failureLabel: Record<string, string> = { auth: "Sign-in error", model: "Model unavailable", rate_limit: "Provider rate limit", unavailable: "Connection unavailable", empty: "Empty response", timeout: "Timed out" }
 
 export default function ConcurrencySettings({ onBusy }: { onBusy: (busy: boolean) => void }) {
   const inputId = useId()
-  const presetsId = useId()
   const [saved, setSaved] = useState<number>()
   const [value, setValue] = useState("")
   const [loading, setLoading] = useState(true)
@@ -20,6 +25,13 @@ export default function ConcurrencySettings({ onBusy }: { onBusy: (busy: boolean
   const number = Number(value)
   const valid = value.trim() !== "" && Number.isInteger(number) && number >= 1 && number <= 100
   const changed = valid && number !== saved
+  const unavailable = loading || busy || saved === undefined
+  const previous = valid ? [...PRESETS].reverse().find(option => option < number) : undefined
+  const next = valid ? PRESETS.find(option => option > number) : undefined
+
+  function setLimit(limit: string) {
+    setValue(limit); setNotice(""); setResult(undefined)
+  }
 
   async function load() {
     setLoading(true); setError("")
@@ -61,16 +73,24 @@ export default function ConcurrencySettings({ onBusy }: { onBusy: (busy: boolean
   return <section className="settings-section" aria-labelledby={`${inputId}-heading`}>
     <h3 id={`${inputId}-heading`}>Concurrent AI requests</h3>
     <p className="settings-hint muted">Choose how many AI requests can run at once. Other requests wait until a place is available.</p>
-    <FieldRow id={inputId} label="Request limit" hint="Choose a whole number from 1 to 100. Suggested values are available in the list.">
-      <input id={inputId} type="number" min={1} max={100} step={1} list={presetsId} value={value} disabled={loading || busy || saved === undefined} aria-describedby={`${inputId}-hint`} aria-invalid={value !== "" && !valid} onChange={event => { setValue(event.target.value); setNotice(""); setResult(undefined) }} />
-      <datalist id={presetsId}>{PRESETS.map(option => <option key={option} value={option} />)}</datalist>
+    <FieldRow id={inputId} label="Request limit">
+      <div className="settings-concurrency-slider">
+        <output htmlFor={inputId}>{valid ? number : "—"}</output>
+        <input id={inputId} type="range" min={0} max={PRESETS.length - 1} step="any" value={valid ? sliderPosition(number) : 0} disabled={unavailable} aria-valuetext={valid ? `${number} requests` : "Loading"} onChange={event => setLimit(String(PRESETS[Math.round(Number(event.target.value))]))} onKeyDown={event => {
+          if (["ArrowUp", "ArrowRight", "ArrowDown", "ArrowLeft", "Home", "End"].includes(event.key)) {
+            event.preventDefault()
+            const target = event.key === "Home" ? PRESETS[0] : event.key === "End" ? PRESETS[PRESETS.length - 1] : event.key === "ArrowUp" || event.key === "ArrowRight" ? next : previous
+            if (target !== undefined) setLimit(String(target))
+          }
+        }} />
+        <div className="settings-concurrency-stops" aria-hidden="true">{PRESETS.map(option => <span key={option}>{option}</span>)}</div>
+      </div>
     </FieldRow>
     {value !== "" && !valid && <p role="alert" className="settings-hint settings-warning">Enter a whole number between 1 and 100.</p>}
     <div className="settings-actions">
       <button type="button" className="btn-sm" disabled={busy || loading || !changed} onClick={() => void save()}>Save limit</button>
       <button type="button" className="btn-sm" disabled={busy || loading || !valid || saved === undefined} onClick={() => void runTest()}>{changed ? "Save & test" : "Test"} {valid ? number : ""} requests</button>
     </div>
-    <p className="settings-hint muted">Testing saves the selected limit first, then sends that many short requests using your saved primary model. This may incur provider charges. Results reflect this test, not a guarantee of future capacity.</p>
     {notice && <p role="status" className="settings-hint">{notice}</p>}
     {error && <p role="alert" className="settings-hint settings-warning">{error} {saved === undefined && <button type="button" className="btn-sm" onClick={() => void load()}>Retry</button>}</p>}
     {result && <div role="status" className="settings-hint">

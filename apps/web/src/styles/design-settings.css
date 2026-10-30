@@ -145,6 +145,30 @@
   text-overflow: ellipsis;
 }
 
+.settings-concurrency-slider {
+  min-width: 0;
+}
+
+.settings-concurrency-slider output {
+  display: block;
+  font-weight: 600;
+}
+
+.settings-concurrency-slider input {
+  display: block;
+  width: 100%;
+  margin: var(--space-2) 0;
+  accent-color: var(--accent);
+}
+
+.settings-concurrency-stops {
+  display: flex;
+  justify-content: space-between;
+  gap: 2px;
+  color: var(--muted);
+  font-size: .75rem;
+}
+
 .settings-field-control > .settings-hint {
   max-width: none;
 }

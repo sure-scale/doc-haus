@@ -115,6 +115,11 @@ async function fixture(name: string, width: number, onboarding = false, cloud = 
       if (method === "PUT") state.preferences = { ...state.preferences, ...body }
       return reply(state.preferences)
     }
+    if (pathname === "/engine/config" && method === "PATCH") {
+      state.config = { ...state.config, ...body }
+      return reply(state.config)
+    }
+    if (pathname === "/api/dochaus/concurrency-test" && method === "POST") return reply({ model: state.config.model, requested: body.count, succeeded: body.count, failed: 0, peak: body.count, elapsed_ms: 1000, errors: [] })
     if (method !== "GET" && !(pathname === "/api/dochaus/provider-test" && method === "POST")) {
       unexpected.push(`${name}: ${method} ${pathname}`)
       return route.abort()
@@ -176,6 +181,29 @@ async function hitTarget(control: Locator, minimum = 40) {
 }
 
 try {
+  for (const width of [1440, 390]) await scenario(`Concurrency slider saves and tests at ${width}px`, async () => {
+    const f = await fixture(`concurrency-slider-${width}`, width)
+    try {
+      await f.page.getByRole("button", { name: "Settings", exact: true }).click()
+      const dialog = f.page.getByRole("dialog", { name: "Settings", exact: true })
+      const slider = dialog.getByRole("slider", { name: "Request limit" })
+      await expect(slider).toHaveAttribute("aria-valuetext", "4 requests")
+      await slider.focus()
+      await f.page.keyboard.press("Home")
+      for (const value of [1, 3, 5, 10, 20, 30, 50, 80, 100]) {
+        await expect(slider).toHaveAttribute("aria-valuetext", `${value} requests`)
+        if (value !== 100) await f.page.keyboard.press("ArrowRight")
+      }
+      await f.page.keyboard.press("ArrowLeft")
+      await expect(slider).toHaveAttribute("aria-valuetext", "80 requests")
+      await dialog.getByRole("button", { name: "Save & test 80 requests" }).click()
+      await expect(dialog.getByText("80 of 80 requests succeeded; 0 failed.")).toBeVisible()
+      expect(f.requests.filter(item => item.path === "/engine/config" && item.method === "PATCH").at(-1)?.body).toEqual({ model_concurrency: 80 })
+      expect(f.requests.filter(item => item.path === "/api/dochaus/concurrency-test").at(-1)?.body).toEqual({ count: 80 })
+      await expect(dialog.getByText("Testing saves the selected limit first", { exact: false })).toHaveCount(0)
+      await noOverflow(f.page)
+    } finally { await f.context.close() }
+  })
   for (const width of [1440, 390]) await scenario(`Settings prepares, tests and saves exact models at ${width}px`, async () => {
     const f = await fixture(`settings-${width}`, width)
     try {
