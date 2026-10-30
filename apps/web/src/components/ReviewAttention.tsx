@@ -145,7 +145,7 @@ function NeedsAttention({ model, checking, filter, onFilter }: { model: ReviewAt
   )
 }
 
-export function ReviewToolbar({ model, checking, running, primary, fillCount, fillBlanks, startDisabled, fillDisabled, canExport, searchable, filter, onFilter, query, onQuery, onStarter, onFill, onReviewNext, onExport }: {
+export function ReviewToolbar({ model, checking, running, primary, fillCount, fillBlanks, startDisabled, fillDisabled, canExport, searchable, filter, onFilter, query, onQuery, onStarter, onFill, onReviewNext, onExport, notice }: {
   model: ReviewAttention
   checking: boolean
   running: number
@@ -165,6 +165,8 @@ export function ReviewToolbar({ model, checking, running, primary, fillCount, fi
   onFill: () => void
   onReviewNext: () => void
   onExport: (format: "xlsx" | "csv" | "docx") => void
+  // A brief word on a step just finished, such as a Review next walk.
+  notice?: string
 }) {
   const exportButton = (main: boolean) => (
     <SplitButton
@@ -191,6 +193,8 @@ export function ReviewToolbar({ model, checking, running, primary, fillCount, fi
       <div className="review-status">
         <ProgressLine progress={model.progress} />
         {running > 0 && <span className="review-running" role="status">Extracting {running}</span>}
+        {/* Always present, so screen readers announce the text when it appears. */}
+        <span className="review-notice" role="status">{notice}</span>
       </div>
       <div className="review-toolbar-actions">
         {searchable && (

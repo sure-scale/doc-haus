@@ -3,7 +3,7 @@ import { createPortal } from "react-dom"
 import { UNSAFE_DataRouterContext, useBlocker } from "react-router-dom"
 import { computeCell, describeRecheck, needsFill, recheckOutcome } from "../api/review-recheck"
 import { citesRow } from "../api/review-answer"
-import { matches, primaryAction, reviewAttention, type AttentionFilter } from "../api/review-attention"
+import { matches, primaryAction, reviewAttention, type AttentionFilter, type QueueEntry } from "../api/review-attention"
 import { cellKey, checkCellSources, getGrid, GridConflictError, hashQuestion, recheckPassages, saveGrid, type Grid, type GridCellData, type SourceCheck } from "../api/ingest/grid"
 import { humanizeError } from "../api/ingest/errors"
 import { getPreferences } from "../api/ingest/preferences"
@@ -35,6 +35,10 @@ import { MARKER_LOOK, ReviewMarker } from "./ReviewMarker"
 // the same computation (api/review-recheck).
 
 const POOL = 5 // concurrent cell extractions; the engine handles one prompt each
+
+// The walk's next step in the detail: its primary, else whichever move is left.
+const walkControl = (modal: HTMLElement | null) =>
+  modal?.querySelector<HTMLButtonElement>(".review-walk-next:not(:disabled)") ?? modal?.querySelector<HTMLButtonElement>(".review-walk-bar button:not(:disabled)")
 
 // A source check answers for the citation it was asked about, so a cell whose
 // citation has since been recomputed shows no verdict until it is checked.
@@ -135,6 +139,15 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   const [detailShown, detailClosing] = useExit(detail)
   const detailKey = detailShown ? cellKey(detailShown.docName, detailShown.columnId) : undefined
   const detailCell = detailKey ? grid.cells[detailKey] : undefined
+  // Review next walks the queue as it stood when the walk started, inside the
+  // same detail; `at` is the open cell's place in it. Opening a cell from the
+  // table leaves the walk. `walkDone` counts finished walks for their status.
+  const [walk, setWalk] = useState<{ entries: QueueEntry[]; at: number }>()
+  const [walkDone, setWalkDone] = useState(0)
+  const inWalk = !!walk && walk.entries[walk.at]?.key === detailKey
+  const walkAt = inWalk ? walk.at : -1
+  // A comment being written belongs to this cell, so the walk waits for it.
+  const composing = !!draft.trim() || commentSaving
   // The cell whose cited document is open over its detail. Closing the viewer
   // returns to that detail, with focus back on the citation that opened it.
   const [viewing, setViewing] = useState<string>()
@@ -172,17 +185,42 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     }
   }, [closing])
 
+  // Opens and closes with the detail, not with each cell it shows, so the walk
+  // moves between cells without reopening the modal or taking focus.
+  const detailOpen = !!detail
   useLayoutEffect(() => {
-    if (!detail) return
+    if (!detailOpen) return
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const modal = detailDialog.current
     modal?.showModal()
-    modal?.querySelector<HTMLTextAreaElement>("textarea")?.focus({ preventScroll: true })
+    ;(walkControl(modal) ?? modal?.querySelector<HTMLTextAreaElement>("textarea"))?.focus({ preventScroll: true })
     return () => {
       modal?.close()
       if (opener?.isConnected) opener.focus({ preventScroll: true })
     }
-  }, [detail])
+  }, [detailOpen])
+
+  // A move that removes or disables the focused walk control hands focus to
+  // the next step, so it never drops out of the detail.
+  useLayoutEffect(() => {
+    const modal = detailDialog.current
+    if (walkAt < 0 || !modal) return
+    const active = document.activeElement
+    if (active && modal.contains(active) && !active.matches(":disabled")) return
+    walkControl(modal)?.focus({ preventScroll: true })
+  }, [walkAt, canEdit])
+
+  // A finished walk hands focus to the table's next step and says it is done.
+  useLayoutEffect(() => {
+    if (!walkDone) return
+    const main = dialog.current?.querySelector<HTMLElement>(".review-toolbar .review-primary")
+    ;(main?.matches("button") ? main : main?.querySelector<HTMLElement>("button"))?.focus({ preventScroll: true })
+  }, [walkDone])
+  useEffect(() => {
+    if (!walkDone) return
+    const timer = window.setTimeout(() => setWalkDone(0), 6000)
+    return () => window.clearTimeout(timer)
+  }, [walkDone])
 
   // Escape closes only the open cell detail. Consumed here, on document (before
   // ModalHeader's window listeners) and wherever focus is, so neither those
@@ -361,18 +399,23 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     dialog.current?.querySelector<HTMLButtonElement>(".review-add-button")?.focus()
   }
 
-  function toggleReviewed(key: string) {
+  function setReviewed(key: string, reviewed: boolean) {
     const cell = gridRef.current.cells[key]
-    if (!cell) return
-    commitCell(key, { ...cell, status: cell.status === "reviewed" ? "filled" : "reviewed" })
+    if (!cell || (cell.status === "reviewed") === reviewed) return
+    commitCell(key, { ...cell, status: reviewed ? "reviewed" : "filled" })
   }
 
-  function openDetail(docName: string, columnId: string) {
+  function showDetail(docName: string, columnId: string) {
     const column = gridRef.current.columns.find((col) => col.id === columnId)
     if (!column) return
     setDraft("")
     setViewing(undefined)
     setDetail({ docName, columnId, question: column.question })
+  }
+
+  function openDetail(docName: string, columnId: string) {
+    setWalk(undefined)
+    showDetail(docName, columnId)
   }
 
   async function addComment() {
@@ -604,11 +647,43 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     setQuery("")
     dialog.current?.querySelector<HTMLInputElement>(".review-toolbar input[type=search]")?.focus()
   }
-  // Review next takes the first queued cell the view shows, else the first.
+  // Review next walks the queued cells the view shows, else the whole queue.
   const reviewNext = () => {
-    const next = attention.queue.find((entry) => matches(attention.cells.get(entry.key)!, filter, query)) ?? attention.queue[0]
-    if (next) openDetail(next.docName, next.columnId)
+    const shown = attention.queue.filter((entry) => matches(attention.cells.get(entry.key)!, filter, query))
+    const entries = shown.length ? shown : attention.queue
+    if (!entries.length) return
+    setWalkDone(0)
+    setWalk({ entries, at: 0 })
+    showDetail(entries[0].docName, entries[0].columnId)
   }
+  // Forward passes cells that no longer need attention (reviewed with nothing
+  // flagged, or gone); back returns to any cell still in the table, to look
+  // again. Past the last cell the walk ends.
+  const stillQueued = new Set(attention.queue.map((entry) => entry.key))
+  const inTable = (entry: QueueEntry) => attention.cells.has(entry.key) && !!grid.cells[entry.key]
+  const walkTo = (step: 1 | -1) => {
+    if (!walk || composing) return
+    for (let at = walk.at + step; at >= 0 && at < walk.entries.length; at += step) {
+      const entry = walk.entries[at]
+      if (step > 0 ? !stillQueued.has(entry.key) : !inTable(entry)) continue
+      setWalk({ entries: walk.entries, at })
+      showDetail(entry.docName, entry.columnId)
+      return
+    }
+    if (step < 0) return
+    setDetail(undefined)
+    setWalkDone((count) => count + 1)
+  }
+  const markReviewedNext = () => {
+    if (!inWalk || !detailKey || !canEdit || composing) return
+    setReviewed(detailKey, true)
+    walkTo(1)
+  }
+  const walkEntry = inWalk && detailKey ? attention.cells.get(detailKey) : undefined
+  const walkReason = detailKey && stillQueued.has(detailKey) ? attention.queue.find((entry) => entry.key === detailKey)!.reason : undefined
+  // A degraded source is always the cell's marker, which the walk's reason
+  // already explains, so the citation keeps only its badge.
+  const walkExplains = (check: SourceVerdict) => inWalk && !!walkReason && DEGRADED.includes(check)
 
   return createPortal(
     <dialog
@@ -646,6 +721,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
           onFill={() => { setError(undefined); setFillPreview(fillTargets()) }}
           onReviewNext={reviewNext}
           onExport={exportAs}
+          notice={walkDone ? "End of the review list" : undefined}
         />
         {narrowed && <FilterSummary shown={matching} total={attention.cells.size} filter={filter} onClear={clearView} />}
 
@@ -735,7 +811,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                                 </svg>
                                 {cell.comments?.length ?? 0}
                               </button>
-                              <button className={`icon-btn review-lock${cell.status === "reviewed" ? " locked" : ""}`} disabled={!canEdit} aria-pressed={cell.status === "reviewed"} title={cell.status === "reviewed" ? "Unlock" : "Mark reviewed"} onClick={() => toggleReviewed(key)}>
+                              <button className={`icon-btn review-lock${cell.status === "reviewed" ? " locked" : ""}`} disabled={!canEdit} aria-pressed={cell.status === "reviewed"} title={cell.status === "reviewed" ? "Unlock" : "Mark reviewed"} onClick={() => setReviewed(key, cell.status !== "reviewed")}>
                                 {cell.status === "reviewed" ? "Locked" : "Lock"}
                               </button>
                               {cell.status !== "reviewed" && (
@@ -776,15 +852,26 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
             onKeyDown={(event) => {
               // The open document viewer keeps its own focus loop.
               if (event.key !== "Tab" || viewerOpen) return
-              const first = event.currentTarget.querySelector<HTMLButtonElement>(".modal-close")
-              const last = event.currentTarget.querySelector<HTMLButtonElement>(".review-comment-compose > button:not(:disabled)") ?? event.currentTarget.querySelector<HTMLTextAreaElement>("textarea")
+              const panel = event.currentTarget.querySelector<HTMLElement>(".picker-panel")
+              const first = panel?.querySelector<HTMLButtonElement>(".modal-close")
+              const last = [...panel?.querySelectorAll<HTMLElement>("button:not(:disabled), textarea") ?? []].at(-1)
               if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
               else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
             }}
           >
             <div className="picker-panel" onClick={(e) => e.stopPropagation()}>
-              <ModalHeader title={detailShown.question} onClose={() => setDetail(undefined)} />
+              <ModalHeader
+                title={detailShown.question}
+                actions={inWalk && <span className="review-walk-position">{walk.at + 1} of {walk.entries.length}</span>}
+                onClose={() => setDetail(undefined)}
+              />
               <div className="picker-body">
+                {inWalk && (
+                  <div className={`review-walk-why${walkEntry?.marker ? ` is-${MARKER_LOOK[walkEntry.marker.state].tone}` : ""}`}>
+                    <span className="review-walk-doc">{detailShown.docName}</span>
+                    <p>{walkReason ? <><strong>Why this cell</strong> {walkReason}</> : "Reviewed."}</p>
+                  </div>
+                )}
                 <p className="review-detail-answer">{detailCell.answer}</p>
                 {detailCell.recheck && <p className="review-recheck-detail">{describeRecheck(detailCell.recheck)}</p>}
                 {detailCell.citation && detailKey && (() => {
@@ -804,7 +891,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                       <div className="excerpt">{citation.excerpt}</div>
                       <p className="review-source-check">
                         {check
-                          ? <><span className={`review-source-badge is-${check}`}>{SOURCE_BADGE[check]}</span> {SOURCE_DETAIL[check]}</>
+                          ? <><span className={`review-source-badge is-${check}`}>{SOURCE_BADGE[check]}</span>{!walkExplains(check) && <> {SOURCE_DETAIL[check]}</>}</>
                           : checkingSources ? "Checking the excerpt against the document…" : "The excerpt could not be checked against the document."}
                       </p>
                     </div>
@@ -844,12 +931,32 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                         }
                       }}
                     />
-                    <button className="primary" onClick={addComment} disabled={!canEdit || !draft.trim() || commentSaving}>
+                    <button className={!inWalk || composing ? "primary" : undefined} onClick={addComment} disabled={!canEdit || !draft.trim() || commentSaving}>
                       {commentSaving ? "Adding comment…" : "Add comment"}
                     </button>
                   </div>
                 </div>
               </div>
+              {/* One next step: Mark reviewed while the cell is open, else Next.
+                  A reviewed cell is never unlocked or refilled from here. */}
+              {inWalk && (() => {
+                const open = detailCell.status !== "reviewed"
+                return (
+                  <div className="review-walk-bar">
+                    {composing ? <small className="review-walk-hint">Add or clear the comment to move on.</small> : (
+                      <>
+                        <button type="button" className="ghost review-walk-previous" disabled={!walk.entries.slice(0, walk.at).some(inTable)} onClick={() => walkTo(-1)}>
+                          Previous
+                        </button>
+                        {open && <button type="button" className="ghost review-walk-skip" onClick={() => walkTo(1)}>Skip</button>}
+                      </>
+                    )}
+                    <button type="button" className={`review-walk-next${composing ? "" : " primary"}`} disabled={composing || (open && !canEdit)} onClick={open ? markReviewedNext : () => walkTo(1)}>
+                      {open ? "Mark reviewed · Next" : "Next"}
+                    </button>
+                  </div>
+                )
+              })()}
             </div>
             {/* Inside the native detail so it stacks above it in the top layer. */}
             <Exit when={viewerOpen ? detailCell.citation : undefined}>{(citation) => {

@@ -50,6 +50,9 @@
 .review-filter-summary { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1); margin: calc(-1 * var(--space-2)) 0 var(--space-4); color: var(--text-secondary); font-size: .85rem; font-variant-numeric: tabular-nums; }
 .review-filter-summary .linklike { min-height: 0; font-size: inherit; line-height: inherit; }
 .review-summary { display: block; color: var(--text-secondary); font-size: .9rem; font-variant-numeric: tabular-nums; }
+.review-notice { color: var(--text-secondary); font-size: .85rem; }
+/* Kept in the tree for announcements, out of the row's gaps while empty. */
+.review-notice:empty { position: absolute; }
 .review-running { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
 .review-running::before { content: ""; width: 12px; height: 12px; border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: step-spin .7s linear infinite; }
 .review-hint { margin: 0 0 var(--space-4); color: var(--muted); font-size: .9rem; }
@@ -133,6 +136,21 @@
 .review-comment-compose { display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--space-2); }
 .review-comment-compose textarea { flex: 1 1 220px; min-height: 80px; resize: vertical; }
 .review-comment-compose button { margin-left: auto; }
+
+/* Review next: the reason and place in the walk above the answer, and one
+   row of moves under the panel. Tone repeats the cell's marker; words carry it. */
+.review-walk-position { color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.review-walk-why { --walk-tone: var(--border-strong); margin: 0 0 var(--space-4); padding: var(--space-3) var(--space-4); border-left: 3px solid var(--walk-tone); border-radius: var(--radius-md); background: var(--md-sys-color-surface-container-low); }
+.review-walk-why.is-danger { --walk-tone: var(--danger); }
+.review-walk-why.is-warn { --walk-tone: var(--warn); }
+.review-walk-why.is-info { --walk-tone: var(--info); }
+.review-walk-why.is-muted { --walk-tone: var(--muted); }
+.review-walk-doc { display: block; margin-bottom: var(--space-1); color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; }
+.review-walk-why p { margin: 0; font-size: .92rem; line-height: 1.55; }
+.review-walk-why strong { margin-right: var(--space-1); font-weight: 600; }
+.review-walk-bar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3); border-top: 1px solid var(--border); }
+.review-walk-previous { margin-right: auto; }
+.review-walk-hint { flex: 1 1 0; min-width: 0; color: var(--muted); font-size: .8rem; line-height: 1.4; }
 
 /* Severity and finding status always remain readable words. Tone is a second
    cue, and a proposal never visually becomes an accepted legal conclusion. */

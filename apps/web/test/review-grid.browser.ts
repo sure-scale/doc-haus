@@ -587,6 +587,119 @@ try {
   holdChecks = heldChecks
   console.log("PASS one primary action per state, Review next, the attention filter, search and Clear")
 
+  // Review next walks the queue inside one open detail: why each cell needs a
+  // look, where it sits in the walk, and one next step. A cell reviewed before
+  // its question changed is never re-locked or refreshed from the walk; the end
+  // hands back to the toolbar's next step, and the search stays as it was.
+  storedGrid = structuredClone(grid)
+  for (const cell of Object.values(storedGrid.cells)) cell.questionHash = hashQuestion(grid.columns[0]!.question)
+  storedGrid.cells["Old note.docx::c1"] = { ...storedGrid.cells["Old note.docx::c1"]!, status: "reviewed", questionHash: "unused" }
+  const walkHeldChecks = holdChecks
+  holdChecks = false
+  await page.goto(server.url.href)
+  await toolbar.getByRole("button", { name: /^Needs attention · 2/ }).waitFor()
+  assert.equal(await primary.textContent(), "Review next")
+  const walkDetail = detailModal.locator(".picker-panel")
+  const walkAnswer = (text: string) => walkDetail.locator(".review-detail-answer", { hasText: text }).waitFor()
+  const position = walkDetail.locator(".review-walk-position")
+  const why = walkDetail.locator(".review-walk-why")
+  const walkBar = walkDetail.locator(".review-walk-bar")
+  const markNext = walkBar.getByRole("button", { name: "Mark reviewed · Next", exact: true })
+  const walkNext = walkBar.getByRole("button", { name: "Next", exact: true })
+  const skip = walkBar.getByRole("button", { name: "Skip", exact: true })
+  const previous = walkBar.getByRole("button", { name: "Previous", exact: true })
+  const gridPut = () => page.waitForResponse(response => response.url().endsWith("/grid") && response.request().method() === "PUT")
+  // Counts the detail's native opens and closes from here on.
+  const dialogCalls = () => page.evaluate(() => (window as unknown as { dialogCalls?: string[] }).dialogCalls ?? [])
+  await primary.click()
+  await walkAnswer("The law of Scotland.")
+  assert.equal(await position.textContent(), "1 of 3")
+  assert.match(await why.innerText(), /^Side letter\.docx\s+Why this cell The document no longer contains the cited excerpt\./)
+  assert.equal(await markNext.evaluate(element => element === document.activeElement), true, "the walk opens on its next step")
+  assert.equal(await previous.isDisabled(), true)
+  assert.equal(await walkDetail.locator("button.primary").count(), 1, "one primary in review mode")
+  assert.equal(await walkDetail.getByRole("button", { name: "Add comment", exact: true }).evaluate(element => element.classList.contains("primary")), false, "Add comment is secondary in review mode")
+  await detailModal.evaluate(element => {
+    element.setAttribute("data-walk", "same")
+    const calls: string[] = (window as unknown as { dialogCalls: string[] }).dialogCalls = []
+    for (const name of ["showModal", "close"] as const) {
+      const native = HTMLDialogElement.prototype[name]
+      HTMLDialogElement.prototype[name] = function (this: HTMLDialogElement) {
+        if (this.classList.contains("review-detail-modal")) calls.push(name)
+        return native.call(this)
+      }
+    }
+  })
+  const marked = gridPut()
+  await page.keyboard.press("Enter")
+  await marked
+  await walkAnswer("English law.")
+  assert.equal(storedGrid.cells["Side letter.docx::c1"]!.status, "reviewed", "Mark reviewed · Next locks the cell")
+  assert.equal(await position.textContent(), "2 of 3")
+  assert.match(await why.innerText(), /Why this cell Question changed after review\. Unlock to refresh\.$/)
+  assert.equal(await markNext.count(), 0, "a reviewed cell whose question changed offers no Mark reviewed")
+  assert.equal(await skip.count(), 0)
+  assert.equal(await walkNext.evaluate(element => element.classList.contains("primary")), true)
+  assert.equal(await focusInDetail(), true, "focus stays in the detail as the walk moves")
+  assert.equal(await detailModal.getAttribute("data-walk"), "same", "the detail is not remounted between cells")
+  assert.deepEqual(await dialogCalls(), [], "the detail does not close or reopen between cells")
+
+  await previous.click()
+  await walkAnswer("The law of Scotland.")
+  assert.equal(await position.textContent(), "1 of 3")
+  assert.equal(await markNext.count(), 0, "a cell reviewed in the walk offers Next only")
+  assert.equal(await walkNext.evaluate(element => element === document.activeElement), true, "a move that disables its button hands focus to the next step")
+  await walkNext.click()
+  await walkAnswer("English law.")
+  await walkNext.click()
+  await walkAnswer("The law of England and Wales.")
+  assert.equal(await position.textContent(), "3 of 3")
+  assert.match(await why.innerText(), /Why this cell Not reviewed yet\.$/)
+  const tableCloses = await closes()
+  await skip.click()
+  await detailModal.waitFor({ state: "detached" })
+  await toolbar.getByText("End of the review list", { exact: true }).waitFor()
+  assert.equal(await primary.textContent(), "Review next")
+  assert.equal(await primary.evaluate(element => element === document.activeElement), true, "the end returns focus to the toolbar's next step")
+  assert.deepEqual(await dialogCalls(), ["close"], "the walk's end closes the detail once")
+  assert.equal(await closes(), tableCloses, "ending the walk keeps the table open")
+  assert.equal(storedGrid.cells["Supply terms.docx::c1"]!.status, "filled", "Skip leaves the cell open")
+  assert.equal(storedGrid.cells["Old note.docx::c1"]!.status, "reviewed")
+  assert.equal(storedGrid.cells["Old note.docx::c1"]!.questionHash, "unused", "the walk never refreshes a reviewed cell")
+
+  // Ending on Mark reviewed leaves nothing to review, so focus lands on Export.
+  await primary.click()
+  await walkAnswer("The law of Scotland.")
+  assert.equal(await toolbar.getByText("End of the review list").count(), 0, "a new walk clears the last one's word")
+  await walkNext.click()
+  await walkAnswer("English law.")
+  await walkNext.click()
+  await walkAnswer("The law of England and Wales.")
+  const lastMark = gridPut()
+  await markNext.click()
+  await lastMark
+  await detailModal.waitFor({ state: "detached" })
+  await toolbar.getByText("End of the review list", { exact: true }).waitFor()
+  assert.equal(storedGrid.cells["Supply terms.docx::c1"]!.status, "reviewed")
+  assert.equal(await primary.getByRole("button", { name: "Export Excel", exact: true }).evaluate(element => element === document.activeElement), true, "with every cell reviewed, the end lands on Export")
+
+  // The walk keeps to the cells the search shows; Escape leaves it as before.
+  await search.fill("note")
+  await page.getByText("Showing 1 of 3 cells", { exact: true }).waitFor()
+  const quietNext = toolbar.getByRole("button", { name: "Review next", exact: true })
+  await quietNext.click()
+  await walkAnswer("English law.")
+  assert.equal(await position.textContent(), "1 of 1", "the walk keeps to the shown cells")
+  await page.keyboard.press("Escape")
+  await detailModal.waitFor({ state: "detached" })
+  assert.equal(await quietNext.evaluate(element => element === document.activeElement), true, "Escape returns focus to where the walk began")
+  assert.equal(await toolbar.getByText("End of the review list").count(), 0, "closing early is not the end of the walk")
+  assert.equal(await search.inputValue(), "note", "the search stays through the walk")
+  await page.getByText("Showing 1 of 3 cells", { exact: true }).waitFor()
+  await search.fill("")
+  holdChecks = walkHeldChecks
+  console.log("PASS Review next walks the queue in one detail, never re-locks a changed question and hands back to the toolbar")
+
   storedGrid = structuredClone(grid)
   extractionWaits.length = 0
   extractionStarts = 0
