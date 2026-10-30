@@ -206,13 +206,17 @@ try {
       // The lawyer's choice, not the recommendation, is what the table opens with.
       await dialog.getByRole("radio", { name: /^Document overview/ }).check()
       await dialog.getByRole("button", { name: "Start" }).click()
-      await expect(chooser(page)).toBeVisible()
-      await expect(chooser(page).getByRole("radio", { name: /^Document overview/ })).toBeChecked()
-      assert.equal(await chooser(page).getByText("Recommended", { exact: false }).count(), 0, "the chosen starter is not second-guessed")
+      // Already chosen and previewed, so the table opens at that starter's questions.
+      const questions = page.getByRole("dialog", { name: "Document overview" })
+      await expect(questions.getByRole("list", { name: "Questions to add" })).toBeVisible()
       await expect.poll(() => param(page, "starter")).toBeNull()
       assert.equal(await param(page, "view"), "review")
       await page.waitForTimeout(300)
-      await shot("arrival-chooser")
+      await shot("arrival-questions")
+      // Back reaches the chooser with the choice kept and not second-guessed.
+      await questions.getByRole("button", { name: "Back" }).click()
+      await expect(chooser(page).getByRole("radio", { name: /^Document overview/ })).toBeChecked()
+      assert.equal(await chooser(page).getByText("Recommended", { exact: false }).count(), 0, "the chosen starter is not second-guessed")
       assert.deepEqual([sessions, prompts, puts], [0, [], 0], "nothing runs or saves on arrival")
       // Consumed once: closing and reopening the table does not reopen the chooser.
       await chooser(page).getByRole("button", { name: "Cancel" }).click()
@@ -243,8 +247,7 @@ try {
       await section.locator(".list-row", { hasText: "Document overview" }).getByRole("button", { name: "Use" }).click()
       const picker = page.getByRole("dialog", { name: 'Use "Document overview" in a matter' })
       await picker.getByRole("button", { name: /Supply review/ }).click()
-      await expect(chooser(page)).toBeVisible()
-      await expect(chooser(page).getByRole("radio", { name: /^Document overview/ })).toBeChecked()
+      await expect(page.getByRole("dialog", { name: "Document overview" }).getByRole("list", { name: "Questions to add" })).toBeVisible()
       await expect.poll(() => where(page)).toBe("/matter/pair?view=review")
     })
   }

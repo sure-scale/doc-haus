@@ -16,7 +16,7 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
   existingQuestions: string[]
   problem?: string
   // A starter chosen before the table opened (from the chat's Workflows dialog
-  // or the Workflows page). A table with questions opens at its questions step.
+  // or the Workflows page), which opens at its questions step.
   initialStarter?: string
   initialStep?: "choose" | "questions"
   onCancel: () => void
