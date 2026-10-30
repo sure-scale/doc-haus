@@ -1479,7 +1479,7 @@ test("tampered row oracle refuses before opening a Word mutation batch", async (
   expect(runs).toBe(0)
 })
 
-async function nativeRowOrchestrationFixture(lostSync = false) {
+async function nativeRowOrchestrationFixture(lostSync = false, reloadInvalidates = false) {
   const { zipSync, strToU8 } = await import("fflate")
   const writerPath = new URL("../../../dochaus/lib/docx-table-row-insertion.ts", import.meta.url).href
   const { docxTableRowInsertionTargets, authorDocxTableRowInsertion } = await import(writerPath)
@@ -1502,14 +1502,14 @@ async function nativeRowOrchestrationFixture(lostSync = false) {
   const stamp = 'w:author="Reviewer" w:date="2026-01-01T00:00:00Z"'
   const cell = (text:string, mark:number, content:number) => `<w:tc><w:tcPr/><w:p><w:pPr><w:rPr><w:ins w:id="${mark}" ${stamp}/></w:rPr></w:pPr><w:ins w:id="${content}" ${stamp}><w:r><w:t>${text}</w:t></w:r></w:ins></w:p></w:tc>`
   const addedXml = `<w:tr><w:trPr><w:ins w:id="1" ${stamp}/></w:trPr>${cell("New",2,3)}${cell("Value",4,5)}</w:tr>`
-  let applied = false, queued = false, rowWrites = 0, exports = 0
-  const para = (id:string,text:string) => ({ uniqueLocalId:id, text, tableNestingLevel:1, styleBuiltIn:"Normal", spaceBefore:0, spaceAfter:0, lineSpacing:12, load() {}, getRange() { return {font:{bold:false,italic:false,underline:"None",load(){}}} } })
+  let applied = false, queued = false, rowWrites = 0, exports = 0, nestingInvalidated = false
+  const para = (id:string,text:string) => ({ uniqueLocalId:id, text, get tableNestingLevel() { if (nestingInvalidated) throw Error("PropertyNotLoaded: Paragraph.tableNestingLevel"); return 1 }, styleBuiltIn:"Normal", spaceBefore:0, spaceAfter:0, lineSpacing:12, load() {}, getRange() { return {font:{bold:false,italic:false,underline:"None",load(){}}} } })
   const oldParas = [para("a","Old"),para("b","Old two")], newParas = [para("c","New"),para("d","Value")]
   const collection = <T>(items:T[]) => ({items,load() {}})
   const nativeTable = { get rowCount() { return applied ? 2 : 1 }, isUniform:true, get values() { return applied ? [["Old","Old two"],["New","Value"]] : [["Old","Old two"]] }, load() {},
     getCell(row:number,col:number) { return {body:{paragraphs:collection([row ? newParas[col]! : oldParas[col]!]), insertText() { return {font:{bold:true,italic:true,underline:"Single",load(){}}} }}} },
     addRows() { queued = true; rowWrites++ }, }
-  const body = { get paragraphs() { return collection(applied ? [...oldParas,...newParas] : oldParas) }, tables:collection([nativeTable]),
+  const body = { get paragraphs() { return { items:applied ? [...oldParas,...newParas] : oldParas, load(properties:string) { if (reloadInvalidates && applied) nestingInvalidated = !properties.includes("tableNestingLevel") } } }, tables:collection([nativeTable]),
     getRange() { return {getOoxml() {return {value:flatOpc(tableXml(applied ? addedXml : ""))}}, getReviewedText() {return {value:applied ? "Old\rOld two\rNew\rValue" : "Old\rOld two"}}, getTrackedChanges() {return collection([])}, getComments() {return collection([])} } } }
   const document = {body, changeTrackingMode:"Off", trackFormatting:false, load() {}, getParagraphByUniqueLocalId(id:string) {return [...oldParas,...newParas].find(p=>p.uniqueLocalId===id)!} }
   const word = {async run(fn:(context:unknown)=>Promise<unknown>) {return fn({document, async sync() { if (queued) {queued=false; applied=true; if (lostSync) throw Error("lost final sync") } }})}} as WordChatWord
@@ -1520,6 +1520,12 @@ test("native row confirms once and a duplicate does not re-export or append", as
   const f = await nativeRowOrchestrationFixture()
   expect(await f.host.applyRow(f.proposal, f.exportCurrent, f.author)).toEqual({status:"applied",tracked:true,saved:false,authors:["Reviewer"]})
   expect((await f.host.applyRow(f.proposal, f.exportCurrent, f.author)).status).toBe("already-applied")
+  expect(f.counts()).toEqual({rowWrites:1,exports:1})
+})
+
+test("row confirmation retains loaded paragraph properties when document-state reload invalidates proxies", async () => {
+  const f = await nativeRowOrchestrationFixture(false, true)
+  expect(await f.host.applyRow(f.proposal, f.exportCurrent, f.author)).toEqual({status:"applied",tracked:true,saved:false,authors:["Reviewer"]})
   expect(f.counts()).toEqual({rowWrites:1,exports:1})
 })
 

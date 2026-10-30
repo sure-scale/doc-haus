@@ -418,9 +418,10 @@ export class WordChatHost {
         const body = context.document.body.getRange("Whole").getOoxml()
         await context.sync()
         const inventory = all.items.map(p => ({ id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel }))
-        const projection = projectNativeWordChatBody(body.value, inventory)
+        const beforeXml = body.value
+        const projection = projectNativeWordChatBody(beforeXml, inventory)
         const fail = () => { throw new Error("Invalid table XML") }
-        const xml = new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(body.value, "application/xml")
+        const xml = new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(beforeXml, "application/xml")
         const parts = Array.from(xml.getElementsByTagNameNS(packageNamespace, "part")).filter(p => p.getAttributeNS(packageNamespace, "name") === "/word/document.xml")
         const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", bodies = parts.length === 1 ? Array.from(parts[0]!.getElementsByTagNameNS(W, "body")) : []
         if (bodies.length !== 1) throw captureMismatch("Word returned a different table structure.")
@@ -449,17 +450,26 @@ export class WordChatHost {
         afterAll.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
         const afterXml = context.document.body.getRange("Whole").getOoxml()
         await context.sync()
-        const fonts = added.map(collection => {
+        // A later body.paragraphs load can refresh aliased Office proxies and
+        // invalidate properties already loaded on these collections.
+        const observedTracking = context.document.changeTrackingMode, observedTrackFormatting = context.document.trackFormatting
+        const observedTable = { rowCount:prepared.table.rowCount, isUniform:prepared.table.isUniform, values:prepared.table.values.map(row => [...row]) }
+        const addedParagraphs = added.map(collection => {
           if (collection.items.length !== 1) throw new Error("Unexpected new cell paragraphs")
-          const range = context.document.getParagraphByUniqueLocalId(collection.items[0]!.uniqueLocalId).getRange("Content") as WordChatRange & { font: { bold: boolean; italic: boolean; underline: string; load(properties: string): void } }
+          const p = collection.items[0]!
+          return { id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel }
+        })
+        const afterInventory = afterAll.items.map(p => ({ id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel }))
+        const observedXml = afterXml.value
+        const fonts = addedParagraphs.map(paragraph => {
+          const range = context.document.getParagraphByUniqueLocalId(paragraph.id).getRange("Content") as WordChatRange & { font: { bold: boolean; italic: boolean; underline: string; load(properties: string): void } }
           range.font.load("bold,italic,underline"); return range.font
         })
         const after = await this.documentState(context)
-        if (context.document.changeTrackingMode !== prepared.tracking || context.document.trackFormatting !== prepared.trackFormatting || !prepared.table.isUniform || prepared.table.rowCount !== prepared.rowCount + 1 || prepared.table.values.length !== prepared.rowCount + 1 || prepared.table.values.some(row => row.length !== prepared.width) || added.some((collection, i) => collection.items[0]!.text !== proposal.cells[i] || collection.items[0]!.tableNestingLevel !== 1) || fonts.some(font => font.bold !== false || font.italic !== false || font.underline !== "None") || JSON.stringify(before.comments) !== JSON.stringify(after.comments)) throw new Error("Native row confirmation failed")
-        const afterInventory = afterAll.items.map(p => ({ id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel }))
-        const remainder = verifyNativeWordChatRowRemainder(body.value, afterXml.value, inventory, afterInventory, proposal.table, proposal.cells)
-        if (remainder.addedParagraphIds.some((id, i) => id !== added[i]!.items[0]!.uniqueLocalId)) throw new Error("Native row identity mismatch")
-        const authors = verifyNativeWordChatAddedRow(body.value, afterXml.value, proposal.table, proposal.cells)
+        if (observedTracking !== prepared.tracking || observedTrackFormatting !== prepared.trackFormatting || !observedTable.isUniform || observedTable.rowCount !== prepared.rowCount + 1 || observedTable.values.length !== prepared.rowCount + 1 || observedTable.values.some(row => row.length !== prepared.width) || addedParagraphs.some((paragraph, i) => paragraph.text !== proposal.cells[i] || paragraph.tableNestingLevel !== 1) || fonts.some(font => font.bold !== false || font.italic !== false || font.underline !== "None") || JSON.stringify(before.comments) !== JSON.stringify(after.comments)) throw new Error("Native row confirmation failed")
+        const remainder = verifyNativeWordChatRowRemainder(beforeXml, observedXml, inventory, afterInventory, proposal.table, proposal.cells)
+        if (remainder.addedParagraphIds.some((id, i) => id !== addedParagraphs[i]!.id)) throw new Error("Native row identity mismatch")
+        const authors = verifyNativeWordChatAddedRow(beforeXml, observedXml, proposal.table, proposal.cells)
         this.applied.set(proposal.id, { identity, authors, uncertain: false })
         return { status: "applied", tracked: true, saved: false, authors }
       })
