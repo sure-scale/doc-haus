@@ -34,9 +34,9 @@ export function needsFill(cell: GridCellData | undefined, questionHash: string) 
   return cell.questionHash !== questionHash || (!cell.citation && !cell.recheck)
 }
 
-export async function computeCell(input: { document: string; question: string; questionHash: string }, jobs: CellJobs): Promise<GridCellData> {
+export async function computeCell(input: { document: string; docPath?: string; question: string; questionHash: string }, jobs: CellJobs): Promise<GridCellData> {
   const first = await jobs.extract(`Document: "${input.document}". Question: ${input.question}`)
-  const { text, citation } = readReviewAnswer(first)
+  const { text, citation } = readReviewAnswer(first, { name: input.document, docPath: input.docPath })
   const cell: GridCellData = { answer: text || NOT_ADDRESSED, citation: citation && stored(citation), status: "filled", questionHash: input.questionHash }
   if (cell.citation) return cell
   const found = await jobs.passages({

@@ -3,6 +3,7 @@ import { SplitButton } from "./SplitButton"
 import { createPortal } from "react-dom"
 import { UNSAFE_DataRouterContext, useBlocker } from "react-router-dom"
 import { computeCell, describeRecheck, needsFill } from "../api/review-recheck"
+import { citesRow } from "../api/review-answer"
 import { cellKey, checkCellSources, getGrid, GridConflictError, hashQuestion, isStale, recheckPassages, saveGrid, type Grid, type GridCellData, type SourceCheck } from "../api/ingest/grid"
 import { humanizeError } from "../api/ingest/errors"
 import { getPreferences } from "../api/ingest/preferences"
@@ -37,19 +38,29 @@ const POOL = 5 // concurrent cell extractions; the engine handles one prompt eac
 // citation has since been recomputed shows no verdict until it is checked.
 type Citation = NonNullable<GridCellData["citation"]>
 const sourceSignature = (c: Citation) => JSON.stringify([c.documentName, c.excerpt, c.charStart, c.charEnd])
-const DEGRADED: SourceCheck[] = ["not_found", "missing"]
-const SOURCE_BADGE: Record<SourceCheck, string> = { verified: "Verified", reanchored: "Re-anchored", not_found: "Not found", missing: "Source missing" }
-const SOURCE_DETAIL: Record<SourceCheck, string> = {
+// A cell saved before answers were tied to their row can cite another
+// document's passage. It is never sent to be checked: that passage cannot
+// support this row's answer, whatever its own document says.
+type SourceVerdict = SourceCheck | "other_document"
+const DEGRADED: SourceVerdict[] = ["not_found", "missing", "other_document"]
+const SOURCE_BADGE: Record<SourceVerdict, string> = { verified: "Verified", reanchored: "Re-anchored", not_found: "Not found", missing: "Source missing", other_document: "Cites another document" }
+const SOURCE_DETAIL: Record<SourceVerdict, string> = {
   verified: "The excerpt matches the document at the recorded position.",
   reanchored: "The excerpt is still in the document, but at a different position from the one recorded. The document may have changed since this answer.",
   not_found: "The document no longer contains this excerpt. It has changed since this answer; check the answer against the current text.",
   missing: "This document is no longer in the matter, so the excerpt cannot be checked.",
+  other_document: "The cited passage is from another document, so it does not support this answer for this document. Refresh the cell to answer from this document.",
+}
+// Cell keys are `<row document>::<column id>`; column ids never contain "::".
+function citesOwnRow(key: string, citation: Citation, documents: Document[]) {
+  const name = key.slice(0, key.lastIndexOf("::"))
+  return citesRow(citation, { name, docPath: documents.find((doc) => doc.name === name)?.doc_path })
 }
 
 // The chat question for one cell: its question, answer and recorded citation,
 // prefilled for the lawyer to edit and send. It carries what the run recorded;
 // the assistant does not re-derive the answer from scratch.
-function cellQuestion(docName: string, question: string, cell: GridCellData, check?: SourceCheck) {
+function cellQuestion(docName: string, question: string, cell: GridCellData, check?: SourceVerdict) {
   const c = cell.citation
   return [
     `About this review table answer for ${docName}:`,
@@ -126,14 +137,15 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   // accepted or rejected redline).
   const [sourceChecks, setSourceChecks] = useState<{ key: string; checks: Record<string, { signature: string; check?: SourceCheck }>; failed?: boolean }>()
   const [sourceRound, setSourceRound] = useState(0)
-  const sources = useMemo(() => Object.entries(grid.cells).flatMap(([key, cell]) => cell.citation
+  const sources = useMemo(() => Object.entries(grid.cells).flatMap(([key, cell]) => cell.citation && citesOwnRow(key, cell.citation, documents)
     ? [{ key, signature: sourceSignature(cell.citation), documentName: cell.citation.documentName, excerpt: cell.citation.excerpt, charStart: cell.citation.charStart, charEnd: cell.citation.charEnd }]
-    : []), [grid.cells])
+    : []), [grid.cells, documents])
   // An edit invalidates the verdict in the same render, before the next effect
   // starts. Late replies remain tied to the document round they actually checked.
   const sourcesKey = JSON.stringify([matterId, sourceRound, sources])
   const sourceCheckFailed = sourceChecks?.key === sourcesKey && sourceChecks.failed
-  const sourceEntry = (key: string, cell: GridCellData | undefined) => {
+  const sourceEntry = (key: string, cell: GridCellData | undefined): { signature: string; check?: SourceVerdict } | undefined => {
+    if (cell?.citation && !citesOwnRow(key, cell.citation, documents)) return { signature: sourceSignature(cell.citation), check: "other_document" }
     const entry = sourceChecks?.key === sourcesKey ? sourceChecks.checks[key] : undefined
     return cell?.citation && entry?.signature === sourceSignature(cell.citation) ? entry : undefined
   }
@@ -393,7 +405,8 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
   // deterministic pass over this document only, then, if it found candidate
   // passages, one extract call that may use no tools and sees only those.
   function extract(docName: string, question: string): Promise<GridCellData> {
-    return computeCell({ document: docName, question, questionHash: hashQuestion(question) }, {
+    const docPath = documentsRef.current.find((doc) => doc.name === docName)?.doc_path
+    return computeCell({ document: docName, docPath, question, questionHash: hashQuestion(question) }, {
       extract: (prompt) => extractTurn(`doc.haus grid: ${docName}`, prompt),
       passages: (request) => recheckPassages(matterId, { document: docName, question, ...request }),
       recheck: (prompt) => extractTurn(`doc.haus grid re-check: ${docName}`, prompt, [{ action: "*", resource: "*", effect: "deny" }]),
@@ -663,7 +676,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, onCl
                             </button>
                             {degraded && (
                               <span className="review-degraded" title={SOURCE_DETAIL[check]}>
-                                {check === "missing" ? "Source missing" : "Source changed"}
+                                {check === "not_found" ? "Source changed" : SOURCE_BADGE[check]}
                               </span>
                             )}
                             {cell.recheck && (

@@ -1,11 +1,19 @@
 import type { Citation } from "./opencode/parts"
 import type { Part } from "./session-view"
 
+export type ReviewRow = { name: string; docPath?: string }
+
+// Whether a citation is to the row's own document. Another matter document can
+// share a section label, and its passage never supports this row's answer.
+export function citesRow(citation: Pick<Citation, "documentName" | "docPath">, row: ReviewRow) {
+  return citation.documentName === row.name && (!row.docPath || citation.docPath === row.docPath || citation.docPath === row.name)
+}
+
 // Keep the final answer separate from intermediate progress text. Retrieval
 // citations may belong to earlier provider steps in the same extraction.
-export function readReviewAnswer(messages: Array<{ parts: Part[] }>) {
+export function readReviewAnswer(messages: Array<{ parts: Part[] }>, row: ReviewRow) {
   const { text, source } = readAnswerText(messages)
-  const citations = retrievedCitations(messages)
+  const citations = retrievedCitations(messages).filter(citation => citesRow(citation, row))
   const section = source?.replace(/^§\s*/, "")
   const matches = citations.filter(citation => section && (citation.section === section ||
     citation.structuralPath?.split("›").at(-1)?.trim().replace(/^§\s*/, "") === section))

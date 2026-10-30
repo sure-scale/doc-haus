@@ -158,3 +158,13 @@ test("the stored re-check reads as what was searched", () => {
   expect(describeRecheck(record("not_found", 1, { read: 1, reread: 1, terms: [] }))).toBe(
     "Not found after re-check. The question has no searchable terms; re-read the one passage the first search returned: none supported a cited answer.")
 })
+
+test("a first answer citing another document's passage goes to the row's re-check", async () => {
+  // Both documents have a Termination clause; the first search returned only NDA's.
+  const clause = (documentName: string): Citation => ({ documentName, docPath: `/matter/${documentName}`, section: "Termination", excerpt: `${documentName} termination.`, charStart: 100, charEnd: 130, score: 1 })
+  const { calls, deps } = fake([searched(clause("NDA.docx")), reply("Either party on 30 days' notice\nSource: §Termination")],
+    { citations: [clause("MSA.docx")], passages: "1. [MSA.docx § Termination]", scope }, [reply("Either party on 90 days' notice\nSource: [1]")])
+  const cell = await computeCell({ document: "MSA.docx", docPath: "/matter/MSA.docx", question: "How can the agreement be terminated?", questionHash: "h1" }, deps)
+  expect(calls.passages).toHaveLength(1)
+  expect(cell).toMatchObject({ answer: "Either party on 90 days' notice", citation: { documentName: "MSA.docx", docPath: "/matter/MSA.docx" }, recheck: { outcome: "found" } })
+})
