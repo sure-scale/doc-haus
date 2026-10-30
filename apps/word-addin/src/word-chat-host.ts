@@ -619,6 +619,7 @@ export class WordChatHost {
     const adjacent = fresh.adjacent.map(p => ({ before: p.ooxml, after: context.document.getParagraphByUniqueLocalId(p.id).getRange("Whole").getOoxml() }))
     await context.sync()
     let authors: string[] = []
+    let verificationError: unknown
     let confirmed = context.document.changeTrackingMode === fresh.tracking && context.document.trackFormatting === fresh.trackFormatting &&
       JSON.stringify(all.items.map(p => p.uniqueLocalId)) === JSON.stringify(fresh.ids) && current.value === input.target.text
     try {
@@ -634,8 +635,8 @@ export class WordChatHost {
       })
       confirmed &&= ![...prior.values()].some(Boolean) && (expectedFormatCount === 0 || added.length > 0) &&
         added.every(change => change.type === "Formatted" && authors.includes(change.author))
-    } catch { confirmed = false }
-    if (!confirmed) throw new WordChatHostError("Word changed the formatting, but could not confirm the reviewed tracked markup. Inspect it and use Undo if needed. Do not apply this proposal again.")
+    } catch (error) { confirmed = false; verificationError = error }
+    if (!confirmed) throw new WordChatHostError("Word changed the formatting, but could not confirm the reviewed tracked markup. Inspect it and use Undo if needed. Do not apply this proposal again.", "unchanged", verificationError === undefined ? undefined : { cause: verificationError })
     if (authored.wording) authors = [...new Set(["doc.haus", ...authors])]
     this.applied.set(input.proposalId, { identity, authors, uncertain: false })
     return { status: "applied", tracked: true, saved: false, authors, target: { ...input.target, id: crypto.randomUUID(), saved: false, capturedAt: new Date().toISOString() } }

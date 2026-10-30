@@ -739,9 +739,18 @@ test("a missing native format revision is uncertain and cannot be replayed", asy
   const { state, host } = formattedOffice(), target = (await host.selection())!
   state.dropNativeFormatting = true
   const input = { proposalId: "missing-native-format", target, replacement: target.text, formatting: [{ paragraph: 2, spacingAfter: 6 }] }
-  await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("could not confirm") })
+  let caught: unknown
+  try { await host.apply(input) } catch (error) { caught = error }
+  expect(caught).toMatchObject({ mutationState: "uncertain", message: expect.stringContaining("could not confirm") })
+  const inner = (caught as WordChatHostError).cause as WordChatHostError
+  expect(inner).toBeInstanceOf(WordChatHostError)
+  expect(inner.cause).toBeInstanceOf(Error)
+  expect((inner.cause as Error).message).toBeTruthy()
   expect(state.tracking).toBe("TrackAll")
+  const batches = state.syncBatchSizes.filter(size => size > 0)
+  expect(batches).toHaveLength(1)
   await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain" })
+  expect(state.syncBatchSizes.filter(size => size > 0)).toEqual(batches)
   expect(state.writes).toHaveLength(0)
 })
 
