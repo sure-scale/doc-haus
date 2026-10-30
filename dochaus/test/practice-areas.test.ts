@@ -40,6 +40,8 @@ test("firm practice areas reach substantive and library agents and update lean i
     for (const agent of ["lean-checklist-extract", "lean-checklist-check"]) {
       expect(await system(agent)).not.toContain("<practice_areas>")
     }
+    // Its JSON reply is read by code: no firm, matter or legal context at all.
+    expect(await system("review-compare")).toBe("")
     const before = stageDraftingPreferences(matter)
     save(["Corporate"])
     expect(stageDraftingPreferences(matter)).not.toBe(before)

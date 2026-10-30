@@ -7,7 +7,7 @@ export type DraftingPreferencesMode = "full" | "explanation" | "none"
 // drafting run's progress, rather than make jurisdiction-sensitive judgments, so
 // they receive no jurisdiction packs. The narrator receives only preferences
 // for human-facing explanations; substantive stages receive preferences in full.
-const CONTEXT_FREE_AGENTS = new Set(["draft", "router", "narrator", "dashboard", "dashboard-chart"])
+const CONTEXT_FREE_AGENTS = new Set(["draft", "router", "narrator", "dashboard", "dashboard-chart", "review-compare"])
 
 export function jurisdictionContextMode(agent: string | undefined): JurisdictionContextMode {
   if (agent && CONTEXT_FREE_AGENTS.has(agent)) return "none"

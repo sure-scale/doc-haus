@@ -62,11 +62,11 @@ export async function getMessages(client: Client, sessionID: string) {
 
 // The same messages unprojected, oldest first: each assistant turn (and
 // compaction) keeps its own cost and time, which the chat projection drops.
-export async function listMessageInfos(client: Client, sessionID: string) {
+export async function listMessageInfos(client: Client, sessionID: string, signal?: AbortSignal) {
   const messages: SessionMessageInfo[] = []
   let cursor: string | undefined
   do {
-    const page = await client.message.list({ sessionID, limit: 200, ...(cursor ? { cursor } : { order: "asc" }) })
+    const page = await client.message.list({ sessionID, limit: 200, ...(cursor ? { cursor } : { order: "asc" }) }, signal ? { signal } : undefined)
     messages.push(...page.data)
     cursor = page.cursor.next ?? undefined
   } while (cursor)

@@ -4,7 +4,17 @@ import { ingestError } from "./errors"
 
 // Tabular-review grid. Columns are questions; cells are keyed `<docName>::<colId>`.
 // Rows are the matter's documents, so they are not stored here.
-export type GridColumn = { id: string; question: string }
+export type GridColumn = { id: string; question: string; comparison?: GridColumnComparison }
+// The AI's grouping of one question's cited answers across documents. Fresh only
+// while `questionHash` and `inputs` (the compared answers' signature) still match.
+// `cells` is keyed by document name; labels are assigned in code, never by the model.
+export type GridColumnComparison = {
+  questionHash: string
+  inputs: string
+  cells: Record<string, { label: "consistent" | "differs"; reason: string }>
+  summary: string
+  comparedAt: number
+}
 export type GridCellData = {
   answer: string
   citation?: {
