@@ -3,6 +3,7 @@ import { INGEST_URL } from "../../config"
 export type Config = {
   model?: string
   small_model?: string
+  model_concurrency?: number
   disabled_providers?: string[]
   provider?: Record<string, { npm?: string; name?: string; options?: Record<string, unknown>; models?: Record<string, { name: string }> }>
 }
@@ -12,6 +13,16 @@ export async function getConfig() {
   const res = await fetch(`${INGEST_URL}/engine/config`, { signal: AbortSignal.timeout(10000) })
   if (!res.ok) throw new Error(`Failed to load config (${res.status})`)
   return (await res.json()) as Config
+}
+
+// Limit how many client-side jobs are admitted at once. The engine owns the
+// authoritative cross-session limit, including changes made during a batch.
+export async function getModelConcurrency() {
+  try {
+    const value = (await getConfig()).model_concurrency
+    if (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 100) return value
+  } catch { /* A conservative local pool still lets the engine enforce its cap. */ }
+  return 4
 }
 
 export async function patchConfig(patch: Config) {

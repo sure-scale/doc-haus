@@ -41,6 +41,17 @@ test("credentials, code, discovery and malformed provider input never reach disk
 })
 test("fresh install has no implicit generation model", () => { fixture(); expect(readEngineConfig().model).toBeUndefined(); expect(readEngineConfig().small_model).toBeUndefined() })
 
+test("concurrency is a persisted whole number from 1 to 100", () => {
+  fixture()
+  expect(readEngineSettings().model_concurrency).toBe(4)
+  for (const value of [1, 50, 100]) {
+    patchEngineConfig({ model_concurrency: value })
+    expect(readEngineSettings().model_concurrency).toBe(value)
+  }
+  for (const value of [0, 101, 1.5, "4", null]) expect(() => patchEngineConfig({ model_concurrency: value })).toThrow()
+  expect(readEngineSettings().model_concurrency).toBe(100)
+})
+
 test("removed provider cannot be newly selected or configured; Go and unrelated settings remain editable", () => {
   fixture(); patchEngineConfig({ model: "test/primary", small_model: "test/fast" })
   const before = readFileSync(engineConfigFile(), "utf8")

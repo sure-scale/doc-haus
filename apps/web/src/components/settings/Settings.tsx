@@ -12,6 +12,7 @@ import WordAddin from "./WordAddin"
 import { connectionMessage, providerHealth } from "../../api/opencode/provider-health"
 import SettingsDialog from "./SettingsDialog"
 import { SettingsFooterContext } from "./SettingsFooter"
+import ConcurrencySettings from "./ConcurrencySettings"
 
 // AI setup shares its provider, connection, model and test flow with onboarding.
 const TABS: { id: Tab; label: string }[] = [
@@ -41,7 +42,8 @@ export default function Settings({ onClose, closing = false, firstRun = false, r
   const [aiSaving, setAISaving] = useState(false)
   const [wordBusy, setWordBusy] = useState(false)
   const [matterBusy, setMatterBusy] = useState(false)
-  const busy = aiSaving || wordBusy || matterBusy
+  const [concurrencyBusy, setConcurrencyBusy] = useState(false)
+  const busy = aiSaving || wordBusy || matterBusy || concurrencyBusy
   function switchTab(next: Tab) {
     if (busy || (recoveryRequired && next !== "ai")) return
     setTab(next)
@@ -74,7 +76,7 @@ export default function Settings({ onClose, closing = false, firstRun = false, r
         ))}
       </div>
       <div className="settings-main"><SettingsFooterContext.Provider value={{ target: footer, tab }}><div className="settings-content" id={`${tabsId}-panel`} role="tabpanel" aria-labelledby={`${tabsId}-${tab}`} tabIndex={0}>
-        <div hidden={tab !== "ai"} inert={tab !== "ai"}>{recoveryRequired && <div role="alert" className="settings-notice"><p>{connectionMessage(providerHealth.getSnapshot().find(item => ["auth", "model", "unavailable"].includes(item.status)) ?? { providerID: reconnectProvider ?? "", modelID: "", status: "unavailable" })}</p><button type="button" disabled={busy} onClick={() => void providerHealth.check(true).then(() => { if (providerHealth.getSnapshot().length > 0 && providerHealth.getSnapshot().every(item => item.status === "ready")) onClose() })}>Check again</button></div>}<AISetup key={`${recoveryRequired}:${reconnectProvider ?? ""}`} reconnectProvider={reconnectProvider} onProgress={progress => setAISaving(progress.saving === true)} onSaved={() => { toast("success", "AI setup saved."); if (firstRun || recoveryRequired) onClose() }} /></div>
+        <div hidden={tab !== "ai"} inert={tab !== "ai"}>{recoveryRequired && <div role="alert" className="settings-notice"><p>{connectionMessage(providerHealth.getSnapshot().find(item => ["auth", "model", "unavailable"].includes(item.status)) ?? { providerID: reconnectProvider ?? "", modelID: "", status: "unavailable" })}</p><button type="button" disabled={busy} onClick={() => void providerHealth.check(true).then(() => { if (providerHealth.getSnapshot().length > 0 && providerHealth.getSnapshot().every(item => item.status === "ready")) onClose() })}>Check again</button></div>}<AISetup key={`${recoveryRequired}:${reconnectProvider ?? ""}`} reconnectProvider={reconnectProvider} onProgress={progress => setAISaving(progress.saving === true)} onSaved={() => { toast("success", "AI setup saved."); if (firstRun || recoveryRequired) onClose() }} />{!firstRun && !recoveryRequired && <ConcurrencySettings onBusy={setConcurrencyBusy} />}</div>
 
         {tab === "drafting" && <DraftingTab onSaved={(m) => toast("success", m)} />}
         {tab === "research" && <ResearchTab onSaved={(m) => toast("success", m)} />}

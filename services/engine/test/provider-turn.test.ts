@@ -23,9 +23,16 @@ test("native provider turn executes a legal tool through the v2 plugin", async (
   await symlink(path.join(original, "dochaus", "plugin", "legal-v2.ts"), path.join(repository, "dochaus", "plugin", "legal-v2.ts"))
   await symlink(path.join(original, "dochaus", "plugin", "research-mcp.ts"), path.join(repository, "dochaus", "plugin", "research-mcp.ts"))
   const requests: Array<{ messages: Array<{ role: string; content?: unknown }>; tools?: Array<{ function: { name: string } }> }> = []
+  let probeActive = 0, probePeak = 0
   const provider = Bun.serve({ port: 0, async fetch(request) {
     const body = await request.json()
     requests.push(body)
+    if (body.messages.some((entry: { content?: unknown }) => JSON.stringify(entry.content).includes("eight short friendly sentences"))) {
+      probeActive++
+      probePeak = Math.max(probePeak, probeActive)
+      await Bun.sleep(300)
+      probeActive--
+    }
     if (body.messages.some((entry: { tool_call_id?: string }) => entry.tool_call_id === "call_legal_read") && !JSON.stringify(body).includes("Attempt a forged private field") && !body.messages.some((entry: { tool_call_id?: string }) => entry.tool_call_id === "call_parallel_read")) return new Response(JSON.stringify({ error: { message: "Parallel tool output missing" } }), { status: 400 })
     const forged = body.messages.some((entry: { content?: unknown }) => JSON.stringify(entry.content).includes("Attempt a forged private field"))
     const hasResult = body.messages.some((entry: { role: string }) => entry.role === "tool")
@@ -43,6 +50,7 @@ test("native provider turn executes a legal tool through the v2 plugin", async (
   const config = JSON.parse(await readFile(path.join(original, "dochaus", "opencode.json"), "utf8"))
   config.mcp = {}
   config.model = config.small_model = "local-fixture/local-fixture"
+  config.model_concurrency = 4
   config.provider = { "local-fixture": { npm: "@ai-sdk/openai-compatible", name: "Local test fixture", options: { baseURL: `http://127.0.0.1:${provider.port}/v1`, apiKey: "synthetic-test-only" }, models: { "local-fixture": { name: "Local fixture", tool_call: true, limit: { context: 131072, output: 8192 } } } } }
   config.agent = Object.fromEntries(Object.entries(config.agent).map(([id, value]) => [id, { ...(value as object), model: config.model }]))
   config.agent["runtime-parent"] = { mode: "primary", model: config.model, prompt: "Delegate the local read to qa-worker using task, then report completion.", tools: { "*": false, task: true }, permission: { task: "allow", subagent: "allow" } }
@@ -68,6 +76,11 @@ test("native provider turn executes a legal tool through the v2 plugin", async (
       if (Date.now() > readyDeadline || engine.exitCode !== null) throw new Error(`Legal plugin did not activate: ${await readFile(logPath, "utf8")}`)
       await Bun.sleep(100)
     }
+    expect((await request("/api/dochaus/concurrency-test", { count: 2 })).status).toBe(409)
+    const concurrency = await request("/api/dochaus/concurrency-test", { count: 4 })
+    expect(concurrency.status).toBe(200)
+    expect(await concurrency.json()).toMatchObject({ model: config.model, requested: 4, succeeded: 4, failed: 0, peak: 4 })
+    expect(probePeak).toBe(4)
     expect((await request("/api/session", { id: "ses_provider_fixture", agent: "qa", model: { providerID: "local-fixture", id: "local-fixture" }, location: { directory: matter } })).status).toBe(200)
     expect((await request("/api/session/ses_provider_fixture/prompt", { id: "msg_provider_fixture", text: "Check the indexed matter using grep-matter for agreement and report completion." })).status).toBe(200)
     const deadline = Date.now() + 30_000

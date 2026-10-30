@@ -40,13 +40,15 @@ import { existsSync, mkdirSync, openSync, closeSync, readFileSync, unlinkSync, w
 import { dataPaths } from "./data-paths"
 import { legalConfigLayer, legalManagedPolicy } from "./config-layer"
 import { generationAdmissionError } from "./generation-admission"
-import { readEffectiveSettings } from "./effective-settings"
+import { modelConcurrency, readEffectiveSettings } from "./effective-settings"
 import { createReusedCredential, credentialReuse, credentialReuseHandler, nativeCredentialDirectory } from "./credential-reuse"
 import { researchConsentStatus } from "../../../dochaus/lib/research-consent-status"
 import { providerCandidates, ProviderCandidateError } from "./provider-candidate"
 import { providerCatalog } from "./provider-catalog"
 import { modelHttp } from "./model-http"
 import { probeProvider, providerTestCache, providerTestFailure, providerTestInput, unavailableModel } from "./provider-health"
+import { concurrencyProbe, runConcurrencyTest, type ConcurrencyProbe } from "./concurrency-test"
+import { limitModelClient, modelConcurrencyNode } from "./model-concurrency"
 
 const repository = path.resolve(import.meta.dir, "../../..")
 const legal = path.join(repository, "dochaus")
@@ -62,6 +64,7 @@ const minimumLogLevel = verbosity === "debug" ? "Debug" : verbosity === "info" ?
 // Request helpers start independent fibers too; share the threshold with startup.
 const runEngine = Effect.runPromiseWith(Context.make(References.MinimumLogLevel, minimumLogLevel))
 const cachedProviderTest = providerTestCache()
+let concurrencyTestRunning = false
 process.env.OPENCODE_CONFIG_DIR = legal
 process.env.WORKSPACE_ROOT = workspace
 process.env.DOCHAUS_RUNTIME_DIR = runtime
@@ -174,6 +177,7 @@ await runEngine(
       const building = Layer.build(
         createRoutes(options, () => [], [
             modelHttp,
+            modelConcurrencyNode,
             Global.node.replace(Global.layerWith({
               data: path.join(runtime, "data", "opencode"),
               config: path.join(runtime, "config", "opencode"),
@@ -224,9 +228,10 @@ await runEngine(
       const credentials = Context.get(context, Credential.Service)
       // Stateless health requests use the same native executor and HTTP client;
       // models still resolve in the sealed installation Location graph.
-      const probeClient = Context.get(yield* Layer.build(LLMClient.layer.pipe(Layer.provide(
+      const rawProbeClient = Context.get(yield* Layer.build(LLMClient.layer.pipe(Layer.provide(
         RequestExecutor.layer.pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, Context.get(context, HttpClient.HttpClient)))),
       ))), LLMClient.Service)
+      const probeClient = limitModelClient(rawProbeClient)
       const restartRelease = yield* Deferred.make<void>()
       const shutdown = yield* Deferred.make<void>()
       let shuttingDown = false
@@ -271,6 +276,8 @@ await runEngine(
             return generateText(request, locations)
           if (pathname === "/api/dochaus/provider-test" && request.method === "POST")
             return testProvider(request, locations, credentials, probeClient)
+          if (pathname === "/api/dochaus/concurrency-test" && request.method === "POST")
+            return testConcurrency(request, locations, rawProbeClient)
           if (pathname === "/api/dochaus/provider-catalog" && request.method === "GET")
             return listProviderCatalog(request, locations)
           if (request.method === "POST" && (/^\/api\/session\/[^/]+\/(prompt|generate)$/.test(pathname) ||
@@ -415,6 +422,45 @@ async function testProvider(request: Request, locations: Context.Service.Shape<t
       runEngine(probeProvider(ref).pipe(Effect.provide(graph), Effect.provideService(LLMClient.Service, client)), { signal: AbortSignal.timeout(20_000) }))
     return managedJson(request, result, result.ok ? 200 : result.kind === "model" ? 400 : 503)
   } catch (error) { return managedJson(request, providerTestFailure(error), 503) }
+}
+
+async function testConcurrency(request: Request, locations: Context.Service.Shape<typeof LocationServiceMap.Service>,
+  client: Context.Service.Shape<typeof LLMClient.Service>) {
+  const ready = await managedReadinessResponse(request, locations)
+  if (!ready.ok) return ready
+  const input: unknown = await request.json().catch(() => undefined)
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => key !== "count") ||
+    !("count" in input) || !Number.isInteger(input.count) || (input.count as number) < 1 || (input.count as number) > 100)
+    return managedJson(request, { error: "Choose a whole number from 1 to 100." }, 400)
+  if (concurrencyTestRunning) return managedJson(request, { error: "A concurrency test is already running." }, 409)
+  try {
+    const settings = readEffectiveSettings()
+    const count = input.count as number
+    if (count !== modelConcurrency(settings)) return managedJson(request, { error: "Save this concurrency setting before testing it." }, 409)
+    if (!settings.model) return managedJson(request, { error: "Select a primary model before testing concurrency." }, 400)
+    const ref = Model.Ref.parse(settings.model)
+    if (settings.disabled_providers?.includes(ref.providerID) ||
+      Array.isArray(settings.enabled_providers) && !settings.enabled_providers.includes(ref.providerID))
+      return managedJson(request, { error: "The selected provider is disabled." }, 400)
+    const directory = requestRef(HttpServerRequest.fromWeb(request)).directory
+    const graph = locations.get(Location.Ref.make({ directory }))
+    concurrencyTestRunning = true
+    const deadline = AbortSignal.timeout(90_000)
+    const signal = AbortSignal.any([request.signal, deadline])
+    const result = await runConcurrencyTest(settings.model, count, async observer => {
+      try {
+        const result = await runEngine(concurrencyProbe(ref).pipe(Effect.provide(graph), Effect.provideService(LLMClient.Service, limitModelClient(client, observer))), { signal })
+        return !result.ok && deadline.aborted ? { ok: false, kind: "timeout" } satisfies ConcurrencyProbe : result
+      } catch {
+        return { ok: false, kind: deadline.aborted ? "timeout" : "unavailable" } satisfies ConcurrencyProbe
+      }
+    })
+    return managedJson(request, result, 200)
+  } catch {
+    return managedJson(request, { error: "The concurrency test could not start. Check your selected model and try again." }, 503)
+  } finally {
+    concurrencyTestRunning = false
+  }
 }
 
 function managedJson(request: Request, body: object, status: number) {

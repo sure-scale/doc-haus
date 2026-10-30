@@ -11,6 +11,7 @@ import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_PROMPT_VERSION, LEAN_STA
 import { QUESTION_KIND_CONTRACT, hashStageInputs, readLeanJson, readQuestions, writeLeanText, type LeanState, type LeanStageState } from "./state"
 import type { DocID } from "./plan"
 import type { Amendment } from "../../lib/drafting-amendment"
+import { workflowConcurrency } from "./model-concurrency"
 
 /** `prior` holds the earlier valid operations within `changes`, kept for a
  * paragraph too large to reconcile in one bounded step. */
@@ -187,7 +188,7 @@ export async function runChangeReconciliation(directory: string, state: LeanStat
       results.push(...oversized.map(row => unreconciledParagraph(component, row.pid, row.reason)))
     } catch (error) { failures.push(`${component.id}: ${error instanceof Error ? error.message : String(error)}`) }
   }
-  await Promise.all(Array.from({ length: Math.min(4, jobs.length) }, async () => {
+  await Promise.all(Array.from({ length: Math.min(workflowConcurrency(), jobs.length) }, async () => {
     for (;;) {
       const at = counts.next++, job = jobs[at]
       if (!job) return

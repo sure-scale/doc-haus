@@ -16,6 +16,7 @@ import { approvedResearch } from "./research"
 import { findingItem, findingsFor, findingsText, heldBackDispositions, reviewText, routedFindingItems } from "./review-findings"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_PROMPT_VERSION, LEAN_STAGE_AGENTS, stageInputs, stepSessionTitle, type LeanDeps } from "./stages"
 import { QUESTION_KIND_CONTRACT, hashStageInputs, leanFile, questionContent, readLeanJson, readLeanText, readQuestions, writeLeanText, type LeanState, type LeanStageState, type Question } from "./state"
+import { workflowConcurrency } from "./model-concurrency"
 
 export type ChangeGroup = {
   id: string
@@ -41,7 +42,6 @@ export type ReviewDisposition = {
 export type ChangePlan = { shared_decisions: string[]; groups: ChangeGroup[]; dismissed: string[]; questions: (Question & { resolves?: string[] })[]; findings?: ReviewDisposition[]; settled_groups?: ChangeGroup[] }
 export type ChangePreparation = { groups: { group: string; changes: ChangeList }[] }
 export type ChangeReview = { status: "pass" | "changes-required"; findings: { target?: "body" | "research"; document?: DocID; pid?: string; detail: string }[]; limitations: string[] }
-const PREPARATION_WIDTH = 4
 
 /** Adjudication supplies goals and dependencies, never replacement wording. */
 export function changePlanPrompt(directory: string, document: DocID) {
@@ -260,7 +260,7 @@ export async function runChangePreparation(directory: string, state: LeanState, 
   const failures: string[] = []
   const questions: Question[] = []
   const openItems = [] as ReturnType<typeof openItem>[]
-  await Promise.all(Array.from({ length: Math.min(PREPARATION_WIDTH, plan.groups.length) }, async () => {
+  await Promise.all(Array.from({ length: Math.min(workflowConcurrency(), plan.groups.length) }, async () => {
     let failuresForGroup: string[] = []
     for (;;) {
       const group = plan.groups[counts.next++]

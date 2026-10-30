@@ -15,6 +15,7 @@ import {
   type MarkupRevision,
 } from "../api/ingest/markup"
 import { getPreferences, savePreferences } from "../api/ingest/preferences"
+import { getModelConcurrency } from "../api/opencode/config"
 import { readBrowserJSON, readBrowserValue, removeBrowserValue, writeBrowserValue } from "../browser-storage"
 import { formatDateTime } from "../lib/format"
 import { authorTones, initialsOf, nameKey, toneClass, type Tone } from "./comment-authors"
@@ -138,7 +139,6 @@ const STRUCTURE_DETAIL: Record<string, string> = {
 // is text that reads like an instruction to an assistant.
 const HIDDEN = new Set(["bidi-control", "invisible-tag", "zero-width"])
 // Replies drafted at once, as the review grid fills cells.
-const POOL = 3
 // A part of a draft only the lawyer can fill.
 const PLACEHOLDER = /\[\[[\s\S]*?\]\]/
 const REPLY_MAX = 4000
@@ -1026,7 +1026,8 @@ export default function MarkupPanel({
     const worker = async () => {
       while (next < queue.length) await draftOne(queue[next++]!)
     }
-    await Promise.all(Array.from({ length: Math.min(POOL, queue.length) }, worker))
+    const width = await getModelConcurrency()
+    await Promise.all(Array.from({ length: Math.min(width, queue.length) }, worker))
     if (done.size) {
       const ready = `${plural(done.size, "draft reply", "draft replies")} ready — read ${done.size === 1 ? "it" : "each one"}, then approve it.`
       setDrafted(ready)

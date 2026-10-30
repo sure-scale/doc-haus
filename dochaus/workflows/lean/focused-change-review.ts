@@ -8,6 +8,7 @@ import { packageCompositionBlock } from "./prompts"
 import { drainLeanRequests } from "./requests"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_PROMPT_VERSION, LEAN_STAGE_AGENTS, stageInputs, stepSessionTitle, type LeanDeps } from "./stages"
 import { hashStageInputs, readQuestions, type LeanState, type LeanStageState } from "./state"
+import { workflowConcurrency } from "./model-concurrency"
 
 const MAX_CONTEXT = 32_000
 export type FocusedChangeReviewInput = { id: string; pids: string[]; text: string }
@@ -122,7 +123,7 @@ export async function runFocusedChangeReview(directory: string, state: LeanState
   const sessions: string[] = []
   const results = new Map<string, ChangeReview>()
   const failures: string[] = []
-  await Promise.all(Array.from({ length: Math.min(4, inputs.length) }, async () => {
+  await Promise.all(Array.from({ length: Math.min(workflowConcurrency(), inputs.length) }, async () => {
     for (;;) {
       const input = inputs[counts.next++]
       if (!input) return
