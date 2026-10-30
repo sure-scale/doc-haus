@@ -224,7 +224,7 @@ try {
       await expect(table(page, "Supply review")).toBeHidden()
       assert.equal(await param(page, "view"), null)
       await go(page, "/matter/pair?view=review")
-      await expect(table(page, "Supply review").getByRole("button", { name: "Use a starter" })).toBeEnabled()
+      await expect(table(page, "Supply review").getByRole("button", { name: "Add questions", exact: true })).toBeEnabled()
       await page.waitForTimeout(400)
       await expect(chooser(page)).toBeHidden()
     })
@@ -273,7 +273,7 @@ try {
 
   await check("an unknown starter is ignored and removed", wide, async (page) => {
     await open(page, "/matter/pair?view=review&starter=missing-v1")
-    await expect(table(page, "Supply review").getByRole("button", { name: "Use a starter" })).toBeEnabled()
+    await expect(table(page, "Supply review").getByRole("button", { name: "Add questions", exact: true })).toBeEnabled()
     await expect.poll(() => param(page, "starter")).toBeNull()
     await page.waitForTimeout(300)
     await expect(chooser(page)).toBeHidden()

@@ -92,7 +92,7 @@ test("a reviewed cell whose question changed is flagged, not filled and not unre
   expect(entry.marker).toEqual({ state: "question_changed", word: "Question changed", reason: "Question changed after review. Unlock to refresh." })
   expect(result.attention).toBe(1)
   expect(result.counts.unreviewed).toBe(0)
-  expect(matches(entry, "unreviewed", "")).toBe(false)
+  expect(matches(entry, ["unreviewed"], "")).toBe(false)
   const pending = fillTargets({ rows, columns: [law, term], cells })
   expect(pending).toBe(0)
   expect(primaryAction(result.progress, pending)).toEqual({ kind: "export" })
@@ -130,12 +130,18 @@ test("without documents there is no primary action, with or without questions", 
     expect(primaryAction(reviewAttention({ rows: [], columns, cells: {}, source: () => "verified" }).progress, 0)).toBeUndefined()
 })
 
-test("a filter and the search text must both match", () => {
-  const result = model({ [cellKey(lease, law.id)]: uncited(law, "Net 30 days") })
+test("a cell shows when it has any chosen state and matches the search text", () => {
+  const result = model({ [cellKey(lease, law.id)]: uncited(law, "Net 30 days"), [cellKey(supply, law.id)]: cited(supply, law) }, { [cellKey(supply, law.id)]: "not_found" })
   const entry = result.cells.get(cellKey(lease, law.id))!
-  expect(matches(entry, "no_citation", "LEASE")).toBe(true)
-  expect(matches(entry, "no_citation", "governing")).toBe(true)
-  expect(matches(entry, undefined, "net 30")).toBe(true)
-  expect(matches(entry, "no_citation", "supply")).toBe(false)
-  expect(matches(entry, "source_changed", "")).toBe(false)
+  const changed = result.cells.get(cellKey(supply, law.id))!
+  expect(matches(entry, ["no_citation"], "LEASE")).toBe(true)
+  expect(matches(entry, ["no_citation"], "governing")).toBe(true)
+  expect(matches(entry, [], "net 30")).toBe(true)
+  expect(matches(entry, ["no_citation"], "supply")).toBe(false)
+  expect(matches(entry, ["source_changed"], "")).toBe(false)
+  // Several states widen the view: either one shows the cell.
+  for (const cell of [entry, changed]) expect(matches(cell, ["source_changed", "no_citation"], "")).toBe(true)
+  expect(matches(changed, ["source_changed", "no_citation"], "lease")).toBe(false)
+  // An empty table cell has neither state.
+  expect(matches(result.cells.get(cellKey(lease, term.id))!, ["source_changed", "no_citation"], "")).toBe(false)
 })

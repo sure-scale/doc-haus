@@ -212,7 +212,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   const [checkingFill, setCheckingFill] = useState(false)
   // Filter and search change only what is shown. Rows and columns with a match
   // stay shown until they change, so a cell reviewed in place does not jump away.
-  const [filter, setFilter] = useState<AttentionFilter>()
+  const [filters, setFilters] = useState<AttentionFilter[]>([])
   const [query, setQuery] = useState("")
   const shownView = useRef({ key: "", rows: new Set<string>(), columns: new Set<string>() })
   // The detail overlay identifies its cell by key and reads it live from `grid`,
@@ -785,12 +785,12 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   const fillCount = documents.reduce((count, doc) => count + grid.columns.filter((col) => needsFill(grid.cells[cellKey(doc.name, col.id)], hashQuestion(col.question))).length, 0)
   const fillBlanks = documents.some((doc) => grid.columns.some((col) => !grid.cells[cellKey(doc.name, col.id)]))
   const primary = primaryAction(attention.progress, fillCount)
-  const narrowed = !!filter || !!query.trim()
-  const viewKey = JSON.stringify([filter, query.trim().toLowerCase()])
+  const narrowed = filters.length > 0 || !!query.trim()
+  const viewKey = JSON.stringify([filters, query.trim().toLowerCase()])
   if (shownView.current.key !== viewKey) shownView.current = { key: viewKey, rows: new Set(), columns: new Set() }
   let matching = 0
   for (const entry of attention.cells.values()) {
-    if (!matches(entry, filter, query)) continue
+    if (!matches(entry, filters, query)) continue
     matching++
     shownView.current.rows.add(entry.docName)
     shownView.current.columns.add(entry.columnId)
@@ -798,14 +798,15 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   const shownDocuments = narrowed ? documents.filter((doc) => shownView.current.rows.has(doc.name)) : documents
   // With no match the questions stay as headings above "No matching cells".
   const shownColumns = narrowed && shownDocuments.length ? grid.columns.filter((col) => shownView.current.columns.has(col.id)) : grid.columns
+  // The search field closes once empty, so focus goes to the filter beside it.
   const clearView = () => {
-    setFilter(undefined)
+    setFilters([])
     setQuery("")
-    dialog.current?.querySelector<HTMLInputElement>(".review-toolbar input[type=search]")?.focus()
+    dialog.current?.querySelector<HTMLButtonElement>(".review-toolbar .review-filter-trigger")?.focus()
   }
   // Review next walks the queued cells the view shows, else the whole queue.
   const reviewNext = () => {
-    const shown = attention.queue.filter((entry) => matches(attention.cells.get(entry.key)!, filter, query))
+    const shown = attention.queue.filter((entry) => matches(attention.cells.get(entry.key)!, filters, query))
     const entries = shown.length ? shown : attention.queue
     if (!entries.length) return
     setWalkDone(0)
@@ -896,8 +897,8 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
           fillDisabled={!canEdit || running > 0}
           canExport={documents.length > 0 && grid.columns.length > 0}
           searchable={attention.cells.size > 0}
-          filter={filter}
-          onFilter={setFilter}
+          filters={filters}
+          onFilters={setFilters}
           query={query}
           onQuery={setQuery}
           onStarter={() => { setError(undefined); setStarterOpen({}) }}
@@ -906,7 +907,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
           onExport={exportAs}
           notice={walkDone ? "End of the review list" : undefined}
         />
-        {narrowed && <FilterSummary shown={matching} total={attention.cells.size} filter={filter} onClear={clearView} />}
+        {narrowed && <FilterSummary shown={matching} total={attention.cells.size} filters={filters} query={query} onClear={clearView} />}
 
         {error && <p role="alert">{error}</p>}
         {saveProblem && <div role="alert"><p>{saveProblem}</p><p>Export the table above or download your local copy before reloading the saved table.</p><button type="button" onClick={downloadPending}>Download unsaved copy</button> <button type="button" disabled={reloading} onClick={reloadGrid}>{reloading ? "Reloading…" : "Reload saved table"}</button></div>}
@@ -967,7 +968,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                     const key = cellKey(doc.name, col.id)
                     const cell = grid.cells[key]
                     const entry = attention.cells.get(key)!
-                    const dimmed = narrowed && !matches(entry, filter, query)
+                    const dimmed = narrowed && !matches(entry, filters, query)
                     const check = sourceCheck(key, cell)
                     // The inset bar takes the marker's tone: a changed source is a warning, a missing or foreign one danger.
                     const degraded = !!check && DEGRADED.includes(check) && !!entry.marker

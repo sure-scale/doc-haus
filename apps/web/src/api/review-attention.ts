@@ -141,9 +141,12 @@ export function primaryAction(progress: ReviewProgress, fillTargets: number): Pr
   return { kind: "export" }
 }
 
-/** A state filter AND case-insensitive text over document name, question and answer. */
-export function matches(entry: CellAttention, filter: AttentionFilter | undefined, query: string) {
-  if (filter && !entry.states.includes(filter)) return false
+/**
+ * Any of the chosen states (none chosen: every cell) AND case-insensitive text
+ * over document name, question and answer.
+ */
+export function matches(entry: CellAttention, filters: readonly AttentionFilter[], query: string) {
+  if (filters.length && !filters.some((filter) => entry.states.includes(filter))) return false
   const text = query.trim().toLowerCase()
   return !text || [entry.docName, entry.question, entry.cell?.answer ?? ""].some((value) => value.toLowerCase().includes(text))
 }

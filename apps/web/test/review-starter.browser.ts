@@ -99,7 +99,7 @@ try {
   // A starter is the primary action of a table without questions, and a quiet one otherwise.
   const starterButton = page.getByRole("button", { name: /^Use a starter$/ })
   const primary = page.locator(".review-toolbar .review-primary")
-  const open = async (query: string) => { await page.goto(`${server.url.href}${query}`); await starterButton.waitFor() }
+  const open = async (query: string) => { await page.goto(`${server.url.href}${query}`); await primary.waitFor() }
   const showChooser = async () => { await starterButton.click(); await expect(chooser).toBeVisible() }
   const showStarter = async () => {
     await showChooser()
@@ -242,10 +242,14 @@ try {
   assert.equal(puts, 1)
   await open("?matter=two")
   await expect(primary).toHaveCount(1)
-  await expect(primary).toHaveText("Use a starter")
-  // The primary is the only starter button: no quiet duplicate beside it.
-  await expect(page.getByRole("button", { name: "Use a starter", exact: true })).toHaveCount(1)
-  await showStarter()
+  await expect(primary).toHaveText("Add questions")
+  // The primary is the only way in: no quiet duplicate beside it.
+  await expect(page.getByRole("button", { name: "Add questions", exact: true })).toHaveCount(1)
+  await primary.click()
+  await expect(chooser).toBeVisible()
+  await overviewChoice.check()
+  await chooser.getByRole("button", { name: "Continue" }).click()
+  await expect(starter).toBeVisible()
   assert.deepEqual(grids.two, empty)
   await starter.getByRole("button", { name: "Cancel" }).click()
 

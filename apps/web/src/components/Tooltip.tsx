@@ -4,7 +4,7 @@ import { createPortal } from "react-dom"
 // Portaled help stays clear of scroll clipping and works with keyboard focus.
 // `describes`: the bubble names itself as the child's description; off where
 // the child already carries the same words in its own aria-describedby.
-export function Tooltip({ label, children, describes = true }: { label: string; children: ReactNode; describes?: boolean }) {
+export function Tooltip({ label, children, describes = true }: { label: ReactNode; children: ReactNode; describes?: boolean }) {
   const host = useRef<HTMLSpanElement>(null)
   const bubble = useRef<HTMLSpanElement>(null)
   const id = useId()
