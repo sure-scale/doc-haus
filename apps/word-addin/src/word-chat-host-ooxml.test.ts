@@ -20,6 +20,16 @@ test("native whole-body snapshot compares mixed structure and protected content"
   expect(sameNativeWordChatBodySnapshot(source, '<invalid')).toBe(false)
 })
 
+test("native whole-body snapshot ignores only terminal section export rsid", () => {
+  const body = '<w:p w:rsidP="11111111"><w:r><w:t>Text</w:t></w:r></w:p><w:sectPr w:rsidSect="11111111"><w:pgSz w:w="12000"/></w:sectPr>'
+  const source = flat(body)
+  expect(sameNativeWordChatBodySnapshot(source, flat(body.replace('w:rsidSect="11111111"', 'w:rsidSect="22222222"')))).toBe(true)
+  expect(sameNativeWordChatBodySnapshot(source, flat(body.replace('w:rsidP="11111111"', 'w:rsidP="22222222"')))).toBe(false)
+  expect(sameNativeWordChatBodySnapshot(source, flat(body.replace('w:w="12000"', 'w:w="13000"')))).toBe(false)
+  const nonterminal = flat('<w:sectPr w:rsidSect="11111111"/><w:p/>')
+  expect(sameNativeWordChatBodySnapshot(nonterminal, nonterminal.replace('11111111', '22222222'))).toBe(false)
+})
+
 test("native body projection binds table order and retains real empty paragraph and properties", async () => {
   const { projectNativeWordChatBody } = await import("./word-chat-host-ooxml")
   const body = '<w:p><w:r><w:t>Same</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:pPr><w:spacing w:after="360"/></w:pPr><w:ins w:id="3" w:author="Prior"><w:r><w:rPr><w:b/></w:rPr><w:t>Same</w:t></w:r></w:ins></w:p></w:tc></w:tr></w:tbl><w:p/><w:p/><w:sectPr/>'

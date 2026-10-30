@@ -625,6 +625,9 @@ export function sameNativeWordChatBodySnapshot(before: string, after: string): b
       const document = elements(data[0]!)[0]!
       const bodies = elements(document).filter(node => node.namespaceURI === W && node.localName === "body")
       if (document.namespaceURI !== W || document.localName !== "document" || bodies.length !== 1) throw new Error("Invalid main story")
+      // Match the existing native projection's terminal section export rule.
+      const terminalSection = elements(bodies[0]!).at(-1)
+      if (terminalSection?.namespaceURI === W && terminalSection.localName === "sectPr") terminalSection.removeAttributeNS(W, "rsidSect")
       return canonical(bodies[0]!, true)
     }
     return JSON.stringify(body(before)) === JSON.stringify(body(after))
