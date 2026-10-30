@@ -1,23 +1,25 @@
-import { useId, useLayoutEffect, useRef, useState } from "react"
+import { useId, useState } from "react"
 import type { StarterExampleAnswer, StarterExample } from "../review-starters-example"
-import { MarkerGlyph } from "./ReviewMarker"
+import { MARKER_LOOK, MarkerGlyph } from "./ReviewMarker"
+import ReviewSetupDialog from "./ReviewSetupDialog"
 
-// A starter's fictional worked example as a small read-only review table. The
-// table shows each answer and its marker; one selected answer at a time opens
-// its comparison and cited passage below. No model, no matter, no writes.
+// A starter's fictional worked example as a small read-only review table. Each
+// answer opens a read-only detail laid out as the table's own cell detail: its
+// marker and reason, the answer and the cited passage. No model, no matter, no writes.
 
 const marker = (answer: StarterExampleAnswer) =>
-  !answer.citation ? { state: "no_citation" as const, word: "Not found" } : answer.comparison === "differs" ? { state: "differs" as const, word: "Differs" } : undefined
+  !answer.citation ? { state: "no_citation" as const, word: "Not found", reason: "The agreement does not appear to address this question." }
+  : answer.comparison === "differs" ? { state: "differs" as const, word: "Differs", reason: answer.reason } : undefined
 
 export default function ReviewExample({ questions, example }: { questions: readonly string[]; example: StarterExample }) {
-  const detailId = useId()
-  const [selected, setSelected] = useState<StarterExampleAnswer>()
-  const detail = useRef<HTMLElement>(null)
-  useLayoutEffect(() => { if (selected) detail.current?.scrollIntoView({ block: "nearest" }) }, [selected])
-  const shown = selected && questions[selected.question]
+  const ids = useId()
+  const [open, setOpen] = useState<StarterExampleAnswer>()
+  const openMark = open && marker(open)
+  const openQuestion = open && questions[open.question]
   return (
     <div className="review-example">
       <p className="review-example-note">{example.note}</p>
+      <p className="review-example-hint">Answers without a marker are consistent across the agreements. Select an answer to see its source.</p>
       <div className="review-scroll review-example-scroll" role="region" aria-label="Example review table" tabIndex={0}>
         <table className="review-table review-example-table" style={{ minWidth: 180 + questions.length * 168 }}>
           <thead>
@@ -34,13 +36,12 @@ export default function ReviewExample({ questions, example }: { questions: reado
                   const answer = example.answers.find((item) => item.document === document.name && item.question === index)
                   if (!answer) return <td key={question} />
                   const mark = marker(answer)
-                  const open = selected === answer
                   return (
-                    <td key={question} className={`review-example-cell${open ? " is-selected" : ""}`}>
-                      <button type="button" aria-expanded={open} aria-controls={detailId} onClick={() => setSelected(open ? undefined : answer)}>
+                    <td key={question} className="review-example-cell">
+                      <button type="button" aria-haspopup="dialog" onClick={() => setOpen(answer)}>
                         <span className="review-example-answer">{answer.answer}</span>
                         {answer.citation && <span className="review-cite">§ {answer.citation.section}</span>}
-                        {mark && <span className={`review-marker is-${mark.state === "differs" ? "info" : "muted"}`}><MarkerGlyph state={mark.state} />{mark.word}</span>}
+                        {mark && <span className={`review-marker is-${MARKER_LOOK[mark.state].tone}`}><MarkerGlyph state={mark.state} />{mark.word}</span>}
                       </button>
                     </td>
                   )
@@ -50,25 +51,35 @@ export default function ReviewExample({ questions, example }: { questions: reado
           </tbody>
         </table>
       </div>
-      <section ref={detail} id={detailId} className="review-example-detail" aria-label="Selected answer" aria-live="polite">
-        {selected && shown ? (
-          <>
-            <p className="review-walk-doc">{selected.document} · {shown}</p>
-            <p className="review-detail-answer">{selected.answer}</p>
-            <p className="review-example-comparison">
-              {!selected.citation ? <><strong>Not found.</strong> The agreement does not appear to address this question.</>
-                : selected.comparison === "differs" ? <><strong>AI comparison: Differs</strong> — {selected.reason}</>
-                : <><strong>AI comparison: Consistent</strong> with the other agreements.</>}
-            </p>
-            {selected.citation && (
+      {open && openQuestion && (
+        <ReviewSetupDialog
+          title={`Example answer: ${openQuestion}`}
+          heading={<span className="viewer-title-text"><span className="review-detail-question">{openQuestion}</span><span className="viewer-title-meta">Fictional example · {open.document}</span></span>}
+          variant="detail"
+          onClose={() => setOpen(undefined)}
+        >
+          {openMark && (
+            <div className={`review-walk-why is-${MARKER_LOOK[openMark.state].tone}`}>
+              <p className="review-walk-word"><MarkerGlyph state={openMark.state} />{openMark.word}{openMark.state === "differs" && <span className="review-ai-tag">AI</span>}</p>
+              <p>{openMark.reason}</p>
+            </div>
+          )}
+          <section className="review-detail-section" aria-labelledby={`${ids}-answer`}>
+            <h3 className="review-detail-label" id={`${ids}-answer`}>Answer</h3>
+            <p className="review-detail-answer">{open.answer}</p>
+            {!openMark && <p className="review-example-consistent">AI comparison: Consistent with the other agreements.</p>}
+          </section>
+          {open.citation && (
+            <section className="review-detail-section" aria-labelledby={`${ids}-source`}>
+              <h3 className="review-detail-label" id={`${ids}-source`}>Source</h3>
               <div className="citation review-source">
-                <div className="ref">[{selected.document} § {selected.citation.section}]</div>
-                <div className="excerpt">{selected.citation.excerpt}</div>
+                <div className="ref">[{open.document} § {open.citation.section}]</div>
+                <div className="excerpt">{open.citation.excerpt}</div>
               </div>
-            )}
-          </>
-        ) : <p className="review-example-hint">Answers without a marker are consistent across the agreements. Select an answer to see its source.</p>}
-      </section>
+            </section>
+          )}
+        </ReviewSetupDialog>
+      )}
     </div>
   )
 }

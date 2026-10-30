@@ -1,17 +1,15 @@
 .picker-panel.review-starter { width: 100%; max-width: 680px; }
+/* The starter keeps one width from choosing to questions; its example widens. */
+.review-detail-modal .picker-panel.review-starter.is-medium { width: min(880px, 100%); }
 .review-detail-modal .picker-panel.review-starter.is-wide { width: min(1120px, 100%); max-width: none; }
 /* Body, header and footer share one left edge (--space-5). */
 .review-starter-body { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; overflow-wrap: anywhere; }
 .picker-body.review-starter-body { padding: var(--space-5); }
 .review-starter-body p, .review-starter-body h3 { margin: 0; }
-.review-starter-body h3 { font-size: 1rem; }
+/* The example's answer detail nests inside this body; its labels keep their own type. */
+.review-starter-body h3:not(.review-detail-label) { font-size: 1rem; }
 .review-starter-body section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .review-starter-body ul { margin: 0; padding-left: 1.5rem; overflow-wrap: anywhere; }
-.review-starter-question { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
-.review-starter-question-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); align-self: stretch; }
-.review-starter-question-head button.ghost { min-height: 32px; margin-right: calc(-1 * var(--space-2)); padding: var(--space-1) var(--space-2); font-size: .875rem; }
-.review-starter-question textarea { box-sizing: border-box; width: 100%; min-width: 0; resize: vertical; }
-.review-starter-question p { color: var(--muted); font-size: .875rem; }
 .review-starter-body .compare-actions { flex-wrap: wrap; margin-top: var(--space-2); }
 
 /* One view per step; the view takes focus when the step changes. */
@@ -46,29 +44,45 @@
   .review-starter-body .review-starter-preview { padding: var(--space-5) 0 0; border-left: 0; border-top: 1px solid var(--border); }
 }
 
-/* Example: a small read-only table; the selected answer's detail sits below. */
-.review-example { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
+/* Example: the table takes the dialog's height and scrolls under its own
+   header row; an answer opens its detail on top. */
+.review-starter.is-wide .review-starter-step, .review-example { flex: 1 1 auto; min-height: 0; }
+.review-example { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
 .review-starter-body .review-example-note { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--info-soft); color: var(--info); font-size: .875rem; }
-.review-example-scroll { max-height: none; }
+.review-starter-body .review-example-hint { margin-top: calc(-1 * var(--space-1)); color: var(--muted); font-size: .85rem; }
+.review-example-scroll { flex: 0 1 auto; min-height: 12rem; max-height: none; }
 .review-table.review-example-table { font-size: .85rem; line-height: 1.5; }
 .review-table.review-example-table th, .review-table.review-example-table td { min-width: 0; padding: var(--space-3); overflow-wrap: break-word; }
-.review-table.review-example-table thead th { position: static; font-size: .8rem; line-height: 1.45; }
+.review-table.review-example-table thead th { font-size: .8rem; line-height: 1.45; }
 .review-table.review-example-table .review-doc-col { width: 180px; min-width: 0; font-size: .85rem; }
 .review-table.review-example-table td.review-example-cell { padding: 0; }
 .review-example-cell > button { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1); width: 100%; height: 100%; min-height: 0; padding: var(--space-3); border: 0; border-radius: 0; background: transparent; color: var(--text); font-weight: 400; text-align: left; white-space: normal; }
 .review-example-cell > button:hover:not(:disabled) { border: 0; background: var(--panel-hover); }
 .review-example-cell > button:focus-visible { outline-offset: -2px; }
-.review-table tbody tr td.review-example-cell.is-selected, .review-table tbody tr:hover td.review-example-cell.is-selected { background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent); }
-.review-example-cell.is-selected > button:hover:not(:disabled) { background: transparent; }
 .review-example-answer { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
 .review-example-cell .review-cite { font-size: .78rem; }
 .review-example-cell .review-marker { margin-left: 0; padding: 0; min-height: 20px; }
-.review-starter-body .review-example-detail { gap: var(--space-2); min-height: 2.5rem; scroll-margin-block: var(--space-4) 5rem; }
-.review-example-detail .review-detail-answer { margin: 0; font-size: .95rem; line-height: 1.6; }
-.review-example-detail .review-source { margin-top: var(--space-1); }
-.review-example-comparison { color: var(--text-secondary); font-size: .9rem; }
-.review-example-comparison strong { color: var(--text); font-weight: 600; }
-.review-example-hint { color: var(--muted); font-size: .875rem; }
+.review-example-consistent { margin: 0; color: var(--muted); font-size: .85rem; }
+
+/* Questions: a numbered list. Each question edits in place on one line and
+   grows only when it wraps; Remove's word ends on the content edge. */
+.review-starter-questions { margin: 0; padding: 0; list-style: none; }
+.review-starter-question { display: grid; grid-template-columns: 1.5rem minmax(0, 1fr) auto; align-items: start; gap: var(--space-1) var(--space-2); padding-block: var(--space-2); }
+.review-starter-question + .review-starter-question { border-top: 1px solid var(--border); }
+.review-starter-question label { padding-top: 7px; color: var(--text-secondary); font-variant-numeric: tabular-nums; line-height: 1.5; }
+.review-starter-question textarea { box-sizing: border-box; width: 100%; min-width: 0; min-height: 0; padding-block: 6px; border-color: transparent; background: transparent; line-height: 1.5; resize: none; field-sizing: content; }
+/* An emptied question keeps a visible field to type into. */
+.review-starter-question textarea:placeholder-shown:not(:focus) { border-color: var(--border); }
+.review-starter-question textarea:hover:not(:disabled):not(:focus) { border-color: var(--border-strong); }
+.review-starter-question button.ghost { min-height: 34px; margin-right: calc(-1 * var(--space-2)); padding: var(--space-1) var(--space-2); font-size: .875rem; }
+.review-starter-question p { grid-column: 2; padding-inline: 11px; color: var(--muted); font-size: .85rem; }
+.review-starter-body .review-starter-scope { margin-top: var(--space-2); color: var(--text-secondary); font-size: .875rem; }
+.review-starter-body .review-starter-summary { margin-top: calc(-1 * var(--space-1)); color: var(--text-secondary); font-size: .875rem; }
+@media (pointer: coarse) {
+  .review-starter-question label { padding-top: 11px; }
+  .review-starter-question textarea { padding-block: 10px; }
+}
+
 @media (max-width: 700px) {
   .review-table.review-example-table .review-doc-col { width: 148px; }
   .picker-body.review-starter-body { padding: var(--space-4); }

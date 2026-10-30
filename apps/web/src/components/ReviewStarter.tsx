@@ -10,8 +10,7 @@ type Step = "choose" | "example" | "questions"
 // Choose a starter (its example is optional), then review its questions and
 // append them to the table. Nothing is written and no model runs before Add
 // questions; answers wait for Fill.
-export default function ReviewStarter({ matterName, documents, existingQuestions, problem, initialStarter, initialStep = "choose", onCancel, onConfirm }: {
-  matterName: string
+export default function ReviewStarter({ documents, existingQuestions, problem, initialStarter, initialStep = "choose", onCancel, onConfirm }: {
   documents: readonly Pick<Document, "name" | "role">[]
   existingQuestions: string[]
   problem?: string
@@ -80,7 +79,7 @@ export default function ReviewStarter({ matterName, documents, existingQuestions
 
   const title = step === "choose" ? "Choose a starter" : step === "example" ? `Example: ${starter.name}` : starter.name
   return (
-    <ReviewSetupDialog title={title} wide={step === "example"} onClose={close}>
+    <ReviewSetupDialog title={title} variant={step === "example" ? "wide" : "medium"} onClose={close}>
       <div ref={stepView} className="review-starter-step" tabIndex={-1}>
         {step === "choose" && (
           <>
@@ -129,33 +128,29 @@ export default function ReviewStarter({ matterName, documents, existingQuestions
 
         {step === "questions" && (
           <>
-            <p><strong>Matter:</strong> {matterName}</p>
-            <section aria-label="Documents in scope">
-              <h3>Documents in scope ({names.length})</h3>
-              {names.length ? <ul>{names.map((name, index) => <li key={`${name}-${index}`}>{name}</li>)}</ul> : <p>Add documents to this matter before using the starter.</p>}
-            </section>
-            <section aria-label="Questions to add">
-              <h3>Questions to add</h3>
-              <p>Edit or remove these questions before adding them. Existing table questions and answers stay as they are.</p>
-              {entries.map((item, index) => (
-                <div className="review-starter-question" key={item.id}>
-                  <div className="review-starter-question-head">
-                    <label htmlFor={`${titleId}-question-${item.id}`}>Question {index + 1}</label>
+            <p>Edit or remove these questions before adding them; existing questions and answers stay as they are.</p>
+            <ol className="review-starter-questions" aria-label="Questions to add">
+              {entries.map((item, index) => {
+                const field = `${titleId}-question-${item.id}`
+                const note = item.duplicate ? "Already in the table or repeated above; this question will not be added. Edit or remove it to continue."
+                  : !item.question ? "Empty questions will not be added." : undefined
+                return (
+                  <li className="review-starter-question" key={item.id}>
+                    <label htmlFor={field}><span className="sr-only">Question </span>{index + 1}</label>
+                    <textarea ref={(element) => { if (element) inputs.current.set(item.id, element); else inputs.current.delete(item.id) }} id={field} rows={1} placeholder="Write a question" aria-describedby={note ? `${field}-note` : undefined} value={questions.find((question) => question.id === item.id)?.question ?? ""} disabled={saving} onChange={(event) => setQuestions((current) => current.map((question) => question.id === item.id ? { ...question, question: event.target.value } : question))} />
                     <button type="button" className="ghost" disabled={saving} onClick={() => {
                       const adjacent = entries[index + 1]?.id ?? entries[index - 1]?.id
                       setQuestions((current) => current.filter((question) => question.id !== item.id))
                       requestAnimationFrame(() => { (adjacent === undefined ? cancel.current : inputs.current.get(adjacent))?.focus() })
                     }} aria-label={`Remove question ${index + 1}`}>Remove</button>
-                  </div>
-                  <textarea ref={(element) => { if (element) inputs.current.set(item.id, element); else inputs.current.delete(item.id) }} id={`${titleId}-question-${item.id}`} rows={2} value={questions.find((question) => question.id === item.id)?.question ?? ""} disabled={saving} onChange={(event) => setQuestions((current) => current.map((question) => question.id === item.id ? { ...question, question: event.target.value } : question))} />
-                  {item.duplicate && <p role="status">Already in the table or repeated above; this question will not be added. Edit or remove it to continue.</p>}
-                  {!item.question && <p>Empty questions will not be added.</p>}
-                </div>
-              ))}
-              {!additions.length && <p>No new questions to add. Edit a question or cancel.</p>}
-            </section>
-            <p><strong>{names.length * additions.length} pending {names.length * additions.length === 1 ? "cell" : "cells"}</strong> for the new questions across these documents.</p>
-            <p>Adding questions does not use AI or fill answers. When you are ready, fill the cells from the table; the fill may include other eligible cells.</p>
+                    {note && <p id={`${field}-note`} role={item.duplicate ? "status" : undefined}>{note}</p>}
+                  </li>
+                )
+              })}
+            </ol>
+            <p className="review-starter-scope">{names.length ? `${names.length} ${names.length === 1 ? "document" : "documents"}: ${names.join(", ")}` : "Add documents to this matter before using the starter."}</p>
+            {!additions.length ? <p className="review-starter-summary">No new questions to add. Edit a question or cancel.</p>
+              : names.length > 0 && <p className="review-starter-summary">Adds {additions.length} {additions.length === 1 ? "question" : "questions"} · {names.length * additions.length} {names.length * additions.length === 1 ? "cell" : "cells"} to fill. No AI runs until you choose Fill.</p>}
             {error && <p className="compare-error" role="alert">{error}</p>}
             {error && problem && <p role="alert">{problem}</p>}
             <div className="compare-actions">

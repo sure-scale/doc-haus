@@ -852,7 +852,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
         {error && <p role="alert">{error}</p>}
         {saveProblem && <div role="alert"><p>{saveProblem}</p><p>Export the table above or download your local copy before reloading the saved table.</p><button type="button" onClick={downloadPending}>Download unsaved copy</button> <button type="button" disabled={reloading} onClick={reloadGrid}>{reloading ? "Reloading…" : "Reload saved table"}</button></div>}
 
-        {starterOpen && <ReviewStarter matterName={title} documents={documents} existingQuestions={grid.columns.map((column) => column.question)} problem={saveProblem ?? error} initialStarter={starterOpen.starter} initialStep={starterOpen.step} onCancel={() => setStarterOpen(undefined)} onConfirm={addStarterQuestions} />}
+        {starterOpen && <ReviewStarter documents={documents} existingQuestions={grid.columns.map((column) => column.question)} problem={saveProblem ?? error} initialStarter={starterOpen.starter} initialStep={starterOpen.step} onCancel={() => setStarterOpen(undefined)} onConfirm={addStarterQuestions} />}
         {fillPreview && <FillPreview targets={fillPreview} checking={checkingFill} onCancel={() => setFillPreview(undefined)} onConfirm={confirmFill} />}
 
         {grid.columns.length === 0 && (
