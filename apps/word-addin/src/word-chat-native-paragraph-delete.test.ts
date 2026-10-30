@@ -53,3 +53,15 @@ test("native deletion retains identity and validates both owned carriers and pri
   expect(() => check(good, [{ ...afterInv[0]!, id: "changed" }, afterInv[1]!, afterInv[2]!])).toThrow()
   expect(() => assertNativeWordChatParagraphDeletionTarget(before, { ...target, endOffset: 4 })).toThrow()
 })
+
+test("a following ordinary paragraph can retain its comment and bookmark graph", () => {
+  const following = '<w:p w14:paraId="22222222"><w:bookmarkStart w:id="1" w:name="Keep"/><w:commentRangeStart w:id="3"/><w:r><w:t>Next</w:t></w:r><w:commentRangeEnd w:id="3"/><w:bookmarkEnd w:id="1"/><w:r><w:commentReference w:id="3"/></w:r></w:p>'
+  const old = projectNativeWordChatBody(flat(targetOld + following),inv.slice(0,2))
+  const checkFollowing = (body: string, comment = "Keep") => verifyNativeWordChatParagraphDeletion(old,projectNativeWordChatBody(flat(body,comment),afterInv.slice(0,2)),target)
+  const next = targetAfter + following
+  expect(assertNativeWordChatParagraphDeletionTarget(old,target)).toBe(0)
+  expect(checkFollowing(next)).toEqual(["Reviewer"])
+  expect(() => checkFollowing(next.replace('w:name="Keep"','w:name="Changed"'))).toThrow()
+  expect(() => checkFollowing(next.replace('<w:commentRangeEnd w:id="3"/>',''))).toThrow()
+  expect(() => checkFollowing(next,"Changed")).toThrow()
+})

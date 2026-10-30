@@ -1709,3 +1709,21 @@ test("paragraph deletion rejects a forged prepared action and final boundary wit
   expect(authorCalls).toBe(0)
   expect(final.state.paragraphDeletions).toBe(0)
 })
+
+test("paragraph operations classify preflight, author and fresh-capture failures as unchanged", async () => {
+  for (const kind of ["insert", "delete"] as const) for (const stage of ["preflight", "author", "fresh"] as const) {
+    const {state,nativeHost}=office(["An existing obligation.","A following provision."],true)
+    state.selection=[0,"An existing obligation.".length]
+    const target=(await nativeHost.selection())!
+    if (stage === "preflight") state.paragraphXml.set("paragraph-0",'<w:p><w:pPr><w:keepNext/></w:pPr><w:r><w:t>An existing obligation.</w:t></w:r></w:p>')
+    const input={proposalId:`${kind}-${stage}`,target,replacement:kind === "insert" ? `${target.text}\rNew paragraph.` : "",
+      ...(kind === "delete" ? {paragraphAction:"delete" as const} : {}),
+      author:async () => {
+        if (stage === "author") throw new Error("author unavailable")
+        if (stage === "fresh") state.afterSync=()=>{throw new Error("fresh capture unavailable")}
+        return kind === "insert" ? {kind:"paragraph_insert" as const,proposalId:`${kind}-${stage}`,target,text:"New paragraph."} : {kind:"paragraph_delete" as const,proposalId:`${kind}-${stage}`,target}
+      }}
+    await expect(nativeHost.apply(input)).rejects.toMatchObject({mutationState:"unchanged"})
+    expect(state.paragraphInsertions).toBe(0); expect(state.paragraphDeletions).toBe(0); expect(state.modeChanges).toEqual([])
+  }
+})

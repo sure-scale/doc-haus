@@ -67,19 +67,11 @@ function validMeta(e: Element) {
       (a.namespaceURI === W14 && ["paraId", "textId"].includes(a.localName) && /^[0-9a-fA-F]{8}$/.test(a.value)),
   )
 }
-/** Restricts deletion to a complete plain top-level paragraph with a plain following boundary. */
+/** Restricts deletion to a complete plain top-level paragraph with a top-level following boundary. */
 export function assertNativeWordChatParagraphDeletionTarget(projection: Projection, target: WordChatTarget): number {
   const index = assertNativeWordChatParagraphInsertionTarget(projection, target)
   const next = projection.paragraphs[index + 1]
-  if (!next || !next.text) return fail()
-  assertNativeWordChatParagraphInsertionTarget(projection, {
-    ...target,
-    id: next.id,
-    text: next.text,
-    startOffset: 0,
-    endOffset: next.text.length,
-    paragraphs: [{ id: next.id, text: next.text }],
-  })
+  if (!next || !next.id || !next.text || next.nesting !== 0 || !/^body\/p\[\d+\]$/.test(next.path)) return fail()
   return index
 }
 

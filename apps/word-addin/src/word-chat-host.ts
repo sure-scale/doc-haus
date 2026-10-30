@@ -553,6 +553,7 @@ export class WordChatHost {
   }
 
   private async applyParagraphDeletionOnce(input: WordChatApplyInput, identity: string): Promise<WordChatApplyResult> {
+    try {
     const capture = async (context: WordChatContext) => {
       const snapshot = await this.importSnapshot(context, input.target, false, false, false, false, true, true)
       if (!snapshot.projection) throw captureMismatch("Word could not capture the paragraph to delete.")
@@ -574,7 +575,7 @@ export class WordChatHost {
     if (!("kind" in plan) || plan.kind !== "paragraph_delete" || plan.proposalId !== input.proposalId ||
       JSON.stringify(plan.target) !== JSON.stringify(input.target))
       throw new WordChatHostError("The prepared deletion does not match the reviewed proposal. Your document is unchanged.")
-    return this.word.run(async context => {
+    return await this.word.run(async context => {
       const fresh = await capture(context)
       if (!sameWordChatTargetSnapshot(initial.ooxml, fresh.ooxml) || initial.current !== fresh.current ||
         !sameNativeProjectionGeometry(initial.projection!, fresh.projection!))
@@ -604,9 +605,17 @@ export class WordChatHost {
         throw new WordChatHostError("Word may contain the deletion, but could not confirm its tracked changes. Inspect it and use Undo if needed. Do not apply this proposal again.", "uncertain", { cause })
       }
     })
+    } catch (error) {
+      if (this.applied.get(input.proposalId)?.uncertain) {
+        if (error instanceof WordChatHostError && error.mutationState === "uncertain") throw error
+        throw new WordChatHostError("Word may already contain this change. Inspect it and use Undo if needed.", "uncertain", { cause: error })
+      }
+      failure(error, "Word could not prepare the reviewed paragraph deletion. Your document is unchanged.")
+    }
   }
 
   private async applyParagraphInsertionOnce(input: WordChatApplyInput, identity: string): Promise<WordChatApplyResult> {
+    try {
     const capture = async (context: WordChatContext) => {
       const anchor = context.document.getParagraphByUniqueLocalId(input.target.paragraphs[0]!.id)
       anchor.load("styleBuiltIn,isListItem")
@@ -623,7 +632,7 @@ export class WordChatHost {
       JSON.stringify(plan.target) !== JSON.stringify(input.target) || input.replacement !== `${input.target.text}\r${plan.text}` ||
       JSON.stringify(plan.formatting) !== JSON.stringify(input.formatting))
       throw new WordChatHostError("The prepared paragraph does not match the reviewed proposal. Your document is unchanged.")
-    return this.word.run(async context => {
+    return await this.word.run(async context => {
       const fresh = await capture(context)
       if (!fresh.projection || !sameWordChatTargetSnapshot(initial.ooxml, fresh.ooxml) ||
         !sameNativeProjectionGeometry(initial.projection!, fresh.projection)) throw captureMismatch("The insertion point changed during review.")
@@ -653,6 +662,13 @@ export class WordChatHost {
         throw new WordChatHostError("Word may contain the new paragraph, but could not confirm its tracked changes. Inspect it and use Undo if needed. Do not apply this proposal again.", "uncertain", { cause })
       }
     })
+    } catch (error) {
+      if (this.applied.get(input.proposalId)?.uncertain) {
+        if (error instanceof WordChatHostError && error.mutationState === "uncertain") throw error
+        throw new WordChatHostError("Word may already contain this change. Inspect it and use Undo if needed.", "uncertain", { cause: error })
+      }
+      failure(error, "Word could not prepare the reviewed paragraph insertion. Your document is unchanged.")
+    }
   }
 
   private async applyInlineOnce(input: WordChatApplyInput, identity: string): Promise<WordChatApplyResult> {
