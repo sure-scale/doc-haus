@@ -297,7 +297,13 @@ export default function Workflows() {
         <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => setViewing(undefined))}>
           <div className="picker-panel workflow-starter-view" onClick={(e) => e.stopPropagation()}>
             <ModalHeader title={`${starter.name} (review table)`} onClose={() => setViewing(undefined)} />
-            <div className="picker-body"><StarterSummary starter={starter} questions /></div>
+            <div className="picker-body">
+              <StarterSummary starter={starter} questions />
+              <div className="compare-actions">
+                <button type="button" className="ghost" onClick={() => setViewing(undefined)}>Close</button>
+                <button type="button" className="primary" onClick={() => { setViewing(undefined); setUsing({ kind: "starter", starter }) }}>Use in a matter</button>
+              </div>
+            </div>
           </div>
         </div>
       )}</Exit>

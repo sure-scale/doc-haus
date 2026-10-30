@@ -111,8 +111,9 @@
 .template-conversation-row > button { flex: none; }
 /* Review-table starters: a second headed group under the chat workflows. */
 .workflow-starters { margin-top: var(--space-6); padding-top: var(--space-5); border-top: 1px solid var(--border); }
-.workflow-starters h3 { margin: 0; font-size: 1rem; }
-.workflow-starters > p { margin: var(--space-1) 0 var(--space-2); font-size: .85rem; line-height: 1.6; }
+/* The group's heading and note start on its cards' content edge. */
+.workflow-starters h3 { margin: 0; padding-inline: var(--space-3); font-size: 1.05rem; font-weight: 650; }
+.workflow-starters > p { margin: var(--space-1) 0 var(--space-2); padding-inline: var(--space-3); font-size: .85rem; line-height: 1.6; }
 .picker-panel.workflow-starter-view { max-width: 600px; }
 .workflow-starter-view .picker-body { padding: var(--space-5); }
 @media (max-width: 760px) {

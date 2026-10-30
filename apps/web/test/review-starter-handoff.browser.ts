@@ -242,7 +242,10 @@ try {
       assert.equal(await fits(page), true, "the view fits its width")
       await page.waitForTimeout(300)
       await shot("workflows-starter-view")
-      await view.getByRole("button", { name: "Close" }).click()
+      // The view ends in its own actions: Close beside the one primary, Use in a matter.
+      const actions = view.locator(".compare-actions")
+      await expect(actions.locator("button.primary")).toHaveText("Use in a matter")
+      await actions.getByRole("button", { name: "Close" }).click()
       await expect(view).toBeHidden()
       await section.locator(".list-row", { hasText: "Document overview" }).getByRole("button", { name: "Use" }).click()
       const picker = page.getByRole("dialog", { name: 'Use "Document overview" in a matter' })
