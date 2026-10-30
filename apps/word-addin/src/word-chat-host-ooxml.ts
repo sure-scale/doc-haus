@@ -1,4 +1,4 @@
-import { DOMParser } from "@xmldom/xmldom"
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { validWordChatFormatting, type WordChatAuthoredAmendment, type WordChatParagraphFormat, type WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { reviewedWordChatParagraphFormatting, wordChatParagraphFormatChanged } from "../../../dochaus/lib/word-chat-formatting-ooxml"
 
@@ -8,8 +8,8 @@ const W14 = "http://schemas.microsoft.com/office/word/2010/wordml"
 const XMLNS = "http://www.w3.org/2000/xmlns/"
 const MAIN = "/word/document.xml"
 const elements = (node: Node) => Array.from(node.childNodes).filter((child): child is Element => child.nodeType === 1)
-function parse(xml: string) {
-  if (typeof xml !== "string" || xml.length > 2_000_000 || /<!DOCTYPE/i.test(xml)) throw new Error("Invalid clause OOXML")
+function parse(xml: string, limit = 2_000_000) {
+  if (typeof xml !== "string" || xml.length > limit || /<!DOCTYPE/i.test(xml)) throw new Error("Invalid clause OOXML")
   const fail = () => { throw new Error("Invalid clause OOXML") }
   const document = new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(xml, "application/xml")
   if (document.doctype || document.documentElement?.namespaceURI !== PKG || document.documentElement.localName !== "package") throw new Error("Expected a scoped Word package")
@@ -21,6 +21,82 @@ function parse(xml: string) {
   }
   if (!parts.has(MAIN)) throw new Error("Missing clause content")
   return parts
+}
+
+/** Bind faithful main-story paragraphs to the same-read native inventory.
+ * Table geometry is represented by structural paths, not text search. */
+export function projectNativeWordChatBody(xml: string, inventory: Array<{ id: string; text: string; tableNestingLevel?: number }>) {
+  if (!inventory.length || inventory.some(p => !p.id || typeof p.text !== "string") || new Set(inventory.map(p => p.id)).size !== inventory.length)
+    throw new Error("Invalid native paragraph inventory")
+  const parts = parse(xml, 16_000_000), data = elements(parts.get(MAIN)!).filter(n => n.namespaceURI === PKG && n.localName === "xmlData")
+  if (data.length !== 1 || elements(data[0]!).length !== 1) throw new Error("Invalid main story")
+  const doc = elements(data[0]!)[0]!, bodies = elements(doc).filter(n => n.namespaceURI === W && n.localName === "body")
+  if (doc.namespaceURI !== W || doc.localName !== "document" || bodies.length !== 1) throw new Error("Invalid main story")
+  const body = bodies[0]!, children = elements(body), nodes: Array<{ node: Element; path: string; nesting: number }> = []
+  const walk = (parent: Element, path: string, container: "body" | "cell", nesting = 0) => {
+    elements(parent).forEach((node, i) => {
+      if (node.namespaceURI !== W) throw new Error("Unsupported main-story structure")
+      const loc = `${path}/${node.localName}[${i}]`
+      if (node.localName === "p") nodes.push({ node, path: loc, nesting })
+      else if (node.localName === "tbl") {
+        elements(node).forEach((row, ri) => {
+          if (row.namespaceURI !== W) throw new Error("Unsupported table structure")
+          if (["tblPr", "tblGrid"].includes(row.localName)) return
+          if (row.localName !== "tr") throw new Error("Unsupported table structure")
+          elements(row).forEach((cell, ci) => {
+            if (cell.namespaceURI !== W) throw new Error("Unsupported table row")
+            if (cell.localName === "trPr") return
+            if (cell.localName !== "tc") throw new Error("Unsupported table row")
+            walk(cell, `${loc}/tr[${ri}]/tc[${ci}]`, "cell", nesting + 1)
+          })
+        })
+      } else if (!(container === "body" && node.localName === "sectPr" && i === elements(parent).length - 1) && !(container === "cell" && node.localName === "tcPr"))
+        throw new Error("Unsupported main-story structure")
+    })
+  }
+  walk(body, "body", "body")
+  let terminalCarrier = false
+  if (nodes.length === inventory.length + 1) {
+    const last = nodes.at(-1)!.node, bodyChildren = children.filter(n => !(n.namespaceURI === W && n.localName === "sectPr"))
+    const permitted = (a: Attr) => a.namespaceURI === XMLNS || a.namespaceURI === W && ["rsidR", "rsidRDefault"].includes(a.localName) || a.namespaceURI === W14 && ["paraId", "textId"].includes(a.localName)
+    if (children.at(-1)?.namespaceURI !== W || children.at(-1)?.localName !== "sectPr" || last !== bodyChildren.at(-1) || last.parentNode !== body || Array.from(last.childNodes).some(n => n.nodeType !== 3 || Boolean(n.nodeValue?.trim())) || Array.from(last.attributes).some(a => !permitted(a)))
+      throw new Error("Unqualified terminal carrier")
+    nodes.pop()
+    terminalCarrier = true
+  }
+  if (nodes.length !== inventory.length || nodes.some((n, i) => text(n.node, "Current") !== inventory[i]!.text || inventory[i]!.tableNestingLevel !== undefined && n.nesting !== inventory[i]!.tableNestingLevel)) throw new Error("Native paragraph projection mismatch")
+  const serializer = new XMLSerializer()
+  const skeleton = body.cloneNode(true) as Element
+  // Whole-story exports assign the terminal section a session rsid even when
+  // the section and all layout properties remain unchanged.
+  const terminalSection = elements(skeleton).at(-1)
+  if (terminalSection?.namespaceURI === W && terminalSection.localName === "sectPr") terminalSection.removeAttributeNS(W, "rsidSect")
+  if (terminalCarrier) {
+    const last = elements(skeleton).filter(n => !(n.namespaceURI === W && n.localName === "sectPr")).at(-1)!
+    skeleton.removeChild(last)
+  }
+  const replaceParagraphs = (node: Element) => {
+    for (const child of elements(node)) {
+      if (child.namespaceURI === W && child.localName === "p") node.replaceChild(child.ownerDocument!.createElementNS(W, "w:p"), child)
+      else replaceParagraphs(child)
+    }
+  }
+  replaceParagraphs(skeleton)
+  return {
+    paragraphs: nodes.map((n, i) => ({ id: inventory[i]!.id, text: inventory[i]!.text, path: n.path, nesting: n.nesting, xml: serializer.serializeToString(n.node) })),
+    geometry: JSON.stringify(canonical(skeleton, true)),
+    /** Preserve every package dependency while scoping the main body to bound paragraphs. */
+    scope(indices: number[]) {
+      if (!indices.length || indices.some((n, i) => !Number.isSafeInteger(n) || n < 0 || n >= nodes.length || i > 0 && n !== indices[i - 1]! + 1)) throw new Error("Invalid paragraph scope")
+      const clone = body.ownerDocument!.cloneNode(true) as Document
+      const main = Array.from(clone.getElementsByTagNameNS(PKG, "part")).find(part => part.getAttributeNS(PKG, "name") === MAIN)
+      const cloneBody = main?.getElementsByTagNameNS(W, "body")[0]
+      if (!cloneBody) throw new Error("Missing main story")
+      while (cloneBody.firstChild) cloneBody.removeChild(cloneBody.firstChild)
+      for (const i of indices) cloneBody.appendChild(nodes[i]!.node.cloneNode(true))
+      return serializer.serializeToString(clone)
+    },
+  }
 }
 function content(parts: Map<string, Element>, table: boolean, section: boolean) {
   const data = elements(parts.get(MAIN)!).filter(node => node.namespaceURI === PKG && node.localName === "xmlData")
@@ -264,6 +340,13 @@ export function verifiedNativeWordChatFormatting(captured: string, authored: str
   const after = content(parse(observed), true, true).nodes.map(node => node.cloneNode(true) as Element)
   const authors: string[] = []
   for (const [index, paragraph] of after.entries()) {
+    for (const name of ["rsidR", "rsidRDefault"]) {
+      const original = before[index]
+      if ([original, paragraph].some(node => node?.hasAttributeNS(W, name) && !/^[0-9a-fA-F]{8}$/.test(node.getAttributeNS(W, name) ?? "")))
+        throw new Error("Invalid paragraph revision-session identifier")
+      if (original?.hasAttributeNS(W, name)) paragraph.setAttributeNS(W, `w:${name}`, original.getAttributeNS(W, name)!)
+      else paragraph.removeAttributeNS(W, name)
+    }
     const properties = elements(paragraph).find(node => node.namespaceURI === W && node.localName === "pPr")
     const changes = properties ? elements(properties).filter(node => node.namespaceURI === W && node.localName === "pPrChange") : []
     if (changes.length > 1) throw new Error("Ambiguous native formatting revision")

@@ -1,6 +1,6 @@
 import type { WordChatAuthoredAmendment, WordChatParagraphFormat, WordChatSnapshot, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { validWordChatFormatting, wordChatApplyPlan } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting } from "./word-chat-host-ooxml"
+import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody } from "./word-chat-host-ooxml"
 import { DOMParser } from "@xmldom/xmldom"
 import { wordChatApplyEligibility } from "./word-chat-apply"
 
@@ -294,43 +294,48 @@ export class WordChatHost {
 
   /** Complete paragraphs form the import transport. The approved edit still
    * names only target.text/startOffset/endOffset, checked in both authored views. */
-  private async importSnapshot(context: WordChatContext, target: WordChatTarget, formatting = false, wordingImport = false, insertedMarks = false, allowNativeCell = false) {
+  private async importSnapshot(context: WordChatContext, target: WordChatTarget, formatting = false, wordingImport = false, insertedMarks = false, allowNativeCell = false, faithfulFormat = false) {
     const { range: selected, paragraphs } = await this.resolve(context, target, allowNativeCell)
     const all = context.document.body.paragraphs
     all.load("items/uniqueLocalId")
     await context.sync()
     const at = all.items.findIndex(p => p.uniqueLocalId === target.paragraphs[0]!.id)
     if (at < 0) throw captureMismatch("Word could not locate the reviewed paragraph among the document’s current paragraphs.")
-    // A cell Whole export may include the row, the target and a trailing paragraph;
-    // Content isolates each neighbour while retaining its paragraph properties.
+    // A cell Whole export may include the row, the target and a trailing paragraph.
     const neighbours: Array<{ id: string; range: WordChatRange }> = [all.items[at - 1], all.items[at + target.paragraphs.length]]
       .filter((p): p is Paragraph => Boolean(p)).map(p => ({ id: p.uniqueLocalId, range: p.getRange(allowNativeCell ? "Content" : "Whole") }))
-    // Content exports the exact paragraphs and all their pPr. Word's Whole
-    // export can add a synthetic trailing paragraph after the final mark.
-    // Only formatting replacement owns that mark; never discard exported
-    // paragraphs to make a Whole snapshot fit the reviewed target.
+    // Native formatting uses the bound whole-story projection below. Legacy
+    // import paths retain their existing scoped Content export.
     const content = paragraphs[0]!.getRange("Content").expandTo(paragraphs.at(-1)!.getRange("Content"))
     const range = formatting && !wordingImport ? paragraphs[0]!.getRange("Whole").expandTo(paragraphs.at(-1)!.getRange("Whole")) : content
     // Every preservation baseline comes from this final read batch. Context
     // discovery yields to Word and must never leave an earlier XML snapshot as
     // the authority for a later complete-paragraph replacement.
-    const xml = content.getOoxml(), comments = range.getComments(), revisions = range.getTrackedChanges()
+    const xml = faithfulFormat ? undefined : content.getOoxml(), bodyXml = faithfulFormat ? context.document.body.getRange("Whole").getOoxml() : undefined, comments = range.getComments(), revisions = range.getTrackedChanges()
     comments.load("items"); revisions.load("items/author,items/type")
     const current = paragraphs.map(paragraph => paragraph.getRange("Content").getReviewedText("Current"))
     context.document.load(formatting ? "changeTrackingMode,trackFormatting" : "changeTrackingMode")
-    all.load("items/uniqueLocalId")
-    const adjacent = neighbours.map(p => ({ id: p.id, xml: p.range.getOoxml() }))
+    all.load(faithfulFormat ? "items/uniqueLocalId,items/text,items/tableNestingLevel" : "items/uniqueLocalId")
+    const adjacent = faithfulFormat ? [] : neighbours.map(p => ({ id: p.id, xml: p.range.getOoxml() }))
     const bodyChanges = context.document.body.getRange().getTrackedChanges()
     bodyChanges.load("items/author,items/type,items/text")
     selected.load("text")
     for (const paragraph of paragraphs) paragraph.load("text")
     await context.sync()
+    const finalIds = all.items.map(p => p.uniqueLocalId)
+    const finalAt = finalIds.indexOf(target.paragraphs[0]!.id)
+    if (faithfulFormat && (finalAt !== at || JSON.stringify([finalIds[finalAt - 1], finalIds[finalAt + target.paragraphs.length]].filter((id): id is string => id !== undefined)) !== JSON.stringify(neighbours.map(p => p.id))))
+      throw captureMismatch("The paragraphs beside this review changed during capture.")
+    let projection: ReturnType<typeof projectNativeWordChatBody> | undefined
+    try { projection = bodyXml ? projectNativeWordChatBody(bodyXml.value, all.items.map(p => ({ id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel }))) : undefined }
+    catch { throw captureMismatch("Word could not bind the exported body to its native paragraphs.") }
+    const scoped = projection ? projection.scope(target.paragraphs.map((_, i) => at + i)) : xml!.value
     if (formatting && typeof context.document.trackFormatting !== "boolean")
       throw new WordChatHostError("This version of Word cannot confirm formatting tracking. Your document is unchanged.")
-    if (comments.items.length || (!formatting && revisions.items.length) || formatting && revisions.items.some(revision => !["Added", "Deleted"].includes((revision as TrackedChange).type)) || hasProtectedContent(xml.value, false, formatting, insertedMarks))
+    if (comments.items.length || (!formatting && revisions.items.length) || formatting && revisions.items.some(revision => !["Added", "Deleted"].includes((revision as TrackedChange).type)) || hasProtectedContent(scoped, false, formatting, insertedMarks))
       throw new WordChatHostError("This paragraph contains existing revisions, comments or a linked Word object. Review that passage in Word first, then prepare a fresh suggestion for ordinary text.")
     let captured: string[]
-    try { captured = capturedWordChatParagraphs(xml.value) }
+    try { captured = capturedWordChatParagraphs(scoped) }
     catch { throw new WordChatHostError("Word could not capture these complete paragraphs safely. Choose ordinary text within one clause or table cell; your document is unchanged.") }
     if (captured.length !== target.paragraphs.length)
       throw captureMismatch(`Word exported ${captured.length} paragraphs for this ${target.paragraphs.length}-paragraph review.`)
@@ -346,9 +351,10 @@ export class WordChatHost {
     const index = ids.indexOf(target.paragraphs[0]!.id)
     if (index < 0 || target.paragraphs.some((p, offset) => ids[index + offset] !== p.id))
       throw captureMismatch("The reviewed paragraphs changed identity or order during capture.")
-    if (formatting && JSON.stringify([ids[index - 1], ids[index + target.paragraphs.length]].filter((id): id is string => id !== undefined)) !== JSON.stringify(adjacent.map(p => p.id)))
+    if (formatting && !faithfulFormat && JSON.stringify([ids[index - 1], ids[index + target.paragraphs.length]].filter((id): id is string => id !== undefined)) !== JSON.stringify(adjacent.map(p => p.id)))
       throw captureMismatch("The paragraphs beside this review changed during capture.")
-    return { range, selected, ooxml: xml.value, ids, index, nesting: paragraphs.map(p => p.tableNestingLevel), adjacent: adjacent.map(p => ({ id: p.id, ooxml: p.xml.value })), tracking: context.document.changeTrackingMode, trackFormatting: formatting ? context.document.trackFormatting : undefined,
+    const nearby = projection ? [index - 1, index + target.paragraphs.length].filter(i => i >= 0 && i < ids.length).map(i => ({ id:ids[i]!, ooxml:projection.scope([i]) })) : adjacent.map(p => ({ id:p.id, ooxml:p.xml.value }))
+    return { range, selected, ooxml: scoped, ids, index, nesting: paragraphs.map(p => p.tableNestingLevel), adjacent: nearby, projection, tracking: context.document.changeTrackingMode, trackFormatting: formatting ? context.document.trackFormatting : undefined,
       changes: bodyChanges.items.map(change => ({ author: change.author, type: change.type, text: change.text })) }
   }
 
@@ -371,7 +377,7 @@ export class WordChatHost {
       if (mixed && (!validWordChatFormatting(input.target, input.formatting, input.replacement) || plan.structure?.kind === "delete")) throw new WordChatHostError("This change needs a smaller reviewed amendment. Your Word document is unchanged.")
       const expected = plan.paragraphs
       const formatting = input.formatting !== undefined
-      const snapshot = await this.word.run(context => this.importSnapshot(context, input.target, formatting || wordingImport, wordingImport, false, nativeText))
+      const snapshot = await this.word.run(context => this.importSnapshot(context, input.target, formatting || wordingImport, wordingImport, false, nativeText, formatting && !mixed))
       // Shared Docxodus authoring is read-only. No Office proxy or canonical
       // write is kept pending while that service authors the reviewed result.
       const authored = await input.author({ ooxml: snapshot.ooxml })
@@ -401,7 +407,7 @@ export class WordChatHost {
         })
       }
       return await this.word.run(async context => {
-        const fresh = await this.importSnapshot(context, input.target, formatting || wordingImport, wordingImport, false, nativeText)
+        const fresh = await this.importSnapshot(context, input.target, formatting || wordingImport, wordingImport, false, nativeText, formatting && !mixed)
         if (nativeText) {
           if (JSON.stringify(snapshot.nesting) !== JSON.stringify(fresh.nesting) || !sameWordChatTargetSnapshot(snapshot.ooxml, fresh.ooxml))
             throw new WordChatHostError("This paragraph changed while doc.haus prepared the amendment. Prepare and review it again; your Word changes are safe.")
@@ -611,20 +617,22 @@ export class WordChatHost {
     await context.sync()
     context.document.load("changeTrackingMode,trackFormatting")
     const all = context.document.body.paragraphs
-    all.load("items/uniqueLocalId")
+    all.load(fresh.projection ? "items/uniqueLocalId,items/text,items/tableNestingLevel" : "items/uniqueLocalId")
     const range = paragraphs[0]!.getRange("Content").expandTo(paragraphs.at(-1)!.getRange("Content"))
-    const xml = range.getOoxml(), current = range.getReviewedText("Current")
+    const xml = fresh.projection ? undefined : range.getOoxml(), bodyXml = fresh.projection ? context.document.body.getRange("Whole").getOoxml() : undefined, current = range.getReviewedText("Current")
     const changes = context.document.body.getRange().getTrackedChanges()
     changes.load("items/author,items/type,items/text")
-    const adjacent = fresh.adjacent.map(p => ({ before: p.ooxml, after: context.document.getParagraphByUniqueLocalId(p.id).getRange("Whole").getOoxml() }))
+    const adjacent = fresh.projection ? [] : fresh.adjacent.map(p => ({ before: p.ooxml, after: context.document.getParagraphByUniqueLocalId(p.id).getRange("Whole").getOoxml() }))
     await context.sync()
     let authors: string[] = []
     let verificationError: unknown
     let confirmed = context.document.changeTrackingMode === fresh.tracking && context.document.trackFormatting === fresh.trackFormatting &&
       JSON.stringify(all.items.map(p => p.uniqueLocalId)) === JSON.stringify(fresh.ids) && current.value === input.target.text
     try {
-      authors = verifiedNativeWordChatFormatting(fresh.ooxml, authored.ooxml, xml.value, formatting, inserted)
-      confirmed &&= adjacent.every(p => sameWordChatParagraphContent(p.before, p.after.value))
+      const projection = bodyXml ? projectNativeWordChatBody(bodyXml.value, all.items.map(p => ({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel}))) : undefined
+      const observed = projection ? projection.scope(input.target.paragraphs.map((_, i) => fresh.index + i)) : xml!.value
+      authors = verifiedNativeWordChatFormatting(fresh.ooxml, authored.ooxml, observed, formatting, inserted)
+      confirmed &&= projection && fresh.projection ? projection.geometry === fresh.projection.geometry && projection.paragraphs.every((p, i) => p.id === fresh.projection!.paragraphs[i]?.id && p.path === fresh.projection!.paragraphs[i]?.path) && fresh.adjacent.every(p => { const i = projection.paragraphs.findIndex(q => q.id === p.id); return i >= 0 && sameWordChatParagraphContent(p.ooxml, projection.scope([i])) }) : adjacent.every(p => sameWordChatParagraphContent(p.before, p.after.value))
       const signature = (change: TrackedChange) => JSON.stringify([change.author, change.type, change.text])
       const prior = new Map<string, number>()
       for (const change of fresh.changes) prior.set(signature(change), (prior.get(signature(change)) ?? 0) + 1)

@@ -36,7 +36,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     driftInsertedRanges: false, renewImportedIds: false, omitNewRevisions: false, authorCalls: 0, duringAuthor: undefined as undefined | (() => void | Promise<void>),
     nativeRevisions: [] as Array<{ start: number; end: number; author: string; type: string; text: string }>,
     extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false, wholeOoxmlTrailingParagraph: false,
-    nativeFormatting: [] as string[], dropNativeFormatting: false, terminalBodyMark: false, cellWholeExpandsRow: false,
+    nativeFormatting: [] as string[], dropNativeFormatting: false, terminalBodyMark: false, cellWholeExpandsRow: false, refuseEmptyContentXml: false,
     paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
   }
   const text = () => state.paragraphs.map((p) => p.text).join(state.separator)
@@ -59,7 +59,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
   const collection = <T>(items: T[]) => ({ items, load() {} })
   const ranges = new Set<Range>()
   class Range {
-    constructor(public start: number, public end: number, public bodyWhole = false, public cellWhole = false) { ranges.add(this) }
+    constructor(public start: number, public end: number, public bodyWhole = false, public cellWhole = false, public paragraphContent = false) { ranges.add(this) }
     get text() { return (text() + "\r").slice(this.start, this.end) }
     get paragraphs() {
       return collection(state.paragraphs.filter((p) => {
@@ -187,6 +187,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       return result
     }
     getOoxml() {
+      if (state.refuseEmptyContentXml && this.paragraphContent && this.start === this.end) throw new Error("empty Content XML unavailable")
       const paragraphs = this.paragraphs.items
       const whole = paragraphs.length && this.end === position(paragraphs.at(-1)!.uniqueLocalId).end + 1
       const markup = (p: { uniqueLocalId: string; text: string }) => {
@@ -281,7 +282,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       const at = position(p.id)
       if (location === "Start") return new Range(at.start, at.start)
       if (location === "End") return new Range(at.end, at.end)
-      return new Range(at.start, at.end + (location === "Whole" ? 1 : 0), false, state.cellWholeExpandsRow && Boolean(p.inTable) && location === "Whole")
+      return new Range(at.start, at.end + (location === "Whole" ? 1 : 0), false, state.cellWholeExpandsRow && Boolean(p.inTable) && location === "Whole", location === "Content")
     },
     insertAnnotations(set: unknown) {
       const id = `annotation-${++state.annotationCounter}`
@@ -595,6 +596,44 @@ test("native formatting restores the original tracking mode in the same mutation
   }
 })
 
+test("native formatting projects the body when an empty neighbor has no Content XML", async () => {
+  const { state, host } = office(["", "Final paragraph."], true)
+  state.selection = [1, 17]
+  state.refuseEmptyContentXml = true
+  state.paragraphXml.set("paragraph-1", '<w:p><w:pPr><w:spacing w:after="200"/></w:pPr><w:r><w:t>Final paragraph.</w:t></w:r></w:p>')
+  const target = (await host.selection())!
+  const result = await host.apply({ proposalId:"format-empty-neighbor", target, replacement:target.text, formatting:[{paragraph:0,spacingAfter:18}] })
+  expect(result.status).toBe("applied")
+  expect(state.nativeFormatting).toEqual(["paragraph-1"])
+  expect(state.paragraphXml.get("paragraph-1")).toContain('w:after="360"')
+})
+
+test("projected native formatting rejects a neighboring paragraph property change", async () => {
+  const { state, host } = formattedOffice(), target = (await host.selection())!
+  state.afterSync = () => {
+    if (state.nativeFormatting.length) {
+      state.paragraphXml.set("paragraph-4", state.paragraphXml.get("paragraph-4")!.replace('w:after="180"', 'w:after="240"'))
+      state.afterSync = undefined
+    }
+  }
+  await expect(host.apply({ proposalId:"format-neighbor-properties", target, replacement:target.text,
+    formatting:[{paragraph:target.paragraphs.length - 1,spacingAfter:6}] })).rejects.toMatchObject({mutationState:"uncertain"})
+  expect(state.nativeFormatting).toHaveLength(1)
+})
+
+test("projected native formatting rejects a missing property revision", async () => {
+  const { state, host } = formattedOffice(), target = (await host.selection())!
+  state.afterSync = () => {
+    if (state.nativeFormatting.length) {
+      state.paragraphXml.set("paragraph-3", state.paragraphXml.get("paragraph-3")!.replace(/<w:pPrChange\b[^>]*>[\s\S]*?<\/w:pPrChange>/, ""))
+      state.afterSync = undefined
+    }
+  }
+  await expect(host.apply({ proposalId:"format-missing-carrier", target, replacement:target.text,
+    formatting:[{paragraph:target.paragraphs.length - 1,spacingAfter:6}] })).rejects.toMatchObject({mutationState:"uncertain"})
+  expect(state.nativeFormatting).toHaveLength(1)
+})
+
 test("unknown formatting tracking refuses native formatting writes", async () => {
   for (const enabled of [undefined]) {
     const { state, host } = formattedOffice()
@@ -826,14 +865,14 @@ test("paragraph formatting refuses an adjacent insertion between neighbour disco
   expect(state.paragraphs[4]!.text).toBe("A coauthor’s unsaved paragraph.")
 })
 
-test("formatting capture distinguishes an extra exported paragraph from different exported tracked text before authoring", async () => {
+test("formatting body capture refuses an extra paragraph or different exported text before authoring", async () => {
   for (const extraParagraph of [true, false]) {
     const { state, host, formatting: baseFormatting } = formattedOffice()
     const target = (await host.selection())!
     const formatting = [...baseFormatting, { paragraph: target.paragraphs.length - 1, spacingAfter: 6 }]
-    const body = state.paragraphXml.get("paragraph-1")! + state.paragraphXml.get("paragraph-2")! + state.paragraphXml.get("paragraph-3")!
-    state.xml = flatOpc(extraParagraph ? body + "<w:p/>" : body.replace("The obligation is ", "The commitment is "), state.extraParts)
-    await expect(host.apply({ proposalId: `capture-diagnostic-${extraParagraph}`, target, replacement: target.text, formatting })).rejects.toThrow(extraParagraph ? "Word exported 4 paragraphs for this 3-paragraph review" : "exported text differs at reviewed paragraph 1")
+    const body = state.paragraphs.map(p => state.paragraphXml.get(p.id)!).join("")
+    state.xml = flatOpc(extraParagraph ? body + '<w:p><w:r><w:t>Extra</w:t></w:r></w:p><w:sectPr/>' : body.replace("The obligation is ", "The commitment is "), state.extraParts)
+    await expect(host.apply({ proposalId: `capture-diagnostic-${extraParagraph}`, target, replacement: target.text, formatting })).rejects.toMatchObject({mutationState:"unchanged", message:expect.stringContaining("could not bind the exported body")})
     expect(state.authorCalls).toBe(0)
     expect(state.writes).toHaveLength(0)
     expect(state.modeChanges).toHaveLength(0)

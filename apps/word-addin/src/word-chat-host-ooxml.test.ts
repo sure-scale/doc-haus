@@ -10,6 +10,37 @@ function flat(paragraph = '<w:p><w:r><w:t>Reviewed text.</w:t></w:r></w:p>', dep
   return `<pkg:package xmlns:pkg="${PKG}" xmlns:w="${W}"><pkg:part pkg:name="/word/document.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"><pkg:xmlData><w:document><w:body>${paragraph}</w:body></w:document></pkg:xmlData></pkg:part>${dependency ? `<pkg:part pkg:name="/word/styles.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml" pkg:padding="${padding}"><pkg:xmlData>${dependency}</pkg:xmlData></pkg:part>` : ""}</pkg:package>`
 }
 
+test("native body projection binds table order and retains real empty paragraph and properties", async () => {
+  const { projectNativeWordChatBody } = await import("./word-chat-host-ooxml")
+  const body = '<w:p><w:r><w:t>Same</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:pPr><w:spacing w:after="360"/></w:pPr><w:ins w:id="3" w:author="Prior"><w:r><w:rPr><w:b/></w:rPr><w:t>Same</w:t></w:r></w:ins></w:p></w:tc></w:tr></w:tbl><w:p/><w:p/><w:sectPr/>'
+  const projection = projectNativeWordChatBody(flat(body), [{id:"a",text:"Same",tableNestingLevel:0},{id:"b",text:"Same",tableNestingLevel:1},{id:"c",text:"",tableNestingLevel:0}])
+  expect(projection.paragraphs.map(p => p.id)).toEqual(["a", "b", "c"])
+  expect(projection.paragraphs[1]!.path).toContain("tbl")
+  expect(projection.scope([1])).toContain('w:after="360"')
+  expect(projection.scope([1])).toContain("<w:b/>")
+  expect(projection.scope([1])).toContain('w:author="Prior"')
+  expect(projection.scope([1])).toContain("/word/styles.xml")
+  expect(projection.scope([2])).toContain("<w:p/>")
+  const changed = projectNativeWordChatBody(flat(body.replace('<w:tbl>', '<w:tbl><w:tblPr><w:tblW w:w="2000"/></w:tblPr>')), [{id:"a",text:"Same",tableNestingLevel:0},{id:"b",text:"Same",tableNestingLevel:1},{id:"c",text:"",tableNestingLevel:0}])
+  expect(changed.geometry).not.toBe(projection.geometry)
+  const layout = projectNativeWordChatBody(flat(body.replace('<w:sectPr/>', '<w:sectPr><w:pgSz w:w="12000"/></w:sectPr>')), [{id:"a",text:"Same",tableNestingLevel:0},{id:"b",text:"Same",tableNestingLevel:1},{id:"c",text:"",tableNestingLevel:0}])
+  expect(layout.geometry).not.toBe(projection.geometry)
+})
+
+test("native body projection refuses unbound or substantive terminal carriers", async () => {
+  const { projectNativeWordChatBody } = await import("./word-chat-host-ooxml")
+  const inv = [{id:"a",text:"One"}], p = '<w:p><w:r><w:t>One</w:t></w:r></w:p>'
+  expect(() => projectNativeWordChatBody(flat(p + '<w:p><w:bookmarkStart w:id="1" w:name="x"/></w:p><w:sectPr/>'), inv)).toThrow()
+  expect(() => projectNativeWordChatBody(flat(p + '<w:p><w:pPr/></w:p><w:sectPr/>'), inv)).toThrow()
+  expect(() => projectNativeWordChatBody(flat(p + '<w:p><!-- marker --></w:p><w:sectPr/>'), inv)).toThrow()
+  expect(() => projectNativeWordChatBody(flat(p + '<w:p/><w:p/><w:sectPr/>'), inv)).toThrow()
+  expect(() => projectNativeWordChatBody(flat(p + '<w:p/>'), inv)).toThrow()
+  expect(() => projectNativeWordChatBody(flat(p), [{id:"a",text:"Other"}])).toThrow()
+  expect(() => projectNativeWordChatBody(flat(p), [{id:"a",text:"One",tableNestingLevel:1}])).toThrow()
+  expect(() => projectNativeWordChatBody(flat(p+p), [{id:"a",text:"One"},{id:"a",text:"One"}])).toThrow()
+  expect(() => projectNativeWordChatBody(flat('<w:sdt><w:sdtContent>'+p+'</w:sdtContent></w:sdt>'), inv)).toThrow()
+})
+
 test("native wording checks paragraph properties inside the selected cell wrapper", () => {
   const cell = (spacing: number) => flat(`<w:tbl><w:tr><w:tc><w:p><w:pPr><w:spacing w:after="${spacing}"/></w:pPr><w:r><w:t>Terms.</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`)
   expect(sameWordChatParagraphProperties(cell(120), cell(120))).toBe(true)
@@ -74,9 +105,11 @@ test("native formatting must retain the prior properties and inline revisions an
   expect(verifiedNativeWordChatFormatting(before, result, native, operations)).toEqual(["Word user"])
   const renumbered = native.replace('w:id="4"', 'w:id="24"').replace('<w:p>', '<w:p w:rsidP="12345678">')
   expect(verifiedNativeWordChatFormatting(before, result, renumbered, operations)).toEqual(["Word user"])
+  const churn = renumbered.replace('<w:p ', '<w:p w:rsidR="00ABCDEF" w:rsidRDefault="00123456" ')
+  expect(verifiedNativeWordChatFormatting(before, result, churn, operations)).toEqual(["Word user"])
   for (const corrupted of [native.replace('w:after="120"', 'w:after="140"'), native.replace('w:after="240"', 'w:after="260"'),
     native.replace('w:author="Earlier"', 'w:author="Other"'), native.replace('w:author="Word user"', 'w:author=""'),
-    renumbered.replace('w:author="Earlier"', 'w:author="Other"'), renumbered.replace('w:rsidP="12345678"', 'w:rsidP="12345678" w:rsidR="unexpected"')])
+    native.replace('Reviewed text.', 'Altered text.'), renumbered.replace('w:author="Earlier"', 'w:author="Other"'), renumbered.replace('w:rsidP="12345678"', 'w:rsidP="12345678" w:rsidR="unexpected"')])
     expect(() => verifiedNativeWordChatFormatting(before, result, corrupted, operations)).toThrow()
 })
 
