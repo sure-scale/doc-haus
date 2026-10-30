@@ -12,6 +12,7 @@ export type WordChatContext = WordChatSnapshot
 export type WordChatSource = { id: string; contentHash?: string; name: string; quote: string; location: string; provenance: "word-buffer" | "saved-version" | "instructions" | "request-upload" }
 export type WordChatConversation = { id: string; title: string; documentName: string; updatedAt: number }
 export type WordChatSuggestion = { title: string; explanation: string; passage: string }
+export type WordChatAnswerPart = { type: "text"; text: string } | { type: "reference"; sourceId: string; quote: string }
 export type WordChatTurn = {
   id: string
   conversationId: string
@@ -20,6 +21,8 @@ export type WordChatTurn = {
   scope: WordChatScope
   text: string
   answer: string
+  answerFormat?: "segments-v1"
+  answerParts?: WordChatAnswerPart[]
   status: "running" | "complete" | "cancelled" | "error"
   sources: WordChatSource[]
   attachments: WordChatMaterial[]

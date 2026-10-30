@@ -1009,3 +1009,67 @@ test("wording eligibility refuses structural, empty and mixed formatting request
   const tabTarget = { ...passage, text: "One\tcell", paragraphs: [{ ...passage.paragraphs[0]!, text: "One\tcell" }], startOffset: 0, endOffset: 8 }
   expect(wordChatApplyEligibility(tabTarget, "Another")).toMatchObject({ supported: false })
 })
+
+test("segmented answers preserve literal brackets and render only verified references", async () => {
+  const source = { id:"source-one", name:"Notes", quote:"Verified passage", location:"Page 1", provenance:"saved-version" as const }
+  const other = { id:"source-two", name:"Other", quote:"Another passage", location:"Page 2", provenance:"saved-version" as const }
+  const original = turn({ answer:"untrusted fallback", sources:[source,other], answerFormat:"segments-v1", answerParts:[
+    {type:"text",text:'Literal [source-one], [word], [1, 2] and <img src=x> & text. '},
+    {type:"reference",sourceId:"source-one",quote:"Verified passage"}, {type:"text",text:" again "},
+    {type:"reference",sourceId:"source-one",quote:"Verified passage"}, {type:"text",text:" and "},
+    {type:"reference",sourceId:"source-two",quote:"Another passage"}, {type:"text",text:" unknown "},
+    {type:"reference",sourceId:"unknown",quote:"forged"}, {type:"reference",sourceId:"source-one",quote:"wrong quote"},
+  ] } as unknown as Partial<WordChatTurn>)
+  const f = fixture({turns:[original]})
+  try {
+    await f.chat.ready
+    const answer = f.root.querySelector(".chat-answer-text")!
+    expect(answer.textContent).toBe('Literal [source-one], [word], [1, 2] and <img src=x> & text. [1] again [1] and [2] unknown [Source unavailable][Source unavailable]')
+    expect(answer.querySelector("img")).toBeNull()
+    expect([...f.root.querySelectorAll(".chat-source summary")].map(e=>e.textContent)).toEqual(["[1] Notes · Saved source", "[2] Other · Saved source"])
+  } finally { f.restore() }
+})
+
+test("malformed marked answers never fall back to raw answer or source links", async () => {
+  const source = { id:"source-one", name:"Notes", quote:"Verified", location:"Page 1", provenance:"saved-version" as const }
+  for (const parts of [undefined, [{type:"reference",sourceId:"source-one"}], [{type:"text",text:"hidden"},{type:"other"}]]) {
+    const f = fixture({turns:[turn({answer:"unsafe [source-one]",sources:[source],answerFormat:"segments-v1",answerParts:parts} as unknown as Partial<WordChatTurn>)]})
+    try {
+      await f.chat.ready
+      const answer = f.root.querySelector('.chat-message[data-role="assistant"]')!
+      expect(answer.textContent).not.toContain("unsafe")
+      expect(answer.textContent).not.toContain("hidden")
+      expect(answer.querySelector(".chat-source")).toBeNull()
+      expect(answer.querySelector('[role="alert"]')?.textContent).toContain("could not be displayed")
+    } finally { f.restore() }
+  }
+})
+
+test("malformed segmented review cannot offer paragraph or row Apply", async () => {
+  for (const review of [{proposal}, {rowProposal}]) {
+    const f = fixture({turns:[turn({kind:"amendment", answerFormat:"segments-v1", answerParts:undefined, ...review})], host:{applyRow:async () => ({status:"applied",tracked:true,saved:false,authors:[]})}})
+    try {
+      await f.chat.ready
+      const answer = f.root.querySelector('.chat-message[data-role="assistant"]')!
+      expect(answer.querySelector('[role="alert"]')).not.toBeNull()
+      expect(answer.querySelector(".chat-proposal")).toBeNull()
+      expect(answer.textContent).not.toContain("Apply")
+    } finally { f.restore() }
+  }
+})
+
+test("cleared segmented answers show only their running, stopped or error state", async () => {
+  const source = { id:"source-one", name:"Notes", quote:"Stale quote", location:"Page 1", provenance:"saved-version" as const }
+  for (const [status, error, expected] of [["running", undefined, "Thinking…"], ["cancelled", undefined, "Stopped"], ["error", "Request failed", "Request failed"], ["complete", "Review failed", "Review failed"]] as const) {
+    const f = fixture({turns:[turn({status,error,answer:"stale answer",answerFormat:"segments-v1",answerParts:undefined,sources:[source],proposal})]})
+    try {
+      await f.chat.ready
+      const answer = f.root.querySelector('.chat-message[data-role="assistant"]')!
+      expect(answer.textContent).toContain(expected)
+      expect(answer.textContent).not.toContain("stale answer")
+      expect(answer.textContent).not.toContain("could not be displayed")
+      expect(answer.querySelector(".chat-source")).toBeNull()
+      expect(answer.querySelector(".chat-proposal")).toBeNull()
+    } finally { f.restore() }
+  }
+})

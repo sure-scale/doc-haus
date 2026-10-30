@@ -474,8 +474,34 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
         else if (!group.excerpts.some(excerpt => excerpt.quote === source.quote && excerpt.location === source.location && excerpt.provenance === source.provenance && excerpt.name === source.name)) group.excerpts.push(source)
       }
       const references = new Map([...sources.keys()].map((id, index) => [id, index + 1]))
-      const displayedAnswer = turn.answer.replace(/\[([^\]\r\n]+)\]/g, (token, id: string) => references.has(id) ? `[${references.get(id)}]` : token)
-      if (displayedAnswer) answer.append(line("p", displayedAnswer, "chat-answer-text"))
+      // Marked answers carry explicit references; literal text is never parsed
+      // for bracket tokens. Legacy persisted turns retain their old renderer.
+      const format: unknown = turn.answerFormat, parts: unknown = turn.answerParts
+      const cited = new Set<string>()
+      let malformed = false
+      const suppressed = format !== undefined && (turn.status !== "complete" || Boolean(turn.error?.trim()))
+      if (format !== undefined) {
+        if (suppressed) { /* The service clears stale answer content while not complete. */ }
+        else if (format !== "segments-v1" || !Array.isArray(parts)) malformed = true
+        else {
+          const paragraph = document.createElement("p"); paragraph.className = "chat-answer-text"
+          for (const part of parts) {
+            if (!part || typeof part !== "object" || Array.isArray(part)) { malformed = true; break }
+            if (part.type === "text" && typeof part.text === "string" && Object.keys(part).every(key => ["type", "text"].includes(key))) paragraph.append(document.createTextNode(part.text))
+            else if (part.type === "reference" && typeof part.sourceId === "string" && typeof part.quote === "string" && Object.keys(part).every(key => ["type", "sourceId", "quote"].includes(key))) {
+              const group = sources.get(part.sourceId)
+              const valid = group?.excerpts.some(excerpt => excerpt.quote === part.quote)
+              if (valid) cited.add(part.sourceId)
+              paragraph.append(document.createTextNode(valid ? `[${references.get(part.sourceId)}]` : "[Source unavailable]"))
+            } else { malformed = true; break }
+          }
+          if (!malformed && paragraph.textContent) answer.append(paragraph)
+        }
+        if (malformed) { const notice = line("p", "This answer could not be displayed. Please try again.", "chat-message-meta"); notice.setAttribute("role", "alert"); answer.append(notice) }
+      } else {
+        const displayedAnswer = turn.answer.replace(/\[([^\]\r\n]+)\]/g, (token, id: string) => references.has(id) ? `[${references.get(id)}]` : token)
+        if (displayedAnswer) answer.append(line("p", displayedAnswer, "chat-answer-text"))
+      }
       if (turn.status === "running") answer.append(line("p", "Thinking…", "chat-message-meta"))
       if (turn.status === "error" || turn.status === "complete" && turn.error?.trim()) {
         const notice = line("p", turn.error || "This request could not be completed. Your Word document is unchanged.", "chat-message-meta")
@@ -483,7 +509,8 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       }
       if (turn.status === "cancelled") answer.append(line("p", "Stopped", "chat-message-meta"))
       const provenance = { "word-buffer": "Word text", "saved-version": "Saved source", instructions: "Playbook", "request-upload": "Chat attachment" }
-      for (const [index, { source, excerpts }] of [...sources.values()].entries()) {
+      for (const [index, { source, excerpts }] of (malformed || suppressed ? [] : [...sources.values()]).entries()) {
+        if (format !== undefined && !cited.has(source.id)) continue
         const detail = document.createElement("details"); detail.className = "chat-source"
         detail.append(line("summary", `[${index + 1}] ${source.name} · ${provenance[source.provenance]}`))
         for (const excerpt of excerpts) {
@@ -496,8 +523,8 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
         }
         answer.append(detail)
       }
-      if (proposal) answer.append(proposalCard(proposal, turn))
-      else if (row) answer.append(rowProposalCard(row, turn))
+      if (!malformed && !suppressed && proposal) answer.append(proposalCard(proposal, turn))
+      else if (!malformed && !suppressed && row) answer.append(rowProposalCard(row, turn))
       wrapper.append(answer)
       if (cached) cached.node.replaceWith(wrapper); else history.append(wrapper)
       cached = { stamp, node: wrapper }; nodes.set(turn.id, cached)

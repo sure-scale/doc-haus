@@ -25,10 +25,21 @@ let directory: string, app: Hono, auth: WordChatAuth, next = 0, generations = 0,
 let modelProposal: { before: string; after?: string; formatting?: unknown } | undefined
 let modelAnswer: string | undefined
 let modelRawOutput: string | undefined, reviewerRawOutput: string | undefined
+let modelStructuredRawOutput: string | undefined
 let routerAgent: "qa" | "redliner" = "qa", routerOutput: string | undefined, loseContextResponse = false
 let reviewerOutcome: "succeeded" | "failed" | "interrupted" = "succeeded"
 let mainOutcome: "succeeded" | "failed" | "interrupted" = "succeeded", queueReview = false
 const stoppedInputs: string[] = []
+// Existing synthetic fixtures describe answers in the previous test shape.
+// Emit the admitted structured wire format; legacy sessions are tested explicitly.
+function structuredFixture(raw: string): string {
+  try {
+    const value = JSON.parse(raw) as {answer?: unknown;citations?: unknown[];answerParts?: unknown}
+    if (typeof value.answer !== "string" || value.answerParts !== undefined || !Array.isArray(value.citations)) return raw
+    const {answer,citations,...rest} = value
+    return JSON.stringify({...rest,answerParts:[{type:"text",text:answer},...citations.map(citation => ({type:"reference",...(citation as object)}))]})
+  } catch { return raw }
+}
 let engineHook: ((session: Session, tail: string, method: string, payload: Record<string, unknown>) => Promise<void>) | undefined
 const oldRuntime = process.env.DOCHAUS_RUNTIME_DIR, oldWorkspace = process.env.WORKSPACE_ROOT
 const transport = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -97,7 +108,8 @@ const transport = Object.assign(async (input: RequestInfo | URL, init?: RequestI
         const source = sources.find(source => source.id !== "word") ?? sources[0]
         const output: Record<string, unknown> = session.metadata.type === "word-chat-review" ? { approved: approveReview, issues: approveReview ? [] : ["The replacement loses a qualification."] } : { answer: modelAnswer ?? `Answer ${source?.quote ?? ""}`, citations: source ? [{ sourceId: inventCitation ? "foreign-source" : source.id, quote: source.quote.slice(0, 100) }] : [], suggestions: [] }
         if (amend && session.metadata.type !== "word-chat-review") output.proposal = { before: deletion ? "Tuesday " : context.text, after: deletion ? "" : context.text.replace("Tuesday", "Wednesday"), ...modelProposal, explanation: "Requested delivery update", openItems: ["Confirm the date with the client"] }
-        rows.push({ id: `msg_answer_${next++}`, type: "assistant", content: [{ type: "text", text: session.agent === "router" ? routerOutput ?? JSON.stringify({ route: amend ? "redliner" : routerAgent }) : (session.metadata.type === "word-chat-review" ? reviewerRawOutput : modelRawOutput) ?? JSON.stringify(output) }], time: { created: new Date().toISOString(), completed: new Date().toISOString() } })
+        const raw = (session.metadata.type === "word-chat-review" ? reviewerRawOutput : modelRawOutput) ?? JSON.stringify(output)
+        rows.push({ id: `msg_answer_${next++}`, type: "assistant", content: [{ type: "text", text: session.agent === "router" ? routerOutput ?? JSON.stringify({ route: amend ? "redliner" : routerAgent }) : session.metadata.type === "word-chat-review" ? raw : modelStructuredRawOutput ?? (session.metadata.answerFormat === "segments-v1" ? structuredFixture(raw) : raw) }], time: { created: new Date().toISOString(), completed: new Date().toISOString() } })
         session.time.idle = new Date().toISOString(); session.outcome = session.metadata.type === "word-chat-review" ? reviewerOutcome : session.agent === "router" ? "succeeded" : mainOutcome
       }
     }
@@ -283,7 +295,7 @@ test("legacy proposal kinds retain their original wording and formatting boundar
     delete child.metadata.suppliedContext; delete child.metadata.contextMode
     const answer = messages.get(turn.id)!.find(message => message.type === "assistant")!
     const setProposal = (replacement: string, properties?: unknown) => {
-      answer.content = [{ type: "text", text: JSON.stringify({ answer: "Prepared.", citations: [], proposal: { before, after: replacement, ...(properties === undefined ? {} : { formatting: properties }), explanation: "Review", openItems: [] } }) }]
+      answer.content = [{ type: "text", text: structuredFixture(JSON.stringify({ answer: "Prepared.", citations: [], proposal: { before, after: replacement, ...(properties === undefined ? {} : { formatting: properties }), explanation: "Review", openItems: [] } })) }]
     }
     const poll = async () => (await (await post("poll", { conversationId: id, turnId: turn.id })).json() as { turn: WordChatTurn }).turn
     child.metadata.kind = "formatting"
@@ -409,7 +421,7 @@ test("Stop queues behind an in-flight poll's reviewer admission and interrupts t
   hold = false; amend = false
   const running = (await response.json() as { turn: WordChatTurn }).turn
   const child = sessions.get(running.id)!
-  messages.get(child.id)!.push({ id: `msg_late_${next++}`, type: "assistant", content: [{ type: "text", text: JSON.stringify({ answer: "Prepared a focused proposal.", citations: [], proposal: { before: context.text, after: context.text.replace("Tuesday", "Wednesday"), explanation: "Requested update.", openItems: [] } }) }], time: { created: new Date().toISOString(), completed: new Date().toISOString() } })
+  messages.get(child.id)!.push({ id: `msg_late_${next++}`, type: "assistant", content: [{ type: "text", text: structuredFixture(JSON.stringify({ answer: "Prepared a focused proposal.", citations: [], proposal: { before: context.text, after: context.text.replace("Tuesday", "Wednesday"), explanation: "Requested update.", openItems: [] } })) }], time: { created: new Date().toISOString(), completed: new Date().toISOString() } })
   child.time.idle = new Date().toISOString(); child.outcome = "succeeded"
   let enter!: () => void, release!: () => void
   const entered = new Promise<void>(resolve => { enter = resolve }), gate = new Promise<void>(resolve => { release = resolve })
@@ -978,6 +990,49 @@ test("reviewed row proposals bind host table, reject forgery and require an inde
     approveReview = false
     expect((await (await request()).json() as {turn:WordChatTurn}).turn.rowProposal).toBeUndefined()
   } finally { modelRawOutput = undefined; approveReview = true }
+})
+
+test("structured answer parts preserve literal brackets and verify explicit references without legacy fallback", async () => {
+  const id = await newConversation(), ref = {type:"reference" as const,sourceId:"word",quote:context.text}
+  const request = () => send(id,"document","Explain the current text")
+  try {
+    const parts = [{type:"text" as const,text:'Literal [word] and ["a", "b"] remain text. '},ref]
+    modelStructuredRawOutput = JSON.stringify({answerParts:parts})
+    const good = (await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(good.status).toBe("complete"); expect(good.answerFormat).toBe("segments-v1"); expect(good.answerParts).toEqual(parts)
+    expect(good.answer).toBe('Literal [word] and ["a", "b"] remain text. '); expect(good.sources[0]?.quote).toBe(context.text)
+    for (const raw of [
+      {answerParts:[{...ref,sourceId:"unknown"}]}, {answerParts:[{...ref,quote:"Invented quote"}]},
+      {answerParts:[{type:"text",text:"x",unexpected:true}]}, {answer:"legacy [word]",citations:[{sourceId:"word",quote:context.text}]},
+      {answerParts:parts,answer:"mixed",citations:[]},
+    ]) {
+      modelStructuredRawOutput = JSON.stringify(raw)
+      const bad = (await (await request()).json() as {turn:WordChatTurn}).turn
+      expect(bad.status).toBe("error"); expect(bad.answerParts).toBeUndefined(); expect(bad.sources).toEqual([])
+    }
+    modelStructuredRawOutput = JSON.stringify({answerParts:parts})
+    const saved = (await (await request()).json() as {turn:WordChatTurn}).turn
+    const child = sessions.get(saved.id)!
+    delete child.metadata.answerFormat
+    const message = messages.get(child.id)!.find(value => value.type === "assistant")!
+    message.content = [{type:"text",text:JSON.stringify({answer:"Legacy reference [word]",citations:[{sourceId:"word",quote:context.text}]})}]
+    const old = (await (await post("poll",{conversationId:id,turnId:child.id})).json() as {turn:WordChatTurn}).turn
+    expect(old.answerFormat).toBeUndefined(); expect(old.answer).toBe("Legacy reference [word]"); expect(old.sources[0]?.quote).toBe(context.text)
+  } finally { modelStructuredRawOutput = undefined }
+})
+
+test("structured answers are suppressed while review is pending and when review fails", async () => {
+  const id = await newConversation()
+  modelStructuredRawOutput = JSON.stringify({answerParts:[{type:"text",text:"Prepared."},{type:"reference",sourceId:"word",quote:context.text}],proposal:{before:context.text,after:context.text.replace("Tuesday","Wednesday"),explanation:"Change",openItems:[]}})
+  try {
+    queueReview = true
+    const pending = (await (await post("send",{conversationId:id,scope:"document",text:"Change the date",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context})).json() as {turn:WordChatTurn}).turn
+    expect(pending.status).toBe("running"); expect(pending.answerParts).toBeUndefined(); expect(pending.sources).toEqual([])
+    queueReview = false; approveReview = false
+    const rejected = (await (await post("send",{conversationId:await newConversation(),scope:"document",text:"Change the date",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context})).json() as {turn:WordChatTurn}).turn
+    expect(rejected.proposal).toBeUndefined(); expect(rejected.sources).toEqual([])
+    expect(rejected.answerParts).toEqual([{type:"text",text:rejected.answer}]); expect(rejected.answer).toContain("reviewer")
+  } finally { queueReview = false; approveReview = true; modelStructuredRawOutput = undefined }
 })
 
 test("row prepare uses stored review and current bytes, and rechecks the pending lease", async () => {
