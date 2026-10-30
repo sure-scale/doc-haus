@@ -899,8 +899,13 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                               onClick={() => openDetail(doc.name, col.id)}
                             >
                               {cell.answer}
-                              {cell.citation && <span className="review-cite"> [{cell.citation.documentName} § {cell.citation.section}]</span>}
-                              {cell.citation && degradedCitation(cell.citation.documentName)}
+                              {/* On its own line; the row names the document unless the citation is from another one. */}
+                              {cell.citation && (
+                                <span className="review-cite">
+                                  <span className="sr-only"> Source:</span> {citesRow(cell.citation, { name: doc.name, docPath: doc.doc_path }) ? "" : `${cell.citation.documentName} `}§ {cell.citation.section}
+                                  {degradedCitation(cell.citation.documentName)}
+                                </span>
+                              )}
                             </button>
                             <ReviewMarker entry={entry} recheck={cell.recheck && recheckOutcome(cell.recheck)} onOpen={() => openDetail(doc.name, col.id)} />
                             <div className="review-cell-actions">

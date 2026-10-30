@@ -104,6 +104,7 @@
 .review-table tbody tr:hover td.review-cell.reviewed { background: var(--accent-soft); }
 .review-cell-body { display: flex; flex-direction: column; gap: var(--space-2); }
 .review-cite { color: var(--accent); font-size: .85rem; }
+.review-answer .review-cite { display: block; margin-top: var(--space-1); }
 .review-recheck-detail { margin: 0 0 var(--space-4); color: var(--muted); font-size: .9rem; }
 .review-cell-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1); min-height: 28px; padding-top: var(--space-1); font-size: .8rem; }
 .review-cell-actions .icon-btn { min-height: 28px; padding: var(--space-1) var(--space-2); border-color: transparent; opacity: 1; font-size: .78rem; }
