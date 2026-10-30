@@ -16,6 +16,82 @@ export type WordChatSnapshot = {
   capturedAt: string
   truncated: boolean
   selection?: WordChatTarget
+  /** Host-captured candidate geometry; the native executor must revalidate it. */
+  table?: WordChatTableCapture
+}
+/** One paragraph per cell in a simple, unmerged, top-level table. The table
+ * index and paragraph IDs come from Word, never from the model. */
+export type WordChatTableCapture = {
+  tableIndex: number
+  rows: WordChatParagraph[][]
+}
+export type WordChatTableRowInsertionProposal = {
+  kind: "table_row_insert"
+  id: string
+  documentId: string
+  explanation: string
+  openItems: string[]
+  createdAt: string
+  position: "end"
+  table: WordChatTableCapture
+  cells: string[]
+}
+/** Additive operation type: existing paragraph proposal consumers remain unchanged. */
+export type WordChatReviewedOperation =
+  | { kind: "paragraph"; proposal: WordChatProposal }
+  | { kind: "table_row_insert"; proposal: WordChatTableRowInsertionProposal }
+
+/** Validate the capture's identity and ordering against the same snapshot.
+ * This does not prove table geometry or grant permission to write in Word. */
+export function wordChatTableCaptureCurrent(snapshot: WordChatSnapshot, value: unknown): value is WordChatTableCapture {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const table = value as WordChatTableCapture
+  if (Object.keys(table).some(key => !["tableIndex", "rows"].includes(key)) ||
+    !Number.isSafeInteger(table.tableIndex) || table.tableIndex < 0 || !Array.isArray(table.rows) ||
+    !table.rows.length || table.rows.length > 1000 || !Array.isArray(table.rows[0]) ||
+    !table.rows[0].length || table.rows[0].length > 32) return false
+  const width = table.rows[0].length
+  const cells: WordChatParagraph[] = []
+  for (const row of table.rows) {
+    if (!Array.isArray(row) || row.length !== width) return false
+    for (const cell of row) {
+      if (!cell || typeof cell !== "object" || Array.isArray(cell) || Object.keys(cell).some(key => !["id", "text"].includes(key)) ||
+        typeof cell.id !== "string" || !cell.id || typeof cell.text !== "string") return false
+      cells.push(cell)
+    }
+  }
+  const ids = new Set(cells.map(cell => cell.id))
+  if (ids.size !== cells.length) return false
+  const at = snapshot.paragraphs.findIndex(paragraph => paragraph.id === cells[0]!.id)
+  return at >= 0 && snapshot.paragraphs.filter(paragraph => ids.has(paragraph.id)).length === cells.length &&
+    cells.every((cell, index) => snapshot.paragraphs[at + index]?.id === cell.id && snapshot.paragraphs[at + index]?.text === cell.text)
+}
+
+/** Only literal cells for an end insertion are admitted by this seam. */
+export function validWordChatTableRowInsertion(snapshot: WordChatSnapshot, value: unknown): value is WordChatTableRowInsertionProposal {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const row = value as WordChatTableRowInsertionProposal
+  if (Object.keys(row).some(key => !["kind", "id", "documentId", "explanation", "openItems", "createdAt", "position", "table", "cells"].includes(key)) ||
+    row.kind !== "table_row_insert" || row.position !== "end" || typeof row.id !== "string" || !row.id ||
+    typeof row.documentId !== "string" || !row.documentId || typeof row.explanation !== "string" ||
+    typeof row.createdAt !== "string" || !Array.isArray(row.openItems) || row.openItems.some(item => typeof item !== "string") ||
+    !wordChatTableCaptureCurrent(snapshot, row.table) || !wordChatTableCaptureCurrent(snapshot, snapshot.table) ||
+    row.table.tableIndex !== snapshot.table.tableIndex || row.table.rows.length !== snapshot.table.rows.length ||
+    row.table.rows.some((cells, i) => cells.length !== snapshot.table!.rows[i]!.length ||
+      cells.some((cell, j) => cell.id !== snapshot.table!.rows[i]![j]!.id || cell.text !== snapshot.table!.rows[i]![j]!.text)) || !Array.isArray(row.cells) ||
+    row.cells.length !== row.table.rows[0]!.length) return false
+  return row.cells.some(cell => typeof cell === "string" && cell.length > 0) && row.cells.every(cell =>
+    typeof cell === "string" && cell.length <= 4000 && cell === cell.trim() && wellFormedWordChatCell(cell) && !/[\u0000-\u001f\u007f]/.test(cell)) && row.cells.join("").length <= 24_000
+}
+function wellFormedWordChatCell(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i)
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(++i)
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false
+    } else if (code >= 0xdc00 && code <= 0xdfff) return false
+  }
+  return true
 }
 export type WordChatProposal = {
   id: string

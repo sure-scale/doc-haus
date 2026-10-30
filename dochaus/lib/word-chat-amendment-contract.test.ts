@@ -1,5 +1,23 @@
 import { expect, test } from "bun:test"
-import { targetWordChatAmendment, validWordChatFormatting, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
+
+test("row insertion binds ordered native cell identities and literal cells to the captured table", () => {
+  const paragraphs = [{id:"a",text:"One"},{id:"b",text:"Two"},{id:"c",text:"Three"},{id:"d",text:"Four"}]
+  const table = {tableIndex:0,rows:[paragraphs.slice(0,2),paragraphs.slice(2)]}
+  const context: WordChatSnapshot = {text:paragraphs.map(p => p.text).join("\r"),paragraphs,table,saved:false,capturedAt:"now",truncated:false}
+  const proposal = {kind:"table_row_insert",id:"proposal",documentId:"document",explanation:"Append a row",openItems:[],createdAt:"now",position:"end",table,cells:["Five","Six"]}
+  expect(wordChatTableCaptureCurrent(context, table)).toBe(true)
+  expect(validWordChatTableRowInsertion(context, proposal)).toBe(true)
+  expect(validWordChatTableRowInsertion(context, {...proposal, table:{...table,tableIndex:1}})).toBe(false)
+  expect(validWordChatTableRowInsertion(context, {...proposal, cells:["Five"]})).toBe(false)
+  expect(validWordChatTableRowInsertion(context, {...proposal, cells:[" Five","Six"]})).toBe(false)
+  expect(validWordChatTableRowInsertion(context, {...proposal, cells:["Five\nSix",""]})).toBe(false)
+  expect(validWordChatTableRowInsertion(context, {...proposal, position:"after"})).toBe(false)
+  expect(wordChatTableCaptureCurrent(context, {...table, rows:[[paragraphs[0],paragraphs[0]],table.rows[1]]})).toBe(false)
+  expect(wordChatTableCaptureCurrent(context, {...table, rows:[[paragraphs[1],paragraphs[0]],table.rows[1]]})).toBe(false)
+  expect(wordChatTableCaptureCurrent(context, {...table, rows:[[...table.rows[0]!], [{...paragraphs[2]!,text:"Changed"},paragraphs[3]]]})).toBe(false)
+  expect(wordChatTableCaptureCurrent(context, {...table, rows:[table.rows[0], [paragraphs[2]]]})).toBe(false)
+})
 
 const snapshot = (): WordChatSnapshot => ({text: "Pay within thirty days.\rPay within thirty days.",
   paragraphs: [{id:"first",text:"Pay within thirty days."},{id:"second",text:"Pay within thirty days."}],

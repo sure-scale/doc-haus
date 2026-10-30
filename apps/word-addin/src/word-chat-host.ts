@@ -1,5 +1,5 @@
-import type { WordChatAuthoredAmendment, WordChatParagraphFormat, WordChatSnapshot, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { validWordChatFormatting, wordChatApplyPlan } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatAuthoredAmendment, WordChatParagraphFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { validWordChatFormatting, wordChatApplyPlan, wordChatTableCaptureCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody } from "./word-chat-host-ooxml"
 import { DOMParser } from "@xmldom/xmldom"
 import { wordChatApplyEligibility } from "./word-chat-apply"
@@ -7,6 +7,7 @@ import { wordChatApplyEligibility } from "./word-chat-apply"
 type ClientResult<T> = { value: T }
 type Collection<T> = { items: T[]; load(properties: string): void }
 type TrackedChange = { author: string; type: string; text: string }
+type NativeTable = { rowCount: number; isUniform: boolean; values: string[][]; load(properties: string): void; getCell(row: number, column: number): { body: { paragraphs: Collection<Paragraph> } } }
 type Paragraph = { text: string; uniqueLocalId: string; tableNestingLevel: number; styleBuiltIn: string; spaceBefore: number; spaceAfter: number; lineSpacing: number; load(properties: string): void; getRange(location?: string): WordChatRange }
 type WordChatRange = {
   text: string
@@ -39,7 +40,7 @@ export type WordChatContext = {
     load(properties: string): void
     getSelection(): WordChatRange
     getParagraphByUniqueLocalId(id: string): Paragraph
-    body: { text: string; load(properties: string): void; paragraphs: Collection<Paragraph>; getRange(location?: string): WordChatRange }
+    body: { text: string; load(properties: string): void; paragraphs: Collection<Paragraph>; tables?: Collection<NativeTable>; getRange(location?: string): WordChatRange }
   }
   sync(): Promise<void>
 }
@@ -169,13 +170,93 @@ export class WordChatHost {
   }
   async capture(includeSelection = false): Promise<WordChatSnapshot> {
     const structured = this.supports("WordApi", "1.6")
-    try { return await this.readSnapshot(structured, includeSelection) }
+    try {
+      const snapshot = await this.readSnapshot(structured, includeSelection)
+      if (structured) {
+        try {
+          const table = await this.readTableCapture(snapshot)
+          if (table && new TextEncoder().encode(JSON.stringify({ ...snapshot, table })).length <= SNAPSHOT_BYTES) snapshot.table = table
+        } catch { /* Optional geometry must never prevent ordinary chat. */ }
+      }
+      return snapshot
+    }
     catch (error) {
       if (includeSelection || error instanceof WordChatHostError || !structured) failure(error, "Word could not read its current text. Keep your message and try again.")
       // Some licensed hosts advertise the API without providing paragraph IDs.
       // Read current text in a fresh Office batch; never substitute a saved copy.
       return this.readSnapshot(false, false)
     }
+  }
+  private async readTableCapture(snapshot: WordChatSnapshot): Promise<WordChatTableCapture | undefined> {
+    return this.word.run(async context => {
+      const body = context.document.body, tables = body.tables, paragraphs = body.paragraphs
+      if (!tables) return
+      tables.load("items")
+      await context.sync()
+      if (!tables.items.length || !snapshot.selection && tables.items.length !== 1) return
+      const xml = body.getRange("Whole").getOoxml()
+      paragraphs.load("items/text,items/uniqueLocalId,items/tableNestingLevel")
+      for (const table of tables.items) table.load("rowCount,isUniform,values")
+      await context.sync()
+      const inventory = paragraphs.items.map(p => ({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel}))
+      if (inventory.length !== snapshot.paragraphs.length || inventory.some((p, i) => p.id !== snapshot.paragraphs[i]!.id || p.text !== snapshot.paragraphs[i]!.text)) return
+      const projection = projectNativeWordChatBody(xml.value, inventory)
+      const fail = () => { throw new Error("Invalid table capture XML") }
+      const doc = new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(xml.value, "application/xml")
+      const parts = Array.from(doc.getElementsByTagNameNS(packageNamespace, "part")).filter(p => p.getAttributeNS(packageNamespace, "name") === "/word/document.xml")
+      if (parts.length !== 1) return
+      const bodies = Array.from(parts[0]!.getElementsByTagNameNS("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "body"))
+      if (bodies.length !== 1) return
+      const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+      const bodyChildren = children(bodies[0]!), xmlTables = bodyChildren.filter(n => n.namespaceURI === W && n.localName === "tbl")
+      if (xmlTables.length !== tables.items.length) return
+      const candidates: Array<{ tableIndex: number; rows: Array<Array<{ collection: Collection<Paragraph>; path: string }>> }> = []
+      for (const [tableIndex, table] of tables.items.entries()) {
+        if (!table.isUniform || !Number.isSafeInteger(table.rowCount) || table.rowCount < 1 || table.rowCount > 1000 ||
+          !Array.isArray(table.values) || table.values.length !== table.rowCount || !Array.isArray(table.values[0])) continue
+        const width = table.values[0]!.length
+        if (!width || width > 32 || table.rowCount * width > 20_000 || table.values.some(row => !Array.isArray(row) || row.length !== width)) continue
+        const tableXml = xmlTables[tableIndex]!, tableChildren = children(tableXml), rows = tableChildren.filter(n => n.namespaceURI === W && n.localName === "tr")
+        if (rows.length !== table.rowCount || tableChildren.some(n => n.namespaceURI !== W || !["tblPr", "tblGrid", "tr"].includes(n.localName))) continue
+        const xmlRows: Element[][] = []
+        let valid = true
+        for (const row of rows) {
+          const rowChildren = children(row), cells = rowChildren.filter(n => n.namespaceURI === W && n.localName === "tc")
+          if (cells.length !== width || rowChildren.some(n => n.namespaceURI !== W || !["trPr", "tc"].includes(n.localName)) ||
+            Array.from(row.getElementsByTagNameNS(W, "gridBefore")).length || Array.from(row.getElementsByTagNameNS(W, "gridAfter")).length) { valid = false; break }
+          for (const cell of cells) {
+            const cellChildren = children(cell)
+            if (cellChildren.some(n => n.namespaceURI !== W || !["tcPr", "p"].includes(n.localName)) || cellChildren.filter(n => n.localName === "p").length !== 1 ||
+              ["gridSpan", "vMerge", "hMerge"].some(name => cell.getElementsByTagNameNS(W, name).length)) { valid = false; break }
+          }
+          if (!valid) break
+          xmlRows.push(cells)
+        }
+        if (!valid) continue
+        const path = `body/tbl[${bodyChildren.indexOf(tableXml)}]`
+        const capturedRows = xmlRows.map((cells, ri) => cells.map((cell, ci) => {
+          const collection = table.getCell(ri, ci).body.paragraphs
+          collection.load("items/text,items/uniqueLocalId,items/tableNestingLevel")
+          return { collection, path: `${path}/tr[${tableChildren.indexOf(rows[ri]!)}]/tc[${children(rows[ri]!).indexOf(cell)}]/p[${children(cell).findIndex(n => n.namespaceURI === W && n.localName === "p")}]` }
+        }))
+        candidates.push({ tableIndex, rows: capturedRows })
+      }
+      if (!candidates.length) return
+      await context.sync()
+      const captures = candidates.flatMap(candidate => {
+        const rows = candidate.rows.map(row => row.map(({ collection, path }) => {
+          if (collection.items.length !== 1) return undefined
+          const p = collection.items[0]!, projected = projection.paragraphs.find(item => item.id === p.uniqueLocalId)
+          return p.tableNestingLevel === 1 && projected?.path === path && projected.text === p.text ? {id:p.uniqueLocalId,text:p.text} : undefined
+        }))
+        if (rows.some(row => row.some(cell => !cell))) return []
+        const capture = {tableIndex:candidate.tableIndex,rows:rows as Array<Array<{id:string;text:string}>>}
+        return wordChatTableCaptureCurrent(snapshot, capture) ? [capture] : []
+      })
+      const selected = snapshot.selection?.paragraphs.map(p => p.id)
+      const matches = selected ? captures.filter(capture => selected.every(id => capture.rows.some(row => row.some(cell => cell.id === id)))) : captures
+      return matches.length === 1 ? matches[0] : undefined
+    })
   }
   private async readSnapshot(structured: boolean, includeSelection: boolean): Promise<WordChatSnapshot> {
     return this.word.run(async context => {

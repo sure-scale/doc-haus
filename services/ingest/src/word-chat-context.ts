@@ -7,7 +7,7 @@ import { readDeskSource } from "./word-source-desk"
 import { readVersion, readVersionBytes } from "./document-versions"
 import { extractDocumentText } from "./ingest"
 import { listPlaybooks } from "./matter"
-import { wordChatParagraphBreaks, wordChatTargetCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
 import type { WordGrant } from "./word-grants"
 
 export class WordChatContextError extends Error {}
@@ -42,7 +42,8 @@ export function validateWordChatContext(value: unknown): value is WordChatContex
     typeof input.saved === "boolean" && typeof input.capturedAt === "string" && typeof input.truncated === "boolean" && !input.truncated &&
     Array.isArray(input.paragraphs) && input.paragraphs.length <= 20_000 && input.paragraphs.every(paragraph =>
       paragraph && typeof paragraph.id === "string" && typeof paragraph.text === "string" && paragraph.text.length <= 512_000) &&
-    (!input.selection || wordChatTargetCurrent(input, input.selection) && input.text.includes(input.selection.text))
+    (!input.selection || wordChatTargetCurrent(input, input.selection) && input.text.includes(input.selection.text)) &&
+    (input.table === undefined || wordChatTableCaptureCurrent(input, input.table))
 }
 
 export function wordChatMaterials(auth: WordChatAuth, uploads: WordChatUpload[] = []): WordChatMaterial[] {
@@ -112,7 +113,8 @@ export async function wordChatEvidence(auth: WordChatAuth, context: WordChatCont
   // current evidence. Exclude capture timestamps and random selection IDs so
   // unchanged context can still carry ordinary follow-up discussion.
   const selection = context.selection ? { text: context.selection.text, paragraphs: context.selection.paragraphs.map(paragraph => paragraph.id), start: context.selection.startOffset, end: context.selection.endOffset } : null
-  return { sources, attachments: selected, sourceKey, evidenceKey: wordChatHash({ sourceKey, text: context.text, selection }) }
+  const table = context.table ? { tableIndex: context.table.tableIndex, rows: context.table.rows.map(row => row.map(cell => [cell.id, cell.text])) } : undefined
+  return { sources, attachments: selected, sourceKey, evidenceKey: wordChatHash({ sourceKey, text: context.text, selection, table }) }
 }
 
 /** Three small independent passage jobs; a large document reports sampling. */

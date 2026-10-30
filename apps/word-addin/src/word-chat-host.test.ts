@@ -20,6 +20,28 @@ const PACKAGE_XML = "http://schemas.microsoft.com/office/2006/xmlPackage"
 const escapeXml = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
 const flatOpc = (content: string, extra = "") => `<pkg:package xmlns:pkg="${PACKAGE_XML}" xmlns:w="${WORD_XML}"><pkg:part pkg:name="/_rels/.rels" pkg:contentType="application/vnd.openxmlformats-package.relationships+xml"><pkg:xmlData><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/document.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"><pkg:xmlData><w:document><w:body>${content}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document></pkg:xmlData></pkg:part>${extra}</pkg:package>`
 
+test("optional native table capture binds geometry to the same paragraph inventory and fails closed", async () => {
+  const paragraph = (id: string, text: string) => ({uniqueLocalId:id,text,tableNestingLevel:1})
+  const cells = [[paragraph("a","One"),paragraph("b","Two")], [paragraph("c","Three"),paragraph("d","Four")]]
+  const collection = <T>(items: T[]) => ({items,load() {}})
+  const table = {rowCount:2,isUniform:true,values:cells.map(row => row.map(p => p.text)),load() {},getCell(r: number,c: number) { return {body:{paragraphs:collection([cells[r]![c]!])}} }}
+  const cellXml = (p: {text:string}, merged = false) => `<w:tc>${merged ? '<w:tcPr><w:vMerge/></w:tcPr>' : ''}<w:p><w:r><w:t>${p.text}</w:t></w:r></w:p></w:tc>`
+  const tableXml = (merged = false) => `<w:tbl>${cells.map((row, i) => `<w:tr>${row.map((p, j) => cellXml(p, merged && i === 0 && j === 0)).join("")}</w:tr>`).join("")}</w:tbl>`
+  let xml = flatOpc(tableXml()), tables = [table], broken = false
+  const body = { text:"One\rTwo\rThree\rFour",load() {},paragraphs:collection(cells.flat()),get tables() { if (broken) throw Error("unavailable"); return collection(tables) },getRange() { return {getOoxml() {return {value:xml}}} } }
+  const word = {run: async (fn: (context: unknown) => Promise<unknown>) => fn({document:{saved:false,load() {},body},sync:async () => {}})} as WordChatWord
+  const host = new WordChatHost(word, () => true)
+  expect((await host.capture()).table).toEqual({tableIndex:0,rows:cells.map(row => row.map(p => ({id:p.uniqueLocalId,text:p.text})))})
+  xml = flatOpc(tableXml(true))
+  expect((await host.capture()).table).toBeUndefined()
+  xml = flatOpc(tableXml() + tableXml()); tables = [table,table]
+  expect((await host.capture()).table).toBeUndefined()
+  broken = true
+  const ordinary = await host.capture()
+  expect(ordinary.text).toBe(body.text)
+  expect(ordinary.table).toBeUndefined()
+})
+
 /** A text-position Office host model: selections and paragraph ranges are real
  * offsets, searches return every occurrence, and writes execute only on sync. */
 function office(paragraphs = ["A clause with a clear obligation.", "Another clause."], nativeText = false) {
