@@ -2,7 +2,7 @@ import { useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal } from "react-dom"
 import { UNSAFE_DataRouterContext, useBlocker } from "react-router-dom"
 import { computeCell, describeRecheck, needsFill, recheckOutcome } from "../api/review-recheck"
-import { citesRow, type ReviewRow } from "../api/review-answer"
+import { citationLabel, citesRow, type ReviewRow } from "../api/review-answer"
 import { compareColumn, comparisonInputs, MAX_COMPARE_DOCUMENTS } from "../api/review-compare"
 import { matches, primaryAction, reviewAttention, type AttentionFilter, type QueueEntry } from "../api/review-attention"
 import { cellKey, checkCellSources, getGrid, GridConflictError, hashQuestion, recheckPassages, saveGrid, type Grid, type GridCellData, type GridColumn, type SourceCheck } from "../api/ingest/grid"
@@ -59,7 +59,7 @@ const SOURCE_DETAIL: Record<SourceVerdict, string> = {
   reanchored: "The excerpt is still in the document, but at a different position from the one recorded. The document may have changed since this answer.",
   not_found: "The document no longer contains this excerpt. It has changed since this answer; check the answer against the current text.",
   missing: "This document is no longer in the matter, so the excerpt cannot be checked.",
-  other_document: "The cited passage is from another document, so it does not support this answer for this document. Refresh the cell to answer from this document; a reviewed cell must be unlocked first.",
+  other_document: "The cited passage is from another document, so it does not support this answer for this document. Re-run the cell to answer from this document; a reviewed cell must be unlocked first.",
 }
 // Cell keys are `<row document>::<column id>`; column ids never contain "::".
 function citesOwnRow(key: string, citation: Citation, documents: Document[]) {
@@ -100,6 +100,25 @@ const without = (set: ReadonlySet<string>, id: string) => {
   return next
 }
 const reviewRows = (documents: Document[]): ReviewRow[] => documents.map((doc) => ({ name: doc.name, docPath: doc.doc_path }))
+
+// File names wrap at separators, never mid-word: before a dot, after - or _.
+function FileName({ name }: { name: string }) {
+  return <>{name.split(/(?=\.)|(?<=[-_])/).flatMap((part, i) => i ? [<wbr key={i} />, part] : [part])}</>
+}
+
+// Cell actions use the same 24px stroke icons as Add column.
+const LockIcon = ({ open }: { open: boolean }) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="5" y="10.5" width="14" height="10" rx="2" />
+    <path d={open ? "M8 10.5V7.5a4 4 0 0 1 7.75-1.4" : "M8 10.5V7.5a4 4 0 0 1 8 0v3"} />
+  </svg>
+)
+const RefreshIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M19 12a7 7 0 1 1-2.05-4.95" />
+    <path d="M16.95 3.5v3.55h-3.55" />
+  </svg>
+)
 
 // The production app uses a data router. Keep this separate so component-only
 // harnesses without a router can still mount the review table.
@@ -913,7 +932,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
             <tbody>
               {shownDocuments.map((doc) => (
                 <tr key={doc.id}>
-                  <th className="review-doc-col" scope="row">{doc.name}<QualityNote quality={doc.quality} /></th>
+                  <th className="review-doc-col" scope="row"><FileName name={doc.name} /><QualityNote quality={doc.quality} /></th>
                   {shownColumns.map((col) => {
                     const key = cellKey(doc.name, col.id)
                     const cell = grid.cells[key]
@@ -938,40 +957,52 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                               className="review-answer"
                               onClick={() => openDetail(doc.name, col.id)}
                             >
-                              {cell.answer}
+                              {/* Four lines at most; the answer detail has the rest. */}
+                              <span className="review-answer-text">{cell.answer}</span>
                               {/* On its own line; the row names the document unless the citation is from another one. */}
                               {cell.citation && (
                                 <span className="review-cite">
-                                  <span className="sr-only"> Source:</span> {citesRow(cell.citation, { name: doc.name, docPath: doc.doc_path }) ? "" : `${cell.citation.documentName} `}§ {cell.citation.section}
+                                  <span className="sr-only"> Source:</span> {!citesRow(cell.citation, { name: doc.name, docPath: doc.doc_path }) && <><FileName name={cell.citation.documentName} />{" "}</>}{citationLabel(cell.citation)}
                                   {degradedCitation(cell.citation.documentName)}
                                 </span>
                               )}
                             </button>
                             <ReviewMarker entry={entry} recheck={cell.recheck && recheckOutcome(cell.recheck)} onOpen={() => openDetail(doc.name, col.id)} />
+                            {/* Comments show only when there are some; a first comment is added in the answer detail.
+                                Re-run and an open padlock appear on hover or focus; a closed padlock always shows. */}
                             <div className="review-cell-actions">
+                              {!!cell.comments?.length && (
+                                <button
+                                  className="icon-btn review-note"
+                                  aria-label={`${cell.comments.length} comments on ${doc.name}: ${col.question}`}
+                                  title={cell.comments.map((c) => `${c.author || "Unattributed"}: ${c.text}`).join("\n")}
+                                  onClick={() => openDetail(doc.name, col.id)}
+                                >
+                                  <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
+                                    <path
+                                      d="M3 2.5h10A1.5 1.5 0 0 1 14.5 4v6a1.5 1.5 0 0 1-1.5 1.5H8.5L5 14.5v-3H3A1.5 1.5 0 0 1 1.5 10V4A1.5 1.5 0 0 1 3 2.5Z"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="1.5"
+                                      strokeLinejoin="round"
+                                    />
+                                  </svg>
+                                  {cell.comments.length}
+                                </button>
+                              )}
                               <button
-                                className={`icon-btn review-note${cell.comments?.length ? " has-comments" : ""}`}
-                                aria-label={`${cell.comments?.length ?? 0} comments on ${doc.name}: ${col.question}`}
-                                title={cell.comments?.map((c) => `${c.author || "Unattributed"}: ${c.text}`).join("\n") || "Add a comment"}
-                                onClick={() => openDetail(doc.name, col.id)}
+                                className={`icon-btn review-lock${cell.status === "reviewed" ? " locked" : " is-quiet"}`}
+                                disabled={!canEdit}
+                                aria-pressed={cell.status === "reviewed"}
+                                aria-label={cell.status === "reviewed" ? "Unlock" : "Mark reviewed"}
+                                title={cell.status === "reviewed" ? "Unlock" : "Mark reviewed"}
+                                onClick={() => setReviewed(key, cell.status !== "reviewed")}
                               >
-                                <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
-                                  <path
-                                    d="M3 2.5h10A1.5 1.5 0 0 1 14.5 4v6a1.5 1.5 0 0 1-1.5 1.5H8.5L5 14.5v-3H3A1.5 1.5 0 0 1 1.5 10V4A1.5 1.5 0 0 1 3 2.5Z"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    strokeWidth="1.5"
-                                    strokeLinejoin="round"
-                                  />
-                                </svg>
-                                {cell.comments?.length ?? 0}
-                              </button>
-                              <button className={`icon-btn review-lock${cell.status === "reviewed" ? " locked" : ""}`} disabled={!canEdit} aria-pressed={cell.status === "reviewed"} title={cell.status === "reviewed" ? "Unlock" : "Mark reviewed"} onClick={() => setReviewed(key, cell.status !== "reviewed")}>
-                                {cell.status === "reviewed" ? "Locked" : "Lock"}
+                                <LockIcon open={cell.status !== "reviewed"} />
                               </button>
                               {cell.status !== "reviewed" && (
-                                <button className="icon-btn" title="Re-run this cell" disabled={!canEdit || running > 0} onClick={() => fill([{ docName: doc.name, column: col }])}>
-                                  Refresh
+                                <button className="icon-btn is-quiet" aria-label="Re-run this cell" title="Re-run this cell" disabled={!canEdit || running > 0} onClick={() => fill([{ docName: doc.name, column: col }])}>
+                                  <RefreshIcon />
                                 </button>
                               )}
                             </div>
@@ -1040,7 +1071,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                   const citation = detailCell.citation
                   const entry = sourceEntry(detailKey, detailCell)
                   const check = entry?.check
-                  const label = `[${citation.documentName} § ${citation.section}]`
+                  const label = `[${citation.documentName} ${citationLabel(citation)}]`
                   // The badge sits beside the reference; its sentence below says
                   // what the check found, unless the walk's reason already does.
                   const detail = check ? (walkExplains(check) ? undefined : SOURCE_DETAIL[check])

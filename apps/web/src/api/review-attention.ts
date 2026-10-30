@@ -54,11 +54,11 @@ function notes(cell: GridCellData | undefined, checking: boolean, differs?: stri
   return {
     unfilled: ["Not filled", "No answer yet."],
     unreviewed: ["Not reviewed", "Not reviewed yet."],
-    other_document: ["Other document", `The cited passage is from another document, so it does not support this answer. ${reviewed ? "Unlock to refresh." : "Refresh to answer from this document."}`],
+    other_document: ["Other document", `The cited passage is from another document, so it does not support this answer. ${reviewed ? "Unlock to refresh." : "Re-run this cell to answer from this document."}`],
     source_changed: ["Source changed", "The document no longer contains the cited excerpt. Check the answer against the current text."],
     source_missing: ["Source missing", "The cited document is no longer in the matter."],
     source_unchecked: checking ? ["Checking source", "Checking the excerpt against the document."] : ["Source not checked", "The excerpt could not be checked against the document."],
-    question_changed: ["Question changed", reviewed ? "Question changed after review. Unlock to refresh." : "Question changed since this answer. Refresh to update it."],
+    question_changed: ["Question changed", reviewed ? "Question changed after review. Unlock to refresh." : "Question changed since this answer. Re-run this cell to update it."],
     no_citation: cell && notAddressed(cell.answer) ? ["Not found", "The document does not appear to address this question."] : ["No source", "The answer has no cited passage in this document."],
     differs: ["Differs", differs || "This answer differs from the other documents."],
   }

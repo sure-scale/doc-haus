@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import type { Citation } from "../src/api/opencode/parts"
-import { readReviewAnswer } from "../src/api/review-answer"
+import { citationLabel, readReviewAnswer } from "../src/api/review-answer"
 import type { Part } from "../src/api/session-view"
 
 test("grid uses final answer and its exact earlier source rather than progress or top search hit", () => {
@@ -38,4 +38,24 @@ test("grid never cites another document's passage that shares the row's section 
 
 test("grid cites the row's own passage when another document shares its section label", () => {
   expect(readReviewAnswer([searched(termination("NDA.docx"), termination("MSA.docx")), answered], msa).citation).toEqual(termination("MSA.docx"))
+})
+
+test("a source label names the cited heading, with § only for numbered sections", () => {
+  const label = (section: string, structuralPath?: string) => citationLabel({ section, structuralPath })
+  expect(label("12", "Doc(Supply terms.docx) › §12 Governing law")).toBe("§12 Governing law")
+  expect(label("7.2", "Doc(MSA.docx) › §7 Termination › §7.2 Notice")).toBe("§7.2 Notice")
+  expect(label("LOGISTICS SERVICES AGREEMENT", "Doc(LSA.docx) › LOGISTICS SERVICES AGREEMENT")).toBe("LOGISTICS SERVICES AGREEMENT")
+  expect(label("Schedule 1", "Doc(LSA.docx) › Schedule 1 › Rates")).toBe("Rates")
+  expect(label("3", "Doc(LSA.docx)")).toBe("§ 3")
+  expect(label("4")).toBe("§ 4")
+  expect(label("§4")).toBe("§ 4")
+  expect(label("Preamble")).toBe("Preamble")
+  expect(label("Termination", "")).toBe("Termination")
+})
+
+test("a clause-sentence heading is cut at a word and keeps its number", () => {
+  const heading = "§5 The Supplier shall deliver the Goods to the Delivery Location on the Delivery Date and shall bear the risk"
+  const shown = citationLabel({ section: "5", structuralPath: `Doc(Supply.docx) › ${heading}` })
+  expect(shown).toBe("§5 The Supplier shall deliver the Goods to the…")
+  expect(heading.startsWith(shown.slice(0, -1))).toBe(true)
 })

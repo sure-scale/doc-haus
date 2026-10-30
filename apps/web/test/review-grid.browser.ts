@@ -235,6 +235,9 @@ try {
 
   await table.getByRole("rowheader", { name: /Supply terms\.docx/ }).getByText("Text may be incomplete or garbled").waitFor()
   assert.equal(putVersions.length, 0, "opening the grid must not write it")
+  // No comments, no comment button: the first comment is added in the answer detail (below).
+  assert.equal(await page.getByRole("row", { name: /^Supply terms\.docx/ }).getByRole("button", { name: /comments on/ }).count(), 0, "a cell without comments shows no comment button")
+  assert.equal(await page.getByRole("row", { name: /^Side letter\.docx/ }).getByRole("button", { name: /^1 comments on Side letter\.docx/ }).count(), 1, "a commented cell shows its count")
   // Keep the first save in flight while the lawyer makes a second change.
   holdPut = true
   const firstPut = page.waitForRequest(request => request.url().endsWith("/grid") && request.method() === "PUT")

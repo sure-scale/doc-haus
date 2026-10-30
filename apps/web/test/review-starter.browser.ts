@@ -365,6 +365,42 @@ try {
   await expect(reviewFill.getByRole("heading", { name: `${"long_".repeat(38)}.docx` })).toBeVisible()
   assert.equal(await fillBody.evaluate((node) => node.scrollWidth <= node.clientWidth + 1), true, "long document names wrap without horizontal overflow")
   console.log("PASS starter chooser recommendation and keyboard, read-only example and its answer detail, starter preview and keyboard, safe append and reload, isolation, duplicate handling, Fill disclosure and dispatched targets, changed documents, stale versions, and save failures")
+
+  // Cell actions: a reviewed cell's padlock always shows. An unreviewed cell's
+  // re-run and padlock appear on hover or focus, and stay in the tab order.
+  const longAnswer = "Payment is due within thirty days of a valid invoice. ".repeat(8) + "Late payment carries interest."
+  grids.cells = { version: 0, columns: initial.columns, cells: { "First.docx::existing": originalCell, "Second.docx::existing": {
+    answer: longAnswer, status: "filled", questionHash: "old",
+    citation: { documentName: "Second.docx", docPath: "Second.docx", section: "3", structuralPath: "Doc(Second.docx) › §3 Payment", excerpt: "Payment is due within thirty days.", charStart: 0, charEnd: 34 },
+  } } }
+  await open("?matter=cells")
+  const opacity = (locator: import("@playwright/test").Locator) => locator.evaluate(element => getComputedStyle(element).opacity)
+  const reviewedRow = page.getByRole("row", { name: /^First\.docx/ })
+  const openRow = page.getByRole("row", { name: /^Second\.docx/ })
+  const markReviewed = openRow.getByRole("button", { name: "Mark reviewed", exact: true })
+  const rerun = openRow.getByRole("button", { name: "Re-run this cell", exact: true })
+  await page.mouse.move(0, 0)
+  await expect.poll(() => opacity(reviewedRow.getByRole("button", { name: "Unlock", exact: true }))).toBe("1")
+  await expect(reviewedRow.getByRole("button", { name: "1 comments on First.docx: Existing question?", exact: true })).toBeVisible()
+  await expect.poll(() => opacity(markReviewed)).toBe("0")
+  assert.equal(await opacity(rerun), "0", "an unreviewed cell's re-run is quiet at rest")
+  assert.equal(await openRow.getByRole("button", { name: /comments on/ }).count(), 0, "a cell without comments shows no comment button")
+  await openRow.locator(".review-cell").hover()
+  await expect.poll(() => opacity(markReviewed)).toBe("1")
+  await expect.poll(() => opacity(rerun)).toBe("1")
+  await page.mouse.move(0, 0)
+  await expect.poll(() => opacity(markReviewed)).toBe("0")
+  await markReviewed.focus()
+  await expect.poll(() => opacity(markReviewed)).toBe("1")
+  await expect.poll(() => opacity(rerun)).toBe("1")
+  // A long answer shows four lines; its source line stays below and the full text stays in its name.
+  const answerText = openRow.locator(".review-answer-text")
+  assert.equal(await answerText.evaluate(element => Math.round(element.clientHeight / parseFloat(getComputedStyle(element).lineHeight))), 4, "a long answer is clamped to four lines")
+  assert.equal(await answerText.evaluate(element => element.scrollHeight > element.clientHeight + 1), true, "the clamp hides the rest of a long answer")
+  await expect(openRow.locator(".review-cite")).toBeVisible()
+  await expect(openRow.locator(".review-cite")).toHaveText(/Source: §3 Payment$/)
+  await expect(openRow.getByRole("button", { name: /Late payment carries interest\. Source: §3 Payment$/ })).toHaveCount(1)
+  console.log("PASS reviewed padlock always shows, unreviewed icons reveal on hover and focus, no empty comment button, and four-line answers keep their source")
 } finally {
   await browser.close()
   server.stop(true)

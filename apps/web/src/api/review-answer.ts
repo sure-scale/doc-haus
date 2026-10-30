@@ -9,6 +9,30 @@ export function citesRow(citation: Pick<Citation, "documentName" | "docPath">, r
   return citation.documentName === row.name && (!row.docPath || citation.docPath === row.docPath || citation.docPath === row.name)
 }
 
+// A short source label: the cited heading itself rather than the whole path.
+// Ingest paths read `Doc(file) › §7 Termination › §7.2 Notice`; an unnumbered
+// heading stands alone, so it gets no §. Clause-sentence headings are cut at a
+// word; the full path stays in the answer detail.
+export function citationLabel(citation: Pick<Citation, "section" | "structuralPath">) {
+  const crumbs = (citation.structuralPath ?? "").split("›").map(crumb => crumb.trim()).filter(Boolean)
+  if (crumbs[0]?.startsWith("Doc(")) crumbs.shift()
+  const heading = crumbs.at(-1)?.replace(/^§\s*/, "§")
+  if (heading) return shortLabel(heading)
+  const section = citation.section.replace(/^§\s*/, "").trim()
+  return /^\d/.test(section) ? `§ ${section}` : shortLabel(section)
+}
+
+const LABEL_MAX = 48
+
+function shortLabel(label: string) {
+  if (label.length <= LABEL_MAX) return label
+  const [, number = "", title = label] = label.match(/^(§\S+\s+)(.+)$/) ?? []
+  const room = Math.max(LABEL_MAX - number.length, 16)
+  const cut = title.slice(0, room + 1)
+  const space = cut.lastIndexOf(" ")
+  return `${number}${(space > room / 2 ? cut.slice(0, space) : cut.slice(0, room)).replace(/[\s,;:.(–-]+$/, "")}…`
+}
+
 // Keep the final answer separate from intermediate progress text. Retrieval
 // citations may belong to earlier provider steps in the same extraction.
 export function readReviewAnswer(messages: Array<{ parts: Part[] }>, row: ReviewRow) {

@@ -106,15 +106,21 @@
 .review-cell-body { display: flex; flex-direction: column; gap: var(--space-2); }
 .review-cite { color: var(--accent); font-size: .85rem; }
 .review-answer .review-cite { display: block; margin-top: var(--space-1); }
+/* Four lines in the cell; the source line stays below and the detail has it all. */
+.review-answer-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; line-clamp: 4; overflow: hidden; }
 .review-recheck-detail { margin: 0 0 var(--space-4); color: var(--muted); font-size: .9rem; }
+/* Icon actions: a reviewed cell's closed padlock always shows; re-run and the
+   open padlock appear on hover or focus. They fade by opacity only, so they
+   stay in the tab order. */
 .review-cell-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1); min-height: 28px; padding-top: var(--space-1); font-size: .8rem; }
-.review-cell-actions .icon-btn { min-height: 28px; padding: var(--space-1) var(--space-2); border-color: transparent; opacity: 1; font-size: .78rem; }
-.review-cell-actions .icon-btn:hover { background: var(--accent-soft); }
-.review-cell-actions .review-lock.locked { background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); font-weight: 600; }
-.review-cell-actions .review-lock.locked:hover:not(:disabled) { border-color: transparent; background: linear-gradient(var(--md-sys-state-hover), var(--md-sys-state-hover)), var(--md-sys-color-primary-container); }
-.review-cell-actions .review-lock.locked:active:not(:disabled) { background: linear-gradient(var(--md-sys-state-pressed), var(--md-sys-state-pressed)), var(--md-sys-color-primary-container); }
-.review-note { display: inline-flex; align-items: center; gap: var(--space-1); }
-.review-note.has-comments { color: var(--accent); }
+.review-cell-actions .icon-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; padding: 0 var(--space-1); border-color: transparent; border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); opacity: 1; font-size: .78rem; transition: opacity var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out); }
+.review-cell-actions .icon-btn:hover:not(:disabled) { border-color: transparent; background: var(--accent-soft); color: var(--accent); }
+.review-cell-actions .icon-btn:disabled { opacity: .5; }
+.review-cell-actions .icon-btn.is-quiet { opacity: 0; }
+.review-cell:is(:hover, :focus-within) .review-cell-actions .icon-btn.is-quiet { opacity: 1; }
+.review-cell:is(:hover, :focus-within) .review-cell-actions .icon-btn.is-quiet:disabled { opacity: .5; }
+.review-cell-actions .review-lock.locked { color: var(--accent); }
+.review-cell-actions .review-note { gap: var(--space-1); padding-inline: var(--space-2); }
 /* One marker per cell: shape, tone and word. Its reason is in the tooltip and
    the cell's detail. A cell without a state shows nothing extra. */
 .review-marker { display: inline-flex; align-self: flex-start; align-items: center; gap: 6px; min-height: 24px; margin-left: calc(-1 * var(--space-1)); padding: 0 var(--space-1); border: 0; border-radius: var(--radius-sm); background: transparent; font-size: .78rem; font-weight: 600; }
@@ -233,6 +239,9 @@
 @media (pointer: coarse) {
   .review-cell-actions .icon-btn, .review-col-x, .review-add-button, .issues > summary { min-height: max(44px, calc(44px / var(--ui-scale))); }
   .review-cell-actions .icon-btn, .review-col-x, .review-add-button { min-width: max(44px, calc(44px / var(--ui-scale))); }
+  /* No hover on touch: every cell action shows. */
+  .review-cell-actions .icon-btn.is-quiet { opacity: 1; }
+  .review-cell-actions .icon-btn.is-quiet:disabled { opacity: .5; }
   .review-table .review-add-col { width: 68px; min-width: 68px; }
   .review-col-q, .review-compare-trigger { min-height: max(44px, calc(44px / var(--ui-scale))); }
 }
