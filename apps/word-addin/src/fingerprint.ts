@@ -1,5 +1,6 @@
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync } from "fflate"
+import { WORD_ADDIN_ID, WORD_LINK_SETTING } from "../../../dochaus/lib/word-addin-contract"
 
 const wordNamespaces = new Set([
   "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -15,6 +16,7 @@ const schemaInstanceNamespace = "http://www.w3.org/2001/XMLSchema-instance"
 const xmlNamespace = "http://www.w3.org/XML/1998/namespace"
 const xmlnsNamespace = "http://www.w3.org/2000/xmlns/"
 const relationshipsNamespace = "http://schemas.openxmlformats.org/package/2006/relationships"
+const webextensionNamespace = "http://schemas.microsoft.com/office/webextensions/webextension/2010/11"
 const rootRelationshipTypes = new Set([
   "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument",
   "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties",
@@ -360,6 +362,23 @@ function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
   )
   if (!doc.documentElement || doc.getElementsByTagName("parsererror").length) fail()
   const root = doc.documentElement
+  if (name.startsWith("word/webextensions/") && root.namespaceURI === webextensionNamespace && root.localName === "webextension") {
+    const refs = Array.from(root.getElementsByTagNameNS(webextensionNamespace, "reference"))
+    const properties = Array.from(root.getElementsByTagNameNS(webextensionNamespace, "property")).filter(property => property.getAttribute("name") === WORD_LINK_SETTING)
+    if (refs.length !== 1 || refs[0]!.getAttribute("id")?.toLowerCase() !== WORD_ADDIN_ID || properties.length !== 1) return bytes
+    const property = properties[0]!
+    if (property.childNodes.length || property.attributes.length !== 2 || !property.hasAttribute("name") || !property.hasAttribute("value")) return bytes
+    const raw = property.getAttribute("value")!
+    try {
+      const link: unknown = JSON.parse(raw)
+      if (!link || typeof link !== "object" || Array.isArray(link) || JSON.stringify(link) !== raw) return bytes
+      const data = link as Record<string, unknown>
+      if (data.version !== 1 || typeof data.baseVersion !== "string" || !data.baseVersion ||
+        !["origin", "apiOrigin", "matter", "document", "token"].every(key => typeof data[key] === "string" && data[key])) return bytes
+      property.setAttribute("value", JSON.stringify({ ...data, baseVersion: "" }))
+      return strToU8(new XMLSerializer().serializeToString(doc))
+    } catch { return bytes }
+  }
   if (rootRelationships) return rootRelationshipContent(root) ?? bytes
   if (coreProperties) {
     if (root.namespaceURI !== corePropertiesNamespace || root.localName !== "coreProperties") return bytes

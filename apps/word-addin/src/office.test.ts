@@ -4,6 +4,7 @@ import { documentFingerprint } from "./fingerprint"
 import { connectOffice, DocumentStateError, exportFile, type OfficeFile } from "./office"
 import { WordSync, type Transport } from "./sync"
 import type { WordConnectionState } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_ADDIN_ID } from "../../../dochaus/lib/word-addin-contract"
 
 test("DOCX fingerprint ignores ZIP timestamps, compression and entry order but detects changed content", async () => {
   const a = strToU8("<document>one</document>")
@@ -13,6 +14,19 @@ test("DOCX fingerprint ignores ZIP timestamps, compression and entry order but d
   const changed = zipSync({ "word/document.xml": strToU8("<document>two</document>"), "word/styles.xml": b })
   expect(await documentFingerprint(first)).toBe(await documentFingerprint(second))
   expect(await documentFingerprint(changed)).not.toBe(await documentFingerprint(first))
+})
+
+test("fingerprint excludes only an acknowledged link base while preserving other settings and markup", async () => {
+  const ns = "http://schemas.microsoft.com/office/webextensions/webextension/2010/11"
+  const fixture = (base:string, token="capability", extra="keep", marker="one") => {
+    const link = JSON.stringify({version:1,origin:"https://example.invalid",apiOrigin:"https://localhost:4612",matter:"matter",document:"draft",baseVersion:base,token,extra}).replaceAll("&","&amp;").replaceAll('"',"&quot;")
+    return zipSync({"word/webextensions/webextension1.xml":strToU8(`<we:webextension xmlns:we="${ns}" marker="${marker}"><we:reference id="${WORD_ADDIN_ID}"/><we:properties><we:property name="dochaus.link" value="${link}"/></we:properties></we:webextension>`)})
+  }
+  const before = await documentFingerprint(fixture("v1"))
+  expect(await documentFingerprint(fixture("v2"))).toBe(before)
+  expect(await documentFingerprint(fixture("v2","different"))).not.toBe(before)
+  expect(await documentFingerprint(fixture("v2","capability","changed"))).not.toBe(before)
+  expect(await documentFingerprint(fixture("v2","capability","keep","two"))).not.toBe(before)
 })
 
 test("sliced export assembles the file and always closes its handle on success or failure", async () => {
@@ -267,6 +281,7 @@ const linkedDocument = {
 
 function installCloseHost(supported: boolean, encoded = false, saveMode: "saved" | "dirty" | "failed" = "saved") {
   const events: string[] = []
+  const exported = zipSync({"word/document.xml":strToU8("<document/>")})
   let nativeSaved = true
   let raw: unknown = encoded ? JSON.stringify(linkedDocument) : { ...linkedDocument }
   let callback: ((result: { status: string; value: void }) => void) | undefined
@@ -307,6 +322,7 @@ function installCloseHost(supported: boolean, encoded = false, saveMode: "saved"
         onReady: async () => ({ host: "Word" }),
         context: {
           document: {
+            getFileAsync: (_type: unknown, _options: unknown, callback: (value: unknown) => void) => callback({status:"succeeded",value:{size:exported.length,sliceCount:1,getSliceAsync:(_index:number, done:(value:unknown)=>void) => done({status:"succeeded",value:{data:[...exported]}}),closeAsync:(done:(value:unknown)=>void)=>done({status:"succeeded",value:undefined})}}),
             settings: {
               get: () => raw,
               set: (key: string, value: unknown) => {
@@ -327,12 +343,14 @@ function installCloseHost(supported: boolean, encoded = false, saveMode: "saved"
               name === "WordApi" && (version === "1.1" || (version === "1.5" && supported)),
           },
         },
+        FileType: {Compressed:"compressed"},
       },
       Word: { run: async (action: (value: typeof context) => Promise<unknown>) => action(context) },
     },
   })
   return {
     events,
+    exported,
     context,
     saving,
     get raw() {
@@ -388,6 +406,30 @@ test("Done persists only its acknowledged base before Save-close, preserving lin
     if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow)
     else delete (globalThis as { window?: unknown }).window
   }
+})
+
+test("acknowledged base persists in the same linked file and refuses identity or persistence failures", async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+  try {
+    for (const encoded of [false,true]) {
+      const f = installCloseHost(true, encoded), host = (await connectOffice()).host
+      const fingerprint = await documentFingerprint(f.exported)
+      const operation = host.persistAcknowledgedBase!("ack-v2","original-v1",fingerprint)
+      await f.saving; f.finish(); await operation
+      expect(encoded ? JSON.parse(f.raw as string) : f.raw).toEqual({...linkedDocument,baseVersion:"ack-v2"})
+      expect(f.events).toContain("save:Save")
+      expect(f.events).not.toContain("close:Save")
+    }
+    const changed = installCloseHost(true), host = (await connectOffice()).host
+    changed.raw = {...linkedDocument,token:"other"}
+    await expect(host.persistAcknowledgedBase!("ack-v2","original-v1",await documentFingerprint(changed.exported))).rejects.toThrow("link changed")
+    expect(changed.events).not.toContain("settings-set")
+    const failure = installCloseHost(true), failingHost = (await connectOffice()).host
+    const operation = failingHost.persistAcknowledgedBase!("ack-v2","original-v1",await documentFingerprint(failure.exported))
+    await failure.saving; failure.finish("failed")
+    await expect(operation).rejects.toThrow("Saved to doc.haus")
+    expect(failure.events).not.toContain("save:Save")
+  } finally { if (originalWindow) Object.defineProperty(globalThis,"window",originalWindow); else delete (globalThis as {window?:unknown}).window }
 })
 
 test("Done cannot stamp another document's link or close after settings persistence fails", async () => {

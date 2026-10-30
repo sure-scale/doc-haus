@@ -57,6 +57,7 @@ export interface WordHost {
   saved(): Promise<boolean>
   save(): Promise<void>
   export(): Promise<Uint8Array>
+  persistAcknowledgedBase?(base: string, previousBase: string, fingerprint: string): Promise<void>
   replace?(bytes: Uint8Array, base: string): Promise<void>
   close?(base: string): Promise<void>
 }
@@ -142,6 +143,26 @@ export async function connectOffice(): Promise<{ host: WordHost; link: unknown }
             throw new Error("Word has not saved the document yet. Try Save to doc.haus again.")
         }),
       export: exportCurrent,
+      persistAcknowledgedBase: async (base, previousBase, fingerprint) => {
+        if (!base || !previousBase || !fingerprint || await documentFingerprint(await exportCurrent()) !== fingerprint)
+          throw new DocumentStateError("Your last save is in doc.haus, but Word has new changes. Choose Save again before closing.")
+        await word.run(async context => {
+          context.document.load("saved"); await context.sync()
+          if (!context.document.saved) throw new DocumentStateError("Your last save is in doc.haus, but Word has new changes. Choose Save again before closing.")
+          const settings = office.context.document.settings, raw = settings.get(WORD_LINK_SETTING), current = readLink(raw, window.location.origin)
+          if (!sameIdentity(current) || !current || ![previousBase, base].includes(current.baseVersion))
+            throw new DocumentStateError("The document link changed after saving. Keep this Word file and reopen it from doc.haus.")
+          const updated = { ...current, baseVersion: base }
+          settings.set(WORD_LINK_SETTING, typeof raw === "string" ? JSON.stringify(updated) : updated)
+          await asyncResult<void>(callback => settings.saveAsync(callback), "Saved to doc.haus, but Word could not update this file's link. Keep the file open and try Save again.")
+          const observed = readLink(settings.get(WORD_LINK_SETTING), window.location.origin)
+          if (!sameIdentity(observed) || JSON.stringify(observed) !== JSON.stringify(updated))
+            throw new DocumentStateError("The document link changed after saving. Keep this Word file and reopen it from doc.haus.")
+          context.document.save("Save"); await context.sync()
+          context.document.load("saved"); await context.sync()
+          if (!context.document.saved) throw new DocumentStateError("Saved to doc.haus, but Word could not save this file's link. Keep the file open and try Save again.")
+        })
+      },
       // Full-document import copies sections and their headers/footers. The
       // complete options set needs 1.7 (odd/even-page headers); body/range import
       // is not an equivalent fallback. Word limits this API to a 4 MB DOCX.

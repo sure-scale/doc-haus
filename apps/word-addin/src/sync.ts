@@ -113,6 +113,7 @@ export class WordSync {
   private base: string
   private connection?: WordConnectionState
   private pending?: Pending
+  private pendingBasePersistence?: { base: string; previousBase: string; fingerprint: string }
   private acknowledgement?: Acknowledgement
   // A reconstructed pane cannot know whether an earlier add-in edit occurred.
   // Require a deliberate Save/Done; native AutoSave or Undo grants no authority.
@@ -661,6 +662,28 @@ export class WordSync {
     this.explicitSaveRequired = true
     await this.inspect(true)
     if (!this.canWrite()) throw documentStateError(this.blockedMessage())
+    if (this.pendingBasePersistence) {
+      if (await this.matchesAcknowledgement()) {
+        await this.persistAcknowledgedBase()
+        if (await this.matchesAcknowledgement()) { this.explicitSaveRequired = false; this.showSaved(); return }
+        this.content = "changed"
+        throw documentStateError("Your last save is in doc.haus. Word has new changes. Choose Save before closing.")
+      }
+      // The previous acknowledged base still has to be recorded before a
+      // newer edited buffer can be uploaded against it. This fingerprint is
+      // only a race guard for the metadata write, not an acknowledgement.
+      await this.host.save()
+      if (!(await this.host.saved())) throw documentStateError("Word has new changes. Try Save again before closing.")
+      const fingerprint = await this.fingerprint(await this.host.export())
+      if (!(await this.host.saved())) throw documentStateError("Word has new changes. Try Save again before closing.")
+      await this.persistAcknowledgedBase(fingerprint)
+      if (!(await this.host.saved()) || await this.fingerprint(await this.host.export()) !== fingerprint || !(await this.host.saved())) {
+        this.content = "changed"
+        throw documentStateError("Word has new changes. Try Save again before closing.")
+      }
+      if (!(await this.capture(true))) throw documentStateError("Word has new changes. Try Save again before closing.")
+      return
+    }
     await this.host.save()
     if (!(await this.capture(true)))
       throw documentStateError("Word has new changes. Try Save again before closing.")
@@ -686,6 +709,11 @@ export class WordSync {
   private async capture(requireAcknowledgement = false): Promise<boolean> {
     if (!this.canWrite()) {
       this.show("not-saved", this.blockedMessage())
+      return false
+    }
+    if (this.pendingBasePersistence && !requireAcknowledgement) {
+      this.explicitSaveRequired = true
+      this.show("not-saved", "Your last save is in doc.haus. Choose Save to finish updating this Word file.")
       return false
     }
     if (this.explicitSaveRequired && !requireAcknowledgement) {
@@ -758,6 +786,13 @@ export class WordSync {
     return matches && (await this.host.saved())
   }
 
+  private async persistAcknowledgedBase(fingerprint?: string): Promise<void> {
+    const pending = this.pendingBasePersistence
+    if (!pending || !this.host.persistAcknowledgedBase) return
+    await this.host.persistAcknowledgedBase(pending.base, pending.previousBase, fingerprint ?? pending.fingerprint)
+    this.pendingBasePersistence = undefined
+  }
+
   private async flush(): Promise<void> {
     const pending = this.pending
     if (!pending) return
@@ -786,6 +821,10 @@ export class WordSync {
     this.explicitSaveRequired = false
     this.nextRetry = 0
     this.checkpoints.write(this.acknowledgement)
+    if (this.host.persistAcknowledgedBase) {
+      this.pendingBasePersistence = {base:this.base, previousBase:pending.base, fingerprint:pending.fingerprint}
+      if (await this.matchesAcknowledgement()) await this.persistAcknowledgedBase()
+    }
   }
 
   private showSaved(): void {
