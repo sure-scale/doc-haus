@@ -123,7 +123,7 @@
 .review-cell-actions .review-note { gap: var(--space-1); padding-inline: var(--space-2); }
 /* One marker per cell: shape, tone and word. Its reason is in the tooltip and
    the cell's detail. A cell without a state shows nothing extra. */
-.review-marker { display: inline-flex; align-self: flex-start; align-items: center; gap: 6px; min-height: 24px; margin-left: calc(-1 * var(--space-1)); padding: 0 var(--space-1); border: 0; border-radius: var(--radius-sm); background: transparent; font-size: .78rem; font-weight: 600; }
+.review-marker { display: inline-flex; align-self: flex-start; align-items: center; gap: 6px; min-height: 24px; margin-left: calc(-1 * var(--space-1)); padding: 0 var(--space-1); border: 0; border-radius: var(--radius-sm); background: transparent; font-size: .78rem; font-weight: 600; white-space: nowrap; }
 .review-marker:hover:not(:disabled) { background: var(--panel-hover); }
 .review-marker.is-danger { color: var(--danger); }
 .review-marker.is-warn { color: var(--warn); }
@@ -138,7 +138,7 @@
 .review-source.degraded.is-not_found { border-left-color: var(--warn); }
 .review-source-path { margin-top: var(--space-1); color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
 .review-source-check { margin: var(--space-2) 0 0; color: var(--text-secondary); font-size: .85rem; line-height: 1.5; }
-.review-source-badge { display: inline-block; margin-right: var(--space-1); padding: 0 var(--space-2); border: 1px solid var(--accent-border); border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-size: .75rem; font-weight: 600; }
+.review-source-badge { display: inline-block; flex: none; margin-right: var(--space-1); padding: 0 var(--space-2); border: 1px solid var(--accent-border); border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-size: .75rem; font-weight: 600; white-space: nowrap; }
 .review-source-badge:is(.is-reanchored, .is-not_found) { border-color: var(--warn-border); background: var(--warn-soft); color: var(--warn); }
 .review-source-badge:is(.is-missing, .is-other_document) { border-color: var(--danger-border); background: var(--danger-soft); color: var(--danger); }
 .review-cell-fill { width: 100%; min-height: 40px; padding: var(--space-2); border: 1px dashed var(--md-sys-color-outline); border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); font-size: .85rem; }
@@ -168,8 +168,15 @@
 .review-detail-label { margin: 0; color: var(--text-secondary); font: var(--md-sys-typescale-label-medium); }
 .review-detail-answer { margin: 0; font-size: 1rem; line-height: 1.7; }
 .review-detail-body .citation { margin: 0; }
-.review-source-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+/* The reference is a plain heading over its excerpt; a long one wraps in place
+   and its badge stays on the first line. The passage opens from the link below. */
+.review-source-head { display: flex; align-items: baseline; gap: var(--space-2); }
+.review-source-head .ref { min-width: 0; overflow-wrap: anywhere; }
 .review-source-head .review-source-badge { margin-left: auto; }
+.review-source-view { display: block; width: fit-content; min-height: 24px; margin-top: var(--space-2); font-size: 13px; }
+@media (pointer: coarse) {
+  .review-source-view { min-height: max(44px, calc(44px / var(--ui-scale))); }
+}
 .review-ask { align-self: flex-start; min-height: 0; }
 .review-comments { display: flex; flex-direction: column; gap: var(--space-3); padding-top: var(--space-5); border-top: 1px solid var(--border); }
 .review-comment { padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--md-sys-color-surface-container-low); }
@@ -233,7 +240,6 @@
   .review-detail-modal .viewer-bar, .review-walk-bar { padding-inline: var(--space-4); }
   /* The next step takes its own full-width row under Previous and Skip. */
   .review-walk-bar .review-walk-next { flex: 1 0 100%; }
-  .review-source-head .review-source-badge { margin-left: 0; }
   .review-walk-skip { margin-right: calc(-1 * var(--space-4)); }
 }
 @media (pointer: coarse) {

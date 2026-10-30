@@ -1074,24 +1074,29 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                   const label = `[${citation.documentName} ${citationLabel(citation)}]`
                   // The badge sits beside the reference; its sentence below says
                   // what the check found, unless the walk's reason already does.
+                  // Another document's passage has no badge: the red edge and
+                  // the sentence (or the walk's reason) already say so.
                   const detail = check ? (walkExplains(check) ? undefined : SOURCE_DETAIL[check])
                     : checkingSources ? "Checking the excerpt against the document…" : "The excerpt could not be checked against the document."
+                  const available = !!citationDocument(citation, documents)
                   return (
                     <section className="review-detail-section" aria-labelledby={`${detailIds}-source`}>
                       <h3 className="review-detail-label" id={`${detailIds}-source`}>Source</h3>
                       <div className={`citation review-source${check && DEGRADED.includes(check) ? ` degraded is-${check}` : ""}`}>
+                        {/* The reference is a plain heading; the passage opens from its own link below. */}
                         <div className="review-source-head">
-                          {citationDocument(citation, documents) ? (
-                            <button ref={sourceLink} type="button" className="ref" aria-label={`Open ${citation.documentName} at section ${citation.section}`} onClick={() => setViewing(detailKey)}>
-                              {label}
-                            </button>
-                          ) : <div className="ref">{label}<span className="muted"> — Source unavailable in this matter</span></div>}
-                          {check && !walkExplains(check) && <span className={`review-source-badge is-${check}`}>{SOURCE_BADGE[check]}</span>}
+                          <div className="ref">{label}{!available && <span className="muted"> — Source unavailable in this matter</span>}</div>
+                          {check && check !== "other_document" && !walkExplains(check) && <span className={`review-source-badge is-${check}`}>{SOURCE_BADGE[check]}</span>}
                         </div>
                         {degradedCitation(citation.documentName)}
                         {sectionPath(citation.structuralPath) && <div className="review-source-path">{sectionPath(citation.structuralPath)}</div>}
                         <div className="excerpt">{citation.excerpt}</div>
                         {detail && <p className="review-source-check">{detail}</p>}
+                        {available && (
+                          <button ref={sourceLink} type="button" className="linklike review-source-view" aria-label={`View in document: ${citation.documentName} at section ${citation.section}`} onClick={() => setViewing(detailKey)}>
+                            View in document
+                          </button>
+                        )}
                       </div>
                     </section>
                   )

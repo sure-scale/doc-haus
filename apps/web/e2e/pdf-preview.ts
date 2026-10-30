@@ -131,7 +131,7 @@ async function run(label: string, width: number, height: number, citation?: Loca
     await expect(page.locator(".sidebar")).toBeVisible()
     await page.getByRole("link", { name: "Review table", exact: true }).click()
     await page.locator(".review-cell button", { hasText: "The supplier delivers the services." }).dispatchEvent("click") // a sticky column covers its centre at phone width
-    await page.getByRole("button", { name: `Open ${NAME} at section 1. Delivery`, exact: true }).click()
+    await page.getByRole("button", { name: `View in document: ${NAME} at section 1. Delivery`, exact: true }).click()
     await expect(dialog.getByRole("status")).toBeVisible()
   } else {
     const docs = page.locator(".sidebar").getByRole("button", { name: /^Documents(?: \d+)?$/ })

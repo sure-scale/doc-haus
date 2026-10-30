@@ -384,13 +384,13 @@ try {
   console.log("PASS a cell the source check could not check reads as unchecked")
 
   // The citation opens the document over the detail with the cited excerpt
-  // highlighted; Escape returns to the same cell's detail, focus on the citation.
+  // highlighted; Escape returns to the same cell's detail, focus on its link.
   await answer.click()
   await detail.getByText("Verified", { exact: true }).waitFor()
   // The dialog names the document once; its path shows the sections only.
   await detail.getByText("§12 Governing law", { exact: true }).waitFor()
   await detail.locator(".review-source").getByText("cited text may be incomplete or garbled").waitFor()
-  const source = detail.getByRole("button", { name: "Open Supply terms.docx at section 12", exact: true })
+  const source = detail.getByRole("button", { name: "View in document: Supply terms.docx at section 12", exact: true })
   await source.click()
   const viewer = page.getByRole("dialog", { name: "Supply terms.docx", exact: true })
   const highlight = viewer.locator(".docx-render mark.citation-passage")
@@ -402,7 +402,7 @@ try {
   await page.keyboard.press("Escape")
   await viewer.waitFor({ state: "detached" })
   assert.equal(await detail.isVisible(), true, "Escape in the document should return to the cell's detail")
-  assert.equal(await source.evaluate(element => element === document.activeElement), true, "closing the document should restore its citation link")
+  assert.equal(await source.evaluate(element => element === document.activeElement), true, "closing the document should restore focus to View in document")
   assert.equal(await table.isVisible(), true)
   assert.equal(await closes(), 0)
   console.log("PASS the citation opens its document at the highlighted excerpt and Escape returns to the same cell")
