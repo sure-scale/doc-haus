@@ -1295,7 +1295,7 @@ test("native amendment admission validates the reviewed turn again after the art
 
 test("paragraph insertion prepare uses stored reviewed proposal and existing lease fence", async () => {
   const id=await newConversation(), text=context.text, inserted="A further obligation."
-  modelStructuredRawOutput=JSON.stringify({answerParts:[{type:"text",text:"Prepared."}],proposal:{before:text,after:text+"\r"+inserted,explanation:"Add paragraph",openItems:[]}})
+  modelStructuredRawOutput=JSON.stringify({answerParts:[{type:"text",text:"Prepared."}],proposal:{before:text,after:text+"\r"+inserted,formatting:[{paragraph:1,style:"Normal"}],explanation:"Add paragraph",openItems:[]}})
   let turn:WordChatTurn
   try { turn=(await (await post("send",{conversationId:id,scope:"document",text:"Add a paragraph",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context})).json() as {turn:WordChatTurn}).turn }
   finally { modelStructuredRawOutput=undefined }
@@ -1314,7 +1314,7 @@ test("paragraph insertion prepare uses stored reviewed proposal and existing lea
   try {
     const response=await prepare({proposal:{...turn.proposal,after:text+"\rForged"}})
     expect(response.status).toBe(200)
-    expect(await response.json()).toEqual({kind:"paragraph_insert",proposalId:turn.proposal!.id,target:turn.proposal!.target,text:inserted})
+    expect(await response.json()).toEqual({kind:"paragraph_insert",proposalId:turn.proposal!.id,target:turn.proposal!.target,text:inserted,formatting:[{paragraph:1,style:"Normal"}]})
     db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",["other-turn",owner.document])
     expect((await prepare()).status).toBe(409)
   } finally {

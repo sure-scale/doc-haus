@@ -121,6 +121,7 @@ export type WordChatParagraphInsertionPlan = {
   proposalId: string
   target: WordChatTarget
   text: string
+  formatting?: WordChatParagraphFormat[]
 }
 export type WordChatPreparedAmendment = WordChatAuthoredAmendment | WordChatInlineFormattingPlan | WordChatParagraphInsertionPlan
 export type WordChatParagraphFormat = {
@@ -149,7 +150,9 @@ export function validWordChatParagraphInsertion(snapshot: WordChatSnapshot, targ
     typeof target.text !== "string" || !target.text.trim() || !wellFormedWordChatCell(target.text) ||
     target.startOffset !== 0 || target.endOffset !== target.paragraphs[0]?.text.length || target.text !== target.paragraphs[0]?.text ||
     !wordChatTargetCurrent(snapshot,target) || snapshot.selection && !wordChatTargetCurrent(snapshot,snapshot.selection) ||
-    formatting !== undefined || inlineFormatting !== undefined || typeof replacement !== "string" || !replacement.startsWith(target.text + "\r")) return false
+    inlineFormatting !== undefined || typeof replacement !== "string" || !replacement.startsWith(target.text + "\r")) return false
+  if (formatting !== undefined && (!Array.isArray(formatting) || formatting.length !== 1 || !formatting[0] || typeof formatting[0] !== "object" || Array.isArray(formatting[0]) ||
+    (Object.keys(formatting[0]).length !== 2 || Object.keys(formatting[0]).some(key => !["paragraph", "style"].includes(key))) || formatting[0].paragraph !== 1 || formatting[0].style !== "Normal")) return false
   const inserted = replacement.slice(target.text.length + 1)
   if (!inserted.trim() || inserted.length > 24_000 || !wellFormedWordChatCell(inserted) || /[\u0000-\u001f\u007f]/.test(inserted)) return false
   const resolved = targetWordChatAmendment(snapshot,target.text)

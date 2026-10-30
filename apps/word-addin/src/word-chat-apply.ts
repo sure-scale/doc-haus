@@ -38,6 +38,7 @@ export function wordChatApplyEligibility(target: WordChatTarget, replacement: st
       ? { supported: true }
       : { supported: false, reason: "Prepare character formatting for one exact passage with its wording unchanged." }
   }
+  if (nativeText && nativeWordChatParagraphInsertionEligible(target, replacement, formatting)) return { supported: true }
   if (formatting !== undefined) {
     // Native paragraph properties remain the only enabled formatting transport.
     return replacement === target.text && validWordChatFormatting(target, formatting) &&
@@ -45,7 +46,6 @@ export function wordChatApplyEligibility(target: WordChatTarget, replacement: st
       ? { supported: true }
       : { supported: false, reason: "Word cannot safely apply this formatting change yet. Make it directly in Word." }
   }
-  if (nativeText && nativeWordChatParagraphInsertionEligible(target, replacement)) return { supported: true }
   if (nativeText && nativeWordChatTextEligible(target, replacement)) return { supported: true }
   if (replacement === target.text) return { supported: false, reason: "Choose a wording, formatting or structural change to apply." }
   return { supported: false, reason: "Word cannot safely apply this change yet. Make it directly in Word." }

@@ -192,7 +192,9 @@ test("paragraph insertion binds a unique complete native paragraph and literal n
   const target=targetWordChatAmendment(context,text)!
   expect(validWordChatParagraphInsertion(context,target,text+"\rAdded 😀 paragraph.")).toBe(true)
   for (const after of [text+"\r",text+"\r  ",text+"\rOne\rTwo",text+"\rOne\tTwo",text+"\r\ud800", "Changed\rAdded"]) expect(validWordChatParagraphInsertion(context,target,after)).toBe(false)
-  expect(validWordChatParagraphInsertion(context,target,text+"\rAdded",[{paragraph:0,style:"Normal"}])).toBe(false)
+  expect(validWordChatParagraphInsertion(context,target,text+"\rAdded",[{paragraph:1,style:"Normal"}])).toBe(true)
+  for (const formatting of [[{paragraph:0,style:"Normal"}], [{paragraph:1,spacingAfter:8}], [{paragraph:1,style:"Heading1"}], [{paragraph:1,style:"Normal",spacingAfter:8}], [{paragraph:1,style:"Normal"},{paragraph:0,style:"Normal"}]])
+    expect(validWordChatParagraphInsertion(context,target,text+"\rAdded",formatting)).toBe(false)
   expect(validWordChatParagraphInsertion(context,target,text+"\rAdded",undefined,{bold:true})).toBe(false)
   const partial=targetWordChatAmendment(context,"paragraph.")!
   expect(validWordChatParagraphInsertion(context,partial,partial.text+"\rAdded")).toBe(false)

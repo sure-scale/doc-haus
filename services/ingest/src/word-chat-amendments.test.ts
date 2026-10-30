@@ -38,3 +38,15 @@ test("paragraph insertion preparation returns a copy of the bound reviewed nativ
   plan.target.paragraphs[0]!.text="changed"
   expect(reviewed.target.paragraphs[0]!.text).toBe(text)
 })
+
+
+test("paragraph insertion plan preserves the reviewed new paragraph Normal style", async () => {
+  const text="Existing paragraph.", target={id:"host-id",text,paragraphs:[{id:"native",text}],startOffset:0,endOffset:text.length,capturedAt:"now",saved:false}
+  const formatting=[{paragraph:1,style:"Normal" as const}]
+  const proposal:WordChatProposal={id:"reviewed",documentId:"document",before:text,after:text+"\rAdded paragraph.",target,formatting,explanation:"Add",openItems:[],createdAt:"now"}
+  const plan=await authorWordChatAmendment("unused",proposal)
+  expect(plan).toEqual({kind:"paragraph_insert",proposalId:"reviewed",target,text:"Added paragraph.",formatting})
+  if (!("kind" in plan) || plan.kind !== "paragraph_insert" || !plan.formatting) throw new Error("Expected styled insertion plan")
+  plan.formatting[0]!.style="Title"
+  expect(proposal.formatting![0]!.style).toBe("Normal")
+})

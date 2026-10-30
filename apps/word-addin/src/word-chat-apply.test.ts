@@ -22,6 +22,7 @@ test("inline formatting eligibility accepts exact partial and whole-paragraph sp
 test("native paragraph insertion requires a complete unchanged anchor and one new paragraph", () => {
   const whole = { ...target, text: "Alpha beta", startOffset: 0, endOffset: 10 }
   expect(wordChatApplyEligibility(whole, "Alpha beta\rNew paragraph.").supported).toBe(true)
+  expect(wordChatApplyEligibility(whole, "Alpha beta\rNew paragraph.", [{ paragraph: 1, style: "Normal" }]).supported).toBe(true)
   expect(wordChatApplyEligibility(target, "beta\rNew paragraph.").supported).toBe(false)
   expect(wordChatApplyEligibility(whole, "Changed anchor\rNew paragraph.").supported).toBe(false)
   expect(wordChatApplyEligibility(whole, "Alpha beta\rNew paragraph.\rAnother paragraph.").supported).toBe(false)

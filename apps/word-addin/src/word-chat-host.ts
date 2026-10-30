@@ -563,7 +563,8 @@ export class WordChatHost {
     assertNativeWordChatParagraphInsertionTarget(initial.projection, input.target)
     const plan = await input.author({ ooxml: initial.ooxml })
     if (!("kind" in plan) || plan.kind !== "paragraph_insert" || plan.proposalId !== input.proposalId ||
-      JSON.stringify(plan.target) !== JSON.stringify(input.target) || input.replacement !== `${input.target.text}\r${plan.text}`)
+      JSON.stringify(plan.target) !== JSON.stringify(input.target) || input.replacement !== `${input.target.text}\r${plan.text}` ||
+      JSON.stringify(plan.formatting) !== JSON.stringify(input.formatting))
       throw new WordChatHostError("The prepared paragraph does not match the reviewed proposal. Your document is unchanged.")
     return this.word.run(async context => {
       const fresh = await capture(context)
@@ -581,12 +582,14 @@ export class WordChatHost {
         await context.sync()
         context.document.load("changeTrackingMode")
         const all = context.document.body.paragraphs
-        all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+        all.load("items/uniqueLocalId,items/text,items/tableNestingLevel,items/styleBuiltIn,items/isListItem")
         const bodyXml = context.document.body.getRange("Whole").getOoxml()
         await context.sync()
         if (context.document.changeTrackingMode !== fresh.tracking) throw new Error("paragraph_insert_tracking")
         const observed = projectNativeWordChatBody(bodyXml.value, all.items.map(p => ({ id: p.uniqueLocalId, text: p.text, tableNestingLevel: p.tableNestingLevel })))
         const authors = verifyNativeWordChatParagraphInsertion(fresh.projection, observed, input.target, plan.text)
+        const inserted = all.items[fresh.index + 1]
+        if (!inserted || inserted.styleBuiltIn !== "Normal" || inserted.isListItem !== false) throw new Error("paragraph_insert_style")
         this.applied.set(input.proposalId, { identity, authors, uncertain: false })
         return { status: "applied", tracked: true, saved: false, authors }
       } catch (cause) {

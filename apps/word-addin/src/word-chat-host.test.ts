@@ -59,7 +59,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     nativeRevisions: [] as Array<{ start: number; end: number; author: string; type: string; text: string }>,
     extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false, wholeOoxmlTrailingParagraph: false,
     inlineBold: false, inlineAfter: "", inlineWrites: 0,
-    paragraphInsertions: 0, corruptParagraphInsertion: false,
+    paragraphInsertions: 0, corruptParagraphInsertion: false, insertedParagraphStyle: "Normal",
     nativeFormatting: [] as string[], dropNativeFormatting: false, terminalBodyMark: false, cellWholeExpandsRow: false, refuseEmptyContentXml: false,
     omitContentProperties: false, paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
   }
@@ -325,7 +325,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
         const stamp = 'w:author="Native user" w:date="2026-01-01T00:00:00Z"'
         state.paragraphInsertions++
         p.id = `retained-${state.paragraphInsertions}`
-        state.paragraphs.splice(index + 1, 0, { id: oldId, text: value })
+        state.paragraphs.splice(index + 1, 0, { id: oldId, text: value, styleBuiltIn: state.insertedParagraphStyle })
         state.paragraphXml.delete(oldId)
         const left = new DOMParser().parseFromString(flatOpc(oldXml), "application/xml").getElementsByTagNameNS(WORD_XML, "p")[0]!
         left.setAttributeNS("http://schemas.microsoft.com/office/word/2010/wordml", "w14:paraId", "00000003")
@@ -1598,14 +1598,14 @@ test("inline plan binding refuses forgery and satisfied native font is a no-op",
 })
 
 test("native paragraph insertion restores tracking and never repeats a dispatched operation", async () => {
-  for (const tracking of ["Off", "TrackAll"]) for (const corrupt of [false, true]) {
+  for (const tracking of ["Off", "TrackAll"]) for (const corrupt of [false, true]) for (const formatting of [undefined, [{paragraph:1,style:"Normal" as const}]]) {
     const { state, nativeHost } = office(["An existing obligation."], true)
     state.tracking = tracking
     state.paragraphXml.set("paragraph-0", '<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="00000001"><w:r><w:t>An existing obligation.</w:t></w:r></w:p>')
     const target = (await nativeHost.selection())!
     state.corruptParagraphInsertion = corrupt
-    const input = { proposalId: "paragraph-insertion", target, replacement: `${target.text}\rA new obligation.`,
-      author: async () => ({ kind: "paragraph_insert" as const, proposalId: "paragraph-insertion", target, text: "A new obligation." }) }
+    const input = { proposalId: "paragraph-insertion", target, replacement: `${target.text}\rA new obligation.`, formatting,
+      author: async () => ({ kind: "paragraph_insert" as const, proposalId: "paragraph-insertion", target, text: "A new obligation.", formatting }) }
     if (corrupt) {
       await expect(nativeHost.apply(input)).rejects.toMatchObject({ mutationState: "uncertain" })
       await expect(nativeHost.apply(input)).rejects.toMatchObject({ mutationState: "uncertain" })
@@ -1628,6 +1628,20 @@ test("native paragraph insertion refuses an altered prepared command before disp
   await expect(nativeHost.apply({ proposalId: "paragraph-bound", target, replacement: `${target.text}\rReviewed wording.`,
     author: async () => { prepared++; return { kind: "paragraph_insert" as const, proposalId: "paragraph-bound", target, text: "Different wording." } } })).rejects.toMatchObject({ mutationState: "unchanged" })
   expect(prepared).toBe(1)
+  await expect(nativeHost.apply({proposalId:"paragraph-style-bound",target,replacement:`${target.text}\rReviewed wording.`,formatting:[{paragraph:1,style:"Normal"}],
+    author:async () => ({kind:"paragraph_insert" as const,proposalId:"paragraph-style-bound",target,text:"Reviewed wording."})})).rejects.toMatchObject({mutationState:"unchanged"})
   expect(state.paragraphInsertions).toBe(0)
   expect(state.modeChanges).toEqual([])
+})
+
+
+test("native paragraph insertion reports uncertainty when inserted style differs from Normal", async () => {
+  const {state,nativeHost}=office(["An existing obligation."],true)
+  state.paragraphXml.set("paragraph-0",'<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="00000001"><w:r><w:t>An existing obligation.</w:t></w:r></w:p>')
+  state.insertedParagraphStyle="Heading1"
+  const target=(await nativeHost.selection())!, formatting=[{paragraph:1,style:"Normal" as const}]
+  const input={proposalId:"style-drift",target,replacement:target.text+"\rNew paragraph.",formatting,author:async () => ({kind:"paragraph_insert" as const,proposalId:"style-drift",target,text:"New paragraph.",formatting})}
+  await expect(nativeHost.apply(input)).rejects.toMatchObject({mutationState:"uncertain"})
+  await expect(nativeHost.apply(input)).rejects.toMatchObject({mutationState:"uncertain"})
+  expect(state.paragraphInsertions).toBe(1)
 })

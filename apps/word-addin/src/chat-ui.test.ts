@@ -67,9 +67,10 @@ test("row card applies once and disables all review actions while pending", asyn
 
 test("native paragraph insertion review offers Apply without the legacy import boundary warning", async () => {
   let calls = 0
-  const inserted = { ...proposal, after: `${proposal.before}\rA new independent obligation.` }
+  const applied: WordChatProposal[] = []
+  const inserted = { ...proposal, after: `${proposal.before}\rA new independent obligation.`, formatting:[{paragraph:1,style:"Normal" as const}] }
   const f = fixture({ turns: [turn({ kind: "amendment", proposal: inserted })], host: {
-    apply: async () => { calls++ },
+    apply: async value => { calls++; applied.push(value) },
     applyEligibility: p => wordChatApplyEligibility(p.target, p.after, p.formatting, true, p.inlineFormatting),
   } })
   try {
@@ -80,6 +81,7 @@ test("native paragraph insertion review offers Apply without the legacy import b
     expect(apply).toBeDefined()
     apply.click(); await Bun.sleep(0)
     expect(calls).toBe(1)
+    expect(applied[0]?.formatting).toEqual([{paragraph:1,style:"Normal"}])
     expect(f.root.querySelector(".chat-proposal-actions")).toBeNull()
   } finally { f.restore() }
 })
