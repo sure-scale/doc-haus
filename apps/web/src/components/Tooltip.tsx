@@ -47,6 +47,10 @@ export function Tooltip({ label, children, describes = true }: { label: string; 
     setPosition({ x: Math.max(12, Math.min(x, innerWidth - rect.width - 12)) / scale, y: Math.max(12, Math.min(y, innerHeight - rect.height - 12)) / scale })
     const onEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return
+      // Help left under a newer dialog is out of sight: hide it and leave this
+      // Escape to that dialog.
+      const top = [...document.querySelectorAll("dialog[open]")].at(-1)
+      if (top && !top.contains(host.current)) return hide()
       // Hovered help must dismiss even when keyboard focus is elsewhere, and
       // consume this Escape before a containing dialog receives it.
       event.preventDefault()
