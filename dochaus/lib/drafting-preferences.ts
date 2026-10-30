@@ -8,9 +8,6 @@ export type DraftingPreferences = {
   posture: "client-favorable" | "balanced" | "conservative"
   formality: "formal" | "plain"
   detail: "concise" | "detailed"
-  // Stored setting kept for settings-page compatibility; it no longer adds
-  // drafting instructions.
-  strategyApproval: "off" | "interactive"
   dateFormat: "month-day-year" | "day-month-year" | "iso"
   numberStyle: "words-and-numerals" | "numerals"
   houseStyle: string
@@ -87,7 +84,6 @@ export const DEFAULT_DRAFTING: DraftingPreferences = {
   posture: "balanced",
   formality: "formal",
   detail: "concise",
-  strategyApproval: "off",
   dateFormat: "month-day-year",
   numberStyle: "numerals",
   houseStyle: "",
@@ -136,7 +132,6 @@ export function normalizePreferences(value: unknown): DraftingPreferences {
     caseLawApiKey: typeof input.caseLawApiKey === "string" ? input.caseLawApiKey.trim() : "",
     approvedSources: normalizeApprovedSources(input.approvedSources),
     courtlistenerMcpEnabled: input.courtlistenerMcpEnabled === true,
-    strategyApproval: input.strategyApproval === "interactive" ? "interactive" : DEFAULT_DRAFTING.strategyApproval,
     telemetry: normalizeTelemetry(input.telemetry),
     pageNumbers: input.pageNumbers === "page" || input.pageNumbers === "dashed" || input.pageNumbers === "off" ? input.pageNumbers : DEFAULT_DRAFTING.pageNumbers,
     pageNumberPosition: input.pageNumberPosition === "right" ? "right" : DEFAULT_DRAFTING.pageNumberPosition,
