@@ -11,7 +11,7 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { read, utils } from "xlsx"
-import type { Grid } from "../src/api/ingest/grid"
+import { hashQuestion, type Grid } from "../src/api/ingest/grid"
 
 const { chromium } = (await import(process.env.PLAYWRIGHT_MODULE ?? "@playwright/test")) as typeof import("@playwright/test")
 const { zipSync, strToU8 } = (await import(Bun.resolveSync("fflate", path.resolve(import.meta.dir, "../../../dochaus")))) as {
@@ -515,12 +515,78 @@ try {
     console.log(`PASS extraction result with ${action} during the run`)
   }
 
+  // One primary action at a time, moving on as the table is worked. Review next
+  // opens the most urgent cell; the filter and the search narrow the view only.
+  storedGrid = structuredClone(grid)
+  for (const cell of Object.values(storedGrid.cells)) cell.questionHash = hashQuestion(grid.columns[0]!.question)
+  const heldChecks = holdChecks
+  holdChecks = false
+  await page.goto(server.url.href)
+  const toolbar = page.locator(".review-toolbar")
+  const primary = toolbar.locator(".review-primary")
+  const attention = toolbar.getByRole("button", { name: /^Needs attention · 1/ })
+  await attention.waitFor()
+  await toolbar.getByText("3 documents · 1 question · 3 of 3 answered · 0 reviewed", { exact: true }).waitFor()
+  assert.equal(await primary.count(), 1)
+  assert.equal(await primary.textContent(), "Review next")
+  assert.equal(await toolbar.getByRole("button", { name: "Review next" }).count(), 1, "the primary action is not repeated")
+  assert.equal(await toolbar.getByRole("button", { name: /^Fill/ }).count(), 0, "nothing to fill")
+  await primary.click()
+  const nextDetail = page.locator(".picker-panel").filter({ hasText: "The law of Scotland." })
+  await nextDetail.waitFor()
+  await page.keyboard.press("Escape")
+  await nextDetail.waitFor({ state: "detached" })
+  assert.equal(await primary.evaluate(element => element === document.activeElement), true, "closing the cell returns to Review next")
+
+  await attention.click()
+  const menu = toolbar.getByRole("group", { name: "Show only" })
+  await menu.getByRole("button", { name: /^Source changed/ }).waitFor()
+  assert.equal(await attention.getAttribute("aria-expanded"), "true")
+  await page.keyboard.press("ArrowDown")
+  assert.equal(await menu.evaluate(element => element.contains(document.activeElement)), true, "arrow keys move into the states")
+  const closesBefore = await closes()
+  await page.keyboard.press("Escape")
+  await menu.waitFor({ state: "hidden" })
+  assert.equal(await attention.evaluate(element => element === document.activeElement), true, "Escape returns focus to Needs attention")
+  assert.equal(await closes(), closesBefore, "Escape closes only the popover")
+  await attention.click()
+  await menu.getByRole("button", { name: /^Source changed/ }).click()
+  await page.getByText("Showing 1 of 3 cells · Source changed", { exact: true }).waitFor()
+  assert.equal(await page.getByRole("row", { name: /^Supply terms\.docx/ }).count(), 0, "rows without a match are hidden")
+  const search = toolbar.getByRole("searchbox", { name: "Search the table" })
+  await search.fill("supply")
+  await page.getByText("Showing 0 of 3 cells · Source changed", { exact: true }).waitFor()
+  await page.getByText("No matching cells.", { exact: true }).waitFor()
+  await page.getByRole("button", { name: "Clear", exact: true }).click()
+  await page.getByText(/^Showing/).waitFor({ state: "detached" })
+  assert.equal(await search.inputValue(), "")
+  assert.equal(await page.locator("tbody tr").count(), 3)
+  assert.equal(await search.evaluate(element => element === document.activeElement), true)
+
+  // Reviewing in place under a filter keeps the cell where it was, quieter.
+  await attention.click()
+  await menu.getByRole("button", { name: /^Not reviewed/ }).click()
+  await page.getByText("Showing 3 of 3 cells · Not reviewed", { exact: true }).waitFor()
+  for (const name of ["Supply terms", "Side letter", "Old note"])
+    await page.getByRole("row", { name: new RegExp(`^${name}\\.docx`) }).getByTitle("Mark reviewed").click()
+  await page.getByText("Showing 0 of 3 cells · Not reviewed", { exact: true }).waitFor()
+  assert.equal(await page.locator("td.review-cell.is-dimmed").count(), 3)
+  assert.equal(await page.getByRole("row", { name: /^Old note\.docx/ }).getByTitle("Unlock").evaluate(element => element === document.activeElement), true, "the lock keeps focus")
+  await page.getByRole("button", { name: "Clear", exact: true }).click()
+  await toolbar.getByText("3 documents · 1 question · 3 of 3 answered · 3 reviewed", { exact: true }).waitFor()
+  assert.equal(await primary.count(), 1)
+  assert.equal(await primary.getByRole("button", { name: "Export Excel", exact: true }).count(), 1)
+  // The changed source still needs a look, so Review next stays, quietly.
+  assert.equal(await toolbar.getByRole("button", { name: "Review next" }).count(), 1)
+  holdChecks = heldChecks
+  console.log("PASS one primary action per state, Review next, the attention filter, search and Clear")
+
   storedGrid = structuredClone(grid)
   extractionWaits.length = 0
   extractionStarts = 0
   onExtraction = undefined
   await page.goto(server.url.href + "?pool")
-  await page.getByRole("button", { name: "Fill empty" }).click()
+  await page.getByRole("button", { name: "Fill 7 cells", exact: true }).click()
   await page.getByRole("dialog", { name: "Review fill" }).getByRole("button", { name: "Start fill" }).click()
   for (let attempt = 0; extractionWaits.length < 5 && attempt < 250; attempt++) await new Promise(resolve => setTimeout(resolve, 20))
   assert.equal(extractionWaits.length, 5, "five extraction jobs should be in flight")

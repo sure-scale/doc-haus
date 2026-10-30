@@ -189,7 +189,7 @@ async function exercise(width: number, height: number) {
     await starter.getByRole("button", { name: "Cancel" }).click()
     expect(state.writes).toHaveLength(1)
 
-    await gridDialog.getByRole("button", { name: "Fill empty" }).click()
+    await gridDialog.getByRole("button", { name: "Fill 10 cells", exact: true }).click()
     const fill = page.getByRole("dialog", { name: "Review fill" })
     await expect(fill).toBeVisible()
     await expect(fill).toContainText("10 cells")

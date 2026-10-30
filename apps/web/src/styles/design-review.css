@@ -11,11 +11,49 @@
 .review .review-toolbar { justify-content: space-between; align-items: center; flex-wrap: wrap; gap: var(--space-4); margin-bottom: var(--space-5); padding-bottom: 0; }
 .review-toolbar > .row { flex-wrap: wrap; }
 .review-toolbar h2 { margin: 0; }
+.review-status { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-4); min-width: 0; }
+.review-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-2); margin-left: auto; }
+.review-toolbar-steps { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-2); margin-left: auto; }
+.review-toolbar-steps > .review-primary { margin-left: var(--space-4); }
+.review-toolbar-actions button.ghost, .review-export:not(.review-primary) > .split-button-lead { padding-inline: var(--space-3); }
+.review-export:not(.review-primary) > button { border-color: transparent; background: transparent; color: var(--muted); }
+.review-export:not(.review-primary) > button:hover:not(:disabled) { border-color: transparent; background: var(--bg); color: var(--text); }
+/* Compact search: the matter list's search field, self-contained here. */
+.review-toolbar .matter-search { position: relative; display: flex; align-items: center; flex: 0 1 180px; min-width: 140px; max-width: 280px; }
+.review-toolbar .matter-search > svg { position: absolute; left: 12px; pointer-events: none; color: var(--muted); }
+.review-toolbar .page-filter { width: 100%; min-width: 0; min-height: var(--ctl-h); padding-left: var(--space-8); border-radius: var(--radius-pill); }
+
+/* Needs attention: a quiet disclosure. Each state keeps its shape and word;
+   tone is the second cue. */
+.review-attention { position: relative; }
+.review-attention-trigger { display: inline-flex; align-items: center; gap: var(--space-2); border-color: var(--border); background: transparent; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.review-attention-trigger.has-attention { border-color: var(--warn-border); color: var(--text); }
+.review-attention-trigger strong { color: var(--warn); font-weight: 650; }
+.review-attention-trigger svg { flex: none; color: var(--muted); }
+.review-attention-trigger[aria-expanded="true"] svg { transform: rotate(180deg); }
+.review-attention-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: var(--z-popover); display: flex; flex-direction: column; gap: 2px; width: min(360px, calc(var(--viewport-inline) - 32px)); max-height: min(440px, 60vh); padding: 6px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); box-shadow: var(--shadow-md); }
+.review-attention-menu[hidden] { display: none; }
+.review-attention-heading { margin: var(--space-1) var(--space-3); color: var(--muted); font-size: .75rem; font-weight: 600; }
+.review-attention-menu button { display: grid; grid-template-columns: 12px 1fr auto; align-items: center; gap: 2px var(--space-3); width: 100%; min-height: 40px; padding: var(--space-2) var(--space-3); border: 0; border-radius: calc(var(--radius-md) - 6px); background: transparent; color: var(--text); box-shadow: none; font-size: .85rem; font-weight: 500; text-align: left; white-space: normal; transform: none; }
+.review-attention-menu button:hover:not(:disabled) { border: 0; background: var(--panel-hover); }
+.review-attention-menu button[aria-pressed="true"] { background: var(--accent-tint); font-weight: 650; }
+.review-attention-menu button:disabled { opacity: 1; color: var(--text-secondary); }
+.review-attention-menu button.is-unreviewed { margin-top: var(--space-1); border-top: 1px solid var(--border-soft); border-radius: 0 0 calc(var(--radius-md) - 6px) calc(var(--radius-md) - 6px); }
+.review-attention-menu button small { grid-column: 2 / -1; color: var(--text-secondary); font-size: .78rem; font-weight: 400; line-height: 1.45; }
+.review-attention-count { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.review-glyph { display: block; width: 10px; height: 10px; justify-self: center; }
+.review-glyph.is-danger { color: var(--danger); }
+.review-glyph.is-warn { color: var(--warn); }
+.review-glyph.is-muted { color: var(--muted); }
+.review-glyph.is-info { color: var(--info); }
+.review-ai-tag { margin-left: var(--space-2); padding: 0 6px; border: 1px solid currentColor; border-radius: var(--radius-sm); color: var(--info); font-size: .7rem; font-weight: 650; }
+.review-filter-summary { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1); margin: calc(-1 * var(--space-2)) 0 var(--space-4); color: var(--text-secondary); font-size: .85rem; font-variant-numeric: tabular-nums; }
+.review-filter-summary .linklike { min-height: 0; font-size: inherit; line-height: inherit; }
 .review-summary { display: block; color: var(--text-secondary); font-size: .9rem; font-variant-numeric: tabular-nums; }
 .review-running { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
 .review-running::before { content: ""; width: 12px; height: 12px; border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: step-spin .7s linear infinite; }
 .review-hint { margin: 0 0 var(--space-4); color: var(--muted); font-size: .9rem; }
-.review > .review-toolbar, .review > .review-hint, .review > [role="alert"] { flex-shrink: 0; }
+.review > .review-toolbar, .review > .review-filter-summary, .review > .review-hint, .review > [role="alert"] { flex-shrink: 0; }
 .review-scroll { min-height: 0; max-height: none; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); scrollbar-width: thin; }
 .review-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
@@ -35,6 +73,9 @@
 .review-col-q:hover, .review-answer:hover { border: 0; background: transparent; color: var(--accent); box-shadow: none; transform: none; }
 .review-col-x { flex-shrink: 0; }
 .review-cell.reviewed { background: var(--accent-tint); box-shadow: inset 3px 0 0 var(--accent); }
+/* Outside the active filter or search: still in place, quieter. */
+.review-cell.is-dimmed > * { opacity: .45; }
+.review-cell.is-dimmed:is(:hover, :focus-within) > * { opacity: 1; }
 .review-table tbody tr:hover td.review-cell.reviewed { background: var(--accent-soft); }
 .review-cell-body { display: flex; flex-direction: column; gap: var(--space-2); }
 .review-cite { color: var(--accent); font-size: .85rem; }
@@ -112,6 +153,8 @@
   .review-table .review-doc-col { width: 200px; min-width: 180px; }
   .review-table th, .review-table td { padding: var(--space-3); }
   .review-toolbar { align-items: stretch; }
+  .review-toolbar-actions { justify-content: flex-start; width: 100%; margin-left: 0; }
+  .review-toolbar .matter-search { flex: 1 1 100%; max-width: none; }
   .review-detail-modal { padding: var(--space-3); }
 }
 @media (pointer: coarse) {

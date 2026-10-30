@@ -39,6 +39,8 @@
   button.primary { border: 2px solid Highlight; }
   .split-button > button { border: 1px solid ButtonBorder; }
   .split-button-menu { border: 1px solid CanvasText; }
+  .review-attention-menu { border: 1px solid CanvasText; }
+  .review-attention-menu button[aria-pressed="true"] { outline: 2px solid Highlight; outline-offset: -2px; }
   /* Document viewer toolbar: the toggle of an open panel takes a Highlight
      edge and an underlined label, not the tint alone; counts keep their pill. */
   .document-reader .viewer-bar-actions > button:not(.primary)[aria-expanded="true"],

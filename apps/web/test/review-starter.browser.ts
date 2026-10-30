@@ -90,10 +90,18 @@ try {
   })
   const starter = page.getByRole("dialog", { name: "Document overview" })
   const reviewFill = page.getByRole("dialog", { name: "Review fill" })
-  const open = async (query: string) => { await page.goto(`${server.url.href}${query}`); await page.getByRole("button", { name: "Use a starter" }).waitFor() }
-  const showStarter = async () => { await page.getByRole("button", { name: "Use a starter" }).click(); await expect(starter).toBeVisible() }
+  // A starter is the primary action of a table without questions, and a quiet one otherwise.
+  const starterButton = page.getByRole("button", { name: /^(Use a starter|Start with a starter)$/ })
+  const primary = page.locator(".review-toolbar .review-primary")
+  const open = async (query: string) => { await page.goto(`${server.url.href}${query}`); await starterButton.waitFor() }
+  const showStarter = async () => { await starterButton.click(); await expect(starter).toBeVisible() }
 
   await open("?matter=one")
+  await expect(primary).toHaveCount(1)
+  await expect(primary).toHaveText("Fill 1 cell")
+  await expect(page.getByRole("button", { name: "Use a starter", exact: true })).toBeVisible()
+  const toolbar = page.locator(".review-toolbar")
+  assert.equal(await toolbar.evaluate((node) => node.scrollWidth <= node.clientWidth + 1), true, "the toolbar wraps within a 400px viewport")
   await showStarter()
   await expect(starter).toContainText("First matter")
   await expect(starter).toContainText("First.docx")
@@ -130,7 +138,8 @@ try {
   await expect(page.getByRole("button", { name: "Edit question: What is the duration?" })).toBeVisible()
   assert.deepEqual(grids.one!.cells["First.docx::existing"], originalCell)
 
-  await page.getByRole("button", { name: "Fill empty" }).click()
+  await expect(primary).toHaveCount(1)
+  await page.getByRole("button", { name: "Fill 3 cells", exact: true }).click()
   await expect(reviewFill).toBeVisible()
   await expect(reviewFill).toContainText("3 cells")
   await expect(reviewFill).toContainText("First.docx")
@@ -153,12 +162,18 @@ try {
   await starter.getByRole("button", { name: "Cancel" }).click()
   assert.equal(puts, 1)
   await open("?matter=two")
+  await expect(primary).toHaveCount(1)
+  await expect(primary).toHaveText("Start with a starter")
+  await expect(page.getByRole("button", { name: "Use a starter", exact: true })).toHaveCount(0)
   await showStarter()
   await expect(starter).toContainText("Second matter")
   assert.deepEqual(grids.two, empty)
   await starter.getByRole("button", { name: "Cancel" }).click()
 
+  // Without documents nothing can be filled or exported: no primary action.
   await open("?matter=empty&empty=1")
+  await expect(primary).toHaveCount(0)
+  await expect(page.getByRole("button", { name: /^Export/ })).toHaveCount(0)
   await showStarter()
   await expect(starter).toContainText("Add documents to this matter")
   await expect(starter.getByRole("button", { name: "Add questions" })).toBeDisabled()
@@ -187,7 +202,7 @@ try {
   // A newer saved grid invalidates the disclosed targets before any model call.
   grids.stale = structuredClone(grids.one!)
   await open("?matter=stale")
-  await page.getByRole("button", { name: "Fill empty" }).click()
+  await page.getByRole("button", { name: "Fill 3 cells", exact: true }).click()
   grids.stale!.version = (grids.stale!.version ?? 0) + 1
   await reviewFill.getByRole("button", { name: "Start fill" }).click()
   await expect(reviewFill).toHaveCount(0)
@@ -208,7 +223,7 @@ try {
   await expect(page.getByText("The matter's documents changed.", { exact: false })).toBeVisible()
   changedDocuments = false
   await open("?matter=changed")
-  await page.getByRole("button", { name: "Fill empty" }).click()
+  await page.getByRole("button", { name: "Fill 3 cells", exact: true }).click()
   changedDocuments = true
   await reviewFill.getByRole("button", { name: "Start fill" }).click()
   await expect(reviewFill).toHaveCount(0)
@@ -220,7 +235,7 @@ try {
   // prompt and refuses it, allowing us to compare actual dispatched targets.
   grids.run = structuredClone(grids.one!)
   await open("?matter=run")
-  await page.getByRole("button", { name: "Fill empty" }).click()
+  await page.getByRole("button", { name: "Fill 3 cells", exact: true }).click()
   await expect(reviewFill).toContainText("3 cells")
   await reviewFill.getByRole("button", { name: "Start fill" }).click()
   await expect.poll(() => prompts.length).toBe(3)
@@ -239,7 +254,7 @@ try {
   assert.deepEqual(grids.two!.cells, {}, "the first matter's answers and comments must not carry over")
   grids.long = structuredClone(initial)
   await open("?matter=long&long=1")
-  await page.getByRole("button", { name: "Fill empty" }).click()
+  await page.getByRole("button", { name: "Fill 1 cell", exact: true }).click()
   const fillBody = reviewFill.locator(".review-starter-body")
   await expect(reviewFill.getByRole("heading", { name: `${"long_".repeat(38)}.docx` })).toBeVisible()
   assert.equal(await fillBody.evaluate((node) => node.scrollWidth <= node.clientWidth + 1), true, "long document names wrap without horizontal overflow")

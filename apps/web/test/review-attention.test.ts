@@ -124,6 +124,12 @@ test("the primary action moves from start to fill to review next to export", () 
   expect(action([law, term], all("reviewed"))).toEqual({ kind: "export" })
 })
 
+test("without documents there is no primary action, with or without questions", () => {
+  // Export, Fill and a starter's questions all need documents; the table asks for them instead.
+  for (const columns of [[], [law, term]])
+    expect(primaryAction(reviewAttention({ rows: [], columns, cells: {}, source: () => "verified" }).progress, 0)).toBeUndefined()
+})
+
 test("a filter and the search text must both match", () => {
   const result = model({ [cellKey(lease, law.id)]: uncited(law, "Net 30 days") })
   const entry = result.cells.get(cellKey(lease, law.id))!

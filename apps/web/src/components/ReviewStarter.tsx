@@ -92,7 +92,7 @@ export default function ReviewStarter({ matterName, documents, existingQuestions
             {!additions.length && <p>No new questions to add. Edit a question or cancel.</p>}
           </section>
           <p><strong>{documents.length * additions.length} pending {documents.length * additions.length === 1 ? "cell" : "cells"}</strong> for the new questions across these documents.</p>
-          <p>Adding questions does not use AI or fill answers. Choose Fill empty in the table when you are ready; it may include other eligible cells.</p>
+          <p>Adding questions does not use AI or fill answers. When you are ready, fill the cells from the table; the fill may include other eligible cells.</p>
           {error && <p className="compare-error" role="alert">{error}</p>}
           {error && problem && <p role="alert">{problem}</p>}
           <div className="compare-actions">

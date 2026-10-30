@@ -1,9 +1,9 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { SplitButton } from "./SplitButton"
 import { createPortal } from "react-dom"
 import { UNSAFE_DataRouterContext, useBlocker } from "react-router-dom"
 import { computeCell, describeRecheck, needsFill } from "../api/review-recheck"
 import { citesRow } from "../api/review-answer"
+import { matches, primaryAction, reviewAttention, type AttentionFilter } from "../api/review-attention"
 import { cellKey, checkCellSources, getGrid, GridConflictError, hashQuestion, isStale, recheckPassages, saveGrid, type Grid, type GridCellData, type SourceCheck } from "../api/ingest/grid"
 import { humanizeError } from "../api/ingest/errors"
 import { getPreferences } from "../api/ingest/preferences"
@@ -23,6 +23,7 @@ import { WordWarning } from "./WordDocuments"
 import useReviewGridPresence from "./useReviewGridPresence"
 import ReviewStarter, { normaliseStarterQuestion } from "./ReviewStarter"
 import FillPreview from "./FillPreview"
+import { FilterSummary, ReviewToolbar } from "./ReviewAttention"
 
 // Tabular review: rows are the matter's documents, columns are natural-language
 // questions, each cell is an extracted answer with a source citation. The grid is
@@ -119,6 +120,11 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   const [starterOpen, setStarterOpen] = useState(false)
   const [fillPreview, setFillPreview] = useState<Array<{ docName: string; column: { id: string; question: string } }>>()
   const [checkingFill, setCheckingFill] = useState(false)
+  // Filter and search change only what is shown. Rows and columns with a match
+  // stay shown until they change, so a cell reviewed in place does not jump away.
+  const [filter, setFilter] = useState<AttentionFilter>()
+  const [query, setQuery] = useState("")
+  const shownView = useRef({ key: "", rows: new Set<string>(), columns: new Set<string>() })
   // The detail overlay identifies its cell by key and reads it live from `grid`,
   // so the comment thread updates in place as comments are added or removed.
   const [detail, setDetail] = useState<{ docName: string; columnId: string; question: string }>()
@@ -360,6 +366,14 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     commitCell(key, { ...cell, status: cell.status === "reviewed" ? "filled" : "reviewed" })
   }
 
+  function openDetail(docName: string, columnId: string) {
+    const column = gridRef.current.columns.find((col) => col.id === columnId)
+    if (!column) return
+    setDraft("")
+    setViewing(undefined)
+    setDetail({ docName, columnId, question: column.question })
+  }
+
   async function addComment() {
     const text = draft.trim()
     if (!detail || !text || commentSaving) return
@@ -566,6 +580,35 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
         .catch((e) => setError(humanizeError(e, "Could not build the Word export. Try again.")))
   }
 
+  const attention = reviewAttention({ rows: documents.map((doc) => doc.name), columns: grid.columns, cells: grid.cells, source: sourceCheck, checkingSources })
+  // The same cells fillTargets() would compute, counted from this render.
+  const fillCount = documents.reduce((count, doc) => count + grid.columns.filter((col) => needsFill(grid.cells[cellKey(doc.name, col.id)], hashQuestion(col.question))).length, 0)
+  const fillBlanks = documents.some((doc) => grid.columns.some((col) => !grid.cells[cellKey(doc.name, col.id)]))
+  const primary = primaryAction(attention.progress, fillCount)
+  const narrowed = !!filter || !!query.trim()
+  const viewKey = JSON.stringify([filter, query.trim().toLowerCase()])
+  if (shownView.current.key !== viewKey) shownView.current = { key: viewKey, rows: new Set(), columns: new Set() }
+  let matching = 0
+  for (const entry of attention.cells.values()) {
+    if (!matches(entry, filter, query)) continue
+    matching++
+    shownView.current.rows.add(entry.docName)
+    shownView.current.columns.add(entry.columnId)
+  }
+  const shownDocuments = narrowed ? documents.filter((doc) => shownView.current.rows.has(doc.name)) : documents
+  // With no match the questions stay as headings above "No matching cells".
+  const shownColumns = narrowed && shownDocuments.length ? grid.columns.filter((col) => shownView.current.columns.has(col.id)) : grid.columns
+  const clearView = () => {
+    setFilter(undefined)
+    setQuery("")
+    dialog.current?.querySelector<HTMLInputElement>(".review-toolbar input[type=search]")?.focus()
+  }
+  // Review next takes the first queued cell the view shows, else the first.
+  const reviewNext = () => {
+    const next = attention.queue.find((entry) => matches(attention.cells.get(entry.key)!, filter, query)) ?? attention.queue[0]
+    if (next) openDetail(next.docName, next.columnId)
+  }
+
   return createPortal(
     <dialog
       ref={dialog}
@@ -583,30 +626,27 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
       <div className="card review">
         <WordWarning />
         {otherWindow && <p role="status">This review table is open in another window.</p>}
-        <div className="row review-toolbar">
-          <div>
-            <span className="review-summary">
-              {documents.length} document{documents.length === 1 ? "" : "s"} · {grid.columns.length} question{grid.columns.length === 1 ? "" : "s"}
-            </span>
-          </div>
-          <div className="row" style={{ gap: 8 }}>
-            {running > 0 && <span className="review-running" role="status">Extracting {running}</span>}
-            <button type="button" onClick={() => { setError(undefined); setStarterOpen(true) }} disabled={!canEdit || running > 0}>Use a starter</button>
-            <button className="primary" onClick={() => { setError(undefined); setFillPreview(fillTargets()) }} disabled={!canEdit || documents.length === 0 || grid.columns.length === 0 || running > 0}>
-              Fill empty
-            </button>
-            <SplitButton
-              label="Export Excel"
-              onClick={() => exportAs("xlsx")}
-              toggleLabel="More export formats"
-              disabled={documents.length === 0 || grid.columns.length === 0}
-              items={[
-                { label: "Export CSV", onSelect: () => exportAs("csv") },
-                { label: "Export Word", onSelect: () => exportAs("docx") },
-              ]}
-            />
-          </div>
-        </div>
+        <ReviewToolbar
+          model={attention}
+          checking={checkingSources}
+          running={running}
+          primary={primary}
+          fillCount={fillCount}
+          fillBlanks={fillBlanks}
+          startDisabled={!canEdit || running > 0}
+          fillDisabled={!canEdit || running > 0}
+          canExport={documents.length > 0 && grid.columns.length > 0}
+          searchable={attention.cells.size > 0}
+          filter={filter}
+          onFilter={setFilter}
+          query={query}
+          onQuery={setQuery}
+          onStarter={() => { setError(undefined); setStarterOpen(true) }}
+          onFill={() => { setError(undefined); setFillPreview(fillTargets()) }}
+          onReviewNext={reviewNext}
+          onExport={exportAs}
+        />
+        {narrowed && <FilterSummary shown={matching} total={attention.cells.size} filter={filter} onClear={clearView} />}
 
         {error && <p role="alert">{error}</p>}
         {saveProblem && <div role="alert"><p>{saveProblem}</p><p>Export the table above or download your local copy before reloading the saved table.</p><button type="button" onClick={downloadPending}>Download unsaved copy</button> <button type="button" disabled={reloading} onClick={reloadGrid}>{reloading ? "Reloading…" : "Reload saved table"}</button></div>}
@@ -618,11 +658,11 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
           <p className="review-hint">Use + to add a question for every document.</p>
         )}
         <div className="review-scroll" role="region" aria-label="Review table" tabIndex={0}>
-          <table className={`review-table${grid.columns.length === 0 ? " is-empty" : ""}`} style={grid.columns.length ? { minWidth: 304 + grid.columns.length * 280 } : undefined} aria-label="Document review">
+          <table className={`review-table${grid.columns.length === 0 ? " is-empty" : ""}`} style={shownColumns.length ? { minWidth: 304 + shownColumns.length * 280 } : undefined} aria-label="Document review">
             <thead>
               <tr>
                 <th className="review-doc-col" scope="col">Document</th>
-                {grid.columns.map((col) => (
+                {shownColumns.map((col) => (
                   <th key={col.id} scope="col">
                     <div className="review-col-head">
                       <button className="review-col-q" disabled={!canEdit} onClick={() => renameColumn(col.id)} aria-label={`Edit question: ${col.question}`} title="Edit question">
@@ -644,17 +684,18 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
               </tr>
             </thead>
             <tbody>
-              {documents.map((doc) => (
+              {shownDocuments.map((doc) => (
                 <tr key={doc.id}>
                   <th className="review-doc-col" scope="row">{doc.name}<QualityNote quality={doc.quality} /></th>
-                  {grid.columns.map((col) => {
+                  {shownColumns.map((col) => {
                     const key = cellKey(doc.name, col.id)
                     const cell = grid.cells[key]
+                    const dimmed = narrowed && !matches(attention.cells.get(key)!, filter, query)
                     const stale = isStale(cell, col.question)
                     const check = sourceCheck(key, cell)
                     const degraded = !!check && DEGRADED.includes(check)
                     return (
-                      <td key={col.id} className={`review-cell${cell?.status === "reviewed" ? " reviewed" : ""}${degraded ? " degraded" : ""}`}>
+                      <td key={col.id} className={`review-cell${cell?.status === "reviewed" ? " reviewed" : ""}${degraded ? " degraded" : ""}${dimmed ? " is-dimmed" : ""}`}>
                         {!cell ? (
                           <button
                             className="review-cell-fill"
@@ -667,11 +708,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                           <div className="review-cell-body">
                             <button
                               className="review-answer"
-                              onClick={() => {
-                                setDraft("")
-                                setViewing(undefined)
-                                setDetail({ docName: doc.name, columnId: col.id, question: col.question })
-                              }}
+                              onClick={() => openDetail(doc.name, col.id)}
                             >
                               {cell.answer}
                               {cell.citation && <span className="review-cite"> [{cell.citation.documentName} § {cell.citation.section}]</span>}
@@ -692,11 +729,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                                 className={`icon-btn review-note${cell.comments?.length ? " has-comments" : ""}`}
                                 aria-label={`${cell.comments?.length ?? 0} comments on ${doc.name}: ${col.question}`}
                                 title={cell.comments?.map((c) => `${c.author || "Unattributed"}: ${c.text}`).join("\n") || "Add a comment"}
-                                onClick={() => {
-                                  setDraft("")
-                                  setViewing(undefined)
-                                  setDetail({ docName: doc.name, columnId: col.id, question: col.question })
-                                }}
+                                onClick={() => openDetail(doc.name, col.id)}
                               >
                                 <svg width="12" height="12" viewBox="0 0 16 16" aria-hidden="true">
                                   <path
@@ -727,9 +760,13 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                   <td className="review-add-col" aria-hidden="true" />
                 </tr>
               ))}
-              {documents.length === 0 && (
+              {documents.length === 0 ? (
                 <tr>
-                  <td className="review-empty-documents" colSpan={grid.columns.length + 2}>Add documents to this matter to start reviewing.</td>
+                  <td className="review-empty-documents" colSpan={shownColumns.length + 2}>Add documents to this matter to start reviewing.</td>
+                </tr>
+              ) : shownDocuments.length === 0 && (
+                <tr>
+                  <td className="review-empty-documents" colSpan={shownColumns.length + 2}>No matching cells.</td>
                 </tr>
               )}
             </tbody>

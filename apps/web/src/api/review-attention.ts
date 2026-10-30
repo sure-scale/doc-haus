@@ -116,8 +116,25 @@ export function reviewAttention(input: AttentionInput): ReviewAttention {
   return { cells, attention, counts, progress, queue }
 }
 
-/** `fillTargets` is the count of cells a Fill would compute (ReviewGrid fillTargets). */
-export function primaryAction(progress: ReviewProgress, fillTargets: number): PrimaryAction {
+/** Each filter's word and meaning for the legend, in the cells' own vocabulary: the reason's first sentence, without a cell's next step. */
+export function legend(): Array<StateNote<AttentionFilter>> {
+  const plain = notes(undefined, false)
+  const [notFound, notFoundReason] = notes({ answer: NOT_ADDRESSED, status: "filled", questionHash: "" }, false).no_citation
+  const meaning = (reason: string) => reason.split(/(?<=\.) /)[0]
+  return FILTERS.map((state) => ({
+    state,
+    word: plain[state][0],
+    reason: meaning(plain[state][1]) + (state === "no_citation" ? ` ${notFound} means ${notFoundReason[0].toLowerCase()}${notFoundReason.slice(1)}` : ""),
+  }))
+}
+
+/**
+ * `fillTargets` is the count of cells a Fill would compute (ReviewGrid fillTargets).
+ * Without documents nothing can be added, filled, reviewed or exported, so there
+ * is no primary action; the table's empty text asks for documents.
+ */
+export function primaryAction(progress: ReviewProgress, fillTargets: number): PrimaryAction | undefined {
+  if (!progress.documents) return undefined
   if (!progress.questions) return { kind: "start" }
   if (fillTargets > 0) return { kind: "fill", count: fillTargets }
   if (progress.answered > progress.reviewed) return { kind: "reviewNext" }
