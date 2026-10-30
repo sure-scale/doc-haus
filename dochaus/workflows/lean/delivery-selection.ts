@@ -222,7 +222,7 @@ function* nameSpellings(raw: string, quote: string, stem: string, extension: str
  * (spelledNames) in the lawyer's words: adding Word's extension to an
  * explicitly stated title does not require a model to invent another name.
  * The selection matches the lawyer's spelling as instructionFound compares
- * text (normalize: quotation marks and whitespace aside), in the lawyer's case:
+ * text (normalize: quotation marks, hyphens and whitespace aside), in the lawyer's case:
  * unlike the files job, which keeps the lawyer's spelling of a name given in
  * another case, it names the file delivered. A name this refuses is still
  * accepted where the earlier check accepted it (quotedOrTitled), unless it

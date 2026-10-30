@@ -249,12 +249,13 @@ function combinedOutput(directory: string): { document: string; name: string; fi
   return parts ? { document: parts.document, name: parts.name, file: parts.file, body: parts.body, notes: parts.notes } : null
 }
 
-/** The run's planned documents without their parts, whom the lawyer acts
- * for, the Posture the stages draft to and how many review findings that
- * Posture held back as beyond market (derived), or null before the outline. */
+/** The run's planned documents without their parts (with the file name the
+ * request gave a document, when it gave one), whom the lawyer acts for, the
+ * Posture the stages draft to and how many review findings that Posture held
+ * back as beyond market (derived), or null before the outline. */
 function plannedDocuments(directory: string) {
   const plan = readLeanPlan(directory)
-  return plan ? { documents: plan.documents.map(row => ({ id: row.id, title: row.title, purpose: row.purpose })), acting_for: planActingFor(directory), posture: runPosture(directory), held_back: heldBackCount(directory) } : null
+  return plan ? { documents: plan.documents.map(row => ({ id: row.id, title: row.title, purpose: row.purpose, ...(row.file ? { file: row.file } : {}) })), acting_for: planActingFor(directory), posture: runPosture(directory), held_back: heldBackCount(directory) } : null
 }
 
 /** Pause: stops the coordinator working on this matter. It interrupts the

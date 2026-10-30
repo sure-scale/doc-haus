@@ -64,7 +64,7 @@ test("an adopted recommendation runs through the queue as the lawyer's answer, r
   const line = `- [${late.id}] Q: ${QUESTION}\n  A (delegated by the lawyer; the recommended option was adopted): ${CHOSEN}`
   expect(answeredQuestionsText(directory)).toContain(line)
   const prompts = model.prompts.slice(start)
-  for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.spine, AGENT.draft, AGENT.coverage,
+  for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.spine, AGENT.draft, AGENT.coverageActs,
     AGENT.review, AGENT["review-independent"], AGENT["review-wording"], AGENT["review-client-disadvantage"], AGENT["change-plan"], AGENT.changes, AGENT["package-review"]])
     expect([agent, prompts.some(prompt => prompt.agent === agent && prompt.text.includes(line))]).toEqual([agent, true])
   const notes = prompts.find(prompt => prompt.agent === AGENT.finalize)!.text

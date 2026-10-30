@@ -27,6 +27,7 @@ agent/*.md
 !agent/extract.md
 !agent/lean-advise.md
 !agent/lean-answer.md
+!agent/lean-answer-reconcile.md
 !agent/lean-change-plan.md
 !agent/lean-change-prepare.md
 !agent/lean-change-review.md
@@ -34,6 +35,7 @@ agent/*.md
 !agent/lean-checklist-extract.md
 !agent/lean-checklist-check.md
 !agent/lean-coverage.md
+!agent/lean-coverage-acts.md
 !agent/lean-discrepancy.md
 !agent/lean-draft.md
 !agent/lean-drafting-notes.md
