@@ -1,6 +1,8 @@
 import { authorWordChatTarget } from "../../../dochaus/lib/docx-flat-opc"
-import type { WordChatAuthoredAmendment, WordChatProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { validWordChatFormatting } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatAuthoredAmendment, WordChatProposal, WordChatSnapshot, WordChatTableRowInsertionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { validWordChatFormatting, validWordChatTableRowInsertion } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { authorDocxTableRowInsertion, docxTableRowInsertionTargets, type DocxTableRowInsertion } from "../../../dochaus/lib/docx-table-row-insertion"
+import { parseZip } from "../../../dochaus/lib/zip"
 
 export { MAX_WORD_AMENDMENT_OOXML_BYTES, WordAmendmentError, WordFormattingError } from "../../../dochaus/lib/docx-flat-opc"
 
@@ -14,4 +16,65 @@ export async function authorWordChatAmendment(ooxml: string, proposal: WordChatP
     throw new Error("word_proposal_changed")
   const authored = await authorWordChatTarget(ooxml, proposal.target, proposal.after, proposal.formatting)
   return { ...authored, proposalId: proposal.id }
+}
+
+const MAX_ROW_SOURCE_BYTES = 16 * 1024 * 1024
+const MAX_ROW_EXPANDED_BYTES = 64 * 1024 * 1024
+const MAX_ROW_PART_BYTES = 16 * 1024 * 1024
+
+/** Bound decompression before the existing writer opens the package. Filtered
+ * ZIP entries are refused here because the writer also reads those entries. */
+function checkedWordRowPackage(source: Uint8Array) {
+  if (!source.length || source.length > MAX_ROW_SOURCE_BYTES) throw new Error("word_row_source_size")
+  const zip = parseZip(source), view = new DataView(source.buffer, source.byteOffset, source.byteLength)
+  let end = -1
+  for (let at = source.length - 22; at >= Math.max(0, source.length - 22 - 0xffff); at--) {
+    if (view.getUint32(at, true) === 0x06054b50) { end = at; break }
+  }
+  if (end < 0 || end + 22 + view.getUint16(end + 20, true) !== source.length ||
+    end >= 20 && view.getUint32(end - 20, true) === 0x07064b50 ||
+    view.getUint16(end + 4, true) !== 0 || view.getUint16(end + 6, true) !== 0 ||
+    view.getUint16(end + 8, true) !== view.getUint16(end + 10, true) ||
+    view.getUint16(end + 10, true) !== zip.entries.length || zip.entries.length > 4096 ||
+    !Number.isSafeInteger(zip.uncompressed) || zip.uncompressed > MAX_ROW_EXPANDED_BYTES ||
+    zip.entries.some(entry => !Number.isSafeInteger(entry.size) || entry.size > MAX_ROW_PART_BYTES || entry.encrypted || entry.unsafePath) ||
+    new Set(zip.entries.map(entry => entry.filename)).size !== zip.entries.length) throw new Error("word_row_source_archive")
+  for (const entry of zip.entries) entry.content()
+}
+
+export type WordChatAuthoredTableRow = {
+  kind: "table_row_insert"
+  proposalId: string
+  sourceSha256: string
+  table: WordChatTableRowInsertionProposal["table"]
+  cells: string[]
+  author: "doc.haus"
+  writerRequest: DocxTableRowInsertion
+  /** Verification oracle only. Never import these bytes into a live Word document. */
+  authoredBytes: Uint8Array
+  revisions: { id: string; family: string }[]
+}
+
+/** Pure authoring against the exact current Word export. The future route must
+ * provide server-owned reviewed context and proposal, and recheck its lease. */
+export async function authorWordChatTableRow(snapshot: WordChatSnapshot, proposal: WordChatTableRowInsertionProposal, currentBytes: Uint8Array): Promise<WordChatAuthoredTableRow> {
+  if (!validWordChatTableRowInsertion(snapshot, proposal)) throw new Error("word_row_proposal_changed")
+  if (!(currentBytes instanceof Uint8Array) || !currentBytes.length || currentBytes.length > MAX_ROW_SOURCE_BYTES) throw new Error("word_row_source_size")
+  const captured = {tableIndex:proposal.table.tableIndex,rows:proposal.table.rows.map(row => row.map(cell => ({...cell})))}
+  const cells = [...proposal.cells], proposalId = proposal.id
+  const source = new Uint8Array(currentBytes)
+  checkedWordRowPackage(source)
+  const packet = await docxTableRowInsertionTargets(source)
+  const rows = captured.rows, table = packet.targets.filter(target => target.table === captured.tableIndex + 1)
+  if (table.length !== rows.length || rows.some((cells, index) => {
+    const matches = table.filter(target => target.row === index + 1)
+    return matches.length !== 1 || matches[0]!.columns !== cells.length || matches[0]!.cells.length !== cells.length ||
+      matches[0]!.cells.some((text, col) => text !== cells[col]!.text)
+  })) throw new Error("word_row_source_changed")
+  const target = table.find(item => item.row === rows.length)!
+  const writerRequest: DocxTableRowInsertion = {source_sha256:packet.source_sha256,target_handle:target.target_handle,position:"after",cells:[...cells],author:"doc.haus"}
+  const authored = await authorDocxTableRowInsertion(source, writerRequest)
+  return {kind:"table_row_insert", proposalId, sourceSha256:packet.source_sha256,
+    table:captured, cells,
+    author:"doc.haus", writerRequest, authoredBytes:authored.bytes, revisions:authored.revisions}
 }
