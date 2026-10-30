@@ -37,10 +37,11 @@ export function suggestPrompt(input: SuggestInput) {
   ].join("\n\n")
 }
 
-// Strict: a `questions` array of at most eight items, each a non-empty question
-// within the length cap and an optional boolean `compare`. Anything else is no
-// result. Repeats within the reply, and of `exclude`, are dropped, so an empty
-// list means nothing new.
+// Lenient, since the lawyer reviews every suggestion: keeps the first eight new
+// questions and skips any item that is malformed, empty, over the length cap or
+// a repeat of the reply or of `exclude`. No result (undefined) means the reply
+// was unreadable: not JSON, no `questions` array, or items but none usable. An
+// empty list means nothing new.
 export function readSuggestions(text: string, exclude: readonly string[] = []): StarterQuestion[] | undefined {
   let reply: unknown
   try {
@@ -48,30 +49,34 @@ export function readSuggestions(text: string, exclude: readonly string[] = []): 
   } catch {
     return undefined
   }
-  if (!reply || typeof reply !== "object" || !("questions" in reply) || !Array.isArray(reply.questions) || reply.questions.length > MAX_SUGGESTIONS) return undefined
+  if (!reply || typeof reply !== "object" || !("questions" in reply) || !Array.isArray(reply.questions)) return undefined
   const seen = new Set(exclude.map(normaliseStarterQuestion))
   const questions: StarterQuestion[] = []
+  let usable = 0
   for (const item of reply.questions as unknown[]) {
-    if (!item || typeof item !== "object" || !("text" in item) || typeof item.text !== "string") return undefined
-    if ("compare" in item && typeof item.compare !== "boolean") return undefined
+    if (questions.length === MAX_SUGGESTIONS) break
+    if (!item || typeof item !== "object" || !("text" in item) || typeof item.text !== "string") continue
+    if ("compare" in item && typeof item.compare !== "boolean") continue
     const question = item.text.replace(/\s+/g, " ").trim()
-    if (!question || question.length > QUESTION_CHARS) return undefined
+    if (!question || question.length > QUESTION_CHARS) continue
+    usable++
     const key = normaliseStarterQuestion(question)
     if (seen.has(key)) continue
     seen.add(key)
     questions.push("compare" in item && item.compare === false ? { text: question, compare: false } : { text: question })
   }
-  return questions
+  return reply.questions.length > 0 && usable === 0 ? undefined : questions
 }
 
-// One bounded native job on the configured fast model, as compareColumn runs.
-// The id is minted before admission so cleanup removes the session even when the
+// One bounded native job, run as compareColumn runs but on the primary model
+// (the fast one when no primary is set): question quality matters more than
+// tokens for this single call. The id is minted before admission so cleanup removes the session even when the
 // create response is lost; an unsettled turn is interrupted first.
 export async function suggestQuestions(client: Client, input: SuggestInput, signal: AbortSignal): Promise<StarterQuestion[] | undefined> {
   signal.throwIfAborted()
   const config = await getConfig()
   signal.throwIfAborted()
-  const model = modelSpec({ model: config.small_model ?? config.model })
+  const model = modelSpec({ model: config.model ?? config.small_model })
   if (!model) throw new Error("Choose a model in Settings before suggesting questions.")
   const sessionID = `ses_${crypto.randomUUID().replaceAll("-", "")}`
   let settled = false

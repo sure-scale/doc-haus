@@ -43,15 +43,24 @@ test("keeps each question's compare flag and drops repeats of the reply and of c
   expect(readSuggestions(reply({ text: "Who are the parties?" }), ["Who are the parties?"])).toEqual([])
 })
 
-test("rejects any reply outside the contract instead of repairing it", () => {
-  const nine = Array.from({ length: MAX_SUGGESTIONS + 1 }, (_, i) => ({ text: `Question ${i}?` }))
+test("keeps the first eight usable questions and skips malformed, empty and over-long items", () => {
+  const valid = Array.from({ length: MAX_SUGGESTIONS + 2 }, (_, i) => ({ text: `Question ${i}?` }))
+  expect(readSuggestions(reply(
+    "What is the term?",
+    { text: "   " },
+    { text: "x".repeat(201) },
+    { text: "Is there a cap?", compare: "no" },
+    { question: "Who signed it?" },
+    ...valid,
+  ))).toEqual(valid.slice(0, MAX_SUGGESTIONS))
+})
+
+test("tells an unreadable reply from one with nothing new", () => {
   for (const text of [
     "Here are some questions you could ask.",
     JSON.stringify({ items: [{ text: "What is the term?" }] }),
-    reply(...nine),
-    reply({ text: "What is the term?" }, { text: "   " }),
-    reply({ text: "x".repeat(201) }),
-    reply({ text: "What is the term?", compare: "no" }),
-    reply("What is the term?"),
+    reply("What is the term?", { text: "   " }, { text: "x".repeat(201) }),
   ]) expect(readSuggestions(text)).toBeUndefined()
+  expect(readSuggestions(reply())).toEqual([])
+  expect(readSuggestions(reply({ text: "Who are the parties?" }, { text: "" }), ["Who are the parties?"])).toEqual([])
 })

@@ -73,7 +73,7 @@ try {
     const json = (body: unknown) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) })
     if (key === "POST /api/session") {
       const body = request.postDataJSON() as { id: string; agent?: string; model?: unknown; metadata?: unknown }
-      assert.deepEqual(body.model, { providerID: "fixture", id: "fast" }, "suggestions run on the fast model")
+      assert.deepEqual(body.model, { providerID: "fixture", id: "primary" }, "suggestions run on the primary model")
       assert.deepEqual(body.metadata, { dochaus_role: "review-suggest" })
       sessions.push({ id: body.id, agent: body.agent, interrupted: false, deleted: false })
       return json({ data: { id: body.id, location: { directory: "/synthetic/one" } } })
