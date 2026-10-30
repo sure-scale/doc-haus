@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { TOOL_SYNTAX_ISSUE, checkDraftingNotes } from "./checks"
 import {
-  LEAN_COVERAGE_SCHEMA, coverageCarries, coverageItems, coveragePlanHash, coveragePrompt, coverageScopeQuestion, parseCoverage, planCoverageIssues, type CoverageAct, type LeanCoverage,
+  LEAN_COVERAGE_SCHEMA, coverageActsPrompt, coverageCarries, coverageItems, coveragePlacementPrompt, coveragePlanHash, coverageScopeQuestion, mergeCoverageActs, parseCoverage,
+  parseCoverageActs, parseCoveragePlacement, planCoverageIssues, type CoverageAct, type InstructedAct, type LeanCoverage,
 } from "./package-coverage"
 import { writeLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { EXCERPT, instructionFound } from "./quotes"
@@ -9,8 +10,9 @@ import { disclosableItems } from "./stages"
 import { writeLeanText, writeQuestions } from "./state"
 import { SOURCE, cleanupMatters, matter } from "./test-support"
 
-// Package coverage: the coverage job's reply is verified against the matter,
-// and the plan is held to the verified acts. Synthetic parties and acts only.
+// Package coverage: the plan-blind job's acts and the placement job's reply are
+// verified against the matter, and the plan is held to the verified acts.
+// Synthetic parties and acts only.
 
 afterEach(cleanupMatters)
 
@@ -506,8 +508,7 @@ describe("an act whose document the instructions leave out", () => {
     const directory = excluding()
     const conflict = (all: string, withIt: string, without: string) =>
       `${all} describe an act the same way ("approve the revised schedule") for the same parties: with "excluded_by" in ${withIt}, without it in ${without}. ` +
-      "If these are different acts, describe each so that the descriptions differ. If they are the same act, keep one entry for it: " +
-      "with \"excluded_by\" and \"document\": null only when the lawyer's own words leave its document out of this package, otherwise without \"excluded_by\"."
+      "Place them alike: each with \"excluded_by\" and \"document\": null only when the lawyer's own words leave this act's document out of this package, otherwise each without \"excluded_by\"."
     expect(parseCoverage(reply({ document: null, excluded_by: EXCLUDE }, {}), directory, documents)).toEqual({ issues: [conflict("acts[0] and acts[1]", "acts[0]", "acts[1]")] })
     // Uncovered, differing only in spacing, case and party naming.
     expect(parseCoverage(reply({ document: null }, { act: " Approve  the revised SCHEDULE ", parties: ["Orchard committee"], document: null, excluded_by: EXCLUDE }), directory, documents))
@@ -517,7 +518,7 @@ describe("an act whose document the instructions leave out", () => {
     // Other parties make another act.
     expect(parseCoverage(reply({ document: null, excluded_by: EXCLUDE }, { parties: ["Kestrel Works"] }), directory, documents))
       .toEqual({ issues: [], value: [excluded, act({ parties: ["Kestrel Works"] })] })
-    // Two different acts described the same way are asked to be told apart, not merged.
+    // Two different acts described the same way are retried, not merged.
     writeLeanText(directory, "request.md", `${REQUEST} ${EXCLUDE}. The Orchard Committee also approves the budget.`)
     expect(parseCoverage(reply({}, { quote: "The Orchard Committee also approves the budget", document: null, excluded_by: EXCLUDE }), directory, documents))
       .toEqual({ issues: [conflict("acts[0] and acts[1]", "acts[1]", "acts[0]")] })
@@ -684,54 +685,197 @@ describe("refusal hint: fix wave 2", () => {
   })
 })
 
-describe("coverage prompt", () => {
+describe("the plan-blind listing job's reply", () => {
+  const ACTS_SHAPE = 'Reply with the JSON object only: {"acts":[{"act":"...","source":"...","quote":"...","parties":["..."]}]}.'
+  const listedRow = (fields: Partial<CoverageAct> = {}): InstructedAct => {
+    const { document: _document, excluded_by: _excluded, ...own } = act(fields)
+    return own
+  }
+  const listing = (...acts: Partial<CoverageAct>[]) => JSON.stringify({ acts: acts.map(fields => listedRow(fields)) })
+
+  test("verified acts are returned with no document, from a bare or fenced reply", () => {
+    const directory = prepared()
+    const release = { act: "release the deposit", source: SOURCE, quote: RELEASE, parties: ["Kestrel Works"] }
+    expect(parseCoverageActs("```json\n" + listing({}, release, { parties: [] }) + "\n```", directory))
+      .toEqual({ issues: [], value: [listedRow(), listedRow(release), listedRow({ parties: [] })] })
+    expect(parseCoverageActs('{"acts":[]}', directory)).toEqual({ issues: [], value: [] })
+    // A document or excluded_by the job gives anyway is not read: the plan places the act.
+    expect(parseCoverageActs(reply({ document: "d3" as DocID, excluded_by: "Not a sentence" }), directory)).toEqual({ issues: [], value: [listedRow()] })
+  })
+
+  test("a printed tool call, a reply that is not the acts object and a malformed act are retried with the listing shape", () => {
+    const directory = prepared()
+    expect(parseCoverageActs('<tool_call>{"name":"read-document","arguments":{"document":"x"}}</tool_call>', directory)).toEqual({ issues: [TOOL_SYNTAX_ISSUE] })
+    for (const text of ["The acts are listed below.", '{"acts":"x"}', '{"placements":[]}', "[]"]) expect(parseCoverageActs(text, directory)).toEqual({ issues: [ACTS_SHAPE] })
+    const rows: unknown[] = ["x", { ...listedRow(), source: "" }, { ...listedRow(), parties: "Kestrel Works" }, { ...listedRow(), act: " " }]
+    expect(parseCoverageActs(JSON.stringify({ acts: rows }), directory)).toEqual({
+      issues: rows.map((_, index) => `acts[${index}] needs nonempty "act", "source" and "quote" strings and "parties" as a list of names ([] when the record does not settle them). ${ACTS_SHAPE}`),
+    })
+  })
+
+  test("an unknown source, a quote not in its source and an unnamed party are retried, each naming the act and never a document", () => {
+    const directory = prepared()
+    const parsed = parseCoverageActs(listing({ source: "minutes.docx" }, { source: SOURCE, quote: "the Orchard Committee shall approve every schedule" }, { parties: ["Lantern Group"] }), directory)
+    expect(parsed).toEqual({ issues: [
+      `acts[0] ("approve the revised schedule") gives the source "minutes.docx", which is not a matter document. Use one of "request", "${SOURCE}".`,
+      expect.stringContaining(`quotes "the Orchard Committee shall approve every schedule" as from "${SOURCE}", but those words are not in that document.`),
+      unnamedParty("Lantern Group").replace("acts[0]", "acts[2]"),
+    ] })
+    expect(parsed.issues.filter(issue => /document"|excluded_by|planned/.test(issue))).toEqual([])
+  })
+
+  test("an act listed again, differing only in spacing, case or party naming, is kept once", () => {
+    const directory = prepared()
+    expect(parseCoverageActs(listing({}, { act: " Approve  the revised SCHEDULE ", parties: ["Orchard committee"] }), directory)).toEqual({ issues: [], value: [listedRow()] })
+    // Other parties, or another quote, make another act.
+    expect(parseCoverageActs(listing({}, { parties: [] }, { quote: "Orchard Committee approves the revised schedule" }), directory))
+      .toEqual({ issues: [], value: [listedRow(), listedRow({ parties: [] }), listedRow({ quote: "Orchard Committee approves the revised schedule" })] })
+  })
+})
+
+describe("the two listings merged", () => {
+  const listedRow = (fields: Partial<InstructedAct> = {}): InstructedAct => ({ act: "approve the revised schedule", source: "request", quote: APPROVE, parties: ["the Orchard Committee"], ...fields })
+  const APPROVED = listedRow()
+  const RELEASED = listedRow({ act: "release the deposit", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works"] })
+
+  test("an act either run lists is kept once, the first run's acts first and in their order", () => {
+    // The same words, or words within or around them, from the same source are one act, however each run describes it.
+    const reworded = listedRow({ act: "release of the deposit", quote: "then releases the deposit", parties: ["Kestrel Works"] })
+    const around = listedRow({ act: "committee approval", quote: "Prepare the papers so that the Orchard Committee approves the revised schedule." })
+    // The same act directed from another source is kept: each quote is its own instruction.
+    const fromSource = listedRow({ act: "release the deposit", source: SOURCE, quote: RELEASE, parties: ["Kestrel Works"] })
+    expect(mergeCoverageActs([RELEASED, APPROVED], [reworded, fromSource, around])).toEqual([RELEASED, APPROVED, fromSource])
+    // An act only the second run lists is kept, and either run listing nothing keeps the other's acts.
+    expect(mergeCoverageActs([APPROVED], [RELEASED])).toEqual([APPROVED, RELEASED])
+    expect([mergeCoverageActs([], [APPROVED]), mergeCoverageActs([APPROVED], [])]).toEqual([[APPROVED], [APPROVED]])
+  })
+
+  test("one run copying an email's bold marks and the other leaving them out list one act", () => {
+    const marked = listedRow({ act: "open the account", source: "instructions.eml", quote: "Open an account at **Wren Bank** in Exeter.", parties: ["the officers"] })
+    const plain = listedRow({ act: "open a bank account", source: "instructions.eml", quote: "Open an account at Wren Bank in Exeter.", parties: ["the officers"] })
+    expect(mergeCoverageActs([marked], [plain])).toEqual([marked])
+    expect(mergeCoverageActs([plain], [marked])).toEqual([plain])
+  })
+})
+
+describe("the placement job's reply", () => {
+  const PLACEMENT_SHAPE = 'Reply with the JSON object only: {"placements":[{"act":0,"document":"planned id or null"}]}.'
+  const documents = [planned("d1", "Resolution", ["the Orchard Committee"]), planned("d2", "Release letter", ["Kestrel Works"])]
+  const APPROVED: InstructedAct = { act: "approve the revised schedule", source: "request", quote: APPROVE, parties: ["the Orchard Committee"] }
+  const RELEASED: InstructedAct = { act: "release the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works"] }
+  const acts = [APPROVED, RELEASED]
+  const placing = (...rows: unknown[]) => JSON.stringify({ placements: rows })
+  const NO_PLACEMENT = 'Give every act exactly once, by its index: "document" the id of the planned document that carries it, or null when none does.'
+
+  test("each act placed by its index is returned in index order with its document, from a bare or fenced reply", () => {
+    const directory = prepared()
+    expect(parseCoveragePlacement("```json\n" + placing({ act: 1, document: "d2" }, { act: 0, document: null }) + "\n```", directory, documents, acts))
+      .toEqual({ issues: [], value: [{ ...APPROVED, document: null }, { ...RELEASED, document: "d2" }] })
+    expect(parseCoveragePlacement(placing({ act: 0, document: "d1" }), directory, documents, [APPROVED])).toEqual({ issues: [], value: [{ ...APPROVED, document: "d1" }] })
+  })
+
+  test("a printed tool call, a reply that is not the placements object and a malformed placement are retried with the placement shape", () => {
+    const directory = prepared()
+    expect(parseCoveragePlacement('<tool_call>{"name":"read-document","arguments":{"document":"x"}}</tool_call>', directory, documents, acts)).toEqual({ issues: [TOOL_SYNTAX_ISSUE] })
+    for (const text of ["The acts are placed below.", '{"acts":[]}', '{"placements":"x"}', "[]"]) expect(parseCoveragePlacement(text, directory, documents, acts)).toEqual({ issues: [PLACEMENT_SHAPE] })
+    expect(parseCoveragePlacement(placing("x", { act: 0 }, { act: 1, document: 3 }), directory, documents, acts)).toEqual({ issues: [
+      ...[0, 1, 2].map(at => `placements[${at}] needs "act" as the index of a listed act and "document" as a planned id or null. ${PLACEMENT_SHAPE}`),
+      `No placement for acts 0, 1. ${NO_PLACEMENT}`,
+    ] })
+  })
+
+  test("an index that names no listed act, an act placed twice and an act left unplaced are retried, naming them", () => {
+    const directory = prepared()
+    const parsed = (...rows: unknown[]) => parseCoveragePlacement(placing(...rows), directory, documents, acts)
+    const notListed = (at: number, given: string) => `placements[${at}] gives "act": ${given}, which is not the index of a listed act. Use the indexes 0 to 1.`
+    expect(parsed({ act: 0, document: "d1" }, { act: 2, document: "d2" }, { act: "1", document: "d2" }, { act: 0.5, document: null }, { document: "d2" }, { act: 1, document: "d2" }))
+      .toEqual({ issues: [notListed(1, "2"), notListed(2, '"1"'), notListed(3, "0.5"), notListed(4, "nothing")] })
+    expect(parseCoveragePlacement(placing({ act: -1, document: "d1" }, { act: 0, document: "d1" }), directory, documents, [APPROVED]))
+      .toEqual({ issues: ['placements[0] gives "act": -1, which is not the index of a listed act. Use the index 0.'] })
+    expect(parsed({ act: 1, document: "d2" }, { act: 0, document: "d1" }, { act: 1, document: null }, { act: 0, document: null }))
+      .toEqual({ issues: ["More than one placement for acts 0, 1. Give every act exactly once, by its index."] })
+    expect(parsed({ act: 0, document: "d1" }, { act: 0, document: "d1" })).toEqual({ issues: ["More than one placement for act 0. Give every act exactly once, by its index.", `No placement for act 1. ${NO_PLACEMENT}`] })
+    expect(parsed()).toEqual({ issues: [`No placement for acts 0, 1. ${NO_PLACEMENT}`] })
+  })
+
+  test("the placed acts are held to the coverage rules: an unplanned document is retried, and excluded_by is checked as the lawyer's words", () => {
+    const directory = prepared()
+    const EXCLUDE = "Prepare only documents Kestrel Works executes"
+    expect(parseCoveragePlacement(placing({ act: 0, document: "d3" }, { act: 1, document: "d2" }), directory, documents, acts)).toEqual({
+      issues: ['acts[0] ("approve the revised schedule") names the document "d3", which is not planned. Use one of the planned ids d1, d2, or null when no planned document carries it.'],
+    })
+    // Words that are not the lawyer's are retried, and dropped on the last attempt so the act is held to the plan.
+    const refused = placing({ act: 0, document: null, excluded_by: EXCLUDE }, { act: 1, document: "d2" })
+    expect(parseCoveragePlacement(refused, directory, documents, acts).issues).toEqual([expect.stringContaining(`acts[0] ("approve the revised schedule") gives "excluded_by": "${EXCLUDE}", but those words are not`)])
+    expect(parseCoveragePlacement(refused, directory, documents, acts, { final: true })).toEqual({ issues: [], value: [{ ...APPROVED, document: null }, { ...RELEASED, document: "d2" }] })
+    // The lawyer's own words are kept with the act.
+    writeLeanText(directory, "request.md", `${REQUEST} ${EXCLUDE}.`)
+    expect(parseCoveragePlacement(refused, directory, documents, acts)).toEqual({ issues: [], value: [{ ...APPROVED, document: null, excluded_by: EXCLUDE }, { ...RELEASED, document: "d2" }] })
+  })
+})
+
+describe("coverage prompts", () => {
+  const ACTS_SHAPE = 'Reply with the JSON object only: {"acts":[{"act":"...","source":"...","quote":"...","parties":["..."]}]}.'
+  const PLACEMENT_SHAPE = 'Reply with the JSON object only: {"placements":[{"act":0,"document":"planned id or null"}]}.'
   const documents = [planned("d1", "Resolution", ["the Orchard Committee"]), planned("d2", "Release letter", ["Kestrel Works"])]
   const TERMS = [{ heading: "Terms", scope: "" }]
+  const APPROVED: InstructedAct = { act: "approve the revised schedule", source: "request", quote: APPROVE, parties: ["the Orchard Committee"] }
+  const RELEASED: InstructedAct = { act: "release the deposit", source: SOURCE, quote: RELEASE, parties: [] }
   const plannedView = (prompt: string): unknown => JSON.parse(/<planned_documents>\n[^\n]*\n([\s\S]*)\n<\/planned_documents>/.exec(prompt)![1]!)
+  const placement = (directory: string, plan = documents) => coveragePlacementPrompt(directory, plan, [APPROVED, RELEASED])
 
-  test("the prompt carries the request and the source names", () => {
-    const prompt = coveragePrompt(prepared(), documents)
+  test("the listing prompt carries the request and the source names, and nothing of the plan", () => {
+    const prompt = coverageActsPrompt(prepared())
     expect(prompt).toContain(`<request>\n${REQUEST}\n</request>`)
     expect(prompt).toContain("<sources>\nMatter documents (use these exact names with search-document and read-document, and as source names):\n" +
       `- ${SOURCE}\nTo quote the request, the lawyer's updates or answers, use the source name "request".\n</sources>`)
-    expect(prompt).toContain(`- ${SHAPE} Reply {"acts":[]} when the instructions direct no legal act.`)
-    expect(prompt).not.toContain("<user_updates>")
-    expect(prompt).not.toContain("<answers>")
+    expect(prompt).toContain(`- ${ACTS_SHAPE} Reply {"acts":[]} when the instructions direct no legal act.`)
+    for (const absent of ["<planned_documents>", "<acts>", "Resolution", "excluded_by", '"document"', "<user_updates>", "<answers>"]) expect(prompt).not.toContain(absent)
   })
 
-  test("acts come from the lawyer's instructions, and an authorisation is the act of the party who gives it", () => {
-    const prompt = coveragePrompt(prepared(), documents)
-    expect(prompt).toContain("- List every legal act that the request, the lawyer's updates or answers direct to be taken or documented in this package. " +
+  test("acts come from the lawyer's instructions, in whichever document, and an authorisation is the act of the party who gives it", () => {
+    const prompt = coverageActsPrompt(prepared())
+    expect(prompt).toContain("- List every legal act that the request, the lawyer's updates or answers direct to be taken or documented: in the requested document or in any other document, now or later. " +
       "A matter document directs an act only where the request adopts it as instructions; an obligation a matter document merely describes is not an instructed act. ")
-    expect(prompt).toContain("\"parties\": every party who must take the act for it to be effective (for an authorisation, those who give it), each named as the sources name it, or [] when the record does not settle who must take it;")
+    expect(prompt).toContain("\"parties\": every party who must take the act for it to be effective (for an authorisation, those who give it), each named as the sources name it, or [] when the record does not settle who must take it.")
     expect(prompt).not.toContain("authorise a later act")
     expect(prompt).not.toContain('"party"')
   })
 
-  test("an act whose document the instructions leave out is listed with the lawyer's words that leave it out", () => {
-    expect(coveragePrompt(prepared(), documents)).toContain("\n- When the request, the lawyer's updates or answers leave out of this package the document that the parties who must take an act would execute, " +
-      'still list the act, with "document": null and "excluded_by": the whole sentence that leaves that document out, copied verbatim from the request, updates or answers, ' +
-      'never from a planned document or a matter document. Leave "excluded_by" out of every other act.\n')
+  test("the placement prompt shows the verified acts by index and asks for each one's planned document", () => {
+    const prompt = placement(prepared())
+    expect(prompt).toContain(`<request>\n${REQUEST}\n</request>`)
+    expect(prompt).toContain(`<acts>\n${JSON.stringify([{ index: 0, ...APPROVED }, { index: 1, ...RELEASED }], null, 2)}\n</acts>`)
+    expect(prompt).toContain("- For each act, by its index, give \"document\": the id of the planned document that carries it, or null when none does. Give every act exactly once.\n")
+    expect(prompt).toContain(`- ${PLACEMENT_SHAPE}\n`)
   })
 
-  test("the lawyer's later instructions and answered questions appear under their own tags", () => {
+  test("an act whose document the instructions leave out is placed with the lawyer's words that leave it out", () => {
+    expect(placement(prepared())).toContain("\n- When the request, the lawyer's updates or answers say that the document the parties who must take an act would execute is not to be prepared in this package, " +
+      'give "document": null and "excluded_by": the whole sentence that says so, copied verbatim from the request, updates or answers, ' +
+      "never from a planned document or a matter document. Words that move an act to another document or defer it to a later one, without saying that document is outside this package, " +
+      'do not leave it out: give the planned document that carries the act, or null when none does, without "excluded_by". Leave "excluded_by" out of every other act.\n')
+  })
+
+  test("the lawyer's later instructions and answered questions appear under their own tags in both prompts", () => {
     const directory = prepared()
     writeLeanText(directory, "updated-notes.md", "Kestrel Works also returns the keys.\n")
     writeQuestions(directory, [
       { id: "q-1", stage: "intake", question: "Who countersigns?", context: "Needed to plan.", status: "answered", answer: "Wren Atelier countersigns." },
       { id: "q-2", stage: "intake", question: "Which schedule applies?", context: "Needed to plan.", status: "open" },
     ])
-    const prompt = coveragePrompt(directory, documents)
-    expect(prompt).toContain("<user_updates>\nLater instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n" +
-      "Kestrel Works also returns the keys.\n</user_updates>")
-    expect(prompt).toContain("<answers>\nThe lawyer's answers; they remain controlling:\n- [q-1] Q: Who countersigns?\n  A: Wren Atelier countersigns.\n</answers>")
-    expect(prompt).not.toContain("Which schedule applies?")
+    for (const prompt of [coverageActsPrompt(directory), placement(directory)]) {
+      expect(prompt).toContain("<user_updates>\nLater instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n" +
+        "Kestrel Works also returns the keys.\n</user_updates>")
+      expect(prompt).toContain("<answers>\nThe lawyer's answers; they remain controlling:\n- [q-1] Q: Who countersigns?\n  A: Wren Atelier countersigns.\n</answers>")
+      expect(prompt).not.toContain("Which schedule applies?")
+    }
   })
 
   test("the plan is shown by id with its executing parties, and with left-out parts only when it has some", () => {
     const withLeftOut: PlannedDocument = { ...planned("d3", "Advice note", []), left_out: [{ part: "Schedule", reason: "Not instructed." }] }
     const emptyLeftOut: PlannedDocument = { ...planned("d4", "Schedule"), left_out: [] }
-    expect(plannedView(coveragePrompt(prepared(), [...documents, withLeftOut, emptyLeftOut]))).toStrictEqual([
+    expect(plannedView(placement(prepared(), [...documents, withLeftOut, emptyLeftOut]))).toStrictEqual([
       { id: "d1", title: "Resolution", purpose: "", executed_by: ["the Orchard Committee"], parts: TERMS },
       { id: "d2", title: "Release letter", purpose: "", executed_by: ["Kestrel Works"], parts: TERMS },
       { id: "d3", title: "Advice note", purpose: "", executed_by: [], parts: TERMS, left_out: [{ part: "Schedule", reason: "Not instructed." }] },

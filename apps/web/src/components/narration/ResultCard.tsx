@@ -1,14 +1,15 @@
 import { documentContentUrl } from "../../api/ingest/documents"
 import type { LeanDraftingStatus } from "../../api/ingest/lean"
 import DraftedList from "../drafting/DraftedList"
-import { checklistFindingsCount, draftedGroups, findingsTitle, OUTPUT_ROLE, type DraftedOutput } from "../drafting/model"
+import { addedDraftNote, checklistFindingsCount, draftedGroups, findingsTitle, OUTPUT_ROLE, type DraftedOutput } from "../drafting/model"
 import { resultChecks } from "./outcome"
 
 /** A completed run in brief: what the checks established, what remains for the
  * lawyer, and the files it produced, each one click from the viewer. Every file
  * to review is featured: a lone draft as a page, several drafts as rows, and
  * the drafting notes as a row beneath them. Redlines stay with all the files.
- * A draft delivered as one combined file with its memo downloads as that file. */
+ * A draft delivered as one combined file with its memo downloads as that file.
+ * A draft the plan added beside the files the request named says why it is there. */
 export default function ResultCard({
   status,
   matterId,
@@ -29,6 +30,7 @@ export default function ResultCard({
   const rows = [...(lone ? [] : drafts), ...notes]
   const combinedOf = (output: DraftedOutput) => groups.find((group) => group.main === output)?.combined
   const loneCombined = lone && combinedOf(lone)
+  const loneNote = lone && addedDraftNote(status, lone.name)
   return (
     <section id="run-result" className="narration-result" aria-labelledby="run-result-title">
       <h3 id="run-result-title" className={`narration-result-title${findings === undefined ? "" : " is-findings"}`}>
@@ -71,6 +73,7 @@ export default function ResultCard({
           <div className="result-document-info">
             <p className="result-document-kind">Created by Doc.Haus</p>
             <h4>{lone.name}</h4>
+            {loneNote && <p className="result-added-note">{loneNote}</p>}
             <div className="result-document-actions">
               <button type="button" className="primary result-review" onClick={() => onViewDocument(lone.name)}>
                 Review draft
@@ -90,7 +93,7 @@ export default function ResultCard({
         <ul className="result-stack" aria-label={lone ? "Also for review" : "Files for review"}>
           {rows.map((output) => (
             <li key={output.name}>
-              <ReviewRow output={output} matterId={matterId} onView={onViewDocument} combined={combinedOf(output)} />
+              <ReviewRow output={output} matterId={matterId} onView={onViewDocument} combined={combinedOf(output)} note={addedDraftNote(status, output.name)} />
             </li>
           ))}
         </ul>
@@ -112,12 +115,15 @@ function ReviewRow({
   matterId,
   onView,
   combined,
+  note,
 }: {
   output: DraftedOutput
   matterId: string
   onView: (name: string) => void
   /** The one file this draft downloads as with the requested memo. */
   combined?: string
+  /** Why this draft is there beside the files the request named. */
+  note?: string
 }) {
   const role = OUTPUT_ROLE[output.role]
   return (
@@ -131,6 +137,7 @@ function ReviewRow({
           {role} · Created by Doc.Haus
         </p>
         <h4>{output.name}</h4>
+        {note && <p className="result-added-note">{note}</p>}
       </div>
       <div className="result-document-actions">
         <button type="button" className="result-review" onClick={() => onView(output.name)} aria-label={`Review ${output.name}`}>

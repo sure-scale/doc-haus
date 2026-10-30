@@ -114,6 +114,7 @@ test("restoring a plan written by hand removes a coverage record its snapshot do
     parts: [{ heading: "Delivery", scope: "Delivery terms" }, { heading: "Payment", scope: "Payment terms" }] }])
   const first = scriptedLeanModel()
   expect((await runLean(directory, { sessions: first.port })).status).toBe("completed")
+  expect(first.agents()).not.toContain(LEAN_STAGE_AGENTS.coverageActs)
   expect(first.agents()).not.toContain(LEAN_STAGE_AGENTS.coverage)
   expect(existsSync(leanFile(directory, "coverage.json"))).toBe(false)
   writeFileSync(leanFile(directory, "coverage.json"), `${JSON.stringify({ schema: "dochaus.lean.coverage/1", plan: "0".repeat(64), status: "covered", acts: [], issues: [] })}\n`)

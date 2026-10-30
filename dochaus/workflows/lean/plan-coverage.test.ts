@@ -7,12 +7,13 @@ import { readLeanPlan, writeLeanPlan } from "./plan"
 import { LEAN_MAX_RETRIES, disclosableItems, outlineBasis } from "./stages"
 import { PACKAGE_SCOPE_QUESTION } from "./package-scope"
 import { leanFile, readLeanState, readQuestions, updateLeanStage, writeLeanText, writeQuestions, type LeanStageState } from "./state"
-import { AGENT, cleanupMatters, matter, scriptedModel } from "./test-support"
+import { AGENT, cleanupMatters, coverageJobs, matter, scriptedModel } from "./test-support"
 
-// The outline step's coverage check: a coverage job in its own session reads the
-// outlined plan, its issues go back to the outline session for a bounded number
-// of revisions, and coverage.json records the result before plan.json is saved.
-// Synthetic parties and acts only.
+// The outline step's coverage check: two listing runs in sessions of their own
+// list the instructed acts once per step, blind to the plan; a placement job in
+// a session of its own places them in each outlined plan, its issues go back to
+// the outline session for a bounded number of revisions, and coverage.json
+// records the result before plan.json is saved. Synthetic parties and acts only.
 
 afterEach(cleanupMatters)
 
@@ -46,12 +47,13 @@ const run = (directory: string, state: ReturnType<typeof prepared>["state"], mod
   runDraftStage(directory, state, { sessions: model.port }, () => {}, "d1", () => {})
 
 const coverageSessions = (model: ReturnType<typeof scriptedModel>) => model.sessions.filter(session => session.agent === AGENT.coverage)
+const listingSessions = (model: ReturnType<typeof scriptedModel>) => model.sessions.filter(session => session.agent === AGENT.coverageActs)
 const revisions = (model: ReturnType<typeof scriptedModel>) => model.prompts.filter(prompt => prompt.agent === AGENT.draft && prompt.text.startsWith(REVISE))
 
 describe("plan coverage at the outline step", () => {
   test("a clean coverage reply is recorded as covered and the plan is saved", async () => {
     const { directory, state } = prepared()
-    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => ACTS })
+    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), ...coverageJobs(() => ACTS) })
     expect((await run(directory, state, model)).status).toBe("done")
 
     const plan = readLeanPlan(directory)!
@@ -62,7 +64,9 @@ describe("plan coverage at the outline step", () => {
       schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(plan.documents, plan.acting_for), status: "covered", acts: [act], issues: [],
     })
     expect(planCoverageCurrent(directory)).toBe(true)
-    // The coverage job runs in a fresh child session of the run's owner.
+    // Each coverage job runs in a fresh child session of the run's owner: two
+    // listing runs, then the placement.
+    expect(listingSessions(model)).toEqual([1, 2].map(run => expect.objectContaining({ parentID: "ses_owner", title: expect.stringContaining(`draft: coverage acts ${run}`) })))
     expect(coverageSessions(model)).toEqual([expect.objectContaining({ parentID: "ses_owner", title: expect.stringContaining("draft: coverage") })])
     expect(revisions(model)).toEqual([])
   }, 60_000)
@@ -72,7 +76,7 @@ describe("plan coverage at the outline step", () => {
     const EXCLUDE = "Prepare only documents Kestrel Works executes"
     writeLeanText(directory, "request.md", `${REQUEST} ${EXCLUDE}.`)
     const excluded: CoverageAct = { ...act, document: null, excluded_by: EXCLUDE }
-    const model = scriptedModel({ [AGENT.draft]: outliner(ONE), [AGENT.coverage]: () => JSON.stringify({ acts: [excluded] }) })
+    const model = scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => JSON.stringify({ acts: [excluded] })) })
     expect((await run(directory, state, model)).status).toBe("done")
 
     const plan = readLeanPlan(directory)!
@@ -94,7 +98,7 @@ describe("plan coverage at the outline step", () => {
     const EXCLUDE = "Prepare only documents Kestrel Works executes"
     writeLeanText(directory, "request.md", `${REQUEST} ${EXCLUDE}.`)
     const excluded: CoverageAct = { ...act, document: null, excluded_by: EXCLUDE }
-    const model = scriptedModel({ [AGENT.draft]: outliner(TWO, ONE), [AGENT.coverage]: () => JSON.stringify({ acts: [excluded] }) })
+    const model = scriptedModel({ [AGENT.draft]: outliner(TWO, ONE), ...coverageJobs(() => JSON.stringify({ acts: [excluded] })) })
     expect((await run(directory, state, model)).status).toBe("done")
 
     expect(revisions(model)).toEqual([expect.objectContaining({ text: expect.stringContaining('but d1 "Committee resolution", executed by "the Orchard Committee", is planned and carries no instructed act. ' +
@@ -109,7 +113,7 @@ describe("plan coverage at the outline step", () => {
     const EXCLUDE = "Prepare only documents Kestrel Works executes"
     writeLeanText(directory, "request.md", `${REQUEST} ${EXCLUDE}.`)
     const excluded: CoverageAct = { ...act, document: null, excluded_by: EXCLUDE }
-    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => JSON.stringify({ acts: [excluded] }) })
+    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), ...coverageJobs(() => JSON.stringify({ acts: [excluded] })) })
     expect((await run(directory, state, model)).status).toBe("done")
 
     expect(revisions(model)).toHaveLength(PLAN_COVERAGE_REVISIONS)
@@ -129,7 +133,7 @@ describe("plan coverage at the outline step", () => {
     const excluded: CoverageAct = { ...act, document: null, excluded_by: EXCLUDE }
     const released: CoverageAct = { act: "release the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works"], document: "d1" }
     const SHARED = "Acting for: not stated\n# Release letter\nForm: letter\nExecuted by: Kestrel Works; the Orchard Committee\n## Terms\nThe release."
-    const model = scriptedModel({ [AGENT.draft]: outliner(SHARED), [AGENT.coverage]: () => JSON.stringify({ acts: [released, excluded] }) })
+    const model = scriptedModel({ [AGENT.draft]: outliner(SHARED), ...coverageJobs(() => JSON.stringify({ acts: [released, excluded] })) })
     expect((await run(directory, state, model)).status).toBe("done")
 
     expect(revisions(model)).toEqual([])
@@ -139,12 +143,14 @@ describe("plan coverage at the outline step", () => {
 
   test("a coverage issue goes back to the outline session, whose revised plan adds the companion document", async () => {
     const { directory, state } = prepared()
-    const model = scriptedModel({ [AGENT.draft]: outliner(ONE, TWO), [AGENT.coverage]: () => ACTS })
+    const model = scriptedModel({ [AGENT.draft]: outliner(ONE, TWO), ...coverageJobs(() => ACTS) })
     expect((await run(directory, state, model)).status).toBe("done")
 
     const outline = model.prompts.find(prompt => prompt.agent === AGENT.draft)!
     expect(revisions(model)).toEqual([expect.objectContaining({ sessionID: outline.sessionID, text: expect.stringContaining(MISPLACED) })])
-    // Each coverage job has its own session, apart from the outline's.
+    // Each coverage job has its own session, apart from the outline's: the acts
+    // are listed once for the step, and each plan is placed afresh.
+    expect(listingSessions(model)).toHaveLength(2)
     expect(coverageSessions(model)).toHaveLength(2)
     const covered = model.prompts.filter(prompt => prompt.agent === AGENT.coverage).map(prompt => prompt.sessionID)
     expect(new Set([outline.sessionID, ...covered]).size).toBe(3)
@@ -155,11 +161,13 @@ describe("plan coverage at the outline step", () => {
 
   test("a coverage reply that never passes its check is recorded as unchecked and the plan is still saved", async () => {
     const { directory, state } = prepared()
-    const model = scriptedModel({ [AGENT.draft]: outliner(ONE), [AGENT.coverage]: () => "The plan looks complete." })
+    const model = scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => "The plan looks complete.") })
     expect((await run(directory, state, model)).status).toBe("done")
 
-    expect(model.count(AGENT.coverage)).toBe(LEAN_MAX_RETRIES + 1)
-    expect(coverageSessions(model)).toHaveLength(1)
+    // Both listing runs are retried to their limit; with no act verified, none is placed.
+    expect(model.count(AGENT.coverageActs)).toBe(2 * (LEAN_MAX_RETRIES + 1))
+    expect(listingSessions(model)).toHaveLength(2)
+    expect(model.count(AGENT.coverage)).toBe(0)
     const coverage = readLeanCoverage(directory)!
     expect(coverage).toMatchObject({ status: "unchecked", acts: [] })
     expect(coverage.issues.length).toBeGreaterThan(0)
@@ -171,10 +179,10 @@ describe("plan coverage at the outline step", () => {
     const { directory, state } = prepared()
     const EXCLUDE = "Prepare only documents Kestrel Works executes"
     writeLeanText(directory, "request.md", `${REQUEST} ${EXCLUDE}.`)
-    const model = scriptedModel({ [AGENT.draft]: outliner(ONE), [AGENT.coverage]: () => JSON.stringify({ acts: [{ ...act, document: null, excluded_by: "Prepare only documents" }] }) })
+    const model = scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => JSON.stringify({ acts: [{ ...act, document: null, excluded_by: "Prepare only documents" }] })) })
     const result = await run(directory, state, model)
 
-    // Each coverage job is retried to its limit, shown the sentence that holds the words.
+    // Each placement job is retried to its limit, shown the sentence that holds the words.
     expect(model.count(AGENT.coverage)).toBe((LEAN_MAX_RETRIES + 1) * (PLAN_COVERAGE_REVISIONS + 1))
     expect(model.prompts.filter(prompt => prompt.agent === AGENT.coverage && prompt.text.startsWith(REVISE))).toHaveLength(LEAN_MAX_RETRIES * (PLAN_COVERAGE_REVISIONS + 1))
     expect(model.prompts.find(prompt => prompt.agent === AGENT.coverage && prompt.text.startsWith(REVISE))!.text).toContain(`the whole sentence containing them is "${EXCLUDE}."`)
@@ -193,7 +201,7 @@ describe("plan coverage at the outline step", () => {
   test("once a package-scope question that showed the act is answered, issues left after the allowed revisions are recorded as uncovered and the last plan is saved", async () => {
     const { directory, state } = prepared()
     writeQuestions(directory, [{ id: `${PACKAGE_SCOPE_QUESTION}earlier`, stage: "draft", question: `The document plan leaves this instructed act without a document executed by the parties who must take it: "approve the revised schedule", directed by "${APPROVE}" [source: request]; to be taken by "the Orchard Committee"; planned in d1 "Release letter", executed by "Kestrel Works".`, context: "", status: "answered", answer: "The release letter only." }])
-    const model = scriptedModel({ [AGENT.draft]: outliner(ONE), [AGENT.coverage]: () => ACTS })
+    const model = scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => ACTS) })
     expect((await run(directory, state, model)).status).toBe("done")
 
     expect(revisions(model)).toHaveLength(PLAN_COVERAGE_REVISIONS)
@@ -204,7 +212,7 @@ describe("plan coverage at the outline step", () => {
     // An answered question that showed no act settles none: the step stops on one about it.
     const other = prepared()
     writeQuestions(other.directory, [{ id: `${PACKAGE_SCOPE_QUESTION}earlier`, stage: "draft", question: "Which document carries each instructed act?", context: "", status: "answered", answer: "The release letter only." }])
-    const blocked = await run(other.directory, other.state, scriptedModel({ [AGENT.draft]: outliner(ONE), [AGENT.coverage]: () => ACTS }))
+    const blocked = await run(other.directory, other.state, scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => ACTS) }))
     expect(blocked).toMatchObject({ status: "blocked", questions: [expect.objectContaining({ stage: "draft", status: "open", question: expect.stringContaining(`"${APPROVE}"`) })] })
     expect(existsSync(leanFile(other.directory, "plan.json"))).toBe(false)
   }, 60_000)
@@ -229,7 +237,7 @@ describe("plan coverage at the outline step", () => {
     const { directory, state } = prepared()
     writeLeanPlan(directory, [{ title: "Committee resolution", purpose: "", parts: [{ heading: "Terms", scope: "" }], executed_by: ["the Orchard Committee"] }], outlineBasis(directory))
     const saved = readFileSync(leanFile(directory, "plan.json"), "utf8")
-    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => ACTS })
+    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), ...coverageJobs(() => ACTS) })
     expect((await run(directory, state, model)).status).toBe("done")
 
     expect(model.prompts.some(prompt => prompt.text.includes("Reply now with the outline only"))).toBe(false)
@@ -238,26 +246,27 @@ describe("plan coverage at the outline step", () => {
     expect(planCoverageCurrent(directory)).toBe(true)
   }, 60_000)
 
-  test("a refresh that keeps the existing draft creates no draft session, only the coverage session", async () => {
+  test("a refresh that keeps the existing draft creates no draft session, only the coverage sessions", async () => {
     const { directory, state } = prepared()
     // The step records its accepted draft's key on its row, as the runner keeps it.
     const progress = (patch: Partial<LeanStageState>) => { updateLeanStage(directory, readLeanState(directory)!, "d1.draft", patch) }
-    expect((await runDraftStage(directory, state, { sessions: scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => ACTS }).port }, progress, "d1", () => {})).status).toBe("done")
+    expect((await runDraftStage(directory, state, { sessions: scriptedModel({ [AGENT.draft]: outliner(TWO), ...coverageJobs(() => ACTS) }).port }, progress, "d1", () => {})).status).toBe("done")
     rmSync(leanFile(directory, "coverage.json"))
-    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => ACTS })
+    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), ...coverageJobs(() => ACTS) })
     const kept = await runDraftStage(directory, readLeanState(directory)!, { sessions: model.port }, progress, "d1", () => {})
 
     expect(kept.status).toBe("done")
     expect(model.sessions.filter(session => session.agent === AGENT.draft)).toEqual([])
     expect(model.prompts.filter(prompt => prompt.agent === AGENT.draft)).toEqual([])
-    const covered = model.prompts.find(prompt => prompt.agent === AGENT.coverage)!.sessionID
-    expect(readLeanState(directory)!.stages["d1.draft"]).toMatchObject({ session_id: covered, session_ids: [covered] })
+    const covered = [AGENT.coverageActs, AGENT.coverage].flatMap(agent => [...new Set(model.prompts.filter(prompt => prompt.agent === agent).map(prompt => prompt.sessionID))])
+    expect(covered).toHaveLength(3)
+    expect(readLeanState(directory)!.stages["d1.draft"]).toMatchObject({ session_id: covered[0], session_ids: covered })
   }, 60_000)
 
   test("a refresh stopped by the package-scope question creates no draft session", async () => {
     const { directory, state } = prepared()
     writeLeanPlan(directory, [{ title: "Release letter", purpose: "", parts: [{ heading: "Terms", scope: "" }], executed_by: ["Kestrel Works"] }], outlineBasis(directory))
-    const model = scriptedModel({ [AGENT.draft]: outliner(ONE), [AGENT.coverage]: () => ACTS })
+    const model = scriptedModel({ [AGENT.draft]: outliner(ONE), ...coverageJobs(() => ACTS) })
     expect((await run(directory, state, model)).status).toBe("blocked")
     expect(model.sessions.filter(session => session.agent === AGENT.draft)).toEqual([])
     expect(coverageSessions(model)).toHaveLength(1)
@@ -265,12 +274,12 @@ describe("plan coverage at the outline step", () => {
 
   test("a pause thrown from a recheck's coverage job propagates and leaves coverage.json and plan.json as they were", async () => {
     const { directory, state } = prepared()
-    await run(directory, state, scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => ACTS }))
+    await run(directory, state, scriptedModel({ [AGENT.draft]: outliner(TWO), ...coverageJobs(() => ACTS) }))
     // A stale coverage record makes the step recheck the saved plan.
     writeLeanText(directory, "coverage.json", JSON.stringify({ ...readLeanCoverage(directory), plan: "0".repeat(64) }))
     const before = ["coverage.json", "plan.json"].map(file => readFileSync(leanFile(directory, file), "utf8"))
     const stop = new Error("pause requested")
-    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => { throw stop } })
+    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), ...coverageJobs(() => ACTS), [AGENT.coverage]: () => { throw stop } })
     await expect(run(directory, state, model)).rejects.toBe(stop)
     expect(coverageSessions(model)).toHaveLength(1)
     expect(["coverage.json", "plan.json"].map(file => readFileSync(leanFile(directory, file), "utf8"))).toEqual(before)
@@ -279,9 +288,11 @@ describe("plan coverage at the outline step", () => {
   test("a restart thrown from the coverage job after a revision propagates and writes neither file", async () => {
     const { directory, state } = prepared()
     const stop = new Error("restart requested")
+    const placing = coverageJobs(() => ACTS)[AGENT.coverage]!
     const model = scriptedModel({
       [AGENT.draft]: outliner(ONE, TWO),
-      [AGENT.coverage]: (_, index) => { if (index === 1) throw stop; return ACTS },
+      ...coverageJobs(() => ACTS),
+      [AGENT.coverage]: (prompt, index) => { if (index === 1) throw stop; return placing(prompt, index) },
     })
     await expect(run(directory, state, model)).rejects.toBe(stop)
     expect(revisions(model)).toHaveLength(1)
@@ -289,10 +300,10 @@ describe("plan coverage at the outline step", () => {
     expect(existsSync(leanFile(directory, "plan.json"))).toBe(false)
   }, 60_000)
 
-  test("a pause before any plan exists writes neither file", async () => {
+  test("a pause thrown from the coverage listing before any plan exists writes neither file", async () => {
     const { directory, state } = prepared()
     const stop = new Error("pause requested")
-    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverage]: () => { throw stop } })
+    const model = scriptedModel({ [AGENT.draft]: outliner(TWO), [AGENT.coverageActs]: () => { throw stop } })
     await expect(run(directory, state, model)).rejects.toBe(stop)
     expect(existsSync(leanFile(directory, "coverage.json"))).toBe(false)
     expect(existsSync(leanFile(directory, "plan.json"))).toBe(false)
@@ -305,7 +316,7 @@ describe("plan coverage at the outline step", () => {
 describe("plan coverage observability", () => {
   test("an uncovered-then-revised outline logs the driving issues on its revision event and the outcome once", async () => {
     const { directory, state } = prepared()
-    const model = scriptedModel({ [AGENT.draft]: outliner(ONE, TWO), [AGENT.coverage]: () => ACTS })
+    const model = scriptedModel({ [AGENT.draft]: outliner(ONE, TWO), ...coverageJobs(() => ACTS) })
     expect((await run(directory, state, model)).status).toBe("done")
 
     const events = readLeanEvents(directory).filter(event => event.stage === "draft" && event.document === "d1")
@@ -319,16 +330,17 @@ describe("plan coverage observability", () => {
 
   test("the coverage jobs' sessions, then the files job's, appear in the draft step's session_ids after the outline's", async () => {
     const { directory, state } = prepared()
-    const model = scriptedModel({ [AGENT.draft]: outliner(ONE, TWO), [AGENT.coverage]: () => ACTS })
+    const model = scriptedModel({ [AGENT.draft]: outliner(ONE, TWO), ...coverageJobs(() => ACTS) })
     const progress = (patch: Partial<LeanStageState>) => { updateLeanStage(directory, readLeanState(directory)!, "d1.draft", patch) }
     expect((await runDraftStage(directory, state, { sessions: model.port }, progress, "d1", () => {})).status).toBe("done")
 
     const outline = model.prompts.find(prompt => prompt.agent === AGENT.draft)!.sessionID
+    const listed = [...new Set(model.prompts.filter(prompt => prompt.agent === AGENT.coverageActs).map(prompt => prompt.sessionID))]
     const covered = [...new Set(model.prompts.filter(prompt => prompt.agent === AGENT.coverage).map(prompt => prompt.sessionID))]
-    expect(covered).toHaveLength(2)
+    expect([listed, covered].map(ids => ids.length)).toEqual([2, 2])
     // The revised outline plans two documents, so the files job reads it too.
     const filed = [...new Set(model.prompts.filter(prompt => prompt.agent === AGENT.files).map(prompt => prompt.sessionID))]
     expect(filed).toHaveLength(1)
-    expect(readLeanState(directory)!.stages["d1.draft"]).toMatchObject({ session_id: outline, session_ids: [outline, ...covered, ...filed] })
+    expect(readLeanState(directory)!.stages["d1.draft"]).toMatchObject({ session_id: outline, session_ids: [outline, ...listed, ...covered, ...filed] })
   }, 60_000)
 })

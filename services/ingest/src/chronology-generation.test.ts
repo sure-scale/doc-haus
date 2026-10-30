@@ -288,6 +288,21 @@ test("ambiguous repeated quotation is an issue unless the occurrence is identifi
   expect(state.events[0]?.accounts[0]?.evidence[0]?.charStart).toBe(last)
 })
 
+test("a quotation found once as written stays unique beside a copy only its escaped reading matches", async () => {
+  const dir = matter(),
+    quote = "On 6 May 2025 the Buyer paid 2.5% of the Price."
+  source(dir, "Payments.md", `${quote}\n\n| Note | On 6 May 2025 the Buyer paid 2\\.5% of the Price. |\n`)
+  await startChronologyRun(
+    dir,
+    { expectedRevision: 0, privilege: "mixed", mode: "initial" },
+    fake(() => complete([event("Price instalment paid", quote)])),
+  )
+  await awaitChronologyRun(dir)
+  const state = readChronology(dir)
+  expect(state.coverage[0]?.issues ?? []).toEqual([])
+  expect(state.events[0]?.accounts[0]?.evidence[0]).toMatchObject({ charStart: 0, excerpt: quote })
+})
+
 test("date precision stays honest; only explicit supported calendar-day formulas calculate", () => {
   expect(parseChronologyDate({ original: "May 2025", precision: "month", start: "2025-05" }).start).toBe("2025-05")
   expect(() => parseChronologyDate({ original: "May 2025", precision: "month", start: "2025-05-01" })).toThrow(

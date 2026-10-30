@@ -1,6 +1,7 @@
 import { statSync } from "node:fs"
 import { writeListLabels } from "./docx-list-labels"
 import { markTrackedChanges } from "./docx-tracked-text"
+import { normalizeWithMap, quotePlaces, sourceReadings } from "./quote-verify"
 import { normalizeExtractedText } from "./untrusted"
 
 // Live-document extraction shared by the citation plugin (which re-checks every
@@ -34,27 +35,57 @@ export async function liveText(docPath: string) {
   return text
 }
 
-// Locate a quotation in the live text. Exact match first; if that fails, fall
-// back to a whitespace-tolerant search so a quote that only differs in run-length
-// of spaces/newlines (mammoth and pdf.js normalize whitespace differently than a
-// human copying text) still anchors. The returned `excerpt` is always the RAW
-// matched span from the live text, never the caller's input — downstream span
-// checks compare against the live document, so the stored excerpt must be what
-// the document actually contains. When `near` is given (the plugin re-anchoring a
-// span an edit shifted), the occurrence nearest that offset wins, since it is
-// almost certainly the same passage; otherwise the first match wins.
-export function findQuote(text: string, quote: string, near?: number) {
-  const matches = [...text.matchAll(quoteRegExp(quote))]
+// Locate a quotation in the live text of `document` (the source file's name or
+// path, which says how its text was written). Exact match first; if that fails,
+// fall back to a whitespace-tolerant search so a quote that only differs in
+// run-length of spaces/newlines (mammoth and pdf.js normalize whitespace
+// differently than a human copying text) still anchors; then to each of the
+// document's readings in verifyQuote's order (sourceReadings: curly quotes
+// folded, then without backslash escapes, then without the format's own markup:
+// Markdown in a .md file, an email or a PDF, reply marks in an email, page-break
+// rules in a PDF, CSV quoting in a spreadsheet), so `cite` anchors the quotes
+// verifyQuote confirms in the same document. Without a document name only the
+// readings every format shares are tried. The returned `excerpt` is always the
+// RAW matched span from the live text, never the caller's input — downstream
+// span checks compare against the live document, so the stored excerpt must be
+// what the document actually contains. When `near` is given (the plugin
+// re-anchoring a span an edit shifted), the occurrence nearest that offset wins
+// among the matches of the first search that finds one, since it is almost
+// certainly the same passage; otherwise the first match wins.
+export function findQuote(text: string, quote: string, document?: string, near?: number) {
+  const matches = findQuotes(text, quote, document)
   const first = matches[0]
   if (!first) return undefined
-  const best =
-    near === undefined
-      ? first
-      : matches.slice(1).reduce(
-          (a, b) => (Math.abs(b.index - near) < Math.abs(a.index - near) ? b : a),
-          first,
-        )
-  return { start: best.index, end: best.index + best[0].length, excerpt: best[0] }
+  if (near === undefined) return first
+  return matches.slice(1).reduce((a, b) => (Math.abs(b.start - near) < Math.abs(a.start - near) ? b : a), first)
+}
+
+// Every match of the first search (findQuote's order) that finds one, as raw
+// spans. Matches from a later reading never join an earlier one's, so a quote
+// found once as written stays unique when an escaped copy of it is elsewhere;
+// two copies read the same way are two matches. A normalized match (quotePlaces,
+// which also reads a quotation's bracketed change of case) maps back through
+// normalizeWithMap's offsets: its first character's raw start to its last's raw
+// end (past a whole decoded entity).
+export function findQuotes(text: string, quote: string, document?: string) {
+  const span = (start: number, end: number) => ({ start, end, excerpt: text.slice(start, end) })
+  const exact = [...text.matchAll(quoteRegExp(quote))].map((m) => span(m.index, m.index + m[0].length))
+  if (exact.length) return exact
+  const needle = normalizeWithMap(quote).text
+  if (!needle) return []
+  for (const reading of sourceReadings(document)) {
+    const { text: normalized, map, end } = normalizeWithMap(text, reading)
+    const { places, length } = quotePlaces(normalized, needle)
+    // Matches do not overlap: each starts past the last one's end.
+    const found: ReturnType<typeof span>[] = []
+    let next = 0
+    for (const at of places) if (at >= next) {
+      found.push(span(map[at]!, end[at + length - 1]!))
+      next = at + length
+    }
+    if (found.length) return found
+  }
+  return []
 }
 
 // Match the quote exactly where possible, but tolerate differing whitespace runs.
