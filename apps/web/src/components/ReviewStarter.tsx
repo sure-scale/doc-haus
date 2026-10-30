@@ -3,6 +3,7 @@ import type { Document } from "../api/ingest/documents"
 import { normaliseStarterQuestion, recommendStarter, REVIEW_STARTERS } from "../review-starters"
 import ReviewSetupDialog from "./ReviewSetupDialog"
 import ReviewExample from "./ReviewExample"
+import StarterSummary from "./StarterSummary"
 import "./ReviewStarter.css"
 
 type Step = "choose" | "example" | "questions"
@@ -97,15 +98,7 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
                 ))}
               </fieldset>
               <section className="review-starter-preview" aria-label={`About ${starter.name}`}>
-                <p id={`${titleId}-purpose`}>{starter.purpose}</p>
-                <dl>
-                  <dt>Inputs</dt><dd>{starter.inputs}</dd>
-                  <dt>Output</dt><dd>{starter.output}</dd>
-                </dl>
-                <ol className="review-starter-preview-questions" aria-label="Questions">
-                  {starter.questions.map((question) => <li key={question}>{question}</li>)}
-                </ol>
-                <p className="review-starter-limits">{starter.limits}</p>
+                <StarterSummary starter={starter} questions purposeId={`${titleId}-purpose`} />
                 {starter.example && <button type="button" className="linklike review-starter-example-link" onClick={() => setStep("example")}>See example</button>}
               </section>
             </div>

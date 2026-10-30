@@ -6,8 +6,6 @@
 .review-starter-body { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; overflow-wrap: anywhere; }
 .picker-body.review-starter-body { padding: var(--space-5); }
 .review-starter-body p, .review-starter-body h3 { margin: 0; }
-/* The example's answer detail nests inside this body; its labels keep their own type. */
-.review-starter-body h3:not(.review-detail-label) { font-size: 1rem; }
 .review-starter-body section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .review-starter-body ul { margin: 0; padding-left: 1.5rem; overflow-wrap: anywhere; }
 .review-starter-body .compare-actions { flex-wrap: wrap; margin-top: var(--space-2); }
@@ -32,12 +30,6 @@
 .review-starter-choice-reason { display: block; margin-top: 2px; color: var(--text-secondary); font-size: .8rem; line-height: 1.45; }
 .review-starter-choice-reason strong { color: var(--accent); font-weight: 600; }
 .review-starter-body .review-starter-preview { gap: var(--space-3); padding-left: var(--space-6); border-left: 1px solid var(--border); line-height: 1.55; }
-.review-starter-preview dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-2) var(--space-4); margin: 0; }
-.review-starter-preview dt { color: var(--text-secondary); font-weight: 600; }
-.review-starter-preview dd { margin: 0; }
-.review-starter-preview-questions { margin: 0; padding-left: 1.25rem; color: var(--text-secondary); font-size: .9rem; }
-.review-starter-preview-questions li + li { margin-top: 2px; }
-.review-starter-limits { color: var(--muted); font-size: .85rem; }
 .review-starter-body .review-starter-example-link { align-self: flex-start; min-height: 0; font-weight: 600; }
 @media (max-width: 640px) {
   .review-starter-choose { grid-template-columns: minmax(0, 1fr); gap: var(--space-5); }
