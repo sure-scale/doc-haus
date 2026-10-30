@@ -63,9 +63,9 @@ const SOURCE_BADGE: Record<SourceVerdict, string> = { verified: "Verified", rean
 const SOURCE_DETAIL: Record<SourceVerdict, string> = {
   verified: "The excerpt matches the document at the recorded position.",
   reanchored: "The excerpt is still in the document, but at a different position from the one recorded. The document may have changed since this answer.",
-  not_found: "The document no longer contains this excerpt. It has changed since this answer; check the answer against the current text.",
-  missing: "This document is no longer in the matter, so the excerpt cannot be checked.",
-  other_document: "The cited passage is from another document, so it does not support this answer for this document. Re-run the cell to answer from this document; a reviewed cell must be unlocked first.",
+  not_found: "The document no longer contains this excerpt. It has changed since this answer; re-run the cell to answer from the current text. A reviewed cell must be unlocked first.",
+  missing: "This document is no longer in the matter, so the excerpt cannot be checked. Re-run the cell to answer from this document. A reviewed cell must be unlocked first.",
+  other_document: "The cited passage is from another document, so it does not support this answer for this document. Re-run the cell to answer from this document. A reviewed cell must be unlocked first.",
 }
 // Cell keys are `<row document>::<column id>`; column ids never contain "::".
 function citesOwnRow(key: string, citation: Citation, documents: Document[]) {
