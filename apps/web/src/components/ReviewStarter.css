@@ -1,13 +1,15 @@
 .picker-panel.review-starter { width: 100%; max-width: 680px; }
 .review-detail-modal .picker-panel.review-starter.is-wide { width: min(1120px, 100%); max-width: none; }
+/* Body, header and footer share one left edge (--space-5). */
 .review-starter-body { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; overflow-wrap: anywhere; }
+.picker-body.review-starter-body { padding: var(--space-5); }
 .review-starter-body p, .review-starter-body h3 { margin: 0; }
 .review-starter-body h3 { font-size: 1rem; }
 .review-starter-body section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .review-starter-body ul { margin: 0; padding-left: 1.5rem; overflow-wrap: anywhere; }
 .review-starter-question { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
 .review-starter-question-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); align-self: stretch; }
-.review-starter-question-head button.ghost { min-height: 32px; padding: var(--space-1) var(--space-2); font-size: .875rem; }
+.review-starter-question-head button.ghost { min-height: 32px; margin-right: calc(-1 * var(--space-2)); padding: var(--space-1) var(--space-2); font-size: .875rem; }
 .review-starter-question textarea { box-sizing: border-box; width: 100%; min-width: 0; resize: vertical; }
 .review-starter-question p { color: var(--muted); font-size: .875rem; }
 .review-starter-body .compare-actions { flex-wrap: wrap; margin-top: var(--space-2); }
@@ -15,9 +17,9 @@
 /* One view per step; the view takes focus when the step changes. */
 .review-starter-step { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 .review-starter-step:focus { outline: none; }
-.review-starter-back { margin-right: auto; }
+.review-starter-back { margin-right: auto; margin-left: calc(-1 * var(--space-4)); }
 /* The step's actions stay in view while its content scrolls. */
-.review-starter-body .review-starter-step > .compare-actions { position: sticky; bottom: calc(-1 * var(--space-3)); z-index: 2; margin: 0 calc(-1 * var(--space-3)) calc(-1 * var(--space-3)); padding: var(--space-3); border-top: 1px solid var(--border); background: var(--panel); }
+.review-starter-body .review-starter-step > .compare-actions { position: sticky; bottom: calc(-1 * var(--space-5)); z-index: 2; margin: 0 calc(-1 * var(--space-5)) calc(-1 * var(--space-5)); padding: var(--space-3) var(--space-5); border-top: 1px solid var(--border); background: var(--panel); }
 
 /* Choose: a short list beside a preview of the highlighted starter. */
 .review-starter-choose { display: grid; grid-template-columns: minmax(176px, 220px) minmax(0, 1fr); gap: var(--space-6); align-items: start; padding-block: var(--space-1); }
@@ -69,4 +71,6 @@
 .review-example-hint { color: var(--muted); font-size: .875rem; }
 @media (max-width: 700px) {
   .review-table.review-example-table .review-doc-col { width: 148px; }
+  .picker-body.review-starter-body { padding: var(--space-4); }
+  .review-starter-body .review-starter-step > .compare-actions { bottom: calc(-1 * var(--space-4)); margin: 0 calc(-1 * var(--space-4)) calc(-1 * var(--space-4)); padding-inline: var(--space-4); }
 }

@@ -130,6 +130,8 @@
 .review-detail-modal .picker-panel { width: min(680px, 100%); max-width: none; }
 .review-detail-modal .viewer-bar { align-items: flex-start; padding-block: var(--space-4); }
 .review-detail-modal .viewer-bar-actions { min-height: 40px; }
+/* One-line titles centre on the close button; two-line titles start at its top. */
+.review-detail-modal .viewer-title { min-height: 40px; }
 .review-detail-question { overflow-wrap: anywhere; }
 .review-detail-body { gap: var(--space-5); padding: var(--space-5); }
 .review-detail-section { display: flex; flex-direction: column; gap: var(--space-2); }
