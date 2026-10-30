@@ -17,6 +17,7 @@ import { nameWithProvenance, provenanceMapLine, sourceProvenance } from "../../l
 import { approvedResearch } from "./research"
 import { QUESTION_KIND_CONTRACT, questionContent, readLeanJson, readQuestions, writeLeanText, type LeanState, type LeanStageState } from "./state"
 import type { DocID } from "./plan"
+import { workflowConcurrency } from "./model-concurrency"
 
 export type Assessment = { item_id: string; item: ChecklistItem; finding: ChecklistFinding }
 export const REPAIR_ADJUDICATION_OUTPUT = 'Return one JSON object {"shared_decisions":[],"groups":[{"id":"label","pids":["initial pid"],"goal":"source-adjudicated correction and preservation requirements","sources":[{"source_id":"canonical source or request","quote":"exact words"}],"limitations":[]}],"dismissed":[],"findings":[{"disposition":"deferred|recommendation|rejected","kind":"information|research|suggestion","detail":"issue and remaining action","reason":"source-grounded disposition","documents":["planned id"],"sources":[{"source_id":"canonical source or request","quote":"exact words"}],"limitations":[]}],"questions":[{"pid":"initial pid","question":"indispensable unresolved human fact or decision","kind":"fact|instruction|judgment","context":"why needed"}],"superseded_decisions":[{"index":0,"reason":"why this supplied generated dependency conflicts with actual sources or human instructions","sources":[{"source_id":"canonical source or request","quote":"exact supporting words"}]}],"superseded_findings":[{"index":0,"reason":"why this supplied prior disposition is replaced","sources":[{"source_id":"canonical source or request","quote":"exact supporting words"}]}]}. Arrays may be empty. Common dependencies above are generated interpretations, not settled human authority; preserve supported dependencies and explicitly supersede a conflicting interpretation from actual sources. Supersession indices may refer ONLY to supplied related history; omit unaffected records. An omitted previous record is retained. Historical groups belong to an earlier pass; actual apply and withheld records determine implementation. Do not replay or supersede an entire historical group; return ONLY necessary current repair goals. Preserve source-supported cumulative intent. Rejected findings and each supersession require nonempty exact supporting source citations; a generated assessment or an evidence limitation cannot authorize dropping a duty. If source support is unavailable, retain the uncertainty as deferred instead of rejecting or superseding. Exact quotes are checked against canonical sources. ' + QUESTION_KIND_CONTRACT + ' No file writes.'
@@ -159,7 +160,7 @@ export async function runFocusedRepairAdjudication(directory: string, state: Lea
   const counts = { next: 0, calls: 0, attempts: 0, sessions: [] as string[] }
   const results: { item_id: string; value: RepairAdjudication }[] = []
   const failures: string[] = []
-  await Promise.all(Array.from({ length: Math.min(4, jobs.length) }, async () => {
+  await Promise.all(Array.from({ length: Math.min(workflowConcurrency(), jobs.length) }, async () => {
     for (;;) {
       const input = jobs[counts.next++]
       if (!input) return

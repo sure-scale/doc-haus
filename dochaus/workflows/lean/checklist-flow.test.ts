@@ -15,6 +15,7 @@ import type { ChecklistCheckerInput, ChecklistItem, ChecklistProducerInput } fro
 import { buildChecklistDocumentContext } from "./checklist-document-context"
 import { checklistProducerInputs } from "./checklist-source-context"
 import { matterSourceBasis } from "./quotes"
+import { withWorkflowLimit } from "./model-concurrency-test-support"
 
 const dirs: string[] = []
 afterEach(() => dirs.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true })))
@@ -56,12 +57,12 @@ function port(directory: string, options: { failSource?: string; failCheck?: boo
   return { sessions, counts, model: null }
 }
 
-test("source completion is incremental, capped at four, exact items and IDs survive cached rerun", async () => {
+test("source completion is incremental and respects the limit; items and IDs survive cached rerun", async () => withWorkflowLimit(3, async () => {
   const directory = matter(6), deps = port(directory, { delay: 4 })
   const result = await runChecklistExtractionFlow(directory, deps)
   expect(result.status).toBe("succeeded")
   expect(result.sources).toHaveLength(7)
-  expect(deps.counts.peak).toBe(4)
+  expect(deps.counts.peak).toBe(3)
   expect(deps.counts.incrementalSeen).toBe(true)
   expect(result.items.every(row => row.item.basis === "proposal")).toBe(true)
   const saved = readLeanJson(directory, "checklist/extraction.json")
@@ -72,7 +73,7 @@ test("source completion is incremental, capped at four, exact items and IDs surv
   writeFileSync(path.join(directory, "sources/source-0.txt"), "Changed original source context.\n")
   await runChecklistExtractionFlow(directory, deps)
   expect(deps.counts.created).toBeGreaterThan(7)
-})
+}))
 
 test("failed source remains explicit and consumer cannot claim complete coverage", async () => {
   const directory = matter(1), deps = port(directory, { failSource: "source-0.txt" })
@@ -85,7 +86,7 @@ test("failed source remains explicit and consumer cannot claim complete coverage
   expect(checked.checks).toHaveLength(1)
 })
 
-test("current lookup is saved before checks; indeterminate is retained, unchanged context caches, Word changes invalidate", async () => {
+test("current lookup is saved before checks; indeterminate is retained, unchanged context caches, Word changes invalidate", async () => withWorkflowLimit(3, async () => {
   const directory = matter(4), deps = port(directory, { finding: "indeterminate", delay: 4 })
   const extracted = await runChecklistExtractionFlow(directory, deps)
   await writeLeanBytes(directory, "d1/body.docx", (await renderMarkdownToDocx("# Record\n\nThe proposed arrangement remains open.")).bytes)
@@ -94,7 +95,7 @@ test("current lookup is saved before checks; indeterminate is retained, unchange
   expect(checked.checks).toHaveLength(extracted.items.length)
   expect(checked.checks.every(row => row.finding?.status === "indeterminate")).toBe(true)
   expect(deps.counts.artifactsSeen).toBe(true)
-  expect(deps.counts.peak).toBe(4)
+  expect(deps.counts.peak).toBe(3)
   const before = deps.counts.created
   expect((await runChecklistCheckFlow(directory, deps)).checks).toEqual(checked.checks)
   expect(deps.counts.created).toBe(before)
@@ -106,7 +107,7 @@ test("current lookup is saved before checks; indeterminate is retained, unchange
   rmSync(leanFile(directory, "d1/body.docx")); rmSync(leanFile(directory, "d1/body-applied.docx"))
   await runChecklistCheckFlow(directory, deps)
   expect(readLeanJson(directory, "checklist-context/d1.json")).toMatchObject({ status: "unavailable", paragraphs: [] })
-})
+}))
 
 test("source update prevents checking stale extracted requirements", async () => {
   const directory = matter(), deps = port(directory)

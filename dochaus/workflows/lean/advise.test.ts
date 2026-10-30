@@ -6,6 +6,7 @@ import { runLean, stageInputSha } from "./runner"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, type StageSessionPort } from "./stages"
 import { keepAskedQuestions, readLeanState, readQuestions, writeLeanText, writeQuestions, type Question } from "./state"
 import { AGENT, SOURCE, cleanupMatters, matter, scriptedModel } from "./test-support"
+import { withWorkflowLimit } from "./model-concurrency-test-support"
 
 afterEach(cleanupMatters)
 
@@ -160,7 +161,7 @@ describe("advising asked questions", () => {
     }
   }, 120_000)
 
-  test("six questions are advised at most four at a time", async () => {
+  test("six questions respect the configured concurrency limit", async () => withWorkflowLimit(3, async () => {
     const directory = matter()
     const model = scriptedModel({ [AGENT.intake]: asks(...["one", "two", "three", "four", "five", "six"].map(n => ({ ...LAW, question: `Question ${n}?` }))) })
     const live = { now: 0, max: 0 }
@@ -174,9 +175,9 @@ describe("advising asked questions", () => {
     } }
     expect((await runLean(directory, { sessions: port })).status).toBe("blocked")
     expect(model.count(AGENT.advise)).toBe(6)
-    expect(live.max).toBe(4)
+    expect(live.max).toBe(3)
     expect(readQuestions(directory).every(row => row.advice)).toBe(true)
-  }, 120_000)
+  }), 120_000)
 
   test("a question without its kind is retried", async () => {
     const directory = matter()
