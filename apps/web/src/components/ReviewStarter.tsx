@@ -47,10 +47,18 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
   onConfirm: (questions: { question: string; compare?: false }[]) => Promise<boolean>
 }) {
   const titleId = useId()
+  // A starter whose questions are all in the table already would add nothing:
+  // it is neither recommended nor preselected, and says so.
+  const [inTable] = useState(() => {
+    const seen = new Set(existingQuestions.map(normaliseStarterQuestion))
+    return new Set(REVIEW_STARTERS.filter((item) => item.questions.every((q) => seen.has(normaliseStarterQuestion(q.text)))).map((item) => item.id))
+  })
   const [recommended] = useState(() => recommendStarter(documents))
-  const [chosenId, setChosenId] = useState(initialStep === "describe" && suggest ? AI : initialStarter ?? recommended.id)
+  const fresh = !inTable.has(recommended.id)
+  const [chosenId, setChosenId] = useState(initialStep === "describe" && suggest ? AI
+    : initialStarter ?? (fresh ? recommended.id : suggest ? AI : REVIEW_STARTERS.find((item) => !inTable.has(item.id))?.id ?? recommended.id))
   // A starter the lawyer already chose is not second-guessed with a Recommended beside it.
-  const recommendedId = !initialStarter || initialStarter === recommended.id ? recommended.id : undefined
+  const recommendedId = fresh && (!initialStarter || initialStarter === recommended.id) ? recommended.id : undefined
   const [step, setStep] = useState<Step>(initialStep === "describe" && !suggest ? "choose" : initialStep)
   const ai = chosenId === AI
   const starter = REVIEW_STARTERS.find((item) => item.id === chosenId)
@@ -187,7 +195,8 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
                     <input type="radio" name={`${titleId}-starter`} value={item.id} checked={item.id === chosenId} aria-describedby={item.id === chosenId ? `${titleId}-purpose` : undefined} onChange={() => setChosenId(item.id)} />
                     <span>
                       <span className="review-starter-choice-name">{item.name}</span>
-                      {item.id === recommendedId && <span className="review-starter-choice-reason"><strong>Recommended</strong> · {recommended.reason}</span>}
+                      {item.id === recommendedId ? <span className="review-starter-choice-reason"><strong>Recommended</strong> · {recommended.reason}</span>
+                        : inTable.has(item.id) && <span className="review-starter-choice-reason">Already in the table</span>}
                     </span>
                   </label>
                 ))}

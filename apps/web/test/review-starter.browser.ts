@@ -293,6 +293,12 @@ try {
   assert.deepEqual(grids.compare!.columns.map(column => column.compare), [undefined, false, undefined, undefined, undefined, undefined], "only the parties question is kept out of the comparison")
   assert.deepEqual(grids.compare!.cells, initial.cells, "adding a starter keeps every existing answer and comment")
   assert.equal(engineCalls, 0, "adding starter questions must not call a model")
+  // A starter whose questions are all in the table already is not offered again.
+  await showChooser()
+  await expect(compareChoice).not.toBeChecked()
+  await expect(chooser).toContainText("Already in the table")
+  await expect(chooser).not.toContainText("Recommended")
+  await page.keyboard.press("Escape")
 
   await open("?matter=failure")
   await showStarter()
