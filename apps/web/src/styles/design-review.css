@@ -58,8 +58,14 @@
 .review-running::before { content: ""; width: 12px; height: 12px; border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: step-spin .7s linear infinite; }
 .review-hint { margin: 0 0 var(--space-4); color: var(--muted); font-size: .9rem; }
 .review > .review-toolbar, .review > .review-filter-summary, .review > .review-hint, .review > [role="alert"] { flex-shrink: 0; }
+.review-scroll-frame { position: relative; display: flex; flex-direction: column; min-height: 0; }
 .review-scroll { min-height: 0; max-height: none; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); scrollbar-width: thin; }
 .review-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+/* Scroll cues: the right edge fades while columns lie beyond it, and the sticky
+   Document column casts a shadow once the table scrolls sideways. */
+.review-scroll-frame::after { content: ""; position: absolute; z-index: 3; top: 1px; right: calc(1px + var(--scrollbar-y, 0px)); bottom: calc(1px + var(--scrollbar-x, 0px)); width: var(--space-8); border-radius: 0 calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px) 0; background: linear-gradient(to right, transparent, var(--md-sys-color-surface-container-low)) 0 0 / 100% var(--head-h, 0px) no-repeat, linear-gradient(to right, transparent, var(--panel)) 0 var(--head-h, 0px) / 100% 100% no-repeat; opacity: 0; pointer-events: none; transition: opacity var(--duration-fast) var(--ease-out); }
+.review-scroll-frame[data-more-right]::after { opacity: 1; }
+.review-scroll-frame[data-scrolled] .review-table .review-doc-col { box-shadow: 6px 0 8px -6px rgb(24 35 28 / 22%); }
 
 /* Separate borders stay attached to their sticky headers during scrolling.
    Fixed table layout keeps long answers from widening unrelated columns. */

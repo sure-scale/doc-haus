@@ -26,6 +26,7 @@ import ReviewStarter from "./ReviewStarter"
 import { normaliseStarterQuestion, REVIEW_STARTERS } from "../review-starters"
 import FillPreview from "./FillPreview"
 import ReviewQuestion from "./ReviewQuestion"
+import ReviewScroll from "./ReviewScroll"
 import { CompareSummary, FilterSummary, ReviewToolbar } from "./ReviewAttention"
 import { MARKER_LOOK, MarkerGlyph, ReviewMarker } from "./ReviewMarker"
 
@@ -925,7 +926,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
         {grid.columns.length === 0 && (
           <p className="review-hint">Use + to add a question for every document.</p>
         )}
-        <div className="review-scroll" role="region" aria-label="Review table" tabIndex={0}>
+        <ReviewScroll>
           <table className={`review-table${grid.columns.length === 0 ? " is-empty" : ""}`} style={shownColumns.length ? { minWidth: 304 + shownColumns.length * 280 } : undefined} aria-label="Document review">
             <thead>
               <tr>
@@ -1045,7 +1046,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
               )}
             </tbody>
           </table>
-        </div>
+        </ReviewScroll>
 
         {detailShown && detailCell && (
           <dialog
