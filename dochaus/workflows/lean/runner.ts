@@ -2,6 +2,7 @@ import { adviseQuestions } from "./advise"
 import { proposedFactQuestions, questionReviewKey, reviewProposedQuestion, sourceFactsFeedback, type QuestionReview } from "./question-review"
 import { parallel } from "./checklist-flow"
 import { classifyAnswers } from "./answer-class"
+import { answersToReconcile, reconcileAnswers } from "./answer-reconcile"
 import { runFocusedChangeReview } from "./focused-change-review"
 import { DRAFTING_STOPPED_REASON } from "../../lib/drafting-update-admission"
 import { PROVIDER_STOP_MESSAGES, providerStopKind, type ProviderStopKind } from "../../lib/provider-stop"
@@ -234,6 +235,20 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
       if (paused()) return { state: settlePause(directory, state), paused: true }
       if (preferencesChanged()) return { state, restart: true }
       if (provider.stop) return { state: settleProviderStop(directory, state, provider.stop) }
+    }
+    // Answers given one question at a time are then read together: answers
+    // that cannot all be followed become one question each for the lawyer,
+    // asked before any step reads them.
+    if ((index === 0 || changes.answered) && answersToReconcile(directory).length >= 2) {
+      const asked = await reconcileAnswers(directory, state, deps)
+      if (paused()) return { state: settlePause(directory, state), paused: true }
+      if (preferencesChanged()) return { state, restart: true }
+      if (provider.stop) return { state: settleProviderStop(directory, state, provider.stop) }
+      if (asked.length) {
+        replaceStageQuestions(directory, "intake", null, asked)
+        const waiting = readQuestions(directory).filter(question => question.status === "open" && question.stage !== "gate")
+        return { state: writeLeanState(directory, { ...state, status: "blocked", stop_reason: `Waiting for your answers: ${waiting.map(question => question.id).join(", ")}` }) }
+      }
     }
     if ((changes.answered || changes.updated) &&
       withSourceSnapshot(() => settled.some(done => stageInputSha(directory, done) !== state.stages[done]?.input_sha)))

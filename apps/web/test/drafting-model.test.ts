@@ -432,6 +432,21 @@ const resultCard = (status: LeanDraftingStatus) => renderToStaticMarkup(createEl
 const resultPage = (html: string) => html.slice(html.indexOf('<div class="result-document">'), html.indexOf('<ul class="result-stack"'))
 const ONE_FILE = 'title="Download the memo and the draft as one .docx"'
 
+test("a delivered draft the request did not name says it was prepared in addition, with its purpose", () => {
+  // The request named the first document's file; the plan added a second without one.
+  const second: LeanDocument = { kind: "body", document: "d2", title: "Second", path: ".dochaus/lean/d2/body-applied.docx", sha256: "d".repeat(64), deliverable: "Second.docx" }
+  const run = (plan: Array<{ id: string; title: string; purpose: string; file?: string }>) =>
+    lean({ ...completed, documents: { ...completed.documents, documents: [...completed.documents.documents, second] }, plan: { documents: plan } })
+  const named = { id: "d1", title: "Supply note", purpose: "Sets out the supply terms.", file: "Supply note.docx" }
+  const added = { id: "d2", title: "Second", purpose: "Records the approval the first document relies on" }
+  const html = resultCard(run([named, added]))
+  expect(html).toContain("<h4>Second.docx</h4><p class=\"result-added-note\">Prepared in addition to the file you named. Records the approval the first document relies on.</p>")
+  expect(html.match(/Prepared in addition/g)).toHaveLength(1)
+  // Every document named, or none: the card is unchanged.
+  expect(resultCard(run([named, { ...added, file: "Second.docx" }]))).not.toContain("Prepared in addition")
+  expect(resultCard(run([{ id: "d1", title: "Supply note", purpose: "Sets out the supply terms." }, added]))).not.toContain("Prepared in addition")
+})
+
 test("the result card downloads a combined file as the file saved in the matter", () => {
   const saved = memoRun({ combined: true })
   expect(resultPage(resultCard(saved))).toContain(resultDownload("Supply note.docx"))

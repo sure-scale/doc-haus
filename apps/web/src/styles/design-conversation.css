@@ -1077,6 +1077,14 @@
   overflow-wrap: anywhere;
 }
 
+.design-conversation .result-added-note {
+  margin: 3px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
 .design-conversation .result-row .result-document-actions {
   flex-wrap: nowrap;
   gap: var(--space-2) var(--space-4);

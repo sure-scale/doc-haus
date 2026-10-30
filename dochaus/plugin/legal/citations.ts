@@ -11,8 +11,9 @@ export async function verifyCitation(citation: DocumentCitation) {
 
   // The indexed span does not match live extraction. This can reflect an edit
   // or an indexing/extraction alignment difference, not proof of an amendment.
-  // Search for the excerpt, preferring the occurrence nearest its indexed span.
-  const match = findQuote(text, citation.excerpt, citation.charStart)
+  // Search for the excerpt, read as its document's format is (findQuote),
+  // preferring the occurrence nearest its indexed span.
+  const match = findQuote(text, citation.excerpt, citation.docPath, citation.charStart)
   if (!match) return undefined
   return {
     ...citation,

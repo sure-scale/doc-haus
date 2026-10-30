@@ -1,4 +1,4 @@
-import { normalize, normalizeWithMap } from "../../lib/quote-verify"
+import { normalize, normalizeWithMap, sourceReadings } from "../../lib/quote-verify"
 import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
 import { FIRST_DOCUMENT, nameKey, namedIn, readLeanPlan, type ActingFor, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
@@ -9,13 +9,18 @@ import { answeredQuestionsText, hashStageInputs, readLeanJson, readLeanText, rea
 import { sourceText } from "./template-structure"
 
 // Package coverage: an instructed act needs an instrument executed by the
-// parties who must take it. One focused job reads the planned package against
-// the lawyer's instructions and lists each legal act they direct, the parties
-// who must take it and the planned document that carries it. parseCoverage
+// parties who must take it. Two focused jobs read the lawyer's instructions.
+// The first, blind to the plan so that the plan does not anchor it, lists each
+// legal act they direct and the parties who must take it; parseCoverageActs
 // verifies that list against the matter (each quote in its source, each party
-// named by the instructions or sources, each document a planned id);
-// planCoverageIssues then holds the plan to it, as retry feedback for the
-// outline. Nothing here judges the legal substance or supplies a party: an act
+// named by the instructions or sources). It runs twice, in separate sessions,
+// and mergeCoverageActs joins the two verified lists, so an act one run misses
+// the other can still list. The second places each verified act in the planned
+// document that carries it; parseCoveragePlacement holds every act to one
+// placement and parseCoverage verifies the placed acts (each document a planned
+// id, any excluded_by the lawyer's own words). planCoverageIssues then holds
+// the plan to them, as retry feedback for the outline. Nothing here judges the
+// legal substance or supplies a party: an act
 // whose parties the record does not settle lists none, and a plan-declared
 // party counts only when the record names it. The outline step records the
 // result in coverage.json, keyed on the plan it checked, and asks the lawyer
@@ -38,6 +43,8 @@ import { sourceText } from "./template-structure"
  * no document, `excluded_by` holds the lawyer's own words that leave the act's
  * document out of this package. */
 export type CoverageAct = { act: string; source: string; quote: string; parties: string[]; document: DocID | null; excluded_by?: string }
+/** One instructed act as the plan-blind job lists it: no document yet. */
+export type InstructedAct = Omit<CoverageAct, "document" | "excluded_by">
 
 export const LEAN_COVERAGE_SCHEMA = "dochaus.lean.coverage/1"
 /** "covered": no issue is left; "uncovered": issues remain after the outline's
@@ -50,49 +57,182 @@ export type LeanCoverage = {
 type Checked<T> = { issues: string[]; value?: T }
 
 const COVERAGE_SHAPE = 'Reply with the JSON object only: {"acts":[{"act":"...","source":"...","quote":"...","parties":["..."],"document":"planned id or null"}]}.'
+const ACTS_SHAPE = 'Reply with the JSON object only: {"acts":[{"act":"...","source":"...","quote":"...","parties":["..."]}]}.'
+const PLACEMENT_SHAPE = 'Reply with the JSON object only: {"placements":[{"act":0,"document":"planned id or null"}]}.'
+const READ_ONLY = "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply."
 
-/** The coverage job's one question, over the instructions and the planned documents. */
-export function coveragePrompt(directory: string, documents: PlannedDocument[]) {
+/** The lawyer's instructions both coverage jobs read: the request, the later updates and the answers. */
+function instructionSections(directory: string) {
   const updates = readLeanText(directory, "updated-notes.md")?.trim()
   const answers = answeredQuestionsText(directory)
-  const provenance = sourceProvenance(directory)
   return [
-    "This is a lean drafting run. Check the planned package against the lawyer's instructions: which legal acts they direct, who must take each and which planned document carries it.",
     tagged("request", readLeanText(directory, "request.md") ?? ""),
     updates ? tagged("user_updates", `Later instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n${updates}`) : "",
     answers ? tagged("answers", `The lawyer's answers; they remain controlling:\n${answers}`) : "",
+  ]
+}
+
+/** The plan-blind job's one question: the legal acts the instructions direct,
+ * in whichever document, and who must take each. */
+export function coverageActsPrompt(directory: string) {
+  const provenance = sourceProvenance(directory)
+  return [
+    "This is a lean drafting run. List the legal acts the lawyer's instructions direct to be taken, whichever document they are to be taken in.",
+    ...instructionSections(directory),
     tagged("sources", [
       "Matter documents (use these exact names with search-document and read-document, and as source names):",
       ...matterSourceIDs(directory).map(name => `- ${nameWithProvenance(name, provenance)}`),
       `To quote the request, the lawyer's updates or answers, use the source name "${REQUEST_SOURCE}".`,
     ].join("\n")),
-    tagged("planned_documents", "The plan under check, by id. Its purposes and parts are the plan's own choices, not instructions. executed_by lists the parties who execute a document; [] says it takes no legal act, and null that the plan does not say.\n" +
-      JSON.stringify(documents.map(coverageView), null, 2)),
     tagged("output_contract", [
-      "- List every legal act that the request, the lawyer's updates or answers direct to be taken or documented in this package. A matter document directs an act only where the request adopts it as instructions; an obligation a matter document merely describes is not an instructed act. " +
-      "List an act the instructions direct even when a planned purpose leaves it out or defers it, or no planned document carries it. Do not list an act the instructions themselves exclude or defer.",
+      "- List every legal act that the request, the lawyer's updates or answers direct to be taken or documented: in the requested document or in any other document, now or later. " +
+      "A matter document directs an act only where the request adopts it as instructions; an obligation a matter document merely describes is not an instructed act. Do not list an act the instructions say is not to be taken at all.",
       "- For each act give \"act\": what is to be done, briefly; \"source\": the exact matter document name, or \"request\"; \"quote\": the exact words that direct it, copied verbatim from that source; " +
-      "\"parties\": every party who must take the act for it to be effective (for an authorisation, those who give it), each named as the sources name it, or [] when the record does not settle who must take it; \"document\": the id of the planned document that carries it, or null when none does.",
-      "- When the request, the lawyer's updates or answers leave out of this package the document that the parties who must take an act would execute, " +
-      "still list the act, with \"document\": null and \"excluded_by\": the whole sentence that leaves that document out, copied verbatim from the request, updates or answers, " +
-      "never from a planned document or a matter document. Leave \"excluded_by\" out of every other act.",
-      "- When a planned document's executed_by names a party as the sources do, write that party exactly as executed_by declares it. Never supply a party by assumption.",
+      "\"parties\": every party who must take the act for it to be effective (for an authorisation, those who give it), each named as the sources name it, or [] when the record does not settle who must take it.",
+      "- Never supply a party by assumption.",
       "- Read the sources you rely on with search-document or read-document, and check each quote with verify-quote.",
-      `- ${COVERAGE_SHAPE} Reply {"acts":[]} when the instructions direct no legal act.`,
-      "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply.",
+      `- ${ACTS_SHAPE} Reply {"acts":[]} when the instructions direct no legal act.`,
+      READ_ONLY,
     ].join("\n")),
   ].filter(Boolean).join("\n\n")
 }
 
-/** Reads the coverage reply and verifies each act against the matter: the
- * quote in its source ("request" is the request, updates and answers), the
- * document a planned id or null, each party named by the instructions or
- * sources, and any excluded_by, with no document, as whole sentences of the
+/** The placement job's one question: which planned document carries each of
+ * the verified `acts`, by its index. */
+export function coveragePlacementPrompt(directory: string, documents: PlannedDocument[], acts: InstructedAct[]) {
+  return [
+    "This is a lean drafting run. Each act below is one the lawyer's instructions direct. Say which planned document carries each.",
+    ...instructionSections(directory),
+    tagged("planned_documents", "The plan under check, by id. Its purposes and parts are the plan's own choices, not instructions. executed_by lists the parties who execute a document; [] says it takes no legal act, and null that the plan does not say.\n" +
+      JSON.stringify(documents.map(coverageView), null, 2)),
+    tagged("acts", JSON.stringify(acts.map((act, index) => ({ index, act: act.act, source: act.source, quote: act.quote, parties: act.parties })), null, 2)),
+    tagged("output_contract", [
+      "- For each act, by its index, give \"document\": the id of the planned document that carries it, or null when none does. Give every act exactly once.",
+      "- When the request, the lawyer's updates or answers say that the document the parties who must take an act would execute is not to be prepared in this package, " +
+      "give \"document\": null and \"excluded_by\": the whole sentence that says so, copied verbatim from the request, updates or answers, " +
+      "never from a planned document or a matter document. Words that move an act to another document or defer it to a later one, without saying that document is outside this package, " +
+      "do not leave it out: give the planned document that carries the act, or null when none does, without \"excluded_by\". Leave \"excluded_by\" out of every other act.",
+      `- ${PLACEMENT_SHAPE}`,
+      READ_ONLY,
+    ].join("\n")),
+  ].filter(Boolean).join("\n\n")
+}
+
+/** A reply's JSON value, bare or fenced; undefined when it is not JSON. */
+function replyJson(reply: string): unknown {
+  try { return JSON.parse(reply.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "")) } catch {}
+}
+
+/** A listed act's own fields, as both jobs' checks read them: nonempty "act",
+ * "source" and "quote" strings, trimmed, and "parties" as a list of nonempty
+ * names, each party once (by nameKey); undefined when any is malformed. */
+function listedAct(row: unknown): InstructedAct | undefined {
+  if (!record(row)) return
+  const text = (key: string) => typeof row[key] === "string" ? (row[key] as string).trim() : ""
+  if (!text("act") || !text("source") || !text("quote") || !(Array.isArray(row.parties) && row.parties.every(party => typeof party === "string" && party.trim()))) return
+  const named = (row.parties as string[]).map(party => party.trim())
+  return { act: text("act"), source: text("source"), quote: text("quote"), parties: named.filter((party, at) => named.findIndex(other => nameKey(other) === nameKey(party)) === at) }
+}
+
+/** A listed act's defects against the matter, as retry feedback: a source that
+ * is not a matter document or "request", a quote not in its source ("request"
+ * is the request, updates and answers), and each party that neither the
+ * instructions nor any matter document names. `texts` gives namingTexts, read
+ * once per reply. */
+function listedActIssues(directory: string, where: string, act: InstructedAct, texts: () => string[]) {
+  const issues: string[] = []
+  const sources = [REQUEST_SOURCE, ...matterSourceIDs(directory)]
+  if (!sources.includes(act.source))
+    issues.push(`${where} gives the source "${act.source}", which is not a matter document. Use one of ${sources.map(name => `"${name}"`).join(", ")}.`)
+  else if (!quoteFound(directory, { quote: act.quote, source_id: act.source }))
+    issues.push(quoteMissIssue(directory, where, { quote: act.quote, source_id: act.source }, "json"))
+  for (const party of act.parties.filter(party => !texts().some(text => namedIn(text, party))))
+    issues.push(`${where} names the party "${party}", but neither the request, the lawyer's updates and answers nor any matter document names that party. ` +
+      "Name each party as the sources name it, and list only parties the record names ([] when it does not settle who must take the act).")
+  return issues
+}
+
+/** Reads the plan-blind job's reply and verifies each act against the matter
+ * (listedActIssues). A planned document's executed_by is not shown to the job,
+ * so no party comes from the plan. Every defect is retry feedback; the acts are
+ * returned only when there is none, each entry once (by act, parties, source
+ * and quote, the quote as the quote checks normalise it). */
+export function parseCoverageActs(reply: string, directory: string): Checked<InstructedAct[]> {
+  if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
+  const value = replyJson(reply)
+  if (!record(value) || !Array.isArray(value.acts)) return { issues: [ACTS_SHAPE] }
+  let texts: string[] | undefined
+  const issues: string[] = []
+  const acts: InstructedAct[] = []
+  value.acts.forEach((row: unknown, index) => {
+    const act = listedAct(row)
+    if (!act) return void issues.push(`acts[${index}] needs nonempty "act", "source" and "quote" strings and "parties" as a list of names ([] when the record does not settle them). ${ACTS_SHAPE}`)
+    issues.push(...listedActIssues(directory, `acts[${index}] ("${excerpt(act.act, 80)}")`, act, () => texts ??= namingTexts(directory)))
+    acts.push(act)
+  })
+  if (issues.length) return { issues }
+  const seen = new Set<string>()
+  return { issues, value: acts.filter(act => {
+    const key = JSON.stringify([sameAct(act), act.source, normalize(act.quote)])
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  }) }
+}
+
+/** Two verified lists of the plan-blind job joined: every act of `first`, in
+ * its order, then each act of `second` whose quote overlaps no quote of an act
+ * already kept from the same source, in any reading of that source
+ * (sourceReadings: one run may copy an email's bold marks and the other leave
+ * them out), so an act either run listed is kept once. */
+export function mergeCoverageActs(first: InstructedAct[], second: InstructedAct[]): InstructedAct[] {
+  const merged = [...first]
+  const same = (a: InstructedAct, b: InstructedAct) => a.source === b.source &&
+    sourceReadings(a.source).some(reading => overlaps(normalizeWithMap(a.quote, reading).text, normalizeWithMap(b.quote, reading).text))
+  for (const act of second) if (!merged.some(other => same(other, act))) merged.push(act)
+  return merged
+}
+
+/** Reads the placement job's reply over the verified `acts`: each act, by its
+ * index, placed exactly once, with "document" a string or null. Any defect
+ * there is retry feedback. The placed acts, in index order (so acts[i] in
+ * parseCoverage's feedback is the act of index i), then go through
+ * parseCoverage, which holds each document and excluded_by to its rules,
+ * including on the last attempt (`final`). */
+export function parseCoveragePlacement(reply: string, directory: string, documents: PlannedDocument[], acts: InstructedAct[], { final = false } = {}): Checked<CoverageAct[]> {
+  if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
+  const value = replyJson(reply)
+  if (!record(value) || !Array.isArray(value.placements)) return { issues: [PLACEMENT_SHAPE] }
+  const issues: string[] = []
+  const placed = new Map<number, Record<string, unknown>>()
+  const again = new Set<number>()
+  value.placements.forEach((row: unknown, at) => {
+    if (!record(row) || !(row.document === null || typeof row.document === "string"))
+      return void issues.push(`placements[${at}] needs "act" as the index of a listed act and "document" as a planned id or null. ${PLACEMENT_SHAPE}`)
+    const index = row.act
+    if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= acts.length)
+      return void issues.push(`placements[${at}] gives "act": ${JSON.stringify(index) ?? "nothing"}, which is not the index of a listed act. ` +
+        (acts.length > 1 ? `Use the indexes 0 to ${acts.length - 1}.` : "Use the index 0."))
+    if (placed.has(index)) return void again.add(index)
+    placed.set(index, { ...acts[index], document: row.document, ...(row.excluded_by !== undefined ? { excluded_by: row.excluded_by } : {}) })
+  })
+  const listing = (indexes: number[]) => `act${indexes.length > 1 ? "s" : ""} ${indexes.join(", ")}`
+  if (again.size) issues.push(`More than one placement for ${listing([...again].toSorted((a, b) => a - b))}. Give every act exactly once, by its index.`)
+  const missing = acts.flatMap((_, index) => placed.has(index) ? [] : [index])
+  if (missing.length) issues.push(`No placement for ${listing(missing)}. Give every act exactly once, by its index: "document" the id of the planned document that carries it, or null when none does.`)
+  if (issues.length) return { issues }
+  return parseCoverage(JSON.stringify({ acts: acts.map((_, index) => placed.get(index)) }), directory, documents, { final })
+}
+
+/** Reads the placed acts (parseCoveragePlacement gives them as one "acts"
+ * list) and verifies each against the matter: its own fields as the plan-blind
+ * job's are verified (listedActIssues), the document a planned id or null, and
+ * any excluded_by, with no document, as whole sentences of the
  * lawyer's own words (lawyerSentences) other than the words that direct the
  * act; words that are not are shown the whole sentences of the lawyer's text
  * that contain them (sentencesAround). excluded_by is the only evidence that the
  * package may leave an act's document out, so the same act for the same parties
- * listed both with and without it is retried, never kept twice. A planned
+ * placed both with and without it is retried, never kept twice. A planned
  * document's executed_by is the plan's own writing, so it grounds no party.
  * Every defect is retry feedback; the acts are returned only when there is
  * none, each entry once (by act, parties, document, source, quote and any
@@ -109,24 +249,19 @@ export function coveragePrompt(directory: string, documents: PlannedDocument[]) 
  * last attempt. */
 export function parseCoverage(reply: string, directory: string, documents: PlannedDocument[], { final = false } = {}): Checked<CoverageAct[]> {
   if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
-  let value: unknown
-  try { value = JSON.parse(reply.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "")) } catch {}
+  const value = replyJson(reply)
   if (!record(value) || !Array.isArray(value.acts)) return { issues: [COVERAGE_SHAPE] }
   const ids = documents.map(document => document.id)
-  const sources = [REQUEST_SOURCE, ...matterSourceIDs(directory)]
   let texts: string[] | undefined
   const issues: string[] = []
   const rows: { index: number; act: CoverageAct; same: string }[] = []
   const listed = new Map<string, { act: string; excluded: number[]; included: number[]; carried: boolean }>()
   value.acts.forEach((row: unknown, index) => {
-    const text = (key: string) => record(row) && typeof row[key] === "string" ? (row[key] as string).trim() : ""
-    if (!record(row) || !text("act") || !text("source") || !text("quote") || !(Array.isArray(row.parties) && row.parties.every(party => typeof party === "string" && party.trim())) ||
-      !(row.document === null || typeof row.document === "string"))
+    const own = listedAct(row)
+    if (!own || !record(row) || !(row.document === null || typeof row.document === "string"))
       return void issues.push(`acts[${index}] needs nonempty "act", "source" and "quote" strings, "parties" as a list of names ([] when the record does not settle them), and "document" as a planned id or null. ${COVERAGE_SHAPE}`)
-    const named = (row.parties as string[]).map(party => party.trim())
-    const parties = named.filter((party, at) => named.findIndex(other => nameKey(other) === nameKey(party)) === at)
-    const act: CoverageAct = { act: text("act"), source: text("source"), quote: text("quote"), parties, document: (text("document") || null) as DocID | null,
-      ...(text("excluded_by") ? { excluded_by: text("excluded_by") } : {}) }
+    const text = (key: string) => typeof row[key] === "string" ? (row[key] as string).trim() : ""
+    const act: CoverageAct = { ...own, document: (text("document") || null) as DocID | null, ...(text("excluded_by") ? { excluded_by: text("excluded_by") } : {}) }
     const where = `acts[${index}] ("${excerpt(act.act, 80)}")`
     const refused = row.excluded_by != null && typeof row.excluded_by !== "string"
       ? `${where} gives "excluded_by" that is not a string. Give the whole sentence of the request, one of the lawyer's updates or one answer that leaves this act's document out of this package, verbatim, or leave "excluded_by" out.`
@@ -143,15 +278,9 @@ export function parseCoverage(reply: string, directory: string, documents: Plann
       : undefined
     if (refused && final) delete act.excluded_by
     else if (refused) issues.push(refused)
-    if (!sources.includes(act.source))
-      issues.push(`${where} gives the source "${act.source}", which is not a matter document. Use one of ${sources.map(name => `"${name}"`).join(", ")}.`)
-    else if (!quoteFound(directory, { quote: act.quote, source_id: act.source }))
-      issues.push(quoteMissIssue(directory, where, { quote: act.quote, source_id: act.source }, "json"))
+    issues.push(...listedActIssues(directory, where, act, () => texts ??= namingTexts(directory)))
     if (act.document !== null && !ids.includes(act.document))
       issues.push(`${where} names the document "${act.document}", which is not planned. Use one of the planned ids ${ids.join(", ")}, or null when no planned document carries it.`)
-    for (const party of parties.filter(party => !(texts ??= namingTexts(directory)).some(text => namedIn(text, party))))
-      issues.push(`${where} names the party "${party}", but neither the request, the lawyer's updates and answers nor any matter document names that party. ` +
-        "Name each party as the sources name it, and list only parties the record names ([] when it does not settle who must take the act).")
     const same = sameAct(act)
     const group = listed.get(same) ?? listed.set(same, { act: act.act, excluded: [], included: [], carried: false }).get(same)!
     ;(act.excluded_by ? group.excluded : group.included).push(index)
@@ -166,8 +295,7 @@ export function parseCoverage(reply: string, directory: string, documents: Plann
   for (const { act, excluded, included, carried } of listed.values()) if (excluded.length && included.length) {
     if (final && !carried) excluded.forEach(index => dropped.add(index))
     else if (!final) issues.push(`${entries([...excluded, ...included])} describe an act the same way ("${excerpt(act, 80)}") for the same parties: with "excluded_by" in ${entries(excluded)}, without it in ${entries(included)}. ` +
-      "If these are different acts, describe each so that the descriptions differ. If they are the same act, keep one entry for it: " +
-      "with \"excluded_by\" and \"document\": null only when the lawyer's own words leave its document out of this package, otherwise without \"excluded_by\".")
+      "Place them alike: each with \"excluded_by\" and \"document\": null only when the lawyer's own words leave this act's document out of this package, otherwise each without \"excluded_by\".")
   }
   if (issues.length) return { issues }
   const seen = new Set<string>()
@@ -335,8 +463,8 @@ function lawyerTexts(directory: string) {
 
 /** Whether `words` are one or more whole sentences of one lawyer text (the
  * request, one included update or one answer, as lawyerTexts gives them),
- * verbatim and in the same case apart from the quote checks' whitespace and
- * quotation-mark normalisation: they start and stop at sentenceBounds, and may
+ * verbatim and in the same case apart from the quote checks' whitespace,
+ * quotation-mark and hyphen normalisation: they start and stop at sentenceBounds, and may
  * leave off a line's markers, the emphasis, quotation marks, brackets or
  * ellipsis around them, and the closing ".", "!", "?" or ";". Markup inside
  * them (MARKUP) is kept as written: the words are quoted again as the lawyer's
@@ -755,7 +883,7 @@ function plannedIn(act: CoverageAct, documents: PlannedDocument[]) {
   return `planned in ${label(carrier)}, executed by ${!executing ? "parties the plan does not name" : executing.length ? quotedList(executing) : "no party"}`
 }
 
-/** What the coverage job reads of a planned document: no delivery or review fields. */
+/** What the placement job reads of a planned document: no delivery or review fields. */
 function coverageView(document: PlannedDocument) {
   return {
     id: document.id, title: document.title, purpose: document.purpose, executed_by: document.executed_by ?? null,
@@ -768,7 +896,7 @@ function namingTexts(directory: string) {
   return [...lawyerWords(directory), ...matterSourceIDs(directory).map(id => sourceText(directory, id))]
 }
 
-/** Content key of a checked plan: what the coverage job read of its documents
+/** Content key of a checked plan: what the placement job read of its documents
  * (coverageView) and whom the lawyer acts for. A document's delivery fields,
  * which the package review may write into the plan, do not change it. */
 export function coveragePlanHash(documents: PlannedDocument[], actingFor: ActingFor | undefined) {

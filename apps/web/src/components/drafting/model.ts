@@ -385,6 +385,25 @@ export function draftedGroups(status: LeanDraftingStatus | undefined): DraftedGr
   return [...groups, ...notes.map((main) => ({ main, extras: [] })), ...earlier]
 }
 
+/** Why a delivered draft is there when the request named files and not this
+ * one: the run's plan added the document without a file name. Says so with
+ * the purpose the plan gives it, read from the saved plan, never restated by a
+ * model; nothing when the request named no file or named this one. */
+export function addedDraftNote(status: LeanDraftingStatus | undefined, name: string): string | undefined {
+  const planned = status?.plan?.documents ?? []
+  const named = planned.filter((document) => document.file).length
+  if (named === 0) return undefined
+  const body = status?.documents?.documents.find((row) => row.kind === "body" && row.deliverable === name)
+  const document = body && planned.find((document) => document.id === body.document)
+  if (!document || document.file) return undefined
+  const lead = `Prepared in addition to the ${named === 1 ? "file" : "files"} you named.`
+  const purpose = document.purpose.replace(/\s+/g, " ").trim()
+  if (!purpose) return lead
+  // A long purpose is cut at a word, so the note stays one short line.
+  const brief = purpose.length > 160 ? `${purpose.slice(0, 160).replace(/\s+\S*$/, "")}…` : purpose
+  return `${lead} ${/[.!?…]$/.test(brief) ? brief : `${brief}.`}`
+}
+
 /** The draft a combined document's one file belongs to. Ingest reports the
  * file with the document's id and the exact names it registered the body and
  * notes under; the file is offered only while the summary lists it as the

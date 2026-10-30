@@ -59,7 +59,10 @@ export default tool({
       return `${args.documentName} has no readable text: ingest could not extract any, so it is not indexed and no quotation from it can be verified. Do not use this quotation; tell the user the document could not be read.`
     }
 
-    const match = findQuote(await liveText(docPath), args.quote)
+    // The file's own name says how its text was written (Markdown, an email,
+    // a spreadsheet's CSV), so the quote is read through the readings
+    // verify-quote uses for that document, and no others.
+    const match = findQuote(await liveText(docPath), args.quote, docPath)
     if (!match) {
       return `The quoted text does not appear in ${args.documentName}. Do not use this quotation — re-read the document with read-document or search-document and quote only text it returns verbatim.`
     }

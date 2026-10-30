@@ -3,7 +3,7 @@ import { approvedResearch, researchSource } from "./research"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
-import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearestGap, normalize, verifyQuote } from "../../lib/quote-verify"
+import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearestGap, normalize, quotePlaces, verifyQuote } from "../../lib/quote-verify"
 import type { DocID } from "./plan"
 import { leanUserUpdates } from "./requests"
 import { readLeanText, readQuestions, shortHash, type OpenItem, type StageID } from "./state"
@@ -13,7 +13,28 @@ import { readLeanText, readQuestions, shortHash, type OpenItem, type StageID } f
 // (verbatim, after folding curly quotes, whitespace and Markdown escapes in the
 // source). A miss names the quote so the authoring model can correct it.
 
-const SOURCE_QUOTE = /["“]([^"“”\n]{1,2000})["”]\s*[[(]\s*source\s*:\s*([^\])\n]+?)\s*[\])]/gi
+// A quotation may hold quoted words of its own ("the "Deposit" means …"), read
+// as part of it. An inner pair opens after a space or punctuation, before a
+// word, and closes after a word, before a space or punctuation, so separate
+// quotations on one line ("A" and "B" [source: X]) are not read as one: only
+// the one the citation follows is. Each citation is found first and its
+// quotation read back from the closing mark, so a line full of quotation marks
+// is read once, not once per mark. A quotation is at most QUOTE_CAP characters
+// (checked after the match), quoted words within it at most 500.
+// A source name may hold brackets of its own (ingest's "Name (2).docx"): a
+// citation in [ ] or ( ) ends at the bracket closing it, past a few balanced
+// pairs of the same kind in the name. A citation that does not close so
+// (mismatched or unbalanced brackets, or none) ends at the first ] or ), or at
+// the end of the line: its quotation is still read and checked, never dropped.
+const INNER_QUOTE = /(?<![\p{L}\p{N}])["“](?=\S)[^"“”\n]{0,500}?(?<=\S)["”](?![\p{L}\p{N}])/u
+const QUOTE_CAP = 2000
+const SOURCE_QUOTE = new RegExp(String.raw`(?=["”]\s*[[(]\s*source\s*:)(?<=["“]((?:[^"“”\n]|${INNER_QUOTE.source}){1,${QUOTE_CAP}}))["”]\s*` +
+  String.raw`(?:\[\s*source\s*:([^\[\]\n]*(?:\[[^\[\]\n]*\][^\[\]\n]*){0,8})\]|\(\s*source\s*:([^()\n]*(?:\([^()\n]*\)[^()\n]*){0,8})\)` +
+  String.raw`|[[(]\s*source\s*:([^\])\n]*)[\])]?)`, "giu")
+// Inside a quotation in double marks, quoted words are written in single ones:
+// "the 'Price' is payable" quotes a source's the "Price" is payable. They end
+// at the next single mark, past an apostrophe within a word ('Seller's Group').
+const NESTED_QUOTE = /(?<![\p{L}\p{N}])['‘](?=\S)((?:[^'‘’"“”\n]|(?<=[\p{L}\p{N}])['’](?=[\p{L}\p{N}]))+?)(?<=\S)['’](?![\p{L}\p{N}])/gu
 export const EXCERPT = 240
 
 export type SourceQuote = { quote: string; source_id: string }
@@ -117,12 +138,13 @@ function readMatterSourceBasis(directory: string) {
 
 /** Quotations written as "exact words" [source: document name]. */
 export function sourceQuotes(text: string): SourceQuote[] {
-  return [...text.matchAll(SOURCE_QUOTE)].map(match => ({ quote: match[1]!.trim(), source_id: match[2]!.trim() }))
+  return [...text.matchAll(SOURCE_QUOTE)].filter(match => match[1]!.length <= QUOTE_CAP)
+    .map(match => ({ quote: match[1]!.trim(), source_id: (match[2] ?? match[3] ?? match[4])!.trim() }))
 }
 
 export function quoteFound(directory: string, quote: SourceQuote) {
   if (/^https?:\/\//.test(quote.source_id)) return approvedResearch(directory).some(row => row.url === quote.source_id &&
-    normalize(researchSource(directory, row.snapshot)?.text ?? "").includes(normalize(quote.quote)))
+    quotePlaces(normalize(researchSource(directory, row.snapshot)?.text ?? ""), normalize(quote.quote), { first: true }).places.length > 0)
   if (quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE)) {
     return instructionFound(directory, quote.quote)
   }
@@ -130,23 +152,45 @@ export function quoteFound(directory: string, quote: SourceQuote) {
 }
 
 /** User instructions have their own provenance: a matter source named
- * "request" must not substitute for what the lawyer actually asked. */
+ * "request" must not substitute for what the lawyer actually asked. Their
+ * words are matched in lower case, with a quotation's bracketed change of case
+ * (quotePlaces). */
 export function instructionFound(directory: string, quote: string) {
   const words = normalize(quote).toLowerCase()
-  return words.length > 0 && lawyerWords(directory).some(text => normalize(text).toLowerCase().includes(words))
+  return words.length > 0 && lawyerWords(directory).some(text => quotePlaces(normalize(text).toLowerCase(), words, { first: true }).places.length > 0)
 }
 
 /** A quotation in prose ('"words" [source: id]') passes when quoteFound does,
  * or when an ellipsis at its start or end leaves one passage that is in the
  * named source (elisionGap). An ellipsis in the middle is never accepted:
  * the words it leaves out can change who must do what or drop a condition,
- * amount or limit. quoteMissIssue then says what it leaves out. A JSON quote
+ * amount or limit. quoteMissIssue then says what it leaves out. Quoted words
+ * in single marks inside it may stand for the source's double marks
+ * (NESTED_QUOTE), tried when the words as written are not found. A JSON quote
  * field keeps the verbatim contract of quoteFound, since its consumers locate
- * those words. */
+ * those words. The citation may add a pinpoint after the source name
+ * (citedSource). */
 export function proseQuoteFound(directory: string, quote: SourceQuote) {
-  if (quoteFound(directory, quote)) return true
-  const elided = elision(directory, quote)
-  return elided?.parts.length === 1 && elided.gap?.kind === "near"
+  const cited = { ...quote, source_id: citedSource(directory, quote.source_id) }
+  const nested = cited.quote.replace(NESTED_QUOTE, '"$1"')
+  return [cited, ...(nested === cited.quote ? [] : [{ ...cited, quote: nested }])].some(reading => {
+    if (quoteFound(directory, reading)) return true
+    const elided = elision(directory, reading)
+    return elided?.parts.length === 1 && elided.gap?.kind === "near"
+  })
+}
+
+/** The source a prose citation names. A name the check knows is taken as
+ * written. Otherwise the longest known name the citation starts with is taken
+ * when the rest opens as a pinpoint ("Name (2).docx, cl. 4.2"); a name that
+ * continues another way ("Name.docx.pdf") is a different source and kept, so
+ * it fails as unknown. */
+function citedSource(directory: string, source_id: string) {
+  if (!/[,;]/.test(source_id)) return source_id
+  const known = [...matterSourceIDs(directory), REQUEST_SOURCE, ...approvedResearch(directory).map(row => row.url)]
+  if (known.includes(source_id)) return source_id
+  return known.filter(name => source_id.startsWith(name) && /^\s*[,;]\s*\S/.test(source_id.slice(name.length)))
+    .sort((a, b) => b.length - a.length)[0] ?? source_id
 }
 
 /** Where the passages of a quotation with an ellipsis sit in its named source

@@ -66,6 +66,8 @@ test("retrieved text verifies exact quotations, while URLs, fabricated quotes an
   expect(approvedResearch(directory)).toHaveLength(1)
   expect(quoteFound(directory, { source_id: research.findings[0]!.url, quote: research.findings[0]!.quote })).toBe(true)
   expect(quoteFound(directory, { source_id: research.findings[0]!.url, quote: "Invented text" })).toBe(false)
+  expect(quoteFound(directory, { source_id: research.findings[0]!.url, quote: "[a] party must give written notice" })).toBe(true)
+  expect(quoteFound(directory, { source_id: research.findings[0]!.url, quote: "[o]ne party must give written notice" })).toBe(false)
   expect(citationRowsForLeanText(directory, "draft", research.findings[0]!.url)[0]?.status).toBe("verified")
   expect(researchHandoff(directory)).toContain("Currency")
 })

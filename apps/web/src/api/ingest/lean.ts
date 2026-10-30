@@ -99,7 +99,13 @@ export type LeanDocument = {
   conflict?: "accepted_revision"
 }
 
-export type LeanPlannedDocument = { id: string; title: string; purpose: string }
+export type LeanPlannedDocument = {
+  id: string
+  title: string
+  purpose: string
+  /** The file name the request gave this document; absent for one the plan added. */
+  file?: string
+}
 
 export type LeanDraftingStatus = {
   schema: "dochaus.lean.state/2"

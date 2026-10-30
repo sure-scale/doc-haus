@@ -103,7 +103,9 @@ export const LEAN_STAGE_AGENTS = {
   "change-review": "lean-change-review",
   changes: "lean-changes",
   finalize: "lean-drafting-notes",
-  // A job of the outline, not a stage: it checks the planned package against the instructions.
+  // A job of the outline, not a stage: it lists the acts the instructions direct, blind to the plan.
+  coverageActs: "lean-coverage-acts",
+  // A job of the outline, not a stage: it places each listed act in the planned document that carries it.
   coverage: "lean-coverage",
   // A job of the outline, not a stage: it reads the files the lawyer asks to receive.
   files: "lean-files",
@@ -111,6 +113,8 @@ export const LEAN_STAGE_AGENTS = {
   advise: "lean-advise",
   // A job of taking an answer, not a stage: it reads how the lawyer's own words answer one question.
   answer: "lean-answer",
+  // A job of taking answers, not a stage: it reads whether the answers given can all be followed together.
+  reconcile: "lean-answer-reconcile",
 } as const
 
 export type PermissionRule = { action: string; resource: string; effect: "allow" | "deny" | "ask" }

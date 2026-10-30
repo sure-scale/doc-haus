@@ -7,7 +7,10 @@ import { TOOL_SYNTAX_ISSUE, checkDraft, printedToolCall, readParagraphs } from "
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { matterSourceIDs } from "./quotes"
 import { memoNotesFile } from "./deliverables"
-import { LEAN_COVERAGE_SCHEMA, coveragePlanHash, coveragePrompt, coverageScopeQuestion, parseCoverage, planCoverageCurrent, planCoverageIssues, type CoverageAct, type LeanCoverage } from "./package-coverage"
+import {
+  LEAN_COVERAGE_SCHEMA, coverageActsPrompt, coveragePlacementPrompt, coveragePlanHash, coverageScopeQuestion, mergeCoverageActs, parseCoverageActs, parseCoveragePlacement, planCoverageCurrent, planCoverageIssues,
+  type CoverageAct, type InstructedAct, type LeanCoverage,
+} from "./package-coverage"
 import { answeredScopeQuestion, openScopeQuestion } from "./package-scope"
 import {
   LEAN_REQUESTED_FILES_SCHEMA, parseRequestedFiles, requestedFilesIssues, requestedFilesPlanned, requestedFilesPrompt, requestedFilesQuestion, requestedFilesRevision, requestedFilesWords, withRequestedNames, writeRequestedFiles,
@@ -46,8 +49,9 @@ import { originalTables, originalTablesBlock, partTableIssues, tableParts } from
 // issues; code assembles the parts in outline order and the assembled document
 // goes through the ordinary draft check, render and paragraph pointers. The
 // outline comes from the model; nothing here knows what a document should hold.
-// Before the plan is saved, a coverage job in its own session checks it against
-// the lawyer's instructions (package-coverage.ts), its issues go back to the
+// Before the plan is saved, coverage jobs in sessions of their own check it
+// against the lawyer's instructions (package-coverage.ts): the acts they direct
+// are listed blind to the plan, then placed in it. The issues go back to the
 // outline session for at most PLAN_COVERAGE_REVISIONS revised outlines, and the
 // result is recorded in coverage.json without failing the step. When an
 // instructed act is still left without a document its parties execute and no
@@ -143,17 +147,39 @@ export async function runDraftStage(
   const ask = exchange({ id: drafter, agent })
   const failed = (label: string, issues: string[]): DraftStageRun =>
     ({ status: "failed", reason: `${step}: ${label}: checker failed after ${LEAN_MAX_RETRIES} retries: ${issues.join(" ")}` })
-  // The coverage job reads the plan in a fresh session of its own, so the
-  // outline's reasoning does not steer it. Errors from the session calls,
-  // including a pause or restart, propagate and leave the plan unwritten.
-  const covering = async (documents: PlannedDocument[]): Promise<Coverage> => {
-    const coverageAgent = LEAN_STAGE_AGENTS.coverage
+  // A coverage job's fresh session of its own, reported with the step's others.
+  const coverageSession = async (agent: string, label: string) => {
     const id = await deps.sessions.createSession({
-      directory, parentID: state.owner_session_id, agent: coverageAgent, title: stepSessionTitle(directory, step, "draft: coverage"), model: state.model, permissions: LEAN_CHILD_PERMISSIONS,
+      directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, step, `draft: ${label}`), model: state.model, permissions: LEAN_CHILD_PERMISSIONS,
     })
     sessionIDs.push(id)
     progress({ ...(sessionIDs.length === 1 ? { session_id: id } : {}), session_ids: [...sessionIDs] })
-    const checked = await exchange({ id, agent: coverageAgent })("coverage", coveragePrompt(directory, documents), (reply, final) => parseCoverage(reply, directory, documents, { final }))
+    return id
+  }
+  // The acts the instructions direct are listed blind to the plan, so they are
+  // listed once per step, on first use, and serve every outline revision and
+  // the saved plan's recheck. Two runs in sessions of their own list them in
+  // parallel and their verified lists are joined (mergeCoverageActs); when
+  // neither passes its check, the first run's issues are the step's.
+  let instructed: Promise<Checked<InstructedAct[]>> | undefined
+  const listing = () => instructed ??= Promise.all([1, 2].map(async run => {
+    const id = await coverageSession(LEAN_STAGE_AGENTS.coverageActs, `coverage acts ${run}`)
+    return exchange({ id, agent: LEAN_STAGE_AGENTS.coverageActs })("coverage acts", coverageActsPrompt(directory), reply => parseCoverageActs(reply, directory))
+  })).then(([first, second]): Checked<InstructedAct[]> => first!.value && second!.value ? { issues: [], value: mergeCoverageActs(first!.value, second!.value) }
+    : first!.value ? first! : second!.value ? second! : { issues: first!.issues })
+  // The placement job reads the plan in a fresh session of its own for each
+  // plan it checks, so the outline's reasoning does not steer it; with no act
+  // listed it is not asked. Errors from the session calls, including a pause or
+  // restart, propagate and leave the plan unwritten.
+  const covering = async (documents: PlannedDocument[]): Promise<Coverage> => {
+    const listed = await listing()
+    if (!listed.value) return { issues: listed.issues }
+    const acts = listed.value
+    if (!acts.length) return { acts: [], issues: planCoverageIssues([], documents, directory) }
+    const coverageAgent = LEAN_STAGE_AGENTS.coverage
+    const id = await coverageSession(coverageAgent, "coverage")
+    const checked = await exchange({ id, agent: coverageAgent })("coverage", coveragePlacementPrompt(directory, documents, acts),
+      (reply, final) => parseCoveragePlacement(reply, directory, documents, acts, { final }))
     return checked.value ? { acts: checked.value, issues: planCoverageIssues(checked.value, documents, directory) } : { issues: checked.issues }
   }
   const recordCoverage = (documents: PlannedDocument[], actingFor: ActingFor | undefined, coverage: Coverage) => {
@@ -183,7 +209,7 @@ export async function runDraftStage(
     return { status: "blocked", outputs: ["coverage.json"], openItems: [], questions: [question],
       reason: `${step}: the document plan leaves an instructed act without a document its parties execute; drafting waits for your answer on the package's scope.` }
   }
-  // The files job, like the coverage job, reads the plan in a fresh session of
+  // The files job, like the placement job, reads the plan in a fresh session of
   // its own, and only when the plan has a memo or more than one document to
   // put in files; undefined when it is not asked. A reply that never passed its
   // check gives no files. A name refused on one attempt is carried, by quote,
