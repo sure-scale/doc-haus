@@ -146,6 +146,8 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   const [comparing, setComparing] = useState<ReadonlySet<string>>(new Set())
   const [compareFailed, setCompareFailed] = useState<ReadonlySet<string>>(new Set())
   const compareAbort = useRef<AbortController>(undefined)
+  // Columns with a comparison call in flight, so one column never runs two at once.
+  const comparingIds = useRef(new Set<string>())
   useEffect(() => {
     const controller = new AbortController()
     compareAbort.current = controller
@@ -329,13 +331,19 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
       const snapshot = { ...queued.grid, version: state.version }
       try {
         const saved = await saveGrid(matterId, snapshot)
-        if (state.epoch !== epoch) break
+        if (state.epoch !== epoch) {
+          queued.resolve?.(false)
+          break
+        }
         state.version = saved.version ?? state.version + 1
         gridRef.current = { ...gridRef.current, version: state.version }
         setGrid(gridRef.current)
         queued.resolve?.(true)
       } catch (e) {
-        if (state.epoch !== epoch) break
+        if (state.epoch !== epoch) {
+          queued.resolve?.(false)
+          break
+        }
         state.queue.unshift(queued)
         state.pending = true
         state.blocked = true
@@ -378,6 +386,8 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
       completed = true
       state.version = latest.version ?? 0
       state.pending = false
+      // Discarded changes resolve as unsaved, so nothing waits on them.
+      state.queue.forEach((item) => item.resolve?.(false))
       state.queue = []
       state.blocked = false
       state.saving = false
@@ -586,10 +596,12 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   // through a pool of two; a column above the document cap is not compared.
   async function compareColumns(columnIds: string[], epoch: number) {
     const ids = columnIds.filter((id) => {
+      if (comparingIds.current.has(id)) return false
       const input = comparisonInputs(gridRef.current, id, reviewRows(documentsRef.current))
       return typeof input === "object" && !freshComparison(gridRef.current.columns.find((col) => col.id === id), input)
     })
     if (!ids.length) return
+    ids.forEach((id) => comparingIds.current.add(id))
     setComparing((current) => new Set([...current, ...ids]))
     let next = 0
     const worker = async () => {
@@ -598,6 +610,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
         try {
           await compareOne(id, epoch)
         } finally {
+          comparingIds.current.delete(id)
           setComparing((current) => without(current, id))
         }
       }
@@ -634,6 +647,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     setCheckingFill(true)
     preflight.current = true
     const epoch = state.epoch
+    const version = state.version
     try {
       const [saved, matter] = await Promise.all([getGrid(matterId), getMatter(matterId)])
       if (state.epoch !== epoch) return
@@ -643,7 +657,10 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
         return
       }
       const current = fillTargets()
-      if ((saved.version ?? 0) !== state.version) {
+      // A comparison saved from this window during the check moves the version
+      // within this range; only a version outside it was saved elsewhere.
+      const savedVersion = saved.version ?? 0
+      if (savedVersion < version || savedVersion > state.version) {
         state.blocked = true
         setSaveProblem("This table changed elsewhere. Reload the saved table before filling; download a copy first if needed.")
         setFillPreview(undefined)
