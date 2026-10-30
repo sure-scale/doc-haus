@@ -16,8 +16,9 @@
 .review-toolbar-steps { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-2); margin-left: auto; }
 .review-toolbar-steps > .review-primary { margin-left: var(--space-4); }
 .review-toolbar-actions button.ghost, .review-export:not(.review-primary) > .split-button-lead { padding-inline: var(--space-3); }
-.review-export:not(.review-primary) > button { border-color: transparent; background: transparent; color: var(--muted); }
-.review-export:not(.review-primary) > button:hover:not(:disabled) { border-color: transparent; background: var(--bg); color: var(--text); }
+/* A quiet export keeps its outline, so its format menu reads as part of it. */
+.review-export:not(.review-primary) > button { border-color: var(--border); background: transparent; color: var(--text-secondary); }
+.review-export:not(.review-primary) > button:hover:not(:disabled) { border-color: var(--border-strong); background: var(--bg); color: var(--text); }
 /* Compact search: the matter list's search field, self-contained here. */
 .review-toolbar .matter-search { position: relative; display: flex; align-items: center; flex: 0 1 180px; min-width: 140px; max-width: 280px; }
 .review-toolbar .matter-search > svg { position: absolute; left: 12px; pointer-events: none; color: var(--muted); }
@@ -234,6 +235,11 @@
   .review-cell-actions .icon-btn, .review-col-x, .review-add-button { min-width: max(44px, calc(44px / var(--ui-scale))); }
   .review-table .review-add-col { width: 68px; min-width: 68px; }
   .review-col-q, .review-compare-trigger { min-height: max(44px, calc(44px / var(--ui-scale))); }
+}
+/* On a phone the document column gives way, so an answer and its column's
+   comparison fit beside it. */
+@media (max-width: 480px) {
+  .review-table .review-doc-col { width: 128px; min-width: 0; font-size: .85rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .review-running::before { animation: none; }

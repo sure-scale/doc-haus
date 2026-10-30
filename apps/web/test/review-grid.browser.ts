@@ -786,6 +786,10 @@ try {
   await summary.click()
   const comparison = head.getByRole("group", { name: "AI comparison" })
   await comparison.getByText("Two documents choose English law; the side letter chooses Scots law.").waitFor()
+  // Scrolling the table keeps the popover open; it follows its summary.
+  await summary.evaluate((element) => { const view = element.closest(".review-scroll")!; view.scrollTop += 8; view.dispatchEvent(new Event("scroll")) })
+  await page.waitForTimeout(50)
+  assert.equal(await comparison.isVisible(), true, "scrolling the table keeps the comparison open")
   await page.keyboard.press("ArrowDown")
   assert.equal(await comparison.getByRole("button", { name: /^Side letter\.docx/ }).evaluate(element => element === document.activeElement), true, "arrow keys move into the differing cells")
   const compareCloses = await closes()

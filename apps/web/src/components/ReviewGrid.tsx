@@ -799,7 +799,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   const walkEntry = inWalk && detailKey ? attention.cells.get(detailKey) : undefined
   const walkReason = detailKey && stillQueued.has(detailKey) ? attention.queue.find((entry) => entry.key === detailKey)!.reason : undefined
   // A degraded source is always the cell's marker, which the walk's reason
-  // already explains, so the citation keeps only its badge.
+  // already names and explains, so the citation repeats neither.
   const walkExplains = (check: SourceVerdict) => inWalk && !!walkReason && DEGRADED.includes(check)
   // The open cell's comparison, unless the walk's reason already gives it.
   const detailColumn = detailShown && grid.columns.find((col) => col.id === detailShown.columnId)
@@ -1047,7 +1047,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                               {label}
                             </button>
                           ) : <div className="ref">{label}<span className="muted"> — Source unavailable in this matter</span></div>}
-                          {check && <span className={`review-source-badge is-${check}`}>{SOURCE_BADGE[check]}</span>}
+                          {check && !walkExplains(check) && <span className={`review-source-badge is-${check}`}>{SOURCE_BADGE[check]}</span>}
                         </div>
                         {degradedCitation(citation.documentName)}
                         {citation.structuralPath && <div className="review-source-path">{citation.structuralPath}</div>}

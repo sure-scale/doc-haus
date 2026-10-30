@@ -161,20 +161,24 @@ export function CompareSummary({ comparison, onOpen }: { comparison: GridColumnC
   const [place, setPlace] = useState<{ top: number; left: number }>()
 
   // Fixed, so the table's scroll area cannot clip it: under the trigger, kept
-  // inside the viewport. Scrolling or resizing closes it.
-  useLayoutEffect(() => {
-    if (!open || !panel.current || !trigger.current) return
+  // inside the viewport. It follows the trigger while the table scrolls and
+  // closes once the trigger leaves the table's view, or on resize.
+  const placePanel = () => {
+    if (!panel.current || !trigger.current) return
     const zoom = parseFloat(getComputedStyle(document.body).zoom) || 1
     const anchor = trigger.current.getBoundingClientRect()
+    const view = trigger.current.closest(".review-scroll")?.getBoundingClientRect()
+    if (view && (anchor.right < view.left || anchor.left > view.right || anchor.bottom < view.top || anchor.top > view.bottom)) return setOpen(false)
     const width = panel.current.getBoundingClientRect().width
     const wide = document.documentElement.clientWidth
     setPlace({ top: (anchor.bottom + 6) / zoom, left: Math.max(16, Math.min(anchor.left - 4, wide - 16 - width)) / zoom })
-  }, [open])
+  }
+  useLayoutEffect(() => { if (open) placePanel() }, [open])
 
   useEffect(() => {
     if (!open) return
     const away = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false) }
-    const moved = (event: Event) => { if (!panel.current?.contains(event.target as Node)) setOpen(false) }
+    const moved = (event: Event) => { if (!panel.current?.contains(event.target as Node)) placePanel() }
     const resized = () => setOpen(false)
     document.addEventListener("pointerdown", away)
     window.addEventListener("scroll", moved, true)

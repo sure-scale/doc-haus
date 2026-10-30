@@ -23,7 +23,7 @@ export default function FillPreview({ targets, checking, onCancel, onConfirm }: 
           ))}
           {!targets.length && <p>There are no eligible cells to fill.</p>}
           <div className="compare-actions">
-            <button type="button" disabled={checking} onClick={close}>Cancel</button>
+            <button type="button" className="ghost" disabled={checking} onClick={close}>Cancel</button>
             <button type="button" className="primary" disabled={checking || !targets.length} onClick={onConfirm}>{checking ? "Checking…" : "Start fill"}</button>
           </div>
     </ReviewSetupDialog>
