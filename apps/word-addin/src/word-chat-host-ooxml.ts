@@ -98,6 +98,91 @@ export function projectNativeWordChatBody(xml: string, inventory: Array<{ id: st
     },
   }
 }
+/** Verify only the protected main-story remainder after an appended row.
+ * The caller must separately verify new-row formatting, carrier ownership and
+ * compressed-package dependencies; this function does not establish them. */
+export function verifyNativeWordChatRowRemainder(
+  beforeXml: string, afterXml: string,
+  beforeInventory: Array<{id:string; text:string; tableNestingLevel?:number}>,
+  afterInventory: Array<{id:string; text:string; tableNestingLevel?:number}>,
+  binding: {tableIndex:number; rows:Array<Array<{id:string; text:string}>>}, cells: string[],
+) {
+  const before = projectNativeWordChatBody(beforeXml, beforeInventory)
+  const after = projectNativeWordChatBody(afterXml, afterInventory)
+  const fail = (): never => { throw new Error("Native row remainder mismatch") }
+  const bodyOf = (xml: string) => {
+    const part = parse(xml, 16_000_000).get(MAIN)!
+    const bodies = Array.from(part.getElementsByTagNameNS(W, "body"))
+    if (bodies.length !== 1) return fail()
+    return bodies[0]!
+  }
+  const oldBody = bodyOf(beforeXml), newBody = bodyOf(afterXml)
+  const tables = (body: Element) => elements(body).filter(e => e.namespaceURI === W && e.localName === "tbl")
+  if (!Number.isSafeInteger(binding.tableIndex) || binding.tableIndex < 0 || !binding.rows.length || !cells.length || cells.length > 32 ||
+      binding.rows.some(row => row.length !== cells.length) || cells.some(cell => typeof cell !== "string")) return fail()
+  const oldTables = tables(oldBody), newTables = tables(newBody)
+  if (oldTables.length !== newTables.length || binding.tableIndex >= oldTables.length) return fail()
+  const oldTable = oldTables[binding.tableIndex]!, newTable = newTables[binding.tableIndex]!
+  const rows = (table: Element) => elements(table).filter(e => e.namespaceURI === W && e.localName === "tr")
+  const oldRows = rows(oldTable), newRows = rows(newTable)
+  if (oldRows.length !== binding.rows.length || newRows.length !== oldRows.length + 1) return fail()
+  const newRow = newRows.at(-1)!
+  const rowCells = (row: Element) => elements(row).filter(e => e.namespaceURI === W && e.localName === "tc")
+  const addedCells = rowCells(newRow)
+  if (addedCells.length !== cells.length || elements(newRow).some(e => e.namespaceURI !== W || !["trPr", "tc"].includes(e.localName))) return fail()
+  const addedIds: string[] = []
+  for (let rowIndex = 0; rowIndex < newRows.length; rowIndex++) {
+    const currentCells = rowCells(newRows[rowIndex]!)
+    if (currentCells.length !== cells.length) return fail()
+    for (let col = 0; col < currentCells.length; col++) {
+      const cell = currentCells[col]!, paragraphs = elements(cell).filter(e => e.namespaceURI === W && e.localName === "p")
+      if (paragraphs.length !== 1 || elements(cell).some(e => e.namespaceURI !== W || !["tcPr", "p"].includes(e.localName))) return fail()
+      const tablePos = elements(newBody).indexOf(newTable), rowPos = elements(newTable).indexOf(newRows[rowIndex]!), cellPos = elements(newRows[rowIndex]!).indexOf(cell), paraPos = elements(cell).indexOf(paragraphs[0]!)
+      const path = `body/tbl[${tablePos}]/tr[${rowPos}]/tc[${cellPos}]/p[${paraPos}]`
+      const found = after.paragraphs.filter(p => p.path === path)
+      if (found.length !== 1) return fail()
+      if (rowIndex === oldRows.length) {
+        if (found[0]!.text !== cells[col]) return fail()
+        addedIds.push(found[0]!.id)
+      } else if (found[0]!.id !== binding.rows[rowIndex]![col]!.id || found[0]!.text !== binding.rows[rowIndex]![col]!.text) return fail()
+    }
+  }
+  const oldIds = binding.rows.flat().map(cell => cell.id)
+  if (new Set(oldIds).size !== oldIds.length || oldIds.some(id => !before.paragraphs.some(p => p.id === id))) return fail()
+  const filtered = after.paragraphs.filter(p => !addedIds.includes(p.id))
+  if (filtered.length !== before.paragraphs.length || filtered.some((p, i) => p.id !== before.paragraphs[i]!.id || p.text !== before.paragraphs[i]!.text || p.path !== before.paragraphs[i]!.path)) return fail()
+  const carrierNames = new Set(["ins", "del", "pPrChange", "rPrChange"])
+  const collect = (root: Element) => {
+    const result: Array<{path:string; node:Element}> = []
+    const visit = (node:Element, path:string) => {
+      if (node.namespaceURI === W && carrierNames.has(node.localName)) result.push({path, node})
+      for (const [i, child] of elements(node).entries()) visit(child, `${path}/${child.localName}[${i}]`)
+    }
+    visit(root,"body"); return result
+  }
+  const allAfter = collect(newBody)
+  const afterIds = allAfter.map(item => item.node.getAttributeNS(W,"id"))
+  if (afterIds.some(id => !id || !/^\d+$/.test(id)) || new Set(afterIds).size !== afterIds.length) return fail()
+  newRow.parentNode!.removeChild(newRow)
+  const old = collect(oldBody), current = collect(newBody)
+  const ids = (items: typeof old) => items.map(item => item.node.getAttributeNS(W,"id"))
+  const oldIdsAll = ids(old), currentIds = ids(current)
+  if (old.length !== current.length || oldIdsAll.some(id => !id || !/^\d+$/.test(id)) || currentIds.some(id => !id || !/^\d+$/.test(id)) ||
+      new Set(oldIdsAll).size !== old.length || new Set(currentIds).size !== current.length) return fail()
+  for (let i = 0; i < old.length; i++) {
+    const a = old[i]!, b = current[i]!
+    if (a.path !== b.path || a.node.namespaceURI !== b.node.namespaceURI || a.node.localName !== b.node.localName) return fail()
+    const name = b.node.getAttributeNodeNS(W,"id")!.name
+    b.node.removeAttributeNS(W,"id"); b.node.setAttributeNS(W,name,a.node.getAttributeNS(W,"id")!)
+  }
+  for (const body of [oldBody, newBody]) {
+    const section = elements(body).at(-1)
+    if (section?.namespaceURI === W && section.localName === "sectPr") section.removeAttributeNS(W,"rsidSect")
+  }
+  if (JSON.stringify(canonical(oldBody,true)) !== JSON.stringify(canonical(newBody,true))) return fail()
+  return { addedParagraphIds: addedIds, carrierMap: old.map((item,i) => ({path:item.path, type:item.node.localName, before:oldIdsAll[i]!, after:currentIds[i]!})) }
+}
+
 function content(parts: Map<string, Element>, table: boolean, section: boolean) {
   const data = elements(parts.get(MAIN)!).filter(node => node.namespaceURI === PKG && node.localName === "xmlData")
   if (data.length !== 1 || elements(data[0]!).length !== 1) throw new Error("Invalid clause document")

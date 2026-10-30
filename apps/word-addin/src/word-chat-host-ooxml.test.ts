@@ -308,3 +308,19 @@ test("post-format neighbour comparison accepts only validated inline revision ID
   const duplicate = flat(paragraph.replace('w:id="4"', 'w:id="3"'))
   expect(sameNativeWordChatParagraphContent(duplicate, duplicate)).toBe(false)
 })
+
+test("native row remainder checks bound geometry and all-depth prior revisions", async () => {
+  const { verifyNativeWordChatRowRemainder: verify } = await import("./word-chat-host-ooxml")
+  const cell = (text: string) => `<w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`
+  const old = `<w:p><w:pPr><w:pPrChange w:id="1" w:author="Earlier" w:date="2026-01-01"><w:pPr/></w:pPrChange></w:pPr><w:ins w:id="2" w:author="Earlier" w:date="2026-01-01"><w:r><w:rPr><w:b/><w:rPrChange w:id="3" w:author="Earlier" w:date="2026-01-01"><w:rPr/></w:rPrChange></w:rPr><w:t>Prior</w:t></w:r></w:ins></w:p>`
+  const row = `<w:tr>${cell("First")}${cell("Second")}</w:tr>`, inserted = `<w:tr>${cell("New")}${cell("Value")}</w:tr>`
+  const body = `${old}<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid>${row}</w:tbl><w:p><w:r><w:t>Tail</w:t></w:r></w:p>`
+  const after = body.replace(row, row+inserted).replace('w:id="1"','w:id="11"').replace('w:id="2"','w:id="12"').replace('w:id="3"','w:id="13"')
+  const beforeInv = [{id:"p",text:"Prior",tableNestingLevel:0},{id:"a",text:"First",tableNestingLevel:1},{id:"b",text:"Second",tableNestingLevel:1},{id:"tail",text:"Tail",tableNestingLevel:0}]
+  const afterInv = [...beforeInv.slice(0,3),{id:"new1",text:"New",tableNestingLevel:1},{id:"new2",text:"Value",tableNestingLevel:1},beforeInv[3]!]
+  const binding = {tableIndex:0,rows:[[{id:"a",text:"First"},{id:"b",text:"Second"}]]}
+  const check = (xml:string, inv=afterInv) => verify(flat(body),flat(xml),beforeInv,inv,binding,["New","Value"])
+  expect(check(after).carrierMap.map(c => [c.before,c.after])).toEqual([["1","11"],["2","12"],["3","13"]])
+  for (const drift of [after.replace('>Prior<','>Wrong<'),after.replace('w:author="Earlier"','w:author="Other"'),after.replace('2026-01-01','2026-01-02'),after.replace('<w:b/>','<w:i/>'),after.replace('w:id="13"','w:id="12"'),after.replace('w:w="2400"','w:w="2300"'),after.replace(inserted,inserted+inserted),after.replace('>New<','>Other<')]) expect(() => check(drift)).toThrow()
+  expect(() => check(after,[afterInv[0]!,afterInv[2]!,afterInv[1]!,...afterInv.slice(3)])).toThrow()
+})
