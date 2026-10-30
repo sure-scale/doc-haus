@@ -951,6 +951,72 @@ test("prepare rechecks ownership and canonical base after asynchronous authoring
   clearWordEditLease(db, auth.grant.document_id); db.close()
 })
 
+test("reviewed row proposals bind host table, reject forgery and require an independent reviewer", async () => {
+  const id = await newConversation()
+  const paragraphs = ["Name","Amount","Fee","Ten"].map((text,i) => ({id:`cell-${i}`,text}))
+  const table = {tableIndex:0,rows:[paragraphs.slice(0,2),paragraphs.slice(2)]}
+  const native = {...context,text:paragraphs.map(p => p.text).join("\r"),paragraphs,table}
+  const request = (extra: object = {}) => post("send", {conversationId:id,scope:"document",text:"Append the agreed row",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context:native,...extra})
+  modelRawOutput = JSON.stringify({answer:"Prepared for review.",citations:[],rowProposal:{cells:["Tax","Five"],explanation:"Add the agreed row",openItems:[]}})
+  try {
+    const approved = (await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(approved.rowProposal?.table).toEqual(table)
+    expect(approved.proposal).toBeUndefined()
+    const reviewer = [...sessions.values()].find(s => s.parentID === approved.id && s.metadata.type === "word-chat-review")!
+    const review = suppliedContext(sessionContext(reviewer.id))
+    expect(review.proposal.table).toEqual({columns:2,firstRow:["Name","Amount"],referenceRow:["Fee","Ten"]})
+    expect(sessionContext(reviewer.id)).not.toContain("cell-0")
+    const forged = {...approved.rowProposal!,cells:["Other","Five"]}
+    expect((await request({rowProposal:forged})).status).toBe(409)
+    const refined = (await (await request({rowProposal:approved.rowProposal,context:{...native,table:undefined}})).json() as {turn:WordChatTurn}).turn
+    expect(refined.rowProposal?.table).toEqual(table)
+    modelRawOutput = JSON.stringify({answer:"Prepared.",citations:[],rowProposal:{cells:["Tax","Five"],explanation:"Add",openItems:[],tableIndex:0}})
+    expect((await (await request()).json() as {turn:WordChatTurn}).turn.rowProposal).toBeUndefined()
+    modelRawOutput = JSON.stringify({answer:"Prepared.",citations:[],rowProposal:{cells:["Tax","Five"],explanation:"Add",openItems:[]},proposal:{before:"Fee",after:"Cost"}})
+    expect((await (await request()).json() as {turn:WordChatTurn}).turn.rowProposal).toBeUndefined()
+    modelRawOutput = JSON.stringify({answer:"Prepared.",citations:[],rowProposal:{cells:["Tax","Five"],explanation:"Add",openItems:[]}})
+    approveReview = false
+    expect((await (await request()).json() as {turn:WordChatTurn}).turn.rowProposal).toBeUndefined()
+  } finally { modelRawOutput = undefined; approveReview = true }
+})
+
+test("row prepare uses stored review and current bytes, and rechecks the pending lease", async () => {
+  const id = await newConversation(), paragraphs = ["Header","Value"].map((text,i) => ({id:`row-${i}`,text}))
+  const native = {...context,text:"Header\rValue",paragraphs,table:{tableIndex:0,rows:[paragraphs]}}
+  modelRawOutput = JSON.stringify({answer:"Prepared.",citations:[],rowProposal:{cells:["New","Value"],explanation:"Add row",openItems:[]}})
+  let turn: WordChatTurn
+  try { turn = (await (await post("send",{conversationId:id,scope:"document",text:"Append a row",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context:native})).json() as {turn:WordChatTurn}).turn }
+  finally { modelRawOutput = undefined }
+  expect(turn.rowProposal).toBeDefined()
+  const current = readCurrentVersion(directory, "Draft.docx")!, db = openDb(directory)
+  db.run("INSERT OR IGNORE INTO word_grants(token_hash,document_id,origin,issued_version,created_at) VALUES (?,?,?,?,?)", [auth.grant.token_hash,auth.grant.document_id,auth.grant.origin,auth.grant.issued_version,Date.now()])
+  const owner = claimWordEditLease(db,{document:auth.grant.document_id,tokenHash:auth.grant.token_hash,session:"row-prepare-session"})
+  const seq = (db.query("SELECT native_sequence FROM word_edit_leases WHERE document_id = ?").get(owner.document) as {native_sequence:number}).native_sequence
+  beginWordNativeOperation(db,owner,seq,"row-prepare",undefined,{conversationId:id,turnId:turn.id})
+  let changed = false
+  const preparing = new Hono()
+  const validator = installWordChat(preparing, () => auth, {fetch:transport,engineURL:"http://synthetic.invalid",authorTableRow:async (stored, proposal, bytes) => {
+    expect(stored.table).toEqual(native.table); expect(proposal).toEqual(turn.rowProposal!); expect(Buffer.from(bytes).toString()).toBe("current unsaved bytes")
+    if (changed) db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",["other-turn",owner.document])
+    return {kind:"table_row_insert",proposalId:proposal.id,sourceSha256:"source",table:proposal.table,cells:proposal.cells,author:"doc.haus",writerRequest:{source_sha256:"source",target_handle:"handle",position:"after",cells:proposal.cells,author:"doc.haus"},authoredBytes:new Uint8Array([1,2]),revisions:[]}
+  }})
+  const headers = {"content-type":"application/json","x-dochaus-word-session":owner.session,"x-dochaus-word-lease":owner.generation,"x-dochaus-word-base-version":current.current.id}
+  const prepare = (input:object) => preparing.request("/word/chat/prepare",{method:"POST",headers,body:JSON.stringify({conversationId:id,turnId:turn.id,...input})})
+  try {
+    await validator.withValidatedProposal(auth,{conversationId:id,turnId:turn.id},async () => {})
+    const response = await prepare({docxBase64:Buffer.from("current unsaved bytes").toString("base64"),rowProposal:{...turn.rowProposal,cells:["Forged","Value"]}})
+    expect(response.status).toBe(200)
+    expect((await response.json() as {authoredBase64:string}).authoredBase64).toBe("AQI=")
+    expect((await prepare({docxBase64:"%%%"})).status).toBe(413)
+    changed = true
+    expect((await prepare({docxBase64:Buffer.from("current unsaved bytes").toString("base64")})).status).toBe(409)
+  } finally {
+    db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",[turn.id,owner.document])
+    settleWordNativeOperation(db,owner,seq + 1,"row-prepare","not-dispatched")
+    clearWordEditLease(db,owner.document); db.close()
+  }
+})
+
 test("prepare returns actionable formatting failures while keeping other authoring errors private", async () => {
   const id = await newConversation()
   amend = true; modelProposal = { before: context.text, after: context.text, formatting: [{ paragraph: 0, spacingAfter: 12 }] }

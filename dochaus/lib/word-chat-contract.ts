@@ -6,7 +6,7 @@ export type WordChatKind = "chat" | "amendment" | "formatting" | "suggestions"
 export type WordChatMode = "auto" | "qa" | "redline"
 export type WordChatAttachment = { kind: "source" | "playbook" | "upload"; id: string; hash: string }
 export type WordChatMaterial = WordChatAttachment & { name: string; description?: string; provenance: "saved-version" | "instructions" | "request-upload" }
-import type { WordChatSnapshot, WordChatProposal } from "./word-chat-amendment-contract"
+import type { WordChatSnapshot, WordChatProposal, WordChatTableRowInsertionProposal } from "./word-chat-amendment-contract"
 export type { WordChatProposal } from "./word-chat-amendment-contract"
 export type WordChatContext = WordChatSnapshot
 export type WordChatSource = { id: string; contentHash?: string; name: string; quote: string; location: string; provenance: "word-buffer" | "saved-version" | "instructions" | "request-upload" }
@@ -25,6 +25,7 @@ export type WordChatTurn = {
   attachments: WordChatMaterial[]
   selection?: WordChatContext["selection"]
   proposal?: WordChatProposal
+  rowProposal?: WordChatTableRowInsertionProposal
   proposalApplied?: boolean
   suggestions?: WordChatSuggestion[]
   suggestionCoverage?: { reviewed: number; total: number }
@@ -43,8 +44,16 @@ export type WordChatSend = {
   mode?: WordChatMode
   /** Exact earlier reviewed target; refining never follows a new cursor position. */
   proposal?: WordChatProposal
+  rowProposal?: WordChatTableRowInsertionProposal
   suggestionTarget?: "document" | "selection"
 }
 export type WordChatConversationResult = { conversation: WordChatConversation; turns: WordChatTurn[] }
 export type WordChatPreferences = { defaultScope: WordChatScope; suggestions: boolean }
 export type WordChatMaterials = { materials: WordChatMaterial[]; matterName: string; documentName: string; preferences?: WordChatPreferences }
+/** Authoring output is a verification oracle, never a Word import payload. */
+export type WordChatAuthoredTableRow = {
+  kind: "table_row_insert"; proposalId: string; sourceSha256: string
+  table: WordChatTableRowInsertionProposal["table"]; cells: string[]; author: "doc.haus"
+  writerRequest: { source_sha256: string; target_handle: string; position: "after"; cells: string[]; author: string }
+  authoredBase64: string; revisions: { id: string; family: string }[]
+}
