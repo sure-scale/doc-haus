@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { checkDraftingNotes } from "./checks"
-import { quoteFound, quoteMissIssue } from "./quotes"
+import { quoteFound, quoteMissIssue, quoteMissItems, sourceQuotes } from "./quotes"
 import { SOURCE, cleanupMatters, matter } from "./test-support"
 
 // Quotation matching against indexed source text: exact words, tolerant only of
@@ -33,6 +33,97 @@ describe("lean quotation matching", () => {
     expect(quoteFound(directory, { quote: "Clause 4.2 applies to *all* goods.", source_id: "other.docx" })).toBe(false)
     const issue = quoteMissIssue(directory, "amendments[0] ([p1]).sources", { quote: "Clause 4.2 applies to some goods.", source_id: SOURCE })
     expect(issue).toContain(`quotes "Clause 4.2 applies to some goods." as from "${SOURCE}", but those words are not in that document.`)
+  })
+})
+
+// How a prose quotation and its citation are read: the source name whole, and
+// the quotation whole with any quoted words it holds.
+describe("lean prose quotation reading", () => {
+  const prose = (directory: string, text: string) => checkDraftingNotes(directory, `# Drafting notes\n\n${text}`, []).issues
+  const unread = (quote: string, source = SOURCE) =>
+    `The drafting notes quotes "${quote}" as from "${source}", but those words are not in that document. Copy the exact words with read-document (or check them with verify-quote), or drop the quotation marks and paraphrase.`
+
+  test("a source name holding brackets of its own is read whole in either citation form", () => {
+    const directory = matter()
+    const db = new Database(path.join(directory, ".dochaus", "legal.db"))
+    const instalments = "The Buyer shall pay the Price in three equal instalments on the first day of each quarter."
+    // Ingest names a second file of the same name "Name (2).ext".
+    for (const name of ["supply-terms (2).docx", "Supply Terms (Execution Version).docx"])
+      db.query("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)").run(name, "1", instalments, 0, instalments.length)
+    db.close()
+    for (const name of ["supply-terms (2).docx", "Supply Terms (Execution Version).docx"]) {
+      for (const cite of [`[source: ${name}]`, `(source: ${name})`, `( source : ${name} )`])
+        expect([cite, prose(directory, `The terms provide "The Buyer shall pay the Price in three equal instalments" ${cite}.`)]).toEqual([cite, []])
+      const wrong = "The Buyer shall pay the Price in two equal instalments"
+      for (const cite of [`[source: ${name}]`, `(source: ${name})`])
+        expect([cite, prose(directory, `The terms provide "${wrong}" ${cite}.`)]).toEqual([cite, [unread(wrong, name)]])
+    }
+    // A citation still ends at its own closing bracket.
+    expect(prose(directory, `The terms provide "within thirty days of the order date" (source: ${SOURCE}) (see the cover email).`)).toEqual([])
+    expect(prose(directory, `The terms provide "within sixty days of the order date" (source: ${SOURCE}) (see the cover email).`)).toEqual([unread("within sixty days of the order date")])
+  })
+
+  // A quotation that is never read is never checked: a misquotation would pass.
+  test("a citation whose brackets do not close as written still has its quotation checked", () => {
+    const directory = matter()
+    const items = (text: string) => quoteMissItems(directory, "draft", text).map(item => item.ref)
+    const wrong = "within ninety days of the order date"
+    for (const [cite, source_id] of [[`[source: ${SOURCE})`, SOURCE], [`(source: ${SOURCE}]`, SOURCE],
+      ["(source: supply-terms (draft.docx)", "supply-terms (draft.docx"], ["[source: supply-terms [v2.docx]", "supply-terms [v2.docx"]]) {
+      expect([cite, items(`The terms provide "${wrong}" ${cite} and nothing else.`)]).toEqual([cite, [{ source_id, quote: wrong }]])
+    }
+    // The name is read, not the quotation flagged blind: the right words pass.
+    for (const cite of [`[source: ${SOURCE})`, `(source: ${SOURCE}]`])
+      expect([cite, items(`The terms provide "within thirty days of the order date" ${cite} and nothing else.`)]).toEqual([cite, []])
+    // A citation left open runs to the end of the line.
+    expect(items(`The terms provide "${wrong}" [source: ${SOURCE}`)).toEqual([{ source_id: SOURCE, quote: wrong }])
+    expect(items(`The terms provide "within thirty days of the order date" [source: ${SOURCE}`)).toEqual([])
+  })
+
+  // Each closing mark once started a fresh read of the rest of the line.
+  test("a long line of quotation marks is read in linear time", () => {
+    const line = `${'"a" '.repeat(50_000)}${'"a"'.repeat(66_000)} "within thirty days" [source: ${SOURCE}]`
+    const started = performance.now()
+    expect(sourceQuotes(line)).toEqual([{ quote: "within thirty days", source_id: SOURCE }])
+    expect(performance.now() - started).toBeLessThan(250)
+  })
+
+  test("a quotation holding quoted words of its own is checked whole", () => {
+    const directory = matter(`In this Agreement the "Deposit" means the sum of 250,000 payable on signing.`)
+    for (const quote of [`"the "Deposit" means the sum of 250,000 payable on signing"`, "“the “Deposit” means the sum of 250,000 payable on signing”",
+      `"the “Deposit” means the sum of 250,000 payable on signing"`])
+      expect([quote, prose(directory, `The terms provide ${quote} [source: ${SOURCE}].`)]).toEqual([quote, []])
+    // The wrong defined term is refused, not passed on the words after it.
+    for (const term of ["Retention", "Escrow Amount"]) {
+      const wrong = `the "${term}" means the sum of 250,000 payable on signing`
+      expect(prose(directory, `The terms provide "${wrong}" [source: ${SOURCE}].`)).toEqual([unread(wrong)])
+    }
+  })
+
+  test("separate quotations on one line are not read as one; only the quotation the citation follows is checked", () => {
+    const directory = matter("The Seller shall deliver the Shares on Completion. The Buyer shall pay the Price on Completion.")
+    for (const join of [" and ", ", ", " or ", ",", "—", " - ", " "]) {
+      expect([join, prose(directory, `The terms provide "The Seller shall deliver the Shares"${join}"The Buyer shall pay the Price" [source: ${SOURCE}].`)]).toEqual([join, []])
+      expect([join, prose(directory, `The terms provide "The Seller shall deliver the Shares"${join}"The Buyer shall pay the Deposit" [source: ${SOURCE}].`)])
+        .toEqual([join, [unread("The Buyer shall pay the Deposit")]])
+    }
+    expect(prose(directory, "The terms provide “The Seller shall deliver the Shares” and “The Buyer shall pay the Deposit” [source: " + SOURCE + "]."))
+      .toEqual([unread("The Buyer shall pay the Deposit")])
+  })
+
+  test("quoted words written in single marks inside a quotation match the source's double marks only", () => {
+    const directory = matter(`The Buyer shall pay the "Purchase Price" on Completion. The Seller's "Warranties" are given at signing.`)
+    for (const quote of [`"The Buyer shall pay the 'Purchase Price' on Completion"`, `"The Buyer shall pay the ‘Purchase Price’ on Completion"`,
+      "“The Buyer shall pay the ‘Purchase Price’ on Completion”", `"The Seller's 'Warranties' are given at signing"`, `"… pay the 'Purchase Price' on Completion"`])
+      expect([quote, prose(directory, `The terms provide ${quote} [source: ${SOURCE}].`)]).toEqual([quote, []])
+    for (const wrong of ["The Buyer shall pay the 'Deferred Price' on Completion", "The Buyer shall pay the 'Purchase Price' at signing"])
+      expect([wrong, prose(directory, `The terms provide "${wrong}" [source: ${SOURCE}].`)]).toEqual([wrong, [unread(wrong)]])
+    // A source without quotation marks there does not take single ones.
+    const plain = matter("The Buyer shall pay the Purchase Price on Completion.")
+    expect(prose(plain, `The terms provide "The Buyer shall pay the 'Purchase Price' on Completion" [source: ${SOURCE}].`))
+      .toEqual([unread("The Buyer shall pay the 'Purchase Price' on Completion")])
+    // A JSON quote field has no outer marks to nest within and stays verbatim.
+    expect(quoteFound(directory, { quote: "The Buyer shall pay the 'Purchase Price' on Completion", source_id: SOURCE })).toBe(false)
   })
 })
 

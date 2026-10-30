@@ -13,7 +13,28 @@ import { readLeanText, readQuestions, shortHash, type OpenItem, type StageID } f
 // (verbatim, after folding curly quotes, whitespace and Markdown escapes in the
 // source). A miss names the quote so the authoring model can correct it.
 
-const SOURCE_QUOTE = /["“]([^"“”\n]{1,2000})["”]\s*[[(]\s*source\s*:\s*([^\])\n]+?)\s*[\])]/gi
+// A quotation may hold quoted words of its own ("the "Deposit" means …"), read
+// as part of it. An inner pair opens after a space or punctuation, before a
+// word, and closes after a word, before a space or punctuation, so separate
+// quotations on one line ("A" and "B" [source: X]) are not read as one: only
+// the one the citation follows is. Each citation is found first and its
+// quotation read back from the closing mark, so a line full of quotation marks
+// is read once, not once per mark. A quotation is at most QUOTE_CAP characters
+// (checked after the match), quoted words within it at most 500.
+// A source name may hold brackets of its own (ingest's "Name (2).docx"): a
+// citation in [ ] or ( ) ends at the bracket closing it, past a few balanced
+// pairs of the same kind in the name. A citation that does not close so
+// (mismatched or unbalanced brackets, or none) ends at the first ] or ), or at
+// the end of the line: its quotation is still read and checked, never dropped.
+const INNER_QUOTE = /(?<![\p{L}\p{N}])["“](?=\S)[^"“”\n]{0,500}?(?<=\S)["”](?![\p{L}\p{N}])/u
+const QUOTE_CAP = 2000
+const SOURCE_QUOTE = new RegExp(String.raw`(?=["”]\s*[[(]\s*source\s*:)(?<=["“]((?:[^"“”\n]|${INNER_QUOTE.source}){1,${QUOTE_CAP}}))["”]\s*` +
+  String.raw`(?:\[\s*source\s*:([^\[\]\n]*(?:\[[^\[\]\n]*\][^\[\]\n]*){0,8})\]|\(\s*source\s*:([^()\n]*(?:\([^()\n]*\)[^()\n]*){0,8})\)` +
+  String.raw`|[[(]\s*source\s*:([^\])\n]*)[\])]?)`, "giu")
+// Inside a quotation in double marks, quoted words are written in single ones:
+// "the 'Price' is payable" quotes a source's the "Price" is payable. They end
+// at the next single mark, past an apostrophe within a word ('Seller's Group').
+const NESTED_QUOTE = /(?<![\p{L}\p{N}])['‘](?=\S)((?:[^'‘’"“”\n]|(?<=[\p{L}\p{N}])['’](?=[\p{L}\p{N}]))+?)(?<=\S)['’](?![\p{L}\p{N}])/gu
 export const EXCERPT = 240
 
 export type SourceQuote = { quote: string; source_id: string }
@@ -117,7 +138,8 @@ function readMatterSourceBasis(directory: string) {
 
 /** Quotations written as "exact words" [source: document name]. */
 export function sourceQuotes(text: string): SourceQuote[] {
-  return [...text.matchAll(SOURCE_QUOTE)].map(match => ({ quote: match[1]!.trim(), source_id: match[2]!.trim() }))
+  return [...text.matchAll(SOURCE_QUOTE)].filter(match => match[1]!.length <= QUOTE_CAP)
+    .map(match => ({ quote: match[1]!.trim(), source_id: (match[2] ?? match[3] ?? match[4])!.trim() }))
 }
 
 export function quoteFound(directory: string, quote: SourceQuote) {
@@ -140,13 +162,18 @@ export function instructionFound(directory: string, quote: string) {
  * or when an ellipsis at its start or end leaves one passage that is in the
  * named source (elisionGap). An ellipsis in the middle is never accepted:
  * the words it leaves out can change who must do what or drop a condition,
- * amount or limit. quoteMissIssue then says what it leaves out. A JSON quote
+ * amount or limit. quoteMissIssue then says what it leaves out. Quoted words
+ * in single marks inside it may stand for the source's double marks
+ * (NESTED_QUOTE), tried when the words as written are not found. A JSON quote
  * field keeps the verbatim contract of quoteFound, since its consumers locate
  * those words. */
 export function proseQuoteFound(directory: string, quote: SourceQuote) {
-  if (quoteFound(directory, quote)) return true
-  const elided = elision(directory, quote)
-  return elided?.parts.length === 1 && elided.gap?.kind === "near"
+  const nested = quote.quote.replace(NESTED_QUOTE, '"$1"')
+  return [quote, ...(nested === quote.quote ? [] : [{ ...quote, quote: nested }])].some(reading => {
+    if (quoteFound(directory, reading)) return true
+    const elided = elision(directory, reading)
+    return elided?.parts.length === 1 && elided.gap?.kind === "near"
+  })
 }
 
 /** Where the passages of a quotation with an ellipsis sit in its named source

@@ -335,8 +335,8 @@ function lawyerTexts(directory: string) {
 
 /** Whether `words` are one or more whole sentences of one lawyer text (the
  * request, one included update or one answer, as lawyerTexts gives them),
- * verbatim and in the same case apart from the quote checks' whitespace and
- * quotation-mark normalisation: they start and stop at sentenceBounds, and may
+ * verbatim and in the same case apart from the quote checks' whitespace,
+ * quotation-mark and hyphen normalisation: they start and stop at sentenceBounds, and may
  * leave off a line's markers, the emphasis, quotation marks, brackets or
  * ellipsis around them, and the closing ".", "!", "?" or ";". Markup inside
  * them (MARKUP) is kept as written: the words are quoted again as the lawyer's

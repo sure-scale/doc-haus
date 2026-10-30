@@ -17,7 +17,7 @@ import type {
   ChronologyProposal,
   ChronologyNameAssociation,
 } from "../../../dochaus/lib/chronology"
-import { findQuote, liveText } from "../../../dochaus/lib/extract"
+import { findQuote, findQuotes, liveText } from "../../../dochaus/lib/extract"
 import { escapeTagOpeners } from "../../../dochaus/lib/untrusted"
 import { engineV2Fetch } from "../../../dochaus/lib/engine-v2"
 import { isProjectedUserAdmission } from "../../../dochaus/lib/engine-v2-projection"
@@ -693,15 +693,10 @@ async function verifyExtracted(
     return {
       issue: `${source.documentName}, section ${section.index + 1}: supporting source identity is no longer authorised in this matter.`,
     }
-  // Refuse ambiguous targets when the model failed to identify an occurrence.
-  const matches: { start: number; end: number; excerpt: string }[] = []
-  let from = 0
-  while (from < section.text.length) {
-    const match = findQuote(section.text.slice(from), extracted.quote)
-    if (!match) break
-    matches.push({ start: from + match.start, end: from + match.end, excerpt: match.excerpt })
-    from += match.end || 1
-  }
+  // Refuse ambiguous targets when the model failed to identify an occurrence:
+  // two copies read the same way. A copy that only a later reading (escapes,
+  // the format's markup) finds is not a second occurrence of an exact match.
+  const matches = findQuotes(section.text, extracted.quote, source.documentName)
   const pointed = extracted.quoteStart === undefined ? undefined : matches.find((m) => m.start === extracted.quoteStart)
   const located = pointed ?? (matches.length === 1 ? matches[0] : undefined)
   if (!located)
@@ -788,7 +783,7 @@ async function verifyExtracted(
     significance: extracted.significance,
     people: extracted.people,
     ...(extracted.nameAssociations?.length
-      ? { nameAssociations: verifiedNameAssociations(extracted.nameAssociations, checked.excerpt, evidenceId) }
+      ? { nameAssociations: verifiedNameAssociations(extracted.nameAssociations, checked.excerpt, source.documentName, evidenceId) }
       : {}),
     status: extracted.status,
     gaps: extracted.gaps,
@@ -1471,8 +1466,9 @@ async function stageNonEventProposals(
   for (const item of nonEvents) {
     if (runtime.controller.signal.aborted) return
     if (extracted.some((event) => event.quote === item.quote)) continue
-    const found = findQuote(section.text, item.quote)
-    if (!found || findQuote(section.text.slice(found.end), item.quote)) continue
+    const occurrences = findQuotes(section.text, item.quote, source.documentName)
+    const found = occurrences.length === 1 ? occurrences[0] : undefined
+    if (!found) continue
     const verified = await (deps.verify ?? verifyCitation)({
       docPath: target.docPath,
       documentName: source.documentName,
@@ -2136,6 +2132,7 @@ function currentSourceDate(
 function verifiedNameAssociations(
   relations: NonNullable<ExtractedEvent["nameAssociations"]>,
   verifiedExcerpt: string,
+  documentName: string,
   evidenceId: string,
 ): ChronologyNameAssociation[] {
   const result: ChronologyNameAssociation[] = []
@@ -2148,7 +2145,7 @@ function verifiedNameAssociations(
       result.some((r) => r.name === relation.name && r.canonicalName === relation.canonicalName)
     )
       continue
-    const passage = relation.quote ? findQuote(verifiedExcerpt, relation.quote)?.excerpt : verifiedExcerpt
+    const passage = relation.quote ? findQuote(verifiedExcerpt, relation.quote, documentName)?.excerpt : verifiedExcerpt
     if (!passage || !present(passage, relation.name) || !present(passage, relation.canonicalName)) continue
     const supported =
       relation.status === "supported" && supportedNameAssociationQuote(relation.name, relation.canonicalName, passage)

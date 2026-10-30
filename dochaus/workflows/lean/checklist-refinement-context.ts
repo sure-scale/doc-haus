@@ -4,7 +4,7 @@ import { checklistTargetAssignments } from "./checklist-target-context"
 import { checklistItemSchema, type ChecklistSourceReference } from "./checklist-contract"
 import { checklistProducerInputs } from "./checklist-source-context"
 import { readLeanJson } from "./state"
-import { normalizeWithMap } from "../../lib/quote-verify"
+import { normalizeWithMap, sourceReadings } from "../../lib/quote-verify"
 import { readRegularFile } from "../../lib/regular-file"
 import path from "node:path"
 import { realpathSync } from "node:fs"
@@ -61,13 +61,13 @@ export function buildChecklistRefinementContext(directory: string, options: { pa
   if (options.scope === "cited_sources") for (const ref of parent.source_refs) {
     const source = sources.find(row => row.document === ref.document)
     if (!source) {
-      const exact = instructions.find(row => row.document === ref.document && quoteRanges(row.quote, ref.quote).length)
+      const exact = instructions.find(row => row.document === ref.document && quoteRanges(row.quote, ref.quote, row.document).length)
       if (!exact) throw Error(`Cited source ${JSON.stringify(ref.document)} is unavailable or its quote is not canonical.`)
       const instructionSource: Source = { document: exact.document, text: exact.quote, ranges: splitRange(exact.locator, exact.quote, 0, exact.quote.length, []) }
       for (const range of instructionSource.ranges) selected.set(range.id, { source: instructionSource, range })
       continue
     }
-    const spans = quoteRanges(source.text, ref.quote)
+    const spans = quoteRanges(source.text, ref.quote, source.document)
     if (!spans.length) throw Error(`Cited quote is not found in canonical source ${JSON.stringify(ref.document)}.`)
     for (const range of source.ranges) if (spans.some(span => span.start < range.end && span.end > range.start)) selected.set(range.id, { source, range })
   }
@@ -88,14 +88,18 @@ function readMap(directory: string) {
   return JSON.parse(bytes.toString("utf8"))
 }
 
-// Matches as verifyQuote does: the source as written first, then with Markdown
-// escapes and bold marks removed, so a quote copying either form is located.
-function quoteRanges(text: string, quote: string) {
+// The raw spans of `quote` in `document`'s canonical text, in the first of the
+// document's readings (sourceReadings) that holds it, as verifyQuote reads the
+// same source_ref: as written, then without escapes, then without only the
+// markup that document's format has (Markdown, reply marks, page-break rules,
+// CSV quoting). A span runs from its first character's raw start to its last's
+// raw end.
+function quoteRanges(text: string, quote: string, document: string) {
   const needle = normalizeWithMap(quote).text
   if (!needle) return []
-  for (const options of [{}, { unescapeMarkdown: true }]) {
-    const haystack = normalizeWithMap(text, options), spans: { start: number; end: number }[] = []
-    for (let index = haystack.text.indexOf(needle); index >= 0; index = haystack.text.indexOf(needle, index + 1)) spans.push({ start: haystack.map[index]!, end: haystack.map[index + needle.length - 1]! + 1 })
+  for (const reading of sourceReadings(document)) {
+    const haystack = normalizeWithMap(text, reading), spans: { start: number; end: number }[] = []
+    for (let index = haystack.text.indexOf(needle); index >= 0; index = haystack.text.indexOf(needle, index + 1)) spans.push({ start: haystack.map[index]!, end: haystack.end[index + needle.length - 1]! })
     if (spans.length) return spans
   }
   return []

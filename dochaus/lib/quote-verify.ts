@@ -14,10 +14,17 @@ import { chunkText } from "./chunk-text"
 export const SHORT_QUOTE = 20
 export const MAX_RENDERED_HITS = 5
 
+/** Word's hyphen and non-breaking hyphen (U+2010, U+2011), the figure dash, en
+ * dash and minus sign (U+2012, U+2013, U+2212), which a page shows as or in
+ * place of "-", read as "-" on both sides of every quote check. Not the em
+ * dash, which sets off an aside. */
+const HYPHENS = /[\u2010-\u2013\u2212]/g
+
 export function normalize(text: string) {
   return text
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/[\u2018\u2019]/g, "'")
+    .replace(HYPHENS, "-")
     .replace(/\s+/g, " ")
     .trim()
 }
@@ -27,35 +34,257 @@ export function normalize(text: string) {
 // shows `.` or `(`; a faithful quote of the document must still match.
 const MARKDOWN_ESCAPABLE = /^[!-\/:-@\[-`{-~]$/
 
-/** Normalized text plus, for each output character, its raw offset. With
- * `unescapeMarkdown`, a backslash before ASCII punctuation is dropped and
- * Markdown bold marks (`**Term:**`) are skipped, so a quote of the words
- * matches (source side only: a quote is never unescaped, so a quote's own
- * backslash still has to be in the source). An escaped `\*` stays literal. */
-export function normalizeWithMap(raw: string, options: { unescapeMarkdown?: boolean } = {}) {
+/** One reading of a source: the format markup it reads past, so a quote of the
+ * words matches (source side only: a quote is never unescaped, so a quote's
+ * own marks still have to be in the source). Each reading reads the source as
+ * written (normalize) and, with
+ * - `escapes`: without a backslash before ASCII punctuation;
+ * - `markdown` (or its older name `unescapeMarkdown`): also without paired
+ *   bold and emphasis marks (strongMarks, EMPHASIS) and a link's brackets and
+ *   target (LINK), with ENTITIES and numeric entities decoded;
+ * - `replies`: without an email's reply marks (REPLY_MARKS), and never across
+ *   a change of reply depth (replyDepthChanges);
+ * - `rules`: with a PDF's page-break rule (RULE_LINE, pageBreak) read as a space;
+ * - `csv`: without a spreadsheet's CSV quoting (csvQuotes).
+ * sourceReadings says which a document gets. */
+export type SourceReading = { escapes?: boolean; markdown?: boolean; unescapeMarkdown?: boolean; replies?: boolean; rules?: boolean; csv?: boolean }
+
+/** The readings a quotation of `document` (a matter document's name or a
+ * playbook's source id) is matched against, in order, as ingest writes each
+ * format's text: every source as written and without backslash escapes; Markdown
+ * (a .md file, a playbook), an email body and a PDF's Markdown-like text also
+ * without Markdown formatting; an email also without its reply marks; a PDF
+ * also across its page breaks; a spreadsheet without its CSV quoting. A Word
+ * document's text is mammoth's plain text, where "*", "[", "&gt;" and "---"
+ * are what the page shows, so it and any other format are read strictly. */
+export function sourceReadings(document?: string): SourceReading[] {
+  const name = document?.toLowerCase() ?? ""
+  const email = /\.(?:eml|msg)$/.test(name), pdf = name.endsWith(".pdf")
+  return [
+    {},
+    { escapes: true },
+    ...(email || pdf || /\.(?:md|markdown)$/.test(name) || name.startsWith("playbook:") ? [{ markdown: true }] : []),
+    ...(email ? [{ markdown: true, replies: true }] : []),
+    ...(pdf ? [{ markdown: true, rules: true }] : []),
+    ...(name.endsWith(".xlsx") ? [{ csv: true }] : []),
+  ]
+}
+
+/** Stands for a change of reply depth in an email's reading: never part of a
+ * quote, which normalize reads as a space, so no quote matches across it. */
+const DEPTH_CHANGE = "\u2029"
+
+// A rule line ("-----"), read as a space where a blank line or the text's edge
+// is either side of it, as LiteParse writes the break between PDF pages: a
+// page break is no paragraph break. A table's "---" cell or a form's blank line
+// has words beside it and stays.
+const RULE_LINE = /(?<![^\n])[^\S\n]*-{3,}[^\S\n]*(?![^\n])/g
+// Reply marks opening a line of an email: "> ", or "&gt; " (or "&amp;gt; ") in
+// an HTML body.
+const REPLY_MARKS = /(?<![^\n])[^\S\n]*(?:(?:>|&gt;|&amp;gt;)[^\S\n]*)+/g
+// A single "*" either side of emphasised words on one line: opening after a
+// space, a line's start or an opening bracket or quote mark, closing after
+// neither, and before neither a word nor another "*". A "*" after a figure or
+// a closing bracket ("5%*", "(per claim)*") marks a footnote and stays.
+const EMPHASIS = /(?<![^\s([{"'\u201C\u2018])\*(?=[^\s*)\]}])[^*\n]*?[^\s*\\([{\u201C\u2018]\*(?![*\p{L}\p{N}])/gu
+// A link, "[Schedule 2](#s2)", whose target is an anchor, a URL or a path, not
+// joined to a word either side. Brackets without one ("[insert date]", "[●]",
+// "clause [4](a)", "[£5m](TBC:board)") stay, as does a footnote link inside a
+// figure ("£5[1](#fn1),000").
+const LINK = /(?<![\\!\p{L}\p{N}])\[[^[\]\n]*\]\((?:#|(?:https?|ftp|file):\/\/|mailto:|tel:|\.{0,2}\/)[^()\s]*\)(?![\p{L}\p{N}])/giu
+// Entities an HTML email body keeps, read as the characters they stand for, as
+// are numeric ones ("&#8217;", "&#x2019;").
+const ENTITIES = new Map(Object.entries({
+  lt: "<", gt: ">", amp: "&", quot: '"', apos: "'", nbsp: "\u00A0", lsquo: "\u2018", rsquo: "\u2019",
+  ldquo: "\u201C", rdquo: "\u201D", ndash: "\u2013", mdash: "\u2014", hellip: "\u2026",
+}))
+const ENTITY = /^&(?:#(\d{1,7})|#[xX]([\da-fA-F]{1,6})|([a-z]+));/
+
+/** The characters an entity at `at` stands for and its raw length, if any. */
+function entityAt(raw: string, at: number) {
+  const match = ENTITY.exec(raw.slice(at, at + 10))
+  if (!match) return
+  const code = match[1] ? Number(match[1]) : match[2] ? parseInt(match[2], 16) : undefined
+  const text = code === undefined ? ENTITIES.get(match[3]!) : code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff) ? String.fromCodePoint(code) : undefined
+  return text === undefined ? undefined : { text, length: match[0].length }
+}
+
+/** The raw offsets of each `**` or `***` run that opens or closes bold words
+ * on one line: an opening run not after a letter or digit and before a
+ * non-space, then a closing run of the same length after a non-space and not
+ * before a letter or digit. A run with no such partner ("£10,000,000**",
+ * "10**6", "Cap**: £1m; Basket**: £100k", "pay *** within") stays, as does an
+ * escaped one. */
+function strongMarks(raw: string, skip: Set<number>) {
+  const word = (ch?: string) => !!ch && /[\p{L}\p{N}]/u.test(ch)
+  let open: { at: number; length: number } | undefined
+  for (const run of raw.matchAll(/\*+|\n/g)) {
+    if (run[0] === "\n") open = undefined
+    if (run[0].length < 2 || run[0].length > 3 || raw[run.index - 1] === "\\") continue
+    const at = run.index, length = run[0].length, before = raw[at - 1], after = raw[at + length]
+    if (open?.length === length && /\S/.test(before ?? "") && !word(after)) {
+      for (const from of [open.at, at]) for (let mark = from; mark < from + length; mark++) skip.add(mark)
+      open = undefined
+    } else if (!word(before) && /\S/.test(after ?? "")) open = { at, length }
+  }
+}
+
+/** The line starts of an email where the reply depth (the number of reply
+ * marks opening a line) differs from the last line with any text. */
+function replyDepthChanges(raw: string, depths: Map<number, number>) {
+  const changes = new Set<number>()
+  let previous: number | undefined
+  for (let start = 0, next = 0; start <= raw.length; start = next + 1) {
+    next = raw.indexOf("\n", start)
+    if (next === -1) next = raw.length
+    if (!/\S/.test(raw.slice(start, next))) continue
+    const depth = depths.get(start) ?? 0
+    if (previous !== undefined && depth !== previous) changes.add(start)
+    previous = depth
+  }
+  return changes
+}
+
+/** Whether the rule line `raw.slice(from, to)` has a blank line or the text's
+ * edge either side. */
+function pageBreak(raw: string, from: number, to: number) {
+  const before = from === 0 ? "" : raw.slice(raw.lastIndexOf("\n", from - 2) + 1, from - 1)
+  const next = raw.indexOf("\n", to + 1)
+  const after = to >= raw.length ? "" : raw.slice(to + 1, next === -1 ? raw.length : next)
+  return !/\S/.test(before) && !/\S/.test(after)
+}
+
+/** The raw offsets a reading reads as a space (`space`: page-break rules) or
+ * leaves out (`skip`: bold and emphasis marks, a link's brackets and target,
+ * reply marks), and the line starts where the reply depth changes (`depth`). */
+function readingMarks(raw: string, reading: { markdown: boolean; replies?: boolean; rules?: boolean }) {
+  const space = new Set<number>(), skip = new Set<number>()
+  const add = (set: Set<number>, from: number, to: number) => { for (let at = from; at < to; at++) set.add(at) }
+  if (reading.rules) for (const match of raw.matchAll(RULE_LINE))
+    if (pageBreak(raw, match.index, match.index + match[0].length)) add(space, match.index, match.index + match[0].length)
+  if (reading.markdown) {
+    strongMarks(raw, skip)
+    for (const match of raw.matchAll(EMPHASIS)) skip.add(match.index).add(match.index + match[0].length - 1)
+    for (const match of raw.matchAll(LINK)) {
+      skip.add(match.index)
+      add(skip, match.index + match[0].indexOf("]("), match.index + match[0].length)
+    }
+  }
+  const depths = new Map<number, number>()
+  if (reading.replies) for (const match of raw.matchAll(REPLY_MARKS)) {
+    add(skip, match.index, match.index + match[0].length)
+    depths.set(match.index, match[0].match(/&amp;gt;|&gt;|>/g)!.length)
+  }
+  return { space, skip, depth: reading.replies ? replyDepthChanges(raw, depths) : undefined }
+}
+
+/** The raw offsets of the quote marks a spreadsheet's CSV text (ingest writes
+ * each sheet with sheet_to_csv) puts around a cell holding a comma, quote or
+ * line break, and of the first of each doubled quote inside one, so the cells
+ * read as the sheet shows them. Read from the start of the text, as a quoted
+ * cell can hold a line break. A cell keeps its marks when its digits would run
+ * into a neighbouring cell's across the comma between them: cells "5,000" and
+ * "250" never read as 5,000,250. */
+function csvQuotes(raw: string) {
+  const skip = new Set<number>()
+  type Cell = { marks: number[]; value: string }
+  const runOn = (a?: Cell, b?: Cell) => !!a && !!b && /\p{N}$/u.test(a.value) && /^\p{N}/u.test(b.value)
+  let row: Cell[] = []
+  for (let at = 0; at <= raw.length; at++) {
+    const cell: Cell = { marks: [], value: "" }
+    let end = at
+    if (raw[at] === '"') {
+      cell.marks.push(at)
+      for (end = at + 1; end < raw.length && (raw[end] !== '"' || raw[end + 1] === '"'); end++) {
+        if (raw[end] === '"') cell.marks.push(end++)
+        cell.value += raw[end]
+      }
+      // Its closing mark ends the cell; a cell with other text there is read as written.
+      if (end < raw.length && /^[,\n]?$/.test(raw[end + 1] ?? "")) cell.marks.push(end++)
+      else {
+        cell.marks = []
+        end = at
+      }
+    }
+    if (!cell.marks.length) {
+      while (end < raw.length && raw[end] !== "," && raw[end] !== "\n") end++
+      cell.value = raw.slice(at, end)
+    }
+    row.push(cell)
+    if (raw[end] !== ",") {
+      row.forEach((cell, index) => {
+        if (!runOn(row[index - 1], cell) && !runOn(cell, row[index + 1])) cell.marks.forEach(mark => skip.add(mark))
+      })
+      row = []
+    }
+    at = end
+  }
+  return skip
+}
+
+/** Normalized text in one `reading` (SourceReading) plus, for each output
+ * character, the raw offset it starts at (`map`) and the one just past its last
+ * raw character (`end`: past the whole of a decoded entity), so `raw.slice(
+ * map[first], end[last])` is the source of a match as written. A space
+ * stands for a whitespace run, read past marks included; `breaks` are the
+ * output offsets of those that hold a paragraph break (a blank line, but not
+ * one around a page-break rule the reading reads as a space) and of each
+ * DEPTH_CHANGE. An escaped character is literal ("\*"); underscores stay, as
+ * they mark blanks. */
+export function normalizeWithMap(raw: string, options: SourceReading = {}) {
+  const markdown = !!(options.markdown || options.unescapeMarkdown)
+  const unescape = markdown || !!options.escapes
+  const marks = markdown || options.replies || options.rules ? readingMarks(raw, { markdown, replies: options.replies, rules: options.rules }) : undefined
+  const quotes = options.csv ? csvQuotes(raw) : undefined
   let out = ""
-  const map: number[] = []
-  let spaceAt = -1
-  for (let i = 0; i < raw.length; i++) {
-    const ch = raw[i]!
-    if (options.unescapeMarkdown && ch === "\\" && MARKDOWN_ESCAPABLE.test(raw[i + 1] ?? "")) continue
-    if (options.unescapeMarkdown && ch === "*" && raw[i + 1] === "*" && raw[i - 1] !== "\\") {
-      while (raw[i + 1] === "*") i++
-      continue
-    }
-    if (/\s/.test(ch)) {
-      if (out.length > 0 && spaceAt === -1) spaceAt = i
-      continue
-    }
+  const map: number[] = [], end: number[] = [], breaks: number[] = []
+  // The pending whitespace run: where it starts, whether it holds a blank
+  // line, a page-break rule or a reply-depth change, and whether its current
+  // line is blank so far.
+  let spaceAt = -1, paragraph = false, rule = false, depth = false, blank = false
+  const emit = (text: string, from: number, to: number) => {
     if (spaceAt !== -1) {
-      out += " "
+      if (depth || paragraph && !rule) breaks.push(out.length)
+      out += depth ? DEPTH_CHANGE : " "
       map.push(spaceAt)
+      end.push(spaceAt + 1)
       spaceAt = -1
     }
-    out += ch === "\u201C" || ch === "\u201D" ? '"' : ch === "\u2018" || ch === "\u2019" ? "'" : ch
-    map.push(i)
+    paragraph = rule = depth = blank = false
+    const folded = text.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(HYPHENS, "-")
+    for (let at = 0; at < folded.length; at++) {
+      map.push(from)
+      end.push(to)
+    }
+    out += folded
   }
-  return { text: out, map }
+  for (let i = 0; i < raw.length; i++) {
+    if (marks?.depth?.has(i)) depth = true
+    const ch = raw[i]!
+    if (quotes?.has(i) || marks?.skip.has(i)) continue
+    if (unescape && ch === "\\" && MARKDOWN_ESCAPABLE.test(raw[i + 1] ?? "")) {
+      emit(raw[i + 1]!, i + 1, i + 2)
+      i++
+      continue
+    }
+    const entity = markdown && ch === "&" ? entityAt(raw, i) : undefined
+    const isRule = !!marks?.space.has(i)
+    if (/\s/.test(entity?.text ?? ch) || isRule) {
+      if (out.length > 0 && spaceAt === -1) spaceAt = i
+      if (isRule) {
+        rule = true
+        blank = false
+      } else if (ch === "\n") {
+        paragraph ||= blank
+        blank = true
+      }
+      if (entity) i += entity.length - 1
+      continue
+    }
+    emit(entity?.text ?? ch, i, i + (entity?.length ?? 1))
+    if (entity) i += entity.length - 1
+  }
+  return { text: out, map, end, breaks }
 }
 
 export type QuoteChunk = {
@@ -97,7 +326,7 @@ export function verifyQuote(args: {
   const playbook = boundPlaybook(args.directory)
   const policyChunks = playbook?.text ? [{ section: "Playbook", text: playbook.text, char_start: 0, char_end: playbook.text.length }] : []
   const policyHits = playbook?.text && needle && (!args.document || args.document === playbook.source_id)
-    ? findHits(playbook.source_id, policyChunks, needle, {}) ?? findHits(playbook.source_id, policyChunks, needle, { unescapeMarkdown: true }) ?? []
+    ? firstHits(playbook.source_id, policyChunks, needle)
     : []
   if (args.document?.startsWith("playbook:")) return policyHits.length
     ? { found: true, hits: policyHits }
@@ -135,12 +364,25 @@ function findHitsInDoc(db: Database, docName: string, needle: string): QuoteHit[
   const chunks = db
     .query("SELECT section, text, char_start, char_end FROM chunks WHERE doc_name = ? ORDER BY char_start, rowid")
     .all(docName) as QuoteChunk[]
-  return findHits(docName, chunks, needle, {}) ?? findHits(docName, chunks, needle, { unescapeMarkdown: true }) ?? []
+  return firstHits(docName, chunks, needle)
 }
 
-function findHits(docName: string, chunks: QuoteChunk[], needle: string, options: { unescapeMarkdown?: boolean }): QuoteHit[] | undefined {
-  const flat = (text: string) => (options.unescapeMarkdown ? normalizeWithMap(text, options).text : normalize(text))
-  const single = chunks.find((c) => flat(c.text).includes(needle))
+/** The hits in the first of a document's readings (sourceReadings) that holds `needle`. */
+function firstHits(docName: string, chunks: QuoteChunk[], needle: string): QuoteHit[] {
+  for (const reading of sourceReadings(docName)) {
+    const hits = findHits(docName, chunks, needle, reading)
+    if (hits) return hits
+  }
+  return []
+}
+
+function findHits(docName: string, chunks: QuoteChunk[], needle: string, reading: SourceReading): QuoteHit[] | undefined {
+  // Only the reading as written reads one chunk at a time: the others depend
+  // on what is around a character (a line's start, an escaping backslash, a
+  // closing mark, a quoted cell), which a chunk's edges can cut off, so they
+  // read the whole document, below.
+  const asWritten = !Object.values(reading).some(Boolean)
+  const single = asWritten ? chunks.find((c) => normalize(c.text).includes(needle)) : undefined
   if (single) {
     return [
       {
@@ -156,14 +398,16 @@ function findHits(docName: string, chunks: QuoteChunk[], needle: string, options
   // (chunkText), then search the normalized whole and map the match back to
   // raw offsets to find the covering chunks.
   const raw = chunkText(chunks).text
-  const normalized = normalizeWithMap(raw, options)
+  const normalized = normalizeWithMap(raw, reading)
   const at = normalized.text.indexOf(needle)
   if (at === -1) return
   const rawStart = normalized.map[at]
-  const rawLast = normalized.map[at + needle.length - 1]
-  if (rawStart === undefined || rawLast === undefined) return
-  const rawEnd = rawLast + 1
+  const rawEnd = normalized.end[at + needle.length - 1]
+  if (rawStart === undefined || rawEnd === undefined) return
   const covering = chunks.filter((c) => c.char_start < rawEnd && c.char_end > rawStart)
+  // A match one chunk holds is that chunk's hit, as in a single-chunk match.
+  const whole = asWritten ? undefined : covering.find((c) => c.char_start <= rawStart && c.char_end >= rawEnd)
+  if (whole) return [{ doc: docName, section: whole.section, charStart: whole.char_start, charEnd: whole.char_end, verbatim: whole.text }]
   const first = covering[0]
   if (!first) return
   // A later-starting chunk may be wholly contained in an earlier one.
@@ -200,44 +444,42 @@ export function elidedParts(quote: string): string[] | undefined {
  * parts of a document. */
 export const MAX_OMITTED = 300
 
-/** Word's hyphen and non-breaking hyphen (U+2010, U+2011), the figure dash, en
- * dash and minus sign (U+2012, U+2013, U+2212), which a page shows as or in
- * place of "-". Not the em dash, which sets off an aside. */
-const HYPHENS = /[\u2010-\u2013\u2212]/g
-
 /** Where an elided quotation's passages (elidedParts) sit in `raw`. It only
  * locates: words left out between passages can change who must do what or
  * drop a condition, amount or limit, and no list of words can tell which, so
  * only a single passage (an ellipsis at the start or end) verifies a quotation.
  *
  * Passages are matched as a quotation is (normalized, case-insensitively with
- * `ignoreCase`, HYPHENS folded to "-"), each long enough (SHORT_QUOTE) to find
- * its place on its own, beginning and ending on whole words of the source
- * (insideWord: a hyphen or dash joins words) and beginning after the previous
- * one ends.
+ * `ignoreCase`), each long enough (SHORT_QUOTE) to find its place on its own,
+ * beginning and ending on whole words of the source (insideWord: a hyphen or
+ * dash joins words) and beginning after the previous one ends.
  * - "near": every passage in the quoted order, each omission short
- *   (MAX_OMITTED) and within one paragraph (no blank line in the raw text). Of
- *   such placements, the one leaving out least, the earliest on a tie.
+ *   (MAX_OMITTED) and within one paragraph of the reading (no break of
+ *   normalizeWithMap: a blank line, but not one around a page-break rule the
+ *   reading reads as a space, nor a change of reply depth). Of such
+ *   placements, the one leaving out least, the earliest on a tie.
  *   `omitted` is the source words each ellipsis leaves out (whitespace
  *   normalized), joined with " … "; a single passage leaves out nothing.
  * - "apart": every passage in the quoted order, but only with a longer
  *   omission or one across a paragraph break.
  * - null: some passage is not in the source in the quoted order. */
-export function elisionGap(raw: string, parts: string[], options: { unescapeMarkdown?: boolean; ignoreCase?: boolean } = {}): ElisionGap {
+export function elisionGap(raw: string, parts: string[], options: SourceReading & { ignoreCase?: boolean } = {}): ElisionGap {
   if (!parts.length || parts.some(part => part.length < SHORT_QUOTE)) return null
   const normalized = normalizeWithMap(raw, options)
-  const folded = { text: normalized.text.replace(HYPHENS, "-"), map: normalized.map }
-  const { text, map } = options.ignoreCase ? lowerWithMap(folded) : folded
-  const wanted = parts.map(part => part.replace(HYPHENS, "-")).map(part => options.ignoreCase ? lowerChars(part) : part)
+  const text = options.ignoreCase ? lowerChars(normalized.text) : normalized.text
+  const breaks = new Set(normalized.breaks)
+  const wanted = parts.map(part => options.ignoreCase ? lowerChars(part) : part)
   const places = wanted.map(part => {
     const found: number[] = []
     for (let at = text.indexOf(part); at !== -1; at = text.indexOf(part, at + 1))
       if (!insideWord(text, at) && !insideWord(text, at + part.length)) found.push(at)
     return found
   })
-  // The source as written between the end of one passage and the start of the next.
-  const between = (from: number, to: number) => raw.slice(map[from - 1]! + 1, map[to])
-  const near = (from: number, to: number) => to - from <= MAX_OMITTED && !/\n[^\S\n]*\n/.test(between(from, to))
+  const parted = (from: number, to: number) => {
+    for (let at = from; at < to; at++) if (breaks.has(at)) return true
+    return false
+  }
+  const near = (from: number, to: number) => to - from <= MAX_OMITTED && !parted(from, to)
   // Each place of the latest passage placed, with the least it can leave out
   // after near placements of the passages before it.
   type Step = { at: number; end: number; left: number; before?: Step }
@@ -253,7 +495,7 @@ export function elisionGap(raw: string, parts: string[], options: { unescapeMark
   const last = steps.reduce<Step | undefined>((best, step) => !best || step.left < best.left ? step : best, undefined)
   if (last) {
     const omitted: string[] = []
-    for (let step = last; step.before; step = step.before) omitted.unshift(normalizeWithMap(between(step.before.end, step.at), options).text)
+    for (let step = last; step.before; step = step.before) omitted.unshift(normalized.text.slice(step.before.end, step.at).trim())
     return { kind: "near", omitted: omitted.filter(Boolean).join(" \u2026 ") }
   }
   let from = 0
@@ -284,22 +526,13 @@ function insideWord(text: string, at: number) {
   return word(at - 1) && (word(at) || joiner(at) && word(at + 1)) || joiner(at - 1) && word(at - 2) && word(at)
 }
 
-/** Lower case one character at a time, so offsets keep their raw positions. */
+/** Lower case one character at a time, keeping any whose lower case is longer
+ * ("\u0130"), so offsets into `text` hold. */
 function lowerChars(text: string) {
-  return Array.from(text, ch => ch.toLowerCase()).join("")
-}
-
-function lowerWithMap(normalized: { text: string; map: number[] }) {
-  let text = ""
-  const map: number[] = []
-  let at = 0
-  for (const ch of normalized.text) {
+  return Array.from(text, ch => {
     const lower = ch.toLowerCase()
-    text += lower
-    for (let i = 0; i < lower.length; i++) map.push(normalized.map[at]!)
-    at += ch.length
-  }
-  return { text, map }
+    return lower.length === ch.length ? lower : ch
+  }).join("")
 }
 
 /** Where a quotation's elided passages (elidedParts) sit in the one named
@@ -309,7 +542,7 @@ export function locateElidedQuote(args: { directory: string; parts: string[]; do
   const texts = args.document.startsWith("playbook:")
     ? playbook?.text && args.document === playbook.source_id ? [playbook.text] : []
     : indexedText(args.directory, args.document)
-  return nearestGap(texts.flatMap(raw => [{}, { unescapeMarkdown: true }].map(options => elisionGap(raw, args.parts, options))))
+  return nearestGap(texts.flatMap(raw => sourceReadings(args.document).map(reading => elisionGap(raw, args.parts, reading))))
 }
 
 function indexedText(directory: string, document: string): string[] {
