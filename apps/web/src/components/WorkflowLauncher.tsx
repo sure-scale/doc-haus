@@ -72,7 +72,8 @@ function Launcher({ options, documents = [], onLaunch, onStartReview, closing, o
     starters.length > 0 && (
       <fieldset key="starters" className="workflow-launcher-group">
         <legend>Review table</legend>
-        {starters.map((s) => choice(`starter:${s.id}`, s.name, s.id === recommended.id ? recommended.reason : undefined))}
+        {/* Recommended only where it leads; beside a preselected chat workflow it would compete. */}
+        {starters.map((s) => choice(`starter:${s.id}`, s.name, startersFirst && s.id === recommended.id ? recommended.reason : undefined))}
       </fieldset>
     ),
   ]

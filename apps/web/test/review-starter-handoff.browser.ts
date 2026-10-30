@@ -167,10 +167,11 @@ try {
       await open(page, "/matter/solo?view=chat")
       await openLauncher(page)
       const dialog = launcher(page)
-      // One document: chat leads, and the starter that fits one document is recommended.
+      // One document: chat leads with its workflow preselected, so no starter competes as Recommended.
       assert.deepEqual(await dialog.locator("legend").allTextContents(), ["In chat", "Review table"])
       await expect(dialog.getByRole("radio", { name: "Full review" })).toBeChecked()
-      await expect(dialog.getByRole("radio", { name: /^Document overview/ })).toHaveAccessibleName(/Recommended · 1 document in this matter/)
+      await expect(dialog.getByRole("radio", { name: /^Document overview/ })).toHaveAccessibleName("Document overview")
+      assert.equal(await dialog.getByText("Recommended", { exact: false }).count(), 0, "no Recommended beside a preselected workflow")
       await expect(dialog.getByRole("region", { name: "About Full review" })).toContainText("Reads every document in the matter")
       await expect(dialog.getByRole("button", { name: "Start" })).toHaveClass(/primary/)
       assert.equal(await dialog.locator("button.primary").count(), 1, "one primary action")
@@ -274,7 +275,7 @@ try {
   await check("a table with questions opens at the starter's questions, which are appended", wide, async (page) => {
     await open(page, "/matter/asked?view=review&starter=compare-agreements-v1")
     const questions = page.getByRole("dialog", { name: "Compare agreements" })
-    await expect(questions.getByRole("region", { name: "Questions to add" })).toBeVisible()
+    await expect(questions.getByRole("list", { name: "Questions to add" })).toBeVisible()
     await expect(questions.getByRole("textbox")).toHaveCount(5)
     await expect.poll(() => param(page, "starter")).toBeNull()
     await questions.getByRole("button", { name: "Add questions" }).click()
