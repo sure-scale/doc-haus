@@ -13,6 +13,7 @@ const origin = new URL(baseURL).origin
 await mkdir(evidence, { recursive: true })
 const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE })
 const allStates: ReturnType<typeof fixture>[] = []
+const chronology = { schemaVersion: 1, revision: 0, created: false, events: [], coverage: [], proposals: [], sourceDates: {}, suggestion: { status: "unknown", reason: "" }, history: [], framing: "", gaps: [] }
 const timestamp = Date.UTC(2026, 9, 21, 10)
 const jurisdictions = [{ code: "EW", name: "England and Wales", citationStyle: "oscola" }, { code: "SC", name: "Scotland", citationStyle: "scotland" }]
 const matter = { id: "fixture-matter", title: "Alder House · Services agreement", reference: "AH-2026-014", client: "Alder House Studio", jurisdictions: ["EW"], dir: "/fixture/matters/alder-house", created_at: timestamp }
@@ -85,6 +86,8 @@ async function open(state: ReturnType<typeof fixture>, width: number, height: nu
       return reply(state.grid)
     }
     if (method === "POST" && pathname === `/matters/${matter.id}/grid/sources`) return reply(Object.fromEntries((request.postDataJSON() as { cells: { key: string }[] }).cells.map(cell => [cell.key, "verified"])))
+    // The matter page checks the chronology on open and on focus; this matter has none.
+    if (pathname === `/matters/${matter.id}/chronology` || (method === "POST" && pathname === `/matters/${matter.id}/chronology/assess`)) return reply(chronology)
     if (method !== "GET") { state.unexpected.push(`${method} ${pathname}`); return route.abort() }
     if (pathname === "/auth/reuse") return reply({ sources: [] })
     if (pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
@@ -145,14 +148,29 @@ async function exercise(width: number, height: number) {
     await page.getByRole("link", { name: "Review table", exact: true }).click()
     const gridDialog = page.getByRole("dialog", { name: `Review table — ${matter.title}` })
     await expect(gridDialog).toBeVisible()
-    const starterButton = gridDialog.getByRole("button", { name: "Use a starter" })
-    await starterButton.focus()
-    await page.keyboard.press("Enter")
+    // Starters open from the + menu in the header row.
+    const addButton = gridDialog.locator(".review-table").getByRole("button", { name: "Ways to add questions", exact: true })
+    const openStarters = async () => {
+      await addButton.click()
+      await page.getByRole("group", { name: "Add questions" }).getByRole("button", { name: "Use a starter", exact: true }).click()
+    }
+    // The chooser comes first and recommends from source documents only.
+    const chooser = page.getByRole("dialog", { name: "Add questions" })
     const starter = page.getByRole("dialog", { name: "Document overview" })
-    await expect(starter).toBeVisible()
-    await expect(starter).toContainText(matter.title)
-    for (const document of documents) await expect(starter).toContainText(document.name)
-    await expect(starter).toContainText("9 pending cells")
+    const chooseOverview = async () => {
+      await expect(chooser).toBeVisible()
+      await chooser.getByRole("radio", { name: /^Document overview/ }).check()
+      await chooser.getByRole("button", { name: "Continue" }).click()
+      await expect(starter).toBeVisible()
+    }
+    await openStarters()
+    await expect(chooser).toBeVisible()
+    await expect(chooser.getByRole("radio", { name: /^Compare agreements/ })).toBeChecked()
+    await expect(chooser).toContainText("Recommended · 2 source documents in this matter")
+    await page.screenshot({ path: `${evidence}/starter-chooser-${width}.png` })
+    await chooseOverview()
+    await expect(starter).toContainText(`3 documents: ${documents.map(document => document.name).join(", ")}`)
+    await expect(starter).toContainText("Adds 3 questions · 9 cells to fill. No AI runs until you choose Fill.")
     await page.screenshot({ path: `${evidence}/starter-initial-${width}.png` })
     for (let i = 0; i < 12; i++) {
       await page.keyboard.press("Tab")
@@ -165,13 +183,14 @@ async function exercise(width: number, height: number) {
     await page.screenshot({ path: `${evidence}/starter-${width}.png` })
     await page.keyboard.press("Escape")
     await expect(starter).toHaveCount(0)
-    await expect(starterButton).toBeFocused()
+    await expect(addButton).toBeFocused()
     expect(state.writes).toHaveLength(0)
 
-    await starterButton.click()
+    await openStarters()
+    await chooseOverview()
     await starter.getByRole("textbox", { name: "Question 1", exact: true }).fill("What is the main topic?")
     await starter.getByRole("button", { name: "Remove question 2" }).click()
-    await expect(starter).toContainText("6 pending cells")
+    await expect(starter).toContainText("Adds 2 questions · 6 cells to fill")
     await starter.getByRole("button", { name: "Add questions" }).click()
     await expect(starter).toHaveCount(0)
     expect(state.writes).toHaveLength(1)
@@ -183,14 +202,15 @@ async function exercise(width: number, height: number) {
     await expect(gridDialog).toBeVisible()
     await expect(gridDialog.getByRole("button", { name: "Edit question: What is the main topic?" })).toBeVisible()
     await expect(gridDialog.getByText("Invoices are payable within 30 days of receipt.")).toBeVisible()
-    await expect(gridDialog.getByRole("button", { name: "1 comments on Services agreement.docx: When is payment due?" })).toBeVisible()
-    await starterButton.click()
+    await expect(gridDialog.getByRole("button", { name: "1 comment on Services agreement.docx: When is payment due?" })).toBeVisible()
+    await openStarters()
+    await chooseOverview()
     await expect(starter).toContainText("Already in the table")
     await starter.getByRole("button", { name: "Cancel" }).click()
     expect(state.writes).toHaveLength(1)
 
-    await gridDialog.getByRole("button", { name: "Fill empty" }).click()
-    const fill = page.getByRole("dialog", { name: "Review fill" })
+    await gridDialog.getByRole("button", { name: "Fill 10 cells", exact: true }).click()
+    const fill = page.getByRole("dialog", { name: "Fill 10 cells?" })
     await expect(fill).toBeVisible()
     await expect(fill).toContainText("10 cells")
     await expect(fill).toContainText("Fill uses AI")

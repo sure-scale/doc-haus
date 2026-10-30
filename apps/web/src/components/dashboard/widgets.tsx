@@ -383,7 +383,7 @@ function Actions() {
     { id: "matter", icon: "matter", title: "New matter", detail: "Open a folder for an engagement", href: "/?new=1" },
     { id: "template", icon: "template", title: "Add a template", detail: "Draft from your own precedent", href: "/templates" },
     { id: "client", icon: "client", title: "Add a client", detail: "Keep parties and details on file", href: "/clients" },
-    { id: "sample", icon: "sample", title: "Try the sample", detail: "Explore a matter with documents" },
+    { id: "sample", icon: "sample", title: "Try the sample", detail: "Explore a fictional matter" },
   ]} />
 }
 
@@ -479,11 +479,11 @@ function SampleMatter({ data }: WidgetContext) {
   return (
     <div className="dash-sample">
       <SamplePreview items={[
-        { id: "sources", icon: "documents", title: "Source files", detail: "Engagement letter & rider" },
-        { id: "answers", icon: "question", title: "Cited Q&A", detail: "Answers linked to sources" },
-        { id: "review", icon: "review", title: "Review table", detail: "A playbook check to explore" },
+        { id: "sources", icon: "documents", title: "Source file", detail: "One engagement letter" },
+        { id: "answers", icon: "question", title: "Cited answers", detail: "A question ready to send" },
+        { id: "playbook", icon: "playbook", title: "Playbook", detail: "Engagement letter checks" },
       ]} />
-      <p className="dash-sample-text">A fictional engagement letter, with cited answers and a legal review ready to look through.</p>
+      <p className="dash-sample-text">A fictional engagement letter, ready for cited questions and a legal review.</p>
       {added
         ? <Link className="dash-text-button" to={`/matter/${added.id}${ASK}`}>Open the sample matter{icons.arrowRight}</Link>
         : <button type="button" className="dash-text-button" onClick={() => sample.open(ASK)} disabled={sample.adding} aria-busy={sample.adding}>Add the sample matter{icons.arrowRight}</button>}

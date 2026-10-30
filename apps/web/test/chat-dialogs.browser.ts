@@ -81,6 +81,10 @@ const server = Bun.serve({
       return json({ current_activity: null, today: { cost_usd: 0, turns: 0 }, matter_total: { cost_usd: 0, turns: 0, sessions: 1, since_ts: 1 }, current_session: null, rate_card_as_of: null, unknown_models: [] })
     if (route === "GET /ingest/matters/matter/drafting-status") return json(drafting)
     if (url.pathname.startsWith("/ingest/matters/matter/answer-drafts/")) return json({ answers: {}, revision: 0 })
+    // No chronology and no open Word documents: the matter page carries on without them.
+    if (route === "GET /ingest/matters/matter/chronology" || route === "POST /ingest/matters/matter/chronology/assess") return new Response(null, { status: 404 })
+    if (route === "GET /ingest/word/config") return json({ available: false, origin: null, manifestUrl: null })
+    if (route === "GET /ingest/matters/matter/documents/word") return json({ documents: [] })
     if (route === "GET /ingest/preferences") return json({ attorney: "" })
     if (route === "GET /ingest/engine/config") return json({ model: "test/model", small_model: "test/model" })
     if (route === "GET /api/event") return new Response(new ReadableStream<Uint8Array>(), { headers: { "content-type": "text/event-stream" } })

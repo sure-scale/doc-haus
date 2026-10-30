@@ -59,8 +59,8 @@ export const LegalPlugin: LegalPolicy = async (input) => {
       // A supplied-context host assembles all authorized evidence explicitly.
       // Keep legacy Word sessions isolated when replaying their admitted input.
       const agent = sessionAgent(input.sessionID)
-      // Dashboard layout jobs use the supplied catalog, not matter/legal context.
-      if (agent === "dashboard" || agent === "dashboard-chart") return
+      // Dashboard and source-bound review jobs use only their supplied data.
+      if (agent === "dashboard" || agent === "dashboard-chart" || agent === "review-compare" || agent === "review-suggest") return
       const suppliedContext = input.suppliedContext || agent === "word-chat"
       const preferencesMode = suppliedContext ? "none" : draftingPreferencesMode(agent)
       // A drafting run's stages take the Posture frozen in its plan (as their

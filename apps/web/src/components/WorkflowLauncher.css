@@ -1,0 +1,33 @@
+/* The list and its preview share one left edge with the title bar (--space-5). */
+.picker-panel.workflow-launcher { width: 100%; max-width: 880px; }
+.workflow-launcher-body { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); gap: var(--space-6); align-items: start; min-height: min(360px, 50vh); padding: var(--space-5); overflow-y: auto; scrollbar-width: thin; }
+.workflow-launcher-list { display: flex; flex-direction: column; gap: var(--space-5); min-width: 0; }
+.workflow-launcher-group { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; margin: 0; padding: 0; border: 0; }
+.workflow-launcher-group legend { margin-bottom: var(--space-2); padding: 0; color: var(--text-secondary); font-size: .8rem; font-weight: 600; }
+.workflow-launcher-choice { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); cursor: pointer; transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out); }
+.workflow-launcher-choice:hover { background: var(--panel-hover); }
+.workflow-launcher-choice.is-selected { border-color: var(--accent-border); background: var(--accent-soft); }
+.workflow-launcher-choice:has(input:focus-visible) { outline: 2px solid var(--md-sys-state-focus, var(--accent)); outline-offset: 2px; }
+.workflow-launcher-choice input { flex: none; margin: 2px 0 0; }
+.workflow-launcher-choice input:focus, .workflow-launcher-choice input:focus-visible { outline: none; }
+.workflow-launcher-choice-name { display: block; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.workflow-launcher-choice-reason { display: block; margin-top: 2px; color: var(--text-secondary); font-size: .8rem; line-height: 1.45; }
+/* Beside the preview, Recommended takes its own line above its reason; the
+   " · " between them is still read out. */
+.workflow-launcher-choice-reason strong { display: block; color: var(--accent); font-weight: 600; }
+.workflow-launcher-choice-sep { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); white-space: nowrap; }
+.workflow-launcher-preview { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; padding-left: var(--space-6); border-left: 1px solid var(--border); line-height: 1.55; overflow-wrap: anywhere; }
+.workflow-launcher-preview p, .workflow-launcher-preview h3 { margin: 0; }
+.workflow-launcher-preview section { display: flex; flex-direction: column; gap: var(--space-2); }
+.workflow-launcher-preview h3 { color: var(--text-secondary); font-size: .9rem; font-weight: 600; }
+.workflow-launcher-preview :is(ol, ul) { margin: 0; padding-left: 1.25rem; }
+.workflow-launcher-preview li + li { margin-top: var(--space-1); }
+.workflow-launcher-note { padding-top: var(--space-3); border-top: 1px solid var(--border-soft); color: var(--text-secondary); font-size: .85rem; }
+.workflow-launcher-actions.compare-actions { flex: none; flex-wrap: wrap; margin: 0; padding: var(--space-3) var(--space-5); border-top: 1px solid var(--border); }
+@media (max-width: 640px) {
+  .workflow-launcher-body { grid-template-columns: minmax(0, 1fr); gap: var(--space-5); min-height: 0; padding: var(--space-4); }
+  .workflow-launcher-preview { padding: var(--space-5) 0 0; border-left: 0; border-top: 1px solid var(--border); }
+  .workflow-launcher-choice-reason strong { display: inline; }
+  .workflow-launcher-choice-sep { position: static; width: auto; height: auto; clip-path: none; }
+  .workflow-launcher-actions.compare-actions { padding-inline: var(--space-4); }
+}

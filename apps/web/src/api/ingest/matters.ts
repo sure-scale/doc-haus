@@ -98,8 +98,9 @@ export async function renameMatter(
   return res.json()
 }
 
-// Adds the fictional sample matter (an engagement letter with cited Q&A and a
-// legal review to explore). Idempotent: an existing sample is returned as is.
+// Adds the fictional sample matter (one engagement letter, bound to the
+// engagement-letter starter playbook). Idempotent: an existing sample is
+// returned as is.
 export async function addSampleMatter(): Promise<Matter> {
   const res = await fetch(`${INGEST_URL}/sample-matter`, { method: "POST" })
   if (!res.ok) throw new Error(await ingestError(res, "Could not add the sample matter"))

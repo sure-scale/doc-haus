@@ -1,0 +1,16 @@
+/* The + header button's menu: fixed, so the table's scroll area cannot clip it. */
+.review-add { display: inline-flex; }
+/* The open menu's header cell stays above the sticky cells beside it. */
+.review-table thead th:has(.review-add-button[aria-expanded="true"]) { z-index: 4; }
+.review-add-menu { position: fixed; z-index: var(--z-popover); display: flex; flex-direction: column; gap: 2px; width: min(300px, calc(var(--viewport-inline) - 32px)); padding: 6px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); box-shadow: var(--shadow-md); text-align: left; }
+.review-add-menu[hidden] { display: none; }
+.review-add-menu button { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; min-height: 40px; padding: var(--space-2) var(--space-3); border: 0; border-radius: calc(var(--radius-md) - 6px); background: transparent; color: var(--text); box-shadow: none; font-size: .875rem; font-weight: 600; text-align: left; white-space: normal; transform: none; }
+.review-add-menu button:hover:not(:disabled) { border: 0; background: var(--panel-hover); }
+.review-add-menu button small { color: var(--text-secondary); font-size: .78rem; font-weight: 400; line-height: 1.45; }
+.review-add-button[aria-expanded="true"] { border-color: var(--accent); background: var(--accent-soft-hover); }
+@media (pointer: coarse) {
+  .review-add-menu button { min-height: 44px; }
+}
+@media (forced-colors: active) {
+  .review-add-menu { border: 1px solid CanvasText; }
+}

@@ -34,9 +34,9 @@ export function needsFill(cell: GridCellData | undefined, questionHash: string) 
   return cell.questionHash !== questionHash || (!cell.citation && !cell.recheck)
 }
 
-export async function computeCell(input: { document: string; question: string; questionHash: string }, jobs: CellJobs): Promise<GridCellData> {
+export async function computeCell(input: { document: string; docPath?: string; question: string; questionHash: string }, jobs: CellJobs): Promise<GridCellData> {
   const first = await jobs.extract(`Document: "${input.document}". Question: ${input.question}`)
-  const { text, citation } = readReviewAnswer(first)
+  const { text, citation } = readReviewAnswer(first, { name: input.document, docPath: input.docPath })
   const cell: GridCellData = { answer: text || NOT_ADDRESSED, citation: citation && stored(citation), status: "filled", questionHash: input.questionHash }
   if (cell.citation) return cell
   const found = await jobs.passages({
@@ -65,9 +65,12 @@ function readCandidateAnswer(messages: Array<{ parts: Part[] }>, candidates: Cit
   return { text, citation: number >= 1 ? candidates[number - 1] : undefined }
 }
 
+/** A re-check's outcome in one sentence, as the cell's marker tooltip gives it. */
+export const recheckOutcome = (recheck: GridRecheck) => recheck.outcome === "found" ? "Found on re-check." : "Not found after re-check."
+
 /** The stored re-check as the lawyer reads it: the outcome and what was searched. */
 export function describeRecheck(recheck: GridRecheck) {
-  const outcome = recheck.outcome === "found" ? "Found on re-check." : "Not found after re-check."
+  const outcome = recheckOutcome(recheck)
   if (!recheck.passages) return `${outcome} This document has no indexed passages to search.`
   const shown = recheck.terms.slice(0, 6).map(term => `"${term}"`).join(", ")
   const terms = recheck.terms.length > 6 ? `${shown} and ${recheck.terms.length - 6} more` : shown

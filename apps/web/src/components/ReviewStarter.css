@@ -1,10 +1,117 @@
 .picker-panel.review-starter { width: 100%; max-width: 680px; }
+/* The starter keeps one width from choosing to questions; its example widens. */
+.review-detail-modal .picker-panel.review-starter.is-medium { width: min(880px, 100%); }
+.review-detail-modal .picker-panel.review-starter.is-wide { width: min(1120px, 100%); max-width: none; }
+/* One question: the field, and its add, save or remove. */
+.review-detail-modal .picker-panel.review-starter.is-narrow { max-width: 520px; }
+.review-starter-body .review-question-field { margin-bottom: calc(-1 * var(--space-1)); font-weight: 600; }
+.review-question-input { box-sizing: border-box; width: 100%; min-width: 0; line-height: 1.5; resize: vertical; }
+.review-starter-body .review-question-hint { margin-top: calc(-1 * var(--space-1)); color: var(--muted); font-size: .875rem; }
+.review-question-remove { margin-right: auto; margin-left: calc(-1 * var(--space-4)); color: var(--danger); }
+/* Body, header and footer share one left edge (--space-5). */
 .review-starter-body { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; overflow-wrap: anywhere; }
+.picker-body.review-starter-body { padding: var(--space-5); }
 .review-starter-body p, .review-starter-body h3 { margin: 0; }
-.review-starter-body h3 { font-size: 1rem; }
+.review-starter-body section > h3 { font-size: .95rem; font-weight: 650; }
 .review-starter-body section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .review-starter-body ul { margin: 0; padding-left: 1.5rem; overflow-wrap: anywhere; }
-.review-starter-question { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
-.review-starter-question textarea { box-sizing: border-box; width: 100%; min-width: 0; resize: vertical; }
-.review-starter-question p { color: var(--muted); font-size: .875rem; }
-.review-starter-body .compare-actions { flex-wrap: wrap; }
+.review-starter-body .compare-actions { flex-wrap: wrap; margin-top: var(--space-2); }
+/* Fill preview: a question that is filled but not compared. */
+.fill-preview-note { margin-left: var(--space-1); color: var(--text-secondary); font-size: .8rem; white-space: nowrap; text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
+/* The "i" beside the compare sentence: a finger-sized target on touch. */
+@media (pointer: coarse) {
+  .review-starter-body .info-tip { position: relative; }
+  .review-starter-body .info-tip::after { content: ""; position: absolute; inset: -12px; }
+}
+
+/* One view per step; the view takes focus when the step changes. */
+.review-starter-step { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.review-starter-step:focus { outline: none; }
+.review-starter-back { margin-right: auto; margin-left: calc(-1 * var(--space-4)); }
+/* The actions stay in view while a step or the Fill preview scrolls. */
+.review-starter-body .review-starter-step > .compare-actions, .review-starter-body > .compare-actions { position: sticky; bottom: calc(-1 * var(--space-5)); z-index: 2; margin: 0 calc(-1 * var(--space-5)) calc(-1 * var(--space-5)); padding: var(--space-3) var(--space-5); border-top: 1px solid var(--border); background: var(--panel); }
+
+/* Choose: a short list beside a preview of the highlighted starter. */
+.review-starter-choose { display: grid; grid-template-columns: minmax(200px, 256px) minmax(0, 1fr); gap: var(--space-6); align-items: start; padding-block: var(--space-1); }
+.review-starter-choices { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; margin: 0; padding: 0; border: 0; }
+.review-starter-choice { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); cursor: pointer; transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out); }
+.review-starter-choice:hover { background: var(--panel-hover); }
+.review-starter-choice.is-selected { border-color: var(--accent-border); background: var(--accent-soft); }
+.review-starter-choice:has(input:focus-visible) { outline: 2px solid var(--md-sys-state-focus, var(--accent)); outline-offset: 2px; }
+.review-starter-choice input { flex: none; margin: 2px 0 0; }
+.review-starter-choice input:focus, .review-starter-choice input:focus-visible { outline: none; }
+.review-starter-choice-name { display: block; font-weight: 600; line-height: 1.4; text-wrap: balance; }
+.review-starter-choice-reason { display: block; margin-top: 2px; color: var(--text-secondary); font-size: .8rem; line-height: 1.45; text-wrap: balance; }
+/* Beside the preview, Recommended takes its own line above its reason; the
+   " · " between them is still read out. */
+.review-starter-choice-reason strong { display: block; color: var(--accent); font-weight: 600; }
+.review-starter-choice-sep { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); white-space: nowrap; }
+.review-starter-body .review-starter-preview { gap: var(--space-3); padding-left: var(--space-6); border-left: 1px solid var(--border); line-height: 1.55; }
+.review-starter-body .review-starter-example-link { align-self: flex-start; min-height: 0; font-weight: 600; }
+@media (max-width: 640px) {
+  .review-starter-choose { grid-template-columns: minmax(0, 1fr); gap: var(--space-5); }
+  .review-starter-choice-reason strong { display: inline; }
+  .review-starter-choice-sep { position: static; width: auto; height: auto; clip-path: none; }
+  .review-starter-body .review-starter-preview { padding: var(--space-5) 0 0; border-left: 0; border-top: 1px solid var(--border); }
+}
+
+/* Example: the table takes the dialog's height and scrolls under its own
+   header row; an answer opens its detail on top. */
+.review-starter.is-wide .review-starter-step, .review-example { flex: 1 1 auto; min-height: 0; }
+.review-example { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+.review-starter-body .review-example-note { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--info-soft); color: var(--info); font-size: .875rem; }
+.review-starter-body .review-example-hint { margin-top: calc(-1 * var(--space-1)); color: var(--muted); font-size: .85rem; }
+.review-example-scroll { flex: 0 1 auto; min-height: 12rem; max-height: none; }
+.review-table.review-example-table { font-size: .85rem; line-height: 1.5; }
+.review-table.review-example-table th, .review-table.review-example-table td { min-width: 0; padding: var(--space-3); overflow-wrap: break-word; }
+.review-table.review-example-table thead th { font-size: .8rem; line-height: 1.45; }
+.review-table.review-example-table .review-doc-col { width: 180px; min-width: 0; font-size: .85rem; }
+.review-table.review-example-table td.review-example-cell { padding: 0; }
+.review-example-cell > button { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1); width: 100%; height: 100%; min-height: 0; padding: var(--space-3); border: 0; border-radius: 0; background: transparent; color: var(--text); font-weight: 400; text-align: left; white-space: normal; }
+.review-example-cell > button:hover:not(:disabled) { border: 0; background: var(--panel-hover); }
+.review-example-cell > button:focus-visible { outline-offset: -2px; }
+.review-example-answer { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
+.review-example-cell .review-cite { font-size: .78rem; }
+.review-example-cell .review-marker { margin-left: 0; padding: 0; min-height: 20px; }
+
+/* Questions: a numbered list of fields. Each grows only when its question
+   wraps; Remove's word ends on the content edge. */
+.review-starter-questions { margin: 0; padding: 0; list-style: none; }
+.review-starter-question { display: grid; grid-template-columns: 1.5rem minmax(0, 1fr) auto; align-items: start; gap: var(--space-1) var(--space-2); padding-block: var(--space-2); }
+.review-starter-question label { padding-top: 7px; color: var(--text-secondary); font-variant-numeric: tabular-nums; line-height: 1.5; }
+/* A quiet outline at rest, so each row reads as editable without hover. */
+.review-starter-question textarea { box-sizing: border-box; width: 100%; min-width: 0; min-height: 0; padding-block: 6px; border-color: var(--border); background: transparent; line-height: 1.5; resize: none; field-sizing: content; }
+.review-starter-question textarea:hover:not(:disabled):not(:focus) { border-color: var(--border-strong); }
+.review-starter-question button.ghost { min-height: 34px; margin-right: calc(-1 * var(--space-2)); padding: var(--space-1) var(--space-2); font-size: .875rem; }
+.review-starter-question p { grid-column: 2; padding-inline: 11px; color: var(--muted); font-size: .85rem; }
+/* An AI suggestion beside a starter's questions carries its tag, under its
+   field so every field keeps one width, until it is edited or added. */
+.review-starter-question.is-suggested .review-starter-tag { grid-column: 2; grid-row: 2; justify-self: start; margin-left: 11px; }
+.review-starter-tag { align-self: start; padding: 0 6px; border: 1px solid currentColor; border-radius: var(--radius-sm); color: var(--info); font-size: .75rem; font-weight: 600; line-height: 1.45; white-space: nowrap; }
+.review-starter-body .review-starter-more { align-self: flex-start; min-height: 0; margin-top: var(--space-1); font-weight: 600; }
+.review-starter-body .review-starter-scope { margin-top: var(--space-2); color: var(--text-secondary); font-size: .875rem; }
+/* What Add questions does, in the sticky footer between Back and Cancel; on a
+   phone, on its own line above the buttons. */
+.review-starter-body .compare-actions > .review-starter-summary { order: 1; flex: 1 1 0; min-width: 0; align-self: center; color: var(--text-secondary); font-size: .875rem; text-align: right; text-wrap: pretty; }
+.review-starter-body .compare-actions:has(> .review-starter-summary) > button:not(.review-starter-back) { order: 2; }
+@media (pointer: coarse) {
+  .review-starter-question label { padding-top: 11px; }
+  .review-starter-question textarea { padding-block: 10px; }
+}
+@media (max-width: 640px) {
+  .review-starter-body .compare-actions > .review-starter-summary { order: -1; flex-basis: 100%; text-align: left; }
+}
+
+/* Describe: the lawyer's words, what the AI reads, and a calm wait. */
+.review-suggest-input { min-height: 6.5em; }
+.review-starter-body .review-suggest-error { color: var(--text-secondary); font-size: .875rem; }
+.review-suggest-error .linklike { min-height: 0; font-size: inherit; font-weight: 600; line-height: inherit; }
+.review-starter-body .review-suggest-running { display: inline-flex; align-items: center; gap: var(--space-2); margin-right: auto; color: var(--text-secondary); font-size: .875rem; }
+.review-suggest-running::before { content: ""; flex: none; width: 12px; height: 12px; border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: step-spin .7s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .review-suggest-running::before { animation: none; } }
+
+@media (max-width: 700px) {
+  .review-table.review-example-table .review-doc-col { width: 148px; }
+  .picker-body.review-starter-body { padding: var(--space-4); }
+  .review-starter-body .review-starter-step > .compare-actions, .review-starter-body > .compare-actions { bottom: calc(-1 * var(--space-4)); margin: 0 calc(-1 * var(--space-4)) calc(-1 * var(--space-4)); padding-inline: var(--space-4); }
+}

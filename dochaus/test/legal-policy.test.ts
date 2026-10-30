@@ -584,3 +584,17 @@ test("the shared Q&A agent respects supplied context after real parameter hook o
   expect(current.system.join("\n")).not.toContain("<jurisdiction")
   expect(current.system).toHaveLength(1)
 })
+
+test("source-bound review agents do not acquire implicit matter context", async () => {
+  const directory = mkdtempSync(path.join(workspace, "review-context-"))
+  writeFileSync(path.join(directory, "matter.json"), JSON.stringify({ id: "review-context", title: "Private matter", conflicts: { status: "pending", owner: "DISTINCTIVE_REVIEW_OWNER" }, jurisdictions: ["EW"] }))
+  const hooks = await pluginFor(directory)
+  for (const agent of ["review-compare", "review-suggest"]) {
+    const sessionID = `source-bound-${agent}`
+    const params = chatParamsForAgent(sessionID, agent)
+    await hooks["chat.params"]!(params.input, params.output)
+    const current = { system: [] as string[] }
+    await hooks["experimental.chat.system.transform"]!({ sessionID } as never, current)
+    expect(current.system).toEqual([])
+  }
+})

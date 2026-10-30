@@ -19,7 +19,7 @@ import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/design-syst
 import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/design-review.css"))}
 const params = new URLSearchParams(location.search)
 const id = params.get("matter") || "one"
-const docs = params.has("empty") ? [] : (params.has("long") ? ["long_".repeat(38) + ".docx"] : ["First.docx", "Second.docx"]).map((name, i) => ({ id: i+1, name, doc_path: name, created_at: 0 }))
+const docs = params.has("empty") ? [] : (params.has("long") ? ["long_".repeat(38) + ".docx", "Second.docx"] : ["First.docx", "Second.docx"]).map((name, i) => ({ id: i+1, name, doc_path: name, created_at: 0, ...(params.has("deliverable") && i === 1 ? { role: "deliverable" } : {}) }))
 createRoot(document.getElementById("root")).render(createElement(ReviewGrid, { matterId: id, title: id === "one" ? "First matter" : "Second matter", directory: "/synthetic/" + id, documents: docs, onClose: () => {}, onAsk: () => {} }))
 `)
 const build = await Bun.build({ entrypoints: [entry], target: "browser", define: { "import.meta.env": JSON.stringify({ VITE_INGEST_URL: "http://grid.invalid", VITE_OPENCODE_URL: "http://engine.invalid" }) } })
@@ -35,7 +35,7 @@ const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: req => {
 const originalCell = { answer: "Existing answer", status: "reviewed" as const, questionHash: "old", comments: [{ id: "note", text: "Keep this comment", at: 1 }] }
 const initial: Grid = { version: 0, columns: [{ id: "existing", question: "Existing question?" }], cells: { "First.docx::existing": originalCell } }
 const empty: Grid = { version: 0, columns: [], cells: {} }
-const grids: Record<string, Grid> = { one: structuredClone(initial), two: structuredClone(empty), empty: structuredClone(empty), conflict: structuredClone(initial), failure: structuredClone(initial) }
+const grids: Record<string, Grid> = { one: structuredClone(initial), two: structuredClone(empty), empty: structuredClone(empty), conflict: structuredClone(initial), failure: structuredClone(initial), compare: structuredClone(initial) }
 let puts = 0
 let engineCalls = 0
 const prompts: string[] = []
@@ -88,17 +88,106 @@ try {
     }
     return route.fulfill({ status: 500, body: "Unexpected model call" })
   })
+  // Each step names the dialog: the chooser, a starter's example, then its questions.
+  const chooser = page.getByRole("dialog", { name: "Add questions" })
+  const example = page.getByRole("dialog", { name: "Example: Compare agreements" })
   const starter = page.getByRole("dialog", { name: "Document overview" })
-  const reviewFill = page.getByRole("dialog", { name: "Review fill" })
-  const open = async (query: string) => { await page.goto(`${server.url.href}${query}`); await page.getByRole("button", { name: "Use a starter" }).waitFor() }
-  const showStarter = async () => { await page.getByRole("button", { name: "Use a starter" }).click(); await expect(starter).toBeVisible() }
+  const compare = page.getByRole("dialog", { name: "Compare agreements" })
+  const overviewChoice = chooser.getByRole("radio", { name: /^Document overview/ })
+  const compareChoice = chooser.getByRole("radio", { name: /^Compare agreements/ })
+  const reviewFill = page.getByRole("dialog", { name: /^Fill \d+ cells?\?$/ })
+  // A table without questions has Add questions as its primary; otherwise starters open from the + menu.
+  const addButton = page.locator(".review-table").getByRole("button", { name: "Ways to add questions", exact: true })
+  const primary = page.locator(".review-toolbar .review-primary")
+  const open = async (query: string) => { await page.goto(`${server.url.href}${query}`); await addButton.waitFor() }
+  const showChooser = async () => {
+    await addButton.click()
+    await page.getByRole("group", { name: "Add questions" }).getByRole("button", { name: "Use a starter", exact: true }).click()
+    await expect(chooser).toBeVisible()
+  }
+  const showStarter = async () => {
+    await showChooser()
+    await overviewChoice.check()
+    await chooser.getByRole("button", { name: "Continue" }).click()
+    await expect(starter).toBeVisible()
+  }
 
   await open("?matter=one")
+  await expect(primary).toHaveCount(1)
+  await expect(primary).toHaveText("Fill 1 cell")
+  await expect(addButton).toBeVisible()
+  const toolbar = page.locator(".review-toolbar")
+  assert.equal(await toolbar.evaluate((node) => node.scrollWidth <= node.clientWidth + 1), true, "the toolbar wraps within a 400px viewport")
+
+  // The chooser preselects the starter that fits the matter's source documents.
+  await showChooser()
+  await expect(compareChoice).toBeChecked()
+  await expect(compareChoice).toBeFocused()
+  await expect(chooser).toContainText("Recommended · 2 documents in this matter")
+  await expect(chooser.getByRole("region", { name: "About Compare agreements" })).toContainText("Which law governs the agreement")
+  await expect(chooser.getByRole("button", { name: /^(Continue|Add questions)$/ })).toHaveCount(1)
+  const chooserBox = await chooser.boundingBox()
+  assert.ok(chooserBox && chooserBox.x >= 0 && chooserBox.x + chooserBox.width <= 400, "chooser must fit a 400px viewport")
+  await page.keyboard.press("ArrowUp")
+  await expect(overviewChoice).toBeChecked()
+  await expect(chooser.getByRole("region", { name: "About Document overview" })).toBeVisible()
+  await expect(chooser.getByRole("button", { name: "See example" })).toHaveCount(0)
+  await page.keyboard.press("Tab")
+  assert.equal(await chooser.evaluate(el => el.contains(document.activeElement)), true, "keyboard focus stays in the chooser")
+  await page.keyboard.press("Escape")
+  await expect(chooser).toHaveCount(0)
+
+  // The example is read-only: it opens, shows a cited passage and returns to the chooser.
+  await showChooser()
+  await chooser.getByRole("button", { name: "See example" }).click()
+  await expect(example).toBeVisible()
+  await expect(example).toContainText("Fictional example")
+  await expect(example.getByRole("region", { name: "Example review table" }).getByRole("columnheader")).toHaveCount(6)
+  // On a short screen the table scrolls within its own region under its header row.
+  const exampleTable = example.getByRole("region", { name: "Example review table" })
+  await page.setViewportSize({ width: 400, height: 640 })
+  assert.equal(await exampleTable.evaluate((node) => node.scrollHeight > node.clientHeight), true, "the example table scrolls within its own region")
+  await exampleTable.evaluate((node) => { node.scrollTop = 120 })
+  const headerTop = await exampleTable.getByRole("columnheader").first().evaluate((node) => node.getBoundingClientRect().top - node.closest(".review-example-scroll")!.getBoundingClientRect().top)
+  assert.ok(Math.abs(headerTop) <= 1.5, `the example header row stays at the top of its region (${headerTop}px)`)
+  await exampleTable.evaluate((node) => { node.scrollTop = 0 })
+  await page.setViewportSize({ width: 400, height: 860 })
+  // An answer opens its read-only detail; Escape closes only the detail and
+  // returns focus to the answer, and a second Escape closes the example.
+  const differsCell = example.locator(".review-example-cell button", { hasText: "Differs" }).first()
+  await differsCell.click()
+  const answerDetail = page.getByRole("dialog", { name: /^Example answer:/ })
+  await expect(answerDetail).toBeVisible()
+  await expect(answerDetail).toContainText("Fictional example")
+  await expect(answerDetail.locator(".review-walk-word")).toContainText("Differs")
+  await expect(answerDetail.locator(".citation .excerpt")).toContainText("limited to £250,000 in aggregate")
+  await expect(answerDetail.getByRole("button")).toHaveCount(1)
+  await page.keyboard.press("Escape")
+  await expect(answerDetail).toHaveCount(0)
+  await expect(example).toBeVisible()
+  await expect(differsCell).toBeFocused()
+  await example.locator(".review-example-cell button", { hasText: "Not found" }).first().click()
+  await expect(answerDetail.locator(".review-walk-why")).toContainText("The document does not appear to address this question.")
+  await expect(answerDetail.getByRole("region", { name: "Source" })).toHaveCount(0)
+  await answerDetail.getByRole("button", { name: "Close" }).click()
+  await expect(answerDetail).toHaveCount(0)
+  await page.keyboard.press("Escape")
+  await expect(example).toHaveCount(0)
+  assert.equal(puts, 0, "the example must not write")
+  await showChooser()
+  await chooser.getByRole("button", { name: "See example" }).click()
+  await example.getByRole("button", { name: "Back" }).click()
+  await expect(chooser).toBeVisible()
+  await expect(compareChoice).toBeChecked()
+  assert.equal(puts, 0, "the chooser and example must not write")
+  assert.equal(engineCalls, 0, "the chooser and example must not call a model")
+  await page.keyboard.press("Escape")
+  await expect(chooser).toHaveCount(0)
+  assert.deepEqual(grids.one, initial)
+
   await showStarter()
-  await expect(starter).toContainText("First matter")
-  await expect(starter).toContainText("First.docx")
-  await expect(starter).toContainText("Second.docx")
-  await expect(starter).toContainText("6 pending cells")
+  await expect(starter).toContainText("2 documents: First.docx, Second.docx")
+  await expect(starter).toContainText("Adds 3 questions · 6 cells to fill. No AI runs until you choose Fill.")
   const box = await starter.boundingBox()
   assert.ok(box && box.x >= 0 && box.x + box.width <= 400, "starter must fit a 400px viewport")
   await starter.getByRole("textbox", { name: "Question 1" }).focus()
@@ -113,24 +202,27 @@ try {
   await showStarter()
   await starter.getByRole("textbox", { name: "Question 1" }).fill("  Existing question?  ")
   await expect(starter.getByRole("status")).toContainText("Already in the table")
-  await expect(starter).toContainText("4 pending cells")
+  await expect(starter).toContainText("Adds 2 questions · 4 cells to fill")
   await starter.getByRole("button", { name: "Remove question 3" }).focus()
   await page.keyboard.press("Enter")
   await expect(starter.getByRole("textbox", { name: "Question 2" })).toBeFocused()
   await starter.getByRole("textbox", { name: "Question 2" }).fill("What is the duration?")
-  await expect(starter).toContainText("2 pending cells")
+  await expect(starter).toContainText("Adds 1 question · 2 cells to fill")
   await starter.getByRole("button", { name: "Add questions" }).click()
   await expect(starter).toHaveCount(0)
   await expect.poll(() => puts).toBe(1)
   assert.equal(grids.one!.columns.length, 2)
   assert.equal(grids.one!.columns[1]!.question, "What is the duration?")
+  assert.equal(grids.one!.columns[1]!.compare, false, "an edited starter question keeps its flag not to compare")
+  assert.deepEqual(grids.one!.columns[0], initial.columns[0], "a duplicate leaves the existing column as it is")
   assert.deepEqual(grids.one!.cells["First.docx::existing"], originalCell, "append retains reviewed answer and comment")
   assert.equal(engineCalls, 0, "setup must never trigger extraction")
   await page.reload()
   await expect(page.getByRole("button", { name: "Edit question: What is the duration?" })).toBeVisible()
   assert.deepEqual(grids.one!.cells["First.docx::existing"], originalCell)
 
-  await page.getByRole("button", { name: "Fill empty" }).click()
+  await expect(primary).toHaveCount(1)
+  await page.getByRole("button", { name: "Fill 3 cells", exact: true }).click()
   await expect(reviewFill).toBeVisible()
   await expect(reviewFill).toContainText("3 cells")
   await expect(reviewFill).toContainText("First.docx")
@@ -153,17 +245,60 @@ try {
   await starter.getByRole("button", { name: "Cancel" }).click()
   assert.equal(puts, 1)
   await open("?matter=two")
-  await showStarter()
-  await expect(starter).toContainText("Second matter")
+  await expect(primary).toHaveCount(1)
+  await expect(primary).toHaveText("Add questions")
+  // The primary is the toolbar's only way in: no quiet duplicate beside it.
+  await expect(page.locator(".review-toolbar").getByRole("button", { name: "Add questions", exact: true })).toHaveCount(1)
+  await primary.click()
+  await expect(chooser).toBeVisible()
+  await overviewChoice.check()
+  await chooser.getByRole("button", { name: "Continue" }).click()
+  await expect(starter).toBeVisible()
   assert.deepEqual(grids.two, empty)
   await starter.getByRole("button", { name: "Cancel" }).click()
 
+  // Without documents nothing can be filled or exported: no primary action.
   await open("?matter=empty&empty=1")
+  await expect(primary).toHaveCount(0)
+  await expect(page.getByRole("button", { name: /^Export/ })).toHaveCount(0)
   await showStarter()
   await expect(starter).toContainText("Add documents to this matter")
   await expect(starter.getByRole("button", { name: "Add questions" })).toBeDisabled()
   await starter.getByRole("button", { name: "Cancel" }).click()
   assert.equal(puts, 1)
+
+  // A starter whose source documents are mostly deliverables recommends the overview.
+  await open("?matter=two&deliverable=1")
+  await showChooser()
+  await expect(overviewChoice).toBeChecked()
+  await expect(chooser).toContainText("Recommended · 1 source document in this matter")
+  await chooser.getByRole("button", { name: "Cancel" }).click()
+  await expect(chooser).toHaveCount(0)
+
+  // From the example, Use with my matter opens the questions; Add questions only appends.
+  await open("?matter=compare")
+  await showChooser()
+  await chooser.getByRole("button", { name: "See example" }).click()
+  await example.getByRole("button", { name: "Use with my matter" }).click()
+  await expect(compare).toBeVisible()
+  await expect(compare).toContainText("Adds 5 questions · 10 cells to fill")
+  await compare.getByRole("button", { name: "Back" }).click()
+  await expect(compareChoice).toBeChecked()
+  await chooser.getByRole("button", { name: "Continue" }).click()
+  await compare.getByRole("button", { name: "Add questions" }).click()
+  await expect(compare).toHaveCount(0)
+  await expect.poll(() => grids.compare!.columns.length).toBe(6)
+  assert.equal(grids.compare!.columns[0]!.question, "Existing question?")
+  assert.equal(grids.compare!.columns[5]!.question, "Which law governs the agreement, and how are disputes resolved?")
+  assert.deepEqual(grids.compare!.columns.map(column => column.compare), [undefined, false, undefined, undefined, undefined, undefined], "only the parties question is kept out of the comparison")
+  assert.deepEqual(grids.compare!.cells, initial.cells, "adding a starter keeps every existing answer and comment")
+  assert.equal(engineCalls, 0, "adding starter questions must not call a model")
+  // A starter whose questions are all in the table already is not offered again.
+  await showChooser()
+  await expect(compareChoice).not.toBeChecked()
+  await expect(chooser).toContainText("Already in the table")
+  await expect(chooser).not.toContainText("Recommended")
+  await page.keyboard.press("Escape")
 
   await open("?matter=failure")
   await showStarter()
@@ -187,7 +322,7 @@ try {
   // A newer saved grid invalidates the disclosed targets before any model call.
   grids.stale = structuredClone(grids.one!)
   await open("?matter=stale")
-  await page.getByRole("button", { name: "Fill empty" }).click()
+  await page.getByRole("button", { name: "Fill 3 cells", exact: true }).click()
   grids.stale!.version = (grids.stale!.version ?? 0) + 1
   await reviewFill.getByRole("button", { name: "Start fill" }).click()
   await expect(reviewFill).toHaveCount(0)
@@ -208,7 +343,7 @@ try {
   await expect(page.getByText("The matter's documents changed.", { exact: false })).toBeVisible()
   changedDocuments = false
   await open("?matter=changed")
-  await page.getByRole("button", { name: "Fill empty" }).click()
+  await page.getByRole("button", { name: "Fill 3 cells", exact: true }).click()
   changedDocuments = true
   await reviewFill.getByRole("button", { name: "Start fill" }).click()
   await expect(reviewFill).toHaveCount(0)
@@ -220,7 +355,7 @@ try {
   // prompt and refuses it, allowing us to compare actual dispatched targets.
   grids.run = structuredClone(grids.one!)
   await open("?matter=run")
-  await page.getByRole("button", { name: "Fill empty" }).click()
+  await page.getByRole("button", { name: "Fill 3 cells", exact: true }).click()
   await expect(reviewFill).toContainText("3 cells")
   await reviewFill.getByRole("button", { name: "Start fill" }).click()
   await expect.poll(() => prompts.length).toBe(3)
@@ -237,13 +372,57 @@ try {
   assert.equal(grids.two!.columns.length, 3)
   assert.deepEqual(grids.one, firstMatter, "adding to a second matter must not change the first matter")
   assert.deepEqual(grids.two!.cells, {}, "the first matter's answers and comments must not carry over")
-  grids.long = structuredClone(initial)
+  // Every document for the same questions: the questions are listed once, and
+  // a starter that compares none promises no comparison.
+  await page.getByRole("button", { name: "Fill 6 cells", exact: true }).click()
+  await expect(reviewFill.getByRole("heading", { name: "3 questions × 2 documents" })).toBeVisible()
+  await expect(reviewFill.getByRole("listitem")).toHaveCount(3)
+  await expect(reviewFill).not.toContainText("compares")
+  await reviewFill.getByRole("button", { name: "Cancel" }).click()
+  // A partial fill lists each document's cells under its name.
+  grids.long = { ...structuredClone(initial), cells: { "Second.docx::existing": structuredClone(originalCell) } }
   await open("?matter=long&long=1")
-  await page.getByRole("button", { name: "Fill empty" }).click()
+  await page.getByRole("button", { name: "Fill 1 cell", exact: true }).click()
   const fillBody = reviewFill.locator(".review-starter-body")
   await expect(reviewFill.getByRole("heading", { name: `${"long_".repeat(38)}.docx` })).toBeVisible()
   assert.equal(await fillBody.evaluate((node) => node.scrollWidth <= node.clientWidth + 1), true, "long document names wrap without horizontal overflow")
-  console.log("PASS starter preview and keyboard, safe append and reload, isolation, duplicate handling, Fill disclosure and dispatched targets, changed documents, stale versions, and save failures")
+  console.log("PASS starter chooser recommendation and keyboard, read-only example and its answer detail, starter preview and keyboard, safe append and reload, isolation, duplicate handling, Fill disclosure and dispatched targets, changed documents, stale versions, and save failures")
+
+  // Cell actions: a reviewed cell's padlock always shows. An unreviewed cell's
+  // re-run and padlock appear on hover or focus, and stay in the tab order.
+  const longAnswer = "Payment is due within thirty days of a valid invoice. ".repeat(8) + "Late payment carries interest."
+  grids.cells = { version: 0, columns: initial.columns, cells: { "First.docx::existing": originalCell, "Second.docx::existing": {
+    answer: longAnswer, status: "filled", questionHash: "old",
+    citation: { documentName: "Second.docx", docPath: "Second.docx", section: "3", structuralPath: "Doc(Second.docx) › §3 Payment", excerpt: "Payment is due within thirty days.", charStart: 0, charEnd: 34 },
+  } } }
+  await open("?matter=cells")
+  const opacity = (locator: import("@playwright/test").Locator) => locator.evaluate(element => getComputedStyle(element).opacity)
+  const reviewedRow = page.getByRole("row", { name: /^First\.docx/ })
+  const openRow = page.getByRole("row", { name: /^Second\.docx/ })
+  const markReviewed = openRow.getByRole("button", { name: "Mark reviewed", exact: true })
+  const rerun = openRow.getByRole("button", { name: "Re-run this cell", exact: true })
+  await page.mouse.move(0, 0)
+  await expect.poll(() => opacity(reviewedRow.getByRole("button", { name: "Unlock", exact: true }))).toBe("1")
+  await expect(reviewedRow.getByRole("button", { name: "1 comment on First.docx: Existing question?", exact: true })).toBeVisible()
+  await expect.poll(() => opacity(markReviewed)).toBe("0")
+  assert.equal(await opacity(rerun), "0", "an unreviewed cell's re-run is quiet at rest")
+  assert.equal(await openRow.getByRole("button", { name: /comments? on/ }).count(), 0, "a cell without comments shows no comment button")
+  await openRow.locator(".review-cell").hover()
+  await expect.poll(() => opacity(markReviewed)).toBe("1")
+  await expect.poll(() => opacity(rerun)).toBe("1")
+  await page.mouse.move(0, 0)
+  await expect.poll(() => opacity(markReviewed)).toBe("0")
+  await markReviewed.focus()
+  await expect.poll(() => opacity(markReviewed)).toBe("1")
+  await expect.poll(() => opacity(rerun)).toBe("1")
+  // A long answer shows four lines; its source line stays below and the full text stays in its name.
+  const answerText = openRow.locator(".review-answer-text")
+  assert.equal(await answerText.evaluate(element => Math.round(element.clientHeight / parseFloat(getComputedStyle(element).lineHeight))), 4, "a long answer is clamped to four lines")
+  assert.equal(await answerText.evaluate(element => element.scrollHeight > element.clientHeight + 1), true, "the clamp hides the rest of a long answer")
+  await expect(openRow.locator(".review-cite")).toBeVisible()
+  await expect(openRow.locator(".review-cite")).toHaveText(/Source: §3 Payment$/)
+  await expect(openRow.getByRole("button", { name: /Late payment carries interest\. Source: §3 Payment$/ })).toHaveCount(1)
+  console.log("PASS reviewed padlock always shows, unreviewed icons reveal on hover and focus, no empty comment button, and four-line answers keep their source")
 } finally {
   await browser.close()
   server.stop(true)

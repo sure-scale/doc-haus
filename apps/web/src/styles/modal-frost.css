@@ -13,6 +13,20 @@ dialog:is(.review-modal, .matter-edit, .launch-notice, .question-dialog, .teleme
   -webkit-backdrop-filter: blur(6px);
 }
 
+/* Where a dialog spans the screen with only a thin gutter, the blur smears the
+   page's edges from just under the panel's border into that gutter, which reads
+   as a notch in the panel. A denser plain scrim stays even and still quiet. */
+@media (max-width: 960px) {
+  .viewer-overlay,
+  .review-detail-modal,
+  dialog:is(.review-modal, .matter-edit, .launch-notice, .question-dialog, .telemetry-overlay, .chronology-dialog)::backdrop,
+  .design-conversation .question-dialog::backdrop {
+    background: color-mix(in srgb, var(--panel) 85%, transparent);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
 /* These full-screen dialogs already carry the frosted layer themselves. */
 .settings-overlay::backdrop,
 .review-detail-modal::backdrop { background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; }
