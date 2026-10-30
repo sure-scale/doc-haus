@@ -70,12 +70,13 @@ export function coveragePrompt(directory: string, documents: PlannedDocument[]) 
       JSON.stringify(documents.map(coverageView), null, 2)),
     tagged("output_contract", [
       "- List every legal act that the request, the lawyer's updates or answers direct to be taken or documented in this package. A matter document directs an act only where the request adopts it as instructions; an obligation a matter document merely describes is not an instructed act. " +
-      "List an act the instructions direct even when a planned purpose leaves it out or defers it, or no planned document carries it. Do not list an act the instructions themselves exclude or defer.",
+      "List an act the instructions direct even when a planned purpose leaves it out or defers it, or no planned document carries it. Do not list an act the instructions themselves say is not to be taken or is outside this request.",
       "- For each act give \"act\": what is to be done, briefly; \"source\": the exact matter document name, or \"request\"; \"quote\": the exact words that direct it, copied verbatim from that source; " +
       "\"parties\": every party who must take the act for it to be effective (for an authorisation, those who give it), each named as the sources name it, or [] when the record does not settle who must take it; \"document\": the id of the planned document that carries it, or null when none does.",
-      "- When the request, the lawyer's updates or answers leave out of this package the document that the parties who must take an act would execute, " +
-      "still list the act, with \"document\": null and \"excluded_by\": the whole sentence that leaves that document out, copied verbatim from the request, updates or answers, " +
-      "never from a planned document or a matter document. Leave \"excluded_by\" out of every other act.",
+      "- When the request, the lawyer's updates or answers say that the document the parties who must take an act would execute is not to be prepared in this package, " +
+      "still list the act, with \"document\": null and \"excluded_by\": the whole sentence that says so, copied verbatim from the request, updates or answers, " +
+      "never from a planned document or a matter document. Words that move an act to another document or defer it to a later one, without saying that document is outside this package, " +
+      "do not leave it out: give the planned document that carries the act, or null when none does, without \"excluded_by\". Leave \"excluded_by\" out of every other act.",
       "- When a planned document's executed_by names a party as the sources do, write that party exactly as executed_by declares it. Never supply a party by assumption.",
       "- Read the sources you rely on with search-document or read-document, and check each quote with verify-quote.",
       `- ${COVERAGE_SHAPE} Reply {"acts":[]} when the instructions direct no legal act.`,

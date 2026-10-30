@@ -709,9 +709,10 @@ describe("coverage prompt", () => {
   })
 
   test("an act whose document the instructions leave out is listed with the lawyer's words that leave it out", () => {
-    expect(coveragePrompt(prepared(), documents)).toContain("\n- When the request, the lawyer's updates or answers leave out of this package the document that the parties who must take an act would execute, " +
-      'still list the act, with "document": null and "excluded_by": the whole sentence that leaves that document out, copied verbatim from the request, updates or answers, ' +
-      'never from a planned document or a matter document. Leave "excluded_by" out of every other act.\n')
+    expect(coveragePrompt(prepared(), documents)).toContain("\n- When the request, the lawyer's updates or answers say that the document the parties who must take an act would execute is not to be prepared in this package, " +
+      'still list the act, with "document": null and "excluded_by": the whole sentence that says so, copied verbatim from the request, updates or answers, ' +
+      "never from a planned document or a matter document. Words that move an act to another document or defer it to a later one, without saying that document is outside this package, " +
+      'do not leave it out: give the planned document that carries the act, or null when none does, without "excluded_by". Leave "excluded_by" out of every other act.\n')
   })
 
   test("the lawyer's later instructions and answered questions appear under their own tags", () => {
