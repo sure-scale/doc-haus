@@ -19,7 +19,7 @@ import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/design-syst
 import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/design-review.css"))}
 const params = new URLSearchParams(location.search)
 const id = params.get("matter") || "one"
-const docs = params.has("empty") ? [] : (params.has("long") ? ["long_".repeat(38) + ".docx"] : ["First.docx", "Second.docx"]).map((name, i) => ({ id: i+1, name, doc_path: name, created_at: 0, ...(params.has("deliverable") && i === 1 ? { role: "deliverable" } : {}) }))
+const docs = params.has("empty") ? [] : (params.has("long") ? ["long_".repeat(38) + ".docx", "Second.docx"] : ["First.docx", "Second.docx"]).map((name, i) => ({ id: i+1, name, doc_path: name, created_at: 0, ...(params.has("deliverable") && i === 1 ? { role: "deliverable" } : {}) }))
 createRoot(document.getElementById("root")).render(createElement(ReviewGrid, { matterId: id, title: id === "one" ? "First matter" : "Second matter", directory: "/synthetic/" + id, documents: docs, onClose: () => {}, onAsk: () => {} }))
 `)
 const build = await Bun.build({ entrypoints: [entry], target: "browser", define: { "import.meta.env": JSON.stringify({ VITE_INGEST_URL: "http://grid.invalid", VITE_OPENCODE_URL: "http://engine.invalid" }) } })
@@ -95,7 +95,7 @@ try {
   const compare = page.getByRole("dialog", { name: "Compare agreements" })
   const overviewChoice = chooser.getByRole("radio", { name: /^Document overview/ })
   const compareChoice = chooser.getByRole("radio", { name: /^Compare agreements/ })
-  const reviewFill = page.getByRole("dialog", { name: "Review fill" })
+  const reviewFill = page.getByRole("dialog", { name: /^Fill \d+ cells?\?$/ })
   // A table without questions has Add questions as its primary; otherwise starters open from the + menu.
   const addButton = page.locator(".review-table").getByRole("button", { name: "Add questions", exact: true })
   const primary = page.locator(".review-toolbar .review-primary")
@@ -366,7 +366,15 @@ try {
   assert.equal(grids.two!.columns.length, 3)
   assert.deepEqual(grids.one, firstMatter, "adding to a second matter must not change the first matter")
   assert.deepEqual(grids.two!.cells, {}, "the first matter's answers and comments must not carry over")
-  grids.long = structuredClone(initial)
+  // Every document for the same questions: the questions are listed once, and
+  // a starter that compares none promises no comparison.
+  await page.getByRole("button", { name: "Fill 6 cells", exact: true }).click()
+  await expect(reviewFill.getByRole("heading", { name: "3 questions × 2 documents" })).toBeVisible()
+  await expect(reviewFill.getByRole("listitem")).toHaveCount(3)
+  await expect(reviewFill).not.toContainText("compares")
+  await reviewFill.getByRole("button", { name: "Cancel" }).click()
+  // A partial fill lists each document's cells under its name.
+  grids.long = { ...structuredClone(initial), cells: { "Second.docx::existing": structuredClone(originalCell) } }
   await open("?matter=long&long=1")
   await page.getByRole("button", { name: "Fill 1 cell", exact: true }).click()
   const fillBody = reviewFill.locator(".review-starter-body")

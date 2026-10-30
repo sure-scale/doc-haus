@@ -210,7 +210,7 @@ async function exercise(width: number, height: number) {
     expect(state.writes).toHaveLength(1)
 
     await gridDialog.getByRole("button", { name: "Fill 10 cells", exact: true }).click()
-    const fill = page.getByRole("dialog", { name: "Review fill" })
+    const fill = page.getByRole("dialog", { name: "Fill 10 cells?" })
     await expect(fill).toBeVisible()
     await expect(fill).toContainText("10 cells")
     await expect(fill).toContainText("Fill uses AI")

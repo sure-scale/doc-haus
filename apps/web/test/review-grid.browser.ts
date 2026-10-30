@@ -856,8 +856,8 @@ try {
   assert.equal(compareSessions.length, 0, "opening the table compares nothing")
   assert.equal(await primary.textContent(), "Fill 4 cells")
   await primary.click()
-  const fillDialog = page.getByRole("dialog", { name: "Review fill" })
-  await fillDialog.getByText(/After filling, AI compares the cited answers across documents for 1 question, one AI call per question\./).waitFor()
+  const fillDialog = page.getByRole("dialog", { name: "Fill 4 cells?" })
+  await fillDialog.getByText("After filling, AI compares the cited answers across documents: one AI call for each question with two or more cited answers.", { exact: false }).waitFor()
   const fillHeld: import("@playwright/test").Route[] = []
   onExtraction = route => void fillHeld.push(route)
   await fillDialog.getByRole("button", { name: "Start fill" }).click()
@@ -974,8 +974,8 @@ try {
 
   // A column marked not to compare (as a starter marks a question whose answers
   // identify each document) is filled but never compared: its header offers no
-  // compare even with two cited answers, the Fill preview leaves it out of its
-  // count, and the Fill opens a compare session only for the other question.
+  // compare even with two cited answers, the Fill preview marks it Not compared,
+  // and the Fill opens a compare session only for the other question.
   const partiesQuestion = "Who are the parties?"
   const partiesCell = (doc: string) => ({
     answer: `The parties to ${doc}.`, status: "filled" as const, questionHash: hashQuestion(partiesQuestion),
@@ -995,9 +995,13 @@ try {
   assert.equal(await partiesHead.locator(".review-compare-note, .review-compare-trigger").count(), 0, "a column marked not to compare offers no compare")
   assert.equal(await primary.textContent(), "Fill 9 cells")
   await primary.click()
-  await fillDialog.getByText(partiesQuestion).first().waitFor()
-  await fillDialog.getByText(/After filling, AI compares the cited answers across documents for 1 question, one AI call per question\./).waitFor()
-  await fillDialog.getByRole("button", { name: "Start fill" }).click()
+  const partiesDialog = page.getByRole("dialog", { name: "Fill 9 cells?" })
+  await partiesDialog.getByText(partiesQuestion).first().waitFor()
+  const partiesItems = partiesDialog.getByRole("listitem").filter({ hasText: partiesQuestion })
+  assert.deepEqual(await partiesDialog.locator(".fill-preview-note").allTextContents(), Array(await partiesItems.count()).fill("Not compared"), "the Fill preview marks the question it will not compare, and only that one")
+  await partiesDialog.getByText("After filling, AI compares the cited answers across documents: one AI call for each question with two or more cited answers.", { exact: false }).waitFor()
+  await partiesDialog.getByText("It skips questions marked Not compared.", { exact: false }).waitFor()
+  await partiesDialog.getByRole("button", { name: "Start fill" }).click()
   await head.getByRole("button", { name: /^AI comparison: 1 of \d+ differs/ }).waitFor()
   await toolbar.getByText(/Comparing|Extracting/).waitFor({ state: "detached" })
   await page.waitForTimeout(100)
@@ -1007,7 +1011,7 @@ try {
   assert.equal(storedGrid.columns[1]!.compare, false, "Fill keeps the column's flag")
   onExtraction = undefined
   holdChecks = flaggedHeldChecks
-  console.log("PASS a column marked not to compare is filled, left out of the Fill preview's count and never compared")
+  console.log("PASS a column marked not to compare is filled, marked Not compared in the Fill preview and never compared")
 
   storedGrid = structuredClone(grid)
   extractionWaits.length = 0
@@ -1015,7 +1019,7 @@ try {
   onExtraction = undefined
   await page.goto(server.url.href + "?pool")
   await page.getByRole("button", { name: "Fill 7 cells", exact: true }).click()
-  await page.getByRole("dialog", { name: "Review fill" }).getByRole("button", { name: "Start fill" }).click()
+  await page.getByRole("dialog", { name: "Fill 7 cells?" }).getByRole("button", { name: "Start fill" }).click()
   for (let attempt = 0; extractionWaits.length < 5 && attempt < 250; attempt++) await new Promise(resolve => setTimeout(resolve, 20))
   assert.equal(extractionWaits.length, 5, "five extraction jobs should be in flight")
   assert.equal(extractionStarts, 5, "the extraction pool should hold the remaining work")

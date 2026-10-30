@@ -16,6 +16,8 @@
 .review-starter-body section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .review-starter-body ul { margin: 0; padding-left: 1.5rem; overflow-wrap: anywhere; }
 .review-starter-body .compare-actions { flex-wrap: wrap; margin-top: var(--space-2); }
+/* Fill preview: a question that is filled but not compared. */
+.fill-preview-note { margin-left: var(--space-1); color: var(--text-secondary); font-size: .8rem; white-space: nowrap; }
 
 /* One view per step; the view takes focus when the step changes. */
 .review-starter-step { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
