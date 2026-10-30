@@ -21,7 +21,7 @@ export const REVIEW_STARTERS: readonly ReviewStarterDefinition[] = [
     id: "document-overview-v1",
     name: "Document overview",
     purpose: "Start a review table with questions about each document in this matter.",
-    inputs: "All documents in this matter and the questions below.",
+    inputs: "All documents in this matter and this starter's questions.",
     output: "A review table for answers and sources for each document and question.",
     limits: "Answers may be missing or incomplete. Check the sources and tailor the questions to your matter; this is not a complete legal review.",
     questions: [
@@ -34,7 +34,7 @@ export const REVIEW_STARTERS: readonly ReviewStarterDefinition[] = [
     id: "compare-agreements-v1",
     name: "Compare agreements",
     purpose: "Compare the key terms of the agreements in this matter side by side.",
-    inputs: "All documents in this matter and the questions below.",
+    inputs: "All documents in this matter and this starter's questions.",
     output: "A review table with an answer and source for each agreement and question. After Fill, answers that differ between agreements are marked.",
     limits: "Answers and comparisons may be missing or incomplete. Check each answer against its source and tailor the questions to your matter; this is not a complete legal review.",
     questions: [
