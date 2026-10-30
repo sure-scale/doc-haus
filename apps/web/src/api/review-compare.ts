@@ -60,9 +60,21 @@ export function comparePrompt(input: ComparisonInput) {
 }
 
 const QUOTES = /["“”„«»]/
+const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
+// Every reason is shown beside its document's name, so a reason that still opens
+// with its own group's names, with or without the file extension, loses them:
+// "Beta.docx has a two-year term" reads "Has a two-year term".
+function withoutOwnNames(reason: string, documents: string[]) {
+  const forms = documents.flatMap(name => [name, name.replace(/\.[a-z][a-z0-9]{1,4}$/i, "")]).filter(Boolean)
+  const name = `(?:${forms.sort((a, b) => b.length - a.length).map(escape).join("|")})(?![^\\s,:;–—])`
+  const rest = reason.replace(new RegExp(`^${name}(?:(?:\\s*,\\s*(?:and\\s+|&\\s+)?|\\s+(?:and|&)\\s+)${name})*[\\s,:;–—-]*`, "i"), "")
+  return rest === reason ? reason : rest.charAt(0).toLocaleUpperCase() + rest.slice(1)
+}
 
 // Strict: every compared document exactly once, a short summary and reasons with no quotation
-// (excerpts shown come from stored citations). Anything else is no result. The
+// (excerpts shown come from stored citations), each reason without its own
+// documents' leading names. Anything else is no result. The
 // one unique largest group of 2 or more is consistent and the rest differ; a
 // single group is all consistent; a tie or all singletons all differ.
 export function readComparison(text: string, input: Pick<ComparisonInput, "documents">): ComparisonResult | undefined {
@@ -81,12 +93,12 @@ export function readComparison(text: string, input: Pick<ComparisonInput, "docum
   for (const group of reply.groups as unknown[]) {
     if (!group || typeof group !== "object" || !("documents" in group) || !Array.isArray(group.documents) || !group.documents.length
       || !("reason" in group) || typeof group.reason !== "string") return undefined
-    const reason = group.reason.trim()
-    if (!reason || reason.length > 140 || QUOTES.test(reason)) return undefined
     for (const name of group.documents as unknown[]) {
       if (typeof name !== "string" || !names.has(name) || seen.has(name)) return undefined
       seen.add(name)
     }
+    const reason = withoutOwnNames(group.reason.trim(), group.documents as string[])
+    if (!reason || reason.length > 140 || QUOTES.test(reason)) return undefined
     groups.push({ documents: group.documents as string[], reason })
   }
   if (seen.size !== names.size) return undefined

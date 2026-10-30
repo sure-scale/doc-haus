@@ -96,6 +96,24 @@ test("rejects any reply that misplaces a document, quotes, or overruns its limit
   ]) expect(readComparison(text, three)).toBeUndefined()
 })
 
+test("a reason that opens with its own documents' names loses them; the UI shows each name beside its reason", () => {
+  const five = docs("Alpha.docx", "Beta.docx", "Gamma lease.pdf", "Delta.docx", "Epsilon.docx")
+  const cells = readComparison(reply([
+    [["Alpha.docx", "Beta.docx"], "Alpha.docx and Beta.docx: three years"],
+    [["Gamma lease.pdf"], "Gamma lease — two years"],
+    [["Delta.docx"], "Delta.docx has a one-year term"],
+    [["Epsilon.docx"], "Alpha.docx term with Epsilon as agent"],
+  ]), five)!.cells
+  expect(Object.fromEntries(Object.entries(cells).map(([name, cell]) => [name, cell.reason]))).toEqual({
+    "Alpha.docx": "Three years", "Beta.docx": "Three years", "Gamma lease.pdf": "Two years",
+    "Delta.docx": "Has a one-year term", "Epsilon.docx": "Alpha.docx term with Epsilon as agent",
+  })
+  const two = docs("Alpha.docx", "Beta.docx")
+  expect(readComparison(reply([[["Alpha.docx"], "Alphabetical schedule"], [["Beta.docx"], "Other"]]), two)!.cells["Alpha.docx"]!.reason).toBe("Alphabetical schedule")
+  expect(readComparison(reply([[["Alpha.docx"], "Alpha.docx"], [["Beta.docx"], "Other"]]), two)).toBeUndefined()
+  expect(readComparison(reply([[["Alpha.docx"], `Alpha.docx: ${"x".repeat(138)}`], [["Beta.docx"], "Other"]]), two)).toBeDefined()
+})
+
 async function engine(onWait: (request: Request) => Promise<Response>) {
   const original = globalThis.fetch
   const requests: Request[] = []
