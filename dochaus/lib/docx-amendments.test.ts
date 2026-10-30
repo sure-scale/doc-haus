@@ -7,6 +7,7 @@ import { paragraphTargets } from "./drafting-amendment"
 import { renderMarkdownToDocx } from "./render"
 import { wordChanges } from "./word-changes"
 import { docxodus } from "./docxodus"
+import { readDocxComments } from "./docx-comments"
 import { COUNTERPARTY_MARKUP, counterpartyMarkupDocx } from "../test/support/counterparty-markup-fixture"
 import { revisionTablesOriginalDocx } from "../test/support/revision-tables-fixture"
 
@@ -437,7 +438,7 @@ test("the revision view labels page header and footer text apart from the body; 
     "Subject to contract, the parties will meet monthly.", "Subject to board approval", "Doe & Partners LLP draft: 20 October 2026", "Page 1"])
   const page = await createDocxLocalization(source, [{ id: "page", before_quote: "Page", replacement: "Sheet" }])
   await expect(applyDocxLocalization(source, page, [{ amendment_id: "page", target_handle: page.candidates[0]!.target_handle }]))
-    .rejects.toThrow("unsupported_field_replacement")
+    .rejects.toThrow("docx_field_replacement")
 })
 
 test("the revision view shows each Word list number before its heading or paragraph, apart from the text quotes match", async () => {
@@ -459,21 +460,20 @@ describe("live cross-references", () => {
   const refs = (bytes: Uint8Array) => [...strFromU8(unzipSync(bytes)["word/document.xml"]!).matchAll(/<w:instrText[^>]*>([^<]*)<\/w:instrText>[\s\S]*?<w:t[^>]*>([^<]*)<\/w:t>/g)]
     .map(match => [match[1]!.replace(/_Ref\d+/, "_Ref#"), match[2]])
 
-  test("an edit beside a REF field keeps it live; an edit of its number leaves that number as text, and the report says so", async () => {
+  test("an edit beside a REF field keeps it live; an edit of its result is refused", async () => {
     const source = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes
     expect(refs(source)).toEqual([[" REF _Ref# \\r \\h ", "2.1"], [" REF _Ref# \\h ", "1"], [" REF _Ref# \\r \\h ", "2.1"]])
     const revision = await createDocxRevision(source)
     const handle = (start: string) => revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle
     const beside = { id: "beside", paragraph_handle: handle("In this Agreement"), occurrence: 0, before_quote: "the terms", replacement: "the defined terms" }
-    const output = await applyDocxParagraphEdits(source, [
-      beside,
-      { id: "number", paragraph_handle: handle("The Customer"), occurrence: 0, before_quote: "clause 2.1", replacement: "clause 2.2" },
-    ])
-    expect((await createDocxRevision(output.bytes)).paragraphs.map(row => row.text)).toContain("In this Agreement the defined terms in clause 2.1 and Schedule 1 apply.")
-    expect((await createDocxRevision(output.bytes)).paragraphs.map(row => row.text)).toContain("The Customer shall pay as set out in clause 2.2.")
-    expect(refs(output.bytes)).toEqual([[" REF _Ref# \\r \\h ", "2.1"], [" REF _Ref# \\h ", "1"]])
-    expect(output.report.limitation).toEndWith("; 1 cross-reference field converted to text in paragraph 2.2")
-    expect((await applyDocxParagraphEdits(source, [beside])).report.limitation).not.toContain("cross-reference")
+    const number = { id: "number", paragraph_handle: handle("The Customer"), occurrence: 0, before_quote: "clause 2.1", replacement: "clause 2.2" }
+    for (const options of [{}, { pendingRevisions: "layer" as const, revisionAuthor: "Reviewer" }]) {
+      await expect(applyDocxParagraphEdits(source, [beside, number], undefined, options)).rejects.toThrow("docx_field_replacement:number")
+      await expect(applyDocxParagraphEdits(source, [{ ...number, replacement: "clause 2.x1" }], undefined, options)).rejects.toThrow("docx_field_replacement:number")
+      await expect(applyDocxParagraphEdits(source, [{ ...number, replacement: "clause 2.1!" }], undefined, options)).rejects.toThrow("docx_field_replacement:number")
+      const output = await applyDocxParagraphEdits(source, [beside], undefined, options)
+      expect(refs(output.bytes)).toEqual(refs(source))
+    }
   })
 
   test("a sentence inserted on each side of a REF field, as Prepare joins two insertions, keeps it live, tracked or not", async () => {
@@ -505,9 +505,12 @@ describe("live cross-references", () => {
       const edit = { id: "words", paragraph_handle: revision.paragraphs.find(row => row.text.startsWith(start))!.paragraph_handle,
         occurrence: 0, before_quote, replacement }
       for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, { pendingRevisions: "layer" }, {}] as const) {
+        if (replacement.includes("1.4 and 2.1")) {
+          await expect(applyDocxParagraphEdits(source, [edit], undefined, options)).rejects.toThrow("docx_field_replacement:words")
+          continue
+        }
         const output = await applyDocxParagraphEdits(source, [edit], undefined, options)
         expect(refs(output.bytes)).toEqual(refs(source))
-        expect(output.report.limitation).not.toContain("cross-reference")
         expect(output.report.amendments[0]!.paragraph_after).toBe(after)
       }
     }
@@ -550,7 +553,12 @@ describe("live cross-references", () => {
         "Notice is required. The Supplier must notify the **Buyer** in writing under clause 1.4 and 2.1, and pay *the Fee* monthly."],
     ] as const) {
       for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
-        const output = await applyDocxParagraphEdits(source, [{ id: "words", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options)
+        const edit = { id: "words", paragraph_handle, occurrence: 0, before_quote, replacement }
+        if (replacement.includes("2.1 in full") || replacement.includes("1.4 and 2.1")) {
+          await expect(applyDocxParagraphEdits(source, [edit], undefined, options)).rejects.toThrow("docx_field_replacement:words")
+          continue
+        }
+        const output = await applyDocxParagraphEdits(source, [edit], undefined, options)
         expect(refs(output.bytes)).toEqual(refs(source))
         expect(output.report.limitation).not.toContain("cross-reference")
         expect(marked((await createDocxRevision(output.bytes, { pendingRevisions: "layer" })).paragraphs.find(row => row.label === "2.3")!)).toBe(after)
@@ -558,18 +566,15 @@ describe("live cross-references", () => {
     }
   })
 
-  test("a cross-reference added beside a live one leaves it live, and the change is the whole numbers added, tracked or not", async () => {
+  test("an insertion at a live field boundary is refused, tracked or not", async () => {
     const source = (await renderMarkdownToDocx(AGREEMENT, undefined, undefined, { form: "agreement" })).bytes
     const paragraph_handle = (await createDocxRevision(source)).paragraphs.find(row => row.label === "2.2")!.paragraph_handle
     const [before_quote, replacement] = ["set out in clause 2.1.", "set out in clauses 3.2 and 2.1, as amended."]
     expect(wordChanges(before_quote, replacement)).toEqual([
       { offset: 11, replaced: "clause ", changed: "clauses 3.2 and " }, { offset: 21, replaced: "", changed: ", as amended" }])
     for (const options of [{ pendingRevisions: "layer", revisionAuthor: "Jordan Example" }, {}] as const) {
-      const output = await applyDocxParagraphEdits(source, [{ id: "reference", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options)
-      expect(refs(output.bytes)).toEqual(refs(source))
-      expect(output.report.limitation).not.toContain("cross-reference")
-      expect((await createDocxRevision(output.bytes, { pendingRevisions: "layer" })).paragraphs.find(row => row.label === "2.2")!.text)
-        .toBe("The Customer shall pay as set out in clauses 3.2 and 2.1, as amended.")
+      await expect(applyDocxParagraphEdits(source, [{ id: "reference", paragraph_handle, occurrence: 0, before_quote, replacement }], undefined, options))
+        .rejects.toThrow("docx_field_replacement:reference")
     }
   })
 
@@ -600,11 +605,11 @@ describe("live cross-references", () => {
     }
     try {
       await expect(applyDocxParagraphEdits(source, [plain])).rejects.toThrow("docx_existing_run_properties_changed")
-      await expect(applyDocxParagraphEdits(source, [plain, number])).rejects.toThrow("docx_existing_run_properties_changed")
+      await expect(applyDocxParagraphEdits(source, [plain, number])).rejects.toThrow("docx_field_replacement:number")
     } finally { prototype.replaceMatch = replaceMatch }
-    // Without the fault both batches apply.
-    expect((await createDocxRevision((await applyDocxParagraphEdits(source, [plain, number])).bytes)).paragraphs.map(row => row.text))
-      .toEqual(expect.arrayContaining(["Nothing in this clause limits the Supplier.", "The Customer shall pay as set out in clause 2.2."]))
+    // Without the fault the ordinary edit applies; the field edit remains refused.
+    expect((await createDocxRevision((await applyDocxParagraphEdits(source, [plain])).bytes)).paragraphs.map(row => row.text))
+      .toContain("Nothing in this clause limits the Supplier.")
   })
 })
 
@@ -879,4 +884,644 @@ describe("layered edits on a counterparty markup", () => {
       await expect(paragraphTargets(source, options)).rejects.toBeInstanceOf(DocxTrackedRevisionsError)
     }
   })
+})
+
+test("preserves annotated paragraphs and refuses edits inside controls", async () => {
+  const original = (await renderMarkdownToDocx("Alpha Alpha.\n\nUnrelated Monday.")).bytes
+  const fixture = (annotation: string) => {
+    const parts = unzipSync(original), doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+    const text = Array.from(doc.getElementsByTagNameNS("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "t")).find(node => node.textContent === "Alpha Alpha.")!
+    const run = text.parentNode!, parent = run.parentNode!, wrapper = new DOMParser().parseFromString(`<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">${annotation}</w:p>`, "application/xml")
+    for (const child of Array.from(wrapper.documentElement.childNodes)) parent.insertBefore(doc.importNode(child, true), run)
+    parent.removeChild(run); parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+    return zipSync(parts)
+  }
+  const annotations = [
+    '<w:r><w:t>Alpha </w:t></w:r><w:sdt><w:sdtPr><w:tag w:val="term"/><w:id w:val="27"/><w:lock w:val="contentLocked"/><w:dataBinding w:storeItemID="{00000000-0000-0000-0000-000000000000}" w:xpath="/root/value"/><w:text/></w:sdtPr><w:sdtContent><w:r><w:t>Alpha</w:t></w:r></w:sdtContent></w:sdt><w:r><w:t>.</w:t></w:r>',
+    '<w:bookmarkStart w:id="5" w:name="term"/><w:r><w:t>Alpha Alpha.</w:t></w:r><w:bookmarkEnd w:id="5"/>',
+    '<w:commentRangeStart w:id="5"/><w:r><w:t>Alpha Alpha.</w:t></w:r><w:commentRangeEnd w:id="5"/><w:r><w:commentReference w:id="5"/></w:r>',
+  ]
+  for (const [index, annotation] of annotations.entries()) {
+    const bytes = fixture(annotation), revision = await createDocxRevision(bytes)
+    const protectedParagraph = revision.paragraphs.find(p => p.text === "Alpha Alpha.")!
+    const safeParagraph = revision.paragraphs.find(p => p.text === "Unrelated Monday.")!
+    const edit = { id: "protected", paragraph_handle: protectedParagraph.paragraph_handle, occurrence: index === 0 ? 1 : 0, before_quote: "Alpha", replacement: "Beta" }
+    if (index === 0) {
+      for (const options of [{}, { pendingRevisions: "layer" as const, revisionAuthor: "doc.haus" }]) {
+        await expect(applyDocxParagraphEdits(bytes, [edit], undefined, options)).rejects.toThrow("docx_protected_inline_content")
+        const beside = { ...edit, occurrence: 0 }
+        expect((await applyDocxParagraphEdits(bytes, [beside], undefined, options)).bytes.length).toBeGreaterThan(0)
+      }
+    }
+    else expect((await applyDocxParagraphEdits(bytes, [edit])).bytes.length).toBeGreaterThan(0)
+    const output = await applyDocxParagraphEdits(bytes, [{ id: "safe", paragraph_handle: safeParagraph.paragraph_handle, occurrence: 0, before_quote: "Monday", replacement: "Tuesday" }])
+    expect((await createDocxRevision(output.bytes)).paragraphs.some(p => p.text === "Unrelated Tuesday.")).toBe(true)
+  }
+  const revisedControl = annotations[0]!.replace('<w:r><w:t>Alpha</w:t></w:r></w:sdtContent>', '<w:del w:id="42" w:author="doc.haus" w:date="2026-01-01T00:00:00Z"><w:r><w:delText>Old</w:delText></w:r></w:del><w:ins w:id="43" w:author="doc.haus" w:date="2026-01-01T00:00:00Z"><w:r><w:t>Alpha</w:t></w:r></w:ins></w:sdtContent>')
+  const prior = fixture(revisedControl), layer = { pendingRevisions: "layer" as const, revisionAuthor: "doc.haus", ownAuthors: ["doc.haus"] }
+  const revision = await createDocxRevision(prior, layer), annotated = revision.paragraphs.find(p => p.text === "Alpha Alpha.")!
+  const result = await applyDocxParagraphEdits(prior, [{ id: "beside", paragraph_handle: annotated.paragraph_handle, occurrence: 0, before_quote: "Alpha", replacement: "Beta" }], undefined, layer)
+  const xml = strFromU8(unzipSync(result.bytes)["word/document.xml"]!)
+  expect(xml).toContain('w:id="42"'); expect(xml).toContain('w:id="43"')
+
+})
+
+test("preservation refuses a control moved across identical text in an edited paragraph", async () => {
+  const original = (await renderMarkdownToDocx("Alpha Alpha.")).bytes, parts = unzipSync(original)
+  const doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml"), W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const text = Array.from(doc.getElementsByTagNameNS(W, "t")).find(node => node.textContent === "Alpha Alpha.")!, run = text.parentNode!, parent = run.parentNode!
+  const control = new DOMParser().parseFromString(`<w:p xmlns:w="${W}"><w:r><w:t>Alpha</w:t></w:r><w:r><w:t xml:space="preserve"> </w:t></w:r><w:sdt><w:sdtPr><w:tag w:val="term"/><w:id w:val="27"/><w:text/></w:sdtPr><w:sdtContent><w:r><w:t>Alpha</w:t></w:r></w:sdtContent></w:sdt><w:r><w:t>.</w:t></w:r></w:p>`, "application/xml")
+  for (const child of Array.from(control.documentElement.childNodes)) parent.insertBefore(doc.importNode(child, true), run)
+  parent.removeChild(run); parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+  const source = zipSync(parts), sdt = doc.getElementsByTagNameNS(W, "sdt")[0]!, space = sdt.previousSibling!, first = space.previousSibling!
+  parent.insertBefore(sdt, first); parent.insertBefore(space, first)
+  parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+  const before = await openRevision(source), after = await openRevision(zipSync(parts))
+  try {
+    expect(before.revision.paragraphs[0]!.text).toBe(after.revision.paragraphs[0]!.text)
+    expect(() => verifyPreservation(before, after, new Set([0]))).toThrow("docx_protected_inline_content_changed")
+  } finally { before.session.close(); after.session.close() }
+})
+
+test("preservation checks controls hidden in prior deleted revisions", async () => {
+  const original = (await renderMarkdownToDocx("Working Monday.")).bytes, parts = unzipSync(original), W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml"), paragraph = doc.getElementsByTagNameNS(W, "p")[0]!
+  const revision = new DOMParser().parseFromString(`<w:del xmlns:w="${W}" w:id="42" w:author="doc.haus" w:date="2026-01-01T00:00:00Z"><w:sdt><w:sdtPr><w:tag w:val="protected"/><w:id w:val="27"/><w:text/></w:sdtPr><w:sdtContent><w:r><w:delText>Old</w:delText></w:r></w:sdtContent></w:sdt></w:del>`, "application/xml")
+  paragraph.appendChild(doc.importNode(revision.documentElement, true)); parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+  const source = zipSync(parts), tag = doc.getElementsByTagNameNS(W, "tag")[0]!
+  tag.setAttributeNS(W, "w:val", "altered"); parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+  const options = { pendingRevisions: "layer" as const, ownAuthors: ["doc.haus"], revisionAuthor: "doc.haus" }
+  const before = await openRevision(source, options), after = await openRevision(zipSync(parts), options)
+  try {
+    expect(before.revision.paragraphs[0]!.text).toBe(after.revision.paragraphs[0]!.text)
+    expect(() => verifyPreservation(before, after, new Set([0]))).toThrow("docx_protected_inline_content_changed")
+  } finally { before.session.close(); after.session.close() }
+})
+
+test("refuses edits inside an enclosing block content control", async () => {
+  const original = (await renderMarkdownToDocx("Working Monday.")).bytes, parts = unzipSync(original), W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml"), paragraph = doc.getElementsByTagNameNS(W, "p")[0]!, parent = paragraph.parentNode!
+  const wrapper = new DOMParser().parseFromString(`<w:sdt xmlns:w="${W}"><w:sdtPr><w:lock w:val="contentLocked"/><w:id w:val="27"/></w:sdtPr><w:sdtContent/></w:sdt>`, "application/xml")
+  const imported = doc.importNode(wrapper.documentElement, true) as Element
+  parent.replaceChild(imported, paragraph); imported.getElementsByTagNameNS(W, "sdtContent")[0]!.appendChild(paragraph)
+  parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc)); const source = zipSync(parts)
+  const revision = await createDocxRevision(source), selected = revision.paragraphs.find(p => p.text === "Working Monday.")!
+  await expect(applyDocxParagraphEdits(source, [{ id: "inside", paragraph_handle: selected.paragraph_handle, occurrence: 0, before_quote: "Monday", replacement: "Tuesday" }])).rejects.toThrow("docx_protected_inline_content:inside")
+})
+
+test("preservation refuses moved comment and bookmark anchors with unchanged visible wording", async () => {
+  const original = (await renderMarkdownToDocx("Alpha Alpha.")).bytes, W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  for (const tag of ["bookmarkStart", "commentRangeStart"]) {
+    const parts = unzipSync(original), doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+    const text = Array.from(doc.getElementsByTagNameNS(W, "t")).find(node => node.textContent === "Alpha Alpha.")!, run = text.parentNode!, parent = run.parentNode!
+    const fixture = new DOMParser().parseFromString(`<w:p xmlns:w="${W}"><w:r><w:t xml:space="preserve">Alpha </w:t></w:r><w:${tag} w:id="55"/><w:r><w:t>Alpha.</w:t></w:r></w:p>`, "application/xml")
+    for (const child of Array.from(fixture.documentElement.childNodes)) parent.insertBefore(doc.importNode(child, true), run)
+    parent.removeChild(run); parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc)); const source = zipSync(parts)
+    const marker = Array.from(doc.getElementsByTagNameNS(W, tag)).find(node => node.getAttributeNS(W, "id") === "55")!
+    parent.insertBefore(marker, marker.previousSibling); parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+    const before = await openRevision(source), after = await openRevision(zipSync(parts))
+    try { expect(() => verifyPreservation(before, after, new Set([0]))).toThrow("docx_protected_inline_content_changed") }
+    finally { before.session.close(); after.session.close() }
+    // An independently added marker is not part of a paragraph edit's authority.
+    parent.insertBefore(marker, marker.nextSibling?.nextSibling ?? null)
+    const extra = doc.createElementNS(W, "w:commentRangeStart"); extra.setAttributeNS(W, "w:id", "56"); parent.appendChild(extra)
+    parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+    const baseline = await openRevision(source), added = await openRevision(zipSync(parts))
+    try { expect(() => verifyPreservation(baseline, added, new Set([0]))).toThrow("docx_protected_inline_content_changed") }
+    finally { baseline.session.close(); added.session.close() }
+  }
+})
+
+test("edits a simple unlocked rich-text control with tracked and untracked writes", async () => {
+  const original = (await renderMarkdownToDocx("Before Alpha beta term after.\n\nOther paragraph.")).bytes, W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const fixture = (extra = "") => {
+    const parts = unzipSync(original), doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+    const text = Array.from(doc.getElementsByTagNameNS(W, "t")).find(node => node.textContent === "Before Alpha beta term after.")!, run = text.parentNode!, parent = run.parentNode!
+    const sample = new DOMParser().parseFromString(`<w:p xmlns:w="${W}"><w:r><w:t xml:space="preserve">Before </w:t></w:r><w:sdt><w:sdtPr><w:tag w:val="term"/><w:id w:val="27"/>${extra}</w:sdtPr><w:sdtContent><w:r><w:rPr><w:b/></w:rPr><w:t>Alpha beta term</w:t></w:r></w:sdtContent></w:sdt><w:r><w:t xml:space="preserve"> after.</w:t></w:r></w:p>`, "application/xml")
+    for (const child of Array.from(sample.documentElement.childNodes)) parent.insertBefore(doc.importNode(child, true), run)
+    parent.removeChild(run); parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc)); return zipSync(parts)
+  }
+  for (const options of [{}, { pendingRevisions: "layer" as const, revisionAuthor: "doc.haus" }]) {
+    const source = fixture(), revision = await createDocxRevision(source, options), p = revision.paragraphs.find(row => row.text.includes("Alpha beta"))!
+    const edit = { id: "term", paragraph_handle: p.paragraph_handle, occurrence: 0, before_quote: "beta", replacement: "delta" }
+    const output = await applyDocxParagraphEdits(source, [edit], undefined, options)
+    const doc = new DOMParser().parseFromString(strFromU8(unzipSync(output.bytes)["word/document.xml"]!), "application/xml"), control = doc.getElementsByTagNameNS(W, "sdt")[0]!
+    expect(control.getElementsByTagNameNS(W, "tag")[0]!.getAttributeNS(W, "val")).toBe("term")
+    expect(control.getElementsByTagNameNS(W, "id")[0]!.getAttributeNS(W, "val")).toBe("27")
+    expect(Array.from(control.getElementsByTagNameNS(W, "r")).every(run => run.getElementsByTagNameNS(W, "b").length === 1)).toBe(true)
+    if (options.revisionAuthor) {
+      const opened = await openRevision(source, { ...options, amendmentAuthors: { other: "Other" } }), ordinal = opened.revision.paragraphs.findIndex(row => row.text.includes("Alpha beta"))
+      const span = new Map([[ordinal, [{ offset: p.text.indexOf("beta"), replaced: "beta", changed: "delta" }]]])
+      const tamper = async (mutate: (control: Element) => void) => {
+        const parts = unzipSync(output.bytes), altered = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+        mutate(altered.getElementsByTagNameNS(W, "sdt")[0]!); parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(altered))
+        const saved = await openRevision(zipSync(parts), options)
+        try { expect(() => verifyPreservation(opened, saved, new Set([ordinal]), span)).toThrow("docx_protected_inline_content_changed") }
+        finally { saved.session.close() }
+      }
+      try {
+        await tamper(control => control.getElementsByTagNameNS(W, "tag")[0]!.setAttributeNS(W, "w:val", "wrong"))
+        await tamper(control => control.getElementsByTagNameNS(W, "ins")[0]!.setAttributeNS(W, "w:author", "Other"))
+        await tamper(control => control.getElementsByTagNameNS(W, "t")[0]!.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "default"))
+        await tamper(control => { const text = control.getElementsByTagNameNS(W, "t")[0]!; text.appendChild(text.ownerDocument.createElementNS(W, "w:object")) })
+        await tamper(control => { const bold = control.getElementsByTagNameNS(W, "b")[0]!; bold.parentNode!.replaceChild(bold.ownerDocument.createElementNS(W, "w:i"), bold) })
+      } finally { opened.session.close() }
+      const dx = await docxodus()
+      for (const accept of [false, true]) {
+        const session = dx.openDocxSession(output.bytes, { persistAnchorIds: false })
+        try {
+          for (const rev of session.listRevisions()) expect((accept ? session.acceptRevision(rev.id) : session.rejectRevision(rev.id)).success).toBe(true)
+          const resolved = new DOMParser().parseFromString(strFromU8(unzipSync(session.save())["word/document.xml"]!), "application/xml")
+          expect(resolved.getElementsByTagNameNS(W, "sdt")[0]!.textContent).toBe(accept ? "Alpha delta term" : "Alpha beta term")
+        } finally { session.close() }
+      }
+    }
+    const entire = { ...edit, before_quote: "Alpha beta term", replacement: "Gamma delta clause" }
+    const entireOutput = await applyDocxParagraphEdits(source, [entire], undefined, options)
+    expect((await createDocxRevision(entireOutput.bytes, { pendingRevisions: "layer" })).paragraphs.find(row => row.text.includes("Gamma delta clause"))).toBeDefined()
+    if (options.revisionAuthor) {
+      const dx = await docxodus()
+      for (const accept of [false, true]) {
+        const session = dx.openDocxSession(entireOutput.bytes, { persistAnchorIds: false })
+        try {
+          for (const rev of session.listRevisions()) expect((accept ? session.acceptRevision(rev.id) : session.rejectRevision(rev.id)).success).toBe(true)
+          const resolved = new DOMParser().parseFromString(strFromU8(unzipSync(session.save())["word/document.xml"]!), "application/xml")
+          expect(resolved.getElementsByTagNameNS(W, "sdt")[0]!.textContent).toBe(accept ? "Gamma delta clause" : "Alpha beta term")
+        } finally { session.close() }
+      }
+    }
+    // Shared words make this a partial edge edit, not an exact whole-control change.
+    await expect(applyDocxParagraphEdits(source, [{ ...entire, replacement: "Alpha delta clause" }], undefined, options)).rejects.toThrow("docx_protected_inline_content")
+    for (const [before_quote, replacement] of [["Alpha", "Gamma"], ["Before Alpha", "Before Gamma"], ["Alpha", "New Alpha"]])
+      await expect(applyDocxParagraphEdits(source, [{ ...edit, before_quote, replacement }], undefined, options)).rejects.toThrow("docx_protected_inline_content")
+    const nestedParts = unzipSync(source), nestedDoc = new DOMParser().parseFromString(strFromU8(nestedParts["word/document.xml"]!), "application/xml")
+    const content = nestedDoc.getElementsByTagNameNS(W, "sdtContent")[0]!, child = content.firstChild!
+    const nested = new DOMParser().parseFromString(`<w:sdt xmlns:w="${W}"><w:sdtPr><w:id w:val="28"/></w:sdtPr><w:sdtContent/></w:sdt>`, "application/xml")
+    const wrapped = nestedDoc.importNode(nested.documentElement, true) as Element
+    content.replaceChild(wrapped, child); wrapped.getElementsByTagNameNS(W, "sdtContent")[0]!.appendChild(child)
+    nestedParts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(nestedDoc)); const nestedFile = zipSync(nestedParts)
+    const nestedView = await createDocxRevision(nestedFile, options), nestedP = nestedView.paragraphs.find(row => row.text.includes("Alpha beta"))!
+    await expect(applyDocxParagraphEdits(nestedFile, [{ ...edit, paragraph_handle: nestedP.paragraph_handle }], undefined, options)).rejects.toThrow("docx_protected_inline_content")
+    for (const extra of ['<w:lock w:val="sdtLocked"/>', '<w:dataBinding w:storeItemID="id" w:xpath="/root"/>', '<w:text/>']) {
+      const protectedFile = fixture(extra), view = await createDocxRevision(protectedFile, options), row = view.paragraphs.find(row => row.text.includes("Alpha beta"))!
+      await expect(applyDocxParagraphEdits(protectedFile, [{ ...edit, paragraph_handle: row.paragraph_handle }], undefined, options)).rejects.toThrow("docx_protected_inline_content")
+    }
+  }
+})
+
+test("an edit inside a simple control preserves other reviewers' revisions and comments", async () => {
+  const parts = unzipSync(counterpartyMarkupDocx()), W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", parser = new DOMParser()
+  const doc = parser.parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+  const text = Array.from(doc.getElementsByTagNameNS(W, "t")).find(node => node.textContent === "9. Governing law. This Agreement is governed by the law of the Province.")!
+  const run = text.parentNode!, parent = run.parentNode!, block = parser.parseFromString(`<w:p xmlns:w="${W}"><w:r><w:t xml:space="preserve">9. Governing law. </w:t></w:r><w:sdt><w:sdtPr><w:tag w:val="law"/><w:id w:val="27"/></w:sdtPr><w:sdtContent><w:r><w:t>This Agreement is governed by the law of the Province.</w:t></w:r></w:sdtContent></w:sdt></w:p>`, "application/xml")
+  for (const child of Array.from(block.documentElement.childNodes)) parent.insertBefore(doc.importNode(child, true), run)
+  parent.removeChild(run); parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc)); const source = zipSync(parts)
+  const options = { pendingRevisions: "layer" as const, revisionAuthor: "doc.haus", ownAuthors: ["doc.haus"] }
+  const view = await createDocxRevision(source, options), paragraph = view.paragraphs.find(row => row.text.includes("the Province."))!
+  const output = await applyDocxParagraphEdits(source, [{ id: "law", paragraph_handle: paragraph.paragraph_handle, occurrence: 0, before_quote: "Province", replacement: "State" }], undefined, options)
+  expect(readDocxComments(output.bytes)).toEqual(readDocxComments(source))
+  const dx = await docxodus(), originalSession = dx.openDocxSession(source, { persistAnchorIds: false })
+  const previous = originalSession.listRevisions(); originalSession.close()
+  for (const accept of [false, true]) {
+    const session = dx.openDocxSession(output.bytes, { persistAnchorIds: false })
+    try {
+      const known = new Set(previous.map(rev => rev.id))
+      for (const rev of session.listRevisions().filter(rev => !known.has(rev.id))) expect((accept ? session.acceptRevision(rev.id) : session.rejectRevision(rev.id)).success).toBe(true)
+      expect(session.listRevisions().map(({ id, author, type, text, date }) => ({ id, author, type, text, date }))).toEqual(previous.map(({ id, author, type, text, date }) => ({ id, author, type, text, date })))
+      const result = parser.parseFromString(strFromU8(unzipSync(session.save())["word/document.xml"]!), "application/xml"), control = result.getElementsByTagNameNS(W, "sdt")[0]!
+      expect(control.textContent).toBe(`This Agreement is governed by the law of the ${accept ? "State" : "Province"}.`)
+      expect(control.getElementsByTagNameNS(W, "tag")[0]!.getAttributeNS(W, "val")).toBe("law")
+    } finally { session.close() }
+  }
+})
+
+test("refuses edits inside a control that already contains tracked markup", async () => {
+  const original = (await renderMarkdownToDocx("Before Alpha beta term after.\n\nOther paragraph.")).bytes
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const fixture = (marked: boolean) => {
+    const parts = unzipSync(original), doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+    const text = Array.from(doc.getElementsByTagNameNS(W, "t")).find(node => node.textContent === "Before Alpha beta term after.")!
+    const run = text.parentNode!, parent = run.parentNode!
+    const content = marked
+      ? '<w:del w:id="91" w:author="doc.haus" w:date="2026-01-01T00:00:00Z"><w:r><w:rPr><w:b/></w:rPr><w:delText>Superseded wording</w:delText></w:r></w:del><w:r><w:rPr><w:b/></w:rPr><w:t>Alpha beta term</w:t></w:r>'
+      : '<w:r><w:rPr><w:b/></w:rPr><w:t>Alpha beta term</w:t></w:r>'
+    const sample = new DOMParser().parseFromString(`<w:p xmlns:w="${W}"><w:r><w:t xml:space="preserve">Before </w:t></w:r><w:sdt><w:sdtPr><w:tag w:val="term"/><w:id w:val="27"/></w:sdtPr><w:sdtContent>${content}</w:sdtContent></w:sdt><w:r><w:t xml:space="preserve"> after.</w:t></w:r></w:p>`, "application/xml")
+    for (const child of Array.from(sample.documentElement.childNodes)) parent.insertBefore(doc.importNode(child, true), run)
+    parent.removeChild(run)
+    parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+    return zipSync(parts)
+  }
+  const options = { pendingRevisions: "layer" as const, revisionAuthor: "doc.haus", ownAuthors: ["doc.haus"] }
+  const edit = async (bytes: Uint8Array) => {
+    const revision = await createDocxRevision(bytes, options)
+    const paragraph = revision.paragraphs.find(row => row.text.includes("Alpha beta term"))!
+    expect(paragraph.text).toBe("Before Alpha beta term after.")
+    return applyDocxParagraphEdits(bytes, [{ id: "control", paragraph_handle: paragraph.paragraph_handle,
+      occurrence: 0, before_quote: "beta", replacement: "delta" }], undefined, options)
+  }
+
+  // The identical current wording is editable while the control has no prior markup.
+  expect((await edit(fixture(false))).bytes).toBeInstanceOf(Uint8Array)
+  // The same-author deletion is outside the selected text; the control has one current bold run plus tracked markup.
+  // That combined control shape is unsupported, so the call returns no authored result.
+  await expect(edit(fixture(true))).rejects.toThrow("docx_protected_inline_content_changed")
+})
+
+test("simple fields refuse result edits and insertions while an adjacent edit preserves the field", async () => {
+  const base = (await renderMarkdownToDocx("Before VALUE after.")).bytes
+  const parts = unzipSync(base)
+  parts["word/document.xml"] = strToU8(strFromU8(parts["word/document.xml"]!).replace("Before VALUE after.", 'Before </w:t></w:r><w:fldSimple w:instr=" DATE "><w:r><w:t>VALUE</w:t></w:r></w:fldSimple><w:r><w:t xml:space="preserve"> after.'))
+  const source = zipSync(parts)
+  const revision = await createDocxRevision(source)
+  const altered = { ...parts, "word/document.xml": strToU8(strFromU8(parts["word/document.xml"]!).replace('w:instr=" DATE "', 'w:instr=" PAGE "')) }
+  const originalOpened = await openRevision(source)
+  const alteredOpened = await openRevision(zipSync(altered))
+  try {
+    const ordinal = revision.paragraphs.findIndex(row => row.text.includes("VALUE"))
+    expect(() => verifyPreservation(originalOpened, alteredOpened, new Set([ordinal]))).toThrow("docx_field_replacement")
+  } finally { originalOpened.session.close(); alteredOpened.session.close() }
+  const orphanParts = { ...parts, "word/document.xml": strToU8(strFromU8(parts["word/document.xml"]!).replace("</w:fldSimple>", '</w:fldSimple><w:r><w:fldChar w:fldCharType="begin"/></w:r>')) }
+  const originalAgain = await openRevision(source)
+  const orphanOpened = await openRevision(zipSync(orphanParts))
+  try {
+    const ordinal = revision.paragraphs.findIndex(row => row.text.includes("VALUE"))
+    expect(() => verifyPreservation(originalAgain, orphanOpened, new Set([ordinal]))).toThrow("docx_field_replacement")
+  } finally { originalAgain.session.close(); orphanOpened.session.close() }
+  const paragraph_handle = revision.paragraphs.find(row => row.text.includes("VALUE"))!.paragraph_handle
+  const edit = (before_quote: string, replacement: string) => ({ id: "field", paragraph_handle, occurrence: 0, before_quote, replacement })
+  for (const options of [{}, { pendingRevisions: "layer" as const, revisionAuthor: "Reviewer" }]) {
+    await expect(applyDocxParagraphEdits(source, [edit("VALUE", "OTHER")], undefined, options)).rejects.toThrow("docx_field_replacement:field")
+    await expect(applyDocxParagraphEdits(source, [edit("VALUE", "VALXUE")], undefined, options)).rejects.toThrow("docx_field_replacement:field")
+    await expect(applyDocxParagraphEdits(source, [edit("Before VALUE after.", "Before VALUE! after.")], undefined, options)).rejects.toThrow("docx_field_replacement:field")
+    await expect(applyDocxParagraphEdits(source, [edit("Before VALUE after.", "Before !VALUE after.")], undefined, options)).rejects.toThrow("docx_field_replacement:field")
+    const result = await applyDocxParagraphEdits(source, [edit("Before", "Prior")], undefined, options)
+    expect(strFromU8(unzipSync(result.bytes)["word/document.xml"]!)).toContain('w:instr=" DATE "')
+  }
+})
+
+test("a complex field spanning paragraphs refuses changes throughout its result and leaves another paragraph editable", async () => {
+  const base = (await renderMarkdownToDocx("Before\n\nVALUE\n\nAfter\n\nOutside")).bytes
+  const parts = unzipSync(base)
+  const xml = strFromU8(parts["word/document.xml"]!)
+  const start = '<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> REF Target </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+  const end = '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
+  parts["word/document.xml"] = strToU8(xml.replace(/(<w:t[^>]*>Before<\/w:t><\/w:r>)/, `$1${start}`).replace(/(<w:t[^>]*>After<\/w:t><\/w:r>)/, `$1${end}`))
+  const source = zipSync(parts)
+  const revision = await createDocxRevision(source)
+  const change = (before_quote: string, replacement: string) => ({ id: before_quote, paragraph_handle: revision.paragraphs.find(row => row.text === before_quote)!.paragraph_handle, occurrence: 0, before_quote, replacement })
+  for (const options of [{}, { pendingRevisions: "layer" as const, revisionAuthor: "Reviewer" }]) {
+    await expect(applyDocxParagraphEdits(source, [change("VALUE", "OTHER")], undefined, options)).rejects.toThrow("docx_field_replacement:VALUE")
+    const result = await applyDocxParagraphEdits(source, [change("Outside", "Elsewhere")], undefined, options)
+    expect(strFromU8(unzipSync(result.bytes)["word/document.xml"]!)).toContain(' REF Target ')
+  }
+  const malformed = { ...parts, "word/document.xml": strToU8(strFromU8(parts["word/document.xml"]!).replace(end, "")) }
+  const broken = zipSync(malformed)
+  const brokenRevision = await createDocxRevision(broken)
+  const outside = { ...change("Outside", "Elsewhere"), paragraph_handle: brokenRevision.paragraphs.find(row => row.text === "Outside")!.paragraph_handle }
+  await expect(applyDocxParagraphEdits(broken, [outside])).rejects.toThrow("docx_field_replacement:Outside")
+})
+
+test("changed spans cannot silently flatten mixed run formatting", async () => {
+  const source = (await renderMarkdownToDocx("The **Supplier shall** pay *the Fee* monthly.")).bytes
+  const initial = new Uint8Array(source), revision = await createDocxRevision(source), paragraph = revision.paragraphs[0]!
+  const edit = (before_quote: string, replacement: string) => ({ id: "mixed", paragraph_handle: paragraph.paragraph_handle, occurrence: 0, before_quote, replacement })
+  for (const options of [{}, { pendingRevisions: "layer" as const, revisionAuthor: "Reviewer", ownAuthors: ["Reviewer"] }]) {
+    await expect(applyDocxParagraphEdits(source, [edit("Supplier shall pay the Fee", "Provider agrees remit Charge")], undefined, options)).rejects.toThrow("docx_mixed_format_replacement:mixed")
+    expect(source).toEqual(initial)
+    const output = await applyDocxParagraphEdits(source, [edit("Supplier shall pay the Fee", "Supplier shall remit the Fee")], undefined, options)
+    expect((await createDocxRevision(output.bytes, options)).paragraphs[0]!.text).toBe("The Supplier shall remit the Fee monthly.")
+    if ("revisionAuthor" in options) {
+      const dx = await docxodus()
+      for (const accept of [true, false]) {
+        const session = dx.openDocxSession(output.bytes, { persistAnchorIds: false })
+        try {
+          for (const revision of session.listRevisions()) expect((accept ? session.acceptRevision(revision.id) : session.rejectRevision(revision.id)).success).toBe(true)
+          const view = await createDocxRevision(session.save())
+          expect(view.markdown).toContain(accept ? "**Supplier shall** remit *the Fee*" : "**Supplier shall** pay *the Fee*")
+        } finally { session.close() }
+      }
+    }
+  }
+})
+
+test("format guard admits deletion, uniform edits and insertion without changing neighboring styling", async () => {
+  const source = (await renderMarkdownToDocx("The **Supplier** pays the fee.")).bytes
+  const revision = await createDocxRevision(source), paragraph = revision.paragraphs[0]!
+  const edit = (before_quote: string, replacement: string) => ({ id: "span", paragraph_handle: paragraph.paragraph_handle, occurrence: 0, before_quote, replacement })
+  const deletion = await applyDocxParagraphEdits(source, [edit("Supplier pays", "")])
+  expect((await createDocxRevision(deletion.bytes)).paragraphs[0]!.text).toBe("The  the fee.")
+  const uniform = await applyDocxParagraphEdits(source, [edit("pays", "remits")])
+  expect((await createDocxRevision(uniform.bytes)).markdown).toContain("**Supplier** remits the fee")
+  const inserted = await applyDocxParagraphEdits(source, [edit("The Supplier", "The new Supplier")])
+  expect((await createDocxRevision(inserted.bytes)).markdown).toContain("The new **Supplier** pays")
+})
+
+test("changed-paragraph associations retain notes, links and live field locations", async () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  const make = async (body: string) => {
+    const parts = unzipSync((await renderMarkdownToDocx("Monday VALUE")).bytes)
+    const doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+    const matches = Array.from(doc.getElementsByTagNameNS(W, "t")).filter(node => node.textContent === "Monday VALUE")
+    expect(matches).toHaveLength(1)
+    const run = matches[0]!.parentNode!, parent = run.parentNode!
+    expect((run as Element).localName).toBe("r")
+    const template = new DOMParser().parseFromString(`<w:p xmlns:w="${W}">${body}</w:p>`, "application/xml")
+    for (const child of Array.from(template.documentElement.childNodes)) parent.insertBefore(doc.importNode(child, true), run)
+    parent.removeChild(run)
+    parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+    return parts
+  }
+  const check = async (parts: Record<string, Uint8Array>, tamper: (xml: string) => string,
+    options: { pendingRevisions?: "layer"; revisionAuthor?: string; ownAuthors?: string[] } = {}) => {
+    const source = zipSync(parts), view = await createDocxRevision(source, options)
+    const ordinal = view.paragraphs.findIndex(p => p.text.startsWith("Monday "))
+    expect(ordinal).toBeGreaterThanOrEqual(0)
+    const edit = { id: "adjacent", paragraph_handle: view.paragraphs[ordinal]!.paragraph_handle, occurrence: 0, before_quote: "Monday", replacement: "Tuesday" }
+    const result = await applyDocxParagraphEdits(source, [edit], undefined, options)
+    const out = unzipSync(result.bytes), xml = strFromU8(out["word/document.xml"]!), altered = tamper(xml)
+    expect(altered).not.toBe(xml)
+    out["word/document.xml"] = strToU8(altered)
+    const before = await openRevision(source, options), good = await openRevision(result.bytes, options), bad = await openRevision(zipSync(out), options)
+    const spans = new Map([[ordinal, [{ offset: 0, replaced: "Monday", changed: "Tuesday", author: options.revisionAuthor }]]])
+    try {
+      expect(good.paragraphs[ordinal]!.match.text).toBe(bad.paragraphs[ordinal]!.match.text)
+      expect(() => verifyPreservation(before, good, new Set([ordinal]), spans)).not.toThrow()
+      expect(() => verifyPreservation(before, bad, new Set([ordinal]), spans)).toThrow()
+    } finally { before.session.close(); good.session.close(); bad.session.close() }
+  }
+  const notes = await make('<w:r><w:t xml:space="preserve">Monday VALUE</w:t></w:r><w:r><w:footnoteReference w:id="1"/></w:r>')
+  notes["word/footnotes.xml"] = strToU8(`<w:footnotes xmlns:w="${W}"><w:footnote w:id="1"><w:p><w:r><w:t>First note.</w:t></w:r></w:p></w:footnote><w:footnote w:id="2"><w:p><w:r><w:t>Other note.</w:t></w:r></w:p></w:footnote></w:footnotes>`)
+  notes["word/_rels/document.xml.rels"] = strToU8(strFromU8(notes["word/_rels/document.xml.rels"]!).replace('</Relationships>', '<Relationship Id="notes-test" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/></Relationships>'))
+  notes["[Content_Types].xml"] = strToU8(strFromU8(notes["[Content_Types].xml"]!).replace('</Types>', '<Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/></Types>'))
+  await check(notes, xml => xml.replace('w:footnoteReference w:id="1"', 'w:footnoteReference w:id="2"'))
+  await check(notes, xml => xml.replace(/<w:footnoteReference w:id="1"\s*\/>/, ''))
+  for (const kind of ["del", "moveFrom", "ins", "moveTo"]) {
+    const prior = { ...notes }, doc = new DOMParser().parseFromString(strFromU8(prior["word/document.xml"]!), "application/xml")
+    const paragraph = doc.getElementsByTagNameNS(W, "p")[0]!
+    const carrier = doc.createElementNS(W, `w:${kind}`)
+    carrier.setAttributeNS(W, "w:id", "76"); carrier.setAttributeNS(W, "w:author", "doc.haus"); carrier.setAttributeNS(W, "w:date", "2026-01-01T00:00:00Z")
+    const run = doc.createElementNS(W, "w:r"), reference = doc.createElementNS(W, "w:footnoteReference")
+    reference.setAttributeNS(W, "w:id", "1"); run.appendChild(reference); carrier.appendChild(run); paragraph.appendChild(carrier)
+    prior["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+    await check(prior, xml => {
+      const changed = new DOMParser().parseFromString(xml, "application/xml")
+      const wrappers = Array.from(changed.getElementsByTagNameNS(W, kind)).filter(node => node.getAttributeNS(W, "id") === "76")
+      expect(wrappers).toHaveLength(1)
+      const ref = wrappers[0]!.getElementsByTagNameNS(W, "footnoteReference")[0]!
+      expect(ref).toBeTruthy(); ref.getAttributeNodeNS(W, "id")!.value = "2"
+      return new XMLSerializer().serializeToString(changed)
+    }, { pendingRevisions: "layer", ownAuthors: ["doc.haus"], revisionAuthor: "doc.haus" })
+  }
+  const links = unzipSync((await renderMarkdownToDocx('Monday [VALUE](https://example.invalid/one) and [OTHER](https://example.invalid/two)')).bytes)
+  await check(links, xml => {
+    const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    const doc = new DOMParser().parseFromString(xml, "application/xml")
+    const found = Array.from(doc.getElementsByTagNameNS(W, "hyperlink"))
+    expect(found).toHaveLength(2)
+    const first = found[0]!.getAttributeNS(R, "id"), second = found[1]!.getAttributeNS(R, "id")
+    expect(first).toBeTruthy(); expect(second).toBeTruthy(); expect(first).not.toBe(second)
+    const attribute = found[0]!.getAttributeNodeNS(R, "id")
+    expect(attribute).toBeTruthy(); attribute!.value = second!
+    const serialized = new XMLSerializer().serializeToString(doc)
+    const reread = new DOMParser().parseFromString(serialized, "application/xml")
+    const link = reread.getElementsByTagNameNS(W, "hyperlink")[0]!
+    expect(Array.from(link.attributes).filter(attr => attr.namespaceURI === R && attr.localName === "id")).toHaveLength(1)
+    expect(link.getAttributeNS(R, "id")).toBe(second)
+    return serialized
+  })
+  await check(links, xml => {
+    const doc = new DOMParser().parseFromString(xml, "application/xml")
+    const found = Array.from(doc.getElementsByTagNameNS(W, "hyperlink"))
+    expect(found).toHaveLength(2)
+    const link = found[0]!, parent = link.parentNode!
+    while (link.firstChild) parent.insertBefore(link.firstChild, link)
+    parent.removeChild(link)
+    return new XMLSerializer().serializeToString(doc)
+  })
+  const qualified = { ...links }
+  {
+    const doc = new DOMParser().parseFromString(strFromU8(qualified["word/document.xml"]!), "application/xml")
+    const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!
+    link.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:mc", "http://schemas.openxmlformats.org/markup-compatibility/2006")
+    link.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:x", "urn:test:one")
+    link.setAttributeNS("http://schemas.openxmlformats.org/markup-compatibility/2006", "mc:Ignorable", "x")
+    qualified["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+  }
+  await check(qualified, xml => {
+    const doc = new DOMParser().parseFromString(xml, "application/xml"), link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!
+    const binding = link.getAttributeNodeNS("http://www.w3.org/2000/xmlns/", "x")
+    expect(binding?.value).toBe("urn:test:one"); binding!.value = "urn:test:two"
+    return new XMLSerializer().serializeToString(doc)
+  })
+  const ancestor = { ...links }
+  {
+    const doc = new DOMParser().parseFromString(strFromU8(ancestor["word/document.xml"]!), "application/xml")
+    const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!, parent = link.parentNode!
+    const wrapper = doc.createElementNS(W, "w:customXml")
+    wrapper.setAttributeNS(W, "w:element", "association")
+    wrapper.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:mc", "http://schemas.openxmlformats.org/markup-compatibility/2006")
+    wrapper.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:x", "urn:test:one")
+    wrapper.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns:y", "urn:test:two")
+    wrapper.setAttributeNS("http://schemas.openxmlformats.org/markup-compatibility/2006", "mc:Ignorable", "x")
+    parent.replaceChild(wrapper, link); wrapper.appendChild(link)
+    ancestor["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+  }
+  {
+    const source = zipSync(ancestor), original = new Uint8Array(source), view = await createDocxRevision(source)
+    const paragraph = view.paragraphs.find(p => p.text.startsWith("Monday "))!
+    expect(paragraph).toBeTruthy()
+    const edit = { id: "adjacent", paragraph_handle: paragraph.paragraph_handle, occurrence: 0, before_quote: "Monday", replacement: "Tuesday" }
+    const dx = await docxodus(), probe = dx.openDocxSession(source, {}), prototype = Object.getPrototypeOf(probe)
+    probe.close()
+    const originalReplace = prototype.replaceMatch, originalTrack = prototype.setTrackedChanges, originalAuthor = prototype.setRevisionAuthor
+    let setters = 0
+    prototype.replaceMatch = function (...args: unknown[]) { setters++; return originalReplace.apply(this, args) }
+    prototype.setTrackedChanges = function (...args: unknown[]) { setters++; return originalTrack.apply(this, args) }
+    prototype.setRevisionAuthor = function (...args: unknown[]) { setters++; return originalAuthor.apply(this, args) }
+    try {
+      await expect(applyDocxParagraphEdits(source, [edit])).rejects.toThrow("docx_protected_association:adjacent")
+      expect(setters).toBe(0); expect(source).toEqual(original)
+    } finally { prototype.replaceMatch = originalReplace; prototype.setTrackedChanges = originalTrack; prototype.setRevisionAuthor = originalAuthor }
+  }
+  const markedRun = { ...notes }
+  {
+    const doc = new DOMParser().parseFromString(strFromU8(markedRun["word/document.xml"]!), "application/xml")
+    const run = doc.getElementsByTagNameNS(W, "footnoteReference")[0]!.parentNode as Element
+    run.setAttributeNS(W, "w:rsidR", "00112233")
+    markedRun["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+  }
+  await check(markedRun, xml => {
+    const doc = new DOMParser().parseFromString(xml, "application/xml")
+    const run = doc.getElementsByTagNameNS(W, "footnoteReference")[0]!.parentNode as Element
+    const attr = run.getAttributeNodeNS(W, "rsidR")!
+    expect(attr.value).toBe("00112233"); attr.value = "44556677"
+    return new XMLSerializer().serializeToString(doc)
+  })
+  const duplicate = unzipSync((await renderMarkdownToDocx('Monday [VALUE](https://example.invalid/one) VALUE')).bytes)
+  await check(duplicate, xml => {
+    const doc = new DOMParser().parseFromString(xml, "application/xml")
+    const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!
+    const plain = Array.from(doc.getElementsByTagNameNS(W, "t")).find(node => node.textContent?.trim() === "VALUE" && node.parentNode?.parentNode !== link)!
+    expect(link).toBeTruthy(); expect(plain).toBeTruthy()
+    const run = plain.parentNode!, parent = link.parentNode!
+    expect(plain.textContent).toBe(" VALUE")
+    const spacer = run.cloneNode(true) as Element
+    spacer.getElementsByTagNameNS(W, "t")[0]!.textContent = " "
+    plain.textContent = "VALUE"; parent.insertBefore(spacer, run)
+    const offset = (target: Element) => {
+      let value = 0
+      for (const node of Array.from(doc.getElementsByTagNameNS(W, "t"))) {
+        if (target === node.parentNode?.parentNode) break
+        value += (node.textContent ?? "").length
+      }
+      return value
+    }
+    const before = offset(link), next = run.nextSibling
+    parent.replaceChild(run, link); parent.insertBefore(link, next)
+    expect(offset(link)).toBeGreaterThan(before)
+    return new XMLSerializer().serializeToString(doc)
+  })
+  const fieldStart = '<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> REF Target </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+  const fieldEnd = '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
+  const value = '<w:r><w:t>1</w:t></w:r>', middle = '<w:r><w:t xml:space="preserve"> then </w:t></w:r>'
+  const fields = await make(`<w:r><w:t xml:space="preserve">Monday </w:t></w:r>${fieldStart}${value}${fieldEnd}${middle}${value}`)
+  await check(fields, xml => {
+    const doc = new DOMParser().parseFromString(xml, "application/xml")
+    const control = Array.from(doc.getElementsByTagNameNS(W, "fldChar")), texts = Array.from(doc.getElementsByTagNameNS(W, "t")).filter(node => node.textContent === "1")
+    expect(control).toHaveLength(3); expect(texts).toHaveLength(2)
+    const parent = control[0]!.parentNode!.parentNode!, first = control[0]!.parentNode!, last = control[2]!.parentNode!
+    const moved: Node[] = []; for (let at: Node | null = first; at; at = at.nextSibling) { moved.push(at); if (at === last) break }
+    expect(moved.at(-1)).toBe(last)
+    const plain = texts[1]!.parentNode!; parent.insertBefore(plain, first)
+    for (const node of moved) parent.appendChild(node)
+    return new XMLSerializer().serializeToString(doc)
+  })
+})
+
+test("a simple hyperlink permits a proven interior edit and rejects changed destinations or revision authors", async () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  const source = (await renderMarkdownToDocx("Before [Alpha beta term](https://example.invalid/one) after.")).bytes
+  for (const options of [{}, { pendingRevisions: "layer" as const, revisionAuthor: "Reviewer", ownAuthors: ["Reviewer"] }]) {
+    const view = await createDocxRevision(source, options), ordinal = view.paragraphs.findIndex(p => p.text.includes("Alpha beta term"))
+    expect(ordinal).toBeGreaterThanOrEqual(0)
+    const edit = { id: "link", paragraph_handle: view.paragraphs[ordinal]!.paragraph_handle, occurrence: 0, before_quote: "beta", replacement: "delta" }
+    const result = await applyDocxParagraphEdits(source, [edit], undefined, options)
+    const before = await openRevision(source, options), after = await openRevision(result.bytes, options)
+    const changes = wordChanges(view.paragraphs[ordinal]!.text, after.paragraphs[ordinal]!.match.text).map(change => ({ ...change, author: "revisionAuthor" in options ? options.revisionAuthor : undefined }))
+    const spans = new Map([[ordinal, changes]])
+    try {
+      expect(() => verifyPreservation(before, after, new Set([ordinal]), spans)).not.toThrow()
+      const assertTamper = async (change: (doc: Document) => void) => {
+        const parts = unzipSync(result.bytes), doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+        change(doc); parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+        const altered = await openRevision(zipSync(parts), options)
+        try {
+          expect(altered.paragraphs[ordinal]!.match.text).toBe(after.paragraphs[ordinal]!.match.text)
+          expect(() => verifyPreservation(before, altered, new Set([ordinal]), spans)).toThrow("docx_protected_association_changed")
+        } finally { altered.session.close() }
+      }
+      await assertTamper(doc => {
+        const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!, id = link.getAttributeNodeNS(R, "id")
+        expect(id).toBeTruthy(); id!.value = "tampered-destination"
+      })
+      await assertTamper(doc => {
+        const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!, parent = link.parentNode!
+        while (link.firstChild) parent.insertBefore(link.firstChild, link)
+        parent.removeChild(link)
+      })
+      await assertTamper(doc => {
+        const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!
+        const run = doc.createElementNS(W, "w:r"), reference = doc.createElementNS(W, "w:footnoteReference")
+        reference.setAttributeNS(W, "w:id", "1"); run.appendChild(reference); link.appendChild(run)
+      })
+      if ("revisionAuthor" in options) await assertTamper(doc => {
+        const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!, revision = link.getElementsByTagNameNS(W, "ins")[0]!
+        expect(revision).toBeTruthy(); revision.setAttributeNS(W, "w:author", "Other")
+      })
+    } finally { before.session.close(); after.session.close() }
+  }
+})
+
+
+test("length-changing edits on both sides of a hyperlink retain its association", async () => {
+  const source = (await renderMarkdownToDocx("Monday [VALUE](https://example.invalid/one) Friday")).bytes
+  const view = await createDocxRevision(source), paragraph = view.paragraphs.find(p => p.text.startsWith("Monday"))!
+  const edits = [
+    { id: "first", paragraph_handle: paragraph.paragraph_handle, occurrence: 0, before_quote: "Monday", replacement: "Wednesday" },
+    { id: "second", paragraph_handle: paragraph.paragraph_handle, occurrence: 0, before_quote: "Friday", replacement: "Saturday" },
+  ]
+  const result = await applyDocxParagraphEdits(source, edits)
+  const updated = await createDocxRevision(result.bytes)
+  expect(updated.paragraphs.find(p => p.text.startsWith("Wednesday"))?.text).toBe("Wednesday VALUE Saturday")
+})
+
+test("a contained replacement in a multi-run hyperlink preserves retained formatting and selective revision views", async () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  const parts = unzipSync(counterpartyMarkupDocx())
+  const xml = strFromU8(parts["word/document.xml"]!).replace("<w:document ", `<w:document xmlns:r="${R}" `)
+  const old = '<w:r><w:t xml:space="preserve">9. Governing law. This Agreement is governed by the law of the Province.</w:t></w:r>'
+  const replacement = '<w:r><w:t xml:space="preserve">9. Governing law. This Agreement is governed by the law of </w:t></w:r>' +
+    '<w:hyperlink r:id="rId4"><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">the </w:t></w:r><w:r><w:rPr><w:i/></w:rPr><w:t>Province</w:t></w:r></w:hyperlink><w:r><w:t>.</w:t></w:r>'
+  expect(xml.split(old)).toHaveLength(2)
+  parts["word/document.xml"] = strToU8(xml.replace(old, replacement))
+  parts["word/_rels/document.xml.rels"] = strToU8(strFromU8(parts["word/_rels/document.xml.rels"]!).replace('</Relationships>', `<Relationship Id="rId4" Type="${R}/hyperlink" Target="https://example.invalid/Schedule-1" TargetMode="External"/></Relationships>`))
+  const source = zipSync(parts), original = new Uint8Array(source), dx = await docxodus()
+  const sourceSession = dx.openDocxSession(source, { persistAnchorIds: false }), oldRevisions = sourceSession.listRevisions(); sourceSession.close()
+  for (const options of [{ pendingRevisions: "layer" as const }, { pendingRevisions: "layer" as const, revisionAuthor: "Reviewer", ownAuthors: ["Reviewer"] }]) {
+    const view = await createDocxRevision(source, options), ordinal = view.paragraphs.findIndex(p => p.text.startsWith("9. Governing law."))
+    const paragraph = view.paragraphs[ordinal]!, offset = paragraph.text.indexOf("Province")
+    expect(offset).toBeGreaterThan(0)
+    const edit = { id: "link", paragraph_handle: paragraph.paragraph_handle, occurrence: 0, before_quote: "Province", replacement: "State" }
+    const output = await applyDocxParagraphEdits(source, [edit], undefined, options)
+    expect(source).toEqual(original)
+    const interior = await applyDocxParagraphEdits(source, [{ ...edit, before_quote: "vin", replacement: "va" }], undefined, options)
+    expect((await createDocxRevision(interior.bytes, options)).paragraphs[ordinal]!.text).toContain("the Provace.")
+    await expect(applyDocxParagraphEdits(source, [{ ...edit, replacement: "Province extra" }], undefined, options)).rejects.toThrow()
+    await expect(applyDocxParagraphEdits(source, [{ ...edit, before_quote: "the Province", replacement: "all law" }], undefined, options)).rejects.toThrow()
+    await expect(applyDocxParagraphEdits(source, [edit, { ...edit, id: "other", before_quote: "Governing", replacement: "Applicable" }], undefined, options)).rejects.toThrow("docx_protected_association_changed")
+    const before = await openRevision(source, options), after = await openRevision(output.bytes, options)
+    const spans = new Map([[ordinal, [{ offset, replaced: "Province", changed: "State", author: "revisionAuthor" in options ? options.revisionAuthor : undefined }]]])
+    try {
+      expect(after.paragraphs[ordinal]!.match.text).toContain("the State.")
+      expect(() => verifyPreservation(before, after, new Set([ordinal]), spans)).not.toThrow()
+      const tamper = async (alter: (doc: Document) => void) => {
+        const saved = unzipSync(output.bytes), doc = new DOMParser().parseFromString(strFromU8(saved["word/document.xml"]!), "application/xml")
+        alter(doc); saved["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+        const changed = await openRevision(zipSync(saved), options)
+        try { expect(() => verifyPreservation(before, changed, new Set([ordinal]), spans)).toThrow("docx_protected_association_changed") }
+        finally { changed.session.close() }
+      }
+      await tamper(doc => { const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!; link.getAttributeNodeNS(R, "id")!.value = "rId1" })
+      await tamper(doc => { const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!, marker = doc.createElementNS(W, "w:footnoteReference"), run = doc.createElementNS(W, "w:r"); marker.setAttributeNS(W, "w:id", "1"); run.appendChild(marker); link.appendChild(run) })
+      await tamper(doc => { const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!, run = link.getElementsByTagNameNS(W, "r")[0]!, rPr = run.getElementsByTagNameNS(W, "rPr")[0]!; rPr.appendChild(doc.createElementNS(W, "w:i")) })
+      await tamper(doc => { const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!, run = link.getElementsByTagNameNS(W, "r")[0]!; link.parentNode!.insertBefore(run, link) })
+      if ("revisionAuthor" in options) {
+        await tamper(doc => { const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!, inserted = link.getElementsByTagNameNS(W, "ins")[0]!; inserted.getAttributeNodeNS(W, "author")!.value = "Other" })
+        await tamper(doc => { const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!, inserted = link.getElementsByTagNameNS(W, "ins")[0]!; inserted.getAttributeNodeNS(W, "id")!.value = oldRevisions[0]!.constituentIds[0]! })
+        // 5 belongs to a move range, not to any earlier insertion/deletion carrier.
+        const ranges = Array.from(before.documents["word/document.xml"]!.getElementsByTagNameNS(W, "moveFromRangeStart")).filter(node => node.getAttributeNS(W, "id") === "5")
+        expect(ranges).toHaveLength(1)
+        await tamper(doc => { const link = doc.getElementsByTagNameNS(W, "hyperlink")[0]!, inserted = link.getElementsByTagNameNS(W, "ins")[0]!; inserted.getAttributeNodeNS(W, "id")!.value = "005" })
+        const inserted = after.paragraphs[ordinal]!.node.getElementsByTagNameNS(W, "ins")[0]!, date = inserted.getAttributeNodeNS(W, "date")!, originalDate = date.value
+        expect(Number.isFinite(Date.parse("2026-02-30T12:00:00Z"))).toBe(true)
+        date.value = "2026-02-30T12:00:00Z"
+        try { expect(() => verifyPreservation(before, after, new Set([ordinal]), spans)).toThrow("docx_protected_association_changed") }
+        finally { date.value = originalDate }
+        const current = dx.openDocxSession(output.bytes, { persistAnchorIds: false }), known = new Set(oldRevisions.map(row => row.id)), added = current.listRevisions().filter(row => !known.has(row.id)); current.close()
+        expect(added).toHaveLength(2)
+        for (const accept of [true, false]) {
+          const clone = dx.openDocxSession(output.bytes, { persistAnchorIds: false })
+          try {
+            for (const change of added) expect((accept ? clone.acceptRevision(change.id) : clone.rejectRevision(change.id)).success).toBe(true)
+            const rows = clone.listRevisions(); expect(rows.map(({id, type, author, date, text, constituentIds}) => ({id, type, author, date, text, constituentIds}))).toEqual(oldRevisions.map(({id, type, author, date, text, constituentIds}) => ({id, type, author, date, text, constituentIds})))
+            const decision = await createDocxRevision(clone.save(), { pendingRevisions: "layer" })
+            expect(decision.paragraphs[ordinal]!.text).toContain(accept ? "the State." : "the Province.")
+            const fragments = decision.paragraphs[ordinal]!.formatting.filter(fragment => fragment.formatting.hyperlinkUrl === "https://example.invalid/Schedule-1")
+            expect(fragments.find(fragment => fragment.text === "the ")?.formatting.bold).toBe(true)
+            expect(fragments.find(fragment => fragment.text.includes(accept ? "State" : "Province"))?.formatting.italic).toBe(true)
+          } finally { clone.close() }
+        }
+      }
+    } finally { before.session.close(); after.session.close() }
+  }
 })

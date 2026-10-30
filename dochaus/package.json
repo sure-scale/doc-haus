@@ -11,7 +11,7 @@
     "@huggingface/transformers": "4.2.0",
     "@kenjiuno/msgreader": "1.28.0",
     "@xmldom/xmldom": "0.8.15",
-    "docxodus": "^13.0.0",
+    "docxodus": "^14.2.0",
     "fflate": "0.8.3",
     "htmlparser2": "8.0.2",
     "iconv-lite": "0.7.3",

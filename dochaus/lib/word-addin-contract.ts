@@ -28,6 +28,8 @@ export type WordOpenDocument = {
   open: boolean
   currentVersion: string | null
   overlap: boolean
+  documentId?: string
+  nativeOperation?: { sequence: number; state: "pending" }
 }
 
 
@@ -42,5 +44,5 @@ export type WordLeaseState = {
   generation?: string
   expiresAt: number | null
 }
-export type WordConnectionState = { version: WordVersionState; lease: WordLeaseState }
+export type WordConnectionState = { version: WordVersionState; lease: WordLeaseState; nativeOperation?: { sequence: number; state: "idle" | "pending" | "confirmed" | "not-dispatched" } }
 export type WordLeaseAction = "inspect" | "claim" | "takeover" | "release"

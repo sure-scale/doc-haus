@@ -2,11 +2,11 @@ import { readFile } from "node:fs/promises"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { z } from "zod"
-import { changedRange, openRevision } from "./docx-amendments"
+import { assertDocxReplacementFormatting, changedRange, openRevision } from "./docx-amendments"
 import { paragraphFields, refInstruction, runText, unlink } from "./docx-fields"
-import { amendmentSchema, amendmentParagraphs, amendmentText, ensureParagraphPointers, normalizeParagraphText, owningParagraph, paragraphPointers, paragraphSha256, type Amendment } from "./drafting-amendment"
+import { amendmentSchema, amendmentParagraphs, amendmentText, ensureParagraphPointers, normalizeParagraphText, owningParagraph, paragraphPointers, paragraphSha256, withParagraphPointers, type Amendment } from "./drafting-amendment"
 import { writeDurableBytes } from "./durable-json"
-import { FIELD_HIGHLIGHT_FILL, OPEN_ITEM_HIGHLIGHT_FILL, shadedMarkerSpans } from "./open-items"
+import { FIELD_HIGHLIGHT_FILL, OPEN_ITEM_HIGHLIGHT_FILL, normalizeOwnedMarkerShading, shadeOpenItemsInDocx, shadedMarkerSpans } from "./open-items"
 
 export type AppliedAmendment = { id: string; pid: string; mode: "code" | "already_applied"; result_pids?: string[] }
 // What a reviewer needs to act on an unapplied amendment. `original` is the text
@@ -43,7 +43,7 @@ const HIGHLIGHT_FILLS = new Set([OPEN_ITEM_HIGHLIGHT_FILL, FIELD_HIGHLIGHT_FILL]
 // differently is left as it was (apply_failed). A live cross-reference keeps
 // its field unless the amendment rewrites its number (unlinkEditedReferences).
 // outPath is written atomically.
-export async function applyAmendments(input: { docxPath: string; outPath: string; amendments: Amendment[] }) {
+export async function applyAmendments(input: { docxPath: string; outPath: string; amendments: Amendment[]; ownedMarkerDecoration?: boolean }) {
   const amendments = requireAmendments(input.amendments)
   const source = new Uint8Array(await readFile(input.docxPath))
   const opened = await openRevision(source)
@@ -66,7 +66,7 @@ export async function applyAmendments(input: { docxPath: string; outPath: string
       const final = settleParagraph(initial, rows, outcomes)
       return final ? [{ ordinal, initial, final, rows }] : []
     })
-    const written = edits.length ? await writeVerified(source, opened, edits.toSorted((a, b) => a.ordinal - b.ordinal)) : { bytes: source, failed: [] }
+    const written = edits.length ? await writeVerified(source, opened, edits.toSorted((a, b) => a.ordinal - b.ordinal), input.ownedMarkerDecoration === true) : { bytes: source, failed: [] }
     for (const failure of written.failed) for (const row of failure.edit.rows) {
       const outcome = outcomes.get(row.id)!
       if (!("mode" in outcome) || outcome.mode === "already_applied") continue
@@ -152,23 +152,46 @@ function settleParagraph(initial: string, rows: Amendment[], outcomes: Map<strin
 // its own edits need unlinked, from the untouched source, so a paragraph left
 // as it was keeps its live cross-references and, when no edit is kept, the
 // source is returned unchanged.
-async function writeVerified(source: Uint8Array, opened: Opened, edits: Edit[]) {
+async function writeVerified(source: Uint8Array, opened: Opened, edits: Edit[], ownedMarkerDecoration: boolean) {
   const failed: { edit: Edit; issue: string }[] = []
   for (let round = 0; ; round++) {
     const kept = edits.filter(edit => !failed.some(row => row.edit === edit))
     if (!kept.length) return { bytes: source, failed }
-    const base = round ? await openRevision(source) : opened
+    const pids = new Set(kept.flatMap(edit => edit.rows.map(row => row.pid)))
+    const select = (paragraph: Element) => paragraphPointers(paragraph).some(row => pids.has(row.pid))
+    const normalized = ownedMarkerDecoration ? normalizeOwnedMarkerShading(source, select) : source
+    const base = normalized !== source || round ? await openRevision(normalized) : opened
     const unlinked = unlinkEditedReferences(base, kept)
     const revision = unlinked ? await openRevision(unlinked) : base
     if (unlinked && base !== opened) base.session.close()
     try {
       const written = writeParagraphs(revision, kept)
       if (written.kind === "failed") {
-        failed.push({ edit: written.failed, issue: "The document engine could not write this paragraph." })
+        failed.push({ edit: written.failed, issue: written.issue })
         continue
       }
-      const bytes = clearResolvedHighlights(written.bytes, new Set(kept.flatMap(edit => edit.rows.map(row => row.pid))))
-      const mismatched = await readBack(bytes, opened, kept)
+      let bytes = ownedMarkerDecoration ? written.bytes : clearResolvedHighlights(written.bytes, pids)
+      let mismatched = await readBack(bytes, opened, kept)
+      if (!mismatched.length && ownedMarkerDecoration) {
+        // Newly split paragraphs have no pointer yet. Assign pointers, then map
+        // successful edits through the verified paragraph sequence; never shade
+        // an adjacent paragraph merely because its text happens to match.
+        if (kept.some(edit => edit.final.length !== 1)) bytes = withParagraphPointers(bytes)
+        const projected = await openRevision(bytes)
+        try {
+          const byOrdinal = new Map(kept.map(edit => [edit.ordinal, edit]))
+          const resultPids = new Set<string>()
+          let at = 0
+          opened.paragraphs.forEach((_, ordinal) => {
+            const edit = byOrdinal.get(ordinal), count = edit?.final.length ?? 1
+            if (edit) for (const paragraph of projected.paragraphs.slice(at, at + count))
+              for (const pointer of paragraphPointers(paragraph.node)) resultPids.add(pointer.pid)
+            at += count
+          })
+          bytes = shadeOpenItemsInDocx(bytes, () => false, paragraph => paragraphPointers(paragraph).some(row => resultPids.has(row.pid)))
+        } finally { projected.session.close() }
+        mismatched = await readBack(bytes, opened, kept)
+      }
       if (!mismatched.length) return { bytes, failed }
       failed.push(...mismatched.map(edit => ({ edit, issue: "The saved paragraph did not read back as the amended text." })))
     } finally {
@@ -185,8 +208,13 @@ function writeParagraphs(opened: Opened, edits: Edit[]) {
     cache.matches ??= opened.session.grep("^[\\s\\S]*$", { scope: 63, whitespace: 0 })
     return cache.matches.find(row => row.enclosingAnchor.id === anchor)
   }
-  const edit = edits.find(row => !writeParagraph(opened, row, live, () => { cache.matches = undefined }))
-  return edit ? { kind: "failed" as const, failed: edit } : { kind: "saved" as const, bytes: preserveDeletedCellParagraphs(opened.session.save(), opened, edits) }
+  for (const edit of edits) {
+    const result = writeParagraph(opened, edit, live, () => { cache.matches = undefined })
+    if (result !== true) return { kind: "failed" as const, failed: edit, issue: result === "mixed-format"
+      ? "This change crosses different Word formatting. Make it in Word, or use smaller changes within each formatting region."
+      : "The document engine could not write this paragraph." }
+  }
+  return { kind: "saved" as const, bytes: preserveDeletedCellParagraphs(opened.session.save(), opened, edits) }
 }
 
 function writeParagraph(opened: Opened, edit: Edit, live: (anchor: string) => ReturnType<Opened["session"]["grep"]>[number] | undefined, refresh: () => void) {
@@ -204,6 +232,7 @@ function writeParagraph(opened: Opened, edit: Edit, live: (anchor: string) => Re
       if (!match) return false
       const { offset, replaced, changed } = hunkRange(match.text, text)
       if (!replaced && !changed) continue
+      assertDocxReplacementFormatting(opened.session, match, offset, replaced.length, changed, edit.rows[0]!.id)
       const result = opened.session.replaceMatch({ ...match, text: replaced, span: { start: match.span.start + offset, length: replaced.length } }, changed)
       refresh()
       if (!result.success) return false
@@ -216,7 +245,7 @@ function writeParagraph(opened: Opened, edit: Edit, live: (anchor: string) => Re
       refresh()
     }
     return true
-  } catch { return false }
+  } catch (error) { return error instanceof Error && error.message.startsWith("docx_mixed_format_replacement:") ? "mixed-format" as const : false }
 }
 
 // A REF field whose number an edit rewrites, and one in a paragraph split or

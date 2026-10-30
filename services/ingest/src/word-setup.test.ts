@@ -17,7 +17,7 @@ function fixture() {
   const root = mkdtempSync(path.join(os.tmpdir(), "dochaus-word-setup-"))
   roots.push(root)
   const assets = path.join(root, "assets")
-  for (const file of ["pane.html", "pane.js", "pane.css", "desk.html", "desk.js", "desk.css", "assets/icon.png"]) {
+  for (const file of ["pane.html", "pane.js", "pane.css", "chat.css", "desk.html", "desk.js", "desk.css", "assets/icon.png"]) {
     mkdirSync(path.dirname(path.join(assets, file)), { recursive: true })
     writeFileSync(path.join(assets, file), file === "pane.html" ? "<script src='office.js'></script>" : "fixture")
   }

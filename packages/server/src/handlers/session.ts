@@ -259,9 +259,11 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
           if (ctx.payload.title !== undefined) {
             if (ctx.payload.title) {
               yield* session
-                .rename({ sessionID: ctx.params.sessionID, title: ctx.payload.title })
+                .rename({ sessionID: ctx.params.sessionID, title: ctx.payload.title, expectedTitle: ctx.payload.expectedTitle })
                 .pipe(Effect.catchTag("Session.NotFoundError", missingSession))
-            } else {
+            } else if (ctx.payload.expectedTitle === undefined) {
+              // Empty title requests native generation; conditional updates only
+              // apply to concrete titles, so they cannot trigger regeneration.
               const title = yield* SessionTitle.Service
               yield* title.generate(ctx.params.sessionID)
             }

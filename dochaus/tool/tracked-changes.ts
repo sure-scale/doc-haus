@@ -1,11 +1,11 @@
 import { tool } from "./legacy-definition"
-import { existsSync, lstatSync, realpathSync } from "node:fs"
+import { lstatSync, realpathSync } from "node:fs"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { recordRedlineProposal, withRedlineDocumentLock } from "../lib/redlines"
 import { draftingAttribution, ourAuthors } from "../lib/docx-attribution"
 import { findPastListLabel } from "../lib/list-label"
-import { hasTrackedRevisions, pendingRevisionAnchors, pendingRevisionRefusal, trackedRevisionsReason } from "../lib/docx-amendments"
+import { applyLegacyPhrase, LegacyPhraseRefusal, hasTrackedRevisions, pendingRevisionAnchors, pendingRevisionRefusal, trackedRevisionsReason } from "../lib/docx-amendments"
 import { registeredWordSource } from "../lib/legal-db"
 
 // doc.haus tracked-changes tool. Proposes a surgical find/replace edit to the
@@ -49,6 +49,9 @@ export default tool({
     if (!located.targets.length) return `Text not found in ${path.basename(file)}: ${JSON.stringify(args.find)}`
     if (located.error) return located.error
     const { find, replace } = located
+    const options = { pendingRevisions: "layer" as const, ownAuthors: own, revisionAuthor: author }
+    try { await applyLegacyPhrase(bytes, find, replace, options, "proposed") }
+    catch (error) { return legacyRefusal(error) }
 
     // Recording the proposal is gated on the matter owner's approval (permission
     // "tracked-changes" in opencode.json) — the redline review queue is itself a
@@ -63,14 +66,18 @@ export default tool({
     })
 
     const proposal = await withRedlineDocumentLock(ctx.directory, file, async () => {
-      if (!existsSync(file)) return { error: `Document not found in this matter: ${args.document}` }
-      const current = dx.openDocxSession(await Bun.file(file).bytes(), {})
+      if (!matterDocument(ctx.directory, file)) return { error: `Document not found in this matter: ${args.document}` }
+      const fresh = await Bun.file(file).bytes()
+      if (!registeredWordSource(ctx.directory, path.basename(file)) && hasTrackedRevisions(fresh)) return { error: trackedRevisionsReason }
+      const current = dx.openDocxSession(fresh, {})
       const again = locate(current, args.find, args.replace, own)
       // Accepting the change replaces every occurrence of the recorded text.
       const matches = again.find === find ? current.findAllByText(find).length : 0
       current.close()
       if (again.error) return { error: again.error }
       if (!again.targets.length || !matches) return { error: `Text changed before approval and is no longer present in ${path.basename(file)}.` }
+      try { await applyLegacyPhrase(fresh, find, replace, options, "proposed") }
+      catch (error) { return { error: legacyRefusal(error) } }
       const anchor = again.targets[0]!.id
       const recorded = recordRedlineProposal(ctx.directory, {
         docPath: file,
@@ -118,4 +125,13 @@ function locate(session: ReturnType<Awaited<ReturnType<typeof docxodus>>["openDo
   const located = findPastListLabel(find, replace, text => session.findAllByText(text), id => session.getAnchorInfo(id)?.visibleText, { recorded: true })
   const refused = located.targets.length && !located.error ? pendingRevisionRefusal(session, pendingRevisionAnchors(session), located.targets.map(target => target.id), located.find, "proposed", own) : undefined
   return refused ? { ...located, error: refused } : located
+}
+
+function legacyRefusal(error: unknown) {
+  if (error instanceof LegacyPhraseRefusal) return error.message
+  if (error instanceof Error && /^docx_field_replacement(?::|$)/.test(error.message)) return "This change touches a Word field that could not be safely preserved. Make the change in Word, then prepare a fresh change."
+  if (error instanceof Error && /^docx_mixed_format_replacement(?::|$)/.test(error.message)) return "This change crosses different Word formatting. Make it in Word, or prepare smaller changes within each formatting region."
+  if (error instanceof Error && /^docx_protected_association(?::|$|_changed$)/.test(error.message)) return "A Word note, link or field could not be safely preserved. Review the passage in Word and prepare a fresh change."
+  if (error instanceof Error && /^docx_protected_inline_content(?::|$|_changed$)/.test(error.message)) return "Word content or its anchors could not be confirmed as preserved. Review the passage in Word and prepare a fresh change."
+  return "This change cannot be safely prepared for every occurrence. Review the passage in Word or request a smaller change."
 }

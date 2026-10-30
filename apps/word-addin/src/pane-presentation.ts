@@ -16,16 +16,16 @@ export function savePresentation(state: PaneState): SavePresentation {
     : undefined
   const result: SavePresentation = {
     badge: "Ready", tone: "neutral", mismatch,
-    message: version?.current ? `Version ${version.current.number} in doc.haus` : "Save to confirm this copy in doc.haus.",
+    message: version?.current ? `Version ${version.current.number} in doc.haus. Choose Save to confirm this copy.` : "Save to confirm this copy in doc.haus.",
   }
   if (state.status === "saving") return { ...result, badge: "Saving…", tone: "saving", message: state.message }
   if (version && version.state !== "current") {
     const copy = {
-      stale: ["A newer version is saved in doc.haus.", "Load the latest version in a separate Word file. Keep any edits in this older copy with Save As."],
+      stale: ["A newer version is saved in doc.haus.", "Load it here to replace this copy. To keep your local edits, use Save As first."],
       removed: ["Saving is unavailable for this copy.", "This copy predates a redaction or removal. Keep your local file and reopen the current document from doc.haus."],
       "unrecorded-change": ["The matter file changed outside its saved history.", "Keep your Word file and resolve that change in doc.haus before saving."],
     }[version.state]
-    return { ...result, badge: "Saving paused", tone: "blocked", message: copy[0], help: copy[1] }
+    return { ...result, badge: "Saving paused", tone: "blocked", message: state.problem ? state.message : copy[0], help: copy[1] }
   }
   if (state.connection?.lease.state === "other") return {
     ...result, badge: "Saving paused", tone: "blocked", message: "Another Word session is editing this document.",

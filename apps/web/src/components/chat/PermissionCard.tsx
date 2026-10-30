@@ -1,3 +1,4 @@
+import { formattingDescription } from "../formatting-description"
 import { useId } from "react"
 import type { PermissionReply, PermissionRequest } from "../../api/opencode/permissions"
 import { humanizeTool, basename } from "./step-labels"
@@ -55,6 +56,7 @@ export default function PermissionCard({
           {newText && <div className="redline-new">{newText}</div>}
         </div>
       )}
+      {Boolean(meta.formatting) && typeof meta.formatting === "object" && <div className="permission-title">{formattingDescription(meta.formatting as Record<string, unknown>)}</div>}
       {detail && <div className="permission-title">{detail}</div>}
       {request.always.length > 0 && !documentAllowance && (
         <div className="permission-title">A saved allowance for this action covers: {request.always.join(", ")}</div>

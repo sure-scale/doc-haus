@@ -254,3 +254,54 @@ test("malformed or inconsistent save ownership cannot become an acknowledgement"
     await expect(client.save(new Uint8Array([1]), "original", "generation")).rejects.toThrow("did not confirm")
   }
 })
+
+test("inline latest content is scoped, bounded and integrity checked without changing the current base", async () => {
+  const bytes = new Uint8Array([80, 75, 3, 4]), encoded = btoa(String.fromCharCode(...bytes))
+  const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), byte => byte.toString(16).padStart(2, "0")).join("")
+  const payload = { version: { id: "new-base", number: 2 }, bytes: encoded, sha256: digest }
+  const client = new WordClient(link, "session", async (url, init) => {
+    expect(String(url)).toBe(`${link.apiOrigin}/word/latest`)
+    expect(JSON.parse(init!.body as string)).toEqual({ origin: link.origin, mode: "inline" })
+    expect(new Headers(init!.headers).get("x-dochaus-word-base-version")).toBe("old-base")
+    return Response.json(payload)
+  })
+  expect(await client.latestContent("old-base")).toEqual({ version: payload.version, bytes })
+  expect(link.baseVersion).toBe("original")
+  for (const bad of [{ ...payload, sha256: "0".repeat(64) }, { ...payload, bytes: "!bad" }, { ...payload, version: { id: "", number: 2 } }, { ...payload, bytes: "A".repeat(6_000_000) }]) {
+    await expect(new WordClient(link, "session", async () => Response.json(bad)).latestContent("old-base")).rejects.toThrow("could not be verified")
+  }
+})
+
+test("native operation client binds sequence and operation acknowledgement without retrying a lost begin", async () => {
+  let calls = 0
+  const state = { ...connection("original"), nativeOperation: { sequence: 1, state: "pending" as const } }
+  const client = new WordClient(link, "session", async (url, init) => {
+    calls++
+    expect(String(url)).toBe(`${link.apiOrigin}/word/native-operation`)
+    expect(new Headers(init?.headers).get("x-dochaus-word-lease")).toBe("generation")
+    expect(JSON.parse(init!.body as string)).toEqual({ action: "begin", sequence: 0, operationId: "op-1", intent: "amendment", proposal: { conversationId: "conversation", turnId: "turn" } })
+    return Response.json({ operation: { sequence: 1, operationId: "op-1", state: "pending" }, connection: state })
+  })
+  expect((await client.nativeOperation("original", "generation", {action:"begin",sequence:0,operationId:"op-1",intent:"amendment",proposal:{conversationId:"conversation",turnId:"turn"}})).operation.state).toBe("pending")
+  expect(calls).toBe(1)
+  const bad = new WordClient(link, "session", async () => Response.json({ operation: { sequence: 1, operationId: "wrong", state: "pending" }, connection: state }))
+  await expect(bad.nativeOperation("original", "generation", {action:"begin",sequence:0,operationId:"op-1",intent:"amendment",proposal:{conversationId:"conversation",turnId:"turn"}})).rejects.toThrow("could not confirm")
+  for (const wrong of [{ ...state, lease: {state:"other", generation:"generation", expiresAt:90000} }, { ...state, lease: {state:"owned", generation:"different", expiresAt:90000} }, { ...state, version: { ...state.version, current: {id:"newer",number:2}, state:"stale" } }]) {
+    const unowned = new WordClient(link, "session", async () => Response.json({ operation: { sequence:1,operationId:"op-1",state:"pending" }, connection:wrong }))
+    await expect(unowned.nativeOperation("original", "generation", {action:"begin",sequence:0,operationId:"op-1",intent:"amendment",proposal:{conversationId:"conversation",turnId:"turn"}})).rejects.toThrow("could not confirm")
+  }
+  const lost = new WordClient(link, "session", async () => { calls++; throw new Error("lost response") })
+  await expect(lost.nativeOperation("original", "generation", {action:"begin",sequence:0,operationId:"op-1",intent:"amendment",proposal:{conversationId:"conversation",turnId:"turn"}})).rejects.toThrow()
+  expect(calls).toBe(2)
+})
+
+test("native refresh admission accepts only the requested latest version with the original owned fence", async () => {
+  const state = { ...connection("original"), version: { base: {id:"original",number:1}, current: {id:"latest",number:2}, state:"stale" as const }, nativeOperation: {sequence:1,state:"pending" as const} }
+  const operation = {sequence:1,operationId:"refresh-op",state:"pending"}
+  const input = {action:"begin" as const,sequence:0,operationId:"refresh-op",intent:"refresh" as const,expectedCurrent:"latest"}
+  const client = new WordClient(link,"session",async () => Response.json({operation,connection:state}))
+  expect((await client.nativeOperation("original","generation",input)).operation.state).toBe("pending")
+  await expect(client.nativeOperation("original","generation",{...input,expectedCurrent:"other"})).rejects.toThrow("could not confirm")
+  const wrongOwner = new WordClient(link,"session",async () => Response.json({operation,connection:{...state,lease:{state:"other",generation:"generation",expiresAt:90000}}}))
+  await expect(wrongOwner.nativeOperation("original","generation",input)).rejects.toThrow("could not confirm")
+})

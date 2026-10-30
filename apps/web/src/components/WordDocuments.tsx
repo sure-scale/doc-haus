@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react"
-import { fetchWordConfig, fetchWordDocuments, fetchWordOpenState, linkedWordDocument, prepareWordOpen, recoverWordEditing, type WordConfig, type WordOpenDocument } from "../api/ingest/word"
+import { copySavedWordRecovery, fetchWordConfig, fetchWordDocuments, fetchWordOpenState, linkedWordDocument, prepareWordOpen, recoverWordEditing, type WordConfig, type WordOpenDocument } from "../api/ingest/word"
 import { humanizeError } from "../api/ingest/errors"
 import { useToast } from "./Toast"
 import { useOpenSettings } from "./settings/navigation"
@@ -11,9 +11,10 @@ type WordState = {
   statusError?: string
   refreshKey: number
   refresh: () => void
+  documentCreated: () => void
   retrySetup: () => void
 }
-const WordDocuments = createContext<WordState>({ documents: [], refreshKey: 0, refresh: () => {}, retrySetup: () => {} })
+const WordDocuments = createContext<WordState>({ documents: [], refreshKey: 0, refresh: () => {}, documentCreated: () => {}, retrySetup: () => {} })
 
 // Heartbeats only say that Word is in contact. Version identity, rather than a
 // save-time timestamp, tells the app that ingest actually received new bytes.
@@ -100,7 +101,7 @@ export function WordDocumentsProvider({ matterId, onChanged, children }: { matte
     }
   }, [matterId])
 
-  return <WordDocuments.Provider value={{ config, setupError, documents, statusError, refreshKey, refresh: () => refresh.current(), retrySetup: () => setSetupAttempt((value) => value + 1) }}>{children}</WordDocuments.Provider>
+  return <WordDocuments.Provider value={{ config, setupError, documents, statusError, refreshKey, refresh: () => refresh.current(), documentCreated: () => { setRefreshKey(value => value + 1); changed.current(); refresh.current() }, retrySetup: () => setSetupAttempt((value) => value + 1) }}>{children}</WordDocuments.Provider>
 }
 
 // A refresh never remounts the viewer or clears a typed edit request. Defer
@@ -120,6 +121,8 @@ export function useWordRefresh(onRefresh: () => void, defer = false) {
 }
 
 export function wordWarning(documents: WordOpenDocument[], name?: string) {
+  const pending = documents.filter(entry => entry.nativeOperation?.state === "pending" && (!name || entry.name === name))
+  if (pending.length) return "A Word change has not been confirmed. Keep the local Word file; you can create a separate copy of the last saved version. Unsent Word edits will not be in the copy."
   const locked = documents.filter((entry) => entry.lease?.state === "other" && (!name || entry.name === name))
   if (locked.length) return `${locked.map((entry) => entry.name).join(", ")} ${locked.length === 1 ? "is" : "are"} being edited in Word. Changes here are locked until the Word editor finishes or you take over editing. Local Word files are kept when ownership changes.`
   const open = documents.filter((entry) => entry.open)
@@ -152,7 +155,7 @@ export function WordBadge({ name }: { name: string }) {
 export function wordSetupReason(config?: WordConfig, error?: string) {
   if (error) return error
   if (!config) return "Checking Word setup…"
-  if (!config.available) return "Word is not ready. Set it up in Settings → Add-ins."
+  if (!config.available) return "Word is not ready. Set it up in Settings → Word add-in."
 }
 
 // Kept nearby instead of repeated on every row. It remains discoverable when
@@ -170,19 +173,21 @@ export function WordSetup() {
 }
 
 export function WordOpenControl({ matterId, name, disabled = false, compact = false }: { matterId: string; name: string; disabled?: boolean; compact?: boolean }) {
-  const { config, setupError, documents, refresh } = useContext(WordDocuments)
-  const [busy, setBusy] = useState<"open" | "download" | "release" | "takeover">()
+  const { config, setupError, documents, refresh, documentCreated } = useContext(WordDocuments)
+  const [busy, setBusy] = useState<"open" | "download" | "release" | "takeover" | "copy">()
   const [fallback, setFallback] = useState(false)
   const opening = useRef<AbortController | undefined>(undefined)
   const [recovery, setRecovery] = useState<{ action: "release" | "takeover"; document: WordOpenDocument }>()
+  const [copyName, setCopyName] = useState<string>()
   useEffect(() => {
-    setBusy(undefined); setFallback(false); setRecovery(undefined)
+    setBusy(undefined); setFallback(false); setRecovery(undefined); setCopyName(undefined)
     return () => opening.current?.abort()
   }, [matterId, name])
   const toast = useToast()
   if (!/\.docx$/i.test(name)) return null
   const status = documents.find((entry) => entry.name === name)
   const locked = status?.lease?.state === "other"
+  const pending = status?.nativeOperation?.state === "pending"
   const available = config?.available && !setupError
   async function open() {
     if (!config?.origin) return
@@ -246,12 +251,31 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
       toast("error", humanizeError(error, "Could not change Word editing ownership."))
     } finally { setBusy(undefined) }
   }
+  async function copyRecovery() {
+    if (!status || copyName === undefined) return
+    setBusy("copy")
+    try {
+      const result = await copySavedWordRecovery(matterId, status, copyName)
+      setCopyName(undefined); documentCreated()
+      toast("success", `Created ${result.name} from the saved version. Open it from the document list.`)
+    } catch (error) { refresh(); toast("error", humanizeError(error, "Could not create the saved copy.")) }
+    finally { setBusy(undefined) }
+  }
   return <span className={`word-controls${compact ? " is-compact" : ""}`}>
-    {available ? <button type="button" className={compact ? "linklike word-open" : "word-open"} onClick={open} disabled={disabled || busy !== undefined} aria-label={`Open ${name} in Word`} title="Open an editable linked copy in desktop Word">
+    {available ? <button type="button" className={compact ? "linklike word-open" : "word-open"} onClick={open} disabled={disabled || pending || busy !== undefined} aria-label={`Open ${name} in Word`} title="Open an editable linked copy in desktop Word">
       {busy === "open" ? "Opening Word…" : "Open in Word"}
     </button> : <span className="word-unavailable" title={wordSetupReason(config, setupError)}>{config || setupError ? "Word setup needed" : "Checking Word…"}</span>}
-    {available && fallback && <button type="button" className="linklike" onClick={download} disabled={disabled || busy !== undefined}>{busy === "download" ? "Downloading…" : "Download Word copy"}</button>}
-    {locked && <>
+    {available && fallback && <button type="button" className="linklike" onClick={download} disabled={disabled || pending || busy !== undefined}>{busy === "download" ? "Downloading…" : "Download Word copy"}</button>}
+    {pending && <>
+      <button type="button" className="linklike" disabled={disabled || busy !== undefined} onClick={() => setCopyName(name.replace(/\.docx$/i, " (saved copy).docx"))}>Create saved copy</button>
+      {copyName !== undefined && <span className="word-recovery" role="group" aria-label="Create separate saved copy">
+        <span>This creates a separate document from version {status?.currentNumber ?? "saved in doc.haus"}. Unsent local Word edits and the unconfirmed change are not included. Keep the original Word file.</span>
+        <label>Copy name <input value={copyName} onChange={event => setCopyName(event.target.value)} /></label>
+        <button type="button" disabled={busy !== undefined || !copyName.trim()} onClick={copyRecovery}>{busy === "copy" ? "Creating…" : "Create copy"}</button>
+        <button type="button" className="linklike" disabled={busy !== undefined} onClick={() => setCopyName(undefined)}>Cancel</button>
+      </span>}
+    </>}
+    {locked && !pending && <>
       <button type="button" className="linklike" disabled={busy !== undefined || disabled} onClick={() => setRecovery(status ? { action: "takeover", document: status } : undefined)}>Take over editing</button>
       <button type="button" className="linklike" disabled={busy !== undefined || disabled} onClick={() => setRecovery(status ? { action: "release", document: status } : undefined)}>Release Word lock</button>
     </>}

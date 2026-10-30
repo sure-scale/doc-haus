@@ -250,6 +250,7 @@ export type SessionSwitchModelOperation<E = never> = (
 export type SessionUpdateInput = {
   readonly sessionID: Session.ID
   readonly title?: string | undefined
+  readonly expectedTitle?: string | undefined
   readonly metadata?: Session.Metadata | undefined
   readonly permissions?: Permission.Ruleset | undefined
 }

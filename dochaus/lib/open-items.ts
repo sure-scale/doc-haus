@@ -118,17 +118,47 @@ export function shadedMarkerSpans(text: string) {
  * Every other formatting is kept, and a run shaded in a fill of its own
  * (ownShading) is left as it is. The bytes are returned themselves when
  * nothing changes. */
-export function shadeOpenItemsInDocx(bytes: Uint8Array, clear: (paragraph: Element) => boolean = () => false) {
+export function shadeOpenItemsInDocx(bytes: Uint8Array, clear: (paragraph: Element) => boolean = () => false, select: (paragraph: Element) => boolean = () => true) {
   const parts = unzipSync(bytes)
   const document = parts["word/document.xml"]
   if (!document) return bytes
   const doc = new DOMParser().parseFromString(strFromU8(document), "application/xml")
   let changed = false
   for (const paragraph of Array.from(doc.getElementsByTagNameNS(W, "p"))) {
+    if (!select(paragraph)) continue
     const runs = paragraphRuns(paragraph)
     const spans = shadedMarkerSpans(runs.flatMap(row => row.content.map(part => part.value)).join(""))
     const clearing = clear(paragraph)
     if (spans.length || clearing) for (const row of runs) changed = shadeRun(row, spans, clearing) || changed
+  }
+  if (!changed) return bytes
+  parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+  return zipSync(parts, { mtime: new Date(1980, 0, 1) })
+}
+
+/** LEAN owns its reserved marker decoration only in selected paragraphs.
+ * Normalize only an exact generated shading whose whole run is inside a parsed
+ * marker. All other run properties and all unselected paragraphs stay intact. */
+export function normalizeOwnedMarkerShading(bytes: Uint8Array, select: (paragraph: Element) => boolean) {
+  const parts = unzipSync(bytes), document = parts["word/document.xml"]
+  if (!document) return bytes
+  const doc = new DOMParser().parseFromString(strFromU8(document), "application/xml")
+  let changed = false
+  for (const paragraph of Array.from(doc.getElementsByTagNameNS(W, "p"))) {
+    if (!select(paragraph)) continue
+    const runs = paragraphRuns(paragraph), spans = shadedMarkerSpans(runs.flatMap(row => row.content.map(part => part.value)).join(""))
+    for (const { run, content } of runs) {
+      const shading = runShading(run), visible = content.filter(part => part.value.length)
+      if (!shading || !visible.length || content.some(part => part.node.localName !== "t") ||
+        shading.getAttributeNS(W, "val") !== "clear" || shading.getAttributeNS(W, "color") !== "auto" ||
+        Array.from(shading.attributes).some(attr => attr.namespaceURI !== "http://www.w3.org/2000/xmlns/" && (attr.namespaceURI !== W || !["val", "color", "fill"].includes(attr.localName)))) continue
+      const fill = shading.getAttributeNS(W, "fill")
+      if (!visible.every(part => spans.some(span => span.fill === fill && span.start <= part.start && part.end <= span.end))) continue
+      const properties = shading.parentNode!
+      properties.removeChild(shading)
+      if (!Array.from(properties.childNodes).some(node => node.nodeType === 1) && !(properties as Element).attributes.length) run.removeChild(properties)
+      changed = true
+    }
   }
   if (!changed) return bytes
   parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))

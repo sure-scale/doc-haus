@@ -9,6 +9,8 @@ import {
 export const WORD_UPDATE_MESSAGE =
   "This Word add-in is out of date. Update Word setup in doc.haus, restart Word, then open a fresh copy."
 
+export type LatestWordContent = { version: { id: string; number: number }; bytes: Uint8Array }
+
 export function isCurrentPaneVersion(value: string): boolean {
   try {
     const versions = new URL(value).searchParams.getAll("version")
@@ -86,6 +88,7 @@ export function readConnection(value: unknown): WordConnectionState | undefined 
   if (
     !state.version ||
     !state.lease ||
+    (state.nativeOperation !== undefined && (!state.nativeOperation || typeof state.nativeOperation !== "object" || !Number.isSafeInteger(state.nativeOperation.sequence) || state.nativeOperation.sequence < 0 || !["idle", "pending", "confirmed", "not-dispatched"].includes(state.nativeOperation.state))) ||
     !["current", "stale", "removed", "unrecorded-change"].includes(state.version.state) ||
     !ref(state.version.base) ||
     !ref(state.version.current) ||
@@ -112,7 +115,7 @@ export class WordClient {
   }
 
   private async post(
-    path: "saves" | "heartbeat" | "done" | "lease" | "latest",
+    path: "saves" | "heartbeat" | "done" | "lease" | "latest" | "native-operation",
     options: {
       bytes?: Uint8Array
       base: string
@@ -212,6 +215,26 @@ export class WordClient {
     )
   }
 
+  /** No retry grants permission to dispatch: the caller must know this call
+   * has not previously queued a Word mutation. */
+  async nativeOperation(base: string, generation: string, input: { action: "read" } | { action: "begin"; sequence: number; operationId: string; intent: "amendment"; proposal: { conversationId: string; turnId: string } } | { action: "begin"; sequence: number; operationId: string; intent: "refresh"; expectedCurrent: string } | { action: "settle"; sequence: number; operationId: string; outcome: "confirmed" | "not-dispatched" }) {
+    const value = await this.post("native-operation", { base, generation, input }) as { operation?: { sequence?: unknown; operationId?: unknown; state?: unknown }; connection?: unknown }
+    const operation = value?.operation
+    if (!operation || !Number.isSafeInteger(operation.sequence) || Number(operation.sequence) < 0 ||
+      !(operation.operationId === null || typeof operation.operationId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(operation.operationId)) ||
+      !["idle", "pending", "confirmed", "not-dispatched"].includes(String(operation.state)))
+      throw new ConnectionError("doc.haus could not confirm the Word operation. Inspect the document before continuing.", true)
+    const connection = this.connection(value.connection)
+    if (!connection.nativeOperation || connection.nativeOperation.sequence !== operation.sequence || connection.nativeOperation.state !== operation.state ||
+      input.action !== "read" && (operation.operationId !== input.operationId || operation.sequence !== (input.action === "begin" ? input.sequence + 1 : input.sequence)) ||
+      input.action === "begin" && (connection.lease.state !== "owned" || connection.lease.generation !== generation || connection.version.base?.id !== base ||
+        (input.intent === "refresh" ? !["current", "stale"].includes(connection.version.state) || connection.version.current?.id !== input.expectedCurrent
+          : connection.version.state !== "current" || connection.version.current?.id !== base)) ||
+      input.action === "settle" && operation.state !== input.outcome)
+      throw new ConnectionError("doc.haus could not confirm the Word operation. Inspect the document before continuing.", true)
+    return { operation: operation as { sequence: number; operationId: string | null; state: "idle" | "pending" | "confirmed" | "not-dispatched" }, connection }
+  }
+
   async save(bytes: Uint8Array, base: string, generation: string): Promise<WordSaveResponse> {
     const value = (await this.post("saves", { bytes, base, generation })) as WordSaveResponse
     if (
@@ -253,6 +276,18 @@ export class WordClient {
     } catch {
       throw new ConnectionError("The latest copy could not be opened. Open this matter in doc.haus and choose Open in Word.")
     }
+  }
+  async latestContent(base: string): Promise<LatestWordContent> {
+    const value = await this.post("latest", { base, input: { origin: this.link.origin, mode: "inline" } }) as { version?: { id?: unknown; number?: unknown }; bytes?: unknown; sha256?: unknown }
+    if (!value?.version || typeof value.version.id !== "string" || !value.version.id || !Number.isSafeInteger(value.version.number) || Number(value.version.number) < 1 ||
+      typeof value.bytes !== "string" || !value.bytes.length || value.bytes.length > Math.ceil(4 * 1024 * 1024 / 3) * 4 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value.bytes) || typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256))
+      throw new ConnectionError("The latest document could not be verified. Your Word copy is unchanged.")
+    const bytes = Uint8Array.from(atob(value.bytes), character => character.charCodeAt(0))
+    if (bytes.length > 4 * 1024 * 1024) throw new ConnectionError("Open the latest copy separately; it is too large to refresh here.")
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), byte => byte.toString(16).padStart(2, "0")).join("")
+    if (hash !== value.sha256) throw new ConnectionError("The latest document could not be verified. Your Word copy is unchanged.")
+    return { version: { id: value.version.id, number: Number(value.version.number) }, bytes }
   }
   async done(base: string, generation: string): Promise<WordConnectionState> {
     return this.connection(await this.post("done", { base, generation }))

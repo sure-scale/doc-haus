@@ -1,11 +1,12 @@
 import { afterEach, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { applyDocxLocalization, createDocxLocalization } from "../lib/docx-amendments"
-import { pendingRedlinesForDoc, supersedeMatchingRedlines } from "../lib/redlines"
+import { pendingRedlinesForDoc, recordRedlineProposal, supersedeMatchingRedlines } from "../lib/redlines"
 import { renderMarkdownToDocx } from "../lib/render"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import redline from "../tool/redline"
 import trackedChanges from "../tool/tracked-changes"
 import wordIntegration from "../tool/word-integration"
@@ -29,8 +30,8 @@ function register(root: string, role: "source" | "deliverable") {
   mkdirSync(path.join(root, ".dochaus"), { recursive: true })
   const db = new Database(path.join(root, ".dochaus", "legal.db"))
   try {
-    db.exec("CREATE TABLE documents (name TEXT, role TEXT)")
-    db.query("INSERT INTO documents VALUES (?, ?)").run(COUNTERPARTY_MARKUP.name, role)
+    db.exec("CREATE TABLE documents (doc_path TEXT, name TEXT, role TEXT)")
+    db.query("INSERT INTO documents VALUES (?, ?, ?)").run(path.join(root, COUNTERPARTY_MARKUP.name), COUNTERPARTY_MARKUP.name, role)
   } finally { db.close() }
   supersedeMatchingRedlines(root, path.join(root, COUNTERPARTY_MARKUP.name), () => false)
 }
@@ -154,4 +155,79 @@ test("on a deliverable with doc.haus's own pending change the chat tools refuse 
     expect(saved).toEqual([])
     expect(new Uint8Array(readFileSync(document))).toEqual(tracked)
   } finally { ingest.stop(true) }
+})
+
+
+test("tracked changes rechecks all occurrences after approval against a new live field", async () => {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "dh-field-permission-")))
+  roots.push(root)
+  const document = path.join(root, COUNTERPARTY_MARKUP.name)
+  const source = (await renderMarkdownToDocx("Notice requires VALUE.\n\nOther VALUE remains.")).bytes
+  writeFileSync(document, source)
+  register(root, "source")
+  const existing = recordRedlineProposal(root, { docPath: document, docName: COUNTERPARTY_MARKUP.name, scope: "phrase", findText: "VALUE", oldText: "VALUE", newText: "OLD", author: "Counsel", reviewComment: "Existing", anchorId: "prior" })
+  const before = pendingRedlinesForDoc(root, document)
+  let arrived!: () => void, release!: () => void
+  const asked = new Promise<void>(resolve => { arrived = resolve })
+  const approval = new Promise<void>(resolve => { release = resolve })
+  const context = { sessionID: "field", messageID: "field", agent: "redliner", directory: root, worktree: root, abort: new AbortController().signal,
+    metadata() {}, async ask() { arrived(); await approval } }
+  const request = trackedChanges.execute({ document: COUNTERPARTY_MARKUP.name, find: "VALUE", replace: "UPDATED", comment: "Review.", author: "Counsel" }, context)
+  await asked
+  const parts = unzipSync(source)
+  const xml = strFromU8(parts["word/document.xml"]!)
+  const field = '</w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> REF Target </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>VALUE</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r><w:r><w:t xml:space="preserve">'
+  const altered = zipSync({ ...parts, "word/document.xml": strToU8(xml.replace("VALUE", field)) })
+  writeFileSync(document, altered)
+  release()
+  expect(await request).toContain("Word field")
+  expect(pendingRedlinesForDoc(root, document)).toEqual(before)
+  expect(pendingRedlinesForDoc(root, document)[0]!.id).toBe(existing.id)
+  expect(new Uint8Array(readFileSync(document))).toEqual(altered)
+})
+
+test("clause proposal pins the approved complete paragraph and refuses a changed source after approval", async () => {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "dh-clause-permission-")))
+  roots.push(root)
+  const document = path.join(root, COUNTERPARTY_MARKUP.name)
+  const source = (await renderMarkdownToDocx("Alpha   term applies.\n\nAlpha term applies.\n\nAlpha term applies.")).bytes
+  writeFileSync(document, source)
+  register(root, "source")
+  let metadata: Record<string, unknown> | undefined
+  const context = { sessionID: "clause", messageID: "clause", agent: "redliner", directory: root, worktree: root, abort: new AbortController().signal,
+    metadata() {}, async ask(input: { metadata: Record<string, unknown> }) { metadata = input.metadata } }
+  await redline.execute({ document: COUNTERPARTY_MARKUP.name, clause: "Alpha term", replacement: "Alpha term changes.", comment: "Review.", author: "Counsel" }, context)
+  expect(metadata?.clause).toBe("Alpha term applies.")
+  const rows = pendingRedlinesForDoc(root, document)
+  expect(rows).toHaveLength(1)
+  expect(rows[0]!.find_text).toBe("Alpha term applies.")
+  expect(JSON.parse(rows[0]!.target_json!)).toMatchObject({ version: 1, kind: "legacy_clause" })
+  supersedeMatchingRedlines(root, document, () => true)
+  let release!: () => void, arrived!: () => void
+  const requested = new Promise<void>(resolve => { arrived = resolve })
+  const approval = new Promise<void>(resolve => { release = resolve })
+  const waiting = redline.execute({ document: COUNTERPARTY_MARKUP.name, clause: "Alpha term", replacement: "Alpha term changes.", comment: "Review.", author: "Counsel" },
+    { ...context, async ask() { arrived(); await approval } })
+  await requested
+  const changed = (await renderMarkdownToDocx("New paragraph.\n\nAlpha term applies.")).bytes
+  writeFileSync(document, changed)
+  release()
+  expect(await waiting).toContain("changed while approval was pending")
+  expect(pendingRedlinesForDoc(root, document)).toEqual([])
+  expect(new Uint8Array(readFileSync(document))).toEqual(changed)
+})
+
+
+test("clause role lookup refuses a registry outside the matter", async () => {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "dh-role-root-")))
+  const external = realpathSync(mkdtempSync(path.join(tmpdir(), "dh-role-external-")))
+  roots.push(root, external)
+  const document = path.join(root, COUNTERPARTY_MARKUP.name)
+  writeFileSync(document, (await renderMarkdownToDocx("Original text.")).bytes)
+  register(external, "source")
+  const externalDb = new Database(path.join(external, ".dochaus", "legal.db"))
+  try { externalDb.run("UPDATE documents SET doc_path = ?", [document]) } finally { externalDb.close() }
+  symlinkSync(path.join(external, ".dochaus"), path.join(root, ".dochaus"))
+  const { registeredWordRole } = await import("../lib/legal-db")
+  expect(registeredWordRole(root, document)).toBeNull()
 })

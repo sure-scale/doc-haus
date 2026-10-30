@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test"
-import { zipSync, strToU8 } from "fflate"
+import { zipSync, strToU8, strFromU8, unzipSync } from "fflate"
 import { documentFingerprint } from "./fingerprint"
 import { connectOffice, DocumentStateError, exportFile, type OfficeFile } from "./office"
+import { WordSync, type Transport } from "./sync"
+import type { WordConnectionState } from "../../../dochaus/lib/word-addin-contract"
 
 test("DOCX fingerprint ignores ZIP timestamps, compression and entry order but detects changed content", async () => {
   const a = strToU8("<document>one</document>")
@@ -442,6 +444,218 @@ test("Done does not close if saving its settings fails or Word remains dirty", a
     }
   } finally {
     if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow)
+    else delete (globalThis as { window?: unknown }).window
+  }
+})
+
+function installRefreshHost(options: { supported?: boolean; encoded?: boolean; failInsert?: boolean; failSettings?: boolean; exportBytes?: Uint8Array; failExport?: boolean } = {}) {
+  const events: string[] = []
+  let raw: unknown = options.encoded ? JSON.stringify(linkedDocument) : { ...linkedDocument }
+  let tracking = "TrackAll"
+  let imported: { bytes: string; location: string; options: Record<string, boolean> } | undefined
+  let importedBytes: Uint8Array | undefined
+  const context = {
+    document: {
+      saved: true,
+      get changeTrackingMode() { return tracking },
+      set changeTrackingMode(value: string) { tracking = value; events.push(`tracking:${value}`) },
+      load: (value: string) => { events.push(`load:${value}`) },
+      save: () => { events.push("native-save") },
+      close: () => { events.push("native-close") },
+      insertFileFromBase64: (bytes: string, location: string, optionsValue: Record<string, boolean>) => {
+        expect(tracking).toBe("Off")
+        events.push("document-replace")
+        imported = { bytes, location, options: optionsValue }
+        importedBytes = Uint8Array.from(atob(bytes), character => character.charCodeAt(0))
+        if (options.failInsert) throw new Error("Synthetic unsupported native package")
+        tracking = "TrackMineOnly" // Simulate the imported source tracking mode.
+        raw = null // Native insertion does not preserve document settings.
+      },
+    },
+    sync: async () => { events.push("sync") },
+  }
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      location: { origin: linkedDocument.apiOrigin },
+      Office: {
+        onReady: async () => ({ host: "Word" }),
+        FileType: { Compressed: "compressed" },
+        context: {
+          requirements: { isSetSupported: (name: string, version: string) => name === "WordApi" && (version !== "1.7" || options.supported !== false) },
+          document: { getFileAsync: (_type: string, _options: unknown, callback: (result: unknown) => void) => {
+            events.push("get-file")
+            if (options.failExport) return callback({ status: "failed" })
+            const bytes = importedBytes ? options.exportBytes ?? importedBytes : latestRefreshBytes()
+            callback({ status: "succeeded", value: { size: bytes.length, sliceCount: 1,
+              getSliceAsync: (_index: number, done: (result: unknown) => void) => { events.push("read-slice"); done({ status: "succeeded", value: { data: Array.from(bytes) } }) },
+              closeAsync: (done: (result: unknown) => void) => { events.push("close-file"); done({ status: "succeeded", value: undefined }) },
+            } })
+          }, settings: {
+            get: () => raw,
+            set: (_key: string, value: unknown) => { events.push("settings-set"); raw = value },
+            saveAsync: (callback: (value: { status: string; value: undefined }) => void) => {
+              events.push("settings-save")
+              callback({ status: options.failSettings ? "failed" : "succeeded", value: undefined })
+            },
+          } },
+        },
+      },
+      Word: { run: async (action: (value: typeof context) => Promise<unknown>) => action(context) },
+    },
+  })
+  return { events, context, get raw() { return raw }, set raw(value: unknown) { raw = value }, get imported() { return imported } }
+}
+
+const latestRefreshBytes = () => zipSync({
+  "word/document.xml": strToU8('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Reviewed text</w:t></w:r><w:ins w:id="1" w:author="Earlier reviewer"><w:r><w:t> added</w:t></w:r></w:ins></w:p><w:sectPr><w:pgSz w:w="12240"/></w:sectPr></w:body></w:document>'),
+  "word/comments.xml": strToU8('<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:comment w:id="1"><w:p><w:r><w:t>Retained comment</w:t></w:r></w:p></w:comment></w:comments>'),
+  "word/numbering.xml": strToU8('<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:num w:numId="1"/></w:numbering>'),
+})
+
+test("refresh uses full-document Replace with all fidelity options, retains the link and imports source tracking without saving", async () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window")
+  try {
+    for (const encoded of [false, true]) {
+      const f = installRefreshHost({ encoded })
+      const { host } = await connectOffice()
+      const bytes = latestRefreshBytes()
+      await host.replace!(bytes, "latest-v2")
+      expect(f.imported).toEqual({ bytes: btoa(String.fromCharCode(...bytes)), location: "Replace", options: {
+        importTheme: true, importStyles: true, importParagraphSpacing: true, importPageColor: true,
+        importChangeTrackingMode: true, importCustomProperties: true, importCustomXmlParts: true, importDifferentOddEvenPages: true,
+      } })
+      expect(typeof f.raw).toBe(encoded ? "string" : "object")
+      expect(encoded ? JSON.parse(f.raw as string) : f.raw).toEqual({ ...linkedDocument, baseVersion: "latest-v2" })
+      expect(f.context.document.changeTrackingMode).toBe("TrackMineOnly")
+      expect(f.events).toEqual(["load:changeTrackingMode", "sync", "tracking:Off", "sync", "document-replace", "sync", "get-file", "read-slice", "close-file", "settings-set", "settings-save"])
+    }
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "window", previous)
+    else delete (globalThis as { window?: unknown }).window
+  }
+})
+
+test("refresh refuses unsupported fidelity API, oversize packages and changed links before native mutation", async () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window")
+  try {
+    const unsupported = installRefreshHost({ supported: false })
+    expect((await connectOffice()).host.replace).toBeUndefined()
+    expect(unsupported.events).toEqual([])
+    for (const changed of [false, true]) {
+      const f = installRefreshHost()
+      const { host } = await connectOffice()
+      if (changed) f.raw = { ...linkedDocument, token: "another-capability" }
+      await expect(host.replace!(changed ? new Uint8Array([1]) : new Uint8Array(4 * 1024 * 1024 + 1), "v2")).rejects.toBeInstanceOf(DocumentStateError)
+      expect(f.events).toEqual([])
+    }
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "window", previous)
+    else delete (globalThis as { window?: unknown }).window
+  }
+})
+
+test("failed native replacement or link persistence never stamps a successful base or blindly repeats import", async () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window")
+  try {
+    for (const failSettings of [false, true]) {
+      const f = installRefreshHost({ failInsert: !failSettings, failSettings })
+      const { host } = await connectOffice()
+      await expect(host.replace!(latestRefreshBytes(), "v2")).rejects.toBeInstanceOf(DocumentStateError)
+      if (!failSettings) {
+        expect(f.raw).toEqual(linkedDocument)
+        expect(f.events).not.toContain("settings-set")
+        expect(f.context.document.changeTrackingMode).toBe("TrackAll")
+      }
+      const count = f.events.length
+      await expect(host.replace!(latestRefreshBytes(), "v2")).rejects.toThrow("previous refresh")
+      expect(f.events).toHaveLength(count)
+      expect(f.events).not.toContain("native-save")
+      expect(f.events).not.toContain("native-close")
+    }
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "window", previous)
+    else delete (globalThis as { window?: unknown }).window
+  }
+})
+
+test("refresh fences a native import that changes content, revisions, comments, numbering or sections", async () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window")
+  try {
+    const bytes = latestRefreshBytes()
+    for (const [part, from, to] of [
+      ["word/document.xml", "Reviewed text", "Changed text"],
+      ["word/document.xml", "Earlier reviewer", "Different reviewer"],
+      ["word/document.xml", "12240", "9999"],
+      ["word/comments.xml", "Retained comment", "Changed comment"],
+      ["word/numbering.xml", 'w:numId="1"', 'w:numId="2"'],
+    ]) {
+      const parts = unzipSync(bytes), xml = strFromU8(parts[part]!)
+      expect(xml).toContain(from)
+      parts[part] = strToU8(xml.replace(from, to))
+      const f = installRefreshHost({ exportBytes: zipSync(parts) }), { host } = await connectOffice()
+      await expect(host.replace!(bytes, "v2")).rejects.toThrow("could not verify its contents")
+      expect(f.events).toContain("document-replace")
+      expect(f.events).not.toContain("settings-set")
+      const events = f.events.length
+      await expect(host.replace!(bytes, "v2")).rejects.toThrow("previous refresh")
+      expect(f.events).toHaveLength(events)
+    }
+    const f = installRefreshHost({ failExport: true }), { host } = await connectOffice()
+    await expect(host.replace!(bytes, "v2")).rejects.toThrow("could not verify its contents")
+    expect(f.events).not.toContain("settings-set")
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "window", previous)
+    else delete (globalThis as { window?: unknown }).window
+  }
+})
+
+test("Load latest keeps the old base and fences saving when Word's imported document fails verification", async () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "window")
+  try {
+    const latest = latestRefreshBytes(), parts = unzipSync(latest)
+    parts["word/comments.xml"] = strToU8(strFromU8(parts["word/comments.xml"]!).replace("Retained comment", "Changed comment"))
+    const f = installRefreshHost({ exportBytes: zipSync(parts) }), { host } = await connectOffice()
+    const actions: string[] = []
+    let operation: { sequence: number; operationId: string | null; state: "idle" | "pending" | "confirmed" | "not-dispatched" } = { sequence: 0, operationId: null, state: "idle" }
+    const connection = (base: string): WordConnectionState => ({ version: { base: { id: base, number: base === "v1" ? 1 : 2 }, current: { id: "v2", number: 2 }, state: base === "v2" ? "current" : "stale" }, lease: { state: "owned", expiresAt: 100_000, generation: "owner" }, nativeOperation: { sequence: operation.sequence, state: operation.state } })
+    const transport: Transport = {
+      lease: async (action, base) => {
+        actions.push(`${action}:${base}`)
+        return connection(base)
+      },
+      nativeOperation: async (base, _generation, input) => {
+        actions.push(`${input.action}:${base}`)
+        if (input.action === "begin") operation = { sequence: input.sequence + 1, operationId: input.operationId, state: "pending" }
+        if (input.action === "settle") operation = { sequence: input.sequence, operationId: input.operationId, state: input.outcome }
+        return { operation, connection: connection(base) }
+      },
+      save: async () => { throw new Error("unexpected upload") },
+      heartbeat: async (base) => connection(base),
+      done: async () => { throw new Error("unexpected done") },
+    }
+    let cleared = false
+    const sync = new WordSync("v1", host, transport, { read: () => null, write: () => {}, clear: () => { cleared = true } }, () => {}, documentFingerprint, async () => {}, () => 50_000)
+    expect(await sync.loadLatest(async () => ({ version: { id: "v2", number: 2 }, bytes: latest }), () => true)).toBe(false)
+    expect(sync.snapshot().message).toContain("could not verify its contents")
+    expect(sync.snapshot().message).toContain("Create saved copy")
+    await sync.tick()
+    expect(sync.snapshot().message).toContain("could not verify its contents")
+    expect(sync.snapshot().message).toContain("Create saved copy")
+    expect(sync.snapshot().canSave).toBe(false)
+    expect(cleared).toBe(false)
+    expect(operation.state).toBe("pending")
+    expect(actions).toContain("begin:v1"); expect(actions).not.toContain("settle:v1")
+    expect(actions).not.toContain("release:v1")
+    expect(f.events).not.toContain("settings-set")
+    expect(await sync.loadLatest(async () => ({ version: { id: "v2", number: 2 }, bytes: latest }), () => true)).toBe(false)
+    expect(f.events.filter(event => event === "document-replace")).toHaveLength(1)
+    operation = { sequence: operation.sequence + 1, operationId: "different", state: "pending" }
+    await sync.tick()
+    expect(sync.snapshot().message).not.toContain("could not verify its contents")
+    expect(sync.snapshot().message).toContain("Create saved copy")
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "window", previous)
     else delete (globalThis as { window?: unknown }).window
   }
 })

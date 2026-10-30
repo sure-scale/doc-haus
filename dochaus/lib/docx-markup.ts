@@ -197,7 +197,7 @@ async function readMarkupRevisions(bytes: Uint8Array): Promise<{ revisions: Mark
     // section starts at the first paragraph after the previous one's anchor.
     const index = session.project().anchorIndex as Record<string, { kind: string; scope: string; textPreview: string; autoNumberPrefix?: string }>
     const comments = new Map(listed.map(row => [row.anchorId, row.id] as const))
-    const sides = rows.some(row => row.type === "move") ? moveSides(session.save(), rows) : new Map<string, MarkupLocation["side"]>()
+    const sides = rows.some(row => row.type === "move") ? moveSides(session.save(), rows) : new Map<string, { side: "from" | "to"; context?: string }>()
     const ordinals = new Map<string, number>(), located = new Map<string, MarkupLocation>()
     const waiting = new Map<string, string[]>(), sections = new Map<string, MarkupLocation>()
     let comment: string | undefined
@@ -234,8 +234,8 @@ async function readMarkupRevisions(bytes: Uint8Array): Promise<{ revisions: Mark
       const anchors = row.affectedAnchors.length ? row.affectedAnchors : row.anchorId ? [{ id: row.anchorId, kind: row.anchorId.split(":")[0]! }] : []
       const own = anchors.filter(anchor => PARAGRAPHS.has(anchor.kind)).map(anchor => anchor.id), container = row.anchorId ?? anchors[0]?.id
       const locations = [...new Set(own.length ? own : container ? [container] : [])].map(id => {
-        const location = located.get(id) ?? { paragraph: null, context: "" }, side = sides.get(`${row.id} ${id}`)
-        return side ? { ...location, side } : location
+        const location = located.get(id) ?? { paragraph: null, context: "" }, move = sides.get(`${row.id} ${id}`)
+        return move ? { ...location, ...move } : location
       })
       const findings: MarkupFinding[] = []
       return {
@@ -262,7 +262,7 @@ async function readMarkupRevisions(bytes: Uint8Array): Promise<{ revisions: Mark
 // moveTo by its native w:id, and the saved package marks every paragraph with
 // its anchor's unid. A paragraph holding both sides, or neither, has none.
 function moveSides(saved: Uint8Array, rows: RevisionListEntry[]) {
-  const parts = unzipSync(saved), paragraphs = new Map<string, Map<string, Element>>(), sides = new Map<string, MarkupLocation["side"]>()
+  const parts = unzipSync(saved), paragraphs = new Map<string, Map<string, Element>>(), sides = new Map<string, { side: "from" | "to"; context?: string }>()
   const byUnid = (partUri: string) => {
     const found = paragraphs.get(partUri)
     if (found) return found
@@ -280,10 +280,32 @@ function moveSides(saved: Uint8Array, rows: RevisionListEntry[]) {
     for (const anchor of row.affectedAnchors) {
       const node = byUnid(row.partUri).get(anchor.unid)
       const held = node ? (["moveFrom", "moveTo"] as const).filter(role => Array.from(node.getElementsByTagNameNS(W, role)).some(carrier => carriers.has(`${role}:${carrier.getAttributeNS(W, "id")}`))) : []
-      if (held.length === 1) sides.set(`${row.id} ${anchor.id}`, held[0] === "moveFrom" ? "from" : "to")
+      if (held.length === 1) {
+        const side = held[0] === "moveFrom" ? "from" : "to"
+        // The SDK preview can omit moved-from text even when the paragraph is
+        // otherwise nonempty. Read that paragraph as marked up from the same
+        // anchored session package, including unchanged and moved text.
+        sides.set(`${row.id} ${anchor.id}`, side === "from" && node
+          ? { side, context: normalizeUntrustedText(markedParagraphText(node)).text }
+          : { side })
+      }
     }
   }
   return sides
+}
+
+// Text visible in the marked-up paragraph, including deleted/moved-from runs.
+// Ignore property subtrees and field instructions; preserve tabs and breaks.
+function markedParagraphText(paragraph: Element): string {
+  const read = (node: Element): string => {
+    const name = node.namespaceURI === W ? node.localName : ""
+    if (PROPERTIES.has(name)) return ""
+    if (name === "t" || name === "delText") return node.textContent ?? ""
+    if (name === "tab") return "\t"
+    if (name === "br" || name === "cr") return "\n"
+    return Array.from(node.childNodes).filter(child => child.nodeType === 1).map(child => read(child as Element)).join("")
+  }
+  return read(paragraph)
 }
 
 /** Comment threads; `native` is readDocxComments of the same bytes when the caller already has it,

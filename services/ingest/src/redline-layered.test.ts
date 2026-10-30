@@ -4,8 +4,8 @@ import { realpathSync } from "node:fs"
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { DOMParser } from "@xmldom/xmldom"
-import { strFromU8, unzipSync, zipSync } from "fflate"
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { applyDocxLocalization, createDocxLocalization, openRevision, ownRevisionRefusals, verifyPreservation } from "../../../dochaus/lib/docx-amendments"
 import { readDocxComments } from "../../../dochaus/lib/docx-comments"
 import { assertLayeredRoundTrip } from "../../../dochaus/lib/redline-round-trip"
@@ -59,6 +59,40 @@ async function proposal(source: Uint8Array, find_text: string, new_text: string,
     target_json: JSON.stringify({ version: 1, source_sha256: packet.revision.source_sha256, target_handle: candidate!.target_handle, amendment_id: String(id) }) }
 }
 
+test("redline preview explains a protected inline control refusal without exposing the internal error", async () => {
+  const original = (await renderMarkdownToDocx("A fee of 500 applies.")).bytes, parts = unzipSync(original)
+  const doc = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+  const text = Array.from(doc.getElementsByTagNameNS(W, "t")).find(node => node.textContent === "A fee of 500 applies.")!
+  const run = text.parentNode!, parent = run.parentNode!
+  const fixture = new DOMParser().parseFromString(`<w:p xmlns:w="${W}"><w:r><w:t xml:space="preserve">A fee of </w:t></w:r><w:sdt><w:sdtPr><w:tag w:val="fee"/><w:id w:val="27"/><w:lock w:val="contentLocked"/></w:sdtPr><w:sdtContent><w:r><w:t>500</w:t></w:r></w:sdtContent></w:sdt><w:r><w:t xml:space="preserve"> applies.</w:t></w:r></w:p>`, "application/xml")
+  for (const child of Array.from(fixture.documentElement.childNodes)) parent.insertBefore(doc.importNode(child, true), run)
+  parent.removeChild(run); parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+  const source = zipSync(parts)
+  const safe = await proposal(source, "applies", "is payable", 1, "")
+  expect((await buildRedlined(source, [safe], undefined, layer)).length).toBeGreaterThan(0)
+  const protectedRow = await proposal(source, "500", "750", 2, "")
+  try {
+    await buildRedlined(source, [protectedRow], undefined, layer)
+    throw new Error("Expected the protected change to be refused")
+  } catch (error) {
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toContain("Word content")
+    expect((error as Error).message).not.toContain("docx_")
+  }
+  const mixed = { ...protectedRow, scope: "clause" as const, target_json: null,
+    find_text: "A fee of 500 applies.", old_text: "A fee of 500 applies.", new_text: "A fee of 750 applies.",
+    formatting_json: JSON.stringify({ spacingAfter: 6 }) }
+  await expect(buildRedlined(source, [mixed], undefined, layer)).rejects.toThrow("Word content")
+  try {
+    await bake(source, [mixed], undefined, layer)
+    throw new Error("Expected the mixed protected change to be refused")
+  } catch (error) {
+    expect((error as Error).message).toContain("Word content")
+    expect((error as Error).message).not.toContain("docx_")
+    expect((error as Error & { refusal?: string }).refusal).toContain("Word content")
+  }
+})
+
 describe("layered redline on an uploaded markup", () => {
   const source = counterpartyMarkupDocx()
   afterEach(() => setSystemTime())
@@ -85,15 +119,40 @@ describe("layered redline on an uploaded markup", () => {
     const comments = readDocxComments(exported)
     expect(comments.map(comment => comment.text)).toEqual([...COUNTERPARTY_MARKUP.comments.map(comment => comment.text), NOTE])
     expect(comments.at(-1)!.markers.map(marker => marker.accepted_paragraph_text)).toEqual([LAW, LAW, LAW])
-    // With doc.haus's comment taken out of the comments part again, only
+    // With doc.haus's comment and its own three markers taken out again, only
     // clause 9 and the Track Changes setting differ from what they sent: every
     // other part compares canonically, the reply and resolved state in
     // commentsExtended included.
     const parts = unzipSync(exported)
-    parts["word/comments.xml"] = unzipSync(source)["word/comments.xml"]!
+    const addedCommentId = comments.at(-1)!.comment_id
+    expect(readDocxComments(source).some(comment => comment.comment_id === addedCommentId)).toBe(false)
+    // Keep every original comment from the exported package in the check;
+    // replacing the entire part with source bytes would hide metadata loss.
+    const commentDocument = new DOMParser().parseFromString(strFromU8(parts["word/comments.xml"]!), "application/xml")
+    const addedComments = Array.from(commentDocument.getElementsByTagNameNS(W, "comment")).filter(comment => comment.getAttributeNS(W, "id") === addedCommentId)
+    expect(addedComments).toHaveLength(1)
+    addedComments[0]!.parentNode!.removeChild(addedComments[0]!)
+    parts["word/comments.xml"] = strToU8(new XMLSerializer().serializeToString(commentDocument))
+    const document = new DOMParser().parseFromString(strFromU8(parts["word/document.xml"]!), "application/xml")
+    const removed = ["commentRangeStart", "commentRangeEnd", "commentReference"].map(kind => {
+      const markers = Array.from(document.getElementsByTagNameNS(W, kind)).filter(marker => marker.getAttributeNS(W, "id") === addedCommentId)
+      expect(markers).toHaveLength(1)
+      const marker = markers[0]!
+      marker.parentNode!.removeChild(marker)
+      return kind
+    })
+    expect(removed).toHaveLength(3)
+    parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(document))
     const tracked = { ...layer, revisionAuthor: AUTHOR }
     const [before, sent] = [await openRevision(source, tracked), await openRevision(zipSync(parts), tracked)]
-    try { expect(() => verifyPreservation(before, sent, new Set([9]))).not.toThrow() } finally { [before, sent].forEach(opened => opened.session.close()) }
+    try {
+      expect(() => verifyPreservation(before, sent, new Set([9]))).not.toThrow()
+      const altered = new DOMParser().parseFromString(strFromU8(parts["word/comments.xml"]!), "application/xml")
+      altered.getElementsByTagNameNS(W, "comment")[0]!.setAttributeNS(W, "w:author", "Different reviewer")
+      const tampered = await openRevision(zipSync({ ...parts, "word/comments.xml": strToU8(new XMLSerializer().serializeToString(altered)) }), tracked)
+      try { expect(() => verifyPreservation(before, tampered, new Set([9]))).toThrow("docx_unrelated_structure_changed:word/comments.xml") }
+      finally { tampered.session.close() }
+    } finally { [before, sent].forEach(opened => opened.session.close()) }
 
     // The round trip both ways: rejecting doc.haus's changes gives their file,
     // accepting them gives what Accept stores (itself layered the same way);

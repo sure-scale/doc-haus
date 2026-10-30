@@ -100,3 +100,23 @@ test("library mutation tools cannot bypass source-template review, even when per
   expect(approvals).toBe(0)
   expect(calls).toBe(0)
 })
+
+test("source pages preserve unavailable table coordinates and merged spans without unpaged cell context", async () => {
+  globalThis.fetch = (async input => {
+    if (new URL(String(input)).pathname.endsWith("/text")) return Response.json({ paragraphs: [
+      { paragraph_handle: "unknown", text: "Pending table", scope: "body", table: {
+        table: 1, row: null, column: null, unavailable_reason: "pending_table_structure", row_context: ["Unpaged cell text"],
+      } },
+      { paragraph_handle: "merged", text: "Merged table", scope: "body", table: {
+        table: 2, row: 1, column: 3, row_span: 2, column_span: 2, vertical_merge: "restart",
+        row_cells: [{ column: 1, text: "Unpaged cell text" }], row_context: ["Unpaged cell text"],
+      } },
+    ] })
+    return Response.json(draft)
+  }) as typeof fetch
+  const result = await readSource.execute({ count: 2, limit: 100 }, context())
+  const page = JSON.parse(result.output.split("\n")[1])
+  expect(page[0].table).toEqual({ table: 1, row: null, column: null, unavailable_reason: "pending_table_structure" })
+  expect(page[1].table).toEqual({ table: 2, row: 1, column: 3, row_span: 2, column_span: 2, vertical_merge: "restart" })
+  expect(result.output).not.toContain("Unpaged cell text")
+})

@@ -44,6 +44,15 @@ describe("pointer-based paragraph amendments", () => {
     return { file, out: path.join(root, `${name}.out.docx`), pid: Object.keys(await ensureParagraphPointers(file))[0]! }
   }
 
+  test("mixed formatting replacement is left unchanged with an actionable open item", async () => {
+    const before = "The Supplier shall pay the Fee monthly.", after = "The Provider agrees remit Charge monthly."
+    const doc = await single("mixed-format", "The **Supplier shall** pay *the Fee* monthly.")
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amend("mixed", doc.pid, before, after)] })
+    expect(result.applied).toEqual([])
+    expect(result.unapplied[0]!.detail.issue).toContain("crosses different Word formatting")
+    expect(await readFile(doc.out)).toEqual(await readFile(doc.file))
+  })
+
   test("disjoint paragraphs apply by code; formatting outside edited words and other paragraphs is kept", async () => {
     const doc = await fixture("disjoint")
     const delivery = "The Vendor shall deliver the Goods within ten days of the order date."
@@ -287,10 +296,55 @@ describe("pointer-based paragraph amendments", () => {
     const doc = await single("merged-open-items", "Defects may be notified within a reasonable time, and in any event within [open item: confirm the notice period and its start] after delivery [open item: confirm the remedy].")
     const before = (await texts(doc.file)).get(doc.pid)!
     const updated = "Defects may be notified within a reasonable time [open item: confirm the notice period and its start date]."
-    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amend("merged", doc.pid, before, updated)] })
+    const amendment = amend("merged", doc.pid, before, updated)
+    const strict = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amendment] })
+    expect(strict.unapplied[0]!.detail.issue).toContain("different Word formatting")
+    expect(await readFile(doc.out)).toEqual(await readFile(doc.file))
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amendment], ownedMarkerDecoration: true })
     expect(result.applied.map(row => row.mode)).toEqual(["code"])
     expect((await texts(doc.out)).get(doc.pid)).toBe(updated)
     expect(await shaded(doc.out)).toEqual(["[open item: confirm the notice period and its start date]"])
+  })
+
+  test("owned marker normalization refuses other source formatting differences", async () => {
+    for (const type of ["bold", "font", "custom-fill", "container"] as const) {
+      const doc = await single(`marker-${type}`, "Before [open item: confirm terms] after.")
+      const altered = await editBody(doc.file, body => {
+        const run = Array.from(body.getElementsByTagNameNS(W, "r")).find(node => node.textContent?.includes("[open item:"))!
+        const props = Array.from(run.childNodes).find(node => node.nodeType === 1 && (node as Element).localName === "rPr") as Element
+        if (type === "container") {
+          const parent = run.parentNode!, wrapper = body.createElementNS(W, "w:smartTag")
+          parent.replaceChild(wrapper, run); wrapper.appendChild(run)
+        } else if (type === "custom-fill") props.getElementsByTagNameNS(W, "shd")[0]!.setAttributeNS(W, "w:fill", "ABCDEF")
+        else if (type === "bold") props.appendChild(body.createElementNS(W, "w:b"))
+        else props.appendChild(body.createElementNS(W, "w:rFonts")).setAttributeNS(W, "w:ascii", "Courier New")
+      })
+      await writeFile(doc.file, altered)
+      const before = (await texts(doc.file)).get(doc.pid)!
+      const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amend(type, doc.pid, before, "Entirely different provision.")], ownedMarkerDecoration: true })
+      expect(result.unapplied[0]!.detail.issue).toContain("different Word formatting")
+      expect(await readFile(doc.out)).toEqual(await readFile(doc.file))
+    }
+  })
+
+  test("owned marker regeneration leaves same-colored user text and untouched paragraphs alone", async () => {
+    const doc = await single("marker-user-color", "Plain outside. [open item: decide] end.\n\nUntouched [open item: other].")
+    const modified = await editBody(doc.file, body => {
+      const run = Array.from(body.getElementsByTagNameNS(W, "r")).find(node => node.textContent?.includes("Plain outside."))!
+      const props = Array.from(run.childNodes).find(node => node.nodeType === 1 && (node as Element).localName === "rPr") as Element | undefined ?? run.insertBefore(body.createElementNS(W, "w:rPr"), run.firstChild)
+      const shade = props.appendChild(body.createElementNS(W, "w:shd")); shade.setAttributeNS(W, "w:val", "clear"); shade.setAttributeNS(W, "w:color", "auto"); shade.setAttributeNS(W, "w:fill", "FFF2CC")
+    })
+    await writeFile(doc.file, modified)
+    const before = (await texts(doc.file)).get(doc.pid)!, prior = await markup(doc.file)
+    const refused = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amend("whole", doc.pid, before, "Entirely different provision.")], ownedMarkerDecoration: true })
+    expect(refused.unapplied[0]!.detail.issue).toContain("different Word formatting")
+    expect(await readFile(doc.out)).toEqual(await readFile(doc.file))
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [amend("marker", doc.pid, before, "Plain outside. [open item: decide later] end.")], ownedMarkerDecoration: true })
+    expect(result.applied.map(row => row.mode)).toEqual(["code"])
+    expect(await shaded(doc.out)).toContain("Plain outside. ")
+    const after = await markup(doc.out)
+    for (const [pid, value] of prior.paragraphs) if (pid !== doc.pid) expect(after.paragraphs.get(pid)).toEqual(value)
+    for (const part of Object.keys(prior.parts)) if (part !== "word/document.xml") expect(after.parts[part]).toEqual(prior.parts[part])
   })
 
   // The apply step shades the markers an amendment wrote (highlightOpenItemsInDocx);
@@ -353,6 +407,17 @@ describe("pointer-based paragraph amendments", () => {
     expect(result.unapplied).toMatchObject([{ id: "update", reason: "stale", detail: { current: split.join("\n\n") } }])
     expect([...await texts(doc.out)].map(([, text]) => text)).toEqual(split)
     expect(bookmarks(await readFile(doc.out))).toEqual({ starts: 2, ends: 2, orphans: 0 })
+  })
+
+  test("owned marker regeneration includes newly split paragraphs only", async () => {
+    const doc = await single("split-marker", "Before. Originally here.\n\nNeighbor [open item: untouched].")
+    const before = (await texts(doc.file)).get(doc.pid)!, original = await markup(doc.file)
+    const split: Amendment = { ...amend("split-marker", doc.pid, before, ""), operation: "split", updated: ["Before.", "[open item: newly required]"] }
+    const result = await applyAmendments({ docxPath: doc.file, outPath: doc.out, amendments: [split], ownedMarkerDecoration: true })
+    expect(result.applied[0]!.result_pids).toHaveLength(2)
+    expect(await shaded(doc.out)).toContain("[open item: newly required]")
+    const after = await markup(doc.out)
+    for (const [pid, paragraph] of original.paragraphs) if (pid !== doc.pid) expect(after.paragraphs.get(pid)).toEqual(paragraph)
   })
 
   test("an overlapping deletion never deletes; a deletion alone applies once", async () => {

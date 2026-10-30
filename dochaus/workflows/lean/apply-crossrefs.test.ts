@@ -416,3 +416,15 @@ test("revising a supplied original, the redline marks only the words that change
     expect(shownParagraphs(redline, "reject")).toEqual(shownParagraphs(original))
   }
 }, 60_000)
+
+test("LEAN apply owns and regenerates marker shading for a merged open item", async () => {
+  const original = "Defects may be notified within a reasonable time, and in any event within [open item: confirm the notice period and its start] after delivery [open item: confirm the remedy]."
+  const target = "Defects may be notified within a reasonable time [open item: confirm the notice period and its start date]."
+  const { directory, row } = await drafted(original)
+  const current = row("Defects may")
+  const result = await apply(directory, [{ pid: current.pid, existing_sha256: current.sha256, updated: target }])
+  expect(result.rows.map(value => value.text)).toContain(target)
+  const doc = new DOMParser().parseFromString(strFromU8(unzipSync(readFileSync(leanFile(directory, "d1/body-applied.docx")))["word/document.xml"]!), "application/xml")
+  const shades = Array.from(doc.getElementsByTagNameNS(W, "r")).filter(run => Array.from(run.getElementsByTagNameNS(W, "shd")).some(shd => shd.getAttributeNS(W, "fill") === OPEN_ITEM_HIGHLIGHT_FILL)).map(run => run.textContent)
+  expect(shades).toEqual(["[open item: confirm the notice period and its start date]"])
+})

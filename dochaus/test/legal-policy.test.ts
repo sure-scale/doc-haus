@@ -563,3 +563,24 @@ describe("official source classification", () => {
     expect(isOfficialSource("https://uscode.house.gov/view.xhtml?req=1+USC+1")).toBe(true)
   })
 })
+
+// The v2 hook calls chat.params before system.transform. Exercise that same
+// ordering: Word chat's bridge is the sole assembler of authorized context.
+test("the shared Q&A agent respects supplied context after real parameter hook ordering", async () => {
+  const directory = mkdtempSync(path.join(workspace, "word-context-"))
+  writeFileSync(path.join(directory, "matter.json"), JSON.stringify({ id: "word-context", title: "private matter", conflicts: { status: "pending", owner: "DISTINCTIVE_MATTER_OWNER" }, jurisdictions: ["EW"], posture: "supplier" }))
+  const hooks = await pluginFor(directory)
+  const ordinary = chatParamsForAgent("ordinary-context", "qa")
+  await hooks["chat.params"]!(ordinary.input, ordinary.output)
+  const prior = { system: [] as string[] }
+  await hooks["experimental.chat.system.transform"]!({ sessionID: "ordinary-context" } as never, prior)
+  expect(prior.system.join("\n")).toContain("DISTINCTIVE_MATTER_OWNER")
+  const scoped = chatParamsForAgent("word-scoped-context", "qa")
+  await hooks["chat.params"]!(scoped.input, scoped.output)
+  const current = { system: [] as string[] }
+  await hooks["experimental.chat.system.transform"]!({ sessionID: "word-scoped-context", suppliedContext: true } as never, current)
+  expect(current.system.join("\n")).toContain("<untrusted-documents>")
+  expect(current.system.join("\n")).not.toContain("DISTINCTIVE_MATTER_OWNER")
+  expect(current.system.join("\n")).not.toContain("<jurisdiction")
+  expect(current.system).toHaveLength(1)
+})

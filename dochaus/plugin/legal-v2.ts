@@ -87,7 +87,10 @@ export default Plugin.define({
         event.tools.task.description += "\n\nAvailable subagents:\n" + available.map(agent => `- ${agent.id}: ${agent.description ?? agent.name}`).join("\n")
       }
       const system = { system: [] as string[] }
-      await policy["experimental.chat.system.transform"]?.({ sessionID: event.sessionID, model } as never, system)
+      // This capability comes from the durable session, never source text or
+      // model output. Host adapters assemble their authorized evidence explicitly.
+      const metadata = current.session.metadata as Record<string, unknown> | undefined
+      await policy["experimental.chat.system.transform"]?.({ sessionID: event.sessionID, model, suppliedContext: metadata?.contextMode === "supplied" } as never, system)
       event.system.push(...system.system.map(text => ({ type: "text" as const, text })))
     })
 

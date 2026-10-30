@@ -45,6 +45,7 @@ async function until(condition: () => boolean) {
 
 async function stream(acceptsSession: (id: string) => boolean) {
   const reads: string[] = []
+  const readSignals: Array<AbortSignal | null | undefined> = []
   const events: Event[] = []
   let formsChanged = 0
   let output: ReadableStreamDefaultController<Uint8Array> | undefined
@@ -79,7 +80,11 @@ async function stream(acceptsSession: (id: string) => boolean) {
       })
     },
   })
-  const client = OpenCode.make({ baseUrl: server.url.href })
+  const client = OpenCode.make({ baseUrl: server.url.href, fetch: ((input, init) => {
+    const request = new Request(input, init)
+    if (new URL(request.url).pathname.endsWith("/message")) readSignals.push(request.signal)
+    return fetch(request)
+  }) as typeof fetch })
   clientDirectories.set(client, "/matter")
   const controller = new AbortController()
   const listening = subscribeEvents(client, (event) => events.push(event), controller.signal, {
@@ -89,6 +94,7 @@ async function stream(acceptsSession: (id: string) => boolean) {
   await until(() => Boolean(output))
   return {
     reads,
+    readSignals,
     events,
     controller,
     formsChanged: () => formsChanged,
@@ -202,7 +208,7 @@ test("ownership is rechecked at flush and abort cancels queued reads", async () 
   }
 })
 
-test("retirement discards a transcript response already in flight", async () => {
+test("retirement aborts a transcript request already in flight and discards its response", async () => {
   const view = await stream((id) => id === "ses_chat")
   let release!: () => void
   view.holdReads(
@@ -213,8 +219,10 @@ test("retirement discards a transcript response already in flight", async () => 
   try {
     view.send(text("ses_chat"))
     await until(() => view.reads.length === 1)
+    expect(view.readSignals[0]?.aborted).toBe(false)
     view.send(deleted("ses_chat"))
     await until(() => view.events.some((event) => event.type === "session.deleted"))
+    expect(view.readSignals[0]?.aborted).toBe(true)
     release()
     await Bun.sleep(30)
     expect(view.events.map((event) => event.type)).toEqual(["session.deleted"])

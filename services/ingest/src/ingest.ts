@@ -18,7 +18,7 @@ import { readDocxMarkup, type DocxMarkup } from "../../../dochaus/lib/docx-marku
 import { markTrackedChanges } from "../../../dochaus/lib/docx-tracked-text"
 import { draftingTraceReference } from "../../../dochaus/lib/drafting-trace-identity"
 import { parseEmail, type ParsedEmail } from "../../../dochaus/lib/email"
-import { parseMsg } from "../../../dochaus/lib/msg"
+import { parseMsg, rtfToText } from "../../../dochaus/lib/msg"
 import { safeFileName } from "../../../dochaus/lib/safe-file-name"
 import { zipToText } from "../../../dochaus/lib/zip"
 import { commitDocumentWriteAsync } from "./atomic-document-write"
@@ -36,7 +36,7 @@ import {
   type ActiveDocumentMutation,
 } from "./document-mutation"
 
-const MATTER_DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml", ".msg", ".zip", ".md", ".markdown"])
+const MATTER_DOCUMENT_EXTENSIONS = new Set([".docx", ".pdf", ".xlsx", ".eml", ".msg", ".zip", ".txt", ".md", ".markdown", ".csv", ".rtf"])
 
 export class SourceDocumentConflictError extends Error {}
 
@@ -77,6 +77,7 @@ export async function ingestDocument(
   options: {
     existing?: ExistingSourceChoice
     requireExistingSource?: boolean
+    beforeRegistryUpdate?: (db: ReturnType<typeof openDb>) => void
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
     // Text the caller already extracted with extractSourceText, with any extra
     // findings it adds, so a document is not read twice.
@@ -139,6 +140,7 @@ async function ingestDocumentLocked(
   options: {
     existing: "refuse" | "replace"
     requireExistingSource?: boolean
+    beforeRegistryUpdate?: (db: ReturnType<typeof openDb>) => void
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
     extracted?: ExtractedSourceText
     links?: DocumentLinks
@@ -247,6 +249,7 @@ async function ingestDocumentLocked(
       injectionReport: findings.length ? JSON.stringify({ findings }) : null,
       extractionQuality: JSON.stringify(quality),
       chunks: preparedChunks,
+      beforeRegistryUpdate: options.beforeRegistryUpdate,
       updateRegistry: options.updateRegistry,
       links: options.links ?? {},
       version,
@@ -355,6 +358,7 @@ async function commitIngestedDocument(
       embedding: Float32Array
       flagged: boolean
     }>
+    beforeRegistryUpdate?: (db: ReturnType<typeof openDb>) => void
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
     links: DocumentLinks
     version: VersionWrite
@@ -376,6 +380,7 @@ async function commitIngestedDocument(
     db.run("BEGIN IMMEDIATE")
     let settled = false
     try {
+      input.beforeRegistryUpdate?.(db)
       const documentId = upsertDocument(
         db,
         input.docPath,
@@ -509,6 +514,9 @@ async function extractRawText(fileName: string, buffer: Buffer): Promise<{ text:
   // links: every consumer uses this same normalized UTF-8 text and offsets.
   if (lower.endsWith(".md") || lower.endsWith(".markdown"))
     return { text: new TextDecoder("utf-8", { fatal: true }).decode(buffer), facts: { format: "markdown" } }
+  // Plain text and CSV retain their contents through common normalization.
+  if (/\.(txt|csv)$/.test(lower)) return { text: buffer.toString("utf8"), facts: { format: "text" } }
+  if (lower.endsWith(".rtf")) return { text: rtfToText(buffer) ?? "", facts: { format: "text" } }
   if (lower.endsWith(".pdf")) {
     const { text, pages } = await readPdf(buffer)
     return { text, facts: { format: "pdf", pages } }

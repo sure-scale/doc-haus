@@ -36,6 +36,8 @@ type PromptRequest = SessionPrompt.Input & {
   resume?: boolean
 }
 
+const titleChanged = Symbol("Session title changed")
+
 /**
  * Build once in the host Scope: `const sessions = yield* Session.make()`.
  * Use `sessions.forSession(id)` for handles that share host services and reload current state.
@@ -69,9 +71,18 @@ export const make = Effect.fn("Session.make")(function* () {
       return
     yield* bus.publish(SessionEvent.Viewed, { sessionID, idle: input.idle })
   })
-  const rename = Effect.fn("Session.rename")(function* (sessionID: SessionSchema.ID, input: { title: string }) {
-    yield* get(sessionID)
-    yield* bus.publish(SessionEvent.Renamed, { sessionID, title: input.title })
+  const rename = Effect.fn("Session.rename")(function* (sessionID: SessionSchema.ID, input: { title: string; expectedTitle?: string }) {
+    if (input.expectedTitle === undefined) {
+      yield* get(sessionID)
+      yield* bus.publish(SessionEvent.Renamed, { sessionID, title: input.title })
+      return
+    }
+    const sequence = (yield* Bus.latestSequence(database.db, sessionID)) + 1
+    const current = yield* get(sessionID)
+    if (current.title !== input.expectedTitle) return
+    yield* bus.publish(SessionEvent.Renamed, { sessionID, title: input.title }, {
+      commit: actual => actual === sequence ? Effect.void : Effect.die(titleChanged),
+    }).pipe(Effect.catchDefect(defect => defect === titleChanged ? Effect.void : Effect.die(defect)))
   })
   const setMetadata = Effect.fn("Session.setMetadata")(function* (
     sessionID: SessionSchema.ID,

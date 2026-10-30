@@ -1556,6 +1556,16 @@
                       }
                     ]
                   },
+                  "expectedTitle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "metadata": {
                     "anyOf": [
                       {

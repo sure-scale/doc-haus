@@ -74,6 +74,21 @@ test("a move's places say which one it leaves and which one it lands in, whichev
   expect(await sides(up)).toEqual([[[3, "to"], [5, "from"]]])
 })
 
+test("a partial move preserves surrounding and moved-from text in its source context", async () => {
+  const bytes = edited("word/document.xml", xml => xml.replace(
+    `<w:moveFrom w:id="6" ${by(AVERY)}>${run(NOTICES)}</w:moveFrom>`,
+    `${run("Before ")}<w:moveFrom w:id="6" ${by(AVERY)}>${run(NOTICES)}</w:moveFrom>${run(" after")}`,
+  ))
+  const move = (await readDocxMarkup(bytes)).revisions.find(row => row.kind === "move")!
+  expect(move.author).toBe(AVERY)
+  expect(move.date).toBe(dates[AVERY])
+  expect(move.text).toBe(`${NOTICES}¶`)
+  expect(move.locations.map(at => [at.paragraph, at.side, at.context])).toEqual([
+    [3, "from", `Before ${NOTICES} after`],
+    [5, "to", NOTICES],
+  ])
+})
+
 test("both planted instructions are flagged on the item that carries them, their visible text unchanged", async () => {
   const markup = await readDocxMarkup(counterpartyMarkupDocx())
   const flagged = [...markup.revisions, ...markup.comments].filter(item => item.findings.length)

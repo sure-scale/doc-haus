@@ -11,7 +11,7 @@ test("matching server versions and restored receipts do not imply that fresh Wor
   for (const acknowledgement of [undefined, receipt]) {
     const view = savePresentation(state({ acknowledgement }))
     expect(view.badge).toBe("Ready")
-    expect(view.message).toBe("Version 2 in doc.haus")
+    expect(view.message).toBe("Version 2 in doc.haus. Choose Save to confirm this copy.")
     expect(view.mismatch).toBeUndefined()
     expect(view.help).toBeUndefined()
   }
@@ -38,4 +38,23 @@ test("blocked copies show contextual recovery and only a real version mismatch g
   expect(other.badge).toBe("Saving paused")
   expect(other.mismatch).toBeUndefined()
   expect(other.help).toContain("take over")
+})
+
+test("a refresh failure remains visible on a stale copy instead of being masked by version advice", () => {
+  const view = savePresentation(state({
+    canSave: false, problem: true, message: "This Word document changed while loading.",
+    connection: { ...current, version: { ...current.version, base: { id: "v1", number: 1 }, state: "stale" } },
+  }))
+  expect(view.message).toBe("This Word document changed while loading.")
+  expect(view.help).toContain("Save As")
+  expect(view.mismatch).toContain("version 1")
+})
+
+
+test("a claimed or taken-over unverified copy shows the explicit Save action without asserting a change", () => {
+  for (const lease of ["available", "owned"] as const) {
+    const connection: WordConnectionState = { ...current, lease: lease === "available" ? current.lease : { state: "owned", generation: "g1", expiresAt: 90000 } }
+    const view = savePresentation(state({ connection, content: "unverified", message: "You now own saving. Your local edits have not been sent; choose Save." }))
+    expect(view).toMatchObject({ badge: "Ready", tone: "neutral", message: "Version 2 in doc.haus. Choose Save to confirm this copy." })
+  }
 })

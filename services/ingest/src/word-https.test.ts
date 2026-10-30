@@ -25,7 +25,10 @@ test("Word HTTPS surface forwards capability writes but cannot reach normal docu
   expect(forwarded).toEqual(["/word/saves"])
   expect((await handler(new Request("https://localhost:4511/word/lease"))).status).toBe(405)
   expect((await handler(new Request("https://localhost:4511/word/lease", { method: "POST", body: "{}" }))).status).toBe(200)
-  expect(forwarded).toEqual(["/word/saves", "/word/lease"])
+  expect((await handler(new Request("https://localhost:4511/word/native-operation"))).status).toBe(405)
+  expect((await handler(new Request("https://localhost:4511/word/native-operation", { method: "POST", body: "{}" }))).status).toBe(200)
+  expect((await handler(new Request("https://localhost:4511/word/native-operation/extra", { method: "POST" }))).status).toBe(404)
+  expect(forwarded).toEqual(["/word/saves", "/word/lease", "/word/native-operation"])
   expect((await handler(new Request("https://localhost:4511/word/latest"))).status).toBe(405)
   expect((await handler(new Request("https://localhost:4511/word/latest", { method: "POST", body: "{}" }))).status).toBe(200)
   expect(forwarded.at(-1)).toBe("/word/latest")
@@ -45,6 +48,22 @@ test("Word HTTPS surface forwards capability writes but cannot reach normal docu
   expect((await handler(new Request(`https://localhost:4511${handoff}/result`))).status).toBe(405)
 })
 
+test("Word chat bridge forwards only exact scoped commands, never engine or nested APIs", async () => {
+  const forwarded: string[] = []
+  const handler = wordHttpsHandler(request => { forwarded.push(new URL(request.url).pathname); return new Response("scoped") },
+    { origin: "https://localhost:4511", external: false, host: "127.0.0.1", port: 4511 })
+  for (const action of ["conversations", "conversation", "send", "poll", "cancel", "materials", "upload", "suggest", "prepare"]) {
+    const route = `/word/chat/${action}`
+    expect((await handler(new Request(`https://localhost:4511${route}`, { method: "POST" }))).status).toBe(200)
+    expect(forwarded.at(-1)).toBe(route)
+    expect((await handler(new Request(`https://localhost:4511${route}`, { method: "OPTIONS" }))).status).toBe(200)
+    expect((await handler(new Request(`https://localhost:4511${route}`))).status).toBe(405)
+    expect((await handler(new Request(`https://localhost:4511${route}/extra`, { method: "POST" }))).status).toBe(404)
+  }
+  for (const route of ["/word/chat/session", "/word/chat/../settings", "/api/session", "/word/chat/send/../../saves/extra"])
+    expect((await handler(new Request(`https://localhost:4511${route}`, { method: "POST" }))).status).toBe(404)
+})
+
 test("bootstrap health is read-only, reports actual assets and limits cross-origin access", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "dochaus-word-health-"))
   roots.push(directory)
@@ -58,6 +77,8 @@ test("bootstrap health is read-only, reports actual assets and limits cross-orig
     mkdirSync(path.dirname(path.join(directory, file)), { recursive: true })
     writeFileSync(path.join(directory, file), "fixture")
   }
+  expect((await handler(request())).status).toBe(503)
+  writeFileSync(path.join(directory, "chat.css"), "fixture")
   const ready = await handler(request())
   expect(ready.status).toBe(200)
   expect(await ready.json()).toEqual({ ready: true, version: WORD_ADDIN_VERSION })

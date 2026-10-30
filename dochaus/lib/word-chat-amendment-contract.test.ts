@@ -1,0 +1,141 @@
+import { expect, test } from "bun:test"
+import { targetWordChatAmendment, validWordChatFormatting, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
+
+const snapshot = (): WordChatSnapshot => ({text: "Pay within thirty days.\rPay within thirty days.",
+  paragraphs: [{id:"first",text:"Pay within thirty days."},{id:"second",text:"Pay within thirty days."}],
+  saved:false,capturedAt:"2026-01-01T00:00:00Z",truncated:false})
+
+test("a formatting review keeps its wording and whole-paragraph authority", () => {
+  const value = snapshot()
+  value.paragraphs.push({ id: "unchanged-tail", text: "An unchanged following paragraph." })
+  value.text = value.paragraphs.map(p => p.text).join("\r")
+  const target = targetWordChatAmendment(value, value.text)!
+  const formatting = [{ paragraph: 0, style: "Heading1" as const, spacingBefore: 12, spacingAfter: 6 }, { paragraph: 1, lineSpacing: 1.15 }]
+  expect(validWordChatFormatting(target, formatting)).toBe(true)
+  expect(wordChatApplyPlan(target, target.text, formatting)).toEqual({ supported: true, paragraphs: value.paragraphs.map(p => p.text) })
+  expect(wordChatApplyPlan(target, target.text.replace("thirty", "sixty"), formatting).supported).toBe(true)
+  const partial = { ...target, startOffset: 4, text: target.text.slice(4) }
+  expect(wordChatApplyPlan(partial, partial.text, formatting).supported).toBe(false)
+  expect(validWordChatFormatting({ ...target, endOffset: target.endOffset - 1, text: target.text.slice(0, -1) }, formatting)).toBe(false)
+})
+
+test("native formatting can include the final paragraph", () => {
+  const value = snapshot(), target = targetWordChatAmendment(value, value.text)!
+  const formatting = [{ paragraph: 0, spacingAfter: 6 }, { paragraph: 1, spacingAfter: 6 }]
+  expect(validWordChatFormatting(target, formatting)).toBe(true)
+  expect(wordChatApplyPlan(target, target.text, formatting)).toEqual({ supported: true, paragraphs: target.paragraphs.map(p => p.text) })
+  expect(wordChatApplyPlan(target, target.text, formatting.slice(0, 1))).toEqual({ supported: true, paragraphs: target.paragraphs.map(p => p.text) })
+  const one = { ...target, text: target.paragraphs[0]!.text, paragraphs: target.paragraphs.slice(0, 1) }
+  expect(validWordChatFormatting(one, formatting.slice(0, 1))).toBe(true)
+  expect(wordChatApplyPlan(one, one.text, formatting.slice(0, 1)).supported).toBe(true)
+})
+
+test("formatting operations cannot smuggle edits or conflicting paragraph properties", () => {
+  const target = targetWordChatAmendment(snapshot(), snapshot().text)!
+  for (const operations of [[], [{ paragraph: 2, spacingAfter: 6 }], [{ paragraph: 0, spacingAfter: 6 }, { paragraph: 0, style: "Title" }],
+    [{ paragraph: 0 }], [{ paragraph: 0, style: "An arbitrary style" }], [{ paragraph: 0, spacingAfter: -1 }],
+    [{ paragraph: 0, spacingBefore: 49 }], [{ paragraph: 0, lineSpacing: 0 }], [{ paragraph: 0, spacingAfter: Infinity }],
+    [{ paragraph: 0, spacingAfter: 6, text: "Different wording" }], [{ paragraph: 0, ooxml: "<w:p/>" }]]) {
+    expect(validWordChatFormatting(target, operations)).toBe(false)
+  }
+})
+
+test("structural eligibility pins exact whole paragraphs and keeps the final import boundary", () => {
+  const value = snapshot()
+  value.paragraphs[1]!.text = "An unchanged qualification."
+  const target = targetWordChatAmendment(value, value.paragraphs.map(p => p.text).join("\r"))!
+  expect(wordChatApplyPlan(target, "A working note.\r" + target.text)).toEqual({ supported: true,
+    paragraphs: ["A working note.", ...target.paragraphs.map(p => p.text)], structure: { kind: "insert", retained: [{ before: 0, after: 1 }, { before: 1, after: 2 }] } })
+  expect(wordChatApplyPlan(target, target.paragraphs[1]!.text)).toMatchObject({ supported: true, structure: { kind: "delete", retained: [{ before: 1, after: 0 }] } })
+  expect(wordChatApplyPlan(target, target.text + "\rA trailing note.").supported).toBe(false)
+  expect(wordChatApplyPlan(target, "Pay within\rthirty days.\rAn unchanged qualification.").supported).toBe(false)
+  const repeated = { ...target, paragraphs: [target.paragraphs[0]!, target.paragraphs[0]!, target.paragraphs[1]!], text: "Pay within thirty days.\rPay within thirty days.\rAn unchanged qualification." }
+  expect(wordChatApplyPlan(repeated, target.text).supported).toBe(false)
+  expect(wordChatApplyPlan({ ...target, startOffset: 4, text: target.text.slice(4) }, "A working note.\r" + target.text.slice(4)).supported).toBe(false)
+})
+
+test("mixed insertions index formatting against the result and reject ambiguous mappings", () => {
+  const texts = ["The parties shall deliver the materials promptly.", "Unchanged qualification."]
+  const target = targetWordChatAmendment({ ...snapshot(), text: texts.join("\r"), paragraphs: texts.map((text, i) => ({ id: String(i), text })) }, texts.join("\r"))!
+  const replacement = ["Delivery", "The parties shall deliver the materials promptly and in writing.", texts[1]!].join("\r")
+  expect(wordChatApplyPlan(target, replacement, [{ paragraph: 0, style: "Heading1" }])).toMatchObject({ supported: true, structure: { kind: "insert", retained: [{ before: 0, after: 1 }, { before: 1, after: 2 }] } })
+  expect(validWordChatFormatting(target, [{ paragraph: 2, spacingAfter: 6 }], replacement)).toBe(true)
+  expect(wordChatApplyPlan(target, replacement, [{ paragraph: 2, spacingAfter: 6 }]).supported).toBe(true)
+  expect(wordChatApplyPlan(target, ["The parties shall deliver promptly.", "The parties shall deliver promptly.", texts[1]!].join("\r")).supported).toBe(false)
+})
+
+test("retained selection rejects stale native paragraphs even when its old words remain elsewhere", () => {
+  const value = snapshot()
+  const selected = { id: "selection", text: "thirty days", paragraphs: [{ ...value.paragraphs[1]! }], startOffset: 11, endOffset: 22, saved: false, capturedAt: value.capturedAt }
+  expect(wordChatTargetCurrent(value, selected)).toBe(true)
+  value.paragraphs[1]!.text = "Pay within forty days."
+  value.text = value.paragraphs.map(paragraph => paragraph.text).join("\r")
+  expect(value.text.includes(selected.text)).toBe(true)
+  expect(wordChatTargetCurrent(value, selected)).toBe(false)
+  value.paragraphs[1]!.text = selected.paragraphs[0]!.text
+  expect(wordChatTargetCurrent(value, { ...selected, startOffset: 0 })).toBe(false)
+  expect(wordChatTargetCurrent(value, { ...selected, endOffset: 500 })).toBe(false)
+  expect(wordChatTargetCurrent(value, { ...selected, paragraphs: [{ ...selected.paragraphs[0]!, id: "missing" }] })).toBe(false)
+  value.paragraphs[0]!.text = "An unrelated local edit."
+  expect(wordChatTargetCurrent(value, { ...selected, id: "fresh-capture", capturedAt: "2026-01-02T00:00:00Z" })).toBe(true)
+})
+
+test("retained multiline selection requires its exact contiguous sequence and boundary text", () => {
+  const value: WordChatSnapshot = { ...snapshot(), text: "Lead first words\rMiddle wording\rLast words tail", paragraphs: [
+    { id: "first", text: "Lead first words" }, { id: "middle", text: "Middle wording" }, { id: "last", text: "Last words tail" },
+  ] }
+  const selected = targetWordChatAmendment(value, "first words\rMiddle wording\rLast words")!
+  expect(wordChatTargetCurrent(value, selected)).toBe(true)
+  value.paragraphs.splice(1, 0, { id: "new", text: "Inserted between selected paragraphs." })
+  expect(wordChatTargetCurrent(value, selected)).toBe(false)
+  value.paragraphs.splice(1, 1)
+  expect(wordChatTargetCurrent(value, selected)).toBe(true)
+  expect(wordChatTargetCurrent(value, { ...selected, text: "Changed selection" })).toBe(false)
+  expect(wordChatTargetCurrent(value, { ...selected, paragraphs: [undefined as never] })).toBe(false)
+})
+
+test("ambiguous document wording requires a selected target rather than choosing the first copy", () => {
+  const value = snapshot()
+  expect(targetWordChatAmendment(value,"thirty days")).toBeUndefined()
+  value.selection = {id:"selected",text:"thirty days",paragraphs:[value.paragraphs[1]!],startOffset:11,endOffset:22,
+    saved:false,capturedAt:value.capturedAt}
+  const target = targetWordChatAmendment(value,"thirty days")!
+  expect(target.paragraphs.map(p => p.id)).toEqual(["second"])
+  expect([target.startOffset,target.endOffset]).toEqual([11,22])
+  value.paragraphs[1]!.text = "A later local edit."
+  expect(target.paragraphs[0]!.text).toBe("Pay within thirty days.")
+})
+
+test("a proposal cannot silently expand an attached selection to other words in its paragraph", () => {
+  const value = snapshot()
+  value.selection = {id:"selected",text:"thirty days",paragraphs:[value.paragraphs[1]!],startOffset:11,endOffset:22,
+    saved:false,capturedAt:value.capturedAt}
+  expect(targetWordChatAmendment(value,"Pay within")).toBeUndefined()
+  expect(targetWordChatAmendment(value,"thirty days.\rPay")).toBeUndefined()
+})
+
+test("an exact multiline amendment retains adjacent paragraphs and partial boundary offsets", () => {
+  const value: WordChatSnapshot = {...snapshot(),text:"Lead first words\rMiddle wording\rLast words tail",
+    paragraphs:[{id:"first",text:"Lead first words"},{id:"middle",text:"Middle wording"},{id:"last",text:"Last words tail"}]}
+  const target = targetWordChatAmendment(value,"first words\nMiddle wording\nLast words")!
+  expect(target.text).toBe("first words\rMiddle wording\rLast words")
+  expect(target.paragraphs.map(p => p.id)).toEqual(["first","middle","last"])
+  expect([target.startOffset,target.endOffset]).toEqual([5,10])
+  expect(wordChatParagraphBreaks("first\r\nsecond\nthird\vsoft break")).toBe("first\rsecond\rthird\vsoft break")
+})
+
+test("a selected multiline occurrence is exact and stays pinned when a later selection changes", () => {
+  const paragraphs = [{id:"first",text:"Lead first words"},{id:"second",text:"Last words tail"},
+    {id:"third",text:"Lead first words"},{id:"fourth",text:"Last words tail"}]
+  const value: WordChatSnapshot = {...snapshot(),text:paragraphs.map(p => p.text).join("\r"),paragraphs}
+  expect(targetWordChatAmendment(value,"first words\rLast words")).toBeUndefined()
+  value.selection = {id:"chosen",text:"first words\rLast words",paragraphs:paragraphs.slice(2),
+    startOffset:5,endOffset:10,saved:false,capturedAt:value.capturedAt}
+  const target = targetWordChatAmendment(value,"first words\rLast words")!
+  expect(target.paragraphs.map(p => p.id)).toEqual(["third","fourth"])
+  expect(targetWordChatAmendment(value,"Lead first words\rLast words")).toBeUndefined()
+  value.selection = {...value.selection,id:"moved",paragraphs:paragraphs.slice(0,2)}
+  value.paragraphs[2]!.text = "Later local text"
+  expect(target.paragraphs.map(p => [p.id,p.text])).toEqual([["third","Lead first words"],["fourth","Last words tail"]])
+  expect([target.startOffset,target.endOffset]).toEqual([5,10])
+})

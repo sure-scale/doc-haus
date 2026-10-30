@@ -16,7 +16,7 @@ export type Step =
 // A redline/tracked-change a turn proposed: the clause delta plus a pointer back
 // to the document, so the assistant bubble can preview the red/green change and
 // link into the full tracked-changes review (see RedlineView, DocumentViewer).
-export type RedlineProposal = { id?: number; document: string; oldText: string; newText: string; comment?: string }
+export type RedlineProposal = { id?: number; document: string; oldText: string; newText: string; comment?: string; formatting?: Record<string, unknown> }
 
 // A comparison of two Word versions the compare-versions tool ran: what to send
 // back to the blackline route, the counts the turn's card reports, and the
@@ -176,7 +176,7 @@ function redlinesOf(parts: Part[]): RedlineProposal[] {
       if (!document) return []
       const oldText = (p.tool === "redline" ? meta.oldText : meta.find) as string | undefined
       const newText = (p.tool === "redline" ? meta.replacement : meta.replace) as string | undefined
-      return [{ id: meta.redline as number | undefined, document, oldText: oldText ?? "", newText: newText ?? "", comment: meta.comment as string | undefined }]
+      return [{ id: meta.redline as number | undefined, document, oldText: oldText ?? "", newText: newText ?? "", comment: meta.comment as string | undefined, formatting: meta.formatting as Record<string, unknown> | undefined }]
     })
 }
 

@@ -56,6 +56,19 @@ base with the server's latest ID. Matching local acknowledgement fingerprints
 can recover an earlier confirmed parent, but a different forwarded copy keeps
 its embedded base and must resolve the conflict.
 
+**Load latest version** deliberately replaces the current Word document after
+confirmation. It reads only this linked document's recorded current bytes,
+checks their digest, rechecks the current version and unchanged local package,
+then uses the whole-document WordApi 1.7 import with sections, headers/footers,
+styles and theme. The same validated link keeps its capability and receives
+only the imported version's base. This does not save or publish; background
+publishing stays paused until an explicit Save. Another editor's lease is never
+taken over. Keep local work with Save As before replacing it. Unsupported hosts
+or packages over 4 MiB can use **Open a separate copy**. Failed native imports
+need inspection/reopen rather than automatic retry. Native Word/coauthor edits
+cannot be locked atomically across the final API call.
+See Microsoft's [whole-document import API](https://learn.microsoft.com/en-us/javascript/api/word/word.document#word-word-document-insertfilefrombase64-member(1)).
+
 **Save to doc.haus** saves in Word, exports the DOCX in 1 MiB slices, closes the
 Office file handle, and waits for an acknowledged version. **Done in Word** does
 the same before releasing editing ownership and closing the current document.
@@ -93,14 +106,19 @@ foreign/unknown attributes remain significant too. Uploaded DOCX bytes are never
 rewritten by this comparison step.
 The standard application-properties `TotalTime` numeric leaf is also normalized
 for comparison, since it records editing duration (minutes by default), which
-can advance while Word is open without a content edit. The four cached counts
-`Words`, `Characters`, `Paragraphs` and `CharactersWithSpaces` are normalized
+can advance while Word is open without a content edit. The five cached counts
+`Words`, `Characters`, `Lines`, `Paragraphs` and `CharactersWithSpaces` are normalized
 only as unique direct standard numeric leaves without attributes. Word can
 recount these on reopening without changing content. Other application
-properties, including `Pages` and `Lines`, and custom XML remain significant.
+properties, including `Pages`, and custom XML remain significant.
 Uploaded DOCX bytes remain unchanged. See Microsoft's
 [TotalTime documentation](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.extendedproperties.totaltime?view=openxml-3.0.1)
 and [cached word count definition](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.extendedproperties.words?view=openxml-3.0.1).
+Comparison also ignores a valid direct standard `zoom` view preference and
+canonicalizes labels/order of familiar package-root relationship records.
+Relationship type, target and mode remain significant; unknown types, extensions,
+signatures and ambiguous IDs retain their exact original bytes for comparison.
+See Microsoft's [zoom definition](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.zoom?view=openxml-3.0.1).
 Word can also add `proofState` after background spelling and grammar checking
 finishes. Comparison ignores only the direct standard settings leaf with known
 `spelling`/`grammar` completion flags. Unknown attributes, nested data and

@@ -6,8 +6,8 @@ import { createInterface } from "node:readline/promises"
 import { generate } from "selfsigned"
 import { renderManifest } from "../apps/word-addin/src/manifest"
 import { WORD_ADDIN_ID } from "../dochaus/lib/word-addin-contract"
-import { wordConfigurationFile, wordOrigin } from "../services/ingest/src/word-configuration"
-import { refreshDesktopLauncher } from "./desktop-launcher"
+import { wordConfigurationFile, wordHttpsConfiguration, wordOrigin } from "../services/ingest/src/word-configuration"
+import { refreshDesktopLauncher, selectedDesktopInstallation } from "./desktop-launcher"
 
 export function validateWordCertificate(certificate: string, key: string, hostname = "localhost") {
   const cert = new X509Certificate(readFileSync(certificate))
@@ -103,6 +103,41 @@ export async function wordAddinRegistered(origin: string, manifest: string, opti
     } else if (platform !== "darwin") return false
     return readFileSync(registered, "utf8") === renderManifest(origin)
   } catch { return false }
+}
+
+/** Refresh an existing installation after its local listener has started. This
+ * never creates an installation, replaces certificates, or changes OS trust. */
+export async function syncWordAddinRegistration(options: WordSetupOptions = {}) {
+  const platform = options.platform ?? process.platform
+  if (platform !== "darwin" && platform !== "win32") return false
+  const environment = options.environment ?? process.env
+  const configuration = wordHttpsConfiguration(environment)
+  if (!configuration || configuration.external) return false
+  if (!await selectedDesktopInstallation(options)) return false
+  const manifest = path.join(path.dirname(wordConfigurationFile(environment)), "word-addin", "manifest.xml")
+  // The installation's own manifest records that setup was explicitly chosen.
+  if (!existsSync(manifest) || !readFileSync(manifest, "utf8").includes(`<Id>${WORD_ADDIN_ID}</Id>`)) return false
+  let registered = registrationFile(options.home ?? os.homedir())
+  if (platform === "win32") {
+    const result = await command(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+      "$p = 'HKCU:\\Software\\Microsoft\\Office\\16.0\\WEF\\Developer'; try { (Get-ItemPropertyValue -Path $p -Name $env:DOCHAUS_WORD_MANIFEST_ID -ErrorAction Stop) } catch { exit 1 }"], options, { DOCHAUS_WORD_MANIFEST_ID: WORD_ADDIN_ID })
+    if (result.code !== 0) return false
+    registered = result.stdout.trim()
+  }
+  if (!existsSync(registered) || !readFileSync(registered, "utf8").includes(`<Id>${WORD_ADDIN_ID}</Id>`)) return false
+  validateWordCertificate(configuration.certificate!, configuration.key!, new URL(configuration.origin).hostname)
+  if (!await wordCertificateTrusted(configuration.certificate!, new URL(configuration.origin).hostname, options))
+    throw new Error("The local Word certificate is not trusted. Repair Word setup in Settings.")
+  const content = renderManifest(configuration.origin)
+  if (readFileSync(manifest, "utf8") !== content) writeFileSync(manifest, content, { mode: 0o600 })
+  if (platform === "darwin") {
+    if (readFileSync(registered, "utf8") !== content) writeFileSync(registered, content)
+  } else if (path.resolve(registered) !== path.resolve(manifest)) {
+    await run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+      "$ErrorActionPreference = 'Stop'; $p = 'HKCU:\\Software\\Microsoft\\Office\\16.0\\WEF\\Developer'; New-ItemProperty -Path $p -Name $env:DOCHAUS_WORD_MANIFEST_ID -Value $env:DOCHAUS_WORD_MANIFEST_FILE -PropertyType String -Force | Out-Null"],
+      options, { DOCHAUS_WORD_MANIFEST_ID: WORD_ADDIN_ID, DOCHAUS_WORD_MANIFEST_FILE: manifest })
+  }
+  return true
 }
 
 export async function setupWordAddin(args = process.argv.slice(2), options: WordSetupOptions = {}) {

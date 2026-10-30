@@ -1,6 +1,6 @@
 import { WORD_ADDIN_VERSION, type WordDocumentLink } from "../../../dochaus/lib/word-addin-contract"
 import { WORD_UPDATE_MESSAGE, httpsOrigin } from "./client"
-import type { DeskRequest } from "./desk-protocol"
+import { isDeskRequest, type DeskRequest } from "./desk-protocol"
 import { captureSelection, showSelection } from "./selection"
 import { DeskRequestError } from "./desk-host"
 
@@ -16,6 +16,9 @@ export function deskRequestHandler(
     throw new Error("A doc.haus browser origin is required.")
   const matterUrl = new URL(`/matter/${encodeURIComponent(link.matter)}?view=documents`, browser.origin).href
   return async (input) => {
+    if (!isDeskRequest(input)) throw new DeskRequestError("Choose a supported document up to 16 MB.")
+    if (input.action === "chat-materials" || input.action === "chat-attach" || input.action === "chat-upload")
+      throw new DeskRequestError("Open Attach from the chat to choose material.")
     if (input.action === "selection") return captureSelection()
     if (input.action === "show") {
       await showSelection(input.selection)
@@ -25,14 +28,21 @@ export function deskRequestHandler(
     const timeout = setTimeout(() => abort.abort(), timeoutMs)
     try {
       const { action, ...body } = input
-      const response = await request(`${origin}/word/desk/${action}`, {
+      let upload: FormData | undefined
+      if (input.action === "document-upload") {
+        const binary = atob(input.data)
+        const bytes = Uint8Array.from(binary, character => character.charCodeAt(0))
+        upload = new FormData()
+        upload.set("file", new File([bytes], input.name))
+      }
+      const response = await request(`${origin}/word/desk/${upload ? "upload" : action}`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${link.token}`,
           "x-dochaus-word-version": WORD_ADDIN_VERSION,
-          "Content-Type": "application/json",
+          ...(!upload ? { "Content-Type": "application/json" } : {}),
         },
-        body: JSON.stringify(input.action === "open" ? { ...body, origin: browser.origin } : body),
+        body: upload ?? JSON.stringify(input.action === "open" ? { ...body, origin: browser.origin } : body),
         credentials: "omit",
         redirect: "error",
         referrerPolicy: "no-referrer",

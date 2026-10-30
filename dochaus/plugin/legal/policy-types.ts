@@ -13,7 +13,7 @@ export type LegalHooks = Omit<Hooks, "event" | "tool.execute.before" | "experime
     output: { messages: Array<{ info: Message; parts: Part[] }> },
   ) => Promise<void>
   "experimental.chat.system.transform"?: (
-    input: { sessionID: string; model: import("@opencode-ai/sdk").Model },
+    input: { sessionID: string; model: import("@opencode-ai/sdk").Model; suppliedContext?: boolean },
     output: { system: string[] },
   ) => Promise<void>
   "tool.execute.error"?: (
