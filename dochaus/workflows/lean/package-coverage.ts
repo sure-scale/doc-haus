@@ -1,4 +1,4 @@
-import { normalize, normalizeWithMap } from "../../lib/quote-verify"
+import { normalize, normalizeWithMap, sourceReadings } from "../../lib/quote-verify"
 import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
 import { FIRST_DOCUMENT, nameKey, namedIn, readLeanPlan, type ActingFor, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
@@ -182,10 +182,14 @@ export function parseCoverageActs(reply: string, directory: string): Checked<Ins
 
 /** Two verified lists of the plan-blind job joined: every act of `first`, in
  * its order, then each act of `second` whose quote overlaps no quote of an act
- * already kept from the same source, so an act either run listed is kept once. */
+ * already kept from the same source, in any reading of that source
+ * (sourceReadings: one run may copy an email's bold marks and the other leave
+ * them out), so an act either run listed is kept once. */
 export function mergeCoverageActs(first: InstructedAct[], second: InstructedAct[]): InstructedAct[] {
   const merged = [...first]
-  for (const act of second) if (!merged.some(other => other.source === act.source && overlaps(other.quote, act.quote))) merged.push(act)
+  const same = (a: InstructedAct, b: InstructedAct) => a.source === b.source &&
+    sourceReadings(a.source).some(reading => overlaps(normalizeWithMap(a.quote, reading).text, normalizeWithMap(b.quote, reading).text))
+  for (const act of second) if (!merged.some(other => same(other, act))) merged.push(act)
   return merged
 }
 

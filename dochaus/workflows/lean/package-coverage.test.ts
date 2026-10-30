@@ -749,6 +749,13 @@ describe("the two listings merged", () => {
     expect(mergeCoverageActs([APPROVED], [RELEASED])).toEqual([APPROVED, RELEASED])
     expect([mergeCoverageActs([], [APPROVED]), mergeCoverageActs([APPROVED], [])]).toEqual([[APPROVED], [APPROVED]])
   })
+
+  test("one run copying an email's bold marks and the other leaving them out list one act", () => {
+    const marked = listedRow({ act: "open the account", source: "instructions.eml", quote: "Open an account at **Wren Bank** in Exeter.", parties: ["the officers"] })
+    const plain = listedRow({ act: "open a bank account", source: "instructions.eml", quote: "Open an account at Wren Bank in Exeter.", parties: ["the officers"] })
+    expect(mergeCoverageActs([marked], [plain])).toEqual([marked])
+    expect(mergeCoverageActs([plain], [marked])).toEqual([plain])
+  })
 })
 
 describe("the placement job's reply", () => {
