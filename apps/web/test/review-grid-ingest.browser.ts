@@ -87,14 +87,19 @@ createRoot(document.getElementById("root")).render(createElement(Harness))
   assert.deepEqual(await readFile(diskPath), originalBytes, "opening must not modify the file")
   console.log("PASS two windows display the advisory notice and opening is read-only through ingest")
 
-  first.once("dialog", dialog => dialog.accept("First window's question?"))
+  // Edits a column's question in its dialog, as the lawyer does.
+  const editQuestion = async (page: typeof first, from: string, to: string) => {
+    await page.getByRole("button", { name: `Edit question: ${from}` }).click()
+    const editor = page.getByRole("dialog", { name: "Edit question" })
+    await editor.getByRole("textbox", { name: "Question" }).fill(to)
+    await editor.getByRole("button", { name: "Save", exact: true }).click()
+  }
   const firstSave = first.waitForResponse(response => response.url() === base + endpoint && response.request().method() === "PUT")
-  await first.getByRole("button", { name: "Edit question: Original question?" }).click()
+  await editQuestion(first, "Original question?", "First window's question?")
   assert.equal((await firstSave).status(), 200)
   await first.getByRole("button", { name: "Edit question: First window's question?" }).waitFor()
-  second.once("dialog", dialog => dialog.accept("Second window's question?"))
   const staleSave = second.waitForResponse(response => response.url() === base + endpoint && response.request().method() === "PUT")
-  await second.getByRole("button", { name: "Edit question: Original question?" }).click()
+  await editQuestion(second, "Original question?", "Second window's question?")
   assert.equal((await staleSave).status(), 409)
   await second.getByText("Your changes are still shown here and have not been saved.", { exact: false }).waitFor()
   const pending = second.getByRole("button", { name: "Edit question: Second window's question?" })

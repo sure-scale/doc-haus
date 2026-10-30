@@ -109,6 +109,14 @@ const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: request => {
   }
   return new Response(`<html><meta charset="utf-8"><div id="root"></div><script type="module" src="/harness.js"></script></html>`, { headers: { "content-type": "text/html" } })
 } })
+// Edits a column's question in its dialog, as the lawyer does.
+async function editQuestion(scope: import("@playwright/test").Page | import("@playwright/test").Locator, from: string, to: string) {
+  await scope.getByRole("button", { name: `Edit question: ${from}` }).click()
+  const editor = scope.getByRole("dialog", { name: "Edit question" })
+  await editor.getByRole("textbox", { name: "Question" }).fill(to)
+  await editor.getByRole("button", { name: "Save", exact: true }).click()
+  await editor.waitFor({ state: "detached" })
+}
 const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH } : {}) })
 try {
   const page = await browser.newPage()
@@ -482,8 +490,7 @@ try {
   // A stale save cannot overwrite the other window. Local edits stay visible,
   // a close needs confirmation, and reload is a deliberate discard.
   storedGrid = { ...storedGrid, version: (storedGrid.version ?? 0) + 1 }
-  page.once("dialog", dialog => dialog.accept("What is the local question?"))
-  await table.getByRole("button", { name: "Edit question: What is the governing law?" }).click()
+  await editQuestion(table, "What is the governing law?", "What is the local question?")
   await table.getByText("Your changes are still shown here and have not been saved.", { exact: false }).waitFor()
   assert.equal(await table.getByRole("button", { name: "Edit question: What is the local question?" }).isDisabled(), true)
   assert.equal(storedGrid.columns[0]!.question, "What is the governing law?")
@@ -508,6 +515,48 @@ try {
   assert.equal(await closes(), 1)
   console.log("PASS the next Escape closes the review table once")
 
+  // Questions are added, edited and removed in one dialog. A column without
+  // answers goes at once; one with answers asks first and says what goes with
+  // it, and Escape steps back to the question. Focus lands on Add column.
+  storedGrid = structuredClone(grid)
+  storedGrid.cells["Old note.docx::c1"]!.status = "reviewed"
+  await page.goto(server.url.href)
+  const focusedOn = (name: string) => page.waitForFunction(label => document.activeElement?.getAttribute("aria-label") === label || document.activeElement?.textContent === label, name)
+  await page.getByRole("button", { name: "Add column" }).click()
+  const adder = page.getByRole("dialog", { name: "Add question" })
+  await page.waitForFunction(() => document.activeElement?.tagName === "TEXTAREA" && document.activeElement.closest("dialog")?.getAttribute("aria-label") === "Add question")
+  assert.equal(await adder.getByRole("button", { name: "Add", exact: true }).isDisabled(), true)
+  assert.equal(await adder.getByRole("button", { name: "Remove column" }).count(), 0)
+  await page.keyboard.type("What is the notice period?")
+  await page.keyboard.press("Enter")
+  await adder.waitFor({ state: "detached" })
+  const added = page.getByRole("button", { name: "Edit question: What is the notice period?" })
+  await added.waitFor()
+  await focusedOn("Add column")
+  await added.click()
+  await page.getByRole("dialog", { name: "Edit question" }).getByRole("button", { name: "Remove column" }).click()
+  await added.waitFor({ state: "detached" })
+  await focusedOn("Add column")
+  const header = page.getByRole("button", { name: "Edit question: What is the governing law?" })
+  await header.click()
+  const editor = page.getByRole("dialog", { name: "Edit question" })
+  await editor.getByRole("button", { name: "Remove column" }).click()
+  const confirm = page.getByRole("dialog", { name: "Remove column" })
+  await confirm.getByText("Remove “What is the governing law?” and its 3 answers, 1 of them reviewed, and 1 comment? This cannot be undone.").waitFor()
+  await focusedOn("Keep column")
+  await page.keyboard.press("Escape")
+  await editor.waitFor()
+  await focusedOn("Remove column")
+  assert.equal(await header.count(), 1)
+  await editor.getByRole("button", { name: "Remove column" }).click()
+  await confirm.getByRole("button", { name: "Remove column" }).click()
+  await header.waitFor({ state: "detached" })
+  await focusedOn("Add column")
+  for (let attempt = 0; storedGrid.columns.length && attempt < 100; attempt++) await new Promise(resolve => setTimeout(resolve, 20))
+  assert.deepEqual(storedGrid.columns, [])
+  assert.deepEqual(storedGrid.cells, {})
+  console.log("PASS questions are added, edited and removed in a dialog; removing answers asks first")
+
   // Real component + mocked engine: release one extraction after changing its
   // live inputs. The unchanged baseline proves the same result is normally applied.
   for (const action of ["none", "review", "question", "delete", "comment"] as const) {
@@ -519,11 +568,12 @@ try {
     await page.waitForFunction(() => document.body.textContent?.includes("Extracting 1"))
     const heldExtraction = await waiting
     if (action === "review") await row.getByTitle("Mark reviewed").click()
-    if (action === "question") {
-      page.once("dialog", dialog => dialog.accept("A changed question"))
+    if (action === "question") await editQuestion(page, "What is the governing law?", "A changed question")
+    if (action === "delete") {
       await page.getByRole("button", { name: "Edit question: What is the governing law?" }).click()
+      await page.getByRole("dialog", { name: "Edit question" }).getByRole("button", { name: "Remove column" }).click()
+      await page.getByRole("dialog", { name: "Remove column" }).getByRole("button", { name: "Remove column" }).click()
     }
-    if (action === "delete") await page.getByRole("button", { name: "Delete column: What is the governing law?" }).click()
     if (action === "comment") {
       await row.getByRole("button", { name: /^The law of England and Wales\./ }).click()
       await page.getByRole("textbox", { name: "Add a comment" }).fill("Preserve this note")
@@ -926,8 +976,7 @@ try {
   assert.equal(extractionWaits.length, 5, "five extraction jobs should be in flight")
   assert.equal(extractionStarts, 5, "the extraction pool should hold the remaining work")
   storedGrid = { ...storedGrid, version: (storedGrid.version ?? 0) + 1 }
-  page.once("dialog", dialog => dialog.accept("Conflicting question"))
-  await page.getByRole("button", { name: "Edit question: What is the governing law?" }).click()
+  await editQuestion(page, "What is the governing law?", "Conflicting question")
   await page.getByText("Your changes are still shown here and have not been saved.", { exact: false }).waitFor()
   page.once("dialog", dialog => dialog.accept())
   await page.getByRole("button", { name: "Reload saved table" }).click()
@@ -953,8 +1002,7 @@ try {
   await page.getByRole("dialog", { name: "Review table — Supplier review" }).getByRole("button", { name: "Close", exact: true }).click()
   assert.equal(await page.getByRole("dialog", { name: "Review table — Supplier review" }).isVisible(), true)
   storedGrid = { ...storedGrid, version: (storedGrid.version ?? 0) + 1 }
-  page.once("dialog", dialog => dialog.accept("Conflicting question"))
-  await page.getByRole("button", { name: "Edit question: What is the governing law?" }).click()
+  await editQuestion(page, "What is the governing law?", "Conflicting question")
   await page.getByText("Your changes are still shown here and have not been saved.", { exact: false }).waitFor()
   page.once("dialog", dialog => dialog.accept())
   await page.getByRole("button", { name: "Reload saved table" }).click()
@@ -1016,8 +1064,7 @@ try {
   await page.getByRole("link", { name: "Open review" }).click()
   await navTable.getByRole("button", { name: "Edit question: What is the governing law?" }).waitFor()
   storedGrid = { ...storedGrid, version: (storedGrid.version ?? 0) + 1 }
-  page.once("dialog", dialog => dialog.accept("Conflicting question"))
-  await navTable.getByRole("button", { name: "Edit question: What is the governing law?" }).click()
+  await editQuestion(navTable, "What is the governing law?", "Conflicting question")
   await navTable.getByText("Your changes are still shown here and have not been saved.", { exact: false }).waitFor()
   holdGridGet = true
   const heldReload = page.waitForRequest(request => request.url().endsWith("/grid") && request.method() === "GET")

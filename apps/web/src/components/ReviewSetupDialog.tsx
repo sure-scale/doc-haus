@@ -5,7 +5,7 @@ import backdropClose from "./backdropClose"
 // A native nested dialog keeps keyboard focus within the current review step.
 // `title` names the dialog; `heading` may show it richer. The detail variant
 // takes the layout of the review table's cell detail.
-export default function ReviewSetupDialog({ title, heading, variant, onClose, children }: { title: string; heading?: ReactNode; variant?: "medium" | "wide" | "detail"; onClose: () => void; children: ReactNode }) {
+export default function ReviewSetupDialog({ title, heading, variant, onClose, children }: { title: string; heading?: ReactNode; variant?: "narrow" | "medium" | "wide" | "detail"; onClose: () => void; children: ReactNode }) {
   const dialog = useRef<HTMLDialogElement>(null)
   useLayoutEffect(() => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null

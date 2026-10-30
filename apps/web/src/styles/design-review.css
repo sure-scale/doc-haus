@@ -75,7 +75,6 @@
 .review-col-q, .review-answer { display: block; max-width: 100%; min-height: 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text); box-shadow: none; font: inherit; text-align: left; white-space: normal; overflow-wrap: anywhere; transform: none; }
 .review-col-q { min-height: 24px; font-weight: 650; }
 .review-col-q:hover, .review-answer:hover { border: 0; background: transparent; color: var(--accent); box-shadow: none; transform: none; }
-.review-col-x { flex-shrink: 0; }
 /* The column's answer comparison: one quiet line under the question, on its
    left edge, opening a small disclosure with the AI summary and the differing
    cells. Words and the Differs shape carry it; tone is the second cue. */
@@ -242,8 +241,8 @@
   .review-walk-skip { margin-right: calc(-1 * var(--space-4)); }
 }
 @media (pointer: coarse) {
-  .review-cell-actions .icon-btn, .review-col-x, .review-add-button, .issues > summary { min-height: max(44px, calc(44px / var(--ui-scale))); }
-  .review-cell-actions .icon-btn, .review-col-x, .review-add-button { min-width: max(44px, calc(44px / var(--ui-scale))); }
+  .review-cell-actions .icon-btn, .review-add-button, .issues > summary { min-height: max(44px, calc(44px / var(--ui-scale))); }
+  .review-cell-actions .icon-btn, .review-add-button { min-width: max(44px, calc(44px / var(--ui-scale))); }
   /* No hover on touch: every cell action shows. */
   .review-cell-actions .icon-btn.is-quiet { opacity: 1; }
   .review-cell-actions .icon-btn.is-quiet:disabled { opacity: .5; }

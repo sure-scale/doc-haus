@@ -25,6 +25,7 @@ import useReviewGridPresence from "./useReviewGridPresence"
 import ReviewStarter from "./ReviewStarter"
 import { normaliseStarterQuestion, REVIEW_STARTERS } from "../review-starters"
 import FillPreview from "./FillPreview"
+import ReviewQuestion from "./ReviewQuestion"
 import { CompareSummary, FilterSummary, ReviewToolbar } from "./ReviewAttention"
 import { MARKER_LOOK, MarkerGlyph, ReviewMarker } from "./ReviewMarker"
 
@@ -190,6 +191,15 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     setStarterOpen({ starter: initialStarter, step: "questions" })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialStarter, canEdit])
+  // The question dialog: adding a column when `id` is absent. Removing a column
+  // hands focus to Add column once the dialog and the column are gone.
+  const [questionEdit, setQuestionEdit] = useState<{ id?: string }>()
+  const focusAdd = useRef(false)
+  useLayoutEffect(() => {
+    if (questionEdit || !focusAdd.current) return
+    focusAdd.current = false
+    dialog.current?.querySelector<HTMLButtonElement>(".review-add-button")?.focus()
+  }, [questionEdit])
   const [fillPreview, setFillPreview] = useState<Array<{ docName: string; column: Pick<GridColumn, "id" | "question" | "compare"> }>>()
   const [checkingFill, setCheckingFill] = useState(false)
   // Filter and search change only what is shown. Rows and columns with a match
@@ -455,24 +465,20 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     commit({ ...gridRef.current, cells: { ...gridRef.current.cells, [key]: data } })
   }
 
-  function addColumn() {
-    const question = window.prompt("New column question (e.g. What is the governing law?)")?.trim()
-    if (!question) return
-    commit({ ...gridRef.current, columns: [...gridRef.current.columns, { id: crypto.randomUUID().slice(0, 6), question }] })
+  function saveQuestion(id: string | undefined, question: string) {
+    const current = gridRef.current
+    commit(id
+      ? { ...current, columns: current.columns.map((c) => (c.id === id ? { ...c, question } : c)) }
+      : { ...current, columns: [...current.columns, { id: crypto.randomUUID().slice(0, 6), question }] })
+    setQuestionEdit(undefined)
   }
 
-  function renameColumn(id: string) {
-    const col = gridRef.current.columns.find((c) => c.id === id)
-    const question = window.prompt("Edit column question", col?.question)?.trim()
-    if (!question) return
-    commit({ ...gridRef.current, columns: gridRef.current.columns.map((c) => (c.id === id ? { ...c, question } : c)) })
-  }
-
-  function deleteColumn(id: string) {
+  function removeColumn(id: string) {
     const cells = { ...gridRef.current.cells }
     for (const doc of documents) delete cells[cellKey(doc.name, id)]
     commit({ ...gridRef.current, columns: gridRef.current.columns.filter((c) => c.id !== id), cells })
-    dialog.current?.querySelector<HTMLButtonElement>(".review-add-button")?.focus()
+    focusAdd.current = true
+    setQuestionEdit(undefined)
   }
 
   function setReviewed(key: string, reviewed: boolean) {
@@ -898,6 +904,23 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
 
         {starterOpen && <ReviewStarter documents={documents} existingQuestions={grid.columns.map((column) => column.question)} problem={saveProblem ?? error} initialStarter={starterOpen.starter} initialStep={starterOpen.step} onCancel={() => setStarterOpen(undefined)} onConfirm={addStarterQuestions} />}
         {fillPreview && <FillPreview targets={fillPreview} checking={checkingFill} onCancel={() => setFillPreview(undefined)} onConfirm={confirmFill} />}
+        {questionEdit && (() => {
+          const column = questionEdit.id ? grid.columns.find((c) => c.id === questionEdit.id) : undefined
+          if (questionEdit.id && !column) return null
+          const answers = column ? documents.flatMap((doc) => grid.cells[cellKey(doc.name, column.id)] ?? []) : []
+          return (
+            <ReviewQuestion
+              question={column?.question}
+              answers={answers.length}
+              reviewed={answers.filter((cell) => cell.status === "reviewed").length}
+              comments={answers.reduce((sum, cell) => sum + (cell.comments?.length ?? 0), 0)}
+              disabled={!canEdit}
+              onSave={(question) => saveQuestion(column?.id, question)}
+              onRemove={() => column && removeColumn(column.id)}
+              onClose={() => setQuestionEdit(undefined)}
+            />
+          )
+        })()}
 
         {grid.columns.length === 0 && (
           <p className="review-hint">Use + to add a question for every document.</p>
@@ -910,18 +933,15 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                 {shownColumns.map((col) => (
                   <th key={col.id} scope="col">
                     <div className="review-col-head">
-                      <button className="review-col-q" disabled={!canEdit} onClick={() => renameColumn(col.id)} aria-label={`Edit question: ${col.question}`} title="Edit question">
+                      <button className="review-col-q" disabled={!canEdit} onClick={() => setQuestionEdit({ id: col.id })} aria-label={`Edit question: ${col.question}`} title="Edit or remove this question">
                         {col.question}
-                      </button>
-                      <button className="icon-btn review-col-x" disabled={!canEdit} onClick={() => deleteColumn(col.id)} aria-label={`Delete column: ${col.question}`} title="Delete column">
-                        ×
                       </button>
                     </div>
                     {compareLine(col)}
                   </th>
                 ))}
                 <th className="review-add-col" scope="col">
-                  <button className="review-add-button" type="button" disabled={!canEdit} onClick={addColumn} aria-label="Add column" title="Add column">
+                  <button className="review-add-button" type="button" disabled={!canEdit} onClick={() => setQuestionEdit({})} aria-label="Add column" title="Add column">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" aria-hidden="true">
                       <path d="M12 5v14M5 12h14" />
                     </svg>

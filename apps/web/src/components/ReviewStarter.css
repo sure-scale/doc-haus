@@ -2,6 +2,12 @@
 /* The starter keeps one width from choosing to questions; its example widens. */
 .review-detail-modal .picker-panel.review-starter.is-medium { width: min(880px, 100%); }
 .review-detail-modal .picker-panel.review-starter.is-wide { width: min(1120px, 100%); max-width: none; }
+/* One question: the field, and its add, save or remove. */
+.review-detail-modal .picker-panel.review-starter.is-narrow { max-width: 520px; }
+.review-starter-body .review-question-field { margin-bottom: calc(-1 * var(--space-1)); font-weight: 600; }
+.review-question-input { box-sizing: border-box; width: 100%; min-width: 0; line-height: 1.5; resize: vertical; }
+.review-starter-body .review-question-hint { margin-top: calc(-1 * var(--space-1)); color: var(--muted); font-size: .875rem; }
+.review-question-remove { margin-right: auto; margin-left: calc(-1 * var(--space-4)); color: var(--danger); }
 /* Body, header and footer share one left edge (--space-5). */
 .review-starter-body { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; overflow-wrap: anywhere; }
 .picker-body.review-starter-body { padding: var(--space-5); }
