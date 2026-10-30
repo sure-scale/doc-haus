@@ -382,7 +382,7 @@ function findHits(docName: string, chunks: QuoteChunk[], needle: string, reading
   // closing mark, a quoted cell), which a chunk's edges can cut off, so they
   // read the whole document, below.
   const asWritten = !Object.values(reading).some(Boolean)
-  const single = asWritten ? chunks.find((c) => normalize(c.text).includes(needle)) : undefined
+  const single = asWritten ? chunks.find((c) => quotePlaces(normalize(c.text), needle, { first: true }).places.length) : undefined
   if (single) {
     return [
       {
@@ -399,10 +399,10 @@ function findHits(docName: string, chunks: QuoteChunk[], needle: string, reading
   // raw offsets to find the covering chunks.
   const raw = chunkText(chunks).text
   const normalized = normalizeWithMap(raw, reading)
-  const at = normalized.text.indexOf(needle)
-  if (at === -1) return
+  const { places: [at], length } = quotePlaces(normalized.text, needle, { first: true })
+  if (at === undefined) return
   const rawStart = normalized.map[at]
-  const rawEnd = normalized.end[at + needle.length - 1]
+  const rawEnd = normalized.end[at + length - 1]
   if (rawStart === undefined || rawEnd === undefined) return
   const covering = chunks.filter((c) => c.char_start < rawEnd && c.char_end > rawStart)
   // A match one chunk holds is that chunk's hit, as in a single-chunk match.
@@ -422,6 +422,46 @@ function findHits(docName: string, chunks: QuoteChunk[], needle: string, reading
       verbatim: raw.slice(first.char_start, end),
     },
   ]
+}
+
+/** Letters a quotation puts in square brackets ("[d]raft", "[T]he"): the
+ * quoter's mark of a change of case. */
+const CASE_CHANGE = /\[(\p{L}+)\]/gu
+
+/** The offsets in `text` (a reading of a source) of `needle` (a normalized
+ * quotation), each `length` characters of `text` long, in either case with
+ * `ignoreCase`, and only the first with `first`. Where `needle` is not in
+ * `text` as written, it is read without the brackets of each change of case
+ * (CASE_CHANGE): their letters match the source's letters there in either
+ * case, so "[d]raft" quotes "Draft". Brackets around anything else, and
+ * letters other than the source's ("[the Company]", "[x]raft"), stay. */
+export function quotePlaces(text: string, needle: string, options: { ignoreCase?: boolean; first?: boolean } = {}) {
+  const read = (value: string) => options.ignoreCase ? lowerChars(value) : value
+  const haystack = read(text)
+  const places = (within: string, wanted: string, kept: (at: number) => boolean = () => true) => {
+    const found: number[] = []
+    for (let at = within.indexOf(wanted); at !== -1 && !(options.first && found.length); at = within.indexOf(wanted, at + 1))
+      if (kept(at)) found.push(at)
+    return found
+  }
+  const exact = places(haystack, read(needle))
+  // The needle without its case-change brackets, and the offsets in it of
+  // the letters they held.
+  let plain = "", from = 0
+  const changed = new Set<number>()
+  for (const match of needle.matchAll(CASE_CHANGE)) {
+    plain += needle.slice(from, match.index)
+    for (let at = 0; at < match[1]!.length; at++) changed.add(plain.length + at)
+    plain += match[1]
+    from = match.index + match[0].length
+  }
+  if (exact.length || !changed.size) return { places: exact, length: needle.length }
+  plain = read(plain + needle.slice(from))
+  const asWritten = (at: number) => {
+    for (let index = 0; index < plain.length; index++) if (!changed.has(index) && haystack[at + index] !== plain[index]) return false
+    return true
+  }
+  return { places: places(options.ignoreCase ? haystack : lowerChars(text), lowerChars(plain), asWritten), length: plain.length }
 }
 
 
@@ -449,8 +489,9 @@ export const MAX_OMITTED = 300
  * drop a condition, amount or limit, and no list of words can tell which, so
  * only a single passage (an ellipsis at the start or end) verifies a quotation.
  *
- * Passages are matched as a quotation is (normalized, case-insensitively with
- * `ignoreCase`), each long enough (SHORT_QUOTE) to find its place on its own,
+ * Passages are matched as a quotation is (normalized, with any bracketed
+ * change of case: quotePlaces, case-insensitively with `ignoreCase`), each
+ * long enough (SHORT_QUOTE) to find its place on its own,
  * beginning and ending on whole words of the source (insideWord: a hyphen or
  * dash joins words) and beginning after the previous one ends.
  * - "near": every passage in the quoted order, each omission short
@@ -466,15 +507,12 @@ export const MAX_OMITTED = 300
 export function elisionGap(raw: string, parts: string[], options: SourceReading & { ignoreCase?: boolean } = {}): ElisionGap {
   if (!parts.length || parts.some(part => part.length < SHORT_QUOTE)) return null
   const normalized = normalizeWithMap(raw, options)
-  const text = options.ignoreCase ? lowerChars(normalized.text) : normalized.text
+  const text = normalized.text
   const breaks = new Set(normalized.breaks)
-  const wanted = parts.map(part => options.ignoreCase ? lowerChars(part) : part)
-  const places = wanted.map(part => {
-    const found: number[] = []
-    for (let at = text.indexOf(part); at !== -1; at = text.indexOf(part, at + 1))
-      if (!insideWord(text, at) && !insideWord(text, at + part.length)) found.push(at)
-    return found
-  })
+  const found = parts.map(part => quotePlaces(text, part, { ignoreCase: options.ignoreCase }))
+  // The source length of each passage (quotePlaces), past which the next begins.
+  const lengths = found.map(({ length }) => length)
+  const places = found.map(({ places, length }) => places.filter(at => !insideWord(text, at) && !insideWord(text, at + length)))
   const parted = (from: number, to: number) => {
     for (let at = from; at < to; at++) if (breaks.has(at)) return true
     return false
@@ -483,13 +521,13 @@ export function elisionGap(raw: string, parts: string[], options: SourceReading 
   // Each place of the latest passage placed, with the least it can leave out
   // after near placements of the passages before it.
   type Step = { at: number; end: number; left: number; before?: Step }
-  let steps: Step[] = places[0]!.map(at => ({ at, end: at + wanted[0]!.length, left: 0 }))
-  for (let index = 1; index < wanted.length; index++) {
+  let steps: Step[] = places[0]!.map(at => ({ at, end: at + lengths[0]!, left: 0 }))
+  for (let index = 1; index < parts.length; index++) {
     steps = places[index]!.flatMap(at => {
       const left = (step: Step) => step.left + at - step.end
       const before = steps.filter(step => step.end <= at && near(step.end, at))
         .reduce<Step | undefined>((best, step) => !best || left(step) < left(best) ? step : best, undefined)
-      return before ? [{ at, end: at + wanted[index]!.length, left: left(before), before }] : []
+      return before ? [{ at, end: at + lengths[index]!, left: left(before), before }] : []
     })
   }
   const last = steps.reduce<Step | undefined>((best, step) => !best || step.left < best.left ? step : best, undefined)
@@ -499,10 +537,10 @@ export function elisionGap(raw: string, parts: string[], options: SourceReading 
     return { kind: "near", omitted: omitted.filter(Boolean).join(" \u2026 ") }
   }
   let from = 0
-  for (const [index, part] of wanted.entries()) {
+  for (const [index, length] of lengths.entries()) {
     const at = places[index]!.find(at => at >= from)
     if (at === undefined) return null
-    from = at + part.length
+    from = at + length
   }
   return { kind: "apart" }
 }

@@ -27,6 +27,12 @@ describe("lean quotation matching", () => {
     expect(quoteFound(directory, { quote: `The buyer's "acceptance" is final.`, source_id: SOURCE })).toBe(true)
   })
 
+  test("a quotation of the request with a bracketed change of case matches the lawyer's letters only", () => {
+    const directory = matter()
+    expect(quoteFound(directory, { quote: "[d]raft a short supply note", source_id: "request" })).toBe(true)
+    expect(quoteFound(directory, { quote: "[c]raft a short supply note", source_id: "request" })).toBe(false)
+  })
+
   test("a misquotation does not match and the issue names the quotation and the document", () => {
     const directory = matter(ESCAPED)
     expect(quoteFound(directory, { quote: "Clause 4.2 applies to some goods.", source_id: SOURCE })).toBe(false)
@@ -61,6 +67,27 @@ describe("lean prose quotation reading", () => {
     // A citation still ends at its own closing bracket.
     expect(prose(directory, `The terms provide "within thirty days of the order date" (source: ${SOURCE}) (see the cover email).`)).toEqual([])
     expect(prose(directory, `The terms provide "within sixty days of the order date" (source: ${SOURCE}) (see the cover email).`)).toEqual([unread("within sixty days of the order date")])
+  })
+
+  test("a pinpoint after a known source name is read as a pinpoint; the quotation is checked against that source", () => {
+    const directory = matter()
+    const db = new Database(path.join(directory, ".dochaus", "legal.db"))
+    const instalments = "The Buyer shall pay the Price in three equal instalments on the first day of each quarter."
+    db.query("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)").run("supply-terms (2).docx", "1", instalments, 0, instalments.length)
+    db.close()
+    for (const cite of ["[source: supply-terms (2).docx, cl. 4.2]", "(source: supply-terms (2).docx; para 3)"])
+      expect([cite, prose(directory, `The terms provide "The Buyer shall pay the Price in three equal instalments" ${cite}.`)]).toEqual([cite, []])
+    const wrong = "The Buyer shall pay the Price in two equal instalments"
+    expect(prose(directory, `The terms provide "${wrong}" [source: supply-terms (2).docx, cl. 4.2].`)).toEqual([unread(wrong, "supply-terms (2).docx, cl. 4.2")])
+  })
+
+  test("a different file name that starts with a known source name is not read as that source", () => {
+    const directory = matter()
+    const quote = "within thirty days of the order date"
+    for (const name of [`${SOURCE}.pdf`, `${SOURCE} (2).docx`])
+      expect([name, prose(directory, `The terms provide "${quote}" [source: ${name}].`)]).toEqual([name, [
+        `The drafting notes quotes "${quote}" as from "${name}", but those words are not in that document. They do appear in "${SOURCE}"; cite that document if it is the source you meant.`,
+      ]])
   })
 
   // A quotation that is never read is never checked: a misquotation would pass.

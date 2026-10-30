@@ -3,7 +3,7 @@ import { approvedResearch, researchSource } from "./research"
 import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
 import path from "node:path"
-import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearestGap, normalize, verifyQuote } from "../../lib/quote-verify"
+import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearestGap, normalize, quotePlaces, verifyQuote } from "../../lib/quote-verify"
 import type { DocID } from "./plan"
 import { leanUserUpdates } from "./requests"
 import { readLeanText, readQuestions, shortHash, type OpenItem, type StageID } from "./state"
@@ -144,7 +144,7 @@ export function sourceQuotes(text: string): SourceQuote[] {
 
 export function quoteFound(directory: string, quote: SourceQuote) {
   if (/^https?:\/\//.test(quote.source_id)) return approvedResearch(directory).some(row => row.url === quote.source_id &&
-    normalize(researchSource(directory, row.snapshot)?.text ?? "").includes(normalize(quote.quote)))
+    quotePlaces(normalize(researchSource(directory, row.snapshot)?.text ?? ""), normalize(quote.quote), { first: true }).places.length > 0)
   if (quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE)) {
     return instructionFound(directory, quote.quote)
   }
@@ -152,10 +152,12 @@ export function quoteFound(directory: string, quote: SourceQuote) {
 }
 
 /** User instructions have their own provenance: a matter source named
- * "request" must not substitute for what the lawyer actually asked. */
+ * "request" must not substitute for what the lawyer actually asked. Their
+ * words are matched in lower case, with a quotation's bracketed change of case
+ * (quotePlaces). */
 export function instructionFound(directory: string, quote: string) {
   const words = normalize(quote).toLowerCase()
-  return words.length > 0 && lawyerWords(directory).some(text => normalize(text).toLowerCase().includes(words))
+  return words.length > 0 && lawyerWords(directory).some(text => quotePlaces(normalize(text).toLowerCase(), words, { first: true }).places.length > 0)
 }
 
 /** A quotation in prose ('"words" [source: id]') passes when quoteFound does,
@@ -166,14 +168,29 @@ export function instructionFound(directory: string, quote: string) {
  * in single marks inside it may stand for the source's double marks
  * (NESTED_QUOTE), tried when the words as written are not found. A JSON quote
  * field keeps the verbatim contract of quoteFound, since its consumers locate
- * those words. */
+ * those words. The citation may add a pinpoint after the source name
+ * (citedSource). */
 export function proseQuoteFound(directory: string, quote: SourceQuote) {
-  const nested = quote.quote.replace(NESTED_QUOTE, '"$1"')
-  return [quote, ...(nested === quote.quote ? [] : [{ ...quote, quote: nested }])].some(reading => {
+  const cited = { ...quote, source_id: citedSource(directory, quote.source_id) }
+  const nested = cited.quote.replace(NESTED_QUOTE, '"$1"')
+  return [cited, ...(nested === cited.quote ? [] : [{ ...cited, quote: nested }])].some(reading => {
     if (quoteFound(directory, reading)) return true
     const elided = elision(directory, reading)
     return elided?.parts.length === 1 && elided.gap?.kind === "near"
   })
+}
+
+/** The source a prose citation names. A name the check knows is taken as
+ * written. Otherwise the longest known name the citation starts with is taken
+ * when the rest opens as a pinpoint ("Name (2).docx, cl. 4.2"); a name that
+ * continues another way ("Name.docx.pdf") is a different source and kept, so
+ * it fails as unknown. */
+function citedSource(directory: string, source_id: string) {
+  if (!/[,;]/.test(source_id)) return source_id
+  const known = [...matterSourceIDs(directory), REQUEST_SOURCE, ...approvedResearch(directory).map(row => row.url)]
+  if (known.includes(source_id)) return source_id
+  return known.filter(name => source_id.startsWith(name) && /^\s*[,;]\s*\S/.test(source_id.slice(name.length)))
+    .sort((a, b) => b.length - a.length)[0] ?? source_id
 }
 
 /** Where the passages of a quotation with an ellipsis sit in its named source

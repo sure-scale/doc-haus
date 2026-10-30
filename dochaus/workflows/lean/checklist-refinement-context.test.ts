@@ -31,6 +31,10 @@ test("a quote with or without a Markdown source's bold marks selects the same un
   const f = fixture(["# Custody\n\n**Keep records,** unless the owner directs otherwise.\n\n", "# Returns\n\nPropose a receipt, subject to confirmation."], "guide.md")
   for (const quote of ["**Keep records,** unless the owner", "Keep records, unless the owner"]) { f.item.source_refs[0].quote = quote;f.save();expect(buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "cited_sources" }).units.map(unit => unit.id)).toEqual(["guide-c1"]) }
 })
+test("a quote's bracketed change of case selects the unit holding the source's letters, and other letters are not found", () => {
+  const f = fixture();f.item.source_refs[0].quote = "[k]eep records, unless the owner directs otherwise.";f.save();expect(buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "cited_sources" }).units.map(unit => unit.id)).toEqual(["guide-c1"])
+  f.item.source_refs[0].quote = "[x]eep records, unless the owner directs otherwise.";f.save();expect(() => buildChecklistRefinementContext(f.dir, { parent_id: "parent", scope: "cited_sources" })).toThrow("not found")
+})
 test("a spreadsheet quote verifyQuote accepts through the CSV quoting selects its unit", () => {
   const texts = ["## Terms\nItem,Term\n", 'Price,"The ""Buyer"" pays within 30 days, net"\n'], f = fixture(texts, "Terms.xlsx")
   f.item.source_refs[0].quote = 'The "Buyer" pays within 30 days, net';f.save()

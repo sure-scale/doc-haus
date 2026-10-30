@@ -1,7 +1,7 @@
 import { statSync } from "node:fs"
 import { writeListLabels } from "./docx-list-labels"
 import { markTrackedChanges } from "./docx-tracked-text"
-import { normalizeWithMap, sourceReadings } from "./quote-verify"
+import { normalizeWithMap, quotePlaces, sourceReadings } from "./quote-verify"
 import { normalizeExtractedText } from "./untrusted"
 
 // Live-document extraction shared by the citation plugin (which re-checks every
@@ -63,9 +63,10 @@ export function findQuote(text: string, quote: string, document?: string, near?:
 // Every match of the first search (findQuote's order) that finds one, as raw
 // spans. Matches from a later reading never join an earlier one's, so a quote
 // found once as written stays unique when an escaped copy of it is elsewhere;
-// two copies read the same way are two matches. A normalized match maps back
-// through normalizeWithMap's offsets: its first character's raw start to its
-// last's raw end (past a whole decoded entity).
+// two copies read the same way are two matches. A normalized match (quotePlaces,
+// which also reads a quotation's bracketed change of case) maps back through
+// normalizeWithMap's offsets: its first character's raw start to its last's raw
+// end (past a whole decoded entity).
 export function findQuotes(text: string, quote: string, document?: string) {
   const span = (start: number, end: number) => ({ start, end, excerpt: text.slice(start, end) })
   const exact = [...text.matchAll(quoteRegExp(quote))].map((m) => span(m.index, m.index + m[0].length))
@@ -74,9 +75,14 @@ export function findQuotes(text: string, quote: string, document?: string) {
   if (!needle) return []
   for (const reading of sourceReadings(document)) {
     const { text: normalized, map, end } = normalizeWithMap(text, reading)
+    const { places, length } = quotePlaces(normalized, needle)
+    // Matches do not overlap: each starts past the last one's end.
     const found: ReturnType<typeof span>[] = []
-    for (let at = normalized.indexOf(needle); at !== -1; at = normalized.indexOf(needle, at + needle.length))
-      found.push(span(map[at]!, end[at + needle.length - 1]!))
+    let next = 0
+    for (const at of places) if (at >= next) {
+      found.push(span(map[at]!, end[at + length - 1]!))
+      next = at + length
+    }
     if (found.length) return found
   }
   return []

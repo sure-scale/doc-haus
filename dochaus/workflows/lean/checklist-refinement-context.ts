@@ -4,7 +4,7 @@ import { checklistTargetAssignments } from "./checklist-target-context"
 import { checklistItemSchema, type ChecklistSourceReference } from "./checklist-contract"
 import { checklistProducerInputs } from "./checklist-source-context"
 import { readLeanJson } from "./state"
-import { normalizeWithMap, sourceReadings } from "../../lib/quote-verify"
+import { normalizeWithMap, quotePlaces, sourceReadings } from "../../lib/quote-verify"
 import { readRegularFile } from "../../lib/regular-file"
 import path from "node:path"
 import { realpathSync } from "node:fs"
@@ -92,14 +92,14 @@ function readMap(directory: string) {
 // document's readings (sourceReadings) that holds it, as verifyQuote reads the
 // same source_ref: as written, then without escapes, then without only the
 // markup that document's format has (Markdown, reply marks, page-break rules,
-// CSV quoting). A span runs from its first character's raw start to its last's
-// raw end.
+// CSV quoting), with a quotation's bracketed change of case (quotePlaces). A
+// span runs from its first character's raw start to its last's raw end.
 function quoteRanges(text: string, quote: string, document: string) {
   const needle = normalizeWithMap(quote).text
   if (!needle) return []
   for (const reading of sourceReadings(document)) {
-    const haystack = normalizeWithMap(text, reading), spans: { start: number; end: number }[] = []
-    for (let index = haystack.text.indexOf(needle); index >= 0; index = haystack.text.indexOf(needle, index + 1)) spans.push({ start: haystack.map[index]!, end: haystack.end[index + needle.length - 1]! })
+    const haystack = normalizeWithMap(text, reading), { places, length } = quotePlaces(haystack.text, needle)
+    const spans = places.map(index => ({ start: haystack.map[index]!, end: haystack.end[index + length - 1]! }))
     if (spans.length) return spans
   }
   return []

@@ -227,3 +227,30 @@ test("an elided quotation located without regard to case or Markdown escapes sho
   expect(elisionGap("The cap in clause 4\\.2 applies \\(save for fraud\\) to all goods and services.", elidedParts("The cap in clause 4.2 applies … to all goods and services")!, { escapes: true }))
     .toEqual({ kind: "near", omitted: "(save for fraud)" })
 })
+
+test("letters a quotation brackets to mark a change of case match the source's letters there, and nothing else in brackets does", () => {
+  const text = "Draft the notice of termination and serve it on the Tenant, and the Tenant shall pay the rent."
+  const end = text.indexOf(" on the Tenant")
+  // Three chunks: a match read to the bracketed quotation's length would run into the third.
+  const check = fixture([chunk(text.slice(0, 20), 0, "a"), chunk(text.slice(20, end), 20, "b"), chunk(text.slice(end), end, "c")])
+  expect(check("[d]raft the notice of termination and serve it")).toMatchObject({ found: true, hits: [{ charStart: 0, charEnd: end }] })
+  expect({
+    capital: check("[T]he Tenant shall pay the rent").found,
+    letters: check("[DRAFT] the notice of termination").found,
+    markdown: fixture([chunk("**Draft** the notice of termination.", 0, "a")], "terms.md")("[d]raft the notice of termination").found,
+    csv: fixture([chunk('Task,Note\nServe,"Draft the notice, then serve it"', 0, "a")], "tasks.xlsx")("[d]raft the notice, then serve it").found,
+    wrongLetter: check("[x]raft the notice of termination").found,
+    substituted: check("[the Landlord] shall pay the rent").found,
+    otherWord: check("[It] shall pay the rent").found,
+    caseOutside: check("[T]he tenant shall pay the rent").found,
+  }).toEqual({ capital: true, letters: true, markdown: true, csv: true, wrongLetter: false, substituted: false, otherWord: false, caseOutside: false })
+})
+
+test("an elided quotation's bracketed change of case is located, and what the ellipsis leaves out read from the source's own letters", () => {
+  const text = "The Tenant shall pay promptly and in full the rent due under this lease."
+  expect({
+    joined: elisionGap(text, elidedParts("[t]he Tenant shall pay … the rent due under this lease")!),
+    passage: elisionGap(text, elidedParts("[t]he Tenant shall pay promptly …")!),
+    wrongLetter: elisionGap(text, elidedParts("[s]he Tenant shall pay promptly …")!),
+  }).toEqual({ joined: { kind: "near", omitted: "promptly and in full" }, passage: { kind: "near", omitted: "" }, wrongLetter: null })
+})

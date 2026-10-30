@@ -50,6 +50,7 @@ test("findQuote accepts exactly what verifyQuote accepts in the same document", 
   const csv = '## Terms\nItem,Term\nPrice,"The ""Buyer"" pays within 30 days, net"\n'
   const link = "The Buyer shall [not](#opt) assign this Agreement.\n"
   const reply = "Agreed.\n\n&gt; The Seller will deliver\n&gt; on Friday.\n"
+  const notice = "Draft the notice of termination and serve it.\n"
   const cases: [name: string, text: string, quote: string, found: boolean][] = [
     // A spreadsheet's CSV quoting is read past.
     ["Terms.xlsx", csv, 'The "Buyer" pays within 30 days, net', true],
@@ -59,11 +60,15 @@ test("findQuote accepts exactly what verifyQuote accepts in the same document", 
     // "&gt; " is a reply mark only in an email.
     ["Note.docx", reply, "The Seller will deliver on Friday", false],
     ["Mail.eml", reply, "The Seller will deliver on Friday", true],
+    // A bracketed change of case quotes the source's letters; other letters do not.
+    ["Notice.docx", notice, "[d]raft the notice of termination", true],
+    ["Notice.docx", notice, "[x]raft the notice of termination", false],
   ]
   for (const [name, text, quote, found] of cases) {
     expect([name, verified(name, text, quote)]).toEqual([name, found])
     expect([name, anchored(text, quote, name) !== undefined]).toEqual([name, found])
   }
+  expect(anchored(notice, "[d]raft the notice of termination", "Notice.docx")?.excerpt).toBe("Draft the notice of termination")
 })
 
 test("a match ending on an entity keeps the whole entity in its excerpt", () => {
