@@ -431,6 +431,14 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
             agent={agent}
             available={available}
             workflows={workflows}
+            onStartReview={(starter) =>
+              setParams((current) => {
+                const next = new URLSearchParams(current)
+                next.set("view", "review")
+                next.set("starter", starter)
+                return next
+              })
+            }
             playbooks={playbooks ?? []}
             playbook={matter.playbook}
             toolsLoading={!agents || !playbooks}
@@ -504,9 +512,22 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
             title={matter.title}
             directory={matter.dir}
             documents={matter.documents}
+            documentsRevision={sourceRefresh}
+            initialStarter={params.get("starter") ?? undefined}
+            onStarterSeated={() =>
+              setParams(
+                (current) => {
+                  const next = new URLSearchParams(current)
+                  next.delete("starter")
+                  return next
+                },
+                { replace: true },
+              )
+            }
             onClose={() => {
               const next = new URLSearchParams(params)
               next.delete("view")
+              next.delete("starter")
               setParams(next, { replace: true })
             }}
             onAsk={(prompt) => {

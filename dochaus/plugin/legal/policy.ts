@@ -57,8 +57,8 @@ export const LegalPlugin: LegalPolicy = async (input) => {
     },
     "experimental.chat.system.transform": async (input, output) => {
       const agent = sessionAgent(input.sessionID)
-      // Dashboard layout jobs use the supplied catalog, not matter/legal context.
-      if (agent === "dashboard" || agent === "dashboard-chart") return
+      // Dashboard layout and review-compare/review-suggest jobs use only the supplied data, not matter/legal context.
+      if (agent === "dashboard" || agent === "dashboard-chart" || agent === "review-compare" || agent === "review-suggest") return
       const preferencesMode = draftingPreferencesMode(agent)
       // A drafting run's stages take the Posture frozen in its plan (as their
       // keys do); other work on the matter takes the matter's, else the firm's.

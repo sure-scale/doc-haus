@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
 import { deleteWorkflow, listWorkflows, type CustomWorkflow } from "../api/ingest/library"
 import type { Matter } from "../api/ingest/matters"
@@ -13,6 +13,12 @@ import { WORKFLOW_BUILDER, WORKFLOWS, type WorkflowMeta } from "../agents"
 import ModalHeader from "../components/ModalHeader"
 import backdropClose from "../components/backdropClose"
 import { Exit } from "../components/useExit"
+import StarterSummary from "../components/StarterSummary"
+import { REVIEW_STARTERS, type ReviewStarterDefinition } from "../review-starters"
+
+// A library entry: a chat workflow runs as a conversation; a review-table starter
+// opens the matter's table with its questions ready for the lawyer to check.
+type Entry = { kind: "workflow"; workflow: WorkflowMeta | CustomWorkflow } | { kind: "starter"; starter: ReviewStarterDefinition }
 
 // The firm's workflow library: built-in multi-agent review routines plus custom
 // workflows created conversationally by the workflow-builder agent. Built-ins are
@@ -22,7 +28,10 @@ import { Exit } from "../components/useExit"
 // directory (there is no matter to scope to), pinned to the workflow-builder agent.
 // "Use" opens a matter picker; picking a matter navigates to its chat with the
 // workflow agent pinned and the launch prompt prefilled — the lawyer reviews and
-// sends, nothing auto-runs.
+// sends, nothing auto-runs. Review-table starters are listed below; "Use" opens
+// the matter table's Add questions with the starter chosen, where its example and
+// AI suggestions are on offer too, and nothing is added until the lawyer confirms
+// the questions.
 export default function Workflows() {
   const [params, setParams] = useSearchParams()
   const session = params.get("session") ?? undefined
@@ -30,9 +39,9 @@ export default function Workflows() {
   const [custom, setCustom] = useState<CustomWorkflow[]>([])
   const [loading, setLoading] = useState(true)
   const [confirmName, setConfirmName] = useState<string | null>(null)
-  // The workflow being launched — either a built-in WorkflowMeta or a custom one.
-  const [using, setUsing] = useState<WorkflowMeta | CustomWorkflow>()
-  const [viewing, setViewing] = useState<WorkflowMeta | CustomWorkflow>()
+  const [using, setUsing] = useState<Entry>()
+  const [viewing, setViewing] = useState<Entry>()
+  const startersHeading = useId()
   const navigate = useNavigate()
   const createdRef = useRef<string | undefined>(undefined)
   const chatKey = useLibraryChatKey(session, undefined, createdRef)
@@ -67,10 +76,12 @@ export default function Workflows() {
   }
 
   // Picking a matter lands in its chat with the workflow agent pinned and the
-  // launch prompt prefilled — the lawyer reviews and sends; nothing auto-runs.
-  function useWorkflow(wf: WorkflowMeta | CustomWorkflow, m: Matter) {
+  // launch prompt prefilled — the lawyer reviews and sends; nothing auto-runs. A
+  // starter opens the matter's review table at Add questions, with it chosen.
+  function openInMatter(entry: Entry, m: Matter) {
     setUsing(undefined)
-    navigate(`/matter/${m.id}?view=chat&agent=${encodeURIComponent(wf.name)}&prompt=${encodeURIComponent(wf.prompt)}`)
+    if (entry.kind === "starter") navigate(`/matter/${m.id}?view=review&starter=${encodeURIComponent(entry.starter.id)}`)
+    else navigate(`/matter/${m.id}?view=chat&agent=${encodeURIComponent(entry.workflow.name)}&prompt=${encodeURIComponent(entry.workflow.prompt)}`)
   }
 
   const sortedCustom = [...custom].sort((a, b) => a.label.localeCompare(b.label))
@@ -81,7 +92,7 @@ export default function Workflows() {
         title="Workflows"
         description="Repeatable review routines for your matters."
         libraryTitle="Available workflows"
-        count={loading ? undefined : WORKFLOWS.length + custom.length}
+        count={loading ? undefined : WORKFLOWS.length + custom.length + REVIEW_STARTERS.length}
         active={Boolean(session)}
         assistant={
           dir && (
@@ -126,11 +137,11 @@ export default function Workflows() {
                 key={wf.name}
                 className="list-row list-row-clickable"
                 title="View what this workflow does"
-                onClick={() => setViewing(wf)}
+                onClick={() => setViewing({ kind: "workflow", workflow: wf })}
               >
                 <div className="list-row-main">
                   <span className="list-row-title">
-                    <button type="button" className="library-item-title" onClick={(e) => { e.stopPropagation(); setViewing(wf) }}>{wf.label}</button>
+                    <button type="button" className="library-item-title" onClick={(e) => { e.stopPropagation(); setViewing({ kind: "workflow", workflow: wf }) }}>{wf.label}</button>
                     <span className="badge badge-quiet">Built-in</span>
                   </span>
                   <span className="list-row-meta">
@@ -143,7 +154,7 @@ export default function Workflows() {
                     title="Launch this workflow in a matter"
                     onClick={(e) => {
                       e.stopPropagation()
-                      setUsing(wf)
+                      setUsing({ kind: "workflow", workflow: wf })
                     }}
                   >
                     Use
@@ -153,7 +164,7 @@ export default function Workflows() {
                     title="View what this workflow does"
                     onClick={(e) => {
                       e.stopPropagation()
-                      setViewing(wf)
+                      setViewing({ kind: "workflow", workflow: wf })
                     }}
                   >
                     View
@@ -168,10 +179,10 @@ export default function Workflows() {
                   key={wf.name}
                   className="list-row list-row-clickable"
                   title="View what this workflow does"
-                  onClick={() => setViewing(wf)}
+                  onClick={() => setViewing({ kind: "workflow", workflow: wf })}
                 >
                   <div className="list-row-main">
-                    <span className="list-row-title"><button type="button" className="library-item-title" onClick={(e) => { e.stopPropagation(); setViewing(wf) }}>{wf.label}</button></span>
+                    <span className="list-row-title"><button type="button" className="library-item-title" onClick={(e) => { e.stopPropagation(); setViewing({ kind: "workflow", workflow: wf }) }}>{wf.label}</button></span>
                     <span className="list-row-meta">
                       <span className="list-row-desc">{wf.description}</span>
                       {stepSummary && <span className="list-row-date">{stepSummary}</span>}
@@ -183,7 +194,7 @@ export default function Workflows() {
                       title="Launch this workflow in a matter"
                       onClick={(e) => {
                         e.stopPropagation()
-                        setUsing(wf)
+                        setUsing({ kind: "workflow", workflow: wf })
                       }}
                     >
                       Use
@@ -193,7 +204,7 @@ export default function Workflows() {
                       title="View what this workflow does"
                       onClick={(e) => {
                         e.stopPropagation()
-                        setViewing(wf)
+                        setViewing({ kind: "workflow", workflow: wf })
                       }}
                     >
                       View
@@ -227,17 +238,78 @@ export default function Workflows() {
             })}
           </ul>
         )}
+        <section className="workflow-starters" aria-labelledby={startersHeading}>
+          <h3 id={startersHeading}>Review table</h3>
+          <p className="muted">Ready-made questions for a matter's review table. Use opens the table's Add questions with the starter chosen, where you can also see an example or have AI suggest questions. No answers are filled until you choose Fill.</p>
+          <ul className="matter-list">
+            {REVIEW_STARTERS.map((starter) => (
+              <li
+                key={starter.id}
+                className="list-row list-row-clickable"
+                title="View what this starter sets up"
+                onClick={() => setViewing({ kind: "starter", starter })}
+              >
+                <div className="list-row-main">
+                  <span className="list-row-title">
+                    <button type="button" className="library-item-title" onClick={(e) => { e.stopPropagation(); setViewing({ kind: "starter", starter }) }}>{starter.name}</button>
+                  </span>
+                  <span className="list-row-meta">
+                    <span className="list-row-desc">{starter.purpose}</span>
+                    <span className="list-row-date">{starter.questions.length} questions</span>
+                  </span>
+                </div>
+                <div className="list-row-actions">
+                  <button
+                    className="icon-btn is-primary"
+                    title="Start a review table in a matter"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setUsing({ kind: "starter", starter })
+                    }}
+                  >
+                    Use
+                  </button>
+                  <button
+                    className="icon-btn"
+                    title="View what this starter sets up"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setViewing({ kind: "starter", starter })
+                    }}
+                  >
+                    View
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
       </LibraryLayout>
 
       <Exit when={using}>{(using) => (
         <MatterPicker
-          title={`Use "${using.label}" in a matter`}
-          onPick={(m) => useWorkflow(using, m)}
+          title={`Use "${using.kind === "starter" ? using.starter.name : using.workflow.label}" in a matter`}
+          onPick={(m) => openInMatter(using, m)}
           onClose={() => setUsing(undefined)}
         />
       )}</Exit>
 
-      <Exit when={viewing}>{(viewing, closing) => (
+      <Exit when={viewing?.kind === "starter" ? viewing.starter : undefined}>{(starter, closing) => (
+        <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => setViewing(undefined))}>
+          <div className="picker-panel workflow-starter-view" onClick={(e) => e.stopPropagation()}>
+            <ModalHeader title={`${starter.name} (review table)`} onClose={() => setViewing(undefined)} />
+            <div className="picker-body">
+              <StarterSummary starter={starter} questions />
+              <div className="compare-actions">
+                <button type="button" className="ghost" onClick={() => setViewing(undefined)}>Close</button>
+                <button type="button" className="primary" onClick={() => { setViewing(undefined); setUsing({ kind: "starter", starter }) }}>Use in a matter</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}</Exit>
+
+      <Exit when={viewing?.kind === "workflow" ? viewing.workflow : undefined}>{(viewing, closing) => (
         <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => setViewing(undefined))}>
           <div className="picker-panel doc-panel" onClick={(e) => e.stopPropagation()}>
             <ModalHeader

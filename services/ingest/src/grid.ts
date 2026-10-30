@@ -17,7 +17,20 @@ import { indexIsContained, lexicalChannel, phraseChannel, type ChunkRow } from "
 // Rows are NOT stored here — they are the matter's documents, enumerated live
 // from the index. We store the columns (the questions) and the computed cells.
 
-export type GridColumn = { id: string; question: string }
+// `compare: false` keeps a column's answers out of the AI comparison (a starter
+// question whose answers identify or describe each document); absent compares.
+export type GridColumn = { id: string; question: string; compare?: boolean; comparison?: GridColumnComparison }
+
+// The AI's grouping of one question's cited answers across documents, written
+// by the web app after a Fill. It lives on the column, never in cells, so it
+// cannot touch a reviewed answer. Labels are assigned in code from the groups.
+export type GridColumnComparison = {
+  questionHash: string
+  inputs: string
+  cells: Record<string, { label: "consistent" | "differs"; reason: string }>
+  summary: string
+  comparedAt: number
+}
 
 export type GridCell = {
   answer: string
@@ -73,6 +86,11 @@ export function readGrid(matterDir: string): Grid {
 
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value)
 
+const comparisonShape = (value: unknown) =>
+  record(value) && typeof value.questionHash === "string" && typeof value.inputs === "string" && Number.isFinite(value.comparedAt)
+  && typeof value.summary === "string" && value.summary.length <= 200 && record(value.cells)
+  && Object.values(value.cells).every((cell) => record(cell) && (cell.label === "consistent" || cell.label === "differs") && typeof cell.reason === "string" && cell.reason.length <= 140)
+
 // Check the structure used by the grid before replacing the work product.
 // Additional fields are retained for forward and backward compatibility.
 export function gridRequest(value: unknown): Grid | undefined {
@@ -81,6 +99,8 @@ export function gridRequest(value: unknown): Grid | undefined {
   const ids = new Set<string>()
   for (const column of value.columns) {
     if (!record(column) || typeof column.id !== "string" || !column.id || typeof column.question !== "string" || ids.has(column.id)) return
+    if (column.compare !== undefined && typeof column.compare !== "boolean") return
+    if (column.comparison !== undefined && !comparisonShape(column.comparison)) return
     ids.add(column.id)
   }
   for (const cell of Object.values(value.cells)) {

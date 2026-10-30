@@ -109,6 +109,14 @@
 .template-conversation-row { display: flex; align-items: center; gap: var(--space-2); }
 .template-conversation-row > a { flex: 1; min-width: 0; }
 .template-conversation-row > button { flex: none; }
+/* Review-table starters: a second group under the chat workflows. Its heading
+   is a section label, smaller and quieter than the items it introduces. */
+.workflow-starters { margin-top: var(--space-6); padding-top: var(--space-5); border-top: 1px solid var(--border); }
+/* The group's label and note start on its rows' content edge. */
+.workflow-starters h3 { margin: 0; padding-inline: var(--space-3); color: var(--text-secondary); font-size: .8rem; font-weight: 600; line-height: 1.5; }
+.workflow-starters > p { margin: var(--space-2) 0 var(--space-2); padding-inline: var(--space-3); font-size: .85rem; line-height: 1.6; }
+.picker-panel.workflow-starter-view { max-width: 600px; }
+.workflow-starter-view .picker-body { padding: var(--space-5); }
 @media (max-width: 760px) {
   .template-reader.has-footer { height: calc(var(--viewport-block) - 24px); max-height: calc(var(--viewport-block) - 24px); }
   .template-reader-footer { padding: var(--space-3) var(--space-4); padding-bottom: max(var(--space-3), env(safe-area-inset-bottom)); }
@@ -150,6 +158,7 @@
   .library-layout { grid-template-columns: minmax(0, 1fr); }
   .library-builder { padding: var(--space-5); }
   .library-collection .list-row { padding-inline: var(--space-2); }
+  .workflow-starters h3, .workflow-starters > p { padding-inline: var(--space-2); }
   /* The active conversation fills the first screen; the collection follows in
      normal page scrolling instead of competing for transcript height. */
   .library-layout:is(.is-active, :has(.msg)) { grid-template-rows: 100% max-content; }

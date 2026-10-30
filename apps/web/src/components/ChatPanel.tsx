@@ -86,6 +86,7 @@ export default function ChatPanel({
   onAddFiles,
   toolsLoading,
   workflows = [],
+  onStartReview,
   playbooks,
   playbook,
   onPlaybookChange,
@@ -147,6 +148,9 @@ export default function ChatPanel({
   // The full launchable workflow list (built-in + custom). Passed to WorkflowLauncher.
   // Surfaces that don't offer workflows omit it; the launcher's own options guard hides it.
   workflows?: WorkflowMeta[]
+  // Opens the matter's review table with a starter chosen; the matter chat adds
+  // the review table to the Workflows dialog through it.
+  onStartReview?: (starter: string) => void
   // The firm playbooks available to bind to this matter, plus the currently-bound
   // one and its setter — surfaced as a composer control alongside the assistant
   // and workflow pickers. All optional so a fixed surface (the template library,
@@ -719,6 +723,8 @@ export default function ChatPanel({
       inputRef={inputRef}
       workflows={workflows}
       runWorkflow={runWorkflow}
+      onStartReview={onStartReview}
+      documents={documents}
       playbooks={playbooks}
       playbook={playbook}
       onPlaybookChange={onPlaybookChange}

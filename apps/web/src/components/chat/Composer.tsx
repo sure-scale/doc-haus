@@ -5,6 +5,7 @@ import PlaybookSelector from "../PlaybookSelector"
 import WorkflowLauncher from "../WorkflowLauncher"
 import { agentLabel } from "./step-labels"
 import type { ChatState } from "./use-chat-state"
+import type { Document } from "../../api/ingest/documents"
 
 export default function Composer({
   pinned,
@@ -16,6 +17,8 @@ export default function Composer({
   inputRef,
   workflows,
   runWorkflow,
+  onStartReview,
+  documents,
   playbooks,
   playbook,
   onPlaybookChange,
@@ -42,6 +45,8 @@ export default function Composer({
   inputRef: ChatState["inputRef"]
   workflows: WorkflowMeta[]
   runWorkflow: (name: string) => Promise<void>
+  onStartReview?: (starter: string) => void
+  documents?: readonly Pick<Document, "role">[]
   playbooks?: { name: string; description: string }[]
   playbook?: string
   onPlaybookChange?: (name?: string) => void
@@ -90,7 +95,7 @@ export default function Composer({
             requestAnimationFrame(() => inputRef.current?.focus())
           }}
         />
-        <WorkflowLauncher available={available} onLaunch={runWorkflow} workflows={workflows} />
+        <WorkflowLauncher available={available} onLaunch={runWorkflow} workflows={workflows} documents={documents} onStartReview={onStartReview} />
         {onPlaybookChange && (
           <PlaybookSelector playbooks={playbooks ?? []} value={playbook} onChange={onPlaybookChange} />
         )}
