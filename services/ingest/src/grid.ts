@@ -17,7 +17,9 @@ import { indexIsContained, lexicalChannel, phraseChannel, type ChunkRow } from "
 // Rows are NOT stored here — they are the matter's documents, enumerated live
 // from the index. We store the columns (the questions) and the computed cells.
 
-export type GridColumn = { id: string; question: string; comparison?: GridColumnComparison }
+// `compare: false` keeps a column's answers out of the AI comparison (a starter
+// question whose answers identify or describe each document); absent compares.
+export type GridColumn = { id: string; question: string; compare?: boolean; comparison?: GridColumnComparison }
 
 // The AI's grouping of one question's cited answers across documents, written
 // by the web app after a Fill. It lives on the column, never in cells, so it
@@ -97,6 +99,7 @@ export function gridRequest(value: unknown): Grid | undefined {
   const ids = new Set<string>()
   for (const column of value.columns) {
     if (!record(column) || typeof column.id !== "string" || !column.id || typeof column.question !== "string" || ids.has(column.id)) return
+    if (column.compare !== undefined && typeof column.compare !== "boolean") return
     if (column.comparison !== undefined && !comparisonShape(column.comparison)) return
     ids.add(column.id)
   }

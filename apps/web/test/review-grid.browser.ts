@@ -760,7 +760,7 @@ try {
   assert.equal(await primary.textContent(), "Fill 4 cells")
   await primary.click()
   const fillDialog = page.getByRole("dialog", { name: "Review fill" })
-  await fillDialog.getByText(/After filling, AI compares each question's cited answers across documents, one AI call per question\./).waitFor()
+  await fillDialog.getByText(/After filling, AI compares the cited answers across documents for 1 question, one AI call per question\./).waitFor()
   const fillHeld: import("@playwright/test").Route[] = []
   onExtraction = route => void fillHeld.push(route)
   await fillDialog.getByRole("button", { name: "Start fill" }).click()
@@ -874,6 +874,43 @@ try {
   sourceChecks["Side letter.docx::c1"] = "not_found"
   holdChecks = compareHeldChecks
   console.log("PASS a comparison is dropped when an answer changes while it runs")
+
+  // A column marked not to compare (as a starter marks a question whose answers
+  // identify each document) is filled but never compared: its header offers no
+  // compare even with two cited answers, the Fill preview leaves it out of its
+  // count, and the Fill opens a compare session only for the other question.
+  const partiesQuestion = "Who are the parties?"
+  const partiesCell = (doc: string) => ({
+    answer: `The parties to ${doc}.`, status: "filled" as const, questionHash: hashQuestion(partiesQuestion),
+    citation: { documentName: doc, docPath: doc, section: "1", excerpt: `Parties to ${doc}.`, charStart: 0, charEnd: 10 },
+  })
+  const flaggedHeldChecks = holdChecks
+  holdChecks = false
+  storedGrid = comparedGrid()
+  storedGrid.columns.push({ id: "c2", question: partiesQuestion, compare: false })
+  storedGrid.cells["Supply terms.docx::c2"] = partiesCell("Supply terms.docx")
+  storedGrid.cells["Side letter.docx::c2"] = partiesCell("Side letter.docx")
+  onExtraction = route => void route.fulfill({ status: 204 })
+  const sessionsBefore = compareSessions.length
+  await page.goto(server.url.href + "?pool")
+  const partiesHead = page.locator("thead th").filter({ hasText: partiesQuestion })
+  await head.getByRole("button", { name: "Compare answers", exact: true }).waitFor()
+  assert.equal(await partiesHead.locator(".review-compare-note, .review-compare-trigger").count(), 0, "a column marked not to compare offers no compare")
+  assert.equal(await primary.textContent(), "Fill 9 cells")
+  await primary.click()
+  await fillDialog.getByText(partiesQuestion).first().waitFor()
+  await fillDialog.getByText(/After filling, AI compares the cited answers across documents for 1 question, one AI call per question\./).waitFor()
+  await fillDialog.getByRole("button", { name: "Start fill" }).click()
+  await head.getByRole("button", { name: /^1 of \d+ differs/ }).waitFor()
+  await toolbar.getByText(/Comparing|Extracting/).waitFor({ state: "detached" })
+  await page.waitForTimeout(100)
+  assert.equal(compareSessions.length, sessionsBefore + 1, "only the compared question opens a compare session")
+  assert.equal(await partiesHead.locator(".review-compare-note, .review-compare-trigger").count(), 0, "after Fill the column marked not to compare still shows no comparison")
+  assert.equal(storedGrid.columns[1]!.comparison, undefined, "nothing is compared or stored for it")
+  assert.equal(storedGrid.columns[1]!.compare, false, "Fill keeps the column's flag")
+  onExtraction = undefined
+  holdChecks = flaggedHeldChecks
+  console.log("PASS a column marked not to compare is filled, left out of the Fill preview's count and never compared")
 
   storedGrid = structuredClone(grid)
   extractionWaits.length = 0

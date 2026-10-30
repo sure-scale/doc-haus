@@ -209,6 +209,8 @@ try {
   await expect.poll(() => puts).toBe(1)
   assert.equal(grids.one!.columns.length, 2)
   assert.equal(grids.one!.columns[1]!.question, "What is the duration?")
+  assert.equal(grids.one!.columns[1]!.compare, false, "an edited starter question keeps its flag not to compare")
+  assert.deepEqual(grids.one!.columns[0], initial.columns[0], "a duplicate leaves the existing column as it is")
   assert.deepEqual(grids.one!.cells["First.docx::existing"], originalCell, "append retains reviewed answer and comment")
   assert.equal(engineCalls, 0, "setup must never trigger extraction")
   await page.reload()
@@ -280,6 +282,7 @@ try {
   await expect.poll(() => grids.compare!.columns.length).toBe(6)
   assert.equal(grids.compare!.columns[0]!.question, "Existing question?")
   assert.equal(grids.compare!.columns[5]!.question, "Which law governs the agreement, and how are disputes resolved?")
+  assert.deepEqual(grids.compare!.columns.map(column => column.compare), [undefined, false, undefined, undefined, undefined, undefined], "only the parties question is kept out of the comparison")
   assert.deepEqual(grids.compare!.cells, initial.cells, "adding a starter keeps every existing answer and comment")
   assert.equal(engineCalls, 0, "adding starter questions must not call a model")
 

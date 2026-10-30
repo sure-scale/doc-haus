@@ -1,4 +1,5 @@
 import { useId, useState } from "react"
+import type { StarterQuestion } from "../review-starters"
 import type { StarterExampleAnswer, StarterExample } from "../review-starters-example"
 import { MARKER_LOOK, MarkerGlyph } from "./ReviewMarker"
 import ReviewSetupDialog from "./ReviewSetupDialog"
@@ -11,33 +12,33 @@ const marker = (answer: StarterExampleAnswer) =>
   !answer.citation ? { state: "no_citation" as const, word: "Not found", reason: "The document does not appear to address this question." }
   : answer.comparison === "differs" ? { state: "differs" as const, word: "Differs", reason: answer.reason } : undefined
 
-export default function ReviewExample({ questions, example }: { questions: readonly string[]; example: StarterExample }) {
+export default function ReviewExample({ questions, example }: { questions: readonly StarterQuestion[]; example: StarterExample }) {
   const ids = useId()
   const [open, setOpen] = useState<StarterExampleAnswer>()
   const openMark = open && marker(open)
-  const openQuestion = open && questions[open.question]
+  const openQuestion = open && questions[open.question]?.text
   return (
     <div className="review-example">
       <p className="review-example-note">{example.note}</p>
-      <p className="review-example-hint">In this example, answers without a marker agree with the other agreements. Select an answer to see its source.</p>
+      <p className="review-example-hint">In this example, terms without a marker agree with the other agreements. Select an answer to see its source.</p>
       <div className="review-scroll review-example-scroll" role="region" aria-label="Example review table" tabIndex={0}>
         <table className="review-table review-example-table" style={{ minWidth: 180 + questions.length * 168 }}>
           <thead>
             <tr>
               <th className="review-doc-col" scope="col">Document</th>
-              {questions.map((question) => <th key={question} scope="col">{question}</th>)}
+              {questions.map(({ text }) => <th key={text} scope="col">{text}</th>)}
             </tr>
           </thead>
           <tbody>
             {example.documents.map((document) => (
               <tr key={document.name}>
                 <th className="review-doc-col" scope="row">{document.name}</th>
-                {questions.map((question, index) => {
+                {questions.map(({ text }, index) => {
                   const answer = example.answers.find((item) => item.document === document.name && item.question === index)
-                  if (!answer) return <td key={question} />
+                  if (!answer) return <td key={text} />
                   const mark = marker(answer)
                   return (
-                    <td key={question} className="review-example-cell">
+                    <td key={text} className="review-example-cell">
                       <button type="button" aria-haspopup="dialog" onClick={() => setOpen(answer)}>
                         <span className="review-example-answer">{answer.answer}</span>
                         {answer.citation && <span className="review-cite">§ {answer.citation.section}</span>}

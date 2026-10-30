@@ -107,7 +107,6 @@ export const COMPARE_AGREEMENTS_EXAMPLE: StarterExample = {
         charStart: 35,
         charEnd: 180,
       },
-      comparison: "consistent",
     },
     {
       document: "Quillbarrow packaging supply agreement.docx",
@@ -177,7 +176,6 @@ export const COMPARE_AGREEMENTS_EXAMPLE: StarterExample = {
         charStart: 37,
         charEnd: 180,
       },
-      comparison: "consistent",
     },
     {
       document: "Hollowmarsh logistics services agreement.docx",
@@ -248,7 +246,6 @@ export const COMPARE_AGREEMENTS_EXAMPLE: StarterExample = {
         charStart: 36,
         charEnd: 176,
       },
-      comparison: "consistent",
     },
     {
       document: "Sorrelgate cleaning services agreement.docx",

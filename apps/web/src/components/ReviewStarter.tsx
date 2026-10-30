@@ -1,12 +1,15 @@
 import { useEffect, useId, useRef, useState } from "react"
 import type { Document } from "../api/ingest/documents"
-import { normaliseStarterQuestion, recommendStarter, REVIEW_STARTERS } from "../review-starters"
+import { normaliseStarterQuestion, recommendStarter, REVIEW_STARTERS, type ReviewStarterDefinition } from "../review-starters"
 import ReviewSetupDialog from "./ReviewSetupDialog"
 import ReviewExample from "./ReviewExample"
 import StarterSummary from "./StarterSummary"
 import "./ReviewStarter.css"
 
 type Step = "choose" | "example" | "questions"
+// A question being edited keeps its starter's compare flag through any edit.
+type Draft = { id: number; question: string; compare?: false }
+const draftOf = (starter: ReviewStarterDefinition): Draft[] => starter.questions.map(({ text, compare }, id) => ({ id, question: text, compare }))
 
 // Choose a starter (its example is optional), then review its questions and
 // append them to the table. Nothing is written and no model runs before Add
@@ -20,7 +23,7 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
   initialStarter?: string
   initialStep?: "choose" | "questions"
   onCancel: () => void
-  onConfirm: (questions: string[]) => Promise<boolean>
+  onConfirm: (questions: { question: string; compare?: false }[]) => Promise<boolean>
 }) {
   const titleId = useId()
   const [recommended] = useState(() => recommendStarter(documents))
@@ -30,10 +33,10 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
   const [step, setStep] = useState<Step>(initialStep)
   const starter = REVIEW_STARTERS.find((item) => item.id === chosenId)!
   // The questions being edited, kept while the lawyer steps back to the same starter.
-  const [draft, setDraft] = useState<{ starter: string; questions: { id: number; question: string }[] } | undefined>(() =>
-    initialStep === "questions" ? { starter: starter.id, questions: starter.questions.map((question, id) => ({ id, question })) } : undefined)
+  const [draft, setDraft] = useState<{ starter: string; questions: Draft[] } | undefined>(() =>
+    initialStep === "questions" ? { starter: starter.id, questions: draftOf(starter) } : undefined)
   const questions = draft?.questions ?? []
-  const setQuestions = (update: (current: { id: number; question: string }[]) => { id: number; question: string }[]) =>
+  const setQuestions = (update: (current: Draft[]) => Draft[]) =>
     setDraft((current) => current && { ...current, questions: update(current.questions) })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string>()
@@ -49,7 +52,7 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
     if (key) seen.add(key)
     return { ...item, question, duplicate }
   })
-  const additions = entries.filter((item) => item.question && !item.duplicate).map((item) => item.question)
+  const additions = entries.filter((item) => item.question && !item.duplicate).map(({ question, compare }) => ({ question, compare }))
   const close = () => { if (!saving) onCancel() }
 
   // Each step starts where the lawyer acts: the chosen starter, or the top of the new view.
@@ -60,7 +63,7 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
   }, [step])
 
   function toQuestions() {
-    if (draft?.starter !== starter.id) setDraft({ starter: starter.id, questions: starter.questions.map((question, id) => ({ id, question })) })
+    if (draft?.starter !== starter.id) setDraft({ starter: starter.id, questions: draftOf(starter) })
     setError(undefined)
     setStep("questions")
   }

@@ -171,7 +171,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     setStarterOpen({ starter: initialStarter, step: "questions" })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialStarter, canEdit])
-  const [fillPreview, setFillPreview] = useState<Array<{ docName: string; column: { id: string; question: string } }>>()
+  const [fillPreview, setFillPreview] = useState<Array<{ docName: string; column: Pick<GridColumn, "id" | "question" | "compare"> }>>()
   const [checkingFill, setCheckingFill] = useState(false)
   // Filter and search change only what is shown. Rows and columns with a match
   // stay shown until they change, so a cell reviewed in place does not jump away.
@@ -687,7 +687,9 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     }
   }
 
-  async function addStarterQuestions(questions: string[]) {
+  // A starter question keeps its compare flag on its new column; an existing
+  // column with the same question is left as it is.
+  async function addStarterQuestions(questions: Array<{ question: string; compare?: false }>) {
     const state = saveState.current
     const epoch = state.epoch
     preflight.current = true
@@ -705,7 +707,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
       preflight.current = false
     }
     const existing = new Set(gridRef.current.columns.map((col) => normaliseStarterQuestion(col.question)))
-    const unique = questions.map((question) => question.trim()).filter((question) => {
+    const unique = questions.map((item) => ({ ...item, question: item.question.trim() })).filter(({ question }) => {
       const key = normaliseStarterQuestion(question)
       if (!key || existing.has(key)) return false
       existing.add(key)
@@ -715,7 +717,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
       setError("Questions or documents changed. Review the starter and try again.")
       return false
     }
-    return commit({ ...gridRef.current, columns: [...gridRef.current.columns, ...unique.map((question) => ({ id: crypto.randomUUID(), question }))] })
+    return commit({ ...gridRef.current, columns: [...gridRef.current.columns, ...unique.map(({ question, compare }) => ({ id: crypto.randomUUID(), question, ...(compare === false && { compare }) }))] })
   }
 
   // Excel, CSV and Word read one model of the grid (./review-export) and save

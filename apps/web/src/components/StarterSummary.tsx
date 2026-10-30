@@ -16,7 +16,7 @@ export default function StarterSummary({ starter, questions = false, purposeId }
       {questions && (
         <section aria-label="Questions">
           <h3>Questions</h3>
-          <ol>{starter.questions.map((question) => <li key={question}>{question}</li>)}</ol>
+          <ol>{starter.questions.map(({ text }) => <li key={text}>{text}</li>)}</ol>
         </section>
       )}
       <p className="starter-summary-limits">{starter.limits}</p>

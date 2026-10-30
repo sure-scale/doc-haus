@@ -4,6 +4,11 @@ import { COMPARE_AGREEMENTS_EXAMPLE, type StarterExample } from "./review-starte
 // documents and the grid remains the sole store for questions and answers. A
 // starter's example is fictional, read-only and never runs a model.
 
+// `compare: false` keeps a question out of the AI comparison after Fill: its
+// answers describe or identify each document, so they differ by nature. The
+// flag stays with the question when the lawyer edits its text, and on its column.
+export type StarterQuestion = { text: string; compare?: false }
+
 export type ReviewStarterDefinition = {
   id: string
   name: string
@@ -11,7 +16,7 @@ export type ReviewStarterDefinition = {
   inputs: string
   output: string
   limits: string
-  questions: readonly string[]
+  questions: readonly StarterQuestion[]
   /** Answers are keyed by the index of `questions`. */
   example?: StarterExample
 }
@@ -22,12 +27,13 @@ export const REVIEW_STARTERS: readonly ReviewStarterDefinition[] = [
     name: "Document overview",
     purpose: "Start a review table with questions about each document in this matter.",
     inputs: "All documents in this matter and this starter's questions.",
-    output: "A review table with an answer and source for each document and question. After Fill, answers that differ between documents are marked.",
+    output: "A review table with an answer and source for each document and question.",
     limits: "Answers may be missing or incomplete. Check the sources and tailor the questions to your matter; this is not a complete legal review.",
+    // Each answer describes its own document, so none is compared.
     questions: [
-      "What is the purpose of this document?",
-      "What obligations are described in this document?",
-      "What dates or deadlines are stated in this document?",
+      { text: "What is the purpose of this document?", compare: false },
+      { text: "What obligations are described in this document?", compare: false },
+      { text: "What dates or deadlines are stated in this document?", compare: false },
     ],
   },
   {
@@ -35,14 +41,15 @@ export const REVIEW_STARTERS: readonly ReviewStarterDefinition[] = [
     name: "Compare agreements",
     purpose: "Compare the key terms of the agreements in this matter side by side.",
     inputs: "All documents in this matter and this starter's questions.",
-    output: "A review table with an answer and source for each agreement and question. After Fill, answers that differ between agreements are marked.",
+    output: "A review table with an answer and source for each agreement and question. After Fill, terms that differ between agreements are marked.",
     limits: "Answers and comparisons may be missing or incomplete. Check each answer against its source and tailor the questions to your matter; this is not a complete legal review.",
+    // The parties and date identify each agreement, so they are not compared.
     questions: [
-      "Who are the parties, and when was the agreement made?",
-      "Does the agreement renew at the end of its term, and how can renewal be stopped?",
-      "When can each party terminate the agreement, and what notice is required?",
-      "What limits and exclusions apply to each party's liability?",
-      "Which law governs the agreement, and how are disputes resolved?",
+      { text: "Who are the parties, and when was the agreement made?", compare: false },
+      { text: "Does the agreement renew at the end of its term, and how can renewal be stopped?" },
+      { text: "When can each party terminate the agreement, and what notice is required?" },
+      { text: "What limits and exclusions apply to each party's liability?" },
+      { text: "Which law governs the agreement, and how are disputes resolved?" },
     ],
     example: COMPARE_AGREEMENTS_EXAMPLE,
   },

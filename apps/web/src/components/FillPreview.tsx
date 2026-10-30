@@ -1,7 +1,7 @@
 import ReviewSetupDialog from "./ReviewSetupDialog"
 import "./ReviewStarter.css"
 
-type Target = { docName: string; column: { id: string; question: string } }
+type Target = { docName: string; column: { id: string; question: string; compare?: boolean } }
 
 export default function FillPreview({ targets, checking, onCancel, onConfirm }: {
   targets: Target[]
@@ -10,11 +10,13 @@ export default function FillPreview({ targets, checking, onCancel, onConfirm }: 
   onConfirm: () => void
 }) {
   const documents = [...new Set(targets.map((target) => target.docName))]
+  // A question marked not to compare is filled but never compared.
+  const compared = new Set(targets.filter((target) => target.column.compare !== false).map((target) => target.column.id)).size
   const close = () => { if (!checking) onCancel() }
   return (
     <ReviewSetupDialog title="Review fill" onClose={close}>
           <p><strong>{targets.length} {targets.length === 1 ? "cell" : "cells"}</strong> will be processed across {documents.length} {documents.length === 1 ? "document" : "documents"}.</p>
-          <p>Fill uses AI for each cell and may use AI again to re-check an answer. After filling, AI compares each question's cited answers across documents, one AI call per question. Review the answers and their sources.</p>
+          <p>Fill uses AI for each cell and may use AI again to re-check an answer.{compared > 0 && ` After filling, AI compares the cited answers across documents for ${compared} ${compared === 1 ? "question" : "questions"}, one AI call per question.`} Review the answers and their sources.</p>
           {documents.map((document) => (
             <section key={document}>
               <h3>{document}</h3>

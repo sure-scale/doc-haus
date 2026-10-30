@@ -29,8 +29,9 @@ test("example has exactly one answer per document and question", () => {
   }
 })
 
-test("uncited answers read Not addressed with no label, and differs reasons stay short and unquoted", () => {
+test("uncited answers and answers to an uncompared question carry no label, and differs reasons stay short and unquoted", () => {
   for (const answer of example.answers) {
+    if (compare.questions[answer.question]!.compare === false) expect(answer.comparison).toBeUndefined()
     if (!answer.citation) {
       expect(answer.answer).toBe("Not addressed")
       expect(answer.comparison).toBeUndefined()
@@ -46,7 +47,7 @@ test("uncited answers read Not addressed with no label, and differs reasons stay
 test("starter ids are unique and each starter's questions stay distinct once normalised", () => {
   expect(new Set(REVIEW_STARTERS.map((starter) => starter.id)).size).toBe(REVIEW_STARTERS.length)
   for (const starter of REVIEW_STARTERS) {
-    const keys = starter.questions.map(normaliseStarterQuestion)
+    const keys = starter.questions.map(({ text }) => normaliseStarterQuestion(text))
     for (const key of keys) expect(key.length).toBeGreaterThan(0)
     expect(new Set(keys).size).toBe(keys.length)
   }

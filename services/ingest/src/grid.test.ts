@@ -121,6 +121,10 @@ test("grid save validates the version, questions and cell structure", () => {
   expect(gridRequest(compared)).toEqual(compared as Grid)
   for (const bad of [{ ...comparison, cells: { "a.docx": { label: "unclear", reason: "?" } } }, { ...comparison, cells: { "a.docx": { label: "differs", reason: "x".repeat(141) } } }, { ...comparison, summary: undefined }])
     expect(gridRequest({ ...valid, columns: [{ ...valid.columns[0]!, comparison: bad }] })).toBeUndefined()
+  const uncompared = { ...valid, columns: [{ ...valid.columns[0]!, compare: false }] }
+  expect(gridRequest(uncompared)).toEqual(uncompared)
+  for (const bad of ["false", 0, null])
+    expect(gridRequest({ ...valid, columns: [{ ...valid.columns[0]!, compare: bad }] })).toBeUndefined()
 })
 
 test("a new comparison beside a reviewed answer saves", () => withMatter((dir) => {

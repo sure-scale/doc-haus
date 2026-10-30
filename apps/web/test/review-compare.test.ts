@@ -33,6 +33,13 @@ test("compares only this column's current answers cited to their own row", () =>
   for (const text of ["Five years", "Gamma.docx", "Delta.docx", "One year", "Ruritania", law]) expect(prompt).not.toContain(text)
 })
 
+test("a column marked not to compare yields nothing to compare; other columns still compare", () => {
+  const flagged = grid()
+  flagged.columns[0] = { ...flagged.columns[0]!, compare: false }
+  expect(comparisonInputs(flagged, "term", rows)).toBeUndefined()
+  expect(inputFor(flagged, "law").documents).toHaveLength(2)
+})
+
 test("the signature follows this column's answers and citations only", () => {
   const before = inputFor(grid()).signature
   const otherColumn = grid()

@@ -3,8 +3,10 @@ import type { Citation } from "../opencode/parts"
 import { ingestError } from "./errors"
 
 // Tabular-review grid. Columns are questions; cells are keyed `<docName>::<colId>`.
-// Rows are the matter's documents, so they are not stored here.
-export type GridColumn = { id: string; question: string; comparison?: GridColumnComparison }
+// Rows are the matter's documents, so they are not stored here. `compare: false`
+// (set from a starter question) keeps a column's answers out of the AI
+// comparison; absent, its answers are compared.
+export type GridColumn = { id: string; question: string; compare?: boolean; comparison?: GridColumnComparison }
 // The AI's grouping of one question's cited answers across documents. Fresh only
 // while `questionHash` and `inputs` (the compared answers' signature) still match.
 // `cells` is keyed by document name; labels are assigned in code, never by the model.

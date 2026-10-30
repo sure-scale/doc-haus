@@ -17,10 +17,11 @@ export type ComparisonResult = Pick<GridColumnComparison, "cells" | "summary">
 // The column's current answers cited to their own row's document, in row order.
 // Uncited answers read "Not found"/"No source" without the model, and an answer
 // to an earlier wording of the question is not this question's, so neither is
-// compared. The signature covers every compared answer and citation.
+// compared. A column marked `compare: false` is never compared, and any stored
+// comparison on it is ignored. The signature covers every compared answer and citation.
 export function comparisonInputs(grid: Grid, columnId: string, rows: ReviewRow[]): ComparisonInput | "too_many" | undefined {
   const column = grid.columns.find(c => c.id === columnId)
-  if (!column) return undefined
+  if (!column || column.compare === false) return undefined
   const questionHash = hashQuestion(column.question)
   const cited = rows.flatMap(row => {
     const key = cellKey(row.name, columnId)
