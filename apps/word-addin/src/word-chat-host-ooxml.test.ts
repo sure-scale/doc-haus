@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { reviewedWordChatInlineControl, importedWordChatDifference, reviewedMixedWordChatArtifact, sameWordChatOoxml, sameWordChatParagraphProperties, sameWordChatReplacementFormatting, uniformWordChatFormatting, verifiedNativeWordChatFormatting, wordChatOoxmlDifference } from "./word-chat-host-ooxml"
+import { reviewedWordChatInlineControl, importedWordChatDifference, reviewedMixedWordChatArtifact, sameWordChatOoxml, sameNativeWordChatParagraphContent, sameWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatReplacementFormatting, uniformWordChatFormatting, verifiedNativeWordChatFormatting, wordChatOoxmlDifference } from "./word-chat-host-ooxml"
 import { reviewedWordChatParagraphFormatting } from "../../../dochaus/lib/word-chat-formatting-ooxml"
 import { DOMParser } from "@xmldom/xmldom"
 
@@ -292,4 +292,19 @@ test("real author preserves original formatting for a mixed-run deletion", async
   const tampered = artifact.ooxml.replace("<w:b/>", "<w:i/>")
   expect(tampered).not.toBe(artifact.ooxml)
   expect(sameWordChatHunkFormatting(source, tampered, hunks)).toBe(false)
+})
+
+
+test("post-format neighbour comparison accepts only validated inline revision ID reassignment", () => {
+  const paragraph = '<w:p><w:pPr><w:spacing w:after="120"/></w:pPr><w:del w:id="3" w:author="Reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:rPr><w:b/></w:rPr><w:delText>old</w:delText></w:r></w:del><w:ins w:id="4" w:author="Reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:t>new</w:t></w:r></w:ins><w:bookmarkStart w:id="9" w:name="mark"/><w:bookmarkEnd w:id="9"/></w:p>'
+  const before = flat(paragraph), after = flat(paragraph.replace('w:id="3"', 'w:id="13"').replace('w:id="4"', 'w:id="14"'))
+  expect(sameWordChatParagraphContent(before, after)).toBe(false)
+  expect(sameNativeWordChatParagraphContent(before, after)).toBe(true)
+  for (const drift of [after.replace('>new<', '>wrong<'), after.replace('w:author="Reviewer"', 'w:author="Other"'), after.replace('2026-01-01', '2026-01-02'), after.replace('<w:b/>', '<w:i/>'), after.replace('w:id="14"', 'w:id="13"'), after.replace('w:id="14"', 'w:id="bad"'), after.replace('w:id="9" w:name="mark"', 'w:id="10" w:name="mark"'), after.replace('w:after="120"', 'w:after="240"')])
+    expect(sameNativeWordChatParagraphContent(before, drift)).toBe(false)
+  const alternatePrefix = after.replace('xmlns:w="' + W + '"', 'xmlns:w="' + W + '" xmlns:ns0="' + W + '"').replace('w:id="13"', 'ns0:id="13"').replace('w:id="14"', 'ns0:id="14"')
+  expect(sameNativeWordChatParagraphContent(before, alternatePrefix)).toBe(true)
+  expect(sameNativeWordChatParagraphContent(before, alternatePrefix.replace('w:author="Reviewer"', 'w:author="Other"'))).toBe(false)
+  const duplicate = flat(paragraph.replace('w:id="4"', 'w:id="3"'))
+  expect(sameNativeWordChatParagraphContent(duplicate, duplicate)).toBe(false)
 })

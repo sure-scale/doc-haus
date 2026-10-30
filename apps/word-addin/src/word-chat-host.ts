@@ -1,6 +1,6 @@
 import type { WordChatAuthoredAmendment, WordChatParagraphFormat, WordChatSnapshot, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { validWordChatFormatting, wordChatApplyPlan } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody } from "./word-chat-host-ooxml"
+import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody } from "./word-chat-host-ooxml"
 import { DOMParser } from "@xmldom/xmldom"
 import { wordChatApplyEligibility } from "./word-chat-apply"
 
@@ -657,7 +657,7 @@ export class WordChatHost {
       checking = "format-paragraph-paths"
       if (confirmed && projection && fresh.projection && !projection.paragraphs.every((p, i) => p.id === fresh.projection!.paragraphs[i]?.id && p.path === fresh.projection!.paragraphs[i]?.path)) { confirmed = false; failedStage = checking }
       checking = "format-neighbours"
-      if (confirmed && !(projection && fresh.projection ? fresh.adjacent.every(p => { const i = projection.paragraphs.findIndex(q => q.id === p.id); return i >= 0 && sameWordChatParagraphContent(p.ooxml, projection.scope([i])) }) : adjacent.every(p => sameWordChatParagraphContent(p.before, p.after.value)))) { confirmed = false; failedStage = checking }
+      if (confirmed && !(projection && fresh.projection ? fresh.adjacent.every(p => { const i = projection.paragraphs.findIndex(q => q.id === p.id); return i >= 0 && sameNativeWordChatParagraphContent(p.ooxml, projection.scope([i])) }) : adjacent.every(p => sameNativeWordChatParagraphContent(p.before, p.after.value)))) { confirmed = false; failedStage = checking }
       checking = "format-revisions"
       const signature = (change: TrackedChange) => JSON.stringify([change.author, change.type, change.text])
       const prior = new Map<string, number>()

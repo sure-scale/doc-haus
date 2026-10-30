@@ -616,6 +616,17 @@ test("native formatting projects the body when an empty neighbor has no Content 
   expect(state.paragraphXml.get("paragraph-1")).toContain('w:after="360"')
 })
 
+test("native formatting permits only matched neighbouring revision ID reassignment", async () => {
+  const { state, host } = formattedOffice(), target = (await host.selection())!
+  const old = '<w:p><w:pPr><w:spacing w:after="180"/></w:pPr><w:del w:id="31" w:author="Earlier" w:date="2026-01-01T00:00:00Z"><w:r><w:delText>Old </w:delText></w:r></w:del><w:ins w:id="32" w:author="Earlier" w:date="2026-01-01T00:00:00Z"><w:r><w:t>Next </w:t></w:r></w:ins><w:r><w:t>paragraph.</w:t></w:r></w:p>'
+  state.paragraphs[4]!.text = "Next paragraph."
+  state.paragraphXml.set("paragraph-4", old)
+  state.afterSync = () => { if (state.nativeFormatting.length) { state.paragraphXml.set("paragraph-4", old.replace('w:id="31"','w:id="41"').replace('w:id="32"','w:id="42"')); state.afterSync = undefined } }
+  expect((await host.apply({ proposalId:"format-neighbor-renumber", target, replacement:target.text,
+    formatting:[{paragraph:target.paragraphs.length - 1,spacingAfter:6}] })).status).toBe("applied")
+  expect(state.nativeFormatting).toHaveLength(1)
+})
+
 test("projected native formatting rejects a neighboring paragraph property change", async () => {
   const { state, host } = formattedOffice(), target = (await host.selection())!
   state.afterSync = () => {

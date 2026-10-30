@@ -325,11 +325,16 @@ function normalizeNativeRevisionIds(before: Element[], after: Element[]) {
   const originalIds = ids(originals), currentIds = ids(observed)
   if (originalIds.some(id => !id || !/^\d+$/.test(id)) || currentIds.some(id => !id || !/^\d+$/.test(id)) ||
     new Set(originalIds).size !== originalIds.length || new Set(currentIds).size !== currentIds.length ||
-    originals.length !== observed.length || originals.some((marks, i) => marks.length !== observed[i]!.length)) return
+    originals.length !== observed.length || originals.some((marks, i) => marks.length !== observed[i]!.length)) return false
   const pairs = originals.flatMap((marks, i) => marks.map((mark, j) => [mark, observed[i]![j]!] as const))
   const withoutId = (node: Element) => { const copy = node.cloneNode(true) as Element; copy.removeAttributeNS(W, "id"); return canonical(copy) }
-  if (pairs.some(([old, current]) => JSON.stringify(withoutId(old)) !== JSON.stringify(withoutId(current)))) return
-  for (const [old, current] of pairs) current.setAttributeNS(W, "w:id", old.getAttributeNS(W, "id")!)
+  if (pairs.some(([old, current]) => JSON.stringify(withoutId(old)) !== JSON.stringify(withoutId(current)))) return false
+  for (const [old, current] of pairs) {
+    const name = current.getAttributeNodeNS(W, "id")!.name
+    current.removeAttributeNS(W, "id")
+    current.setAttributeNS(W, name, old.getAttributeNS(W, "id")!)
+  }
+  return true
 }
 
 /** Verify native paragraph formatting against both the captured source and the
@@ -437,6 +442,17 @@ export function reviewedMixedWordChatArtifact(artifact: WordChatAuthoredAmendmen
 export function sameWordChatParagraphContent(before: string, after: string): boolean {
   const view = (xml: string) => content(parse(xml), true, true).shape.map(node => canonical(node, true))
   return JSON.stringify(view(before)) === JSON.stringify(view(after))
+}
+
+/** After a native formatting write, Word may renumber matching inline
+ * revisions in neighbouring paragraphs. All remaining markup stays exact. */
+export function sameNativeWordChatParagraphContent(before: string, after: string): boolean {
+  const original = content(parse(before), true, true)
+  const observed = content(parse(after), true, true)
+  // The parsed observed package is private to this comparison; normalize its
+  // bound paragraphs in place so the complete shape retains its table wrapper.
+  if (!normalizeNativeRevisionIds(original.nodes, observed.nodes)) return false
+  return JSON.stringify(original.shape.map(node => canonical(node, true))) === JSON.stringify(observed.shape.map(node => canonical(node, true)))
 }
 
 /** The reviewed paragraphs (text and pPr) must be unchanged immediately before
