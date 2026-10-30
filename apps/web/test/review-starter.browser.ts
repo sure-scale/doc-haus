@@ -19,7 +19,7 @@ import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/design-syst
 import ${JSON.stringify(path.resolve(import.meta.dir, "../src/styles/design-review.css"))}
 const params = new URLSearchParams(location.search)
 const id = params.get("matter") || "one"
-const docs = params.has("empty") ? [] : (params.has("long") ? ["long_".repeat(38) + ".docx"] : ["First.docx", "Second.docx"]).map((name, i) => ({ id: i+1, name, doc_path: name, created_at: 0 }))
+const docs = params.has("empty") ? [] : (params.has("long") ? ["long_".repeat(38) + ".docx"] : ["First.docx", "Second.docx"]).map((name, i) => ({ id: i+1, name, doc_path: name, created_at: 0, ...(params.has("deliverable") && i === 1 ? { role: "deliverable" } : {}) }))
 createRoot(document.getElementById("root")).render(createElement(ReviewGrid, { matterId: id, title: id === "one" ? "First matter" : "Second matter", directory: "/synthetic/" + id, documents: docs, onClose: () => {}, onAsk: () => {} }))
 `)
 const build = await Bun.build({ entrypoints: [entry], target: "browser", define: { "import.meta.env": JSON.stringify({ VITE_INGEST_URL: "http://grid.invalid", VITE_OPENCODE_URL: "http://engine.invalid" }) } })
@@ -35,7 +35,7 @@ const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: req => {
 const originalCell = { answer: "Existing answer", status: "reviewed" as const, questionHash: "old", comments: [{ id: "note", text: "Keep this comment", at: 1 }] }
 const initial: Grid = { version: 0, columns: [{ id: "existing", question: "Existing question?" }], cells: { "First.docx::existing": originalCell } }
 const empty: Grid = { version: 0, columns: [], cells: {} }
-const grids: Record<string, Grid> = { one: structuredClone(initial), two: structuredClone(empty), empty: structuredClone(empty), conflict: structuredClone(initial), failure: structuredClone(initial) }
+const grids: Record<string, Grid> = { one: structuredClone(initial), two: structuredClone(empty), empty: structuredClone(empty), conflict: structuredClone(initial), failure: structuredClone(initial), compare: structuredClone(initial) }
 let puts = 0
 let engineCalls = 0
 const prompts: string[] = []
@@ -88,13 +88,25 @@ try {
     }
     return route.fulfill({ status: 500, body: "Unexpected model call" })
   })
+  // Each step names the dialog: the chooser, a starter's example, then its questions.
+  const chooser = page.getByRole("dialog", { name: "Choose a starter" })
+  const example = page.getByRole("dialog", { name: "Example: Compare agreements" })
   const starter = page.getByRole("dialog", { name: "Document overview" })
+  const compare = page.getByRole("dialog", { name: "Compare agreements" })
+  const overviewChoice = chooser.getByRole("radio", { name: /^Document overview/ })
+  const compareChoice = chooser.getByRole("radio", { name: /^Compare agreements/ })
   const reviewFill = page.getByRole("dialog", { name: "Review fill" })
   // A starter is the primary action of a table without questions, and a quiet one otherwise.
   const starterButton = page.getByRole("button", { name: /^(Use a starter|Start with a starter)$/ })
   const primary = page.locator(".review-toolbar .review-primary")
   const open = async (query: string) => { await page.goto(`${server.url.href}${query}`); await starterButton.waitFor() }
-  const showStarter = async () => { await starterButton.click(); await expect(starter).toBeVisible() }
+  const showChooser = async () => { await starterButton.click(); await expect(chooser).toBeVisible() }
+  const showStarter = async () => {
+    await showChooser()
+    await overviewChoice.check()
+    await chooser.getByRole("button", { name: "Continue" }).click()
+    await expect(starter).toBeVisible()
+  }
 
   await open("?matter=one")
   await expect(primary).toHaveCount(1)
@@ -102,6 +114,43 @@ try {
   await expect(page.getByRole("button", { name: "Use a starter", exact: true })).toBeVisible()
   const toolbar = page.locator(".review-toolbar")
   assert.equal(await toolbar.evaluate((node) => node.scrollWidth <= node.clientWidth + 1), true, "the toolbar wraps within a 400px viewport")
+
+  // The chooser preselects the starter that fits the matter's source documents.
+  await showChooser()
+  await expect(compareChoice).toBeChecked()
+  await expect(compareChoice).toBeFocused()
+  await expect(chooser).toContainText("Recommended · 2 documents in this matter")
+  await expect(chooser.getByRole("region", { name: "About Compare agreements" })).toContainText("Which law governs the agreement")
+  await expect(chooser.getByRole("button", { name: /^(Continue|Add questions)$/ })).toHaveCount(1)
+  const chooserBox = await chooser.boundingBox()
+  assert.ok(chooserBox && chooserBox.x >= 0 && chooserBox.x + chooserBox.width <= 400, "chooser must fit a 400px viewport")
+  await page.keyboard.press("ArrowUp")
+  await expect(overviewChoice).toBeChecked()
+  await expect(chooser.getByRole("region", { name: "About Document overview" })).toBeVisible()
+  await expect(chooser.getByRole("button", { name: "See example" })).toHaveCount(0)
+  await page.keyboard.press("Tab")
+  assert.equal(await chooser.evaluate(el => el.contains(document.activeElement)), true, "keyboard focus stays in the chooser")
+  await page.keyboard.press("Escape")
+  await expect(chooser).toHaveCount(0)
+
+  // The example is read-only: it opens, shows a cited passage and returns to the chooser.
+  await showChooser()
+  await chooser.getByRole("button", { name: "See example" }).click()
+  await expect(example).toBeVisible()
+  await expect(example).toContainText("Fictional example")
+  await expect(example.getByRole("region", { name: "Example review table" }).getByRole("columnheader")).toHaveCount(6)
+  await example.locator(".review-example-cell button", { hasText: "Differs" }).click()
+  await expect(example.getByRole("region", { name: "Selected answer" })).toContainText("AI comparison: Differs")
+  await expect(example.locator(".citation .excerpt")).toContainText("limited to £250,000 in aggregate")
+  await example.getByRole("button", { name: "Back" }).click()
+  await expect(chooser).toBeVisible()
+  await expect(compareChoice).toBeChecked()
+  assert.equal(puts, 0, "the chooser and example must not write")
+  assert.equal(engineCalls, 0, "the chooser and example must not call a model")
+  await page.keyboard.press("Escape")
+  await expect(chooser).toHaveCount(0)
+  assert.deepEqual(grids.one, initial)
+
   await showStarter()
   await expect(starter).toContainText("First matter")
   await expect(starter).toContainText("First.docx")
@@ -179,6 +228,32 @@ try {
   await expect(starter.getByRole("button", { name: "Add questions" })).toBeDisabled()
   await starter.getByRole("button", { name: "Cancel" }).click()
   assert.equal(puts, 1)
+
+  // A starter whose source documents are mostly deliverables recommends the overview.
+  await open("?matter=two&deliverable=1")
+  await showChooser()
+  await expect(overviewChoice).toBeChecked()
+  await expect(chooser).toContainText("Recommended · 1 source document in this matter")
+  await chooser.getByRole("button", { name: "Cancel" }).click()
+  await expect(chooser).toHaveCount(0)
+
+  // From the example, Use with my matter opens the questions; Add questions only appends.
+  await open("?matter=compare")
+  await showChooser()
+  await chooser.getByRole("button", { name: "See example" }).click()
+  await example.getByRole("button", { name: "Use with my matter" }).click()
+  await expect(compare).toBeVisible()
+  await expect(compare).toContainText("10 pending cells")
+  await compare.getByRole("button", { name: "Back" }).click()
+  await expect(compareChoice).toBeChecked()
+  await chooser.getByRole("button", { name: "Continue" }).click()
+  await compare.getByRole("button", { name: "Add questions" }).click()
+  await expect(compare).toHaveCount(0)
+  await expect.poll(() => grids.compare!.columns.length).toBe(6)
+  assert.equal(grids.compare!.columns[0]!.question, "Existing question?")
+  assert.equal(grids.compare!.columns[5]!.question, "Which law governs the agreement, and how are disputes resolved?")
+  assert.deepEqual(grids.compare!.cells, initial.cells, "adding a starter keeps every existing answer and comment")
+  assert.equal(engineCalls, 0, "adding starter questions must not call a model")
 
   await open("?matter=failure")
   await showStarter()
@@ -258,7 +333,7 @@ try {
   const fillBody = reviewFill.locator(".review-starter-body")
   await expect(reviewFill.getByRole("heading", { name: `${"long_".repeat(38)}.docx` })).toBeVisible()
   assert.equal(await fillBody.evaluate((node) => node.scrollWidth <= node.clientWidth + 1), true, "long document names wrap without horizontal overflow")
-  console.log("PASS starter preview and keyboard, safe append and reload, isolation, duplicate handling, Fill disclosure and dispatched targets, changed documents, stale versions, and save failures")
+  console.log("PASS starter chooser recommendation and keyboard, read-only example, starter preview and keyboard, safe append and reload, isolation, duplicate handling, Fill disclosure and dispatched targets, changed documents, stale versions, and save failures")
 } finally {
   await browser.close()
   server.stop(true)

@@ -3,7 +3,7 @@ import ModalHeader from "./ModalHeader"
 import backdropClose from "./backdropClose"
 
 // A native nested dialog keeps keyboard focus within the current review step.
-export default function ReviewSetupDialog({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+export default function ReviewSetupDialog({ title, wide, onClose, children }: { title: string; wide?: boolean; onClose: () => void; children: ReactNode }) {
   const dialog = useRef<HTMLDialogElement>(null)
   useLayoutEffect(() => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -22,7 +22,7 @@ export default function ReviewSetupDialog({ title, onClose, children }: { title:
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
     }}>
-      <div className="picker-panel review-starter" onClick={(event) => event.stopPropagation()}>
+      <div className={`picker-panel review-starter${wide ? " is-wide" : ""}`} onClick={(event) => event.stopPropagation()}>
         <ModalHeader title={title} onClose={onClose} />
         <div className="picker-body review-starter-body">{children}</div>
       </div>

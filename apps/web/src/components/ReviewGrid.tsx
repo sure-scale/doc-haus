@@ -21,7 +21,8 @@ import DocumentViewer from "./DocumentViewer"
 import { citationDocument } from "./citation-target"
 import { WordWarning } from "./WordDocuments"
 import useReviewGridPresence from "./useReviewGridPresence"
-import ReviewStarter, { normaliseStarterQuestion } from "./ReviewStarter"
+import ReviewStarter from "./ReviewStarter"
+import { normaliseStarterQuestion } from "../review-starters"
 import FillPreview from "./FillPreview"
 import { FilterSummary, ReviewToolbar } from "./ReviewAttention"
 import { MARKER_LOOK, ReviewMarker } from "./ReviewMarker"
@@ -728,7 +729,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
         {error && <p role="alert">{error}</p>}
         {saveProblem && <div role="alert"><p>{saveProblem}</p><p>Export the table above or download your local copy before reloading the saved table.</p><button type="button" onClick={downloadPending}>Download unsaved copy</button> <button type="button" disabled={reloading} onClick={reloadGrid}>{reloading ? "Reloading…" : "Reload saved table"}</button></div>}
 
-        {starterOpen && <ReviewStarter matterName={title} documents={documents.map((doc) => doc.name)} existingQuestions={grid.columns.map((column) => column.question)} problem={saveProblem ?? error} onCancel={() => setStarterOpen(false)} onConfirm={addStarterQuestions} />}
+        {starterOpen && <ReviewStarter matterName={title} documents={documents} existingQuestions={grid.columns.map((column) => column.question)} problem={saveProblem ?? error} onCancel={() => setStarterOpen(false)} onConfirm={addStarterQuestions} />}
         {fillPreview && <FillPreview targets={fillPreview} checking={checkingFill} onCancel={() => setFillPreview(undefined)} onConfirm={confirmFill} />}
 
         {grid.columns.length === 0 && (

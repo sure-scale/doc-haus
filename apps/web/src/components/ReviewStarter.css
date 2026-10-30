@@ -1,10 +1,72 @@
 .picker-panel.review-starter { width: 100%; max-width: 680px; }
+.review-detail-modal .picker-panel.review-starter.is-wide { width: min(1120px, 100%); max-width: none; }
 .review-starter-body { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; overflow-wrap: anywhere; }
 .review-starter-body p, .review-starter-body h3 { margin: 0; }
 .review-starter-body h3 { font-size: 1rem; }
 .review-starter-body section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .review-starter-body ul { margin: 0; padding-left: 1.5rem; overflow-wrap: anywhere; }
 .review-starter-question { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+.review-starter-question-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); align-self: stretch; }
+.review-starter-question-head button.ghost { min-height: 32px; padding: var(--space-1) var(--space-2); font-size: .875rem; }
 .review-starter-question textarea { box-sizing: border-box; width: 100%; min-width: 0; resize: vertical; }
 .review-starter-question p { color: var(--muted); font-size: .875rem; }
-.review-starter-body .compare-actions { flex-wrap: wrap; }
+.review-starter-body .compare-actions { flex-wrap: wrap; margin-top: var(--space-2); }
+
+/* One view per step; the view takes focus when the step changes. */
+.review-starter-step { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.review-starter-step:focus { outline: none; }
+.review-starter-back { margin-right: auto; }
+/* The step's actions stay in view while its content scrolls. */
+.review-starter-body .review-starter-step > .compare-actions { position: sticky; bottom: calc(-1 * var(--space-3)); z-index: 2; margin: 0 calc(-1 * var(--space-3)) calc(-1 * var(--space-3)); padding: var(--space-3); border-top: 1px solid var(--border); background: var(--panel); }
+
+/* Choose: a short list beside a preview of the highlighted starter. */
+.review-starter-choose { display: grid; grid-template-columns: minmax(176px, 220px) minmax(0, 1fr); gap: var(--space-6); align-items: start; padding-block: var(--space-1); }
+.review-starter-choices { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; margin: 0; padding: 0; border: 0; }
+.review-starter-choice { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); cursor: pointer; transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out); }
+.review-starter-choice:hover { background: var(--panel-hover); }
+.review-starter-choice.is-selected { border-color: var(--accent-border); background: var(--accent-soft); }
+.review-starter-choice:has(input:focus-visible) { outline: 2px solid var(--md-sys-state-focus, var(--accent)); outline-offset: 2px; }
+.review-starter-choice input { flex: none; margin: 2px 0 0; }
+.review-starter-choice input:focus, .review-starter-choice input:focus-visible { outline: none; }
+.review-starter-choice-name { display: block; font-weight: 600; line-height: 1.4; }
+.review-starter-choice-reason { display: block; margin-top: 2px; color: var(--text-secondary); font-size: .8rem; line-height: 1.45; }
+.review-starter-choice-reason strong { color: var(--accent); font-weight: 600; }
+.review-starter-body .review-starter-preview { gap: var(--space-3); padding-left: var(--space-6); border-left: 1px solid var(--border); line-height: 1.55; }
+.review-starter-preview dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-2) var(--space-4); margin: 0; }
+.review-starter-preview dt { color: var(--text-secondary); font-weight: 600; }
+.review-starter-preview dd { margin: 0; }
+.review-starter-preview-questions { margin: 0; padding-left: 1.25rem; color: var(--text-secondary); font-size: .9rem; }
+.review-starter-preview-questions li + li { margin-top: 2px; }
+.review-starter-limits { color: var(--muted); font-size: .85rem; }
+.review-starter-body .review-starter-example-link { align-self: flex-start; min-height: 0; font-weight: 600; }
+@media (max-width: 640px) {
+  .review-starter-choose { grid-template-columns: minmax(0, 1fr); gap: var(--space-5); }
+  .review-starter-body .review-starter-preview { padding: var(--space-5) 0 0; border-left: 0; border-top: 1px solid var(--border); }
+}
+
+/* Example: a small read-only table; the selected answer's detail sits below. */
+.review-example { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
+.review-starter-body .review-example-note { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: var(--info-soft); color: var(--info); font-size: .875rem; }
+.review-example-scroll { max-height: none; }
+.review-table.review-example-table { font-size: .85rem; line-height: 1.5; }
+.review-table.review-example-table th, .review-table.review-example-table td { min-width: 0; padding: var(--space-3); overflow-wrap: break-word; }
+.review-table.review-example-table thead th { position: static; font-size: .8rem; line-height: 1.45; }
+.review-table.review-example-table .review-doc-col { width: 180px; min-width: 0; font-size: .85rem; }
+.review-table.review-example-table td.review-example-cell { padding: 0; }
+.review-example-cell > button { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1); width: 100%; height: 100%; min-height: 0; padding: var(--space-3); border: 0; border-radius: 0; background: transparent; color: var(--text); font-weight: 400; text-align: left; white-space: normal; }
+.review-example-cell > button:hover:not(:disabled) { border: 0; background: var(--panel-hover); }
+.review-example-cell > button:focus-visible { outline-offset: -2px; }
+.review-table tbody tr td.review-example-cell.is-selected, .review-table tbody tr:hover td.review-example-cell.is-selected { background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent); }
+.review-example-cell.is-selected > button:hover:not(:disabled) { background: transparent; }
+.review-example-answer { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
+.review-example-cell .review-cite { font-size: .78rem; }
+.review-example-cell .review-marker { margin-left: 0; padding: 0; min-height: 20px; }
+.review-starter-body .review-example-detail { gap: var(--space-2); min-height: 2.5rem; scroll-margin-block: var(--space-4) 5rem; }
+.review-example-detail .review-detail-answer { margin: 0; font-size: .95rem; line-height: 1.6; }
+.review-example-detail .review-source { margin-top: var(--space-1); }
+.review-example-comparison { color: var(--text-secondary); font-size: .9rem; }
+.review-example-comparison strong { color: var(--text); font-weight: 600; }
+.review-example-hint { color: var(--muted); font-size: .875rem; }
+@media (max-width: 700px) {
+  .review-table.review-example-table .review-doc-col { width: 148px; }
+}
