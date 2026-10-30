@@ -1,5 +1,5 @@
 {
-  "version": 20,
-  "name": "2.1.0",
-  "notes": "Build and review source-linked matter chronologies with a timeline, evidence excerpts, qualified dates and safe updates that preserve lawyer work. Create custom dashboards with live matter activity and charts. Start document-overview review tables and save review work more safely when changes overlap. Attach documents in library conversations, set optional firm practice areas, and use the streamlined setup and settings. Shared menus, overlays and approval controls are clearer and more consistent."
+  "version": 21,
+  "name": "2.1.1",
+  "notes": "Compare agreements in review tables: start from ready questions with a fictional worked example, and after Fill AI compares each question's answers across your documents and marks those that differ. Each answer shows one clear marker, and Review next walks you through flagged answers first. Suggest review questions with AI, preview chat workflows before they start, and set and test how many AI requests run in parallel. Small UI improvements and minor bug fixes."
 }
