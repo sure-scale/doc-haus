@@ -148,9 +148,12 @@ function NeedsAttention({ model, checking, filter, onFilter }: { model: ReviewAt
   )
 }
 
-// A column header's comparison, in a word, as a disclosure: the AI summary and
-// each differing document, which opens that cell. Escape returns focus to the
-// trigger; arrows move between the documents.
+// What a column's AI comparison is and is not, in one line, for its header.
+export const COMPARE_HELP = "One AI call compares the cited answers across documents. It does not check legal correctness."
+
+// A column header's comparison, in a few words, as a disclosure: the AI summary
+// and each differing document, which opens that cell. Escape returns focus to
+// the trigger; arrows move between the documents.
 export function CompareSummary({ comparison, onOpen }: { comparison: GridColumnComparison; onOpen: (docName: string) => void }) {
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement>(null)
@@ -159,7 +162,9 @@ export function CompareSummary({ comparison, onOpen }: { comparison: GridColumnC
   const id = useId()
   const differing = Object.entries(comparison.cells).filter(([, cell]) => cell.label === "differs")
   const total = Object.keys(comparison.cells).length
-  const label = differing.length ? `${differing.length} of ${total} ${differing.length === 1 ? "differs" : "differ"}` : "Consistent"
+  const result = differing.length
+    ? `${differing.length} of ${total} ${differing.length === 1 ? "differs" : "differ"}`
+    : total === 2 ? "both agree" : `all ${total} agree`
   const [place, setPlace] = useState<{ top: number; left: number }>()
 
   // Fixed, so the table's scroll area cannot clip it: under the trigger, kept
@@ -215,11 +220,14 @@ export function CompareSummary({ comparison, onOpen }: { comparison: GridColumnC
         if (open && next && !root.current?.contains(next)) setOpen(false)
       }}
     >
-      <button ref={trigger} type="button" className={`review-compare-trigger${differing.length ? " has-differs" : ""}`} aria-label={`${label}, AI comparison`} aria-expanded={open} aria-controls={id} onClick={() => setOpen((value) => !value)}>
-        {differing.length > 0 && <MarkerGlyph state="differs" />}
-        {label}
-        <span className="review-ai-tag">AI</span>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+      {/* A native title, not Tooltip: Tooltip takes Escape while shown, and Escape closes this panel. */}
+      <button ref={trigger} type="button" className={`review-compare-trigger${differing.length ? " has-differs" : ""}`} title={COMPARE_HELP} aria-expanded={open} aria-controls={id} onClick={() => setOpen((value) => !value)}>
+        {/* Each phrase stays whole, the marker with the first and the chevron with the last, so a
+            narrow header wraps between them. */}
+        <span className="review-compare-text">
+          <span>{differing.length > 0 && <MarkerGlyph state="differs" />}AI comparison:</span>{" "}
+          <span>{result}<svg className="review-compare-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg></span>
+        </span>
       </button>
       <div id={id} ref={panel} className="review-compare-menu" role="group" aria-label="AI comparison" hidden={!open} style={place}>
         <p className="review-compare-summary">{comparison.summary}<span className="review-ai-tag">AI</span></p>

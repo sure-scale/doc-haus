@@ -27,7 +27,7 @@ import { normaliseStarterQuestion, REVIEW_STARTERS } from "../review-starters"
 import FillPreview from "./FillPreview"
 import ReviewQuestion from "./ReviewQuestion"
 import ReviewScroll from "./ReviewScroll"
-import { CompareSummary, FilterSummary, ReviewToolbar } from "./ReviewAttention"
+import { COMPARE_HELP, CompareSummary, FilterSummary, ReviewToolbar } from "./ReviewAttention"
 import { MARKER_LOOK, MarkerGlyph, ReviewMarker } from "./ReviewMarker"
 
 // Tabular review: rows are the matter's documents, columns are natural-language
@@ -839,21 +839,22 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   const detailDiffers = detailCompared?.label === "differs" && !(inWalk && walkReason && walkEntry?.marker?.state === "differs") ? detailCompared.reason : undefined
   // The header's one quiet line on its comparison: the summary, which opens the
   // differing cells, or why there is none and, where one can run, a compare.
-  // While cells fill it waits: the comparison follows the fill.
+  // While cells fill it waits: the comparison follows the fill. Every state
+  // names the AI comparison; the action keeps to one unbroken phrase.
   const compareLine = (col: GridColumn) => {
     const input = compareInputs.get(col.id)
     if (!input) return null
-    if (input === "too_many") return <p className="review-compare-note">Not compared: more than {MAX_COMPARE_DOCUMENTS} documents</p>
-    if (comparing.has(col.id)) return <p className="review-compare-note">Comparing answers…</p>
+    if (input === "too_many") return <p className="review-compare-note">No AI comparison: more than {MAX_COMPARE_DOCUMENTS} documents</p>
+    if (comparing.has(col.id)) return <p className="review-compare-note">Comparing with AI…</p>
     const fresh = comparisonOf(col)
     if (fresh) return <CompareSummary comparison={fresh} onOpen={(docName) => openDetail(docName, col.id)} />
     if (running > 0) return null
     const failed = compareFailed.has(col.id)
     return (
       <p className="review-compare-note">
-        {failed ? "Could not compare · " : col.comparison ? "Comparison out of date · " : ""}
-        <button type="button" className="linklike" disabled={!canEdit} title="One AI call compares the cited answers across documents" onClick={() => void compareColumns([col.id], saveState.current.epoch)}>
-          {failed || col.comparison ? "Compare again" : "Compare answers"}
+        {failed ? "Could not compare · " : col.comparison ? "AI comparison out of date · " : ""}
+        <button type="button" className="linklike" disabled={!canEdit} title={COMPARE_HELP} onClick={() => void compareColumns([col.id], saveState.current.epoch)}>
+          {failed ? "Try again" : col.comparison ? "Compare again" : "Compare with AI"}
         </button>
       </p>
     )
@@ -927,7 +928,8 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
           <p className="review-hint">Use + to add a question for every document.</p>
         )}
         <ReviewScroll>
-          <table className={`review-table${grid.columns.length === 0 ? " is-empty" : ""}`} style={shownColumns.length ? { minWidth: 304 + shownColumns.length * 280 } : undefined} aria-label="Document review">
+          {/* Column widths are the stylesheet's: the Document column narrows on small screens. */}
+          <table className={`review-table${grid.columns.length === 0 ? " is-empty" : ""}`} style={shownColumns.length ? { minWidth: `calc(var(--review-doc-w) + var(--review-add-w) + ${shownColumns.length} * var(--review-answer-w))` } : undefined} aria-label="Document review">
             <thead>
               <tr>
                 <th className="review-doc-col" scope="col">Document</th>
@@ -989,8 +991,10 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                               )}
                             </button>
                             <ReviewMarker entry={entry} recheck={cell.recheck && recheckOutcome(cell.recheck)} onOpen={() => openDetail(doc.name, col.id)} />
-                            {/* Comments show only when there are some; a first comment is added in the answer detail.
-                                Re-run and an open padlock appear on hover or focus; a closed padlock always shows. */}
+                            {/* Along the cell's bottom edge. Comments sit bottom left, only when there are some; a
+                                first comment is added in the answer detail. Re-run and the padlock sit bottom right,
+                                the padlock in the corner: an open one and Re-run appear on hover or focus, a closed
+                                one always shows. */}
                             <div className="review-cell-actions">
                               {!!cell.comments?.length && (
                                 <button
@@ -1011,6 +1015,11 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                                   {cell.comments.length}
                                 </button>
                               )}
+                              {cell.status !== "reviewed" && (
+                                <button className="icon-btn is-quiet review-rerun" aria-label="Re-run this cell" title="Re-run this cell" disabled={!canEdit || running > 0} onClick={() => fill([{ docName: doc.name, column: col }])}>
+                                  <RefreshIcon />
+                                </button>
+                              )}
                               <button
                                 className={`icon-btn review-lock${cell.status === "reviewed" ? " locked" : " is-quiet"}`}
                                 disabled={!canEdit}
@@ -1021,11 +1030,6 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                               >
                                 <LockIcon open={cell.status !== "reviewed"} />
                               </button>
-                              {cell.status !== "reviewed" && (
-                                <button className="icon-btn is-quiet" aria-label="Re-run this cell" title="Re-run this cell" disabled={!canEdit || running > 0} onClick={() => fill([{ docName: doc.name, column: col }])}>
-                                  <RefreshIcon />
-                                </button>
-                              )}
                             </div>
                           </div>
                         )}

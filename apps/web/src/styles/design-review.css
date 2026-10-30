@@ -70,11 +70,15 @@
 /* Separate borders stay attached to their sticky headers during scrolling.
    Fixed table layout keeps long answers from widening unrelated columns. */
 .review-table { border-collapse: separate; border-spacing: 0; width: 100%; table-layout: fixed; font-size: .9rem; line-height: 1.6; }
-.review-table th, .review-table td { min-width: 220px; padding: var(--space-4); border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+/* Column widths, shared with the table's minimum width set in ReviewGrid. */
+.review-table { --cell-pad: var(--space-4); --cell-actions-h: 28px; --review-doc-w: 240px; --review-add-w: 64px; --review-answer-w: 280px; }
+/* Narrow widths are sized against the scroll area, not the window. */
+.review-scroll-frame > .review-scroll { container-type: inline-size; }
+.review-table th, .review-table td { min-width: 220px; padding: var(--cell-pad); border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
 .review-table th:last-child, .review-table td:last-child { border-right: none; }
 .review-table tbody tr:last-child td, .review-table tbody tr:last-child th { border-bottom: none; }
 .review-table thead th { position: sticky; top: 0; z-index: 2; color: var(--text-secondary); background: var(--md-sys-color-surface-container-low); font-size: .85rem; font-weight: 600; }
-.review-table .review-doc-col { position: sticky; left: 0; z-index: 1; width: 240px; min-width: 200px; background: var(--panel); color: var(--text); font-weight: 600; }
+.review-table .review-doc-col { position: sticky; left: 0; z-index: 1; width: var(--review-doc-w); min-width: 200px; background: var(--panel); color: var(--text); font-weight: 600; }
 .review-table thead .review-doc-col { z-index: 3; background: var(--md-sys-color-surface-container-low); }
 .review-table tbody tr:hover td, .review-table tbody tr:hover th { background: var(--md-sys-color-surface-container-low); }
 .review-col-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); }
@@ -84,17 +88,21 @@
 /* The column's answer comparison: one quiet line under the question, on its
    left edge, opening a small disclosure with the AI summary and the differing
    cells. Words and the Differs shape carry it; tone is the second cue. */
-.review-compare-note { margin: var(--space-1) 0 0; padding-block: calc((24px - 1.5em) / 2); color: var(--muted); font-size: .78rem; font-weight: 500; line-height: 1.5; }
-.review-compare-note .linklike { min-height: 0; font-size: inherit; font-weight: 600; line-height: inherit; }
+/* Its action stays one phrase; on a narrow column it takes the next line,
+   centred in its touch target there. */
+.review-compare-note { display: flex; flex-wrap: wrap; align-items: center; column-gap: .3em; margin: var(--space-1) 0 0; padding-block: calc((24px - 1.5em) / 2); color: var(--muted); font-size: .78rem; font-weight: 500; line-height: 1.5; }
+.review-compare-note .linklike { min-height: 0; font-size: inherit; font-weight: 600; line-height: inherit; white-space: nowrap; }
 .review-compare { margin-top: var(--space-1); }
 /* Above the sticky document column's header while its comparison is open. */
 .review-table thead th:has(.review-compare-trigger[aria-expanded="true"]) { z-index: 4; }
 .review-compare-trigger { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; margin-left: calc(-1 * var(--space-1)); padding: 0 var(--space-1); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); box-shadow: none; font-size: .78rem; font-weight: 600; transform: none; }
 .review-compare-trigger.has-differs { color: var(--info); }
 .review-compare-trigger:hover:not(:disabled) { border: 0; background: var(--panel-hover); }
-.review-compare-trigger .review-ai-tag { margin-left: 0; }
-.review-compare-trigger svg:last-child { flex: none; color: var(--muted); }
-.review-compare-trigger[aria-expanded="true"] svg:last-child { transform: rotate(180deg); }
+.review-compare-text { line-height: 1.5; text-align: left; }
+.review-compare-text > span { white-space: nowrap; }
+.review-compare-text .review-glyph { display: inline-block; margin-right: 6px; vertical-align: middle; }
+.review-compare-chevron { display: inline-block; margin-left: 4px; color: var(--muted); vertical-align: middle; }
+.review-compare-trigger[aria-expanded="true"] .review-compare-chevron { transform: rotate(180deg); }
 .review-compare-menu { position: fixed; z-index: var(--z-popover); display: flex; flex-direction: column; gap: 2px; width: min(360px, calc(var(--viewport-inline) - 32px)); max-height: min(360px, 50vh); padding: 6px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); box-shadow: var(--shadow-md); }
 .review-compare-menu[hidden] { display: none; }
 .review-compare-summary { margin: 0; padding: var(--space-2) var(--space-3); color: var(--text); font-size: .85rem; font-weight: 500; line-height: 1.5; }
@@ -114,10 +122,15 @@
 /* Four lines in the cell; the source line stays below and the detail has it all. */
 .review-answer-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; line-clamp: 4; overflow: hidden; }
 .review-recheck-detail { margin: 0 0 var(--space-4); color: var(--muted); font-size: .9rem; }
-/* Icon actions: a reviewed cell's closed padlock always shows; re-run and the
-   open padlock appear on hover or focus. They fade by opacity only, so they
-   stay in the tab order. */
-.review-cell-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1); min-height: 28px; padding-top: var(--space-1); font-size: .8rem; }
+/* Icon actions along the cell's bottom edge, so a row's icons line up whatever
+   each answer's length: comments bottom left, re-run and the padlock bottom
+   right with the padlock in the corner. A reviewed cell's closed padlock always
+   shows; re-run and the open padlock appear on hover or focus. They fade by
+   opacity only, so they stay in the tab order. The answer keeps clear of them,
+   and each icon's glyph sits on the cell's content edge. */
+.review-cell { position: relative; }
+.review-cell-body { padding-bottom: calc(var(--cell-actions-h) - 6px + var(--space-1)); }
+.review-cell-actions { position: absolute; right: calc(var(--cell-pad) - 6px); bottom: calc(var(--cell-pad) - 6px); left: calc(var(--cell-pad) - var(--space-1)); display: flex; align-items: center; justify-content: flex-end; gap: var(--space-1); font-size: .8rem; }
 .review-cell-actions .icon-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 28px; padding: 0 var(--space-1); border-color: transparent; border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); opacity: 1; font-size: .78rem; transition: opacity var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out); }
 .review-cell-actions .icon-btn:hover:not(:disabled) { border-color: transparent; background: var(--accent-soft); color: var(--accent); }
 .review-cell-actions .icon-btn:disabled { opacity: .5; }
@@ -125,7 +138,7 @@
 .review-cell:is(:hover, :focus-within) .review-cell-actions .icon-btn.is-quiet { opacity: 1; }
 .review-cell:is(:hover, :focus-within) .review-cell-actions .icon-btn.is-quiet:disabled { opacity: .5; }
 .review-cell-actions .review-lock.locked { color: var(--accent); }
-.review-cell-actions .review-note { gap: var(--space-1); padding-inline: var(--space-2); }
+.review-cell-actions .review-note { gap: var(--space-1); margin-right: auto; padding-inline: var(--space-1); }
 /* One marker per cell: shape, tone and word. Its reason is in the tooltip and
    the cell's detail. A cell without a state shows nothing extra. */
 .review-marker { display: inline-flex; align-self: flex-start; align-items: center; gap: 6px; min-height: 24px; margin-left: calc(-1 * var(--space-1)); padding: 0 var(--space-1); border: 0; border-radius: var(--radius-sm); background: transparent; font-size: .78rem; font-weight: 600; white-space: nowrap; }
@@ -147,7 +160,7 @@
 .review-source-badge:is(.is-missing, .is-other_document) { border-color: var(--danger-border); background: var(--danger-soft); color: var(--danger); }
 .review-cell-fill { width: 100%; min-height: 40px; padding: var(--space-2); border: 1px dashed var(--md-sys-color-outline); border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); font-size: .85rem; }
 .review-cell-fill:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-tint); color: var(--accent); }
-.review-table .review-add-col { width: 64px; min-width: 64px; padding: var(--space-3); text-align: center; }
+.review-table .review-add-col { width: var(--review-add-w); min-width: var(--review-add-w); padding: var(--space-3); text-align: center; }
 .review-table.is-empty .review-add-col { width: auto; }
 .review-table.is-empty .review-doc-col { width: 40%; }
 .review-table.is-empty tbody .review-add-col { background: var(--accent-tint); }
@@ -234,8 +247,11 @@
 @media (max-width: 700px) {
   .review-modal { width: calc(var(--viewport-inline) - 24px); height: calc(var(--viewport-block) - 24px); max-height: calc(var(--viewport-block) - 24px); margin: var(--space-3) auto; }
   .review-modal > .card.review { padding: var(--space-4); }
-  .review-table .review-doc-col { width: 200px; min-width: 180px; }
-  .review-table th, .review-table td { padding: var(--space-3); }
+  /* The Document column gives way first, so the first answer column, its
+     icons included, fits beside it without scrolling sideways. */
+  .review-table { --cell-pad: var(--space-3); --review-doc-w: clamp(112px, 100cqw - 280px, 200px); --review-answer-w: clamp(184px, 100cqw - var(--review-doc-w), 280px); }
+  .review-table th, .review-table td { min-width: 0; }
+  .review-table .review-doc-col { min-width: 0; }
   .review-toolbar { align-items: stretch; }
   .review-toolbar-actions { justify-content: flex-start; width: 100%; margin-left: 0; }
   .review-toolbar .matter-search { flex: 1 1 100%; max-width: none; }
@@ -252,13 +268,11 @@
   /* No hover on touch: every cell action shows. */
   .review-cell-actions .icon-btn.is-quiet { opacity: 1; }
   .review-cell-actions .icon-btn.is-quiet:disabled { opacity: .5; }
-  .review-table .review-add-col { width: 68px; min-width: 68px; }
+  .review-table { --cell-actions-h: max(44px, calc(44px / var(--ui-scale))); --review-add-w: 68px; }
   .review-col-q, .review-compare-trigger { min-height: max(44px, calc(44px / var(--ui-scale))); }
 }
-/* On a phone the document column gives way, so an answer and its column's
-   comparison fit beside it. */
 @media (max-width: 480px) {
-  .review-table .review-doc-col { width: 128px; min-width: 0; font-size: .85rem; }
+  .review-table .review-doc-col { font-size: .85rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .review-running::before { animation: none; }

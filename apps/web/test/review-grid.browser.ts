@@ -808,7 +808,7 @@ try {
   const head = page.locator("thead th").filter({ hasText: "What is the governing law?" })
   const sideRow = page.getByRole("row", { name: /^Side letter\.docx/ })
   const differsMarker = sideRow.locator(".review-marker", { hasText: "Differs" })
-  await head.getByRole("button", { name: "Compare answers", exact: true }).waitFor()
+  await head.getByRole("button", { name: "Compare with AI", exact: true }).waitFor()
   assert.equal(compareSessions.length, 0, "opening the table compares nothing")
   assert.equal(await primary.textContent(), "Fill 4 cells")
   await primary.click()
@@ -825,12 +825,12 @@ try {
   await Promise.all(fillHeld.splice(0).map(route => route.fulfill({ status: 204 })))
   await toolbar.getByText("Comparing 1 question", { exact: true }).waitFor()
   assert.equal(await toolbar.getByText(/Extracting/).count(), 0, "comparing is counted apart from extracting")
-  await head.getByText("Comparing answers…", { exact: true }).waitFor()
+  await head.getByText("Comparing with AI…", { exact: true }).waitFor()
   const firstCompare = await heldCompare()
   assert.equal(compareSessions.length, 1, "one compare for the one filled question")
   assert.equal(await primary.count(), 1)
   await firstCompare.fulfill({ status: 204 })
-  const summary = head.getByRole("button", { name: /^1 of \d+ differs/ })
+  const summary = head.getByRole("button", { name: /^AI comparison: 1 of \d+ differs/ })
   await summary.waitFor()
   await toolbar.getByText(/Comparing/).waitFor({ state: "detached" })
   await differsMarker.waitFor()
@@ -874,10 +874,10 @@ try {
   console.log("PASS a reviewed Fill compares the question once, marks the differing cell and deletes the session")
 
   // A changed answer puts the comparison out of date: no Differs marker, and a
-  // quiet Compare again. A failed compare stores nothing and stays quiet.
+  // quiet Compare again. A failed compare stores nothing, stays quiet and offers Try again.
   await page.getByRole("row", { name: /^Old note\.docx/ }).getByTitle("Re-run this cell").click()
   await page.getByRole("row", { name: /^Old note\.docx/ }).getByRole("button", { name: "New extracted answer" }).waitFor()
-  await head.getByText("Comparison out of date ·", { exact: false }).waitFor()
+  await head.getByText("AI comparison out of date ·", { exact: false }).waitFor()
   assert.equal(await differsMarker.count(), 0, "an out-of-date comparison marks nothing")
   assert.equal(compareSessions.length, 1, "a single cell's Refresh does not compare")
   compareReply = "not a comparison"
@@ -887,13 +887,13 @@ try {
   assert.equal(await page.getByRole("alert").count(), 0, "a failed compare raises no alert")
   assert.equal(storedGrid.columns[0]!.comparison?.comparedAt, stored?.comparedAt, "a failed compare stores nothing")
   compareReply = replyFor([[["Supply terms.docx"], "English law governs."], [["Side letter.docx"], "Scots law governs."]], "The two cited answers choose different laws.")
-  await head.getByRole("button", { name: "Compare again", exact: true }).click()
-  await head.getByRole("button", { name: /^2 of \d+ differ\b/ }).waitFor()
+  await head.getByRole("button", { name: "Try again", exact: true }).click()
+  await head.getByRole("button", { name: /^AI comparison: 2 of \d+ differ\b/ }).waitFor()
   await differsMarker.waitFor()
   await page.waitForTimeout(100)
   assert.equal(compareSessions.length, 3)
   assert.deepEqual(compareDeleted, compareSessions, "every compare session is deleted, failed ones included")
-  console.log("PASS a changed answer puts the comparison out of date; Compare again runs once and fails quietly")
+  console.log("PASS a changed answer puts the comparison out of date; Compare again runs once and fails quietly, then Try again")
 
   // An answer that changes while its question is compared drops the result,
   // leaving the column uncompared. Extracting and comparing are counted apart.
@@ -901,7 +901,7 @@ try {
   holdCompare = true
   compareReply = threeWay
   await page.goto(server.url.href + "?pool")
-  await head.getByRole("button", { name: "Compare answers", exact: true }).waitFor()
+  await head.getByRole("button", { name: "Compare with AI", exact: true }).waitFor()
   await primary.click()
   await fillDialog.getByRole("button", { name: "Start fill" }).click()
   await toolbar.getByText("Comparing 1 question", { exact: true }).waitFor()
@@ -920,7 +920,7 @@ try {
   await page.waitForTimeout(150)
   assert.equal(storedGrid.columns[0]!.comparison, undefined, "a result for answers that have since changed is dropped")
   assert.equal(await differsMarker.count(), 0)
-  await head.getByRole("button", { name: "Compare answers", exact: true }).waitFor()
+  await head.getByRole("button", { name: "Compare with AI", exact: true }).waitFor()
   assert.deepEqual(compareDeleted, compareSessions)
   holdCompare = false
   onExtraction = undefined
@@ -947,14 +947,14 @@ try {
   const sessionsBefore = compareSessions.length
   await page.goto(server.url.href + "?pool")
   const partiesHead = page.locator("thead th").filter({ hasText: partiesQuestion })
-  await head.getByRole("button", { name: "Compare answers", exact: true }).waitFor()
+  await head.getByRole("button", { name: "Compare with AI", exact: true }).waitFor()
   assert.equal(await partiesHead.locator(".review-compare-note, .review-compare-trigger").count(), 0, "a column marked not to compare offers no compare")
   assert.equal(await primary.textContent(), "Fill 9 cells")
   await primary.click()
   await fillDialog.getByText(partiesQuestion).first().waitFor()
   await fillDialog.getByText(/After filling, AI compares the cited answers across documents for 1 question, one AI call per question\./).waitFor()
   await fillDialog.getByRole("button", { name: "Start fill" }).click()
-  await head.getByRole("button", { name: /^1 of \d+ differs/ }).waitFor()
+  await head.getByRole("button", { name: /^AI comparison: 1 of \d+ differs/ }).waitFor()
   await toolbar.getByText(/Comparing|Extracting/).waitFor({ state: "detached" })
   await page.waitForTimeout(100)
   assert.equal(compareSessions.length, sessionsBefore + 1, "only the compared question opens a compare session")
