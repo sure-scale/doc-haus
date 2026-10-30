@@ -9,7 +9,7 @@ import "./ReviewStarter.css"
 
 type Step = "choose" | "example" | "describe" | "questions"
 // A question being edited keeps its starter's compare flag through any edit;
-// `suggested` marks one the AI suggested, until it is added.
+// `suggested` marks one the AI suggested, until it is edited or added.
 type Draft = { id: number; question: string; compare?: false; suggested?: true }
 const draftOf = (starter: ReviewStarterDefinition): Draft[] => starter.questions.map(({ text, compare }, id) => ({ id, question: text, compare }))
 // The chooser's entry for AI suggestions, beside the starters.
@@ -278,12 +278,14 @@ export default function ReviewStarter({ documents, existingQuestions, problem, i
                 const field = `${titleId}-question-${item.id}`
                 const note = item.duplicate ? "Already in the table or listed above, so it will not be added."
                   : !item.question ? "Empty questions will not be added." : undefined
-                const described = [item.suggested && `${field}-tag`, note && `${field}-note`].filter(Boolean).join(" ")
+                // The AI's own list is titled as suggested; a starter's tags what the AI added.
+                const tagged = item.suggested && draft?.source !== AI
+                const described = [tagged && `${field}-tag`, note && `${field}-note`].filter(Boolean).join(" ")
                 return (
-                  <li className={`review-starter-question${item.suggested ? " is-suggested" : ""}`} key={item.id}>
+                  <li className={`review-starter-question${tagged ? " is-suggested" : ""}`} key={item.id}>
                     <label htmlFor={field}><span className="sr-only">Question </span>{index + 1}</label>
-                    <textarea ref={(element) => { if (element) inputs.current.set(item.id, element); else inputs.current.delete(item.id) }} id={field} rows={1} placeholder="Write a question" aria-describedby={described || undefined} value={questions.find((question) => question.id === item.id)?.question ?? ""} disabled={saving} onChange={(event) => setQuestions((current) => current.map((question) => question.id === item.id ? { ...question, question: event.target.value } : question))} />
-                    {item.suggested && <span id={`${field}-tag`} className="review-starter-tag">Suggested<span className="sr-only"> by AI</span></span>}
+                    <textarea ref={(element) => { if (element) inputs.current.set(item.id, element); else inputs.current.delete(item.id) }} id={field} rows={1} placeholder="Write a question" aria-describedby={described || undefined} value={questions.find((question) => question.id === item.id)?.question ?? ""} disabled={saving} onChange={(event) => setQuestions((current) => current.map((question) => question.id === item.id ? { ...question, question: event.target.value, suggested: undefined } : question))} />
+                    {tagged && <span id={`${field}-tag`} className="review-starter-tag">Suggested<span className="sr-only"> by AI</span></span>}
                     <button type="button" className="ghost" disabled={saving} onClick={() => {
                       const adjacent = entries[index + 1]?.id ?? entries[index - 1]?.id
                       setQuestions((current) => current.filter((question) => question.id !== item.id))

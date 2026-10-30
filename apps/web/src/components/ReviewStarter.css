@@ -74,7 +74,7 @@
 .review-starter-question textarea:hover:not(:disabled):not(:focus) { border-color: var(--border-strong); }
 .review-starter-question button.ghost { min-height: 34px; margin-right: calc(-1 * var(--space-2)); padding: var(--space-1) var(--space-2); font-size: .875rem; }
 .review-starter-question p { grid-column: 2; padding-inline: 11px; color: var(--muted); font-size: .85rem; }
-/* An AI suggestion carries its tag until it is added. */
+/* An AI suggestion beside a starter's questions carries its tag until it is edited or added. */
 .review-starter-question.is-suggested { grid-template-columns: 1.5rem minmax(0, 1fr) auto auto; }
 .review-starter-tag { align-self: start; margin-top: 7px; padding: 0 6px; border: 1px solid currentColor; border-radius: var(--radius-sm); color: var(--info); font-size: .75rem; font-weight: 600; line-height: 1.45; white-space: nowrap; }
 .review-starter-body .review-starter-more { align-self: flex-start; min-height: 0; margin-top: var(--space-1); font-weight: 600; }

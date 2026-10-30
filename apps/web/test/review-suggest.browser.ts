@@ -178,8 +178,8 @@ try {
   await expect(describe.getByRole("alert")).toHaveCount(0)
   await expect.poll(() => sessions[1]?.deleted).toBe(true)
 
-  // Try again: the suggestions arrive at the questions step, tagged, without
-  // the one already in the table. The AI saw only the description, the names
+  // Try again: the suggestions arrive at the questions step, titled as
+  // suggested rather than tagged row by row, without the one already in the table. The AI saw only the description, the names
   // and the table's questions; the session is deleted after.
   replies.push(JSON.stringify({ questions: [
     { text: "Who are the parties to this document?", compare: false },
@@ -196,7 +196,7 @@ try {
   for (const text of [JSON.stringify(wanted), JSON.stringify(["First.docx", "Second.docx"]), JSON.stringify(["Existing question?"])]) assert.ok(firstPrompt.includes(text), `the prompt carries ${text}`)
   const list = suggested.getByRole("list", { name: "Questions to add" })
   await expect(list.getByRole("textbox")).toHaveCount(3)
-  await expect(list.locator(".review-starter-tag")).toHaveText(Array(3).fill("Suggested by AI"))
+  await expect(list.locator(".review-starter-tag")).toHaveCount(0)
   await expect(suggested.getByRole("textbox", { name: "Question 1" })).toHaveValue("Who are the parties to this document?")
   await expect(suggested).toContainText("Adds 3 questions · 6 cells to fill. No AI runs until you choose Fill.")
 
@@ -232,6 +232,25 @@ try {
   assert.ok(sessions.every(session => session.deleted), "every suggest session is deleted")
   assert.deepEqual(otherEngineCalls, [], "nothing else reaches the engine before Fill")
 
+  // Beside a starter's questions an AI suggestion is tagged, until the lawyer
+  // edits it into their own question.
+  await add.click()
+  await menu.getByRole("button", { name: "Use a starter" }).click()
+  await chooser.getByRole("radio", { name: /^Document overview/ }).check()
+  await chooser.getByRole("button", { name: "Continue" }).click()
+  const overview = page.getByRole("dialog", { name: "Document overview" })
+  await expect(overview.locator(".review-starter-tag")).toHaveCount(0)
+  replies.push(JSON.stringify({ questions: [{ text: "Which law governs each document?" }] }))
+  await overview.getByRole("button", { name: "Suggest more with AI" }).click()
+  await field.fill(wanted)
+  await describe.getByRole("button", { name: "Suggest questions" }).click()
+  await expect(overview.locator(".review-starter-tag")).toHaveText(["Suggested by AI"])
+  await overview.getByRole("textbox", { name: "Question 4" }).fill("Which law governs this agreement?")
+  await expect(overview.locator(".review-starter-tag")).toHaveCount(0)
+  await expect.poll(() => sessions[4]?.deleted).toBe(true)
+  await overview.getByRole("button", { name: "Cancel" }).click()
+  await expect(overview).toHaveCount(0)
+
   // At 400px the describe step fits the viewport.
   await page.setViewportSize({ width: 400, height: 860 })
   await add.click()
@@ -240,7 +259,7 @@ try {
   assert.ok(box && box.x >= 0 && box.x + box.width <= 400, "the describe step fits a 400px viewport")
   await page.keyboard.press("Escape")
   await expect(describe).toHaveCount(0)
-  console.log("PASS suggestions arrive tagged and de-duplicated, edit and remove, Suggest more appends, Add keeps compare flags, and every session is deleted")
+  console.log("PASS suggestions arrive de-duplicated, edit and remove, Suggest more appends, Add keeps compare flags, a suggestion beside starter questions is tagged until edited, and every session is deleted")
 } finally {
   await browser.close()
   server.stop(true)
