@@ -944,7 +944,7 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
           onExport={exportAs}
           notice={walkDone ? "End of the review list" : undefined}
         />
-        {narrowed && <FilterSummary shown={matching} total={attention.cells.size} filters={filters} query={query} onClear={clearView} />}
+        {narrowed && shownDocuments.length > 0 && <FilterSummary shown={matching} total={attention.cells.size} filters={filters} query={query} onClear={clearView} />}
 
         {error && <p role="alert">{error}</p>}
         {saveProblem && <div role="alert"><p>{saveProblem}</p><p>Export the table above or download your local copy before reloading the saved table.</p><button type="button" onClick={downloadPending}>Download unsaved copy</button> <button type="button" disabled={reloading} onClick={reloadGrid}>{reloading ? "Reloading…" : "Reload saved table"}</button></div>}
@@ -971,7 +971,7 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
 
         <ReviewScroll>
           {/* Column widths are the stylesheet's: the Document column narrows on small screens. */}
-          <table className={`review-table${grid.columns.length === 0 ? " is-empty" : ""}`} style={shownColumns.length ? { minWidth: `calc(var(--review-doc-w) + var(--review-add-w) + ${shownColumns.length} * var(--review-answer-w))` } : undefined} aria-label="Document review">
+          <table className={`review-table${grid.columns.length === 0 ? " is-empty" : ""}`} style={shownColumns.length ? { minWidth: `calc(var(--review-doc-w) + var(--review-add-w) + ${shownColumns.length} * var(--review-answer-min))` } : undefined} aria-label="Document review">
             <thead>
               <tr>
                 <th className="review-doc-col" scope="col">Document</th>
@@ -1089,7 +1089,7 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
                 </tr>
               ) : shownDocuments.length === 0 && (
                 <tr>
-                  <td className="review-empty-documents" colSpan={shownColumns.length + 2}>No matching cells.</td>
+                  <td className="review-empty-documents" colSpan={shownColumns.length + 2}><span role="status">No matching cells.</span> <button type="button" className="linklike" onClick={clearView}>Clear</button></td>
                 </tr>
               )}
             </tbody>

@@ -578,7 +578,7 @@ try {
     const row = page.getByRole("row", { name: /^Supply terms\.docx/ })
     const waiting = new Promise<import("@playwright/test").Route>(resolve => { onExtraction = resolve })
     await row.getByTitle("Re-run this cell").click()
-    await page.waitForFunction(() => document.body.textContent?.includes("Extracting 1"))
+    await page.waitForFunction(() => document.body.textContent?.includes("Filling 1"))
     const heldExtraction = await waiting
     if (action === "review") await row.getByTitle("Mark reviewed").click()
     if (action === "question") await editQuestion(page, "What is the governing law?", "A changed question")
@@ -595,7 +595,7 @@ try {
       await page.keyboard.press("Escape")
     }
     await heldExtraction.fulfill({ status: 204 })
-    await page.getByText("Extracting 1").waitFor({ state: "detached" })
+    await page.getByText("Filling 1", { exact: true }).waitFor({ state: "detached" })
     if (action === "none" || action === "comment") {
       await row.getByRole("button", { name: "New extracted answer" }).waitFor()
       if (action === "comment") await row.getByRole("button", { name: /^1 comment on/ }).waitFor()
@@ -666,19 +666,19 @@ try {
   assert.equal(await closes(), closesBefore, "Escape closes only the search")
   await searchToggle.click()
   await search.fill("supply")
-  await page.getByText("Showing 0 of 3 cells · Source changed · “supply”", { exact: true }).waitFor()
   await page.getByText("No matching cells.", { exact: true }).waitFor()
+  assert.equal(await page.getByText(/^Showing/).count(), 0, "with no match only the No matching cells line shows")
   await filter.focus()
   assert.equal(await search.inputValue(), "supply", "leaving a search keeps it open")
   await page.getByRole("button", { name: "Clear", exact: true }).click()
-  await page.getByText(/^Showing/).waitFor({ state: "detached" })
+  await page.getByText("No matching cells.", { exact: true }).waitFor({ state: "detached" })
   assert.equal(await search.count(), 0, "an empty search closes once left")
   assert.equal(await page.locator("tbody tr").count(), 3)
   assert.equal(await filter.evaluate(element => element === document.activeElement), true, "Clear hands focus to Filter")
 
   // Reviewing in place under a filter keeps the cell where it was, quieter.
   await filter.click()
-  await menu.getByRole("checkbox", { name: /^Not reviewed/ }).check()
+  await menu.getByRole("checkbox", { name: "Not reviewed, 3 cells", exact: true }).check()
   await page.getByText("Showing 3 of 3 cells · Not reviewed", { exact: true }).waitFor()
   await page.keyboard.press("Escape")
   await menu.waitFor({ state: "hidden" })
@@ -692,9 +692,9 @@ try {
   await menu.getByRole("checkbox", { name: /^Source changed/ }).check()
   await page.getByText("Showing 1 of 3 cells · Source changed or Not reviewed", { exact: true }).waitFor()
   assert.equal(await toolbar.getByRole("button", { name: "Filter · 2 selected", exact: true }).count(), 1)
-  await menu.getByRole("button", { name: "Clear all", exact: true }).click()
+  await menu.getByRole("button", { name: "Clear", exact: true }).click()
   await page.getByText(/^Showing/).waitFor({ state: "detached" })
-  assert.equal(await filter.evaluate(element => element === document.activeElement), true, "Clear all hands focus to Filter")
+  assert.equal(await filter.evaluate(element => element === document.activeElement), true, "Clear hands focus to Filter")
   await page.keyboard.press("Escape")
   await menu.waitFor({ state: "hidden" })
   // A reviewed cell whose source changed still needs a look.
@@ -880,14 +880,14 @@ try {
   onExtraction = route => void fillHeld.push(route)
   await fillDialog.getByRole("button", { name: "Start fill" }).click()
   // While cells fill, the status counts them, answers already in are the one next step, and no compare is offered.
-  await toolbar.getByText(/^Extracting/).waitFor()
+  await toolbar.getByText(/^Filling \d/).waitFor()
   assert.equal(await primary.textContent(), "Review next")
   assert.equal(await toolbar.getByRole("button", { name: "Review next" }).count(), 1, "one Review next while cells fill")
   assert.equal(await head.getByRole("button", { name: /^Compare/ }).count(), 0, "no compare is offered while cells fill")
   onExtraction = route => void route.fulfill({ status: 204 })
   await Promise.all(fillHeld.splice(0).map(route => route.fulfill({ status: 204 })))
   await toolbar.getByText("Comparing 1 question", { exact: true }).waitFor()
-  assert.equal(await toolbar.getByText(/Extracting/).count(), 0, "comparing is counted apart from extracting")
+  assert.equal(await toolbar.getByText(/^Filling \d/).count(), 0, "comparing is counted apart from filling")
   await head.getByText("Comparing with AI…", { exact: true }).waitFor()
   const firstCompare = await heldCompare()
   assert.equal(compareSessions.length, 1, "one compare for the one filled question")
@@ -959,7 +959,7 @@ try {
   console.log("PASS a changed answer puts the comparison out of date; Compare again runs once and fails quietly, then Try again")
 
   // An answer that changes while its question is compared drops the result,
-  // leaving the column uncompared. Extracting and comparing are counted apart.
+  // leaving the column uncompared. Filling and comparing are counted apart.
   storedGrid = comparedGrid()
   holdCompare = true
   compareReply = threeWay
@@ -973,7 +973,7 @@ try {
   const releaseExtraction = new Promise<import("@playwright/test").Route>(resolve => { onExtraction = resolve })
   await supplyRow.getByTitle("Re-run this cell").click()
   const heldRefresh = await releaseExtraction
-  await toolbar.getByText("Extracting 1", { exact: true }).waitFor()
+  await toolbar.getByText("Filling 1", { exact: true }).waitFor()
   await toolbar.getByText("Comparing 1 question", { exact: true }).waitFor()
   assert.equal(await primary.count(), 1)
   await heldRefresh.fulfill({ status: 204 })
@@ -1022,7 +1022,7 @@ try {
   await partiesDialog.getByText("It skips questions marked Not compared.", { exact: false }).waitFor()
   await partiesDialog.getByRole("button", { name: "Start fill" }).click()
   await head.getByRole("button", { name: /^AI comparison: 1 of \d+ differs/ }).waitFor()
-  await toolbar.getByText(/Comparing|Extracting/).waitFor({ state: "detached" })
+  await toolbar.getByText(/Comparing|^Filling \d/).waitFor({ state: "detached" })
   await page.waitForTimeout(100)
   assert.equal(compareSessions.length, sessionsBefore + 1, "only the compared question opens a compare session")
   assert.equal(await partiesHead.locator(".review-compare-note, .review-compare-trigger").count(), 0, "after Fill the column marked not to compare still shows no comparison")
@@ -1049,7 +1049,7 @@ try {
   await page.getByRole("button", { name: "Reload saved table" }).click()
   await page.getByRole("button", { name: "Edit question: What is the governing law?" }).waitFor()
   await Promise.all(extractionWaits.map(route => route.fulfill({ status: 204 })))
-  await page.getByText(/Extracting/).waitFor({ state: "detached" })
+  await page.getByText(/^Filling \d/).waitFor({ state: "detached" })
   assert.equal(extractionStarts, 5, "queued targets from the old table must not start after reload")
   assert.equal(await page.getByRole("button", { name: /New extracted answer/ }).count(), 0)
   console.log("PASS reloading cancels queued extraction targets and ignores in-flight results")

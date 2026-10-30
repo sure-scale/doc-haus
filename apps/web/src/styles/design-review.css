@@ -32,18 +32,15 @@
 .review-progress-bar:focus-visible { outline: 2px solid var(--md-sys-state-focus); outline-offset: 2px; }
 .review-progress-part { flex: 0 1 0; min-width: 4px; height: 8px; border-radius: 4px; }
 .review-progress-part.is-reviewed, .review-progress-swatch.is-reviewed { background: var(--accent); }
-.review-progress-part.is-answered, .review-progress-swatch.is-answered { background: var(--md-sys-color-outline); }
+/* Answered but not reviewed is a light neutral, so a filled, unreviewed table
+   does not read as nearly done; a cell not yet answered is an empty outline. */
+.review-progress-part.is-answered, .review-progress-swatch.is-answered { background: color-mix(in srgb, var(--md-sys-color-outline) 45%, var(--border)); }
 .review-progress-part.is-attention, .review-progress-swatch.is-attention { background: var(--warn); }
-.review-progress-part.is-empty, .review-progress-swatch.is-empty { background: var(--border); }
-.review-progress-key { display: grid; gap: var(--space-1); min-width: 180px; padding-block: 2px; }
+.review-progress-part.is-empty, .review-progress-swatch.is-empty { background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--md-sys-color-outline) 45%, var(--border)); }
+.review-progress-key { display: grid; gap: var(--space-1); min-width: 200px; padding-block: 2px; }
 .review-progress-scope { margin-bottom: 2px; opacity: .8; }
-.review-progress-key-row { display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: var(--space-2); }
-/* The markers that put cells in Needs attention, lightened to read on the inverse tooltip surface. */
-.review-progress-key-markers { display: inline-flex; gap: 6px; padding-left: var(--space-4); }
-.review-progress-key-markers .review-glyph.is-danger { color: color-mix(in srgb, var(--danger) 55%, var(--md-sys-color-inverse-on-surface)); }
-.review-progress-key-markers .review-glyph.is-warn { color: color-mix(in srgb, var(--warn) 55%, var(--md-sys-color-inverse-on-surface)); }
-.review-progress-key-markers .review-glyph.is-muted { color: color-mix(in srgb, var(--muted) 55%, var(--md-sys-color-inverse-on-surface)); }
-.review-progress-key-markers .review-glyph.is-info { color: color-mix(in srgb, var(--info) 55%, var(--md-sys-color-inverse-on-surface)); }
+.review-progress-key-row { display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: var(--space-2) var(--space-3); }
+.review-progress-key-count { font-variant-numeric: tabular-nums; text-align: right; }
 /* A light edge, so every swatch stands off the inverse tooltip surface. */
 .review-progress-swatch { width: 10px; height: 10px; border-radius: 3px; box-shadow: 0 0 0 1px color-mix(in srgb, var(--md-sys-color-inverse-on-surface) 45%, transparent); }
 
@@ -68,17 +65,19 @@
 .review-filter-foot .linklike { min-height: 32px; padding-inline: var(--space-2); font-size: .85rem; }
 .review-filter-foot .linklike:disabled { color: var(--muted); text-decoration: none; cursor: default; }
 .review-export-list { min-width: 160px; }
+.review-export-list > .review-filter-heading { margin-bottom: var(--space-2); }
 .review-glyph { display: block; width: 10px; height: 10px; justify-self: center; }
 .review-glyph.is-danger { color: var(--danger); }
 .review-glyph.is-warn { color: var(--warn); }
 .review-glyph.is-muted { color: var(--muted); }
 .review-glyph.is-info { color: var(--info); }
 .review-ai-tag { margin-left: var(--space-2); padding: 0 6px; border: 1px solid currentColor; border-radius: var(--radius-sm); color: var(--info); font-size: .7rem; font-weight: 650; }
-/* Inline, so a wrapped line ends with Clear beside the search term; the
+/* Inline, so a wrapped line ends with Clear beside the search term (or beside
+   No matching cells, which replaces the line); the
    .review button selector outranks the global 44px touch rule, which ::after
    restores as a hit area below. */
 .review-filter-summary { margin: calc(-1 * var(--space-2)) 0 var(--space-4); color: var(--text-secondary); font-size: .85rem; font-variant-numeric: tabular-nums; }
-.review .review-filter-summary button.linklike { position: relative; min-height: 0; margin-inline-start: var(--space-1); padding: 0; font-size: inherit; line-height: inherit; vertical-align: baseline; }
+.review :is(.review-filter-summary, .review-empty-documents) button.linklike { position: relative; min-height: 0; margin-inline-start: var(--space-1); padding: 0; font-size: inherit; line-height: inherit; vertical-align: baseline; }
 .review-summary { display: block; color: var(--text-secondary); font-size: .9rem; font-variant-numeric: tabular-nums; }
 .review-notice { min-width: 0; overflow: hidden; color: var(--text-secondary); font-size: .85rem; text-overflow: ellipsis; white-space: nowrap; }
 /* Kept in the tree for announcements, out of the row's gaps while empty. */
@@ -95,12 +94,20 @@
 .review-scroll-frame::after { content: ""; position: absolute; z-index: 3; top: 1px; right: calc(1px + var(--scrollbar-y, 0px)); bottom: calc(1px + var(--scrollbar-x, 0px)); width: var(--review-fade-w); border-radius: 0 calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px) 0; background: linear-gradient(to right, transparent, var(--md-sys-color-surface-container-low)) 0 0 / 100% var(--head-h, 0px) no-repeat, linear-gradient(to right, transparent, var(--panel)) 0 var(--head-h, 0px) / 100% 100% no-repeat; opacity: 0; pointer-events: none; transition: opacity var(--duration-fast) var(--ease-out); }
 .review-scroll-frame[data-more-right]::after { opacity: 1; }
 .review-scroll-frame[data-scrolled] .review-table .review-doc-col { box-shadow: 6px 0 8px -6px rgb(24 35 28 / 22%); }
+/* Round steps on the header row: › inside the fade while questions lie past
+   the right edge, ‹ at the Document column's edge once scrolled. */
+.review-scroll-step { position: absolute; z-index: 4; top: calc(1px + var(--head-h, 0px) / 2 - 18px); display: inline-flex; align-items: center; justify-content: center; width: 36px; min-width: 36px; height: 36px; min-height: 36px; padding: 0; border: 1px solid var(--border); border-radius: 50%; background: var(--panel); color: var(--text-secondary); box-shadow: var(--shadow-sm); }
+.review-scroll-step[hidden] { display: none; }
+.review-scroll-step:hover:not(:disabled) { border-color: var(--accent-border); background: var(--accent-tint); color: var(--accent); }
+.review-scroll-step.is-next { right: calc(4px + var(--scrollbar-y, 0px)); }
+.review-scroll-step.is-previous { left: calc(1px + var(--doc-w, 0px) - 36px - var(--space-2)); }
 
 /* Separate borders stay attached to their sticky headers during scrolling.
    Fixed table layout keeps long answers from widening unrelated columns. */
 .review-table { border-collapse: separate; border-spacing: 0; width: 100%; table-layout: fixed; font-size: .9rem; line-height: 1.6; }
-/* Column widths, shared with the table's minimum width set in ReviewGrid. */
-.review-table { --cell-pad: var(--space-4); --cell-actions-h: 28px; --review-doc-w: 240px; --review-add-w: 64px; --review-answer-w: 280px; }
+/* Column widths, shared with the table's minimum width set in ReviewGrid:
+   answer columns share the width down to a readable minimum, then scroll. */
+.review-table { --cell-pad: var(--space-4); --cell-actions-h: 28px; --review-doc-w: 200px; --review-add-w: 64px; --review-answer-w: 280px; --review-answer-min: 210px; }
 /* Narrow widths are sized against the scroll area, not the window. */
 .review-scroll-frame > .review-scroll { container-type: inline-size; }
 .review-table th, .review-table td { min-width: 220px; padding: var(--cell-pad); border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
@@ -141,6 +148,9 @@
 .review-compare-menu button { display: grid; grid-template-columns: 12px 1fr; align-items: center; gap: 2px var(--space-3); width: 100%; min-height: 40px; padding: var(--space-2) var(--space-3); border: 0; border-radius: calc(var(--radius-md) - 6px); background: transparent; color: var(--text); box-shadow: none; font-size: .85rem; font-weight: 600; text-align: left; white-space: normal; transform: none; }
 .review-compare-menu button:hover:not(:disabled) { border: 0; background: var(--panel-hover); }
 .review-compare-menu button small { grid-column: 2; color: var(--text-secondary); font-size: .78rem; font-weight: 400; line-height: 1.45; }
+/* Each differing document opens its cell, so its name reads as a link. */
+.review-compare-menu button > span { color: var(--accent); text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 2px; }
+.review-compare-menu button:is(:hover, :focus-visible) > span { text-decoration-color: currentcolor; }
 .review-compare-detail { display: flex; align-items: flex-start; gap: var(--space-2); margin: 0; color: var(--text-secondary); font-size: .9rem; line-height: 1.55; }
 .review-compare-detail > .review-glyph { flex: none; margin-top: calc((1.55em - 10px) / 2); }
 /* Reviewed reads calm: a faint tint and edge, the padlock says the rest. A
@@ -291,7 +301,7 @@
      included, fits beside it without scrolling sideways. The answer column
      leaves the next one peeking under the right-edge fade, so its own lines end
      where the fade begins. */
-  .review-table { --cell-pad: var(--space-3); --review-peek: max(0px, var(--review-fade-w, 0px) - var(--cell-pad)); --review-doc-w: clamp(112px, 100cqw - 280px - var(--review-peek), 200px); --review-answer-w: clamp(160px, 100cqw - var(--review-doc-w) - var(--review-peek), 280px); }
+  .review-table { --cell-pad: var(--space-3); --review-peek: max(0px, var(--review-fade-w, 0px) - var(--cell-pad)); --review-doc-w: clamp(112px, 100cqw - 280px - var(--review-peek), 200px); --review-answer-w: clamp(160px, 100cqw - var(--review-doc-w) - var(--review-peek), 280px); --review-answer-min: var(--review-answer-w); }
   .review-table th, .review-table td { min-width: 0; }
   .review-table .review-doc-col { min-width: 0; }
   /* Two rows: progress with search and export, then the filter and the next
@@ -309,8 +319,9 @@
   .review-toolbar-steps { grid-area: steps; flex-wrap: nowrap; }
   .review-toolbar-steps > .review-primary { margin-left: 0; }
   .review-progress-bar { width: 64px; }
-  /* While a step runs, its word takes the line's place. */
-  .review-status.is-busy .review-summary { display: none; }
+  /* While a step runs, its word takes a second line, so the count stays. */
+  .review-status { flex-wrap: wrap; row-gap: 0; }
+  .review-status > .review-running { line-height: 1.3; }
   .review-detail-modal { padding: var(--space-3); }
   .review-detail-body { padding: var(--space-4); }
   .review-detail-modal .viewer-bar, .review-detail-bar { padding-inline: var(--space-4); }
@@ -332,8 +343,10 @@
   .review-col-q, .review-compare-trigger { min-height: max(44px, calc(44px / var(--ui-scale))); }
   .review-icon-button { width: max(44px, calc(44px / var(--ui-scale))); min-width: max(44px, calc(44px / var(--ui-scale))); }
   .review-icon-button, .review-filter-trigger, .review-filter-option, .review-filter-foot .linklike, .review-export-list button { min-height: max(44px, calc(44px / var(--ui-scale))); }
+  /* A 44px touch area around each round column step. */
+  .review-scroll-step::after { content: ""; position: absolute; inset: -4px; }
   /* A 44px touch area around the inline Clear, without opening up the line. */
-  .review-filter-summary .linklike::after { content: ""; position: absolute; inset: -12px -10px; }
+  :is(.review-filter-summary, .review-empty-documents) .linklike::after { content: ""; position: absolute; inset: -12px -10px; }
 }
 @media (max-width: 480px) {
   .review-table .review-doc-col { font-size: .85rem; }

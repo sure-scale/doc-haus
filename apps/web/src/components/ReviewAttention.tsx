@@ -79,7 +79,7 @@ const PARTS: Array<{ part: Part; word: string; spoken: (count: number) => string
   { part: "reviewed", word: "Reviewed", spoken: () => "reviewed" },
   { part: "answered", word: "Answered, not reviewed", spoken: () => "answered but not reviewed" },
   { part: "attention", word: "Needs attention", spoken: (count) => count === 1 ? "needs attention" : "need attention" },
-  { part: "empty", word: "Not filled", spoken: () => "not filled" },
+  { part: "empty", word: "Not answered", spoken: () => "not answered" },
 ]
 
 // Every current cell in one part: a flagged cell needs attention whether or not
@@ -91,10 +91,9 @@ function progressParts(model: ReviewAttention) {
 }
 
 // A thin segmented bar and one short line. The bar's name gives every count in
-// words; hover or focus shows its key, with the table's documents and questions.
-// The key names each colour, and the markers that make a cell need attention;
-// the line and the Filter carry the counts. Before any answer there is nothing
-// to count, so the line gives the table's size.
+// words; hover or focus shows its key, with the table's documents and questions:
+// each colour's word and count. Before any answer there is nothing to count, so
+// the line gives the table's size.
 function ProgressBar({ model }: { model: ReviewAttention }) {
   const { documents, questions } = model.progress
   const scope = `${plural(documents, "document")} · ${plural(questions, "question")}`
@@ -102,7 +101,6 @@ function ProgressBar({ model }: { model: ReviewAttention }) {
   if (!model.progress.answered) return <span className="review-summary">{scope}</span>
   const parts = progressParts(model)
   const reviewed = parts.find((part) => part.part === "reviewed")?.count ?? 0
-  const markers = legend().flatMap((note) => note.state !== "unreviewed" && model.counts[note.state] > 0 ? [note.state] : [])
   const name = `Review progress, ${plural(total, "cell")} in ${plural(documents, "document")} and ${plural(questions, "question")}: ${parts.map((part) => `${part.count} ${part.spoken(part.count)}`).join(", ")}`
   const key = (
     <span className="review-progress-key">
@@ -111,7 +109,7 @@ function ProgressBar({ model }: { model: ReviewAttention }) {
         <span key={part.part} className="review-progress-key-row">
           <span className={`review-progress-swatch is-${part.part}`} aria-hidden="true" />
           <span>{part.word}</span>
-          {part.part === "attention" && <span className="review-progress-key-markers">{markers.map((state) => <MarkerGlyph key={state} state={state} />)}</span>}
+          <span className="review-progress-key-count">{part.count}</span>
         </span>
       ))}
     </span>
@@ -209,21 +207,20 @@ function FilterMenu({ model, checking, filters, onFilters }: { model: ReviewAtte
             return (
               <Tooltip key={note.state} label={note.reason} describes={false} around=".review-filter-menu">
                 <label className={`review-filter-option${marker ? "" : " is-unreviewed"}`}>
-                  <input type="checkbox" checked={filters.includes(note.state)} aria-label={marker ? `${note.word}, ${plural(model.counts[note.state], "cell")}` : note.word} aria-describedby={`${id}-${note.state}`} onChange={(event) => toggle(note.state, event.target.checked)} />
+                  <input type="checkbox" checked={filters.includes(note.state)} aria-label={`${note.word}, ${plural(model.counts[note.state], "cell")}`} aria-describedby={`${id}-${note.state}`} onChange={(event) => toggle(note.state, event.target.checked)} />
                   {marker ? <MarkerGlyph state={note.state as MarkerState} /> : <span className="review-glyph" aria-hidden="true" />}
                   <span className="review-filter-word">
                     {note.word}
                     {note.state === "differs" && <span className="review-ai-tag">AI</span>}
                   </span>
-                  {/* Not reviewed goes without a count: the progress line already says how many are reviewed. */}
-                  {marker && <span className="review-filter-count">{model.counts[note.state]}</span>}
+                  <span className="review-filter-count">{model.counts[note.state]}</span>
                   <span id={`${id}-${note.state}`} hidden>{note.reason}</span>
                 </label>
               </Tooltip>
             )
           })}
           <div className="review-filter-foot">
-            <button type="button" className="linklike" disabled={!filters.length} onClick={() => { onFilters([]); trigger.current?.focus() }}>Clear all</button>
+            <button type="button" className="linklike" disabled={!filters.length} onClick={() => { onFilters([]); trigger.current?.focus() }}>Clear</button>
           </div>
         </div>
       )}
@@ -231,7 +228,7 @@ function FilterMenu({ model, checking, filters, onFilters }: { model: ReviewAtte
   )
 }
 
-// Export as one icon: a menu of formats.
+// Export as one icon: a menu of formats under its own heading.
 function ExportMenu({ onExport }: { onExport: (format: "xlsx" | "csv" | "docx") => void }) {
   const { open, setOpen, trigger, panel, rootProps, panelStyle } = useDisclosure("button")
   const id = useId()
@@ -249,6 +246,7 @@ function ExportMenu({ onExport }: { onExport: (format: "xlsx" | "csv" | "docx") 
       </Tooltip>
       {open && (
         <div id={id} ref={panel} className="viewer-more-menu review-export-list" role="group" aria-label="Export as" style={panelStyle}>
+          <p className="review-filter-heading" aria-hidden="true">Export</p>
           <button type="button" onClick={() => choose("xlsx")}>Excel</button>
           <button type="button" onClick={() => choose("csv")}>CSV</button>
           <button type="button" onClick={() => choose("docx")}>Word</button>
@@ -414,7 +412,7 @@ export function ReviewToolbar({ model, checking, running, comparing, primary, fi
     <div className={`row review-toolbar${query ? " is-searching" : ""}`}>
       <div className={`review-status${busy ? " is-busy" : ""}`}>
         <ProgressBar model={model} />
-        {running > 0 && <span className="review-running" role="status"><span>Extracting {running}</span></span>}
+        {running > 0 && <span className="review-running" role="status"><span>Filling {running}</span></span>}
         {comparing > 0 && <span className="review-running" role="status"><span>Comparing {plural(comparing, "question")}</span></span>}
         {/* Always present, so screen readers announce the text when it appears. */}
         <span className="review-notice" role="status">{notice}</span>
