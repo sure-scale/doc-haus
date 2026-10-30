@@ -432,8 +432,7 @@ export function FilterSummary({ shown, total, filters, query, onClear }: { shown
   const text = query.trim()
   return (
     <p className="review-filter-summary">
-      <span role="status">Showing {shown} of {plural(total, "cell")}{words.length ? ` · ${listed(words)}` : ""}{text ? ` · “${text}”` : ""}</span>
-      {" · "}
+      <span role="status">Showing {shown} of {plural(total, "cell")}{words.length ? ` · ${listed(words)}` : ""}{text ? ` · “${text}”` : ""}</span>{" "}
       <button type="button" className="linklike" onClick={onClear}>Clear</button>
     </p>
   )

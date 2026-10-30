@@ -17,7 +17,8 @@
 .review-toolbar-steps > .review-primary { margin-left: var(--space-4); }
 .review-toolbar-actions button.ghost { padding-inline: var(--space-3); }
 /* Search opens from its icon into the matter list's search field, self-contained here. */
-.review-toolbar .matter-search { position: relative; display: flex; align-items: center; flex: 0 1 220px; min-width: 160px; max-width: 280px; }
+/* A fixed width, so the actions row sizes to it and never wraps its own steps. */
+.review-toolbar .matter-search { position: relative; display: flex; align-items: center; flex: none; width: 220px; min-width: 0; max-width: none; }
 .review-toolbar .matter-search > svg { position: absolute; left: 12px; pointer-events: none; color: var(--muted); }
 .review-toolbar .page-filter { width: 100%; min-width: 0; min-height: var(--ctl-h); padding-left: var(--space-8); border-radius: var(--radius-pill); }
 /* Quiet icon actions; each has a tooltip and a name. */
@@ -68,8 +69,11 @@
 .review-glyph.is-muted { color: var(--muted); }
 .review-glyph.is-info { color: var(--info); }
 .review-ai-tag { margin-left: var(--space-2); padding: 0 6px; border: 1px solid currentColor; border-radius: var(--radius-sm); color: var(--info); font-size: .7rem; font-weight: 650; }
-.review-filter-summary { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1); margin: calc(-1 * var(--space-2)) 0 var(--space-4); color: var(--text-secondary); font-size: .85rem; font-variant-numeric: tabular-nums; }
-.review-filter-summary .linklike { min-height: 0; font-size: inherit; line-height: inherit; }
+/* Inline, so a wrapped line ends with Clear beside the search term; the
+   .review button selector outranks the global 44px touch rule, which ::after
+   restores as a hit area below. */
+.review-filter-summary { margin: calc(-1 * var(--space-2)) 0 var(--space-4); color: var(--text-secondary); font-size: .85rem; font-variant-numeric: tabular-nums; }
+.review .review-filter-summary button.linklike { position: relative; min-height: 0; margin-inline-start: var(--space-1); padding: 0; font-size: inherit; line-height: inherit; vertical-align: baseline; }
 .review-summary { display: block; color: var(--text-secondary); font-size: .9rem; font-variant-numeric: tabular-nums; }
 .review-notice { min-width: 0; overflow: hidden; color: var(--text-secondary); font-size: .85rem; text-overflow: ellipsis; white-space: nowrap; }
 /* Kept in the tree for announcements, out of the row's gaps while empty. */
@@ -282,7 +286,7 @@
   .review-status { grid-area: status; }
   .review-toolbar:has(.matter-search) .review-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .review-search-toggle, .review-toolbar .matter-search { grid-area: search; }
-  .review-toolbar .matter-search { min-width: 0; max-width: none; }
+  .review-toolbar .matter-search { width: auto; }
   .review-filter { grid-area: filter; }
   .review-export-menu { grid-area: export; }
   .review-toolbar-steps { grid-area: steps; flex-wrap: nowrap; }
@@ -307,6 +311,8 @@
   .review-col-q, .review-compare-trigger { min-height: max(44px, calc(44px / var(--ui-scale))); }
   .review-icon-button { width: max(44px, calc(44px / var(--ui-scale))); min-width: max(44px, calc(44px / var(--ui-scale))); }
   .review-icon-button, .review-filter-trigger, .review-filter-option, .review-filter-foot .linklike, .review-export-list button { min-height: max(44px, calc(44px / var(--ui-scale))); }
+  /* A 44px touch area around the inline Clear, without opening up the line. */
+  .review-filter-summary .linklike::after { content: ""; position: absolute; inset: -12px -10px; }
 }
 @media (max-width: 480px) {
   .review-table .review-doc-col { font-size: .85rem; }
