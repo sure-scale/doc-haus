@@ -35,6 +35,7 @@ test("unchanged poll presentation preserves the pane DOM and focus while real sa
     details.click(); expect(saves).toBe(0)
     details.focus()
     const text = document.getElementById("status")!.firstChild
+    const unchangedMarkup = document.body.innerHTML
     const mutations: unknown[] = []
     const observer = new page.MutationObserver(records => mutations.push(...records))
     observer.observe(page.document.body, { subtree: true, attributes: true, childList: true, characterData: true })
@@ -44,13 +45,12 @@ test("unchanged poll presentation preserves the pane DOM and focus while real sa
       await page.happyDOM.waitUntilComplete()
       mutations.push(...observer.takeRecords())
       expect(mutations).toHaveLength(0)
+      expect(document.body.innerHTML).toBe(unchangedMarkup)
       expect(document.getElementById("status")!.firstChild === text).toBe(true)
       expect(document.activeElement === details).toBe(true)
       expect(button.disabled).toBe(false)
       render({ ...state, status: "saving", busy: true, message: "Saving to doc.haus…" })
-      await page.happyDOM.waitUntilComplete()
-      mutations.push(...observer.takeRecords())
-      expect(mutations.length).toBeGreaterThan(0)
+      expect(document.body.innerHTML).not.toBe(unchangedMarkup)
       expect(button.disabled).toBe(true)
       expect(button.hidden).toBe(false)
       expect(document.getElementById("status")!.textContent).toBe("Saving…")
