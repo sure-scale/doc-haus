@@ -240,7 +240,8 @@
 .review-comment-actions button { margin-left: auto; }
 
 /* Review next: the reason and place in the walk above the answer, and one
-   row of moves under the panel. Tone repeats the cell's marker; words carry it. */
+   row of steps under the panel, as outside the walk. Tone repeats the cell's
+   marker; words carry it. */
 .review-walk-position { color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .review-walk-why { --walk-tone: var(--border-strong); display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3) var(--space-4); border-left: 3px solid var(--walk-tone); border-radius: var(--radius-md); background: var(--md-sys-color-surface-container-low); }
 .review-walk-why.is-danger { --walk-tone: var(--danger); }
@@ -251,7 +252,8 @@
 .review-walk-why .review-walk-word { display: flex; align-items: center; gap: var(--space-2); color: var(--walk-tone); font-weight: 600; }
 .review-walk-why.is-muted .review-walk-word { color: var(--text-secondary); }
 .review-walk-reviewed { margin: 0; color: var(--text-secondary); font-size: .85rem; }
-.review-walk-bar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3) var(--space-5); border-top: 1px solid var(--border); }
+.review-detail-bar { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3) var(--space-5); border-top: 1px solid var(--border); }
+.review-detail-error { flex: 1 0 100%; margin: 0; color: var(--danger); font-size: .85rem; line-height: 1.4; }
 /* Pulled out by its own padding, so its word lines up with the content edge. */
 .review-walk-previous { margin-right: auto; margin-left: calc(-1 * var(--space-4)); }
 .review-walk-hint { flex: 1 1 0; min-width: 0; color: var(--muted); font-size: .8rem; line-height: 1.4; }
@@ -306,10 +308,11 @@
   .review-status.is-busy .review-summary { display: none; }
   .review-detail-modal { padding: var(--space-3); }
   .review-detail-body { padding: var(--space-4); }
-  .review-detail-modal .viewer-bar, .review-walk-bar { padding-inline: var(--space-4); }
-  /* The next step takes its own full-width row under Previous and Skip. */
-  .review-walk-bar .review-walk-next { flex: 1 0 100%; }
-  .review-walk-skip { margin-right: calc(-1 * var(--space-4)); }
+  .review-detail-modal .viewer-bar, .review-detail-bar { padding-inline: var(--space-4); }
+  /* The primary takes its own full-width row under the other steps; the last
+     of those lines its word up with the content edge. */
+  .review-detail-bar .review-detail-primary { flex: 1 0 100%; }
+  .review-detail-bar .ghost:not(.review-walk-previous):has(+ .review-detail-primary) { margin-right: calc(-1 * var(--space-4)); }
 }
 @media (pointer: coarse) {
   .review-cell-actions .icon-btn, .review-add-button, .issues > summary { min-height: max(44px, calc(44px / var(--ui-scale))); }

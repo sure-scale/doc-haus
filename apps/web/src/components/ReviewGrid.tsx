@@ -5,7 +5,7 @@ import { computeCell, describeRecheck, needsFill, recheckOutcome } from "../api/
 import { citationLabel, citesRow, type ReviewRow } from "../api/review-answer"
 import { compareColumn, comparisonInputs, MAX_COMPARE_DOCUMENTS } from "../api/review-compare"
 import { suggestQuestions } from "../api/review-suggest"
-import { matches, primaryAction, reviewAttention, type AttentionFilter, type QueueEntry } from "../api/review-attention"
+import { matches, primaryAction, reviewAttention, type AttentionFilter, type MarkerState, type QueueEntry } from "../api/review-attention"
 import { cellKey, checkCellSources, getGrid, GridConflictError, hashQuestion, recheckPassages, saveGrid, type Grid, type GridCellData, type GridColumn, type SourceCheck } from "../api/ingest/grid"
 import { humanizeError } from "../api/ingest/errors"
 import { getPreferences } from "../api/ingest/preferences"
@@ -44,9 +44,11 @@ const POOL = 5 // concurrent cell extractions; the engine handles one prompt eac
 const COMPARE_POOL = 2 // concurrent column comparisons after a Fill
 const COMPARE_TIMEOUT = 120_000
 
-// The walk's next step in the detail: its primary, else whichever move is left.
-const walkControl = (modal: HTMLElement | null) =>
-  modal?.querySelector<HTMLButtonElement>(".review-walk-next:not(:disabled)") ?? modal?.querySelector<HTMLButtonElement>(".review-walk-bar button:not(:disabled)")
+// The detail's next step: its primary, else the last step still enabled.
+const detailControl = (modal: HTMLElement | null) =>
+  modal?.querySelector<HTMLButtonElement>(".review-detail-primary:not(:disabled)") ?? [...modal?.querySelectorAll<HTMLButtonElement>(".review-detail-bar button:not(:disabled)") ?? []].at(-1)
+// Markers whose reason names a re-run of the cell: unlocked first if reviewed.
+const RERUN: MarkerState[] = ["other_document", "source_changed", "source_missing", "question_changed"]
 
 // A source check answers for the citation it was asked about, so a cell whose
 // citation has since been recomputed shows no verdict until it is checked.
@@ -224,6 +226,8 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
   const [detail, setDetail] = useState<{ docName: string; columnId: string; question: string }>()
   const [draft, setDraft] = useState("") // comment being composed in the overlay
   const [commentSaving, setCommentSaving] = useState(false)
+  // The cell re-running from its detail; `failed` when it came back unchanged.
+  const [rerun, setRerun] = useState<{ key: string; failed?: boolean }>()
   // Each dialog closes, and returns focus, as its exit starts.
   const [detailShown, detailClosing] = useExit(detail)
   const detailKey = detailShown ? cellKey(detailShown.docName, detailShown.columnId) : undefined
@@ -283,22 +287,23 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const modal = detailDialog.current
     modal?.showModal()
-    ;(walkControl(modal) ?? modal?.querySelector<HTMLTextAreaElement>("textarea"))?.focus({ preventScroll: true })
+    // Not the comment field, whose keyboard would cover the answer on a phone.
+    ;(detailControl(modal) ?? modal?.querySelector<HTMLButtonElement>(".modal-close"))?.focus({ preventScroll: true })
     return () => {
       modal?.close()
       if (opener?.isConnected) opener.focus({ preventScroll: true })
     }
   }, [detailOpen])
 
-  // A move that removes or disables the focused walk control hands focus to
-  // the next step, so it never drops out of the detail.
+  // A move or re-run that removes or disables the focused control hands focus
+  // to the next step, so it never drops out of the detail.
   useLayoutEffect(() => {
     const modal = detailDialog.current
-    if (walkAt < 0 || !modal) return
+    if (!detailOpen || !modal) return
     const active = document.activeElement
     if (active && modal.contains(active) && !active.matches(":disabled")) return
-    walkControl(modal)?.focus({ preventScroll: true })
-  }, [walkAt, canEdit])
+    detailControl(modal)?.focus({ preventScroll: true })
+  }, [walkAt, canEdit, rerun])
 
   // A finished walk hands focus to the table's next step and says it is done.
   useLayoutEffect(() => {
@@ -840,7 +845,20 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
     setReviewed(detailKey, true)
     walkTo(1)
   }
+  // The same refresh as the cell's re-run in the table; never of a reviewed cell.
+  const rerunCell = () => {
+    if (!detailShown || !detailKey || !canEdit || running > 0) return
+    const key = detailKey
+    const column = grid.columns.find((col) => col.id === detailShown.columnId)
+    if (!column) return
+    const answer = (cell?: GridCellData) => cell && JSON.stringify({ ...cell, comments: undefined })
+    const before = answer(gridRef.current.cells[key])
+    setRerun({ key })
+    void fill([{ docName: detailShown.docName, column }]).finally(() => setRerun(answer(gridRef.current.cells[key]) === before ? { key, failed: true } : undefined))
+  }
   const walkEntry = inWalk && detailKey ? attention.cells.get(detailKey) : undefined
+  const detailMarker = detailKey ? attention.cells.get(detailKey)?.marker?.state : undefined
+  const rerunFixes = !!detailMarker && RERUN.includes(detailMarker)
   const walkReason = detailKey && stillQueued.has(detailKey) ? attention.queue.find((entry) => entry.key === detailKey)!.reason : undefined
   // A degraded source is always the cell's marker, which the walk's reason
   // already names and explains, so the citation repeats neither.
@@ -1121,10 +1139,11 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                   const section = sectionPath(citation.structuralPath) || citationLabel(citation)
                   const label = citesRow(citation, { name: detailShown.docName, docPath: documents.find((doc) => doc.name === detailShown.docName)?.doc_path }) ? section : `${citation.documentName} · ${section}`
                   // The badge sits beside the reference; its sentence below says
-                  // what the check found, unless the walk's reason already does.
+                  // what the check found, unless the walk's reason already does
+                  // or the badge says it all (Verified).
                   // Another document's passage has no badge: the red edge and
                   // the sentence (or the walk's reason) already say so.
-                  const detail = check ? (walkExplains(check) ? undefined : SOURCE_DETAIL[check])
+                  const detail = check ? (walkExplains(check) || check === "verified" ? undefined : SOURCE_DETAIL[check])
                     : checkingSources ? "Checking the excerpt against the document…" : "The excerpt could not be checked against the document."
                   const available = !!citationDocument(citation, documents)
                   return (
@@ -1184,30 +1203,49 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                     />
                     <div className="review-comment-actions">
                       <small className="muted" id={`${detailIds}-signed`}>Comments use the attorney name in Settings → Drafting.</small>
-                      <button className={!inWalk || composing ? "primary" : undefined} onClick={addComment} disabled={!canEdit || !draft.trim() || commentSaving}>
+                      <button className={composing ? "primary" : undefined} onClick={addComment} disabled={!canEdit || !draft.trim() || commentSaving}>
                         {commentSaving ? "Adding comment…" : "Add comment"}
                       </button>
                     </div>
                   </div>
                 </section>
               </div>
-              {/* One next step: Mark reviewed while the cell is open, else Next.
-                  A reviewed cell is never unlocked or refilled from here. */}
-              {inWalk && (() => {
+              {/* One primary per state, last in the row so focus stays on it as
+                  the step changes. In the walk a flagged cell's named remedy
+                  leads (Re-run this cell, or Unlock once reviewed, never both in
+                  one click), then Mark reviewed · Next; outside it, Mark
+                  reviewed or Unlock. Only the lawyer's click changes review. */}
+              {detailKey && (() => {
                 const open = detailCell.status !== "reviewed"
+                const busy = rerun?.key === detailKey && !rerun.failed
+                type Step = { label: string; onClick: () => void; disabled: boolean; busy?: boolean }
+                const rerunStep: Step = { label: busy ? "Re-running…" : "Re-run this cell", onClick: rerunCell, disabled: !busy && (!canEdit || running > 0), busy }
+                const mark: Step = inWalk ? { label: "Mark reviewed · Next", onClick: markReviewedNext, disabled: busy || !canEdit }
+                  : { label: "Mark reviewed", onClick: () => setReviewed(detailKey, true), disabled: busy || !canEdit }
+                const unlock: Step = { label: "Unlock", onClick: () => setReviewed(detailKey, false), disabled: !canEdit }
+                const next: Step = { label: "Next", onClick: () => walkTo(1), disabled: false }
+                const [secondary, primary]: [Step | undefined, Step] = open
+                  ? (rerunFixes || busy ? (inWalk ? [mark, rerunStep] : [rerunStep, mark]) : [undefined, mark])
+                  : inWalk ? (rerunFixes ? [next, unlock] : [undefined, next]) : [undefined, unlock]
+                // A busy re-run keeps focus, so its button is aria-disabled, not disabled.
+                const button = (step: Step, className: string, disabled = step.disabled) => (
+                  <button type="button" className={className} disabled={disabled} aria-disabled={step.busy || undefined} aria-busy={step.busy || undefined} onClick={step.busy ? undefined : step.onClick}>
+                    {step.label}
+                  </button>
+                )
                 return (
-                  <div className="review-walk-bar">
-                    {composing ? <small className="review-walk-hint">Add or clear the comment to move on.</small> : (
+                  <div className="review-detail-bar">
+                    {rerun?.key === detailKey && rerun.failed && error && <p className="review-detail-error" role="alert">{error}</p>}
+                    {inWalk && (composing ? <small className="review-walk-hint">Add or clear the comment to move on.</small> : (
                       <>
                         <button type="button" className="ghost review-walk-previous" disabled={!walk.entries.slice(0, walk.at).some(inTable)} onClick={() => walkTo(-1)}>
                           Previous
                         </button>
                         {open && <button type="button" className="ghost review-walk-skip" onClick={() => walkTo(1)}>Skip</button>}
                       </>
-                    )}
-                    <button type="button" className={`review-walk-next${composing ? "" : " primary"}`} disabled={composing || (open && !canEdit)} onClick={open ? markReviewedNext : () => walkTo(1)}>
-                      {open ? "Mark reviewed · Next" : "Next"}
-                    </button>
+                    ))}
+                    {secondary && !(inWalk && composing) && button(secondary, "ghost")}
+                    {button(primary, `review-detail-primary${composing ? "" : " primary"}`, primary.disabled || (inWalk && composing))}
                   </div>
                 )
               })()}

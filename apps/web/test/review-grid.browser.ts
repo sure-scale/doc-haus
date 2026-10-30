@@ -282,7 +282,8 @@ try {
     await detail.waitFor()
     assert.equal(await detailModal.evaluate(element => (element as HTMLDialogElement).open), true)
     await detail.getByRole("textbox", { name: "Add a comment", exact: true }).waitFor()
-    assert.equal(await detail.getByRole("textbox", { name: "Add a comment", exact: true }).evaluate(element => element === document.activeElement), true, "opening an answer should focus its comment field")
+    // Its one next step, not the comment field, whose keyboard would cover the answer on a phone.
+    assert.equal(await detail.locator("button.primary").evaluate(element => element === document.activeElement && element.textContent === "Mark reviewed"), true, "opening an answer should focus Mark reviewed")
     if (focus === "detail text") await detail.locator(".review-detail-answer").click()
     if (focus === "deleted comment") {
       await detail.locator("textarea").fill("Confirm the governing law with the client.")
@@ -292,12 +293,12 @@ try {
     }
     assert.equal(await focusInDetail(), true, `focus escaped the active detail after ${focus}`)
     // With an empty composer, Add comment is disabled. The native sequence is
-    // Close → textarea → Close, in both directions, without entering the table.
-    await detail.locator("textarea").focus()
+    // Close → Mark reviewed → Close, in both directions, without entering the table.
+    await detail.getByRole("button", { name: "Mark reviewed", exact: true }).focus()
     await page.keyboard.press("Tab")
     assert.equal(await detail.getByRole("button", { name: "Close", exact: true }).evaluate(element => element === document.activeElement), true, "Tab should wrap to the detail's close button")
     await page.keyboard.press("Shift+Tab")
-    assert.equal(await detail.locator("textarea").evaluate(element => element === document.activeElement), true, "Shift+Tab should wrap to the detail's comment field")
+    assert.equal(await detail.getByRole("button", { name: "Mark reviewed", exact: true }).evaluate(element => element === document.activeElement), true, "Shift+Tab should wrap to the detail's last step")
     assert.equal(await focusInDetail(), true)
     await page.keyboard.press("Escape")
     await detail.waitFor({ state: "detached" })
@@ -707,9 +708,11 @@ try {
   console.log("PASS one primary action per state, Review next, the multi-state filter, search and Clear")
 
   // Review next walks the queue inside one open detail: why each cell needs a
-  // look, where it sits in the walk, and one next step. A cell reviewed before
-  // its question changed is never re-locked or refreshed from the walk; the end
-  // hands back to the toolbar's next step, and the search stays as it was.
+  // look, where it sits in the walk, and one next step. A changed source leads
+  // with the lawyer's re-run, which stays on the cell and never marks it. A cell
+  // reviewed before its question changed is never re-locked or refreshed from
+  // the walk; the end hands back to the toolbar's next step, and the search
+  // stays as it was.
   storedGrid = structuredClone(grid)
   for (const cell of Object.values(storedGrid.cells)) cell.questionHash = hashQuestion(grid.columns[0]!.question)
   storedGrid.cells["Old note.docx::c1"] = { ...storedGrid.cells["Old note.docx::c1"]!, status: "reviewed", questionHash: "unused" }
@@ -722,8 +725,9 @@ try {
   const walkAnswer = (text: string) => walkDetail.locator(".review-detail-answer", { hasText: text }).waitFor()
   const position = walkDetail.locator(".review-walk-position")
   const why = walkDetail.locator(".review-walk-why")
-  const walkBar = walkDetail.locator(".review-walk-bar")
+  const walkBar = walkDetail.locator(".review-detail-bar")
   const markNext = walkBar.getByRole("button", { name: "Mark reviewed · Next", exact: true })
+  const rerun = walkBar.getByRole("button", { name: "Re-run this cell", exact: true })
   const walkNext = walkBar.getByRole("button", { name: "Next", exact: true })
   const skip = walkBar.getByRole("button", { name: "Skip", exact: true })
   const previous = walkBar.getByRole("button", { name: "Previous", exact: true })
@@ -736,7 +740,8 @@ try {
   assert.match(await walkDetail.locator(".viewer-title").innerText(), /Side letter\.docx$/, "the header names the cell's document")
   assert.match(await why.innerText(), /^Source changed\s+The document no longer contains the cited excerpt\./)
   assert.equal(await walkDetail.locator(".review-source-check").count(), 0, "the reason line, not the source, explains a changed source")
-  assert.equal(await markNext.evaluate(element => element === document.activeElement), true, "the walk opens on its next step")
+  assert.equal(await rerun.evaluate(element => element === document.activeElement && element.classList.contains("primary")), true, "a changed source opens on its re-run")
+  assert.equal(await markNext.evaluate(element => element.classList.contains("primary")), false, "Mark reviewed · Next stays as the other step")
   assert.equal(await previous.isDisabled(), true)
   assert.equal(await walkDetail.locator("button.primary").count(), 1, "one primary in review mode")
   assert.equal(await walkDetail.getByRole("button", { name: "Add comment", exact: true }).evaluate(element => element.classList.contains("primary")), false, "Add comment is secondary in review mode")
@@ -751,22 +756,36 @@ try {
       }
     }
   })
-  const marked = gridPut()
+  // The re-run keeps focus while it runs; the old answer cannot be marked meanwhile.
+  const heldRerun = new Promise<import("@playwright/test").Route>(resolve => { onExtraction = resolve })
   await page.keyboard.press("Enter")
-  await marked
+  const rerunning = await heldRerun
+  assert.equal(await walkBar.getByRole("button", { name: "Re-running…", exact: true }).evaluate(element => element === document.activeElement), true, "the re-run keeps focus")
+  assert.equal(await markNext.isDisabled(), true, "the answer being replaced cannot be marked reviewed")
+  await rerunning.fulfill({ status: 204 })
+  onExtraction = undefined
+  await walkAnswer("New extracted answer")
+  assert.equal(await position.textContent(), "1 of 3 to review", "the re-run stays on its cell")
+  await walkBar.locator("button.primary", { hasText: "Mark reviewed · Next" }).waitFor()
+  assert.equal(await markNext.evaluate(element => element === document.activeElement), true, "the new answer, still unreviewed, leads with Mark reviewed · Next")
+  await page.keyboard.press("Enter")
   await walkAnswer("English law.")
+  for (let attempt = 0; storedGrid.cells["Side letter.docx::c1"]!.status !== "reviewed" && attempt < 250; attempt++) await new Promise(resolve => setTimeout(resolve, 20))
   assert.equal(storedGrid.cells["Side letter.docx::c1"]!.status, "reviewed", "Mark reviewed · Next locks the cell")
   assert.equal(await position.textContent(), "2 of 3 to review")
   assert.match(await why.innerText(), /Question changed\s+Question changed after review\. Unlock to refresh\.$/)
   assert.equal(await markNext.count(), 0, "a reviewed cell whose question changed offers no Mark reviewed")
+  assert.equal(await rerun.count(), 0, "a reviewed cell is never re-run from the walk")
   assert.equal(await skip.count(), 0)
-  assert.equal(await walkNext.evaluate(element => element.classList.contains("primary")), true)
+  const unlock = walkBar.getByRole("button", { name: "Unlock", exact: true })
+  assert.equal(await unlock.evaluate(element => element === document.activeElement && element.classList.contains("primary")), true, "its named remedy, Unlock, leads and keeps focus")
+  assert.equal(await walkNext.evaluate(element => element.classList.contains("primary")), false)
   assert.equal(await focusInDetail(), true, "focus stays in the detail as the walk moves")
   assert.equal(await detailModal.getAttribute("data-walk"), "same", "the detail is not remounted between cells")
   assert.deepEqual(await dialogCalls(), [], "the detail does not close or reopen between cells")
 
   await previous.click()
-  await walkAnswer("The law of Scotland.")
+  await walkAnswer("New extracted answer")
   assert.equal(await position.textContent(), "1 of 3 to review")
   assert.equal(await markNext.count(), 0, "a cell reviewed in the walk offers Next only")
   assert.equal(await walkNext.evaluate(element => element === document.activeElement), true, "a move that disables its button hands focus to the next step")
@@ -789,11 +808,10 @@ try {
   assert.equal(storedGrid.cells["Old note.docx::c1"]!.questionHash, "unused", "the walk never refreshes a reviewed cell")
 
   // Ending on Mark reviewed leaves nothing to review, so focus lands on Export.
+  // The re-run side letter now needs no look, so the walk starts at the old note.
   await primary.click()
-  await walkAnswer("The law of Scotland.")
-  assert.equal(await toolbar.getByText("End of the review list").count(), 0, "a new walk clears the last one's word")
-  await walkNext.click()
   await walkAnswer("English law.")
+  assert.equal(await toolbar.getByText("End of the review list").count(), 0, "a new walk clears the last one's word")
   await walkNext.click()
   await walkAnswer("The law of England and Wales.")
   const lastMark = gridPut()
@@ -820,7 +838,7 @@ try {
   await page.getByText("Showing 1 of 3 cells · “note”", { exact: true }).waitFor()
   await search.fill("")
   holdChecks = walkHeldChecks
-  console.log("PASS Review next walks the queue in one detail, never re-locks a changed question and hands back to the toolbar")
+  console.log("PASS Review next walks the queue in one detail, leads a changed source with its re-run, never re-locks a changed question and hands back to the toolbar")
 
   // A reviewed Fill compares each filled question's cited answers once, in a
   // hidden review-compare session that is deleted afterwards. The result is
