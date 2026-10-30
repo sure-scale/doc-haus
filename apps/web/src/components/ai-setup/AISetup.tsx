@@ -61,13 +61,16 @@ function prefill(provider: Provider | undefined, integration: IntegrationInfo | 
   return { ...emptyDraft(), options, choice: choice?.value ?? "", answer: methodDefaults(choice?.method) }
 }
 
-export default function AISetup({ mode = "settings", reconnectProvider, phase = "provider", onPhaseChange, onProgress, onSaved }: {
+export default function AISetup({ mode = "settings", reconnectProvider, phase = "provider", onPhaseChange, onProgress, onSaved, extraDirty = false, extraBusy = false, onSaveExtra }: {
   mode?: "settings" | "onboarding"
   reconnectProvider?: string
   phase?: SetupPhase
   onPhaseChange?: (phase: SetupPhase) => void
   onProgress?: (progress: AISetupProgress) => void
   onSaved: () => void | Promise<void>
+  extraDirty?: boolean
+  extraBusy?: boolean
+  onSaveExtra?: () => Promise<void>
 }) {
   const client = useMemo(settingsClient, [])
   const [providers, setProviders] = useState<Provider[]>([])
@@ -95,6 +98,7 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   const [results, setResults] = useState<ModelTestResult[]>([])
   const [verified, setVerified] = useState("")
   const [saved, setSaved] = useState(false)
+  const [aiDirty, setAIDirty] = useState(false)
   const [attempt, setAttempt] = useState<(CandidateAuthResult & { type: "oauth" | "command" })>()
   const [authCode, setAuthCode] = useState("")
   const connectionHeading = useRef<HTMLHeadingElement>(null)
@@ -186,6 +190,7 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   }, [focusConnection, provider])
 
   function changeProvider(id: string) {
+    setAIDirty(true)
     if (id === provider) return
     resetCandidate(); setProvider(id); setPrimary(""); setFast("")
     const item = providers.find(item => item.id === id)
@@ -193,9 +198,9 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
     if (next.choice.startsWith("method:") && reusable.some(connection => connection.integrationID === (item?.integrationID ?? id))) next.choice = ""
     setDraft(next)
   }
-  function changeDraft(next: ConnectionDraft) { resetCandidate(); setDraft(next) }
-  function changePrimary(value: string) { clearTest(); setPrimary(value) }
-  function changeFast(value: string) { clearTest(); setFast(value) }
+  function changeDraft(next: ConnectionDraft) { setAIDirty(true); resetCandidate(); setDraft(next) }
+  function changePrimary(value: string) { setAIDirty(true); clearTest(); setPrimary(value) }
+  function changeFast(value: string) { setAIDirty(true); clearTest(); setFast(value) }
 
   function input(): CandidateInput {
     if (!actualProvider || isRemovedProvider(actualProvider)) throw new Error("Choose a provider first.")
@@ -237,7 +242,7 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
   }
   async function prepare(advance = true) {
     if (busy) return
-    setBusy(true); setError("")
+    setBusy(true); if (advance) setError("")
     const current = revision.current
     try {
       const created = await createCandidate(input())
@@ -309,6 +314,13 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
     try { await onSaved() }
     catch { setContinuePending(true); setError("AI setup was saved. Setup progress could not be updated. Continue again to retry that step.") }
   }
+  async function saveExtra() {
+    if (!extraDirty || !onSaveExtra || busy || extraBusy) return
+    setSaving(true); setBusy(true); setError("")
+    try { await onSaveExtra(); await onSaved() }
+    catch { setError("Could not save the request limit. Your changes are still here. Try again.") }
+    finally { setSaving(false); setBusy(false) }
+  }
   async function save(testedJustNow = false) {
     if ((!passed && !testedJustNow) || (busy && !testedJustNow) || saveUnconfirmed) return
     setSaving(true); setBusy(true); setError("")
@@ -320,9 +332,13 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
     }
     // Save is committed. Refresh/progress failures must never invite another
     // credential activation against the now-closed candidate.
-    setSaved(true); session.current = ""; setSessionID(""); setModelReady(false)
+    setSaved(true); setAIDirty(false); session.current = ""; setSessionID(""); setModelReady(false)
     providerHealth.confirmed([{ providerID: actualProvider, modelID: modelID(primary) }, { providerID: actualProvider, modelID: modelID(chosenFast) }])
     await load({ providerID: actualProvider, models: [modelID(primary), modelID(chosenFast)] })
+    if (extraDirty && onSaveExtra) {
+      try { await onSaveExtra() }
+      catch { setError("AI setup was saved, but the request limit could not be saved. Try again."); setBusy(false); setSaving(false); return }
+    }
     await continueAfterSave()
     setBusy(false); setSaving(false)
   }
@@ -385,7 +401,7 @@ export default function AISetup({ mode = "settings", reconnectProvider, phase = 
       {saved && <p role="status">AI setup saved.</p>}
       <SettingsFooter tab="ai"><div className="ai-setup-actions">
         {mode === "onboarding" && <button type="button" className="onboarding-back" disabled={busy} onClick={() => onPhaseChange?.("models")}>Back to models</button>}
-        {mode === "onboarding" ? <button type="button" className="primary" disabled={busy || (!saved && (!choiceValid || !configured || saveUnconfirmed))} onClick={() => void (saved ? continueAfterSave() : runTests(true))}>{saving ? "Saving…" : busy ? "Testing connection…" : saved ? "Continue" : "Test and continue"}</button> : <button type="button" className="primary" disabled={busy || !choiceValid || !configured || saved || saveUnconfirmed} onClick={() => void runTests(true)}>{saving ? "Saving…" : busy ? "Testing connection…" : "Test and save"}</button>}
+        {mode === "onboarding" ? <button type="button" className="primary" disabled={busy || (!saved && (!choiceValid || !configured || saveUnconfirmed))} onClick={() => void (saved ? continueAfterSave() : runTests(true))}>{saving ? "Saving…" : busy ? "Testing connection…" : saved ? "Continue" : "Test and continue"}</button> : <button type="button" className="primary" disabled={busy || extraBusy || (extraDirty && !aiDirty ? false : !choiceValid || !configured || saved || saveUnconfirmed)} onClick={() => void (extraDirty && !aiDirty ? saveExtra() : runTests(true))}>{saving ? "Saving…" : busy ? "Testing connection…" : extraDirty && !aiDirty ? "Save" : "Test and save"}</button>}
       </div></SettingsFooter>
     </section>}
   </div>
