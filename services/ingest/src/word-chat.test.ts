@@ -1300,6 +1300,9 @@ test("paragraph insertion prepare uses stored reviewed proposal and existing lea
   try { turn=(await (await post("send",{conversationId:id,scope:"document",text:"Add a paragraph",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context})).json() as {turn:WordChatTurn}).turn }
   finally { modelStructuredRawOutput=undefined }
   expect(turn.proposal?.after).toBe(text+"\r"+inserted)
+  expect(sessionContext(turn.id)).toContain("inserting or deleting paragraphs alone does not request formatting")
+  const reviewer = [...sessions.values()].find(session => session.parentID === turn.id && session.metadata.type === "word-chat-review")!
+  expect(sessionContext(reviewer.id)).toContain("Reject unrequested restyling when the instruction requires formatting preservation")
   const current=readCurrentVersion(directory,"Draft.docx")!, db=openDb(directory)
   db.run("INSERT OR IGNORE INTO word_grants(token_hash,document_id,origin,issued_version,created_at) VALUES (?,?,?,?,?)",[auth.grant.token_hash,auth.grant.document_id,auth.grant.origin,auth.grant.issued_version,Date.now()])
   const owner=claimWordEditLease(db,{document:auth.grant.document_id,tokenHash:auth.grant.token_hash,session:"insert-prepare-session"})
