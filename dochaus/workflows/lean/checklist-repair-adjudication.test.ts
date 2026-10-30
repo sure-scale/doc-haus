@@ -1,5 +1,6 @@
 import { LEAN_PROMPT_VERSION, stageInputs } from "./stages"
 import { afterEach, expect, test } from "bun:test"
+import { withWorkflowLimit } from "./model-concurrency-test-support"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
 import { readFileSync } from "node:fs"
@@ -83,7 +84,7 @@ test("native product dispatch accepts cumulative plan with one focused job and n
   expect(accepted.findings).toEqual([plan.findings![1]!])
 })
 
-test("six independent repairs are bounded to four native sessions and transport errors are not retried", async () => {
+test("independent repairs respect the configured limit and transport errors are not retried", async () => withWorkflowLimit(3, async () => {
   const { directory, assessment } = await setup()
   const assessments = Array.from({ length: 6 }, (_, index) => ({ ...assessment, item_id: `finding-${index}`, finding: { ...assessment.finding, item_id: `finding-${index}` } }))
   startRepairRound(directory, assessments.map(value => openItem("checklist-check", "omission", `Reassess.\n${JSON.stringify(value)}`, { document: "d1", repair_target: "body", pid })), true)
@@ -103,12 +104,12 @@ test("six independent repairs are bounded to four native sessions and transport 
   }
   const before = readLeanText(directory, "d1/change-plan.json")
   const run = await runFocusedRepairAdjudication(directory, readLeanState(directory)!, { sessions }, "d1", () => {})
-  expect(maximum).toBe(4)
+  expect(maximum).toBe(3)
   expect(created).toBe(6)
   expect(prompts).toBe(6)
   expect(run.status).toBe("failed")
   expect(readLeanText(directory, "d1/change-plan.json")).toBe(before)
-})
+}))
 
 
 test("a local goal never expands to an old omnibus paragraph group", () => {
