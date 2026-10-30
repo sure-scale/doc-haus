@@ -59,6 +59,7 @@ agent/*.md
 !agent/redliner.md
 !agent/research.md
 !agent/review-compare.md
+!agent/review-suggest.md
 !agent/router.md
 !agent/skill-builder.md
 !agent/summarizer.md
