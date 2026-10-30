@@ -203,3 +203,60 @@ test("authored granular hunks preserve styled boundary whitespace and reject uns
   expect(() => authoredWordChatWordingHunks(authored, before, after, 1, before.length)).toThrow()
   expect(() => authoredWordChatWordingHunks(authored.replace(del("Cell bold", "<w:b/>"), ""), before, after, 0, before.length)).toThrow()
 })
+
+test("one-sided authored hunks are scoped and preserve source formatting", async () => {
+  const { authoredWordChatWordingHunks, sameWordChatHunkFormatting, unambiguousWordChatInsertionFormatting } = await import("./word-chat-host-ooxml")
+  const run = (v: string) => `<w:r><w:t xml:space="preserve">${v}</w:t></w:r>`
+  const add = (v: string) => `<w:ins w:id="1" w:author="doc.haus">${run(v)}</w:ins>`
+  const del = (v: string) => `<w:del w:id="2" w:author="doc.haus"><w:r><w:delText>${v}</w:delText></w:r></w:del>`
+  const before = flat(`<w:p>${run("Alpha beta")}</w:p>`)
+  const added = flat(`<w:p>${run("Alpha ")}${add("new ")}${run("beta")}</w:p>`)
+  const addedHunks = authoredWordChatWordingHunks(added, "Alpha beta", "Alpha new beta", 0, 10)
+  expect(addedHunks).toEqual([{ start: 6, end: 6, before: "", after: "new " }])
+  expect(sameWordChatHunkFormatting(before, added, addedHunks)).toBe(true)
+  expect(() => authoredWordChatWordingHunks(added, "Alpha beta", "Alpha new beta", 0, 5)).toThrow()
+  const deleted = flat(`<w:p>${run("Alpha ")}${del("beta")}</w:p>`)
+  const deletedHunks = authoredWordChatWordingHunks(deleted, "Alpha beta", "Alpha ", 0, 10)
+  expect(deletedHunks).toEqual([{ start: 6, end: 10, before: "beta", after: "" }])
+  expect(sameWordChatHunkFormatting(before, deleted, deletedHunks)).toBe(true)
+  const boundary = flat(`<w:p>${run("Alpha ")}<w:r><w:rPr><w:b/></w:rPr><w:t>beta</w:t></w:r></w:p>`)
+  expect(unambiguousWordChatInsertionFormatting(boundary, 6)).toBe(false)
+  expect(unambiguousWordChatInsertionFormatting(boundary, 0)).toBe(true)
+  expect(uniformWordChatFormatting(boundary, 6, 6)).toBe(false)
+  expect(sameWordChatHunkFormatting(boundary, added, addedHunks)).toBe(false)
+  const emoji = flat(`<w:p>${run("A😀B")}</w:p>`)
+  expect(unambiguousWordChatInsertionFormatting(emoji, 2)).toBe(false)
+  expect(() => authoredWordChatWordingHunks(added, "Alpha beta", "Alpha new beta", 0, 11)).toThrow()
+})
+
+test("real author output supports a pure insertion and deletion", async () => {
+  const { authorWordChatTarget } = await import(new URL("../../../dochaus/lib/docx-flat-opc.ts", import.meta.url).href) as { authorWordChatTarget(xml: string, target: import("../../../dochaus/lib/word-chat-amendment-contract").WordChatTarget, replacement: string): Promise<Omit<import("../../../dochaus/lib/word-chat-amendment-contract").WordChatAuthoredAmendment, "proposalId">> }
+  const { authoredWordChatWordingHunks, sameWordChatHunkFormatting } = await import("./word-chat-host-ooxml")
+  const rel = "http://schemas.openxmlformats.org/package/2006/relationships", office = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  const source = flat('<w:p><w:r><w:t xml:space="preserve">Alpha beta</w:t></w:r></w:p>', "")
+    .replace('</pkg:package>', `<pkg:part pkg:name="/_rels/.rels" pkg:contentType="application/vnd.openxmlformats-package.relationships+xml"><pkg:xmlData><Relationships xmlns="${rel}"><Relationship Id="r1" Type="${office}/officeDocument" Target="word/document.xml"/></Relationships></pkg:xmlData></pkg:part></pkg:package>`)
+  const target = { id: "target", paragraphs: [{ id: "p", text: "Alpha beta" }], text: "beta", startOffset: 6, endOffset: 10, saved: false, capturedAt: "" }
+  for (const replacement of ["new beta", ""]) {
+    const artifact = await authorWordChatTarget(source, target, replacement)
+    const hunks = authoredWordChatWordingHunks(artifact.ooxml, "Alpha beta", `Alpha ${replacement}`, 6, 10)
+    expect(hunks.some(hunk => !hunk.before || !hunk.after)).toBe(true)
+    expect(sameWordChatHunkFormatting(source, artifact.ooxml, hunks)).toBe(true)
+  }
+})
+
+test("real author preserves original formatting for a mixed-run deletion", async () => {
+  const { authorWordChatTarget } = await import(new URL("../../../dochaus/lib/docx-flat-opc.ts", import.meta.url).href) as { authorWordChatTarget(xml: string, target: import("../../../dochaus/lib/word-chat-amendment-contract").WordChatTarget, replacement: string): Promise<Omit<import("../../../dochaus/lib/word-chat-amendment-contract").WordChatAuthoredAmendment, "proposalId">> }
+  const { authoredWordChatWordingHunks, sameWordChatHunkFormatting } = await import("./word-chat-host-ooxml")
+  const rel = "http://schemas.openxmlformats.org/package/2006/relationships", office = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  const source = flat('<w:p><w:r><w:t xml:space="preserve">Keep </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>bold</w:t></w:r><w:r><w:t xml:space="preserve"> plain </w:t></w:r><w:r><w:rPr><w:i/></w:rPr><w:t>italic</w:t></w:r><w:r><w:t xml:space="preserve"> end</w:t></w:r></w:p>', "")
+    .replace('</pkg:package>', `<pkg:part pkg:name="/_rels/.rels" pkg:contentType="application/vnd.openxmlformats-package.relationships+xml"><pkg:xmlData><Relationships xmlns="${rel}"><Relationship Id="r1" Type="${office}/officeDocument" Target="word/document.xml"/></Relationships></pkg:xmlData></pkg:part></pkg:package>`)
+  const original = "Keep bold plain italic end", selected = "bold plain italic"
+  const target = { id: "target", paragraphs: [{ id: "p", text: original }], text: selected, startOffset: 5, endOffset: 22, saved: false, capturedAt: "" }
+  const artifact = await authorWordChatTarget(source, target, "")
+  const hunks = authoredWordChatWordingHunks(artifact.ooxml, original, "Keep  end", 5, 22)
+  expect(hunks).toEqual([{ start: 5, end: 22, before: selected, after: "" }])
+  expect(sameWordChatHunkFormatting(source, artifact.ooxml, hunks)).toBe(true)
+  const tampered = artifact.ooxml.replace("<w:b/>", "<w:i/>")
+  expect(tampered).not.toBe(artifact.ooxml)
+  expect(sameWordChatHunkFormatting(source, tampered, hunks)).toBe(false)
+})

@@ -6,7 +6,12 @@ export type WordChatApplyEligibility = { supported: true } | { supported: false;
 /** Native wording transport for ordinary single-paragraph changes. Exact
  * authored hunks, formatting and fresh Word scope are verified by the host. */
 export function nativeWordChatTextEligible(target: WordChatTarget, replacement: string): boolean {
-  return replacement.length > 0 && target.text.length > 0 && replacement !== target.text && target.paragraphs.length === 1 &&
+  const paragraph = target.paragraphs[0]?.text
+  const boundary = (offset: number) => paragraph !== undefined && Number.isSafeInteger(offset) && offset >= 0 && offset <= paragraph.length &&
+    !(offset > 0 && offset < paragraph.length && /[\uD800-\uDBFF]/.test(paragraph[offset - 1]!) && /[\uDC00-\uDFFF]/.test(paragraph[offset]!))
+  return target.text.length > 0 && replacement !== target.text && target.paragraphs.length === 1 &&
+    boundary(target.startOffset) && boundary(target.endOffset) && paragraph!.slice(target.startOffset, target.endOffset) === target.text &&
+    (replacement.length > 0 || target.paragraphs[0]!.text.slice(0, target.startOffset).length + target.paragraphs[0]!.text.slice(target.endOffset).length > 0) &&
     target.startOffset <= target.endOffset && !/[\r\n\t\v]/.test(target.text) && !/[\r\n\t\v]/.test(replacement)
 }
 

@@ -35,6 +35,7 @@ export type WordChatContext = {
   document: {
     saved: boolean
     changeTrackingMode: string
+    trackFormatting: boolean
     load(properties: string): void
     getSelection(): WordChatRange
     getParagraphByUniqueLocalId(id: string): Paragraph
@@ -314,7 +315,7 @@ export class WordChatHost {
     const xml = content.getOoxml(), comments = range.getComments(), revisions = range.getTrackedChanges()
     comments.load("items"); revisions.load("items/author,items/type")
     const current = paragraphs.map(paragraph => paragraph.getRange("Content").getReviewedText("Current"))
-    context.document.load("changeTrackingMode")
+    context.document.load(formatting ? "changeTrackingMode,trackFormatting" : "changeTrackingMode")
     all.load("items/uniqueLocalId")
     const adjacent = neighbours.map(p => ({ id: p.id, xml: p.range.getOoxml() }))
     const bodyChanges = context.document.body.getRange().getTrackedChanges()
@@ -322,6 +323,8 @@ export class WordChatHost {
     selected.load("text")
     for (const paragraph of paragraphs) paragraph.load("text")
     await context.sync()
+    if (formatting && typeof context.document.trackFormatting !== "boolean")
+      throw new WordChatHostError("This version of Word cannot confirm formatting tracking. Your document is unchanged.")
     if (comments.items.length || (!formatting && revisions.items.length) || formatting && revisions.items.some(revision => !["Added", "Deleted"].includes((revision as TrackedChange).type)) || hasProtectedContent(xml.value, false, formatting, insertedMarks))
       throw new WordChatHostError("This paragraph contains existing revisions, comments or a linked Word object. Review that passage in Word first, then prepare a fresh suggestion for ordinary text.")
     let captured: string[]
@@ -343,12 +346,14 @@ export class WordChatHost {
       throw captureMismatch("The reviewed paragraphs changed identity or order during capture.")
     if (formatting && JSON.stringify([ids[index - 1], ids[index + target.paragraphs.length]].filter((id): id is string => id !== undefined)) !== JSON.stringify(adjacent.map(p => p.id)))
       throw captureMismatch("The paragraphs beside this review changed during capture.")
-    return { range, selected, ooxml: xml.value, ids, index, nesting: paragraphs.map(p => p.tableNestingLevel), adjacent: adjacent.map(p => ({ id: p.id, ooxml: p.xml.value })), tracking: context.document.changeTrackingMode,
+    return { range, selected, ooxml: xml.value, ids, index, nesting: paragraphs.map(p => p.tableNestingLevel), adjacent: adjacent.map(p => ({ id: p.id, ooxml: p.xml.value })), tracking: context.document.changeTrackingMode, trackFormatting: formatting ? context.document.trackFormatting : undefined,
       changes: bodyChanges.items.map(change => ({ author: change.author, type: change.type, text: change.text })) }
   }
 
   private async applyOnce(input: WordChatApplyInput, identity: string, wordingImport = false): Promise<WordChatApplyResult> {
     try {
+      if (input.formatting !== undefined && !this.supports("WordApiDesktop", "1.4"))
+        throw new WordChatHostError("This version of Word cannot confirm formatting tracking. Your document is unchanged.")
       const eligibility = wordChatApplyEligibility(input.target, input.replacement, input.formatting, this.nativeTextEnabled)
       if (!eligibility.supported) throw new WordChatHostError(eligibility.reason)
       // Scoped OOXML imports may change numbering elsewhere in Word, even
@@ -506,8 +511,10 @@ export class WordChatHost {
     let hunks: ReturnType<typeof authoredWordChatWordingHunks>
     try { hunks = authoredWordChatWordingHunks(authored.ooxml, paragraph.text, expected[0]!, target.startOffset, target.endOffset) }
     catch { throw new WordChatHostError("Word cannot safely map this authored wording to the reviewed passage. Your document is unchanged.") }
-    if (hunks.some(hunk => !uniformWordChatFormatting(fresh.ooxml, hunk.start, hunk.end)))
+    if (hunks.some(hunk => hunk.after.length > 0 && !uniformWordChatFormatting(fresh.ooxml, hunk.start, hunk.end)))
       throw new WordChatHostError("A changed span crosses character formatting, so Word cannot replace it safely here. Your document is unchanged.")
+    if (!sameWordChatHunkFormatting(fresh.ooxml, authored.ooxml, hunks))
+      throw new WordChatHostError("The authored wording changes character formatting outside the reviewed change. Your document is unchanged.")
     const paragraphRange = context.document.getParagraphByUniqueLocalId(paragraph.id).getRange("Content")
     const ranges: Array<{ hunk: typeof hunks[number]; range: WordChatRange }> = []
     for (const hunk of hunks) {
@@ -537,7 +544,12 @@ export class WordChatHost {
     // lost final sync is uncertain and must never trigger a second dispatch.
     this.applied.set(input.proposalId, { identity, authors: [], uncertain: true })
     context.document.changeTrackingMode = "TrackAll"
-    for (const item of [...ranges].reverse()) item.range.insertText(item.hunk.after, "Replace")
+    for (const item of [...ranges].reverse()) {
+      // A verified zero-length range inserts without deleting source text.
+      // Pure deletions use the native deletion operation, excluding the mark.
+      if (item.hunk.after) item.range.insertText(item.hunk.after, "Replace")
+      else item.range.delete()
+    }
     context.document.changeTrackingMode = fresh.tracking
     await context.sync()
     context.document.load("changeTrackingMode")
@@ -567,12 +579,12 @@ export class WordChatHost {
       JSON.stringify(after.comments) === JSON.stringify(before.comments)
     if (!confirmed) throw new WordChatHostError("Word applied the wording, but could not confirm that only the reviewed passage and tracked markup changed. Inspect it and use Undo if needed. Do not apply this proposal again.")
     this.applied.set(input.proposalId, { identity, authors, uncertain: false })
-    return { status: "applied", tracked: true, saved: false, authors, target: {
+    return { status: "applied", tracked: true, saved: false, authors, target: input.replacement.trim() ? {
       ...target, id: crypto.randomUUID(), text: input.replacement,
       paragraphs: [{ id: paragraph.id, text: expectedParagraph }],
       startOffset: target.startOffset, endOffset: target.startOffset + input.replacement.length,
       saved: false, capturedAt: new Date().toISOString(),
-    } }
+    } : undefined }
   }
 
   private async applyNativeFormatting(context: WordChatContext, input: WordChatApplyInput, identity: string,
@@ -583,22 +595,19 @@ export class WordChatHost {
     const paragraphs = input.target.paragraphs.map(p => context.document.getParagraphByUniqueLocalId(p.id))
     this.applied.set(input.proposalId, { identity, authors: [], uncertain: true })
     const nativeFormatting = formatting.filter(op => !inserted.has(op.paragraph))
-    try {
-      if (nativeFormatting.length) context.document.changeTrackingMode = "TrackAll"
-      for (const op of nativeFormatting) {
-        const paragraph = paragraphs[op.paragraph]!
-        if (op.style !== undefined) paragraph.styleBuiltIn = op.style
-        if (op.spacingBefore !== undefined) paragraph.spaceBefore = op.spacingBefore
-        if (op.spacingAfter !== undefined) paragraph.spaceAfter = op.spacingAfter
-        if (op.lineSpacing !== undefined) paragraph.lineSpacing = op.lineSpacing * 12
-      }
-      await context.sync()
-    } finally {
-      if (nativeFormatting.length) {
-        context.document.changeTrackingMode = fresh.tracking
-        await context.sync()
-      }
+    if (nativeFormatting.length && !fresh.trackFormatting) context.document.trackFormatting = true
+    if (nativeFormatting.length) context.document.changeTrackingMode = "TrackAll"
+    for (const op of nativeFormatting) {
+      const paragraph = paragraphs[op.paragraph]!
+      if (op.style !== undefined) paragraph.styleBuiltIn = op.style
+      if (op.spacingBefore !== undefined) paragraph.spaceBefore = op.spacingBefore
+      if (op.spacingAfter !== undefined) paragraph.spaceAfter = op.spacingAfter
+      if (op.lineSpacing !== undefined) paragraph.lineSpacing = op.lineSpacing * 12
     }
+    if (nativeFormatting.length) context.document.changeTrackingMode = fresh.tracking
+    if (nativeFormatting.length && !fresh.trackFormatting) context.document.trackFormatting = false
+    await context.sync()
+    context.document.load("changeTrackingMode,trackFormatting")
     const all = context.document.body.paragraphs
     all.load("items/uniqueLocalId")
     const range = paragraphs[0]!.getRange("Content").expandTo(paragraphs.at(-1)!.getRange("Content"))
@@ -608,7 +617,8 @@ export class WordChatHost {
     const adjacent = fresh.adjacent.map(p => ({ before: p.ooxml, after: context.document.getParagraphByUniqueLocalId(p.id).getRange("Whole").getOoxml() }))
     await context.sync()
     let authors: string[] = []
-    let confirmed = JSON.stringify(all.items.map(p => p.uniqueLocalId)) === JSON.stringify(fresh.ids) && current.value === input.target.text
+    let confirmed = context.document.changeTrackingMode === fresh.tracking && context.document.trackFormatting === fresh.trackFormatting &&
+      JSON.stringify(all.items.map(p => p.uniqueLocalId)) === JSON.stringify(fresh.ids) && current.value === input.target.text
     try {
       authors = verifiedNativeWordChatFormatting(fresh.ooxml, authored.ooxml, xml.value, formatting, inserted)
       confirmed &&= adjacent.every(p => sameWordChatParagraphContent(p.before, p.after.value))

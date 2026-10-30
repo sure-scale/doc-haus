@@ -371,9 +371,22 @@ function singleParagraphRuns(xml: string, version: "Current" | "Original") {
 export type WordChatWordingHunk = { start: number; end: number; before: string; after: string }
 
 /** Derive replacements from the already verified authored Word revisions, not
- * from model-provided offsets. Each changed group must be one deletion and one
- * insertion; unsupported structural or one-sided groups fail closed. */
+ * from model-provided offsets. Each group is a replacement, insertion or
+ * deletion; ambiguous or structural groups fail closed. */
+function safeUtf16Boundary(value: string, offset: number): boolean {
+  return Number.isSafeInteger(offset) && offset >= 0 && offset <= value.length &&
+    !(offset > 0 && offset < value.length && /[\uD800-\uDBFF]/.test(value[offset - 1]!) && /[\uDC00-\uDFFF]/.test(value[offset]!))
+}
+function wellFormedUtf16(value: string): boolean {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i)
+    if (code >= 0xD800 && code <= 0xDBFF) { if (++i >= value.length || value.charCodeAt(i) < 0xDC00 || value.charCodeAt(i) > 0xDFFF) return false }
+    else if (code >= 0xDC00 && code <= 0xDFFF) return false
+  }
+  return true
+}
 export function authoredWordChatWordingHunks(xml: string, original: string, expected: string, start: number, end: number): WordChatWordingHunk[] {
+  if (!wellFormedUtf16(original) || !wellFormedUtf16(expected) || !safeUtf16Boundary(original, start) || !safeUtf16Boundary(original, end) || start > end) throw new Error("Unsafe UTF-16 boundary")
   const nodes = content(parse(xml), false, false).nodes
   if (nodes.length !== 1) throw new Error("Expected one authored paragraph")
   const tokens: Array<{ kind: "same" | "add" | "delete"; value: string }> = []
@@ -398,24 +411,46 @@ export function authoredWordChatWordingHunks(xml: string, original: string, expe
     const group = [] as typeof tokens
     while (i < tokens.length && tokens[i]!.kind !== "same") group.push(tokens[i++]!)
     const deletions = group.filter(x => x.kind === "delete"), additions = group.filter(x => x.kind === "add")
-    if (deletions.length !== 1 || additions.length !== 1) throw new Error("Unsupported wording revision group")
-    const before = deletions[0]!.value, after = additions[0]!.value, next = at + before.length
-    if (at < start || next > end || original.slice(at, next) !== before) throw new Error("Wording revision outside reviewed selection")
+    if ((deletions.length > 1 && additions.length > 0) || additions.length > 1 || !group.length) throw new Error("Unsupported wording revision group")
+    const before = deletions.map(x => x.value).join(""), after = additions[0]?.value ?? "", next = at + before.length
+    if (!wellFormedUtf16(before) || !wellFormedUtf16(after) || !safeUtf16Boundary(original, at) || !safeUtf16Boundary(original, next) || at < start || next > end || original.slice(at, next) !== before) throw new Error("Wording revision outside reviewed selection")
     hunks.push({ start: at, end: next, before, after }); at = next; rebuilt += after
   }
   if (!hunks.length || at !== original.length || rebuilt !== expected) throw new Error("Authored wording differs from reviewed result")
   return hunks
 }
 
-/** Check every unchanged character and each replacement's source-run format. */
+/** An insertion inherits format only if the adjacent source context is
+ * unambiguous; paragraph edges require one actual neighbouring character. */
+export function unambiguousWordChatInsertionFormatting(xml: string, offset: number): boolean {
+  const runs = singleParagraphRuns(xml, "Original")
+  const source = runs.flatMap(run => Array.from({ length: run.text.length }, (_, i) => ({ char: run.text[i]!, format: run.format })))
+  const value = source.map(x => x.char).join("")
+  if (!source.length || !wellFormedUtf16(value) || !safeUtf16Boundary(value, offset)) return false
+  const left = source[offset - 1]?.format, right = source[offset]?.format
+  return left !== undefined || right !== undefined ? left === undefined || right === undefined || left === right : false
+}
+
+/** Check unchanged characters and each hunk's source-bound format. */
 export function sameWordChatHunkFormatting(before: string, after: string, hunks: WordChatWordingHunk[]): boolean {
   const prior = singleParagraphRuns(before, "Original"), actual = singleParagraphRuns(after, "Current")
   const source = prior.flatMap(run => Array.from({ length: run.text.length }, (_, i) => ({ char: run.text[i]!, format: run.format })))
+  const afterOriginal = singleParagraphRuns(after, "Original").flatMap(run => Array.from({ length: run.text.length }, (_, i) => ({ char: run.text[i]!, format: run.format })))
+  if (JSON.stringify(source) !== JSON.stringify(afterOriginal)) return false
+  const original = source.map(x => x.char).join("")
   const expected = [...source]
+  let previousEnd = 0
+  for (const hunk of hunks) {
+    if (hunk.start < previousEnd || !safeUtf16Boundary(original, hunk.start) || !safeUtf16Boundary(original, hunk.end) || hunk.end < hunk.start || !wellFormedUtf16(hunk.after) || original.slice(hunk.start, hunk.end) !== hunk.before || (!hunk.before && !hunk.after)) return false
+    previousEnd = hunk.end
+  }
   for (const hunk of [...hunks].reverse()) {
     const slice = source.slice(hunk.start, hunk.end)
-    if (!slice.length || slice.some(x => x.format !== slice[0]!.format) || slice.map(x => x.char).join("") !== hunk.before) return false
-    expected.splice(hunk.start, hunk.end - hunk.start, ...Array.from({ length: hunk.after.length }, (_, i) => ({ char: hunk.after[i]!, format: slice[0]!.format })))
+    if (hunk.after && slice.length && slice.some(x => x.format !== slice[0]!.format)) return false
+    if (!slice.length && !unambiguousWordChatInsertionFormatting(before, hunk.start)) return false
+    const format = slice[0]?.format ?? source[hunk.start - 1]?.format ?? source[hunk.start]?.format
+    if (format === undefined) return false
+    expected.splice(hunk.start, hunk.end - hunk.start, ...Array.from({ length: hunk.after.length }, (_, i) => ({ char: hunk.after[i]!, format })))
   }
   const result = actual.flatMap(run => Array.from({ length: run.text.length }, (_, i) => ({ char: run.text[i]!, format: run.format })))
   return JSON.stringify(expected) === JSON.stringify(result)
@@ -435,7 +470,7 @@ export function uniformWordChatFormatting(xml: string, start: number, end: numbe
       format = run.format
     }
   }
-  return at >= end && (start === end || format !== undefined)
+  return start === end ? unambiguousWordChatInsertionFormatting(xml, start) : at >= end && format !== undefined
 }
 
 /** The accepted result must have exactly the reviewed text and preserve the

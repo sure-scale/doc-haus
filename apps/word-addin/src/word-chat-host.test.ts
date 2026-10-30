@@ -27,7 +27,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     list?: { id: number; level: number; label: string }; inTable?: boolean }
   const state = {
     paragraphs: paragraphs.map((text, i): NativeParagraph => ({ id: `paragraph-${i}`, text })),
-    selection: [0, paragraphs[0]!.length], separator: "\r", saved: false, tracking: "Off", modeChanges: [] as string[],
+    selection: [0, paragraphs[0]!.length], separator: "\r", saved: false, tracking: "Off", trackFormatting: true as boolean | undefined, modeChanges: [] as string[],
     writes: [] as Array<{ before: string; text: string; tracking: string; start: number; end: number }>, syncBatchSizes: [] as number[],
     paragraphXml: new Map<string, string>(), comments: [] as Array<[number, number]>, revisions: [] as Array<[number, number]>, xml: undefined as string | undefined,
     selected: 0, highlights: 0, outside: false, annotationCounter: 0,
@@ -117,10 +117,11 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
           if (revision.start >= end) { revision.start -= removed.length; revision.end -= removed.length }
           return revision
         })
-        const next = (before.slice(0, start) + before.slice(end)).split("\r")
+        const next = (before.slice(0, start) + before.slice(end)).split(state.separator)
         state.paragraphs = state.paragraphs.map((p, index) => ({ ...p, text: next[index] ?? "" }))
         state.comments = state.comments.map(([a, b]) => [a >= end ? a - removed.length : a, b >= end ? b - removed.length : b])
         state.revisions = state.revisions.map(([a, b]) => [a >= end ? a - removed.length : a, b >= end ? b - removed.length : b])
+        state.writes.push({ before, text: "", tracking: state.tracking, start, end })
         state.saved = false
       })
     }
@@ -188,7 +189,23 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     getOoxml() {
       const paragraphs = this.paragraphs.items
       const whole = paragraphs.length && this.end === position(paragraphs.at(-1)!.uniqueLocalId).end + 1
-      return { value: !state.writes.length && state.xml !== undefined ? state.xml : flatOpc(paragraphs.map(p => state.paragraphXml.get(p.uniqueLocalId) ?? `<w:p><w:r><w:t xml:space="preserve">${escapeXml(p.text)}</w:t></w:r></w:p>`).join("") + (state.wholeOoxmlTrailingParagraph && whole ? "<w:p/>" : ""), state.extraParts) }
+      const markup = (p: { uniqueLocalId: string; text: string }) => {
+        const stored = state.paragraphXml.get(p.uniqueLocalId)
+        if (stored) return stored
+        const bounds = position(p.uniqueLocalId)
+        const changes = state.nativeRevisions.filter(change => ["Added", "Deleted"].includes(change.type) && change.start >= bounds.start && change.end <= bounds.end)
+          .sort((a, b) => a.start - b.start)
+        const run = (value: string, deleted = false) => value ? `<w:r><w:${deleted ? "delText" : "t"} xml:space="preserve">${escapeXml(value)}</w:${deleted ? "delText" : "t"}></w:r>` : ""
+        let cursor = bounds.start, result = ""
+        for (const [index, change] of changes.entries()) {
+          result += run(text().slice(cursor, change.start))
+          const tag = change.type === "Added" ? "ins" : "del"
+          result += `<w:${tag} w:id="${index + 1}" w:author="${escapeXml(change.author)}">${run(change.text, tag === "del")}</w:${tag}>`
+          cursor = change.end
+        }
+        return `<w:p>${result}${run(text().slice(cursor, bounds.end))}</w:p>`
+      }
+      return { value: !state.writes.length && state.xml !== undefined ? state.xml : flatOpc(paragraphs.map(markup).join("") + (state.wholeOoxmlTrailingParagraph && whole ? "<w:p/>" : ""), state.extraParts) }
     }
     getReviewedText() {
       const paragraphs = state.paragraphs.filter(p => { const at = position(p.id); return this.start <= at.start && at.end <= this.end })
@@ -222,7 +239,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     let properties = Array.from(block.childNodes).find(n => n.nodeType === 1 && (n as Element).localName === "pPr") as Element | undefined
     if (!properties) { properties = doc.createElementNS(WORD_XML, "w:pPr"); block.insertBefore(properties, block.firstChild) }
     let change = Array.from(properties.childNodes).find(n => n.nodeType === 1 && (n as Element).localName === "pPrChange") as Element | undefined
-    if (!change) {
+    if (!change && state.trackFormatting && state.tracking === "TrackAll") {
       const previous = properties.cloneNode(true)
       change = doc.createElementNS(WORD_XML, "w:pPrChange")
       change.setAttributeNS(WORD_XML, "w:id", "900")
@@ -274,6 +291,8 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
   const context = {
     document: {
       get saved() { return state.saved },
+      get trackFormatting(): boolean { return state.trackFormatting as boolean },
+      set trackFormatting(value: boolean) { queue.push(() => { state.trackFormatting = value }) },
       get changeTrackingMode() { return state.tracking },
       set changeTrackingMode(value: string) { state.modeChanges.push(value); queue.push(() => { state.tracking = value }) },
       load() {},
@@ -561,6 +580,51 @@ test("native properties track the final selected paragraph without replacing the
   expect(text()).toBe(texts.join("\r"))
 })
 
+test("native formatting restores the original tracking mode in the same mutation flush", async () => {
+  for (const mode of ["Off", "TrackAll"]) {
+    const { state, host } = formattedOffice()
+    state.tracking = mode
+    const target = (await host.selection())!
+    const result = await host.apply({ proposalId: `format-flush-${mode}`, target, replacement: target.text,
+      formatting: [{ paragraph: target.paragraphs.length - 1, spacingAfter: 6 }] })
+    expect(result.status).toBe("applied")
+    expect(state.tracking).toBe(mode)
+    expect(state.modeChanges).toEqual(["TrackAll", mode])
+    expect(state.syncBatchSizes.filter(size => size > 0)).toEqual([3])
+  }
+})
+
+test("unknown formatting tracking refuses native formatting writes", async () => {
+  for (const enabled of [undefined]) {
+    const { state, host } = formattedOffice()
+    state.trackFormatting = enabled
+    const target = (await host.selection())!
+    await expect(host.apply({ proposalId: `format-tracking-${enabled}`, target, replacement: target.text,
+      formatting: [{ paragraph: target.paragraphs.length - 1, spacingAfter: 6 }] })).rejects.toMatchObject({
+      mutationState: "unchanged", message: expect.stringContaining("cannot confirm formatting tracking"),
+    })
+    expect(state.modeChanges).toEqual([])
+    expect(state.nativeFormatting).toEqual([])
+    expect(state.syncBatchSizes.filter(size => size > 0)).toEqual([])
+  }
+})
+
+test("disabled formatting tracking is temporarily enabled and restored in the fresh write", async () => {
+ for (const disableDuringAuthor of [false, true]) {
+  const { state, host } = formattedOffice()
+  if (!disableDuringAuthor) state.trackFormatting = false
+  const target = (await host.selection())!
+  if (disableDuringAuthor) state.duringAuthor = () => { state.trackFormatting = false }
+  expect((await host.apply({ proposalId: `format-tracking-fresh-${disableDuringAuthor}`, target, replacement: target.text,
+    formatting: [{ paragraph: target.paragraphs.length - 1, spacingAfter: 6 }] })).status).toBe("applied")
+  expect(state.authorCalls).toBe(1)
+  expect(state.trackFormatting).toBe(false)
+  expect(state.modeChanges).toEqual(["TrackAll", "TrackAll"])
+  expect(state.nativeFormatting).toEqual(["paragraph-3"])
+  expect(state.syncBatchSizes.filter(size => size > 0)).toEqual([5])
+ }
+})
+
 test("native final-boundary formatting verifies each requested property and prior revisions", async () => {
   const { state, host, formatting } = formattedOffice(), target = (await host.selection())!
   const operations = [...formatting, { paragraph: 2, spacingAfter: 6 }]
@@ -680,16 +744,22 @@ test("a missing native format revision is uncertain and cannot be replayed", asy
   expect(state.writes).toHaveLength(0)
 })
 
-test("a lost native formatting response restores tracking and prevents replay", async () => {
+test("a lost native formatting response prevents replay without a compensating write", async () => {
+ for (const enabled of [true, false]) {
   const { state, host } = formattedOffice(), target = (await host.selection())!
   state.tracking = "Off"
+  state.trackFormatting = enabled
   state.throwAfterWrite = true
   const input = { proposalId: "lost-native-format", target, replacement: target.text, formatting: [{ paragraph: 2, spacingAfter: 6 }] }
   await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain" })
   expect(state.tracking).toBe("Off")
+  expect(state.trackFormatting).toBe(enabled)
   expect(state.nativeFormatting).toEqual(["paragraph-3"])
+  expect(state.syncBatchSizes.filter(size => size > 0)).toEqual([enabled ? 3 : 5])
+  expect(state.modeChanges).toEqual(["TrackAll", "Off"])
   await expect(host.apply(input)).rejects.toMatchObject({ mutationState: "uncertain" })
   expect(state.nativeFormatting).toHaveLength(1)
+ }
 })
 
 test.skip("formatting captures and verifies Content XML when Whole export adds a synthetic final paragraph", async () => {
@@ -1118,4 +1188,62 @@ test("the default host enables granular wording while explicit opt-out remains g
   const oldInput = { proposalId: "explicit-opt-out", target: oldTarget, replacement: oldTarget.text.replace("clear", "specific") }
   await expect(disabled.nativeHost.apply({ ...oldInput, author: disabled.author(oldInput) })).rejects.toThrow("cannot safely apply")
   expect(disabled.state.writes).toHaveLength(0)
+})
+
+test("real authored one-sided wording uses one native batch and preserves surrounding cell text", async () => {
+  const cases = [
+    { before: "Alpha beta remains.", after: "Alpha new beta remains.", start: 6, end: 10, replacement: "new beta", types: ["Added"] },
+    { before: "Alpha beta remains.", after: "Alpha remains.", start: 6, end: 11, replacement: "", types: ["Deleted"] },
+    { before: "Alpha beta remains.", after: "New Alpha beta remains.", start: 0, end: 19, replacement: "New Alpha beta remains.", types: ["Added"] },
+    { before: "Alpha beta remains.", after: "Alpha beta remains. Added.", start: 0, end: 19, replacement: "Alpha beta remains. Added.", types: ["Added"] },
+    { before: "Alpha beta and gamma remain.", after: "Alpha new beta and remain.", start: 0, end: 28, replacement: "Alpha new beta and remain.", types: ["Added", "Deleted"] },
+  ]
+  for (const [index, row] of cases.entries()) {
+    const { state, nativeHost, text } = office([row.before, "Other cell."], true)
+    state.separator = "\t"
+    state.paragraphs[0]!.inTable = true
+    state.selection = [row.start, row.end]
+    const target = (await nativeHost.selection())!
+    const proposalId = `one-sided-${index}`
+    const input = { proposalId, target, replacement: row.replacement,
+      author: async ({ ooxml }: { ooxml: string }) => ({ ...await authorWordChatTarget(ooxml, target, row.replacement), proposalId }) }
+    const result = await nativeHost.apply(input)
+    expect(result.status).toBe("applied")
+    if (row.replacement) expect(result.target?.text).toBe(row.replacement)
+    else expect(result.target).toBeUndefined()
+    expect(text()).toBe(`${row.after}\tOther cell.`)
+    expect(state.nativeRevisions.map(change => change.type).sort()).toEqual([...row.types].sort())
+    expect(state.syncBatchSizes.filter(size => size > 0)).toEqual([row.types.length + 2])
+    expect(state.modeChanges).toEqual(["TrackAll", "Off"])
+    expect(state.writes.every(write => write.tracking === "TrackAll")).toBe(true)
+    expect((await nativeHost.apply(input)).status).toBe("already-applied")
+    expect(state.writes).toHaveLength(row.types.length)
+  }
+})
+
+test("a lost pure-deletion response stays uncertain without a second dispatch", async () => {
+  const { state, nativeHost, text } = office(["Alpha beta remains."], true)
+  state.selection = [6, 11]
+  const target = (await nativeHost.selection())!, proposalId = "pure-delete-lost"
+  const input = { proposalId, target, replacement: "",
+    author: async ({ ooxml }: { ooxml: string }) => ({ ...await authorWordChatTarget(ooxml, target, ""), proposalId }) }
+  state.throwAfterWrite = true
+  await expect(nativeHost.apply(input)).rejects.toMatchObject({ mutationState: "uncertain" })
+  expect(text()).toBe("Alpha remains.")
+  expect(state.writes).toHaveLength(1)
+  await expect(nativeHost.apply(input)).rejects.toThrow("may already contain")
+  expect(state.writes).toHaveLength(1)
+})
+
+test("ordinary wording does not read the unloaded desktop formatting-tracking property", async () => {
+  const fixture = office(["Alpha beta remains."], true)
+  await fixture.word.run(async context => {
+    Object.defineProperty(context.document, "trackFormatting", { get() { throw new Error("PropertyNotLoaded") } })
+  })
+  const host = new WordChatHost(fixture.word, name => name === "WordApi")
+  const target = (await host.selection())!, proposalId = "wording-no-formatting-property"
+  const replacement = target.text.replace("beta", "new beta")
+  expect((await host.apply({ proposalId, target, replacement,
+    author: async ({ ooxml }) => ({ ...await authorWordChatTarget(ooxml, target, replacement), proposalId }) })).status).toBe("applied")
+  expect(fixture.text()).toBe("Alpha new beta remains.")
 })
