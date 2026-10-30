@@ -65,9 +65,12 @@ function readCandidateAnswer(messages: Array<{ parts: Part[] }>, candidates: Cit
   return { text, citation: number >= 1 ? candidates[number - 1] : undefined }
 }
 
+/** A re-check's outcome in one sentence, as the cell's marker tooltip gives it. */
+export const recheckOutcome = (recheck: GridRecheck) => recheck.outcome === "found" ? "Found on re-check." : "Not found after re-check."
+
 /** The stored re-check as the lawyer reads it: the outcome and what was searched. */
 export function describeRecheck(recheck: GridRecheck) {
-  const outcome = recheck.outcome === "found" ? "Found on re-check." : "Not found after re-check."
+  const outcome = recheckOutcome(recheck)
   if (!recheck.passages) return `${outcome} This document has no indexed passages to search.`
   const shown = recheck.terms.slice(0, 6).map(term => `"${term}"`).join(", ")
   const terms = recheck.terms.length > 6 ? `${shown} and ${recheck.terms.length - 6} more` : shown

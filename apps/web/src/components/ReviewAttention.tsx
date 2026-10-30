@@ -1,34 +1,12 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { legend, type AttentionFilter, type MarkerState, type PrimaryAction, type ReviewAttention, type ReviewProgress } from "../api/review-attention"
+import { MarkerGlyph } from "./ReviewMarker"
 import { SplitButton } from "./SplitButton"
 import { Tooltip } from "./Tooltip"
 
 // The review table's one toolbar row: a quiet progress line on the left; search,
 // the Needs attention filter, the quiet actions and the one primary action on
 // the right. Filtering and search only change what is shown.
-
-type Shape = "cross" | "triangle" | "dot" | "ring" | "diamond"
-// Shape and word carry each state; tone is a second cue, never the only one.
-export const MARKER_LOOK: Record<MarkerState, { shape: Shape; tone: "danger" | "warn" | "muted" | "info" }> = {
-  other_document: { shape: "cross", tone: "danger" },
-  source_missing: { shape: "triangle", tone: "danger" },
-  source_changed: { shape: "triangle", tone: "warn" },
-  question_changed: { shape: "dot", tone: "warn" },
-  no_citation: { shape: "ring", tone: "muted" },
-  differs: { shape: "diamond", tone: "info" },
-}
-const SHAPES: Record<Shape, React.ReactNode> = {
-  cross: <path d="M2.2 2.2 7.8 7.8M7.8 2.2 2.2 7.8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />,
-  triangle: <path d="M5 1 9.3 8.7H.7Z" fill="currentColor" />,
-  dot: <circle cx="5" cy="5" r="3.6" fill="currentColor" />,
-  ring: <circle cx="5" cy="5" r="3.3" fill="none" stroke="currentColor" strokeWidth="1.5" />,
-  diamond: <path d="M5 .7 9.3 5 5 9.3.7 5Z" fill="currentColor" />,
-}
-
-export function MarkerGlyph({ state }: { state: MarkerState }) {
-  const look = MARKER_LOOK[state]
-  return <svg className={`review-glyph is-${look.tone}`} width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">{SHAPES[look.shape]}</svg>
-}
 
 function useNarrow(query = "(max-width: 700px)") {
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && Boolean(window.matchMedia?.(query).matches))

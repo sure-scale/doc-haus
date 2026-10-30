@@ -1,10 +1,10 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { UNSAFE_DataRouterContext, useBlocker } from "react-router-dom"
-import { computeCell, describeRecheck, needsFill } from "../api/review-recheck"
+import { computeCell, describeRecheck, needsFill, recheckOutcome } from "../api/review-recheck"
 import { citesRow } from "../api/review-answer"
 import { matches, primaryAction, reviewAttention, type AttentionFilter } from "../api/review-attention"
-import { cellKey, checkCellSources, getGrid, GridConflictError, hashQuestion, isStale, recheckPassages, saveGrid, type Grid, type GridCellData, type SourceCheck } from "../api/ingest/grid"
+import { cellKey, checkCellSources, getGrid, GridConflictError, hashQuestion, recheckPassages, saveGrid, type Grid, type GridCellData, type SourceCheck } from "../api/ingest/grid"
 import { humanizeError } from "../api/ingest/errors"
 import { getPreferences } from "../api/ingest/preferences"
 import { getMatter } from "../api/ingest/matters"
@@ -24,6 +24,7 @@ import useReviewGridPresence from "./useReviewGridPresence"
 import ReviewStarter, { normaliseStarterQuestion } from "./ReviewStarter"
 import FillPreview from "./FillPreview"
 import { FilterSummary, ReviewToolbar } from "./ReviewAttention"
+import { MARKER_LOOK, ReviewMarker } from "./ReviewMarker"
 
 // Tabular review: rows are the matter's documents, columns are natural-language
 // questions, each cell is an extracted answer with a source citation. The grid is
@@ -44,7 +45,7 @@ const sourceSignature = (c: Citation) => JSON.stringify([c.documentName, c.excer
 // support this row's answer, whatever its own document says.
 type SourceVerdict = SourceCheck | "other_document"
 const DEGRADED: SourceVerdict[] = ["not_found", "missing", "other_document"]
-const SOURCE_BADGE: Record<SourceVerdict, string> = { verified: "Verified", reanchored: "Re-anchored", not_found: "Not found", missing: "Source missing", other_document: "Cites another document" }
+const SOURCE_BADGE: Record<SourceVerdict, string> = { verified: "Verified", reanchored: "Re-anchored", not_found: "Source changed", missing: "Source missing", other_document: "Cites another document" }
 const SOURCE_DETAIL: Record<SourceVerdict, string> = {
   verified: "The excerpt matches the document at the recorded position.",
   reanchored: "The excerpt is still in the document, but at a different position from the one recorded. The document may have changed since this answer.",
@@ -690,12 +691,13 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                   {shownColumns.map((col) => {
                     const key = cellKey(doc.name, col.id)
                     const cell = grid.cells[key]
-                    const dimmed = narrowed && !matches(attention.cells.get(key)!, filter, query)
-                    const stale = isStale(cell, col.question)
+                    const entry = attention.cells.get(key)!
+                    const dimmed = narrowed && !matches(entry, filter, query)
                     const check = sourceCheck(key, cell)
-                    const degraded = !!check && DEGRADED.includes(check)
+                    // The inset bar takes the marker's tone: a changed source is a warning, a missing or foreign one danger.
+                    const degraded = !!check && DEGRADED.includes(check) && !!entry.marker
                     return (
-                      <td key={col.id} className={`review-cell${cell?.status === "reviewed" ? " reviewed" : ""}${degraded ? " degraded" : ""}${dimmed ? " is-dimmed" : ""}`}>
+                      <td key={col.id} className={`review-cell${cell?.status === "reviewed" ? " reviewed" : ""}${degraded ? ` degraded is-${MARKER_LOOK[entry.marker!.state].tone}` : ""}${dimmed ? " is-dimmed" : ""}`}>
                         {!cell ? (
                           <button
                             className="review-cell-fill"
@@ -714,16 +716,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                               {cell.citation && <span className="review-cite"> [{cell.citation.documentName} § {cell.citation.section}]</span>}
                               {cell.citation && degradedCitation(cell.citation.documentName)}
                             </button>
-                            {degraded && (
-                              <span className="review-degraded" title={SOURCE_DETAIL[check]}>
-                                {check === "not_found" ? "Source changed" : SOURCE_BADGE[check]}
-                              </span>
-                            )}
-                            {cell.recheck && (
-                              <span className="review-recheck" title={describeRecheck(cell.recheck)}>
-                                {cell.recheck.outcome === "found" ? "Found on re-check" : "Not found after re-check"}
-                              </span>
-                            )}
+                            <ReviewMarker entry={entry} recheck={cell.recheck && recheckOutcome(cell.recheck)} onOpen={() => openDetail(doc.name, col.id)} />
                             <div className="review-cell-actions">
                               <button
                                 className={`icon-btn review-note${cell.comments?.length ? " has-comments" : ""}`}
@@ -742,7 +735,6 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                                 </svg>
                                 {cell.comments?.length ?? 0}
                               </button>
-                              {stale && <span className="review-stale" title="Question changed since this answer">stale</span>}
                               <button className={`icon-btn review-lock${cell.status === "reviewed" ? " locked" : ""}`} disabled={!canEdit} aria-pressed={cell.status === "reviewed"} title={cell.status === "reviewed" ? "Unlock" : "Mark reviewed"} onClick={() => toggleReviewed(key)}>
                                 {cell.status === "reviewed" ? "Locked" : "Lock"}
                               </button>
@@ -801,7 +793,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
                   const check = entry?.check
                   const label = `[${citation.documentName} § ${citation.section}]`
                   return (
-                    <div className={`citation review-source${check && DEGRADED.includes(check) ? " degraded" : ""}`}>
+                    <div className={`citation review-source${check && DEGRADED.includes(check) ? ` degraded is-${check}` : ""}`}>
                       {citationDocument(citation, documents) ? (
                         <button ref={sourceLink} type="button" className="ref" aria-label={`Open ${citation.documentName} at section ${citation.section}`} onClick={() => setViewing(detailKey)}>
                           {label}
