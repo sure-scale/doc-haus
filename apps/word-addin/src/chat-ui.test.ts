@@ -823,6 +823,44 @@ test("formatting review groups adjacent identical operations while preserving un
   } finally { f.restore() }
 })
 
+test("inline formatting review names the exact span and properties, applies once, and removes its actions", async () => {
+  const text = passage.paragraphs[0]!.text, selected = "within 14", start = text.indexOf(selected)
+  const target: WordChatTarget = { ...passage, text: selected, startOffset: start, endOffset: start + selected.length }
+  const formatted: WordChatProposal = { ...proposal, before: selected, after: selected, target, inlineFormatting: { bold: true, italic: false, underline: true } }
+  const applied: WordChatProposal[] = []
+  const f = fixture({ turns: [turn({ kind: "formatting", proposal: formatted })], host: { apply: async value => { applied.push(value) } } })
+  try {
+    await f.chat.ready
+    const card = f.root.querySelector('[aria-label="Formatting to review"]')!
+    expect(card.querySelector("h3")!.textContent).toBe("Review formatting")
+    expect(card.textContent).toContain("Wording unchanged")
+    expect(card.querySelector(".chat-format-inline-target")!.textContent).toBe(selected)
+    expect([...card.querySelectorAll(".chat-format-plan li")].map(item => item.textContent)).toEqual(["Bold on", "Italic off", "Underline on"])
+    const apply = [...card.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(button => button.textContent === "Apply")!
+    apply.click(); apply.click(); await Bun.sleep(0)
+    expect(applied).toEqual([formatted])
+    expect(f.root.querySelector(".chat-proposal-actions")).toBeNull()
+  } finally { f.restore() }
+})
+
+test("refining inline formatting retains its exact selection, formatting kind, and requested properties", async () => {
+  const text = passage.paragraphs[0]!.text, selected = "within 14", start = text.indexOf(selected)
+  const target: WordChatTarget = { ...passage, text: selected, startOffset: start, endOffset: start + selected.length }
+  const formatted: WordChatProposal = { ...proposal, before: selected, after: selected, target, inlineFormatting: { bold: false, underline: true } }
+  const f = fixture({ turns: [turn({ kind: "formatting", proposal: formatted })] })
+  try {
+    await f.chat.ready
+    const card = f.root.querySelector(".chat-proposal")!
+    ;[...card.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(button => button.textContent === "Refine")!.click()
+    await f.send("Keep the same passage and add italics.")
+    const sent = f.calls.find(call => call.action === "send")!.input as WordChatSend
+    expect(sent.kind).toBe("formatting")
+    expect(sent.proposal).toEqual(formatted)
+    expect(sent.proposal?.inlineFormatting).toEqual({ bold: false, underline: true })
+    expect(sent.proposal?.target).toEqual(target)
+  } finally { f.restore() }
+})
+
 test("partial wording review shows the assembled paragraph without expanding the applied span", async () => {
   const text = "Send a notice .", selected = "notice", start = text.indexOf(selected)
   const target: WordChatTarget = { ...passage, text: selected, paragraphs: [{ id: "boundary", text }], startOffset: start, endOffset: start + selected.length }

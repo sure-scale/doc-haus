@@ -58,6 +58,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     driftInsertedRanges: false, renewImportedIds: false, omitNewRevisions: false, authorCalls: 0, duringAuthor: undefined as undefined | (() => void | Promise<void>),
     nativeRevisions: [] as Array<{ start: number; end: number; author: string; type: string; text: string }>,
     extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false, wholeOoxmlTrailingParagraph: false,
+    inlineBold: false, inlineAfter: "", inlineWrites: 0,
     nativeFormatting: [] as string[], dropNativeFormatting: false, terminalBodyMark: false, cellWholeExpandsRow: false, refuseEmptyContentXml: false,
     omitContentProperties: false, paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
   }
@@ -83,6 +84,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
   class Range {
     constructor(public start: number, public end: number, public bodyWhole = false, public cellWhole = false, public paragraphContent = false, public bodyExport = false) { ranges.add(this) }
     get text() { return (text() + "\r").slice(this.start, this.end) }
+    get font() { return { load() {}, get bold() { return state.inlineBold }, set bold(value: boolean | null) { queue.push(() => { state.inlineWrites++; state.inlineBold = Boolean(value); if (state.inlineAfter) state.paragraphXml.set("paragraph-0", state.inlineAfter) }) }, italic: false, underline: "None" } }
     get paragraphs() {
       return collection(state.paragraphs.filter((p) => {
         const at = position(p.id)
@@ -1534,4 +1536,40 @@ test("lost native row mutation sync is uncertain and cannot replay", async () =>
   await expect(f.host.applyRow(f.proposal, f.exportCurrent, f.author)).rejects.toMatchObject({mutationState:"uncertain"})
   await expect(f.host.applyRow(f.proposal, f.exportCurrent, f.author)).rejects.toMatchObject({mutationState:"uncertain"})
   expect(f.counts()).toEqual({rowWrites:1,exports:1})
+})
+
+
+test("native inline formatting confirms tracked markup and fences an uncertain write", async () => {
+  for (const corrupt of [false, true]) {
+    const { state, nativeHost } = office(["abcd"], true)
+    const marker = '<w:bookmarkStart w:id="4" w:name="place"/>'
+    state.paragraphXml.set("paragraph-0", `<w:p><w:r><w:t>ab</w:t></w:r>${marker}<w:r><w:t>cd</w:t></w:r></w:p>`)
+    const target = (await nativeHost.selection())!
+    const run = (text: string, id: number, author: string) => `<w:r><w:rPr><w:b/><w:rPrChange w:id="${id}" w:author="${author}" w:date="2026-01-01T00:00:00Z"><w:rPr/></w:rPrChange></w:rPr><w:t>${text}</w:t></w:r>`
+    const para = (author: string, anchor = marker) => `<w:p>${run("ab", 8, author)}${anchor}${run("cd", 9, author)}</w:p>`
+    state.inlineAfter = para("Native user", corrupt ? "" : marker)
+    const input = {proposalId:"inline",target,replacement:target.text,inlineFormatting:{bold:true},author:async () => ({kind:"inline_format" as const,proposalId:"inline",target,inlineFormatting:{bold:true}})}
+    if (corrupt) {
+      await expect(nativeHost.apply(input)).rejects.toMatchObject({mutationState:"uncertain"})
+      await expect(nativeHost.apply(input)).rejects.toMatchObject({mutationState:"uncertain"})
+    } else {
+      expect((await nativeHost.apply(input)).status).toBe("applied")
+      expect((await nativeHost.apply(input)).status).toBe("already-applied")
+    }
+    expect(state.inlineWrites).toBe(1)
+    expect(state.tracking).toBe("Off")
+  }
+})
+
+test("inline plan binding refuses forgery and satisfied native font is a no-op", async () => {
+  const {state,nativeHost} = office(["abcd"], true)
+  const target = (await nativeHost.selection())!
+  const input = {proposalId:"inline-plan",target,replacement:target.text,inlineFormatting:{bold:true},author:async () => ({kind:"inline_format" as const,proposalId:"wrong",target,inlineFormatting:{bold:true}})}
+  await expect(nativeHost.apply(input)).rejects.toMatchObject({mutationState:"unchanged"})
+  expect(state.inlineWrites).toBe(0)
+  state.inlineBold = true
+  const noOp = {...input,author:async () => ({kind:"inline_format" as const,proposalId:"inline-plan",target,inlineFormatting:{bold:true}})}
+  expect((await nativeHost.apply(noOp)).status).toBe("applied")
+  expect(state.inlineWrites).toBe(0)
+  expect((await nativeHost.apply(noOp)).status).toBe("already-applied")
 })

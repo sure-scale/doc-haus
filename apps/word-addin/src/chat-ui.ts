@@ -304,11 +304,12 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   }
   function proposalCard(proposal: WordChatProposal, turn: WordChatTurn): HTMLElement {
     const formatting = proposal.formatting
+    const inlineFormatting = proposal.inlineFormatting
     const wordingChanged = proposal.before !== proposal.after
     const plan = wordChatApplyPlan(proposal.target, proposal.after, proposal.formatting)
     const eligibility = host.applyEligibility(proposal)
     const unavailable = !plan.supported ? plan.reason : !eligibility.supported ? eligibility.reason : undefined
-    const card = document.createElement("section"); card.className = "chat-proposal"; card.setAttribute("aria-label", formatting && !wordingChanged ? "Formatting to review" : "Amendment to review")
+    const card = document.createElement("section"); card.className = "chat-proposal"; card.setAttribute("aria-label", (formatting || inlineFormatting) && !wordingChanged ? "Formatting to review" : "Amendment to review")
     card.append(line("h3", wordingChanged ? "Review amendment" : "Review formatting"))
     if (wordingChanged) {
       const before = document.createElement("details"); before.className = "chat-format-target"
@@ -347,6 +348,14 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
         details.append(line("summary", "Selected text"), line("pre", displayWordText(proposal.before)))
         card.append(list, details)
       }
+    }
+    if (inlineFormatting) {
+      card.append(line("p", "Wording unchanged", "chat-message-meta"), line("pre", displayWordText(proposal.before), "chat-format-inline-target"))
+      const list = document.createElement("ul"); list.className = "chat-format-plan"
+      for (const [property, label] of [["bold", "Bold"], ["italic", "Italic"], ["underline", "Underline"]] as const) {
+        if (inlineFormatting[property] !== undefined) list.append(line("li", `${label} ${inlineFormatting[property] ? "on" : "off"}`))
+      }
+      card.append(list)
     }
     if (proposal.explanation) card.append(line("p", proposal.explanation))
     if (proposal.openItems.length) {
@@ -690,7 +699,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
         if (disposed) return
         if (requestSelection && !wordChatTargetCurrent(context, requestSelection)) throw new Error("Selected text changed. Select it again or remove it before sending.")
         if (requestSelection) context.selection = requestSelection
-        pending = { conversationId: conversation.id, requestId: crypto.randomUUID(), text, scope: requestScope, mode: requestMode, attachments: requestAttachments, context, ...(requestRow ? { kind:"amendment" as const, rowProposal:requestRow } : requestProposal ? { kind: requestProposal.before === requestProposal.after && requestProposal.formatting ? "formatting" : "amendment", proposal: requestProposal } : {}) }
+        pending = { conversationId: conversation.id, requestId: crypto.randomUUID(), text, scope: requestScope, mode: requestMode, attachments: requestAttachments, context, ...(requestRow ? { kind:"amendment" as const, rowProposal:requestRow } : requestProposal ? { kind: requestProposal.before === requestProposal.after && (requestProposal.formatting || requestProposal.inlineFormatting) ? "formatting" : "amendment", proposal: requestProposal } : {}) }
       }
       status("Sending…")
       const submitted = pending

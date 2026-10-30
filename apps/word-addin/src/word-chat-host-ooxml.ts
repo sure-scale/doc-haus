@@ -2,8 +2,9 @@ import { unzipSync } from "fflate"
 import type { WordChatAuthoredTableRow } from "../../../dochaus/lib/word-chat-contract"
 import type { WordChatTableRowInsertionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
-import { validWordChatFormatting, type WordChatAuthoredAmendment, type WordChatParagraphFormat, type WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { validWordChatFormatting, type WordChatAuthoredAmendment, type WordChatInlineFormat, type WordChatParagraphFormat, type WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { reviewedWordChatParagraphFormatting, wordChatParagraphFormatChanged } from "../../../dochaus/lib/word-chat-formatting-ooxml"
+import { assertWordChatInlineFormattingTarget, verifyWordChatInlineFormatting } from "../../../dochaus/lib/word-chat-inline-formatting-ooxml"
 
 const PKG = "http://schemas.microsoft.com/office/2006/xmlPackage"
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -807,6 +808,74 @@ function unchangedFormattingDependencies(before: string, after: string) {
     } else if (data.localName === "binaryData" ? data.textContent?.replace(/\s/g, "") !== prior.textContent?.replace(/\s/g, "")
       : JSON.stringify(elements(data).map(node => canonical(node))) !== JSON.stringify(elements(prior).map(node => canonical(node)))) throw new Error("Formatting dependency changed")
   }
+}
+
+/** The native font operation must preserve the definition parts that determine
+ * effective formatting. Other Word-maintained package parts are not compared. */
+export function assertNativeWordChatInlineDependencies(before: string, after: string) {
+  const relevant = (name: string) => ["/word/styles.xml", "/word/numbering.xml", "/word/fontTable.xml"].includes(name) || /^\/word\/theme\/[^/]+\.xml$/.test(name)
+  const select = (xml: string) => new Map([...parse(xml,16_000_000)].filter(([name]) => relevant(name)))
+  const original = select(before), observed = select(after)
+  if (original.size !== observed.size || [...original.keys()].some(name => !observed.has(name))) throw new Error("inline_formatting_dependencies_changed")
+  for (const [name, part] of original) {
+    const next = observed.get(name)!, data = elements(part), nextData = elements(next)
+    if (part.getAttributeNS(PKG,"contentType") !== next.getAttributeNS(PKG,"contentType") || data.length !== 1 || nextData.length !== 1 || JSON.stringify(canonical(data[0]!)) !== JSON.stringify(canonical(nextData[0]!))) throw new Error("inline_formatting_dependencies_changed")
+  }
+}
+
+/** Check the captured source before the native font operation. */
+export function assertNativeWordChatInlineTarget(captured: string, target: WordChatTarget, formatting: WordChatInlineFormat) {
+  const paragraphs = content(parse(captured),true,true).nodes
+  if (paragraphs.length !== 1) throw new Error("inline_source_paragraph")
+  assertWordChatInlineFormattingTarget(paragraphs[0]!,target,formatting)
+}
+
+export function verifiedNativeWordChatInlineFormatting(captured: string, observed: string, target: WordChatTarget, formatting: WordChatInlineFormat, effectiveProof: WordChatInlineFormat) {
+  const before = content(parse(captured),true,true).nodes, after = content(parse(observed),true,true).nodes
+  if (before.length !== 1 || after.length !== 1) throw new Error("inline_native_paragraph")
+  // Word updates these session IDs on the paragraph and formatted runs. Keep
+  // the shared verifier strict; only the native bridge accepts valid metadata.
+  const original = before[0]!.cloneNode(true) as Element, current = after[0]!.cloneNode(true) as Element
+  const stripSessionIds = (paragraph: Element) => {
+    const remove = (node: Element, name: string) => {
+      const attr = node.getAttributeNodeNS(W,name)
+      if (attr) { if (!/^[0-9a-fA-F]{8}$/.test(attr.value)) throw new Error("inline_invalid_native_rsid"); node.removeAttributeNS(W,name) }
+    }
+    remove(paragraph,"rsidR"); remove(paragraph,"rsidRDefault")
+    const visible = (node: Element): string => {
+      if (node.namespaceURI === W) {
+        if (["del","pPr","rPr"].includes(node.localName)) return ""
+        if (node.localName === "t") return node.textContent ?? ""
+        if (node.localName === "tab") return "\t"
+        if (["br","cr"].includes(node.localName)) return "\v"
+      }
+      return elements(node).map(visible).join("")
+    }
+    let offset = 0
+    for (const node of elements(paragraph)) {
+      const length = visible(node).length
+      if (node.namespaceURI === W && node.localName === "r" && offset < target.endOffset && offset + length > target.startOffset) remove(node,"rsidRPr")
+      offset += length
+    }
+  }
+  stripSessionIds(original); stripSessionIds(current)
+  // Map the old IDs to the observed ones, so the verifier checks new carrier
+  // collisions against the IDs actually present in Word after the operation.
+  if (!normalizeNativeRevisionIds([current],[original])) throw new Error("inline_prior_revision_changed")
+  const actual = verifyWordChatInlineFormatting(original,current,target,formatting,undefined,effectiveProof)
+  if (!actual.revisions.length) throw new Error("inline_missing_revision")
+  return [...new Set(actual.revisions.map(change => change.author))]
+}
+
+/** Strict paragraph comparison, except Word's evidenced inline revision-ID
+ * reassignment, using the existing matched-payload normalization. */
+export function sameNativeProjectedWordChatParagraph(before: string, after: string): boolean {
+  const fail = () => { throw new Error("invalid paragraph") }
+  const parser = () => new DOMParser({errorHandler:{warning:fail,error:fail,fatalError:fail}})
+  const original = parser().parseFromString(before,"application/xml").documentElement
+  const observed = parser().parseFromString(after,"application/xml").documentElement
+  if (!original || !observed || original.namespaceURI !== W || observed.namespaceURI !== W || original.localName !== "p" || observed.localName !== "p") return false
+  return normalizeNativeRevisionIds([original],[observed]) && JSON.stringify(canonical(original,true)) === JSON.stringify(canonical(observed,true))
 }
 
 /** Compare the complete target and every dependency actually imported. Word's

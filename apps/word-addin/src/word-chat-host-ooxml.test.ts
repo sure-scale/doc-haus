@@ -373,3 +373,49 @@ function fixture(kind = "simple") {
     await expect(verify(source,{...oracle,authoredBase64:encode(zipSync(parts))},proposal)).rejects.toThrow()
   }
 })
+
+test("native inline verification preserves a marker within the reviewed span and rejects anchor drift", async () => {
+  const { assertNativeWordChatInlineTarget, verifiedNativeWordChatInlineFormatting } = await import("./word-chat-host-ooxml")
+  const marker = '<w:bookmarkStart w:id="4" w:name="place"/>'
+  const before = flat(`<w:p><w:r><w:t>ab</w:t></w:r>${marker}<w:r><w:t>cd</w:t></w:r></w:p>`)
+  const run = (text: string, id: number, author: string) => `<w:r><w:rPr><w:b/><w:rPrChange w:id="${id}" w:author="${author}" w:date="2026-01-01T00:00:00Z"><w:rPr/></w:rPrChange></w:rPr><w:t>${text}</w:t></w:r>`
+  const after = (author: string, anchor = marker) => flat(`<w:p>${run("ab", 8, author)}${anchor}${run("cd", 9, author)}</w:p>`)
+  const target = {id:"target", text:"abcd", paragraphs:[{id:"p",text:"abcd"}], startOffset:0,endOffset:4,capturedAt:"now",saved:false}
+  assertNativeWordChatInlineTarget(before,target,{bold:true})
+  expect(verifiedNativeWordChatInlineFormatting(before,after("Native user"),target,{bold:true},{bold:true})).toEqual(["Native user"])
+  expect(() => verifiedNativeWordChatInlineFormatting(before,after("Native user", ""),target,{bold:true},{bold:true})).toThrow()
+  expect(() => verifiedNativeWordChatInlineFormatting(before,after("Native user", marker.replace('w:id="4"','w:id="5"')),target,{bold:true},{bold:true})).toThrow()
+})
+
+test("native inline bridge admits evidenced session metadata and matched prior revision renumbering only", async () => {
+  const { verifiedNativeWordChatInlineFormatting } = await import("./word-chat-host-ooxml")
+  const prior = (id:string, author="Prior", date="2026-01-01T00:00:00Z") => `<w:ins w:id="${id}" w:author="${author}" w:date="${date}"><w:r><w:t>Old</w:t></w:r></w:ins>`
+  const mark = '<w:rPrChange w:id="2" w:author="Native" w:date="2026-01-01T00:00:00Z"><w:rPr/></w:rPrChange>'
+  const para = (id:string, rsid:string, runAttr:string, props:string, old=prior(id), num="5", paraId="AABBCCDD") => `<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="${paraId}" w:rsidR="${rsid}" w:rsidRDefault="${rsid}"><w:pPr><w:numPr><w:numId w:val="${num}"/></w:numPr></w:pPr>${old}<w:r ${runAttr}><w:rPr>${props}</w:rPr><w:t>Target</w:t></w:r></w:p>`
+  const before = flat(para("2","00112233","","")), after = flat(para("3","AABBCCDD",'w:rsidRPr="01020304"',`<w:b/>${mark}`))
+  const target = {id:"target",text:"Target",paragraphs:[{id:"p",text:"OldTarget"}],startOffset:3,endOffset:9,capturedAt:"now",saved:false}
+  const verify = (value:string) => verifiedNativeWordChatInlineFormatting(before,value,target,{bold:true},{bold:true})
+  expect(verify(after)).toEqual(["Native"])
+  expect(()=>verify(after.replace('w:rsidRPr="01020304"','w:rsidRPr="bad"'))).toThrow()
+  expect(()=>verify(after.replace('w14:paraId="AABBCCDD"','w14:paraId="11223344"'))).toThrow()
+  expect(()=>verify(after.replace('w:numId w:val="5"','w:numId w:val="6"'))).toThrow()
+  expect(()=>verify(after.replace('w:author="Prior"','w:author="Other"'))).toThrow()
+  expect(()=>verify(after.replace('w:date="2026-01-01T00:00:00Z"','w:date="2026-01-02T00:00:00Z"'))).toThrow()
+  expect(()=>verify(after.replace('<w:b/>','<w:b/><w:i/>'))).toThrow()
+  expect(()=>verify(after.replace('w:ins w:id="3"','w:ins w:id="2"'))).toThrow()
+})
+
+test("inline formatting preserves exact formatting definition parts", async () => {
+  const { assertNativeWordChatInlineDependencies } = await import("./word-chat-host-ooxml")
+  const part = (name:string, body:string, type="application/xml") => `<pkg:part pkg:name="${name}" pkg:contentType="${type}"><pkg:xmlData>${body}</pkg:xmlData></pkg:part>`
+  const stylesPart = part("/word/styles.xml",'<w:styles><w:style w:styleId="Normal"/></w:styles>')
+  const numbering = part("/word/numbering.xml",'<w:numbering><w:num w:numId="5"/></w:numbering>')
+  const theme = part("/word/theme/theme1.xml",'<theme xmlns="urn:example"><color>blue</color></theme>')
+  const before = flat(undefined,"", "0").replace('</pkg:package>',`${stylesPart}${numbering}${theme}</pkg:package>`)
+  expect(()=>assertNativeWordChatInlineDependencies(before,before)).not.toThrow()
+  expect(()=>assertNativeWordChatInlineDependencies(before,before.replace('w:styleId="Normal"','w:styleId="Other"'))).toThrow()
+  expect(()=>assertNativeWordChatInlineDependencies(before,before.replace('w:numId="5"','w:numId="6"'))).toThrow()
+  expect(()=>assertNativeWordChatInlineDependencies(before,before.replace(numbering,""))).toThrow()
+  expect(()=>assertNativeWordChatInlineDependencies(before,before.replace('application/xml','text/xml'))).toThrow()
+  expect(()=>assertNativeWordChatInlineDependencies(before,before.replace('>blue<','>red<'))).toThrow()
+})

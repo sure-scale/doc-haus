@@ -104,7 +104,19 @@ export type WordChatProposal = {
   createdAt: string
   /** Optional reviewed paragraph properties, indexed against the resulting text. */
   formatting?: WordChatParagraphFormat[]
+  /** Optional reviewed character properties on the exact captured span. */
+  inlineFormatting?: WordChatInlineFormat
 }
+export type WordChatInlineFormat = { bold?: boolean; italic?: boolean; underline?: boolean }
+/** A reviewed property command for the live Word executor. The resulting
+ * native document, rather than a simulated DOCX, is verified and synchronized. */
+export type WordChatInlineFormattingPlan = {
+  kind: "inline_format"
+  proposalId: string
+  target: WordChatTarget
+  inlineFormatting: WordChatInlineFormat
+}
+export type WordChatPreparedAmendment = WordChatAuthoredAmendment | WordChatInlineFormattingPlan
 export type WordChatParagraphFormat = {
   /** Zero-based index within the resulting complete paragraphs. */
   paragraph: number
@@ -123,6 +135,26 @@ export type WordChatAuthoredAmendment = {
   author: "doc.haus"
   formatting?: WordChatParagraphFormat[]
   wording?: { ooxml: string; unformattedOoxml?: string; revisions: WordChatAuthoredAmendment["revisions"] }
+}
+
+/** Bind inline properties to the unique resolved native paragraph and UTF-16
+ * offsets. The model supplies wording, never an identity or offset. */
+export function validWordChatInlineFormatting(snapshot: WordChatSnapshot, target: WordChatTarget, value: unknown,
+  replacement: unknown = target?.text, paragraphFormatting?: unknown): value is WordChatInlineFormat {
+  if (!snapshot || !target || typeof target.id !== "string" || !target.id || typeof target.text !== "string" ||
+    typeof target.capturedAt !== "string" || typeof target.saved !== "boolean" || !Array.isArray(snapshot.paragraphs) ||
+    snapshot.paragraphs.some(paragraph => !paragraph || typeof paragraph.id !== "string" || typeof paragraph.text !== "string") ||
+    !Array.isArray(target.paragraphs) || target.paragraphs.length !== 1 ||
+    snapshot.selection && !wordChatTargetCurrent(snapshot, snapshot.selection) ||
+    !wordChatTargetCurrent(snapshot, target) || typeof replacement !== "string" || replacement !== target.text ||
+    !wellFormedWordChatCell(target.text) || paragraphFormatting !== undefined ||
+    !value || typeof value !== "object" || Array.isArray(value)) return false
+  const resolved = targetWordChatAmendment(snapshot, target.text)
+  if (!resolved || resolved.id !== target.id || resolved.text !== target.text || resolved.startOffset !== target.startOffset ||
+    resolved.endOffset !== target.endOffset || resolved.capturedAt !== target.capturedAt || resolved.saved !== target.saved ||
+    resolved.paragraphs.length !== 1 || resolved.paragraphs[0]!.id !== target.paragraphs[0]!.id || resolved.paragraphs[0]!.text !== target.paragraphs[0]!.text) return false
+  const format = value as Record<string, unknown>, keys = Object.keys(format)
+  return keys.length > 0 && keys.every(key => ["bold", "italic", "underline"].includes(key) && typeof format[key] === "boolean")
 }
 
 /** Paragraph formatting cannot borrow a partial selection's authority to

@@ -1,5 +1,5 @@
-import type { WordChatParagraphFormat, WordChatProposal, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { validWordChatFormatting } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatInlineFormat, WordChatParagraphFormat, WordChatProposal, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting } from "../../../dochaus/lib/word-chat-amendment-contract"
 
 export type WordChatApplyEligibility = { supported: true } | { supported: false; reason: string }
 
@@ -18,7 +18,16 @@ export function nativeWordChatTextEligible(target: WordChatTarget, replacement: 
 /** Transport availability only. Live Word identity, target uniqueness,
  * protection, comments/revisions, formatting and the authored artifact must
  * still pass their existing checks before any mutation. */
-export function wordChatApplyEligibility(target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[], nativeText = true): WordChatApplyEligibility {
+export function wordChatApplyEligibility(target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[], nativeText = true, inlineFormatting?: WordChatInlineFormat): WordChatApplyEligibility {
+  if (inlineFormatting !== undefined) {
+    const snapshot = { text: target.paragraphs.map(p => p.text).join("\r"), paragraphs: target.paragraphs, selection: target,
+      saved: target.saved, capturedAt: target.capturedAt, truncated: false }
+    const canonical = targetWordChatAmendment(snapshot, target.text)
+    return canonical && validWordChatInlineFormatting(snapshot, canonical, inlineFormatting, replacement, formatting) &&
+      canonical.startOffset === target.startOffset && canonical.endOffset === target.endOffset
+      ? { supported: true }
+      : { supported: false, reason: "Prepare character formatting for one exact passage with its wording unchanged." }
+  }
   if (formatting !== undefined) {
     // Native paragraph properties remain the only enabled formatting transport.
     return replacement === target.text && validWordChatFormatting(target, formatting) &&
@@ -34,7 +43,7 @@ export function wordChatApplyEligibility(target: WordChatTarget, replacement: st
 /** Refuse known-unavailable transport before the caller claims editing, records
  * a native BEGIN or marks the Word buffer changed. Recheck even for cached UI. */
 export async function applyWordChatIfEligible<T>(proposal: WordChatProposal, apply: () => Promise<T>): Promise<T> {
-  const eligibility = wordChatApplyEligibility(proposal.target, proposal.after, proposal.formatting)
+  const eligibility = wordChatApplyEligibility(proposal.target, proposal.after, proposal.formatting, true, proposal.inlineFormatting)
   if (!eligibility.supported) throw Object.assign(new Error(eligibility.reason), { mutationState: "unchanged" as const })
   return apply()
 }

@@ -1035,6 +1035,51 @@ test("structured answers are suppressed while review is pending and when review 
   } finally { queueReview = false; approveReview = true; modelStructuredRawOutput = undefined }
 })
 
+test("inline formatting review binds exact Word text, preserves refinement target and refuses invalid shapes", async () => {
+  const id = await newConversation(), text = "Keep the payment terms and delivery terms."
+  const native = {...context,text,paragraphs:[{id:"inline-native",text}],selection:undefined}
+  const request = (extra:object = {}) => post("send",{conversationId:id,scope:"document",text:"Bold payment",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context:native,...extra})
+  const setOutput = (proposal:object, extra:object = {}) => {modelStructuredRawOutput=JSON.stringify({answerParts:[{type:"text",text:"Prepared for review."}],proposal,...extra})}
+  try {
+    setOutput({before:"payment",after:"payment",inlineFormatting:{bold:true,italic:false},explanation:"Emphasize",openItems:[]})
+    const first = (await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(first.kind).toBe("formatting"); expect(first.proposal?.inlineFormatting).toEqual({bold:true,italic:false})
+    expect(first.proposal?.target.startOffset).toBe(text.indexOf("payment"))
+    const reviewer = [...sessions.values()].find(s => s.parentID === first.id && s.metadata.type === "word-chat-review")!
+    expect(sessionContext(reviewer.id)).toContain("false turns a property off")
+    const original = first.proposal!
+    setOutput({before:"payment",after:"payment",inlineFormatting:{underline:true},explanation:"Underline",openItems:[]})
+    const second = (await (await request({proposal:original,context:{...native,capturedAt:"later"}})).json() as {turn:WordChatTurn}).turn
+    expect(second.proposal?.target).toEqual(original.target); expect(second.proposal?.inlineFormatting).toEqual({underline:true})
+    const third = (await (await request({proposal:second.proposal,context:{...native,capturedAt:"later again"}})).json() as {turn:WordChatTurn}).turn
+    expect(third.proposal?.target).toEqual(original.target)
+    expect((await request({proposal:original,context:{...native,text:text.replace("payment","changed"),paragraphs:[{id:"inline-native",text:text.replace("payment","changed")}]}})).status).toBe(409)
+    for (const bad of [
+      {before:"payment",after:"payment",inlineFormatting:{}},
+      {before:"payment",after:"payment",inlineFormatting:{bold:"true"}},
+      {before:"payment",after:"payment",inlineFormatting:{bold:true,offset:0}},
+      {before:"payment",after:"changed",inlineFormatting:{bold:true}},
+      {before:"payment",after:"payment",inlineFormatting:{bold:true},formatting:[{paragraph:0,style:"Heading1"}]},
+      {before:"terms",after:"terms",inlineFormatting:{bold:true}},
+    ]) {
+      setOutput(bad)
+      const refused = (await (await request()).json() as {turn:WordChatTurn}).turn
+      expect(refused.proposal).toBeUndefined(); expect(refused.error).toBeTruthy()
+    }
+    setOutput({before:"payment",after:"changed"},{inlineFormatting:{bold:true}})
+    expect((await (await request()).json() as {turn:WordChatTurn}).turn.proposal).toBeUndefined()
+    const termStart = text.lastIndexOf("terms")
+    const selected = {...native,selection:{id:"chosen-terms",text:"terms",paragraphs:native.paragraphs,startOffset:termStart,endOffset:termStart+5,capturedAt:native.capturedAt,saved:false}}
+    setOutput({before:"terms",after:"terms",inlineFormatting:{italic:true}})
+    const selectedTurn = (await (await request({context:selected})).json() as {turn:WordChatTurn}).turn
+    expect(selectedTurn.proposal?.target.startOffset).toBe(termStart)
+    const legacy = sessions.get(first.id)!
+    delete legacy.metadata.inlineContract
+    const reread = (await (await post("poll",{conversationId:id,turnId:first.id})).json() as {turn:WordChatTurn}).turn
+    expect(reread.proposal).toBeUndefined()
+  } finally { modelStructuredRawOutput = undefined }
+})
+
 test("row prepare uses stored review and current bytes, and rechecks the pending lease", async () => {
   const id = await newConversation(), paragraphs = ["Header","Value"].map((text,i) => ({id:`row-${i}`,text}))
   const native = {...context,text:"Header\rValue",paragraphs,table:{tableIndex:0,rows:[paragraphs]}}

@@ -1,5 +1,33 @@
 import { expect, test } from "bun:test"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
+
+test("inline formatting binds exact native UTF-16 targets without trusting model offsets", () => {
+  const text = "Keep 😀 terms and terms."
+  const paragraph = {id:"native-paragraph",text}
+  const start = text.lastIndexOf("terms"), selection = {id:"native-selection",text:"terms",paragraphs:[paragraph],startOffset:start,endOffset:start+5,capturedAt:"now",saved:false}
+  const context: WordChatSnapshot = {text,paragraphs:[paragraph],selection,capturedAt:"now",saved:false,truncated:false}
+  const target = targetWordChatAmendment(context,"terms")!
+  expect(validWordChatInlineFormatting(context,target,{bold:true,italic:false,underline:true})).toBe(true)
+  expect(validWordChatInlineFormatting(context,target,{underline:false})).toBe(true)
+  expect(validWordChatInlineFormatting(context,target,{})).toBe(false)
+  expect(validWordChatInlineFormatting(context,target,{bold:undefined})).toBe(false)
+  expect(validWordChatInlineFormatting(context,target,{bold:"true"})).toBe(false)
+  expect(validWordChatInlineFormatting(context,target,{bold:true,offset:0})).toBe(false)
+  expect(validWordChatInlineFormatting(context,target,{bold:true},"changed")).toBe(false)
+  expect(validWordChatInlineFormatting(context,target,{bold:true},target.text,[{paragraph:0,style:"Heading1"}])).toBe(false)
+  expect(validWordChatInlineFormatting({...context,selection:undefined},target,{bold:true})).toBe(false)
+  expect(targetWordChatAmendment({...context,selection:undefined},"terms")).toBeUndefined()
+  expect(validWordChatInlineFormatting(context,{...target,startOffset:text.indexOf("terms"),endOffset:text.indexOf("terms")+5},{bold:true})).toBe(false)
+  expect(validWordChatInlineFormatting({...context,paragraphs:[{...paragraph,text:text+" changed"}]},target,{bold:true})).toBe(false)
+  const unselected = {...context,selection:undefined}
+  const full = targetWordChatAmendment(unselected,text)!, partial = targetWordChatAmendment(unselected,"Keep")!
+  expect(validWordChatInlineFormatting(unselected,full,{bold:true})).toBe(true)
+  expect(validWordChatInlineFormatting(unselected,partial,{bold:true})).toBe(true)
+  const emoji = text.indexOf("😀"), split = targetWordChatAmendment(unselected,text.slice(emoji,emoji+1))!
+  expect(validWordChatInlineFormatting(unselected,split,{bold:true})).toBe(false)
+  const wholeEmoji = targetWordChatAmendment(unselected,"😀")!
+  expect(validWordChatInlineFormatting(unselected,wholeEmoji,{italic:true})).toBe(true)
+})
 
 test("row insertion binds ordered native cell identities and literal cells to the captured table", () => {
   const paragraphs = [{id:"a",text:"One"},{id:"b",text:"Two"},{id:"c",text:"Three"},{id:"d",text:"Four"}]

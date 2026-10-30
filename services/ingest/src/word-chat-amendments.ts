@@ -1,15 +1,26 @@
 import { authorWordChatTarget } from "../../../dochaus/lib/docx-flat-opc"
-import type { WordChatAuthoredAmendment, WordChatProposal, WordChatSnapshot, WordChatTableRowInsertionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { validWordChatFormatting, validWordChatTableRowInsertion } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatPreparedAmendment, WordChatProposal, WordChatSnapshot, WordChatTableRowInsertionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatTableRowInsertion } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { authorDocxTableRowInsertion, docxTableRowInsertionTargets, type DocxTableRowInsertion } from "../../../dochaus/lib/docx-table-row-insertion"
 import { parseZip } from "../../../dochaus/lib/zip"
 
 export { MAX_WORD_AMENDMENT_OOXML_BYTES, WordAmendmentError, WordFormattingError } from "../../../dochaus/lib/docx-flat-opc"
 
-/** Pure preview authoring against the live target snapshot. The route must
+/** Pure preparation against the reviewed target. Inline properties become a
+ * native Word command; wording and paragraph properties use shared authoring.
+ * The route must
  * resolve its stored proposal and current editing lease before calling this.
  * Neither this function nor the shared Docxodus writer publishes a version. */
-export async function authorWordChatAmendment(ooxml: string, proposal: WordChatProposal): Promise<WordChatAuthoredAmendment> {
+export async function authorWordChatAmendment(ooxml: string, proposal: WordChatProposal): Promise<WordChatPreparedAmendment> {
+  if (proposal.inlineFormatting !== undefined) {
+    if (!proposal.id || proposal.before !== proposal.target.text || proposal.after !== proposal.before || proposal.formatting !== undefined)
+      throw new Error("word_proposal_changed")
+    const target = proposal.target, snapshot = {text:target.paragraphs.map(p => p.text).join("\r"), paragraphs:target.paragraphs,
+      selection:target, capturedAt:target.capturedAt, saved:target.saved, truncated:false}
+    const canonical = targetWordChatAmendment(snapshot, target.text)
+    if (!canonical || !validWordChatInlineFormatting(snapshot, canonical, proposal.inlineFormatting)) throw new Error("word_proposal_changed")
+    return { kind:"inline_format", proposalId:proposal.id, target:structuredClone(target), inlineFormatting:{...proposal.inlineFormatting} }
+  }
   if (!proposal.id || proposal.before !== proposal.target.text || (proposal.formatting !== undefined
     ? !validWordChatFormatting(proposal.target, proposal.formatting, proposal.after)
     : proposal.before === proposal.after))

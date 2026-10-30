@@ -1,6 +1,6 @@
-import type { WordChatAuthoredAmendment, WordChatParagraphFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget, WordChatTableRowInsertionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { validWordChatFormatting, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatTableCaptureCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody, verifyNativeWordChatRowRemainder, verifyReviewedWordChatRowOracle } from "./word-chat-host-ooxml"
+import type { WordChatAuthoredAmendment, WordChatPreparedAmendment, WordChatParagraphFormat, WordChatInlineFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget, WordChatTableRowInsertionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { validWordChatFormatting, validWordChatInlineFormatting, targetWordChatAmendment, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatTableCaptureCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody, verifyNativeWordChatRowRemainder, verifyReviewedWordChatRowOracle, assertNativeWordChatInlineTarget, assertNativeWordChatInlineDependencies, verifiedNativeWordChatInlineFormatting, sameNativeProjectedWordChatParagraph } from "./word-chat-host-ooxml"
 import type { WordChatAuthoredTableRow } from "../../../dochaus/lib/word-chat-contract"
 import { prepareNativeRow, queueNativeRow, type NativeRowContext } from "./word-chat-native-row"
 import { verifyNativeWordChatAddedRow } from "./word-chat-native-row-verification"
@@ -14,6 +14,7 @@ type NativeTable = { rowCount: number; isUniform: boolean; values: string[][]; l
 type Paragraph = { text: string; uniqueLocalId: string; tableNestingLevel: number; styleBuiltIn: string; spaceBefore: number; spaceAfter: number; lineSpacing: number; load(properties: string): void; getRange(location?: string): WordChatRange }
 type WordChatRange = {
   text: string
+  font?: { bold: boolean | null; italic: boolean | null; underline: string | null; load(properties: string): void }
   paragraphs: Collection<Paragraph>
   load(properties: string): void
   getRange(location?: string): WordChatRange
@@ -49,7 +50,7 @@ export type WordChatContext = {
 }
 export type WordChatWord = { run<T>(callback: (context: WordChatContext) => Promise<T>): Promise<T> }
 export type WordChatApplyResult = { status: "applied" | "already-applied"; tracked: true; saved: false; authors: string[]; target?: WordChatTarget }
-export type WordChatApplyInput = { proposalId: string; target: WordChatTarget; replacement: string; formatting?: WordChatParagraphFormat[]; author: (snapshot: { ooxml: string }) => Promise<WordChatAuthoredAmendment>; mayDispatch?: () => boolean }
+export type WordChatApplyInput = { proposalId: string; target: WordChatTarget; replacement: string; formatting?: WordChatParagraphFormat[]; inlineFormatting?: WordChatInlineFormat; author: (snapshot: { ooxml: string }) => Promise<WordChatPreparedAmendment>; mayDispatch?: () => boolean }
 export class WordChatHostError extends Error {
   constructor(message: string, readonly mutationState: "unchanged" | "uncertain" = "unchanged", options?: ErrorOptions) { super(message, options); this.name = "WordChatHostError" }
 }
@@ -362,9 +363,9 @@ export class WordChatHost {
     this.ready()
     validate(input.target)
     if (typeof input.author !== "function") throw new WordChatHostError("Reconnect to doc.haus to author this amendment before applying it. Your document is unchanged.")
-    if (!input.proposalId || typeof input.replacement !== "string" || input.replacement.length > LIMIT || input.replacement === input.target.text && input.formatting === undefined)
+    if (!input.proposalId || typeof input.replacement !== "string" || input.replacement.length > LIMIT || input.replacement === input.target.text && input.formatting === undefined && input.inlineFormatting === undefined)
       throw new WordChatHostError("Prepare and review a change before applying it.")
-    const identity = JSON.stringify([input.target, input.replacement, input.formatting])
+    const identity = JSON.stringify([input.target, input.replacement, input.formatting, input.inlineFormatting])
     const pending = this.pending.get(input.proposalId)
     if (pending) {
       if (pending.identity !== identity) throw new WordChatHostError("This proposal has different wording. Prepare a fresh proposal.")
@@ -376,7 +377,7 @@ export class WordChatHost {
       if (observed.identity !== identity) throw new WordChatHostError("This proposal has different wording. Prepare a fresh proposal.")
       return { status: "already-applied", tracked: true, saved: false, authors: observed.authors }
     }
-    const promise = this.applyOnce(input, identity)
+    const promise = input.inlineFormatting !== undefined ? this.applyInlineOnce(input, identity) : this.applyOnce(input, identity)
     this.pending.set(input.proposalId, { identity, promise })
     try { return await promise } finally { this.pending.delete(input.proposalId) }
   }
@@ -481,7 +482,7 @@ export class WordChatHost {
 
   /** Complete paragraphs form the import transport. The approved edit still
    * names only target.text/startOffset/endOffset, checked in both authored views. */
-  private async importSnapshot(context: WordChatContext, target: WordChatTarget, formatting = false, wordingImport = false, insertedMarks = false, allowNativeCell = false, faithfulProjection = false) {
+  private async importSnapshot(context: WordChatContext, target: WordChatTarget, formatting = false, wordingImport = false, insertedMarks = false, allowNativeCell = false, faithfulProjection = false, inline = false) {
     const { range: selected, paragraphs } = await this.resolve(context, target, allowNativeCell)
     const all = context.document.body.paragraphs
     all.load("items/uniqueLocalId")
@@ -519,7 +520,7 @@ export class WordChatHost {
     const scoped = projection ? projection.scope(target.paragraphs.map((_, i) => at + i)) : xml!.value
     if (formatting && typeof context.document.trackFormatting !== "boolean")
       throw new WordChatHostError("This version of Word cannot confirm formatting tracking. Your document is unchanged.")
-    if (comments.items.length || (!formatting && revisions.items.length) || formatting && revisions.items.some(revision => !["Added", "Deleted"].includes((revision as TrackedChange).type)) || hasProtectedContent(scoped, false, formatting, insertedMarks))
+    if (!inline && (comments.items.length || (!formatting && revisions.items.length) || formatting && revisions.items.some(revision => !["Added", "Deleted"].includes((revision as TrackedChange).type)) || hasProtectedContent(scoped, false, formatting, insertedMarks)))
       throw new WordChatHostError("This paragraph contains existing revisions, comments or a linked Word object. Review that passage in Word first, then prepare a fresh suggestion for ordinary text.")
     let captured: string[]
     try { captured = capturedWordChatParagraphs(scoped) }
@@ -545,6 +546,67 @@ export class WordChatHost {
       changes: bodyChanges.items.map(change => ({ author: change.author, type: change.type, text: change.text })) }
   }
 
+  private async applyInlineOnce(input: WordChatApplyInput, identity: string): Promise<WordChatApplyResult> {
+    const format = input.inlineFormatting!
+    const snapshot: WordChatSnapshot = { text: input.target.paragraphs.map(p => p.text).join("\r"), paragraphs: input.target.paragraphs, selection: input.target, saved: input.target.saved, capturedAt: input.target.capturedAt, truncated: false }
+    const target = targetWordChatAmendment(snapshot, input.target.text)
+    if (!target || !validWordChatInlineFormatting(snapshot, target, format, input.replacement, input.formatting) || target.startOffset !== input.target.startOffset || target.endOffset !== input.target.endOffset)
+      throw new WordChatHostError("Review a valid inline formatting change before applying it.")
+    if (!this.supports("WordApiDesktop", "1.4")) throw new WordChatHostError("This version of Word cannot confirm formatting tracking. Your document is unchanged.")
+    const eligibility = wordChatApplyEligibility(input.target, input.replacement, input.formatting, this.nativeTextEnabled, format)
+    if (!eligibility.supported) throw new WordChatHostError(eligibility.reason)
+    const capture = (context: WordChatContext) => this.importSnapshot(context, input.target, true, false, false, true, true, true)
+    const initial = await this.word.run(capture)
+    const plan = await input.author({ooxml: initial.ooxml})
+    if (!("kind" in plan) || plan.kind !== "inline_format" || plan.proposalId !== input.proposalId || JSON.stringify(plan.target) !== JSON.stringify(input.target) || JSON.stringify(plan.inlineFormatting) !== JSON.stringify(format)) throw new WordChatHostError("The prepared inline change does not match the reviewed proposal. Your document is unchanged.")
+    try { assertNativeWordChatInlineTarget(initial.ooxml, input.target, format) }
+    catch (cause) { throw new WordChatHostError("This passage cannot be formatted safely. Your document is unchanged.", "unchanged", {cause}) }
+    return this.word.run(async context => {
+      const fresh = await capture(context)
+      if (!sameWordChatTargetSnapshot(initial.ooxml, fresh.ooxml) || !initial.projection || !fresh.projection || !sameNativeProjectionGeometry(initial.projection, fresh.projection)) throw captureMismatch("This passage changed during review.")
+      const font = fresh.selected.font
+      if (!font) throw new WordChatHostError("Word cannot inspect this inline formatting. Your document is unchanged.")
+      font.load("bold,italic,underline")
+      await context.sync()
+      const matches = () => (format.bold === undefined || font.bold === format.bold) && (format.italic === undefined || font.italic === format.italic) && (format.underline === undefined || font.underline === (format.underline ? "Single" : "None"))
+      const already = matches()
+      const final = await capture(context)
+      if (!sameWordChatTargetSnapshot(fresh.ooxml, final.ooxml) || !final.projection || !sameNativeProjectionGeometry(fresh.projection, final.projection)) throw captureMismatch("This passage changed before formatting.")
+      if (input.mayDispatch && !input.mayDispatch()) throw new WordChatHostError("The Word pane closed before the change was applied. Your document is unchanged.")
+      if (already) {
+        this.applied.set(input.proposalId, {identity, authors: [], uncertain: false})
+        return {status: "applied", tracked: true, saved: false, authors: [], target: {...input.target, id: crypto.randomUUID(), saved: false, capturedAt: new Date().toISOString()}}
+      }
+      const writeFont = final.selected.font
+      if (!writeFont) throw new WordChatHostError("Word cannot apply this inline formatting. Your document is unchanged.")
+      this.applied.set(input.proposalId, {identity, authors: [], uncertain: true})
+      try {
+        if (!final.trackFormatting) context.document.trackFormatting = true
+        context.document.changeTrackingMode = "TrackAll"
+        if (format.bold !== undefined) writeFont.bold = format.bold
+        if (format.italic !== undefined) writeFont.italic = format.italic
+        if (format.underline !== undefined) writeFont.underline = format.underline ? "Single" : "None"
+        context.document.changeTrackingMode = final.tracking
+        if (!final.trackFormatting) context.document.trackFormatting = false
+        await context.sync()
+        context.document.load("changeTrackingMode,trackFormatting")
+        const all = context.document.body.paragraphs
+        all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+        const bodyXml = context.document.body.getRange("Whole").getOoxml()
+        writeFont.load("bold,italic,underline")
+        await context.sync()
+        const observed = projectNativeWordChatBody(bodyXml.value, all.items.map(p => ({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})))
+        if (context.document.changeTrackingMode !== final.tracking || context.document.trackFormatting !== final.trackFormatting || !sameNativeProjectionGeometry(final.projection, observed)) throw new Error("inline_geometry_or_tracking")
+        if (!observed.paragraphs.every((p, i) => i === final.index || sameNativeProjectedWordChatParagraph(final.projection!.paragraphs[i]!.xml, p.xml))) throw new Error("inline_unchanged_paragraph")
+        if ((format.bold !== undefined && writeFont.bold !== format.bold) || (format.italic !== undefined && writeFont.italic !== format.italic) || (format.underline !== undefined && writeFont.underline !== (format.underline ? "Single" : "None"))) throw new Error("inline_effective_font")
+        assertNativeWordChatInlineDependencies(final.ooxml, observed.scope([final.index]))
+        const authors = verifiedNativeWordChatInlineFormatting(final.ooxml, observed.scope([final.index]), input.target, format, { bold: writeFont.bold ?? undefined, italic: writeFont.italic ?? undefined, underline: writeFont.underline === "Single" ? true : writeFont.underline === "None" ? false : undefined })
+        this.applied.set(input.proposalId, {identity, authors, uncertain: false})
+        return {status: "applied", tracked: true, saved: false, authors, target: {...input.target, id: crypto.randomUUID(), saved: false, capturedAt: new Date().toISOString()}}
+      } catch (cause) { throw new WordChatHostError("Word changed the formatting, but could not confirm the reviewed tracked markup. Inspect it and use Undo if needed. Do not apply this proposal again.", "uncertain", {cause}) }
+    })
+  }
+
   private async applyOnce(input: WordChatApplyInput, identity: string, wordingImport = false): Promise<WordChatApplyResult> {
     try {
       if (input.formatting !== undefined && !this.supports("WordApiDesktop", "1.4"))
@@ -568,6 +630,7 @@ export class WordChatHost {
       // Shared Docxodus authoring is read-only. No Office proxy or canonical
       // write is kept pending while that service authors the reviewed result.
       const authored = await input.author({ ooxml: snapshot.ooxml })
+      if ("kind" in authored) throw new WordChatHostError("The prepared amendment does not match the reviewed proposal. Your document is unchanged.")
       let authoredChanges: ReturnType<typeof reviewedWordChatArtifact>
       let mixedArtifact: ReturnType<typeof reviewedMixedWordChatArtifact> | undefined
       try {
@@ -870,7 +933,7 @@ export const captureWordChatSelection = () => host().selection()
 export const applyReviewedProposal = (proposal: import("../../../dochaus/lib/word-chat-amendment-contract").WordChatProposal,
   author: WordChatApplyInput["author"], mayDispatch?: () => boolean) => {
   if (proposal.before !== proposal.target.text) throw new WordChatHostError("Review a fresh amendment before applying it.")
-  return host().apply({proposalId: proposal.id,target: proposal.target,replacement: proposal.after,formatting: proposal.formatting,author,mayDispatch})
+  return host().apply({proposalId: proposal.id,target: proposal.target,replacement: proposal.after,formatting: proposal.formatting,inlineFormatting: proposal.inlineFormatting,author,mayDispatch})
 }
 
 export const applyReviewedTableRow = (proposal: WordChatTableRowInsertionProposal, exportCurrent: () => Promise<Uint8Array>,
