@@ -10,14 +10,15 @@ import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { LEAN_MAX_RETRIES } from "./stages"
 import { leanFile, readLeanJson, readLeanText, readOpenItems, readQuestions, writeLeanText, writeOpenItems } from "./state"
-import { AGENT, NO_FINDINGS, cleanupMatters, draftingNotes, matter, noChanges, registering, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, cleanupMatters, draftingNotes, listedActs, matter, noChanges, registering, scriptedModel, type Reply } from "./test-support"
 
-// Plan coverage through the whole run (runLean): the outline's coverage job,
+// Plan coverage through the whole run (runLean): the outline's coverage jobs,
 // its revision requests to the outline session, and what the later steps
 // deliver. The step-level behaviour is in plan-coverage.test.ts, the scope
 // question and its answer in plan-scope-question.test.ts, and the derived open
 // items in coverage-items.test.ts. Synthetic parties and acts only; only the
-// model is scripted, and the coverage job answers from the plan it is shown.
+// model is scripted: the listing job lists the instructed acts, and the
+// placement job places each from the plan it is shown.
 
 afterEach(cleanupMatters)
 
@@ -37,22 +38,26 @@ type Instructed = { act: string; quote: string; parties: string[]; heading: stri
 const approval: Instructed = { act: "approve the revised schedule", quote: APPROVE, parties: ["the Orchard Committee"], heading: "Approval" }
 const release: Instructed = { act: "release the deposit", quote: RELEASE, parties: ["Kestrel Works"], heading: "Release" }
 
-/** The planned documents the coverage prompt shows, as JSON after one line of explanation. */
+/** The planned documents the placement prompt shows, as JSON after one line of explanation. */
 function plannedIn(prompt: string) {
   const json = /<planned_documents>\n[^\n]*\n([\s\S]*?)\n<\/planned_documents>/.exec(prompt)?.[1]
   if (!json) throw new Error("The coverage prompt shows no planned documents.")
   return JSON.parse(json) as { id: string; title: string; executed_by: string[] | null; parts: { heading: string }[] }[]
 }
 
-/** The coverage job: each instructed act, carried by the planned document with a
- * part under its heading, or by none. */
-const coverageOf = (...acts: Instructed[]): Reply => prompt => {
-  const documents = plannedIn(prompt)
-  return JSON.stringify({ acts: acts.map(row => ({
-    act: row.act, source: "request", quote: row.quote, parties: row.parties,
-    document: documents.find(document => document.parts.some(part => part.heading === row.heading))?.id ?? null,
-  })) })
-}
+/** The coverage jobs: the listing job lists each instructed act, and the
+ * placement job places each act it is shown in the planned document with a part
+ * under its heading, or in none. */
+const coverageOf = (...acts: Instructed[]): Record<string, Reply> => ({
+  [AGENT.coverageActs]: () => JSON.stringify({ acts: acts.map(row => ({ act: row.act, source: "request", quote: row.quote, parties: row.parties })) }),
+  [AGENT.coverage]: prompt => {
+    const documents = plannedIn(prompt)
+    return JSON.stringify({ placements: listedActs(prompt).map(listed => {
+      const heading = acts.find(row => row.act === listed.act && row.quote === listed.quote)?.heading
+      return { act: listed.index, document: documents.find(document => document.parts.some(part => part.heading === heading))?.id ?? null }
+    }) })
+  },
+})
 
 /** The outline agent: `first` answers the outline prompt, `revised` any
  * revision request, and each part gets one plain paragraph, or `part`'s. */
@@ -88,7 +93,7 @@ const gateOf = (directory: string) => readLeanJson(directory, "gate.json") as Ga
  * parties only, so the coverage record is out of date while d1's draft step keeps its inputs. */
 async function laterPartiesEdited(part?: Reply) {
   const directory = prepared()
-  const run = () => scriptedModel(replies({ [AGENT.draft]: outliner(outline(RESOLUTION, RELEASE_LETTER), undefined, part), [AGENT.coverage]: coverageOf(approval, release) }))
+  const run = () => scriptedModel(replies({ [AGENT.draft]: outliner(outline(RESOLUTION, RELEASE_LETTER), undefined, part), ...coverageOf(approval, release) }))
   expect((await runLean(directory, { sessions: run().port })).status).toBe("completed")
   const plan = readLeanPlan(directory)!
   const edited = { ...plan, documents: plan.documents.map(row => row.id === "d2" ? { ...row, executed_by: [...row.executed_by!, "the Heron Trust"] } : row) }
@@ -102,7 +107,7 @@ describe("plan coverage through the run", () => {
     const deliverables = registering()
     const model = scriptedModel(replies({
       [AGENT.draft]: outliner(outline(RELEASE_LETTER), outline(RELEASE_LETTER, RESOLUTION)),
-      [AGENT.coverage]: coverageOf(approval, release),
+      ...coverageOf(approval, release),
     }))
     const state = await runLean(directory, { sessions: model.port, registerDeliverable: deliverables.registerDeliverable })
     expect(state.status).toBe("completed")
@@ -112,7 +117,8 @@ describe("plan coverage through the run", () => {
     const issues = revisions(model)[0]!.text.split("\n").filter(line => line.startsWith("- "))
     expect(issues).toEqual([`- The instructions direct "approve the revised schedule" ("${APPROVE}" [source: request]), but no planned document carries it. ` +
       'Plan it in a document executed by "the Orchard Committee", adding one when none is planned.'])
-    expect(model.count(AGENT.coverage)).toBe(2)
+    // The acts are listed once, in two runs, and placed once per plan: the outline and its revision.
+    expect([model.count(AGENT.coverageActs), model.count(AGENT.coverage)]).toEqual([2, 2])
 
     expect(readLeanPlan(directory)!.documents.map(row => [row.id, row.title, row.executed_by])).toEqual([
       ["d1", "Release letter", ["Kestrel Works"]], ["d2", "Committee resolution", ["the Orchard Committee"]],
@@ -156,7 +162,7 @@ describe("plan coverage through the run", () => {
   ] as const)
     test(`an act planned in a document executed by the wrong party: ${name}, with the issue in the revision prompt`, async () => {
       const directory = prepared()
-      const model = scriptedModel(replies({ [AGENT.draft]: outliner(first, revised), [AGENT.coverage]: coverageOf(approval, release) }))
+      const model = scriptedModel(replies({ [AGENT.draft]: outliner(first, revised), ...coverageOf(approval, release) }))
       expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
       expect(revisions(model)).toEqual([expect.objectContaining({ sessionID: outlinePrompt(model).sessionID })])
@@ -174,27 +180,29 @@ describe("plan coverage through the run", () => {
 
   test("a request whose only instructed act is covered on the first pass plans exactly as with no instructed act, without a revision", async () => {
     const request = `Prepare the letter by which ${RELEASE}.`
-    const run = async (coverage?: Reply) => {
+    const run = async (coverage: Record<string, Reply> = {}) => {
       const directory = prepared(request)
-      const model = scriptedModel(replies({ [AGENT.draft]: outliner(outline(RELEASE_LETTER)), ...(coverage ? { [AGENT.coverage]: coverage } : {}) }))
+      const model = scriptedModel(replies({ [AGENT.draft]: outliner(outline(RELEASE_LETTER)), ...coverage }))
       expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
       const { basis, ...plan } = readLeanPlan(directory)!
       expect(basis).toEqual(expect.any(String))
       return { directory, model, plan }
     }
-    // The coverage step's default reply lists no act.
+    // The listing job's default reply lists no act.
     const none = await run()
     const one = await run(coverageOf(release))
 
     expect(one.plan).toEqual(none.plan)
     expect(readLeanCoverage(none.directory)).toMatchObject({ status: "covered", acts: [], issues: [] })
     expect(readLeanCoverage(one.directory)).toMatchObject({ status: "covered", acts: [expect.objectContaining({ act: release.act, document: "d1" })], issues: [] })
-    // No revision or checker retry, and the same model calls in the same order.
+    // No revision or checker retry, and the same model calls in the same order, but for the
+    // one placement: with no act listed there is nothing to place, so it is not asked.
     for (const { model } of [none, one]) {
       expect(model.prompts.filter(prompt => prompt.text.startsWith(REVISE))).toEqual([])
-      expect(model.count(AGENT.coverage)).toBe(1)
+      expect(model.count(AGENT.coverageActs)).toBe(2)
     }
-    expect(one.model.prompts.map(prompt => prompt.agent)).toEqual(none.model.prompts.map(prompt => prompt.agent))
+    expect([none.model.count(AGENT.coverage), one.model.count(AGENT.coverage)]).toEqual([0, 1])
+    expect(one.model.prompts.filter(prompt => prompt.agent !== AGENT.coverage).map(prompt => prompt.agent)).toEqual(none.model.prompts.map(prompt => prompt.agent))
     expect(readQuestions(one.directory)).toEqual([])
     expect(coverageItems(one.directory)).toEqual([])
   }, 120_000)
@@ -202,11 +210,14 @@ describe("plan coverage through the run", () => {
   test("an act whose document the request leaves out brings no companion document and no question; the drafting notes and the gate disclose it as outstanding", async () => {
     const EXCLUDE = "Prepare only documents Kestrel Works executes"
     const directory = prepared(`${REQUEST} ${EXCLUDE}.`)
-    const excluding: Reply = (prompt, index) => {
-      const reply = JSON.parse(coverageOf(approval, release)(prompt, index)) as { acts: { act: string; excluded_by?: string }[] }
-      return JSON.stringify({ acts: reply.acts.map(row => row.act === approval.act ? { ...row, excluded_by: EXCLUDE } : row) })
-    }
-    const model = scriptedModel(replies({ [AGENT.draft]: outliner(outline(RELEASE_LETTER)), [AGENT.coverage]: excluding }))
+    // The approval is listed as usual; its placement carries the lawyer's words that leave its document out.
+    const covering = coverageOf(approval, release)
+    const excluding: Record<string, Reply> = { ...covering, [AGENT.coverage]: (prompt, index) => {
+      const reply = JSON.parse(covering[AGENT.coverage]!(prompt, index)) as { placements: { act: number; excluded_by?: string }[] }
+      const left = listedActs(prompt).find(row => row.act === approval.act)?.index
+      return JSON.stringify({ placements: reply.placements.map(row => row.act === left ? { ...row, excluded_by: EXCLUDE } : row) })
+    } }
+    const model = scriptedModel(replies({ [AGENT.draft]: outliner(outline(RELEASE_LETTER)), ...excluding }))
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
     expect(revisions(model)).toEqual([])
@@ -226,13 +237,17 @@ describe("plan coverage through the run", () => {
   test("a coverage reply that never passes its check leaves the run going; the drafting notes and the gate disclose the one unchecked item", async () => {
     const directory = prepared()
     const deliverables = registering()
-    const model = scriptedModel(replies({ [AGENT.draft]: outliner(outline(RELEASE_LETTER)), [AGENT.coverage]: () => "The plan looks complete." }))
+    const prose: Reply = () => "The plan looks complete."
+    const model = scriptedModel(replies({ [AGENT.draft]: outliner(outline(RELEASE_LETTER)), [AGENT.coverageActs]: prose, [AGENT.coverage]: prose }))
     const state = await runLean(directory, { sessions: model.port, registerDeliverable: deliverables.registerDeliverable })
     expect(state.status).toBe("completed")
 
-    // One coverage job, retried to its limit, and no outline revision or question.
-    expect(model.count(AGENT.coverage)).toBe(LEAN_MAX_RETRIES + 1)
-    expect(model.sessions.filter(session => session.agent === AGENT.coverage)).toHaveLength(1)
+    // Both listing runs, each retried to its limit in its own session; with no act
+    // listed nothing is placed, and there is no outline revision or question.
+    expect(model.count(AGENT.coverageActs)).toBe(2 * (LEAN_MAX_RETRIES + 1))
+    expect(model.sessions.filter(session => session.agent === AGENT.coverageActs)).toHaveLength(2)
+    expect(model.count(AGENT.coverage)).toBe(0)
+    expect(model.sessions.filter(session => session.agent === AGENT.coverage)).toHaveLength(0)
     expect(revisions(model)).toEqual([])
     expect(readQuestions(directory)).toEqual([])
     expect(readLeanCoverage(directory)).toMatchObject({ status: "unchecked", acts: [] })
@@ -251,7 +266,7 @@ describe("plan coverage through the run", () => {
 
   test("a lawyer's edit of a later document's executing parties rechecks coverage before the run goes on; the gate discloses what it leaves open", async () => {
     const directory = prepared()
-    const run = () => scriptedModel(replies({ [AGENT.draft]: outliner(outline(RESOLUTION, RELEASE_LETTER)), [AGENT.coverage]: coverageOf(approval, release) }))
+    const run = () => scriptedModel(replies({ [AGENT.draft]: outliner(outline(RESOLUTION, RELEASE_LETTER)), ...coverageOf(approval, release) }))
     expect((await runLean(directory, { sessions: run().port })).status).toBe("completed")
     expect(readLeanCoverage(directory)).toMatchObject({ status: "covered", issues: [] })
 
@@ -265,7 +280,8 @@ describe("plan coverage through the run", () => {
 
     // Checked once more, against the plan as the lawyer left it, which is followed and not outlined
     // again; both accepted drafts are kept, and d2's changed entry reaches it through its review and change plan.
-    expect(model.count(AGENT.coverage)).toBe(1)
+    // The recheck's step lists the acts afresh, in two runs, and places them once.
+    expect([model.count(AGENT.coverageActs), model.count(AGENT.coverage)]).toEqual([2, 1])
     expect(revisions(model)).toEqual([])
     expect(model.count(AGENT.draft)).toBe(0)
     expect(["d1", "d2"].map(document => readLeanText(directory, `${document}/draft.md`))).toEqual(drafted)
@@ -291,7 +307,7 @@ describe("plan coverage through the run", () => {
       const model = run()
       expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
 
-      expect(model.count(AGENT.coverage)).toBe(1)
+      expect([model.count(AGENT.coverageActs), model.count(AGENT.coverage)]).toEqual([2, 1])
       expect(model.prompts.filter(prompt => prompt.agent === AGENT.draft).map(prompt => /^Draft part 1 of 1 of "([^"]+)"/m.exec(prompt.text)?.[1]))
         .toEqual(["Committee resolution"])
       expect(readLeanText(directory, "d1/draft.md")).toBe(drafted)
@@ -321,7 +337,7 @@ describe("plan coverage through the run", () => {
   // each document's accepted draft is kept while what its draft reads of its plan entry is unchanged.
   async function scopeEdited(edit: (plan: LeanPlan) => LeanPlan, part?: Reply, stopped?: (directory: string) => void) {
     const directory = prepared()
-    const run = () => scriptedModel(replies({ [AGENT.draft]: outliner(outline(RESOLUTION, RELEASE_LETTER), undefined, part), [AGENT.coverage]: coverageOf(approval, release) }))
+    const run = () => scriptedModel(replies({ [AGENT.draft]: outliner(outline(RESOLUTION, RELEASE_LETTER), undefined, part), ...coverageOf(approval, release) }))
     expect((await runLean(directory, { sessions: run().port })).status).toBe("completed")
     const bodies = () => ["d1", "d2"].map(document => readFileSync(leanFile(directory, `${document}/body.docx`)))
     const before = bodies()
@@ -371,7 +387,7 @@ describe("plan coverage through the run", () => {
 
   test("an outlined plan whose coverage record is missing is checked again; a plan written by hand without one is followed unchecked", async () => {
     const directory = prepared(`Prepare the letter by which ${RELEASE}.`)
-    const run = () => scriptedModel(replies({ [AGENT.draft]: outliner(outline(RELEASE_LETTER)), [AGENT.coverage]: coverageOf(release) }))
+    const run = () => scriptedModel(replies({ [AGENT.draft]: outliner(outline(RELEASE_LETTER)), ...coverageOf(release) }))
     expect((await runLean(directory, { sessions: run().port })).status).toBe("completed")
     const record = readLeanText(directory, "coverage.json")
     expect(record).toBeDefined()
@@ -379,7 +395,7 @@ describe("plan coverage through the run", () => {
     rmSync(leanFile(directory, "coverage.json"))
     const rechecked = run()
     expect((await runLean(directory, { sessions: rechecked.port })).status).toBe("completed")
-    expect([rechecked.count(AGENT.coverage), rechecked.count(AGENT.draft)]).toEqual([1, 0])
+    expect([rechecked.count(AGENT.coverageActs), rechecked.count(AGENT.coverage), rechecked.count(AGENT.draft)]).toEqual([2, 1, 0])
     expect(readLeanText(directory, "coverage.json")).toBe(record)
 
     // Written by hand: no outline basis and no coverage record. Nothing is checked or drafted again.
@@ -388,7 +404,7 @@ describe("plan coverage through the run", () => {
     rmSync(leanFile(directory, "coverage.json"))
     const followed = run()
     expect((await runLean(directory, { sessions: followed.port })).status).toBe("completed")
-    expect([followed.count(AGENT.coverage), followed.count(AGENT.draft)]).toEqual([0, 0])
+    expect([followed.count(AGENT.coverageActs), followed.count(AGENT.coverage), followed.count(AGENT.draft)]).toEqual([0, 0, 0])
     expect(coverageItems(directory)).toEqual([])
   }, 120_000)
 })

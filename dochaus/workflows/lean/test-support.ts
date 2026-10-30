@@ -56,8 +56,9 @@ export function scriptedModel(replies: Record<string, Reply>) {
         // Ordinary drafting regression fixtures assert no source-derived items.
         // Dedicated checklist lifecycle fixtures provide positive items/checks.
         "lean-checklist-extract": () => JSON.stringify({ items: [] }),
-        // The outline's coverage job finds no lawyer instruction to account for.
-        [AGENT.coverage]: () => JSON.stringify({ acts: [] }),
+        // The outline's coverage job lists no act the lawyer's instructions
+        // direct, so no act is placed.
+        [AGENT.coverageActs]: () => JSON.stringify({ acts: [] }),
         // The outline's files job finds no lawyer instruction on the files to deliver.
         [AGENT.files]: () => JSON.stringify({ stated: false, files: [] }),
         // The plan rejects every listed review finding: the scripted changes
@@ -94,6 +95,48 @@ export function scriptedModel(replies: Record<string, Reply>) {
   }
   const count = (agent: string) => prompts.filter(prompt => prompt.agent === agent).length
   return { port, prompts, sessions, count, counts: () => [AGENT.draft, AGENT.review, AGENT.changes, AGENT.finalize].map(count) }
+}
+
+/** The acts a coverage placement prompt lists, by index. */
+export function listedActs(prompt: string) {
+  const json = /<acts>\n([\s\S]*?)\n<\/acts>/.exec(prompt)?.[1]
+  if (!json) throw new Error("The placement prompt lists no acts.")
+  return JSON.parse(json) as { index: number; act: string; source: string; quote: string; parties: string[] }[]
+}
+
+/** The two coverage jobs scripted from one reply that gives each instructed act
+ * with its document: the listing job lists the acts without their documents,
+ * and the placement job places each act it is shown where that reply put it.
+ * A reply that is not such a list goes to both jobs unchanged. The reply reads
+ * each job's own prompt and count, so one that reads the planned documents
+ * belongs to the placement job only. A retry arrives in the same session
+ * without the acts, which the session already holds. */
+export function coverageJobs(reply: Reply): Record<string, Reply> {
+  const shown = new Map<string | undefined, ReturnType<typeof listedActs>>()
+  const combined = (text: string) => {
+    try {
+      const value = JSON.parse(text)
+      if (value && Array.isArray(value.acts)) return value.acts as Record<string, unknown>[]
+    } catch {}
+  }
+  return {
+    [AGENT.coverageActs]: (prompt, index, sessionID) => {
+      const text = reply(prompt, index, sessionID)
+      const acts = combined(text)
+      return acts ? JSON.stringify({ acts: acts.map(({ document, excluded_by, ...act }) => act) }) : text
+    },
+    [AGENT.coverage]: (prompt, index, sessionID) => {
+      const text = reply(prompt, index, sessionID)
+      const acts = combined(text)
+      if (!acts) return text
+      const listing = prompt.includes("<acts>\n") ? listedActs(prompt) : shown.get(sessionID)
+      if (!listing) throw new Error("The placement session was shown no acts.")
+      shown.set(sessionID, listing)
+      return JSON.stringify({ placements: listing.flatMap(listed => acts
+        .filter(act => act.act === listed.act && act.source === listed.source && act.quote === listed.quote)
+        .map(act => ({ act: listed.index, document: act.document ?? null, ...(act.excluded_by !== undefined ? { excluded_by: act.excluded_by } : {}) }))) })
+    },
+  }
 }
 
 /** The draft agent for whole Markdown documents, in drafting order: their "# "

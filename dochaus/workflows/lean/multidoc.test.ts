@@ -119,7 +119,7 @@ describe("lean drafting with several documents", () => {
     const directory = matter()
     const model = scriptedModel(happyPath)
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
-    // The coverage check reads the plan itself; drafting and review prompts show no list.
+    // The coverage placement job reads the plan itself; drafting and review prompts show no list.
     model.prompts.filter(prompt => prompt.agent !== LEAN_STAGE_AGENTS.coverage).forEach(prompt => {
       expect(prompt.text).not.toContain("<planned_documents>")
       expect(prompt.text).not.toContain(REVIEW_SCOPE)

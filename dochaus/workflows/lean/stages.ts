@@ -103,7 +103,9 @@ export const LEAN_STAGE_AGENTS = {
   "change-review": "lean-change-review",
   changes: "lean-changes",
   finalize: "lean-drafting-notes",
-  // A job of the outline, not a stage: it checks the planned package against the instructions.
+  // A job of the outline, not a stage: it lists the acts the instructions direct, blind to the plan.
+  coverageActs: "lean-coverage-acts",
+  // A job of the outline, not a stage: it places each listed act in the planned document that carries it.
   coverage: "lean-coverage",
   // A job of the outline, not a stage: it reads the files the lawyer asks to receive.
   files: "lean-files",

@@ -4,11 +4,12 @@ import { readLeanCoverage, type CoverageAct } from "./package-coverage"
 import { leanSteps, readLeanPlan } from "./plan"
 import { runLean } from "./runner"
 import { readQuestions, writeLeanText, writeQuestions, type Question } from "./state"
-import { AGENT, NO_FINDINGS, cleanupMatters, draftingNotes, matter, noChanges, scriptedModel } from "./test-support"
+import { AGENT, NO_FINDINGS, cleanupMatters, draftingNotes, listedActs, matter, noChanges, scriptedModel } from "./test-support"
 
 // An answer that moves an instructed act to a separate document keeps that act
-// in the package: the coverage job lists it with no planned document and no
-// excluded_by, so the plan that leaves it out is not taken as covered. Its
+// in the package: the coverage jobs list it, blind to the plan, and place it in
+// no planned document with no excluded_by, so the plan that leaves it out is
+// not taken as covered. Its
 // issue goes back to the outline, whose revision plans the separate document,
 // and the run drafts it. Synthetic parties and acts only; only the model is
 // scripted.
@@ -32,11 +33,14 @@ const SEPARATE = `${ONE}\n# Committee resolution\nForm: other\nExecuted by: the 
 const released: CoverageAct = { act: "release the deposit", source: "request", quote: RELEASE, parties: ["Kestrel Works"], document: "d1" }
 const approved: CoverageAct = { act: "approve the revised schedule", source: "request", quote: APPROVE, parties: ["the Orchard Committee"], document: null }
 
-/** The coverage job: the approval in the planned document the committee executes, or in none, and never left out. */
-const coverage = (text: string) => {
+/** The listing job: both acts the instructions direct, whichever document is to carry them. */
+const listing = () => JSON.stringify({ acts: [released, approved].map(({ document: _, ...act }) => act) })
+/** The placement job: the release in the release letter, and the approval in
+ * the planned document the committee executes, or in none, never left out. */
+const placement = (text: string) => {
   const planned = JSON.parse(/<planned_documents>\n[^\n]*\n([\s\S]*)\n<\/planned_documents>/.exec(text)![1]!) as { id: string; executed_by: string[] | null }[]
   const committee = planned.find(document => document.executed_by?.includes("the Orchard Committee"))
-  return JSON.stringify({ acts: [released, { ...approved, document: committee?.id ?? null }] })
+  return JSON.stringify({ placements: listedActs(text).map(row => ({ act: row.index, document: row.act === released.act ? released.document : committee?.id ?? null })) })
 }
 
 const PART = /^Draft part \d+ of \d+ of "([^"]*)"/m
@@ -49,7 +53,7 @@ describe("an act an answer moves to a separate document", () => {
     writeLeanText(directory, "request.md", REQUEST)
     writeQuestions(directory, [ANSWERED])
     const model = scriptedModel({
-      [AGENT.draft]: outliner, [AGENT.coverage]: coverage, [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: noChanges, [AGENT.finalize]: draftingNotes,
+      [AGENT.draft]: outliner, [AGENT.coverageActs]: listing, [AGENT.coverage]: placement, [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: noChanges, [AGENT.finalize]: draftingNotes,
     })
     const state = await runLean(directory, { sessions: model.port })
     expect(state.status).toBe("completed")
@@ -62,6 +66,8 @@ describe("an act an answer moves to a separate document", () => {
       ["d1", "Release letter", ["Kestrel Works"]], ["d2", "Committee resolution", ["the Orchard Committee"]],
     ])
     expect(readLeanCoverage(directory)).toMatchObject({ status: "covered", acts: [released, { ...approved, document: "d2" }], issues: [] })
+    // The acts are listed once, by two runs, and each plan is placed afresh.
+    expect([model.count(AGENT.coverageActs), model.count(AGENT.coverage)]).toEqual([2, 2])
     // The separate document is drafted, and no package-scope question was needed.
     expect(leanSteps(directory)).toContain("d2.draft")
     expect(state.stages["d2.draft"]?.status).toBe("done")
