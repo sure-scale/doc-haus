@@ -1069,7 +1069,7 @@ export default function ReviewGrid({ matterId, title, directory, documents, docu
             <div className="picker-panel" onClick={(e) => e.stopPropagation()}>
               <ModalHeader
                 title={<span className="viewer-title-text"><span className="review-detail-question">{detailShown.question}</span><span className="viewer-title-meta">{detailShown.docName}</span></span>}
-                actions={inWalk && <span className="review-walk-position">{walk.at + 1} of {walk.entries.length}</span>}
+                actions={inWalk && <span className="review-walk-position">{walk.at + 1} of {walk.entries.length} to review</span>}
                 onClose={() => setDetail(undefined)}
               />
               <div className="picker-body review-detail-body">

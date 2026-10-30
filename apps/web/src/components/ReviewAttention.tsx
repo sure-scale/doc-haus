@@ -24,13 +24,14 @@ function useNarrow(query = "(max-width: 700px)") {
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`
 
-// "3 documents · 4 questions · 8 of 12 answered · 3 reviewed". When narrow the
+// "3 documents · 4 questions · 8 of 12 answered · 6 to review". "To review" is
+// the Review next list, so the walk's position reads against it. When narrow the
 // scope moves into the tooltip, and stays in the accessible text.
-function ProgressLine({ progress }: { progress: ReviewProgress }) {
+function ProgressLine({ progress, toReview }: { progress: ReviewProgress; toReview: number }) {
   const narrow = useNarrow()
   const scope = `${plural(progress.documents, "document")} · ${plural(progress.questions, "question")}`
   const total = progress.documents * progress.questions
-  const done = total ? `${progress.answered} of ${total} answered · ${progress.reviewed} reviewed` : ""
+  const done = total ? `${progress.answered} of ${total} answered${toReview ? ` · ${toReview} to review` : ""}` : ""
   if (!narrow || !done) return <span className="review-summary">{done ? `${scope} · ${done}` : scope}</span>
   return (
     <Tooltip label={scope} describes={false}>
@@ -136,7 +137,8 @@ function NeedsAttention({ model, checking, filter, onFilter }: { model: ReviewAt
                 {note.word}
                 {note.state === "differs" && <span className="review-ai-tag">AI</span>}
               </span>
-              <span className="review-attention-count">{count}</span>
+              {/* Not reviewed filters without a count: it would nearly repeat the toolbar's "to review". */}
+              {marker && <span className="review-attention-count">{count}</span>}
               {marker && <small id={`${id}-${note.state}`} aria-hidden="true">{note.reason}</small>}
             </button>
           )
@@ -290,7 +292,7 @@ export function ReviewToolbar({ model, checking, running, comparing, primary, fi
   return (
     <div className="row review-toolbar">
       <div className="review-status">
-        <ProgressLine progress={model.progress} />
+        <ProgressLine progress={model.progress} toReview={model.queue.length} />
         {running > 0 && <span className="review-running" role="status">Extracting {running}</span>}
         {comparing > 0 && <span className="review-running" role="status">Comparing {plural(comparing, "question")}</span>}
         {/* Always present, so screen readers announce the text when it appears. */}
