@@ -13,6 +13,7 @@ const origin = new URL(baseURL).origin
 await mkdir(evidence, { recursive: true })
 const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE })
 const allStates: ReturnType<typeof fixture>[] = []
+const chronology = { schemaVersion: 1, revision: 0, created: false, events: [], coverage: [], proposals: [], sourceDates: {}, suggestion: { status: "unknown", reason: "" }, history: [], framing: "", gaps: [] }
 const timestamp = Date.UTC(2026, 9, 21, 10)
 const jurisdictions = [{ code: "EW", name: "England and Wales", citationStyle: "oscola" }, { code: "SC", name: "Scotland", citationStyle: "scotland" }]
 const matter = { id: "fixture-matter", title: "Alder House · Services agreement", reference: "AH-2026-014", client: "Alder House Studio", jurisdictions: ["EW"], dir: "/fixture/matters/alder-house", created_at: timestamp }
@@ -85,6 +86,8 @@ async function open(state: ReturnType<typeof fixture>, width: number, height: nu
       return reply(state.grid)
     }
     if (method === "POST" && pathname === `/matters/${matter.id}/grid/sources`) return reply(Object.fromEntries((request.postDataJSON() as { cells: { key: string }[] }).cells.map(cell => [cell.key, "verified"])))
+    // The matter page checks the chronology on open and on focus; this matter has none.
+    if (pathname === `/matters/${matter.id}/chronology` || (method === "POST" && pathname === `/matters/${matter.id}/chronology/assess`)) return reply(chronology)
     if (method !== "GET") { state.unexpected.push(`${method} ${pathname}`); return route.abort() }
     if (pathname === "/auth/reuse") return reply({ sources: [] })
     if (pathname === "/api/dochaus/ready") return reply({ ready: true, consentState: "active" })
