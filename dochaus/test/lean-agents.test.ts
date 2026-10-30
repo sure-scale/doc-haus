@@ -77,11 +77,12 @@ test("client summary loads as a hidden primary agent whose own rules allow exact
 })
 
 // The research agent loads through the same path; its grant set includes direct
-// official-source retrieval, which the research settings describe as available.
-test("research agent's own rules allow exactly its matter, case-law and official-source tools", () => {
+// official-source retrieval, which the research settings describe as available,
+// and the matter chronology it may read and propose changes to.
+test("research agent's own rules allow exactly its matter, chronology, case-law and official-source tools", () => {
   const agent = loadAgent("research")
   expect(TOOLS.filter(action => Permission.evaluate(action, "*", agent.permissions ?? []).effect === "allow").toSorted())
-    .toEqual(["case-law", "cite", "glob", "grep", "list", "official-source", "search-document"])
+    .toEqual(["case-law", "cite", "glob", "grep", "list", "official-source", "propose-chronology-changes", "read-chronology", "search-document"])
 })
 
 
