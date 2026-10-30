@@ -84,6 +84,8 @@ export function scriptedModel(replies: Record<string, Reply>) {
         [AGENT.advise]: () => JSON.stringify({ unavailable: { reason: "The scripted advisor recommends nothing." } }),
         // Every answer in the lawyer's words is read as their own answer.
         [AGENT.answer]: () => JSON.stringify({ class: "answered" }),
+        // Every set of answers can be followed together.
+        [AGENT.reconcile]: () => JSON.stringify({ conflicts: [] }),
       }
       const reply = replies[input.agent] ?? preparation[input.agent]
       if (!reply) throw new Error(`No scripted reply for ${input.agent}.`)

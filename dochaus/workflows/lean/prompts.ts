@@ -208,7 +208,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   return (sections[isReviewStage(stage) ? "review" : stage] ?? []).filter(Boolean).join("\n\n")
 }
 
-export function retryPrompt(stage: StageID | "advise" | "answer", issues: string[]) {
+export function retryPrompt(stage: StageID | "advise" | "answer" | "reconcile", issues: string[]) {
   return [
     `Your reply did not pass the ${stage} checks:`,
     ...issues.map(issue => `- ${issue}`),

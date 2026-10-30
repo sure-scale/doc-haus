@@ -27,6 +27,7 @@ agent/*.md
 !agent/extract.md
 !agent/lean-advise.md
 !agent/lean-answer.md
+!agent/lean-answer-reconcile.md
 !agent/lean-change-plan.md
 !agent/lean-change-prepare.md
 !agent/lean-change-review.md

@@ -111,6 +111,8 @@ export const LEAN_STAGE_AGENTS = {
   advise: "lean-advise",
   // A job of taking an answer, not a stage: it reads how the lawyer's own words answer one question.
   answer: "lean-answer",
+  // A job of taking answers, not a stage: it reads whether the answers given can all be followed together.
+  reconcile: "lean-answer-reconcile",
 } as const
 
 export type PermissionRule = { action: string; resource: string; effect: "allow" | "deny" | "ask" }
