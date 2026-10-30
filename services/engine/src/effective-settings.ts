@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { dataPaths } from "./data-paths"
+import { DEFAULT_MODEL_CONCURRENCY, nearestModelConcurrency } from "../../../dochaus/lib/model-concurrency-presets"
 
 export type EngineSettings = {
   model?: string
@@ -18,9 +19,9 @@ export type EngineSettings = {
 export function isRemovedProvider(id: string | undefined): boolean { return id === "opencode" }
 
 export function modelConcurrency(settings: EngineSettings): number {
-  const value = settings.model_concurrency === undefined ? 4 : settings.model_concurrency
+  const value = settings.model_concurrency === undefined ? DEFAULT_MODEL_CONCURRENCY : settings.model_concurrency
   if (!Number.isInteger(value) || value < 1 || value > 100) throw new Error("Saved concurrency setting must be a whole number from 1 to 100.")
-  return value
+  return nearestModelConcurrency(value)
 }
 
 export const settingsRepository = path.resolve(import.meta.dir, "../../..")

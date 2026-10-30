@@ -1,4 +1,5 @@
 import { INGEST_URL } from "../../config"
+import { DEFAULT_MODEL_CONCURRENCY, nearestModelConcurrency } from "../../../../../dochaus/lib/model-concurrency-presets"
 
 export type Config = {
   model?: string
@@ -20,9 +21,9 @@ export async function getConfig() {
 export async function getModelConcurrency() {
   try {
     const value = (await getConfig()).model_concurrency
-    if (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 100) return value
+    if (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 100) return nearestModelConcurrency(value)
   } catch { /* A conservative local pool still lets the engine enforce its cap. */ }
-  return 4
+  return DEFAULT_MODEL_CONCURRENCY
 }
 
 export async function patchConfig(patch: Config) {

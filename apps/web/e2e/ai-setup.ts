@@ -187,7 +187,16 @@ try {
       await f.page.getByRole("button", { name: "Settings", exact: true }).click()
       const dialog = f.page.getByRole("dialog", { name: "Settings", exact: true })
       const slider = dialog.getByRole("slider", { name: "Request limit" })
-      await expect(slider).toHaveAttribute("aria-valuetext", "4 requests")
+      await expect(slider).toHaveAttribute("aria-valuetext", "5 requests")
+      const alignment = await slider.evaluate(input => {
+        const bounds = input.getBoundingClientRect()
+        const labels = [...input.parentElement!.querySelectorAll(".settings-concurrency-stops span")]
+        return labels.map((label, index) => {
+          const rect = label.getBoundingClientRect()
+          return Math.abs(rect.left + rect.width / 2 - (bounds.left + 8 + (bounds.width - 16) * index / 8))
+        })
+      })
+      expect(Math.max(...alignment)).toBeLessThan(1)
       await slider.focus()
       await f.page.keyboard.press("Home")
       for (const value of [1, 3, 5, 10, 20, 30, 50, 80, 100]) {

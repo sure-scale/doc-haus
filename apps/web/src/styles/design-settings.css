@@ -158,15 +158,23 @@
   display: block;
   width: 100%;
   margin: var(--space-2) 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
   accent-color: var(--accent);
 }
 
 .settings-concurrency-stops {
-  display: flex;
-  justify-content: space-between;
-  gap: 2px;
+  position: relative;
+  height: 1.4em;
+  margin: 0 8px;
   color: var(--muted);
   font-size: .75rem;
+}
+
+.settings-concurrency-stops span {
+  position: absolute;
+  transform: translateX(-50%);
 }
 
 .settings-field-control > .settings-hint {

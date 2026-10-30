@@ -2,14 +2,8 @@ import { useEffect, useId, useState } from "react"
 import { getConfig, patchConfig } from "../../api/opencode/config"
 import { testConcurrency, type ConcurrencyTestResult } from "../../api/opencode/concurrency"
 import { FieldRow } from "./controls"
+import { DEFAULT_MODEL_CONCURRENCY, MODEL_CONCURRENCY_PRESETS as PRESETS, nearestModelConcurrency } from "../../../../../dochaus/lib/model-concurrency-presets"
 
-const PRESETS = [1, 3, 5, 10, 20, 30, 50, 80, 100]
-// Preserve the position of a previously saved custom value between its neighbours.
-function sliderPosition(value: number) {
-  const upper = PRESETS.findIndex(option => option >= value)
-  if (upper <= 0) return upper < 0 ? PRESETS.length - 1 : 0
-  return upper - 1 + (value - PRESETS[upper - 1]) / (PRESETS[upper] - PRESETS[upper - 1])
-}
 const message = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback
 const failureLabel: Record<string, string> = { auth: "Sign-in error", model: "Model unavailable", rate_limit: "Provider rate limit", unavailable: "Connection unavailable", empty: "Empty response", timeout: "Timed out" }
 
@@ -37,7 +31,7 @@ export default function ConcurrencySettings({ onBusy }: { onBusy: (busy: boolean
     setLoading(true); setError("")
     try {
       const config = await getConfig()
-      const limit = config.model_concurrency ?? 4
+      const limit = nearestModelConcurrency(config.model_concurrency ?? DEFAULT_MODEL_CONCURRENCY)
       setSaved(limit); setValue(String(limit))
     } catch (failure) { setError(message(failure, "Could not load the request limit.")) }
     finally { setLoading(false) }
@@ -76,14 +70,14 @@ export default function ConcurrencySettings({ onBusy }: { onBusy: (busy: boolean
     <FieldRow id={inputId} label="Request limit">
       <div className="settings-concurrency-slider">
         <output htmlFor={inputId}>{valid ? number : "—"}</output>
-        <input id={inputId} type="range" min={0} max={PRESETS.length - 1} step="any" value={valid ? sliderPosition(number) : 0} disabled={unavailable} aria-valuetext={valid ? `${number} requests` : "Loading"} onChange={event => setLimit(String(PRESETS[Math.round(Number(event.target.value))]))} onKeyDown={event => {
+        <input id={inputId} type="range" min={0} max={PRESETS.length - 1} step={1} value={valid ? PRESETS.findIndex(option => option === number) : 0} disabled={unavailable} aria-valuetext={valid ? `${number} requests` : "Loading"} onChange={event => setLimit(String(PRESETS[Number(event.target.value)]))} onKeyDown={event => {
           if (["ArrowUp", "ArrowRight", "ArrowDown", "ArrowLeft", "Home", "End"].includes(event.key)) {
             event.preventDefault()
             const target = event.key === "Home" ? PRESETS[0] : event.key === "End" ? PRESETS[PRESETS.length - 1] : event.key === "ArrowUp" || event.key === "ArrowRight" ? next : previous
             if (target !== undefined) setLimit(String(target))
           }
         }} />
-        <div className="settings-concurrency-stops" aria-hidden="true">{PRESETS.map(option => <span key={option}>{option}</span>)}</div>
+        <div className="settings-concurrency-stops" aria-hidden="true">{PRESETS.map((option, index) => <span key={option} style={{ left: `${index * 100 / (PRESETS.length - 1)}%` }}>{option}</span>)}</div>
       </div>
     </FieldRow>
     {value !== "" && !valid && <p role="alert" className="settings-hint settings-warning">Enter a whole number between 1 and 100.</p>}

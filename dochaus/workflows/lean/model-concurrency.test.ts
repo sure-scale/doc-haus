@@ -13,8 +13,8 @@ test("workflow pool follows the saved installation limit", async () => {
     mkdirSync(legal)
     process.env.DOCHAUS_DIR = legal
     process.env.DOCHAUS_RUNTIME_DIR = path.join(root, "runtime")
-    for (const limit of [2, 7]) {
-      writeFileSync(path.join(legal, "opencode.json"), JSON.stringify({ model_concurrency: limit }))
+    for (const [saved, limit] of [[2, 3], [7, 5]]) {
+      writeFileSync(path.join(legal, "opencode.json"), JSON.stringify({ model_concurrency: saved }))
       let active = 0
       let peak = 0
       const finished: number[] = []
