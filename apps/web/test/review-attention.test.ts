@@ -91,7 +91,7 @@ test("a reviewed cell whose question changed is flagged, not filled and not unre
   cells[cellKey(supply, law.id)] = { ...cells[cellKey(supply, law.id)], questionHash: hashQuestion("What law applies?") }
   const result = model(cells)
   const entry = result.cells.get(cellKey(supply, law.id))!
-  expect(entry.marker).toEqual({ state: "question_changed", word: "Question changed", reason: "Question changed after review. Unlock to refresh." })
+  expect(entry.marker).toEqual({ state: "question_changed", word: "Question changed", reason: "The question was edited after this cell was reviewed. Unlock to refresh." })
   expect(result.attention).toBe(1)
   expect(result.counts.unreviewed).toBe(0)
   expect(matches(entry, ["unreviewed"], "")).toBe(false)

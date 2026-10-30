@@ -44,9 +44,13 @@ const POOL = 5 // concurrent cell extractions; the engine handles one prompt eac
 const COMPARE_POOL = 2 // concurrent column comparisons after a Fill
 const COMPARE_TIMEOUT = 120_000
 
-// The detail's next step: its primary, else the last step still enabled.
+// The detail's next step: its primary, else the walk's Skip, else the last step
+// still enabled. A reviewed cell's quiet Unlock is never the next step, so a
+// cell with nothing left to do hands focus to Close.
 const detailControl = (modal: HTMLElement | null) =>
-  modal?.querySelector<HTMLButtonElement>(".review-detail-primary:not(:disabled)") ?? [...modal?.querySelectorAll<HTMLButtonElement>(".review-detail-bar button:not(:disabled)") ?? []].at(-1)
+  modal?.querySelector<HTMLButtonElement>(".review-detail-primary:not(:disabled)") ?? modal?.querySelector<HTMLButtonElement>(".review-walk-skip:not(:disabled)")
+    ?? [...modal?.querySelectorAll<HTMLButtonElement>(".review-detail-bar button:not(:disabled):not(.review-detail-unlock)") ?? []].at(-1)
+    ?? modal?.querySelector<HTMLButtonElement>(".modal-close") ?? undefined
 // Markers whose reason names a re-run of the cell: unlocked first if reviewed.
 const RERUN: MarkerState[] = ["other_document", "source_changed", "source_missing", "question_changed"]
 
@@ -111,11 +115,15 @@ const without = (set: ReadonlySet<string>, id: string) => {
 const reviewRows = (documents: Document[]): ReviewRow[] => documents.map((doc) => ({ name: doc.name, docPath: doc.doc_path }))
 
 // File names wrap at separators, never mid-word: before a dot, after - or _.
-// The last word keeps its extension, wrapping inside only when it cannot fit a line alone.
+// The extension stays on the line of the word it ends, parting from it only
+// when the two are wider than the column; the last word moves to the next line whole.
 function FileName({ name }: { name: string }) {
   const parts = (text: string, at: string) => text.split(/(?=\.)|(?<=[-_])/).flatMap((part, i) => i ? [<wbr key={`${at}${i}`} />, part] : [part])
   const end = name.lastIndexOf(" ") + 1
-  return <>{parts(name.slice(0, end), "a")}<span className="review-file-end">{parts(name.slice(end), "b")}</span></>
+  const dot = name.lastIndexOf(".")
+  const [word, extension] = dot > end ? [name.slice(end, dot), name.slice(dot)] : [name.slice(end), ""]
+  const tail = word.split(/(?<=[-_])/)
+  return <>{parts(name.slice(0, end), "a")}<span className="review-file-end">{parts(tail.slice(0, -1).join(""), "b")}<span className="review-file-ext">{tail.at(-1)}{extension && <><wbr />{extension}</>}</span></span></>
 }
 
 // Cell actions use the same 24px stroke icons as Add column.
@@ -180,6 +188,8 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
   const otherWindow = useReviewGridPresence(directory, matterId)
   const canEdit = loaded && !saveProblem
   const [running, setRunning] = useState(0) // cells currently extracting
+  // Cells of a running Fill: extracting now, or waiting for a free worker.
+  const [pending, setPending] = useState<ReadonlyMap<string, "filling" | "waiting">>(new Map())
   // Columns being compared, queued ones included, and those whose last
   // comparison failed. Neither is stored; in-flight comparisons stop on unmount.
   const [comparing, setComparing] = useState<ReadonlySet<string>>(new Set())
@@ -232,8 +242,12 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
   const [detail, setDetail] = useState<{ docName: string; columnId: string; question: string }>()
   const [draft, setDraft] = useState("") // comment being composed in the overlay
   const [commentSaving, setCommentSaving] = useState(false)
-  // The cell re-running from its detail; `failed` when it came back unchanged.
-  const [rerun, setRerun] = useState<{ key: string; failed?: boolean }>()
+  // The cell re-running from its detail, then how it came back: `failed` when
+  // the cell is unchanged, else whether its answer text changed. The outcome
+  // shows until the detail moves to another cell.
+  const [rerun, setRerun] = useState<{ key: string; state: "running" | "failed" | "unchanged" | "updated" }>()
+  // The attorney name comments are signed with; "" when none is set.
+  const [attorney, setAttorney] = useState<string>()
   // Each dialog closes, and returns focus, as its exit starts.
   const [detailShown, detailClosing] = useExit(detail)
   const detailKey = detailShown ? cellKey(detailShown.docName, detailShown.columnId) : undefined
@@ -294,22 +308,27 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
     const modal = detailDialog.current
     modal?.showModal()
     // Not the comment field, whose keyboard would cover the answer on a phone.
-    ;(detailControl(modal) ?? modal?.querySelector<HTMLButtonElement>(".modal-close"))?.focus({ preventScroll: true })
+    detailControl(modal)?.focus({ preventScroll: true })
+    // The comment hint shows only while no attorney name is set to sign with.
+    let live = true
+    getPreferences().then((prefs) => prefs.attorney?.trim() || "", () => "").then((name) => { if (live) setAttorney(name) })
     return () => {
+      live = false
       modal?.close()
       if (opener?.isConnected) opener.focus({ preventScroll: true })
     }
   }, [detailOpen])
 
-  // A move or re-run that removes or disables the focused control hands focus
-  // to the next step, so it never drops out of the detail.
+  // A move, re-run or review change that removes or disables the focused
+  // control hands focus to the next step, so it never drops out of the detail.
+  const detailStatus = detailKey ? grid.cells[detailKey]?.status : undefined
   useLayoutEffect(() => {
     const modal = detailDialog.current
     if (!detailOpen || !modal) return
     const active = document.activeElement
     if (active && modal.contains(active) && !active.matches(":disabled")) return
     detailControl(modal)?.focus({ preventScroll: true })
-  }, [walkAt, canEdit, rerun])
+  }, [walkAt, canEdit, rerun, detailStatus])
 
   // A finished walk hands focus to the table's next step and says it is done.
   useLayoutEffect(() => {
@@ -515,6 +534,8 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
     if (!column) return
     setDraft("")
     setViewing(undefined)
+    // A re-run's outcome belongs to the cell it ran on.
+    setRerun((current) => current?.state === "running" ? current : undefined)
     setDetail({ docName, columnId, question: column.question })
   }
 
@@ -585,12 +606,20 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
     if (targets.length === 0 || !loaded || saveState.current.blocked) return
     setError(undefined)
     setRunning((n) => n + targets.length)
+    const mark = (key: string, state?: "filling" | "waiting") => setPending((current) => {
+      const next = new Map(current)
+      if (state) next.set(key, state)
+      else next.delete(key)
+      return next
+    })
+    for (const t of targets) mark(cellKey(t.docName, t.column.id), "waiting")
     const fillEpoch = saveState.current.epoch
     let next = 0
     const worker = async () => {
       while (next < targets.length) {
         const t = targets[next++]
         const key = cellKey(t.docName, t.column.id)
+        mark(key, "filling")
         const original = gridRef.current.cells[key]
         const initialColumn = gridRef.current.columns.find((col) => col.id === t.column.id)
         // Comments can be added during extraction. Compare all other cell data,
@@ -611,6 +640,7 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
           setError(humanizeError(error, "Extraction failed. Try the unfinished cells again."))
         } finally {
           setRunning((n) => n - 1)
+          mark(key)
         }
       }
     }
@@ -857,11 +887,17 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
     const key = detailKey
     const column = grid.columns.find((col) => col.id === detailShown.columnId)
     if (!column) return
-    const answer = (cell?: GridCellData) => cell && JSON.stringify({ ...cell, comments: undefined })
-    const before = answer(gridRef.current.cells[key])
-    setRerun({ key })
-    void fill([{ docName: detailShown.docName, column }]).finally(() => setRerun(answer(gridRef.current.cells[key]) === before ? { key, failed: true } : undefined))
+    const data = (cell?: GridCellData) => cell && JSON.stringify({ ...cell, comments: undefined })
+    const old = gridRef.current.cells[key]
+    setRerun({ key, state: "running" })
+    void fill([{ docName: detailShown.docName, column }]).finally(() => {
+      const now = gridRef.current.cells[key]
+      const state = data(now) === data(old) ? "failed" : now?.answer === old?.answer ? "unchanged" : "updated"
+      // Only while the detail is still on this cell; a move has cleared it.
+      setRerun((current) => current?.key === key ? { key, state } : current)
+    })
   }
+  const rerunOutcome = rerun && rerun.key === detailKey ? ({ unchanged: "Answer unchanged", updated: "Answer updated" } as Record<string, string>)[rerun.state] : undefined
   const walkEntry = inWalk && detailKey ? attention.cells.get(detailKey) : undefined
   const detailMarker = detailKey ? attention.cells.get(detailKey)?.marker?.state : undefined
   const rerunFixes = !!detailMarker && RERUN.includes(detailMarker)
@@ -1003,38 +1039,46 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
                     const cell = grid.cells[key]
                     const entry = attention.cells.get(key)!
                     const dimmed = narrowed && !matches(entry, filters, query)
-                    const check = sourceCheck(key, cell)
-                    // The inset bar takes the marker's tone: a changed source is a warning, a missing or foreign one danger.
-                    const degraded = !!check && DEGRADED.includes(check) && !!entry.marker
-                    // A reviewed cell with a marker takes the marker's bar, not the reviewed one; its padlock says it is locked.
+                    // A reviewed cell with a marker is not tinted as done; its marker says why.
                     const flagged = cell?.status === "reviewed" && !!entry.marker
+                    // A cell in a running Fill says so in its marker's place; an empty one in place of Fill.
+                    const inFill = pending.get(key)
+                    const fillState = inFill && <span className={`review-cell-pending is-${inFill}`}>{inFill === "filling" ? "Filling…" : "Waiting"}</span>
+                    // Not found already says the document does not address the question, so the cell shows only the marker.
+                    const markerOnly = entry.marker?.state === "not_addressed"
                     return (
-                      <td key={col.id} className={`review-cell${cell?.status === "reviewed" ? " reviewed" : ""}${degraded ? " degraded" : ""}${flagged ? " is-flagged" : ""}${degraded || flagged ? ` is-${MARKER_LOOK[entry.marker!.state].tone}` : ""}${dimmed ? " is-dimmed" : ""}`}>
-                        {!cell ? (
-                          <button
-                            className="review-cell-fill"
-                            disabled={!canEdit || running > 0}
-                            onClick={() => fill([{ docName: doc.name, column: col }])}
-                          >
-                            Fill
-                          </button>
+                      <td key={col.id} className={`review-cell${cell?.status === "reviewed" ? " reviewed" : ""}${flagged ? " is-flagged" : ""}${!cell ? " is-empty" : ""}${dimmed ? " is-dimmed" : ""}`}>
+                        {!cell ? fillState || (
+                          <>
+                            {/* On a phone the empty cell names its state; its own Fill stays beside it. */}
+                            <span className="review-cell-unfilled">Not filled</span>
+                            <button
+                              className="review-cell-fill"
+                              disabled={!canEdit || running > 0}
+                              onClick={() => fill([{ docName: doc.name, column: col }])}
+                            >
+                              Fill
+                            </button>
+                          </>
                         ) : (
                           <div className="review-cell-body">
-                            <button
-                              className="review-answer"
-                              onClick={() => openDetail(doc.name, col.id)}
-                            >
-                              {/* Four lines at most; the answer detail has the rest. */}
-                              <span className="review-answer-text">{cell.answer}</span>
-                              {/* On its own line; the row names the document unless the citation is from another one. */}
-                              {cell.citation && (
-                                <span className="review-cite">
-                                  <span className="sr-only"> Source:</span> {!citesRow(cell.citation, { name: doc.name, docPath: doc.doc_path }) && <><FileName name={cell.citation.documentName} />{" "}</>}{citationLabel(cell.citation)}
-                                  {degradedCitation(cell.citation.documentName)}
-                                </span>
-                              )}
-                            </button>
-                            <ReviewMarker entry={entry} recheck={cell.recheck && recheckOutcome(cell.recheck)} onOpen={() => openDetail(doc.name, col.id)} />
+                            {!markerOnly && (
+                              <button
+                                className="review-answer"
+                                onClick={() => openDetail(doc.name, col.id)}
+                              >
+                                {/* Four lines at most; the answer detail has the rest. */}
+                                <span className="review-answer-text">{cell.answer}</span>
+                                {/* On its own line; the row names the document unless the citation is from another one. */}
+                                {cell.citation && (
+                                  <span className="review-cite">
+                                    <span className="sr-only"> Source:</span> {!citesRow(cell.citation, { name: doc.name, docPath: doc.doc_path }) && <><FileName name={cell.citation.documentName} />{" "}</>}{citationLabel(cell.citation)}
+                                    {degradedCitation(cell.citation.documentName)}
+                                  </span>
+                                )}
+                              </button>
+                            )}
+                            {fillState || <ReviewMarker entry={entry} recheck={cell.recheck && recheckOutcome(cell.recheck)} onOpen={() => openDetail(doc.name, col.id)} />}
                             {/* Along the cell's bottom edge. Comments sit bottom left, only when there are some; a
                                 first comment is added in the answer detail. Re-run and the padlock sit bottom right,
                                 the padlock in the corner: an open one and Re-run appear on hover or focus, a closed
@@ -1116,7 +1160,7 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
           >
             <div className="picker-panel" onClick={(e) => e.stopPropagation()}>
               <ModalHeader
-                title={<span className="viewer-title-text"><span className="review-detail-question">{detailShown.question}</span><span className="viewer-title-meta">{detailShown.docName}</span></span>}
+                title={<span className="viewer-title-text"><span className="review-detail-question">{detailShown.question}</span><span className="viewer-title-meta"><span className="review-detail-file"><FileName name={detailShown.docName} /></span></span></span>}
                 actions={inWalk && <span className="review-walk-position">{walk.at + 1} of {walk.entries.length} to review</span>}
                 onClose={() => setDetail(undefined)}
               />
@@ -1129,9 +1173,12 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
                     <p>{walkReason}</p>
                   </div>
                 )}
-                {inWalk && !walkReason && <p className="review-walk-reviewed">Reviewed</p>}
                 <section className="review-detail-section" aria-labelledby={`${detailIds}-answer`}>
-                  <h3 className="review-detail-label" id={`${detailIds}-answer`}>Answer</h3>
+                  <div className="review-detail-label-row">
+                    <h3 className="review-detail-label" id={`${detailIds}-answer`}>Answer</h3>
+                    {/* After a re-run, whether the answer text changed; gone once the detail moves on. */}
+                    <span className="review-rerun-outcome" role="status">{rerunOutcome}</span>
+                  </div>
                   <p className="review-detail-answer">{detailCell.answer}</p>
                   {detailDiffers && <p className="review-compare-detail"><MarkerGlyph state="differs" /><span>AI comparison: Differs — {detailDiffers}</span></p>}
                   {detailCell.recheck && <p className="review-recheck-detail">{describeRecheck(detailCell.recheck)}</p>}
@@ -1154,7 +1201,8 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
                   const available = !!citationDocument(citation, documents)
                   return (
                     <section className="review-detail-section" aria-labelledby={`${detailIds}-source`}>
-                      <h3 className="review-detail-label" id={`${detailIds}-source`}>Source</h3>
+                      {/* While the source is degraded the excerpt is old evidence, not the document's current text. */}
+                      <h3 className="review-detail-label" id={`${detailIds}-source`}>{check && DEGRADED.includes(check) ? "Previously cited" : "Source"}</h3>
                       <div className={`citation review-source${check && DEGRADED.includes(check) ? ` degraded is-${check}` : ""}`}>
                         {/* The reference is a plain heading; the passage opens from its own link below. */}
                         <div className="review-source-head">
@@ -1184,8 +1232,8 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
                     <div key={c.id} className="review-comment">
                       <div className="review-comment-meta">
                         <span><strong>{c.author || "Unattributed"}</strong><span className="muted"> · {formatDateTime(c.at)}</span></span>
-                        <button className="icon-btn" disabled={!canEdit} aria-label="Delete comment" title="Delete comment" onClick={() => deleteComment(c.id)}>
-                          ×
+                        <button type="button" className="ghost btn-sm review-comment-delete" disabled={!canEdit} aria-label="Delete comment" onClick={() => deleteComment(c.id)}>
+                          Delete
                         </button>
                       </div>
                       <div className="review-comment-text">{c.text}</div>
@@ -1194,7 +1242,7 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
                   <div className="review-comment-compose">
                     <textarea
                       rows={2}
-                      aria-describedby={`${detailIds}-signed`}
+                      aria-describedby={attorney === "" ? `${detailIds}-signed` : undefined}
                       value={draft}
                       readOnly={commentSaving || !canEdit}
                       aria-label="Add a comment"
@@ -1208,7 +1256,7 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
                       }}
                     />
                     <div className="review-comment-actions">
-                      <small className="muted" id={`${detailIds}-signed`}>Comments use the attorney name in Settings → Drafting.</small>
+                      {attorney === "" && <small className="muted" id={`${detailIds}-signed`}>Comments use the attorney name in Settings → Drafting.</small>}
                       <button className={composing ? "primary" : undefined} onClick={addComment} disabled={!canEdit || !draft.trim() || commentSaving}>
                         {commentSaving ? "Adding comment…" : "Add comment"}
                       </button>
@@ -1216,23 +1264,26 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
                   </div>
                 </section>
               </div>
-              {/* One primary per state, last in the row so focus stays on it as
-                  the step changes. In the walk a flagged cell's named remedy
-                  leads (Re-run this cell, or Unlock once reviewed, never both in
-                  one click), then Mark reviewed · Next; outside it, Mark
-                  reviewed or Unlock. Only the lawyer's click changes review. */}
+              {/* One rule for the walk and the dialog, one primary per state, last
+                  in the row so focus stays on it as the step changes. A cell whose
+                  marker names a re-run leads with it (Re-run this cell, or Unlock
+                  once reviewed, never both in one click), with Mark reviewed
+                  beside it; a plain open cell leads with Mark reviewed. A reviewed
+                  cell with nothing flagged has no primary: it says Reviewed, with
+                  a quiet Unlock. The walk adds Previous and Skip in every state.
+                  Only the lawyer's click changes review. */}
               {detailKey && (() => {
                 const open = detailCell.status !== "reviewed"
-                const busy = rerun?.key === detailKey && !rerun.failed
+                const busy = rerun?.key === detailKey && rerun.state === "running"
                 type Step = { label: string; onClick: () => void; disabled: boolean; busy?: boolean }
                 const rerunStep: Step = { label: busy ? "Re-running…" : "Re-run this cell", onClick: rerunCell, disabled: !busy && (!canEdit || running > 0), busy }
                 const mark: Step = inWalk ? { label: "Mark reviewed · Next", onClick: markReviewedNext, disabled: busy || !canEdit }
                   : { label: "Mark reviewed", onClick: () => setReviewed(detailKey, true), disabled: busy || !canEdit }
                 const unlock: Step = { label: "Unlock", onClick: () => setReviewed(detailKey, false), disabled: !canEdit }
-                const next: Step = { label: "Next", onClick: () => walkTo(1), disabled: false }
-                const [secondary, primary]: [Step | undefined, Step] = open
-                  ? (rerunFixes || busy ? (inWalk ? [mark, rerunStep] : [rerunStep, mark]) : [undefined, mark])
-                  : inWalk ? (rerunFixes ? [next, unlock] : [undefined, next]) : [undefined, unlock]
+                const remedy = rerunFixes || busy
+                const [secondary, primary]: [Step | undefined, Step | undefined] = open
+                  ? (remedy ? [mark, rerunStep] : [undefined, mark])
+                  : remedy ? [undefined, unlock] : [unlock, undefined]
                 // A busy re-run keeps focus, so its button is aria-disabled, not disabled.
                 const button = (step: Step, className: string, disabled = step.disabled) => (
                   <button type="button" className={className} disabled={disabled} aria-disabled={step.busy || undefined} aria-busy={step.busy || undefined} onClick={step.busy ? undefined : step.onClick}>
@@ -1241,17 +1292,18 @@ export default function ReviewGrid({ matterId, title, directory, documents: matt
                 )
                 return (
                   <div className="review-detail-bar">
-                    {rerun?.key === detailKey && rerun.failed && error && <p className="review-detail-error" role="alert">{error}</p>}
+                    {rerun?.key === detailKey && rerun.state === "failed" && error && <p className="review-detail-error" role="alert">{error}</p>}
                     {inWalk && (composing ? <small className="review-walk-hint">Add or clear the comment to move on.</small> : (
                       <>
                         <button type="button" className="ghost review-walk-previous" disabled={!walk.entries.slice(0, walk.at).some(inTable)} onClick={() => walkTo(-1)}>
                           Previous
                         </button>
-                        {open && <button type="button" className="ghost review-walk-skip" onClick={() => walkTo(1)}>Skip</button>}
+                        <button type="button" className="ghost review-walk-skip" onClick={() => walkTo(1)}>Skip</button>
                       </>
                     ))}
-                    {secondary && !(inWalk && composing) && button(secondary, "ghost")}
-                    {button(primary, `review-detail-primary${composing ? "" : " primary"}`, primary.disabled || (inWalk && composing))}
+                    {!primary && <span className="review-detail-status"><LockIcon open={false} />Reviewed</span>}
+                    {secondary && !(inWalk && composing) && button(secondary, `ghost${secondary === unlock ? " review-detail-unlock" : ""}`)}
+                    {primary && button(primary, `review-detail-primary${composing ? "" : " primary"}`, primary.disabled || (inWalk && composing))}
                   </div>
                 )
               })()}
