@@ -188,24 +188,24 @@ describe("lean drafting start and Continue", () => {
     model.release()
     await leanDraftingIdle(directory)
     // The stopped stage is re-run once for the queued Continues, by the same coordinator.
-    expect(model.prompts).toEqual([LEAN_STAGE_AGENTS.discrepancy, LEAN_STAGE_AGENTS.discrepancy])
+    expect(model.prompts).toEqual([LEAN_STAGE_AGENTS.instructions, LEAN_STAGE_AGENTS.instructions])
     expect(pendingLeanRequests(directory)).toEqual([])
     expect(doneRequests(directory)).toHaveLength(2)
     const failed = await (await routes.request("/m1/lean/state")).json()
     expect(failed).toMatchObject({
       profile: "lean", status: "failed", in_flight: false, pending_requests: 0,
-      stop_reason: "discrepancy: stopped by a runtime error: scripted engine outage",
-      stages: { discrepancy: { status: "failed" } },
+      stop_reason: "instructions: stopped by a runtime error: scripted engine outage",
+      stages: { instructions: { status: "failed" } },
       plan: null,
     })
-    expect(model.created[1]).toMatchObject({ parentID: "ses_1", agent: LEAN_STAGE_AGENTS.discrepancy })
+    expect(model.created[1]).toMatchObject({ parentID: "ses_1", agent: LEAN_STAGE_AGENTS.instructions })
 
     // A Continue after the run stopped starts it again.
     const resumed = await routes.request("/m1/lean/resume", { method: "POST" })
     expect(resumed.status).toBe(202)
     expect(await resumed.json()).toMatchObject({ mode: "queued", status: { in_flight: true } })
     await leanDraftingIdle(directory)
-    expect(model.prompts).toEqual([LEAN_STAGE_AGENTS.discrepancy, LEAN_STAGE_AGENTS.discrepancy, LEAN_STAGE_AGENTS.discrepancy])
+    expect(model.prompts).toEqual([LEAN_STAGE_AGENTS.instructions, LEAN_STAGE_AGENTS.instructions, LEAN_STAGE_AGENTS.instructions])
     expect(readLeanState(directory)).toMatchObject({ status: "failed", owner_session_id: "ses_1" })
     expect(doneRequests(directory)).toHaveLength(3)
   })
@@ -448,9 +448,9 @@ test("the HTTP answer flow holds a run until every intake question is answered",
   expect(waiting.status).toBe("blocked")
   expect(waiting.questions).toHaveLength(2)
   expect(waiting.stages["d1.review"]?.status).toBe("pending")
-  // Discrepancy, intake and one advice per question; waiting asks the model nothing more.
+  // Instructions, discrepancy, intake and one advice per question; waiting asks the model nothing more.
   const asked = model.prompts.length
-  expect(asked).toBe(4)
+  expect(asked).toBe(5)
   const post = (id: string, answer: string) => routes.request(`/m1/lean/questions/${id}`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ answer }),
   })
