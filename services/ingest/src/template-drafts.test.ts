@@ -336,7 +336,7 @@ test("a placeholder edit removes shared text and image links while retaining ima
     expect(proposed.getElementsByTagNameNS(drawing, "hlinkClick")[0]!.getAttributeNS(relationship, "id")).toBe(publicId)
     expect(proposed.getElementsByTagNameNS("http://schemas.openxmlformats.org/drawingml/2006/picture", "pic").length).toBe(1)
     for (const name of Object.keys(sourceParts).filter(name => name.startsWith("word/media/"))) expect(parts[name]).toEqual(sourceParts[name])
-    // The inserted "[insert " is typed before the link, as a tracked write types it; once the link is removed both runs read the same.
+    // The link carrying the replaced text is removed before the edit, so the whole placeholder reads as one bold, unlinked run.
     const placeholder = (await createDocxRevision(bytes)).paragraphs[0].formatting
     expect(placeholder.map(fragment => fragment.text).join("")).toBe("[insert contact email]")
     expect(placeholder.every(fragment => fragment.formatting.bold && !fragment.formatting.hyperlinkUrl)).toBe(true)

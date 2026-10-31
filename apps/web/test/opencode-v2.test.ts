@@ -3,6 +3,8 @@ import { afterAll, expect, test } from "bun:test"
 const requests: Array<{ method: string; url: URL; body?: Record<string, unknown> }> = []
 let configAvailable = true
 let executionFailed = false
+let sessionTitle = "Conversation"
+let holdNaming: Promise<void> | undefined
 // Serve the engine and ingest routes in-process through a fetch stub. The shared
 // config module keeps the origins of whichever test file first evaluates it, so
 // this file must not depend on owning that evaluation.
@@ -10,7 +12,7 @@ const originalFetch = globalThis.fetch
 globalThis.fetch = (async (input, init) => handle(new Request(input, init))) as typeof fetch
 async function handle(request: Request) {
   const url = new URL(request.url)
-  const body = request.method === "POST" ? await request.json().catch(() => undefined) as Record<string, unknown> | undefined : undefined
+  const body = ["POST", "PATCH"].includes(request.method) ? await request.json().catch(() => undefined) as Record<string, unknown> | undefined : undefined
   requests.push({ method: request.method, url, body })
   if (url.pathname === "/engine/config") return configAvailable ? Response.json({ model: "provider/selected" }) : new Response(null, { status: 503 })
   expect(request.headers.get("x-opencode-directory")).toBe("/active-matter")
@@ -22,6 +24,10 @@ async function handle(request: Request) {
   if (url.pathname === "/api/model") return Response.json({ data: [{ id: "selected", modelID: "wire-id", name: "Selected", providerID: "provider", enabled: true }] })
   if (url.pathname === "/api/integration") return Response.json({ data: [{ id: "provider-account", connections: [{ type: "env", name: "TEST_MODEL_KEY" }] }] })
   if (url.pathname === "/api/session" && request.method === "POST") return Response.json({ data: { id: "ses_created", location: body?.location } })
+  if (url.pathname === "/api/session/ses_created") {
+    if (request.method === "PATCH") { await holdNaming; sessionTitle = typeof body?.title === "string" && body.title || "Delivery clause review"; return new Response(null, { status: 204 }) }
+    return Response.json({ data: { id: "ses_created", title: sessionTitle } })
+  }
   if (url.pathname === "/api/session") return Response.json({ data: [], cursor: url.searchParams.has("cursor") ? {} : { next: "next-page" } })
   if (/\/api\/session\/[^/]+\/(agent|model)$/.test(url.pathname)) return new Response(null, { status: 204 })
   if (url.pathname.endsWith("/wait")) return new Response(null, { status: 204 })
@@ -43,6 +49,41 @@ test("web creation passes the native matter location in the body", async () => {
   const session = await sessionsApi.createSession(clientApi.matterClient("/active-matter"), "Matter conversation")
   expect(session.location.directory).toBe("/active-matter")
   expect(requests.at(-1)?.body).toMatchObject({ title: "Matter conversation", location: { directory: "/active-matter" } })
+})
+test("web names a new conversation through the shared native title action after the actual user turn", async () => {
+  configAvailable = true; executionFailed = false; sessionTitle = "Conversation"
+  const client = clientApi.matterClient("/active-matter")
+  await sessionsApi.createSession(client)
+  expect(requests.at(-1)?.body?.title).toBe("Conversation")
+  const before = requests.length
+  await sessionsApi.sendPrompt(client, "ses_created", "qa", "Explain the delivery clause.")
+  // Naming runs independently so the completed answer is never held by a title job.
+  for (let attempt = 0; attempt < 20 && sessionTitle === "Conversation"; attempt++) await Bun.sleep(1)
+  expect(sessionTitle).toBe("Delivery clause review")
+  const recent = requests.slice(before)
+  const prompt = recent.findIndex(request => request.url.pathname.endsWith("/prompt"))
+  const title = recent.findIndex(request => request.method === "PATCH" && request.body?.title === "")
+  expect(prompt).toBeGreaterThanOrEqual(0)
+  expect(title).toBeGreaterThan(prompt)
+  await sessionsApi.sendPrompt(client, "ses_created", "qa", "Explain that further.")
+  await Bun.sleep(1)
+  expect(requests.slice(before).filter(request => request.method === "PATCH" && request.body?.title === "")).toHaveLength(1)
+})
+test("concurrent completed turns share one in-flight title job", async () => {
+  configAvailable = true; executionFailed = false; sessionTitle = "Conversation"
+  let release!: () => void
+  holdNaming = new Promise<void>(resolve => { release = resolve })
+  const before = requests.length
+  try {
+    const client = clientApi.matterClient("/active-matter")
+    await sessionsApi.sendPrompt(client, "ses_created", "qa", "First question")
+    for (let attempt = 0; attempt < 50 && !requests.slice(before).some(request => request.method === "PATCH"); attempt++) await Bun.sleep(1)
+    await sessionsApi.sendPrompt(client, "ses_created", "qa", "Second question")
+    expect(requests.slice(before).filter(request => request.method === "PATCH" && request.body?.title === "")).toHaveLength(1)
+  } finally {
+    release(); holdNaming = undefined
+    for (let attempt = 0; attempt < 50 && sessionTitle === "Conversation"; attempt++) await Bun.sleep(1)
+  }
 })
 test("web catalog uses selection IDs and list pagination follows native cursors", async () => {
   const client = clientApi.matterClient("/active-matter")

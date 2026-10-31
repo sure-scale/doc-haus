@@ -238,7 +238,6 @@ test("observed cached counts and numeric package revision can change without hid
     app.replace("Synthetic company", "Another company"),
     app.replace("preserved", "changed"),
     app.replace("<e:Pages>1", "<e:Pages>2"),
-    app.replace("<e:Lines>2", "<e:Lines>3"),
   ])
     expect(await documentFingerprint(fixture(edit))).not.toBe(baseline)
   expect(original).toEqual(copy)
@@ -373,4 +372,139 @@ test("note separator normalization preserves real paragraph and comment identity
     const xml = (id: string) => `<w:${root} xmlns:w="${word}" xmlns:w14="${word2010}">${wrapper[0]}<w:p w14:paraId="${id}">${run("Neutral text.")}</w:p>${wrapper[1]}</w:${root}>`
     expect(await hash(part, xml("00000001"))).not.toBe(await hash(part, xml("00000002")))
   }
+})
+
+const relationshipNamespace = "http://schemas.openxmlformats.org/package/2006/relationships"
+const officeRelationship = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/"
+const coreRelationship = "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties"
+const taskpaneRelationship = "http://schemas.microsoft.com/office/2011/relationships/webextensiontaskpanes"
+function rootRelationships(reopened = false): string {
+  const records = reopened
+    ? [["rId3", coreRelationship, "docProps/core.xml"], ["rId2", taskpaneRelationship, "NULL"], ["rId1", officeRelationship + "officeDocument", "word/document.xml"], ["rId4", officeRelationship + "extended-properties", "docProps/app.xml"]]
+    : [["rId3", officeRelationship + "extended-properties", "docProps/app.xml"], ["rIdDocHaus1", taskpaneRelationship, "NULL"], ["rId2", coreRelationship, "docProps/core.xml"], ["rId1", officeRelationship + "officeDocument", "word/document.xml"]]
+  return `<Relationships xmlns="${relationshipNamespace}">${records.map(([id, type, target]) => `<Relationship Id="${id}" Type="${type}" Target="${target}"/>`).join("")}</Relationships>`
+}
+const rootFingerprint = (relationships: string) => documentFingerprint(zipSync({ "_rels/.rels": strToU8(relationships) }))
+
+test("package root relationship order and local IDs may rotate on native reopen without changing targets", async () => {
+  const original = rootRelationships(), reopened = rootRelationships(true)
+  const baseline = await rootFingerprint(original)
+  expect(await rootFingerprint(original)).toBe(baseline)
+  expect(await rootFingerprint(reopened)).toBe(baseline)
+  for (const changed of [
+    reopened.replace('Target="word/document.xml"', 'Target="word/other.xml"'),
+    reopened.replace('Target="NULL"', 'Target="word/webextensions/taskpanes.xml"'),
+    reopened.replace('Target="docProps/app.xml"', 'Target="docProps/app.xml" TargetMode="External"'),
+  ]) expect(await rootFingerprint(changed)).not.toBe(baseline)
+})
+
+test("root relationship comparison preserves unknown payloads, signature relationships and duplicate IDs", async () => {
+  for (const transform of [
+    (xml: string) => xml.replace("<Relationship ", '<Relationship xmlns:c="urn:synthetic" c:metadata="retained" '),
+    (xml: string) => xml.replace(taskpaneRelationship, "urn:synthetic:relationship"),
+    (xml: string) => xml.replace(taskpaneRelationship, "http://schemas.openxmlformats.org/package/2006/relationships/digital-signature/origin"),
+    (xml: string) => xml.replace(/Id="[^"]+"/g, 'Id="duplicate"'),
+    (xml: string) => xml.replace(relationshipNamespace, "urn:synthetic"),
+  ]) expect(await rootFingerprint(transform(rootRelationships()))).not.toBe(await rootFingerprint(transform(rootRelationships(true))))
+})
+
+test("native reopen may recount Lines and remove only the standard magnification leaf", async () => {
+  const extended = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+  const packageBytes = (lines: number, zoom: string, pages = 1) => zipSync({
+    "docProps/app.xml": strToU8(`<Properties xmlns="${extended}"><Lines>${lines}</Lines><Pages>${pages}</Pages></Properties>`),
+    "word/settings.xml": strToU8(`<w:settings xmlns:w="${word}">${zoom}<w:defaultTabStop w:val="720"/></w:settings>`),
+  })
+  const baseline = await documentFingerprint(packageBytes(2, '<w:zoom w:percent="125"/>'))
+  expect(await documentFingerprint(packageBytes(8, '<w:zoom w:percent="125"/>'))).toBe(baseline)
+  expect(await documentFingerprint(packageBytes(2, ""))).toBe(baseline)
+  expect(await documentFingerprint(packageBytes(8, '<w:zoom w:val="bestFit" w:percent="100"/>'))).toBe(baseline)
+  expect(await documentFingerprint(packageBytes(8, "", 2))).not.toBe(baseline)
+})
+
+test("Lines and magnification normalization leave unknown, nested, duplicate and malformed values significant", async () => {
+  const extended = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+  for (const leaf of [
+    (value: string) => `<Lines xmlns="urn:synthetic">${value}</Lines>`,
+    (value: string) => `<Lines xmlns:c="urn:synthetic" c:metadata="retained">${value}</Lines>`,
+    (value: string) => `<Other><Lines>${value}</Lines></Other>`,
+    (value: string) => `<Lines><Other>${value}</Other></Lines>`,
+    (value: string) => `<Lines>${value}</Lines><Lines>1</Lines>`,
+    (value: string) => `<Lines>custom-${value}</Lines>`,
+  ]) {
+    const bytes = (value: string) => zipSync({ "docProps/app.xml": strToU8(`<Properties xmlns="${extended}">${leaf(value)}</Properties>`) })
+    expect(await documentFingerprint(bytes("2"))).not.toBe(await documentFingerprint(bytes("8")))
+  }
+  for (const leaf of [
+    (value: string) => `<c:zoom xmlns:c="urn:synthetic" w:percent="${value}"/>`,
+    (value: string) => `<w:zoom xmlns:c="urn:synthetic" w:percent="${value}" c:metadata="retained"/>`,
+    (value: string) => `<w:other><w:zoom w:percent="${value}"/></w:other>`,
+    (value: string) => `<w:zoom w:percent="${value}"><w:other/></w:zoom>`,
+    (value: string) => `<w:zoom w:percent="${value}"/><w:zoom w:percent="100"/>`,
+    (value: string) => `<w:zoom w:percent="custom-${value}"/>`,
+  ]) {
+    const bytes = (value: string) => zipSync({ "word/settings.xml": strToU8(`<w:settings xmlns:w="${word}">${leaf(value)}</w:settings>`) })
+    expect(await documentFingerprint(bytes("125"))).not.toBe(await documentFingerprint(bytes("150")))
+  }
+})
+
+test("native reopen metadata churn cannot hide wording, formatting, numbering or tracked-revision changes", async () => {
+  const extended = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+  const body = `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>Notice: </w:t></w:r><w:del w:id="1" w:author="doc.haus"><w:r><w:delText>five</w:delText></w:r></w:del><w:ins w:id="2" w:author="doc.haus"><w:r><w:t>ten</w:t></w:r></w:ins><w:r><w:t xml:space="preserve"> working days.</w:t></w:r></w:p>`
+  const packageBytes = (reopened: boolean, content = body) => zipSync({
+    "_rels/.rels": strToU8(rootRelationships(reopened)),
+    "docProps/app.xml": strToU8(`<Properties xmlns="${extended}"><Lines>${reopened ? 8 : 2}</Lines><Pages>1</Pages></Properties>`),
+    "word/settings.xml": strToU8(`<w:settings xmlns:w="${word}">${reopened ? "" : '<w:zoom w:percent="125"/>'}<w:defaultTabStop w:val="720"/></w:settings>`),
+    "word/document.xml": strToU8(document(content)),
+  })
+  const bytes = packageBytes(false), original = bytes.slice(), baseline = await documentFingerprint(bytes)
+  expect(await documentFingerprint(packageBytes(true))).toBe(baseline)
+  for (const changed of [body.replace(">ten<", ">twenty<"), body.replace("<w:b/>", "<w:i/>"), body.replace('w:numId w:val="1"', 'w:numId w:val="2"'), body.replace('w:id="2"', 'w:id="3"'), body.replace('w:author="doc.haus"', 'w:author="Other reviewer"')])
+    expect(await documentFingerprint(packageBytes(true, changed))).not.toBe(baseline)
+  expect(bytes).toEqual(original)
+})
+
+const stylePart = (sessionId: string, reopened = false) => `<w:styles xmlns:w="${word}" xmlns:c="urn:synthetic"><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:rsid w:val="${sessionId}"/><w:pPr><w:spacing w:after="160"/></w:pPr><w:rPr><w:sz w:val="22"/></w:rPr></w:style><w:style w:type="character" w:default="1" w:styleId="DefaultParagraphFont"><w:name w:val="Default Paragraph Font"/><w:uiPriority w:val="1"/><w:semiHidden/><w:unhideWhenUsed/>${reopened ? "" : `<w:rsid w:val="${sessionId}"/>`}</w:style><w:style w:type="numbering" w:default="1" w:styleId="NoList"><w:name w:val="No List"/><w:uiPriority w:val="99"/><w:semiHidden/><w:unhideWhenUsed/>${reopened ? "" : `<w:rsid w:val="${sessionId}"/>`}</w:style></w:styles>`
+
+test("native reopen may omit style session IDs while real style and document changes remain significant", async () => {
+  const content = `<w:pPr><w:pStyle w:val="Normal"/><w:numPr><w:numId w:val="1"/></w:numPr></w:pPr><w:ins w:id="4" w:author="Synthetic reviewer">${run("Neutral text.")}</w:ins>`
+  const bytes = (styles: string, body = content) => zipSync({
+    "word/styles.xml": strToU8(styles), "word/document.xml": strToU8(document(body)),
+    "word/numbering.xml": strToU8(`<w:numbering xmlns:w="${word}"><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>`),
+  })
+  const saved = bytes(stylePart("00112233")), original = saved.slice(), baseline = await documentFingerprint(saved)
+  expect(await documentFingerprint(saved)).toBe(baseline)
+  // Word may keep some style IDs while omitting others after Save/close/reopen.
+  const reopened = stylePart("00112233", true)
+  expect(await documentFingerprint(bytes(reopened))).toBe(baseline)
+  expect(await documentFingerprint(bytes(stylePart("00445566", true)))).toBe(baseline)
+  for (const styles of [
+    reopened.replace('w:val="22"', 'w:val="24"'),
+    reopened.replace('w:after="160"', 'w:after="240"'),
+    reopened.replace('w:type="numbering"', 'w:type="paragraph"'),
+    reopened.replace('w:styleId="Normal"', 'w:styleId="Other"'),
+    reopened.replace('<w:rPr>', '<w:rPr><w:b/>'),
+    reopened.replace('<w:pPr>', '<w:pPr><w:numPr><w:numId w:val="2"/></w:numPr>'),
+    reopened.replace('<w:uiPriority w:val="99"/>', '<w:uiPriority w:val="99"/><c:metadata>retained</c:metadata>'),
+  ]) expect(await documentFingerprint(bytes(styles))).not.toBe(baseline)
+  for (const body of [
+    content.replace("Neutral", "Changed"), content.replace('w:numId w:val="1"', 'w:numId w:val="2"'),
+    content.replace('w:id="4"', 'w:id="5"'), content.replace("Synthetic reviewer", "Another reviewer"),
+  ]) expect(await documentFingerprint(bytes(reopened, body))).not.toBe(baseline)
+  expect(saved).toEqual(original)
+})
+
+test("style session ID normalization preserves malformed, nested, duplicate, foreign and extended leaves", async () => {
+  const hash = (part: string, styles: string) => documentFingerprint(zipSync({ [part]: strToU8(styles) }))
+  for (const transform of [
+    (xml: string) => xml.replaceAll('<w:rsid ', '<w:rsid c:metadata="retained" '),
+    (xml: string) => xml.replaceAll('<w:rsid ', '<c:rsid '),
+    (xml: string) => xml.replaceAll(/<w:rsid ([^>]+)\/>/g, '<w:rsid $1><c:data/></w:rsid>'),
+    (xml: string) => xml.replaceAll(/<w:rsid ([^>]+)\/>/g, '<w:rsid $1/><w:rsid w:val="77889900"/>'),
+    (xml: string) => xml.replaceAll(/<w:rsid ([^>]+)\/>/g, '<w:other><w:rsid $1/></w:other>'),
+    (xml: string) => xml.replaceAll('w:val="00', 'w:val="invalid-00'),
+    (xml: string) => xml.replaceAll('<w:styles ', '<w:other ' ).replaceAll('</w:styles>', '</w:other>'),
+    (xml: string) => xml.replaceAll('<w:style ', '<c:style ').replaceAll('</w:style>', '</c:style>'),
+  ]) expect(await hash("word/styles.xml", transform(stylePart("00112233")))).not.toBe(await hash("word/styles.xml", transform(stylePart("00445566"))))
+  for (const part of ["customXml/item1.xml", "word/custom.xml"])
+    expect(await hash(part, stylePart("00112233"))).not.toBe(await hash(part, stylePart("00445566")))
 })

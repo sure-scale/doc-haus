@@ -1,0 +1,19 @@
+.paragraph-insertion-proposal { width: 100%; min-width: 0; max-width: 100%; color: var(--text); overflow-wrap: anywhere; }
+.paragraph-insertion-proposal .paragraph-insertion-title { margin: 0 0 8px; font-size: 0.8125rem; font-weight: 550; line-height: 1.5; }
+.paragraph-insertion-unavailable { margin: 0 0 8px; color: var(--muted); font-size: 0.75rem; line-height: 1.5; overflow-wrap: anywhere; }
+.paragraph-insertion-proposal .paragraph-insertion-block { min-width: 0; max-width: 100%; margin: 7px 0; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+.paragraph-insertion-proposal .paragraph-insertion-block h4 { margin: 0 0 5px; color: var(--muted); font-size: 0.625rem; font-weight: 550; line-height: 1.5; text-transform: none; letter-spacing: normal; }
+.paragraph-insertion-proposal .paragraph-insertion-text { margin: 0; font-size: 0.75rem; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.paragraph-insertion-proposal .paragraph-insertion-new { border-color: var(--accent-border); background: var(--accent-soft); }
+.paragraph-insertion-proposal .paragraph-insertion-new h4 { color: var(--accent); }
+.paragraph-insertion-proposal .paragraph-insertion-note { width: fit-content; margin: 4px 0 0; padding: 1px 4px; border: 1px solid var(--border); border-radius: 3px; color: var(--muted); background: var(--panel); font-size: 0.625rem; font-style: italic; white-space: normal; }
+.paragraph-insertion-location { margin: 0 0 10px; font-size: 0.75rem; line-height: 1.6; }
+.paragraph-insertion-location summary { width: fit-content; max-width: 100%; padding: 4px 0; cursor: pointer; color: var(--muted); }
+.paragraph-insertion-location summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+.paragraph-insertion-location dl { margin: 4px 0 0; padding-left: 10px; border-left: 2px solid var(--border); }
+.paragraph-insertion-location dt { margin-top: 7px; font-size: 0.625rem; color: var(--muted); }
+.paragraph-insertion-location dd { margin: 0; min-width: 0; }
+.paragraph-insertion-location ol { margin: 0; padding: 0; list-style: none; }
+.paragraph-insertion-location li + li { margin-top: 3px; }
+.paragraph-insertion-source-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.paragraph-insertion-context-note { color: var(--muted); }

@@ -7,6 +7,7 @@ import {
   type Acknowledgement,
   type Checkpoints,
   type PaneState,
+  type Transport,
 } from "./sync"
 import type { WordConnectionState, WordSaveResponse } from "../../../dochaus/lib/word-addin-contract"
 
@@ -72,6 +73,59 @@ const checkpoints = (initial: Acknowledgement | null = null): Checkpoints => ({
 })
 const fingerprint = async (bytes: Uint8Array) => String(bytes[0])
 const immediate = async () => {}
+
+test("confirmed save persists its base for reopen and never silently adopts a newer server version", async () => {
+  let diskBase = "v1", uploads = 0, version = "v1"
+  const observed: string[] = []
+  const host: WordHost = {saved:async()=>true,save:immediate,export:async()=>new Uint8Array([1]),persistAcknowledgedBase:async (base,previous,hash)=>{expect(previous).toBe("v1");expect(hash).toBe("1");diskBase=base}}
+  const transport: Transport = {
+    lease:async (_action,base)=>{observed.push(base); return base === version ? connection(base) : {...connection(base),version:{base:{id:base,number:1},current:{id:version,number:2},state:"stale"}}},
+    heartbeat:async base=>connection(base),done:async base=>connection(base),save:async()=>{uploads++;version="v2";return acknowledgement(version,2)},
+  }
+  const sync = new CheckedWordSync("v1",host,transport,checkpoints(),()=>{},fingerprint,immediate)
+  expect(await sync.save()).toBe(true); expect(diskBase).toBe("v2"); expect(uploads).toBe(1)
+  const reopened = new CheckedWordSync(diskBase,host,transport,checkpoints(),()=>{},fingerprint,immediate)
+  await reopened.start(); expect(observed.at(-1)).toBe("v2"); expect(reopened.snapshot().connection?.version.state).toBe("current")
+  version="v3"
+  const stale = new CheckedWordSync(diskBase,host,transport,checkpoints(),()=>{},fingerprint,immediate)
+  await stale.start(); expect(stale.snapshot().connection?.version.state).toBe("stale"); expect(stale.snapshot().canSave).toBe(false); expect(uploads).toBe(1)
+})
+
+test("post-ack metadata failure retries without another upload and concurrent content stays unconfirmed", async () => {
+  for (const scenario of ["failure","edit"] as const) {
+    let bytes=1,uploads=0,persistCalls=0
+    const host:WordHost={saved:async()=>true,save:immediate,export:async()=>new Uint8Array([bytes]),persistAcknowledgedBase:async()=>{persistCalls++;if(scenario==="failure" && persistCalls===1)throw Error("metadata failed");if(scenario==="edit" && persistCalls===1)bytes=2}}
+    const sync=new WordSync("v1",host,{heartbeat:immediate,done:immediate,save:async()=>{uploads++;return acknowledgement(`v${uploads+1}`)}},checkpoints(),()=>{},fingerprint,immediate)
+    expect(await sync.save()).toBe(false); expect(sync.snapshot().status).not.toBe("saved"); expect(uploads).toBe(1)
+    if (scenario==="failure") {expect(await sync.save()).toBe(true);expect(uploads).toBe(1);expect(persistCalls).toBe(2)}
+    else {expect(sync.snapshot().content).toBe("changed");expect(await sync.save()).toBe(true);expect(uploads).toBe(2)}
+  }
+})
+
+test("a post-ack edit persists the pending base before saving the newer buffer", async () => {
+  for (const failedMetadata of [false,true]) {
+    let bytes=1, uploads=0, link="v1", persisted="v1", calls=0, clock=0
+    const writes: Array<{base:string;previous:string;fingerprint:string}> = []
+    const host:WordHost={saved:async()=>true,save:immediate,export:async()=>new Uint8Array([bytes]),persistAcknowledgedBase:async(base,previous,hash)=>{
+      calls++; writes.push({base,previous,fingerprint:hash})
+      if (![previous,base].includes(link)) throw Error("link base mismatch")
+      link=base
+      if (failedMetadata && calls===1) throw Error("settings or native save failed")
+      persisted=base
+    }}
+    const sync=new WordSync("v1",host,{heartbeat:immediate,done:immediate,save:async()=>{
+      uploads++; if (!failedMetadata && uploads===1) bytes=2
+      return acknowledgement(`v${uploads+1}`)
+    }},checkpoints(),()=>{},fingerprint,immediate,()=>clock)
+    expect(await sync.save()).toBe(false); expect(uploads).toBe(1); expect(sync.snapshot().status).not.toBe("saved")
+    if (failedMetadata) bytes=2
+    clock=31_000; await sync.tick(); expect(sync.snapshot().status).not.toBe("saved"); expect(uploads).toBe(1)
+    expect(await sync.save()).toBe(true); expect(uploads).toBe(2); expect(link).toBe("v3"); expect(persisted).toBe("v3")
+    expect(writes.at(-2)).toEqual({base:"v2",previous:"v1",fingerprint:"2"})
+    expect(writes.at(-1)).toEqual({base:"v3",previous:"v2",fingerprint:"2"})
+    expect(sync.snapshot().acknowledgement?.base).toBe("v3")
+  }
+})
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -196,14 +250,15 @@ describe("confirmed Word saves", () => {
     let saved = false
     let exports = 0
     let uploads = 0
+    let race = false
     const sync = new WordSync(
       "base",
       {
         saved: async () => saved,
-        save: immediate,
+        save: async () => { saved = true },
         export: async () => {
           exports++
-          saved = false
+          if (race) saved = false
           return new Uint8Array([1])
         },
       },
@@ -222,7 +277,8 @@ describe("confirmed Word saves", () => {
     )
     await sync.start()
     expect(exports).toBe(0)
-    saved = true
+    expect(await sync.save()).toBe(true)
+    exports = 0; uploads = 0; race = true
     await sync.refresh()
     expect(exports).toBe(1)
     expect(uploads).toBe(0)
@@ -256,6 +312,8 @@ describe("confirmed Word saves", () => {
     expect(bases).toEqual([])
     await sync.refresh()
     await sync.tick()
+    expect(bases).toEqual([])
+    expect(await sync.save()).toBe(true)
     expect(bases).toEqual(["base"])
     bytes = 2
     await sync.tick()
@@ -452,6 +510,8 @@ describe("confirmed Word saves", () => {
   test("Save and background capture do not confirm an old snapshot when Word saved newer edits during upload", async () => {
     for (const explicit of [true, false]) {
       let bytes = 1
+      let race = false
+      let uploads = 0
       const published: string[] = []
       const sync = new WordSync(
         "base",
@@ -464,8 +524,9 @@ describe("confirmed Word saves", () => {
           heartbeat: immediate,
           done: immediate,
           save: async () => {
-            bytes = 2
-            return acknowledgement("v1")
+            uploads++
+            if (race) bytes = 3
+            return acknowledgement(race ? "v2" : "v1")
           },
         },
         checkpoints(),
@@ -475,11 +536,17 @@ describe("confirmed Word saves", () => {
         fingerprint,
         immediate,
       )
+      expect(await sync.save()).toBe(true)
+      published.length = 0; bytes = 2; race = true
       if (explicit) expect(await sync.save()).toBe(false)
       else await sync.refresh()
-      expect(sync.snapshot().acknowledgement?.fingerprint).toBe("1")
+      expect(sync.snapshot().acknowledgement?.fingerprint).toBe("2")
       expect(sync.snapshot().status).toBe("not-saved")
-      expect(published).not.toContain("saved")
+      expect(published.slice(published.indexOf("saving"))).not.toContain("saved")
+      if (explicit) {
+        await sync.tick()
+        expect(uploads).toBe(2)
+      }
     }
   })
 
@@ -820,4 +887,94 @@ test("a real background upload still shows Saving and remains busy until confirm
     expect(await polling).toBe(true)
     expect(sync.snapshot()).toMatchObject({ busy: false, status: "saved", content: "confirmed", acknowledgement: { base: "v2" } })
   } finally { uploaded.resolve(acknowledgement("v2")); await polling }
+})
+
+
+test("rehydrated reviewed edits require explicit Save across lease ownership states", async () => {
+  for (const outcome of ["success", "uncertain"] as const) for (const next of ["owned", "available", "other"] as const) {
+    let owner: "owned" | "available" | "other" = "owned", bytes = 1, version = "base", uploads = 0, nativeSaves = 0
+    let operation: { sequence: number; operationId: string | null; state: "idle" | "pending" | "confirmed" | "not-dispatched" } = { sequence: 0, operationId: null, state: "idle" }
+    const current = (): WordConnectionState => ({ nativeOperation: { sequence: operation.sequence, state: operation.state }, version: { base: {id: version, number: 1}, current: {id: version, number: 1}, state: "current" }, lease: owner === "available" && operation.state !== "pending" ? { state: "available", expiresAt: null } : { state: owner === "owned" ? "owned" : "other", generation: "g1", expiresAt: 90000 } })
+    const host = { saved: async () => true, save: async () => { nativeSaves++ }, export: async () => new Uint8Array([bytes]) }
+    const transport = {
+      lease: async (action: string) => { if ((action === "claim" || action === "takeover") && operation.state !== "pending") owner = "owned"; return current() },
+      nativeOperation: async (_base: string, _generation: string, input: { action: "read" } | { action: "begin"; sequence: number; operationId: string } | { action: "settle"; sequence: number; operationId: string; outcome: "confirmed" | "not-dispatched" }) => {
+        if (input.action === "begin") operation = { sequence: input.sequence + 1, operationId: input.operationId, state: "pending" }
+        if (input.action === "settle") operation = { sequence: input.sequence, operationId: input.operationId, state: input.outcome }
+        return { operation, connection: current() }
+      },
+      heartbeat: async () => current(), done: async () => current(),
+      save: async () => { uploads++; version = `v${uploads}`; return { ...acknowledgement(version), connection: current() } },
+    }
+    const make = () => new CheckedWordSync("base", host, transport, checkpoints(), () => {}, fingerprint, immediate)
+    const first = make()
+    await first.start()
+    const edit = first.localEdit({ conversationId: "conversation", turnId: "turn" }, async () => { bytes = 2; if (outcome === "uncertain") throw new Error("lost response") })
+    if (outcome === "uncertain") await expect(edit).rejects.toThrow("lost response")
+    else await edit
+    await first.tick()
+    expect(uploads).toBe(0)
+    owner = next
+    const reopened = make()
+    await reopened.checkStatus()
+    if (outcome === "success" && next === "available") expect(await reopened.startEditing()).toBe(true)
+    if (outcome === "success" && next === "other") expect(await reopened.takeover()).toBe(true)
+    await reopened.tick()
+    expect(uploads).toBe(0)
+    expect(nativeSaves).toBe(0)
+    if (outcome === "uncertain") {
+      expect(reopened.snapshot()).toMatchObject({status: "not-saved", canSave: false})
+      expect(await reopened.save()).toBe(false)
+      expect(uploads).toBe(0); expect(nativeSaves).toBe(0)
+      continue
+    }
+    expect(reopened.snapshot()).toMatchObject({status: "not-saved", canSave: true})
+    expect(await reopened.save()).toBe(true)
+    expect(uploads).toBe(1)
+    expect(nativeSaves).toBe(1)
+    bytes = 3
+    await reopened.tick()
+    expect(uploads).toBe(2)
+  }
+})
+
+test("a new pane stays neutral and never publishes an unverified saved buffer", async () => {
+  let uploads = 0
+  const sync = new WordSync("base", {saved: async () => true, save: immediate, export: async () => new Uint8Array([1])},
+    {heartbeat: immediate, done: immediate, save: async () => { uploads++; return acknowledgement("v1") }}, checkpoints(), () => {}, fingerprint, immediate)
+  await sync.start()
+  await sync.tick()
+  expect(uploads).toBe(0)
+  expect(sync.snapshot()).toMatchObject({status: "not-saved", content: "unverified", canSave: true, message: "Ready to save. Choose Save to send this document."})
+})
+
+test("a failed native Save after retrying pending bytes cannot publish newer content in the background", async () => {
+  let bytes = 1, uploads = 0, nativeSaves = 0, rejectUpload = false, failNative = false, clock = 0
+  const sync = new WordSync("base", {
+    saved: async () => true,
+    save: async () => { nativeSaves++; if (failNative) throw new Error("native save failed") },
+    export: async () => new Uint8Array([bytes]),
+  }, {
+    heartbeat: immediate, done: immediate,
+    save: async () => {
+      uploads++
+      if (rejectUpload) throw new ConnectionError("offline")
+      return acknowledgement(`v${uploads}`)
+    },
+  }, checkpoints(), () => {}, fingerprint, immediate, () => clock)
+  expect(await sync.save()).toBe(true)
+  bytes = 2; rejectUpload = true
+  expect(await sync.save()).toBe(false)
+  rejectUpload = false; failNative = true
+  expect(await sync.save()).toBe(false)
+  const afterPendingAcknowledged = uploads
+  expect(sync.snapshot().acknowledgement?.fingerprint).toBe("2")
+  bytes = 3; clock += 60_000
+  await sync.tick()
+  expect(uploads).toBe(afterPendingAcknowledged)
+  expect(sync.snapshot().status).toBe("not-saved")
+  failNative = false
+  expect(await sync.save()).toBe(true)
+  expect(uploads).toBe(afterPendingAcknowledged + 1)
+  expect(nativeSaves).toBe(4)
 })

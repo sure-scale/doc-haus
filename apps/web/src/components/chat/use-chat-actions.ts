@@ -22,15 +22,6 @@ import {
 import type { ChatState } from "./use-chat-state"
 import type { TurnSettlement } from "./use-turn-settlement"
 
-// A session title from the first message: trimmed to a word boundary with an
-// ellipsis, so the rail reads cleanly instead of cutting mid-word.
-function titleFrom(text: string) {
-  if (text.length <= 60) return text
-  const cut = text.slice(0, 60)
-  const space = cut.lastIndexOf(" ")
-  return (space > 30 ? cut.slice(0, space) : cut).trimEnd() + "…"
-}
-
 // An explicit Quick draft pick is still checked against quick-draft scope, by
 // the same router judgment Auto uses, with drafting as the only route.
 const DRAFT_ONLY: AssistantMeta[] = CHAT_ASSISTANTS.filter((a) => a.name === "draft")
@@ -259,7 +250,7 @@ export function useChatActions({
   // form belongs to a session; the request stays as the pending turn.
   async function offerQuickDraft(text: string, turn: { stopped: boolean }) {
     if (!sessionRef.current) {
-      sessionRef.current = (await createSession(client, titleFrom(text))).id
+      sessionRef.current = (await createSession(client)).id
       freshRef.current = true
       onSessionPersisted?.(sessionRef.current)
       onSessionStarted?.()
@@ -418,7 +409,7 @@ export function useChatActions({
       } else ack(resolved.name === "draft" ? "draft" : "answer")
       // Other chats create their ordinary conversation lazily.
       if (!sessionRef.current) {
-        sessionRef.current = (await createSession(client, titleFrom(text))).id
+        sessionRef.current = (await createSession(client)).id
         freshRef.current = true
         onSessionPersisted?.(sessionRef.current)
         onSessionStarted?.()

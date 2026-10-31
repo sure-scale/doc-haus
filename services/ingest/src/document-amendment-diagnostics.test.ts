@@ -52,7 +52,8 @@ test("failed preparation retains bounded private phase evidence without publishi
     expect(receipt.captures.second_prompt.value).toBe(requests[1].prompt)
     expect(receipt.captures.first_text.value).toBe(outputs[0])
     expect(receipt.captures.second_text.value).toBe(outputs[1])
-    expect(receipt.captures.frozen_legal_proposals.value).toEqual(JSON.parse(outputs[0]))
+    // The frozen proposals are recorded as parsed: the wording pass returned no structural proposals.
+    expect(receipt.captures.frozen_legal_proposals.value).toEqual({...JSON.parse(outputs[0]),table_rows:[],table_row_deletions:[],paragraph_formats:[],paragraph_insertions:[]})
     expect((receipt.captures.candidates.value as unknown[]).length).toBe(1)
     expect(receipt.captures.selections.value).toEqual(JSON.parse(outputs[1]).selections)
     expect(receipt.timings.some((row) => row.phase === "legal_generation")).toBe(true)

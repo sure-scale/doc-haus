@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
+import { createDocxRevision } from "../../../dochaus/lib/docx-amendments"
 import { withParagraphPointers } from "../../../dochaus/lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../../dochaus/lib/render"
 import * as deliverables from "../../../dochaus/workflows/lean/deliverables"
@@ -67,6 +68,11 @@ function savedCombined(directory: string) {
 
 function documentText(bytes: Uint8Array) {
   return strFromU8(unzipSync(bytes)["word/document.xml"]!)
+}
+
+/** Each paragraph's text as a reader sees it, however an edit split its runs. */
+async function paragraphTexts(bytes: Uint8Array) {
+  return (await createDocxRevision(bytes)).paragraphs.map(paragraph => paragraph.text)
 }
 
 /** Rewrites a registered part's document XML on disk, as an edit outside
@@ -622,7 +628,7 @@ describe("combined file rebuild: lock, contention and ownership", () => {
       const lawyer = await request(`${matter.route}/redlines/${propose(matter.dir, SAVED, "Memo marker", "Lawyer marker")}/accept`, { method: "POST" })
       expect({ status: lawyer.status, body: await lawyer.json() }).toEqual({ status: 200, body: { ok: true } })
       const accepted = readFileSync(saved)
-      expect(documentText(accepted)).toContain("Lawyer marker")
+      expect(await paragraphTexts(accepted)).toContain("Lawyer marker: the start date needs confirmation.")
       const part = await request(`${matter.route}/redlines/${propose(matter.dir, BODY_NAME)}/accept`, { method: "POST" })
       expect(await part.json()).toMatchObject({ ok: true, combined_updated: false, combined_skip_reason: "combined_changed" })
       expect(readFileSync(saved)).toEqual(accepted)
@@ -654,7 +660,7 @@ describe("combined file rebuild: lock, contention and ownership", () => {
       const accepted = await request(`${matter.route}/redlines/${propose(matter.dir, NOTES_NAME, "Memo marker", "Memo note")}/accept`, { method: "POST" })
       expect(await accepted.json()).toMatchObject({ ok: true, combined_updated: true })
       const saved = new Uint8Array(readFileSync(path.join(matter.dir, SAVED)))
-      expect(documentText(saved)).toContain("Memo note")
+      expect(await paragraphTexts(saved)).toContain("Memo note: the start date needs confirmation.")
       expect(withParagraphPointers(saved)).toEqual(saved)
       expect(readSystemDocx(matter.dir, SAVED)).toEqual({ version: 1, sha256: sha256(saved) })
     })

@@ -3,7 +3,7 @@ import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { z } from "zod"
 import { REVISION_ELEMENTS } from "./docx-comments"
-import { paragraphFields, refInstruction, runText, unlink } from "./docx-fields"
+import { paragraphFields, refInstruction, runText } from "./docx-fields"
 import { docxodus } from "./docxodus"
 import { shownText } from "./list-label"
 import { normalizeUntrustedText } from "./untrusted-text"
@@ -27,6 +27,18 @@ export type DocxParagraphEdit = z.infer<typeof paragraphEditSchema>
 type Session = ReturnType<Awaited<ReturnType<typeof docxodus>>["openDocxSession"]>
 type Match = ReturnType<Session["grep"]>[number]
 type Opened = Awaited<ReturnType<typeof openRevision>>
+export type DocxTableContext = {
+  table: number
+  row: number | null
+  column: number | null
+  /** Legacy context in physical cell order, not logical column indices. */
+  row_context: string[]
+  row_span?: number
+  column_span?: number
+  vertical_merge?: "none" | "restart" | "continue"
+  row_cells?: { column: number; column_span: number; row_span: number; vertical_merge: "none" | "restart" | "continue"; text: string }[]
+  unavailable_reason?: "pending_table_structure" | "unsupported_table_geometry"
+}
 type Binding = { handle: string; amendment: DocxAmendment; match: Match; ordinal: number }
 type Limits = { maxCandidates?: number; maxContextCharacters?: number }
 export type DocxLocalizationLimits = Limits
@@ -105,6 +117,78 @@ export async function applyDocxParagraphEdits(bytes: Uint8Array, edits: DocxPara
   } finally { opened.session.close() }
 }
 
+export class LegacyPhraseRefusal extends Error {
+  constructor(readonly kind: "missing" | "pending", message: string) { super(message) }
+}
+/** Replay every exact legacy phrase occurrence through the preservation writer. */
+export async function applyLegacyPhrase(bytes: Uint8Array, find: string, replacement: string, options: DocxRevisionOptions = {}, verb: "proposed" | "applied" = "applied") {
+  if (!find || /[\r\n\t]/.test(find + replacement)) throw new Error("unsupported_legacy_phrase")
+  const opened = await openRevision(new Uint8Array(bytes), options)
+  let edits: DocxParagraphEdit[]
+  try {
+    const targets = opened.session.findAllByText(find)
+    if (!targets.length) throw new LegacyPhraseRefusal("missing", "Text no longer found")
+    const refusal = pendingRevisionRefusal(opened.session, pendingRevisionAnchors(opened.session), targets.map(target => target.id), find, verb, options.ownAuthors ?? [])
+    if (refusal) throw new LegacyPhraseRefusal("pending", refusal)
+    const anchors = new Set(targets.map(target => target.id))
+    const mapped = new Set<string>()
+    const spans: string[] = []
+    edits = []
+    for (const [ordinal, paragraph] of opened.paragraphs.entries()) {
+      let at = 0, occurrence = 0
+      while ((at = paragraph.match.text.indexOf(find, at)) >= 0) {
+        mapped.add(paragraph.match.enclosingAnchor.id)
+        spans.push(JSON.stringify([paragraph.match.enclosingAnchor.id, paragraph.match.span.start + at, find]))
+        edits.push({ id: `legacy-${edits.length}`, paragraph_handle: opened.revision.paragraphs[ordinal]!.paragraph_handle,
+          occurrence: occurrence++, before_quote: find, replacement })
+        at += find.length
+      }
+    }
+    const matches = opened.session.grep(literal(find), { scope: 63, whitespace: 0 })
+      .map(match => JSON.stringify([match.enclosingAnchor.id, match.span.start, match.text])).sort()
+    if (!edits.length || anchors.size !== mapped.size || [...anchors].some(anchor => !mapped.has(anchor)) ||
+      JSON.stringify(matches) !== JSON.stringify(spans.sort())) throw new Error("unsupported_legacy_phrase_target")
+  } finally { opened.session.close() }
+  return applyDocxParagraphEdits(bytes, edits, undefined, options)
+}
+
+/** Resolve the legacy first SDK clause target and prove the guarded write has
+ * the same visible text and character formatting as SDK Markdown replacement. */
+export async function applyLegacyClause(bytes: Uint8Array, find: string, replacement: string, options: DocxRevisionOptions = {}, verb: "proposed" | "applied" = "applied") {
+  if (!find || !replacement || /[\r\n\t]/.test(replacement)) throw new Error("unsupported_legacy_clause")
+  const source = new Uint8Array(bytes), opened = await openRevision(source, options)
+  let paragraphHandle: string, before: string, target: string
+  try {
+    const selected = opened.session.findByText(find, { ignoreWhitespace: true })
+    if (!selected) throw new LegacyPhraseRefusal("missing", "Clause no longer found")
+    const matches = opened.paragraphs.flatMap((paragraph, ordinal) => paragraph.match.enclosingAnchor.id === selected.id ? [ordinal] : [])
+    if (matches.length !== 1) throw new Error("unsupported_legacy_clause_target")
+    const ordinal = matches[0]!, paragraph = opened.paragraphs[ordinal]!
+    if (paragraph.part !== "word/document.xml") throw new Error("unsupported_legacy_clause_target")
+    const refusal = pendingRevisionRefusal(opened.session, pendingRevisionAnchors(opened.session), [selected.id], find, verb, options.ownAuthors ?? [], true)
+    if (refusal) throw new LegacyPhraseRefusal("pending", refusal)
+    before = paragraph.match.text
+    if (!before) throw new Error("unsupported_legacy_clause_target")
+    paragraphHandle = opened.revision.paragraphs[ordinal]!.paragraph_handle
+    target = targetHandle(opened.revision.source_sha256, ordinal, paragraph.match)
+  } finally { opened.session.close() }
+  const edit = { id: "legacy-clause", paragraph_handle: paragraphHandle, occurrence: 0, before_quote: before, replacement }
+  const plainOptions = { ...options, revisionAuthor: undefined, amendmentAuthors: undefined }
+  const guarded = await applyDocxParagraphEdits(source, [edit], undefined, plainOptions)
+  const dx = await docxodus(), probe = dx.openDocxSession(source, { persistAnchorIds: false })
+  let sdk: Uint8Array
+  try {
+    const selected = probe.findByText(find, { ignoreWhitespace: true })
+    if (!selected || !probe.replaceText(selected.id, replacement).success) throw new Error("unsupported_legacy_clause_target")
+    sdk = probe.save()
+  } finally { probe.close() }
+  const [expected, actual] = await Promise.all([createDocxRevision(sdk, plainOptions), createDocxRevision(guarded.bytes, plainOptions)])
+  const display = (revision: DocxRevisionPacket) => revision.paragraphs.map(row => ({ text: row.text, formatting: row.formatting.flatMap(fragment => Array.from(fragment.text).map(text => [text, fragment.formatting])) }))
+  if (JSON.stringify(display(expected)) !== JSON.stringify(display(actual))) throw new Error("unsupported_legacy_clause_markup")
+  const result = options.revisionAuthor ? await applyDocxParagraphEdits(source, [edit], undefined, options) : guarded
+  return { ...result, before, target_handle: target, source_sha256: digest(source) }
+}
+
 function selectedBindings(opened: Opened, packet: DocxLocalizationPacket, selected: DocxLocalizationSelection[]) {
   const rebuilt = localize(opened, packet.amendments, packet.limits)
   if (JSON.stringify(rebuilt.packet) !== JSON.stringify(packet)) throw new Error("docx_packet_binding_changed")
@@ -157,14 +241,37 @@ function paragraphSpan(paragraph: Match, start: number, length: number): Match {
     contextBefore: paragraph.text.slice(Math.max(0, start - 160), start), contextAfter: paragraph.text.slice(end, end + 160) }
 }
 
-function admitted(opened: Opened, binding: Binding) {
+const ASSOCIATIONS = ["footnoteReference", "endnoteReference", "hyperlink", "fldSimple", "fldChar", "instrText"]
+// Only wrappers whose text and revision ownership are understood are admitted.
+// In particular MC alternatives and custom XML can change the projection.
+function assertAssociationAncestry(paragraph: Element, id?: string) {
+  const supported = new Set(["r", "hyperlink", "fldSimple", "ins", "del", "moveFrom", "moveTo", "sdt", "sdtContent"])
+  for (const element of elements(paragraph, "*").filter(node => ASSOCIATIONS.includes(node.localName))) {
+    for (let node = element.parentNode; node && node !== paragraph; node = node.parentNode) {
+      if (node.nodeType !== 1 || (node as Element).namespaceURI !== W || !supported.has((node as Element).localName))
+        throw new Error(`docx_protected_association${id ? `:${id}` : ""}`)
+    }
+  }
+}
+
+class DocxStructuralAmendmentRefusal extends Error {
+  constructor(readonly kind: "unsupported_structural_replacement" | "unsupported_empty_paragraph_replacement", readonly amendmentId: string) {
+    super(`${kind}:${amendmentId}`)
+  }
+}
+
+function admittedFields(opened: Opened, binding: Binding) {
   const { amendment, match, ordinal } = binding
+  assertAssociationAncestry(opened.paragraphs[ordinal]!.node, amendment.id)
   // The touch rule (see pendingRevisionParagraphs); only a layer-mode reader marks paragraphs.
+  // A paragraph inside a block content control is governed by its enclosing
+  // control, outside the paragraph XML we can safely verify here.
+  if (closest(opened.paragraphs[ordinal]!.node, "sdt")) throw new Error(`docx_protected_inline_content:${amendment.id}`)
   const pending = opened.paragraphs[ordinal]!.pending
   if (othersPending(pending, opened.options.ownAuthors).length) throw new Error(`docx_pending_revision:${amendment.id}`)
-  if (/[\r\n\t]/.test(amendment.replacement)) throw new Error("unsupported_structural_replacement")
+  if (/[\r\n\t]/.test(amendment.replacement)) throw new DocxStructuralAmendmentRefusal("unsupported_structural_replacement", amendment.id)
   if (!amendment.replacement && match.text === opened.paragraphs[ordinal].match.text)
-    throw new Error("unsupported_empty_paragraph_replacement")
+    throw new DocxStructuralAmendmentRefusal("unsupported_empty_paragraph_replacement", amendment.id)
   const whole = opened.paragraphs[ordinal]!.match
   // The paragraph's tabs and breaks, by offset in the quote.
   const breaks = breakOffsets(opened.paragraphs[ordinal]!.node).map(at => at - (match.span.start - whole.span.start))
@@ -178,21 +285,135 @@ function admitted(opened: Opened, binding: Binding) {
       : at > 0 && insideRevision(opened.session, paragraphSpan(whole, at - 1, 1)) && insideRevision(opened.session, paragraphSpan(whole, at, 1))
   }))
     throw new Error(`docx_own_revision:${amendment.id}`)
+  if (spanningFieldParagraphs(opened.documents[opened.paragraphs[ordinal]!.part]!).has(opened.paragraphs[ordinal]!.node))
+    throw new Error(`docx_field_replacement:${amendment.id}`)
   const xml = parse(opened.session.raw.getXml(match.enclosingAnchor.id))
-  if (!elements(xml, "fldChar").length && !elements(xml, "instrText").length) return { ...binding, changes, breaks, unlinks: [] as number[] }
-  // A live cross-reference (a REF field) is the only field an edit may stand
-  // beside. One the edit's changed text touches becomes the text it shows.
+  if (!elements(xml, "fldChar").length && !elements(xml, "instrText").length && !elements(xml, "fldSimple").length) return { ...binding, changes, breaks }
+  // Simple field offsets are mapped only when the projected and XML text agree.
+  const simple = elements(opened.paragraphs[ordinal]!.node, "fldSimple")
+  if (simple.length) {
+    const paragraph = opened.paragraphs[ordinal]!
+    if (runText(paragraph.node) !== paragraph.match.text) throw new Error(`docx_field_replacement:${amendment.id}`)
+    let offset = 0
+    const spans = new Map<Element, { from: number; to: number }>()
+    for (const text of elements(paragraph.node, "t")) {
+      const length = (text.textContent ?? "").length
+      for (let node = text.parentNode; node && node !== paragraph.node; node = node.parentNode) {
+        if (node.nodeType !== 1 || (node as Element).localName !== "fldSimple") continue
+        const field = node as Element, span = spans.get(field)
+        spans.set(field, { from: span?.from ?? offset, to: offset + length })
+      }
+      offset += length
+    }
+    if (simple.some(field => !spans.has(field))) throw new Error(`docx_field_replacement:${amendment.id}`)
+    if ([...spans.values()].some(field => changes.some(change => {
+      const start = change.match.span.start - paragraph.match.span.start
+      return change.match.text.length ? start < field.to && field.from < start + change.match.text.length
+        : field.from <= start && start <= field.to
+    }))) throw new Error(`docx_field_replacement:${amendment.id}`)
+    if (!elements(xml, "fldChar").length && !elements(xml, "instrText").length) return { ...binding, changes, breaks }
+  }
+  // Only a verified REF can safely stand beside an edit; its result remains live.
   const paragraph = opened.paragraphs[ordinal]!
   const fields = paragraphFields(paragraph.node)
   const owned = new Set(fields.flatMap(field => field.controls))
   if (runText(paragraph.node) !== paragraph.match.text || fields.some(field => !refInstruction(field))
     || [...elements(paragraph.node, "fldChar"), ...elements(paragraph.node, "instrText")].some(node => !owned.has(node)))
-    throw new Error("unsupported_field_replacement")
+    throw new Error(`docx_field_replacement:${amendment.id}`)
   const touches = (field: (typeof fields)[number]) => changes.some(change => {
     const start = change.match.span.start - paragraph.match.span.start
-    return start < field.to && field.from < start + change.match.text.length
+    return change.match.text.length ? start < field.to && field.from < start + change.match.text.length
+      : field.from <= start && start <= field.to
   })
-  return { ...binding, changes, breaks, unlinks: fields.flatMap((field, index) => touches(field) ? [index] : []) }
+  if (fields.some(touches)) throw new Error(`docx_field_replacement:${amendment.id}`)
+  return { ...binding, changes, breaks }
+}
+
+// Complex fields can span paragraphs (including table cells). Each document
+// part and each footnote, endnote, comment or text box is a separate story.
+// A cross-paragraph field holds every paragraph it occupies. Invalid or
+// unclosed markers make the whole story unsafe, including unmapped markers.
+function spanningFieldParagraphs(document: Document) {
+  const unsafe = new Set<Element>()
+  const storyNames = new Set(["footnote", "endnote", "comment", "txbxContent"])
+  const story = (node: Element) => {
+    for (let at: Node | null = node.parentNode; at && at.nodeType === 1; at = at.parentNode)
+      if ((at as Element).namespaceURI === W && storyNames.has((at as Element).localName)) return at as Element
+    return document.documentElement!
+  }
+  const groups = Map.groupBy(elements(document, "p"), story)
+  for (const [root, paragraphs] of groups) {
+    const paragraphSet = new Set(paragraphs)
+    let stack: { separate: boolean }[] = []
+    let invalid = false
+    for (const paragraph of paragraphs) {
+      const entering = stack.length > 0
+      for (const control of elements(paragraph, "*").filter(node => ["fldChar", "instrText"].includes(node.localName))) {
+        // Nested story or paragraph controls belong to their own paragraph.
+        if (story(control) !== root || closest(control, "p") !== paragraph) continue
+        if (control.localName === "instrText") {
+          if (!stack.length || stack.at(-1)!.separate) invalid = true
+          continue
+        }
+        const type = control.getAttributeNS(W, "fldCharType")
+        if (type === "begin") stack.push({ separate: false })
+        else if (type === "separate" && stack.length && !stack.at(-1)!.separate) stack.at(-1)!.separate = true
+        else if (type === "end" && stack.length) stack.pop()
+        else invalid = true
+      }
+      if (entering || stack.length) unsafe.add(paragraph)
+    }
+    if (stack.length) invalid = true
+    // A marker outside a mapped paragraph cannot be safely paired.
+    if ([...elements(root, "fldChar"), ...elements(root, "instrText")].some(control => story(control) === root && !paragraphSet.has(closest(control, "p")!))) invalid = true
+    if (invalid) paragraphs.forEach(paragraph => unsafe.add(paragraph))
+  }
+  return unsafe
+}
+
+// A changed span cannot safely assign one inherited run style to several
+// different formatting regions or semantic containers. Compare the actual
+// changed words, not the surrounding quote; deletions introduce no formatting.
+function admitted(opened: Opened, binding: Binding) {
+  const result = admittedFields(opened, binding)
+  const paragraph = opened.paragraphs[binding.ordinal]!.match
+  for (const change of result.changes) assertDocxReplacementFormatting(opened.session, paragraph,
+    change.match.span.start - paragraph.span.start, change.match.text.length, change.replacement, binding.amendment.id)
+  return result
+}
+
+/** Guard each actual replacement hunk, including callers outside redline. */
+export function assertDocxReplacementFormatting(session: Session, paragraph: Match, start: number, length: number, replacement: string, id: string) {
+  // Insertions do not overwrite any existing styled text. The writer has
+  // explicit preceding/joins-after inheritance and separate structural guards.
+  if (!replacement || !length) return
+  const xml = parse(session.raw.getXml(paragraph.enclosingAnchor.id))
+  const runs = new Map(elements(xml, "r").map(run => [run.getAttributeNS(PT, "Unid"), run]))
+  const identities = new Map<Node, number>()
+  const spans = session.listInlineSpans(paragraph.enclosingAnchor.id).map(span => {
+    const run = runs.get(span.runUnid)
+    if (!run) return { ...span.span, text: span.text, key: undefined }
+    const ancestors: number[] = []
+    for (let node = run.parentNode; node && node.nodeType === 1 && (node as Element).localName !== "p"; node = node.parentNode) {
+      if (!identities.has(node)) identities.set(node, identities.size + 1)
+      ancestors.push(identities.get(node)!)
+    }
+    return { ...span.span, text: span.text, key: JSON.stringify([canonical(children(run, "rPr")[0]), span.direct, span.effective, ancestors]) }
+  })
+  const end = start + length
+  const touched = length ? spans.filter(span => span.start < end && start < span.start + span.length)
+    : spans.filter(span => span.start <= start && start <= span.start + span.length && (span.start < start || span.start + span.length > start))
+  const fail = () => { throw new Error(`docx_mixed_format_replacement:${id}`) }
+  if (!touched.length || touched.some(span => span.key === undefined) || new Set(touched.map(span => span.key)).size !== 1) fail()
+  if (length) {
+    let at = start
+    for (const span of touched) {
+      const from = Math.max(start, span.start), to = Math.min(end, span.start + span.length)
+      if (from !== at || span.text.slice(from - span.start, to - span.start) !== paragraph.text.slice(from, to)) fail()
+      at = to
+    }
+    if (at !== end) fail()
+  }
 }
 
 // Whether a run of the changed span lies inside a tracked insertion, deletion or move.
@@ -208,14 +429,26 @@ function insideRevision(session: Session, match: Match) {
 /** Each selected amendment the writer would refuse for landing inside
  * doc.haus's own pending change (ownAuthors), by amendment id; nothing is
  * written. Prepare reports these as open items before qualifying the batch. */
-export async function ownRevisionRefusals(bytes: Uint8Array, packet: DocxLocalizationPacket, selections: unknown, options: DocxRevisionOptions) {
+export async function admissionRefusals(bytes: Uint8Array, packet: DocxLocalizationPacket, selections: unknown, options: DocxRevisionOptions) {
   const opened = await openRevision(new Uint8Array(bytes), options)
   try {
-    return new Set(selectedBindings(opened, packet, selectionSchema.parse(selections)).flatMap(binding => {
+    return new Map(selectedBindings(opened, packet, selectionSchema.parse(selections)).flatMap(binding => {
       try { admitted(opened, binding); return [] }
-      catch (error) { return error instanceof Error && error.message === `docx_own_revision:${binding.amendment.id}` ? [binding.amendment.id] : [] }
+      catch (error) {
+        if (error instanceof DocxStructuralAmendmentRefusal && error.amendmentId === binding.amendment.id)
+          return [[binding.amendment.id, error.kind] as const]
+        if (error instanceof Error && ["docx_own_revision", "docx_field_replacement", "docx_mixed_format_replacement", "docx_protected_association"].some(code => error.message === `${code}:${binding.amendment.id}`))
+          return [[binding.amendment.id, error.message.split(":")[0]!] as const]
+        throw error
+      }
     }))
   } finally { opened.session.close() }
+}
+
+/** Compatibility for callers interested only in earlier own revisions. */
+export async function ownRevisionRefusals(bytes: Uint8Array, packet: DocxLocalizationPacket, selections: unknown, options: DocxRevisionOptions) {
+  const refusals = await admissionRefusals(bytes, packet, selections, options)
+  return new Set([...refusals].filter(([, reason]) => reason === "docx_own_revision").map(([id]) => id))
 }
 
 /** Words quoted to the lawyer, as they read them. */
@@ -244,8 +477,7 @@ export function ownRevisionReason(text: string, verb: "proposed" | "applied" | "
 // text, so in a run holding text, then a tab or break, then more text, any edit
 // moves the tab or break to the run's start, and an insertion fails
 // (offset_out_of_range). In each edited paragraph such a run becomes one run per
-// piece, each with the run's properties, and the REF fields the edits touch
-// are unwrapped to their text.
+// piece, each with the run's properties.
 function editableSource(opened: Opened, edits: ReturnType<typeof admitted>[]) {
   const documents = new Map<string, Document>()
   let changed = false
@@ -254,9 +486,6 @@ function editableSource(opened: Opened, edits: ReturnType<typeof admitted>[]) {
     const doc = documents.get(part) ?? parse(strFromU8(opened.parts[part]!))
     documents.set(part, doc)
     const paragraph = elements(doc, "p")[elements(opened.documents[part]!, "p").indexOf(node)]!
-    const fields = paragraphFields(paragraph)
-    for (const index of new Set(rows.flatMap(row => row.unlinks))) unlink(fields[index]!)
-    changed ||= rows.some(row => row.unlinks.length)
     for (const run of elements(paragraph, "r")) {
       if (closest(run, "p") !== paragraph) continue
       const pieces = Array.from(run.childNodes).filter((child): child is Element => child.nodeType === 1)
@@ -281,20 +510,6 @@ function editableSource(opened: Opened, edits: ReturnType<typeof admitted>[]) {
 function closest(node: Node, name: string) {
   for (let at = node.parentNode; at && at.nodeType === 1; at = at.parentNode)
     if ((at as Element).namespaceURI === W && (at as Element).localName === name) return at as Element
-}
-
-// The report's line for the live cross-references editableSource made text:
-// how many, and the paragraphs they are in, by list number or opening words.
-function unlinkedFields(opened: Opened, edits: ReturnType<typeof admitted>[]) {
-  const counts = [...Map.groupBy(edits, edit => edit.ordinal)].map(([ordinal, rows]) => [ordinal, new Set(rows.flatMap(row => row.unlinks)).size] as const)
-    .filter(([, count]) => count)
-  if (!counts.length) return []
-  const total = counts.reduce((sum, [, count]) => sum + count, 0)
-  const where = counts.map(([ordinal]) => {
-    const view = opened.revision.paragraphs[ordinal]!
-    return view.label ?? `"${view.text.length > 40 ? `${view.text.slice(0, 40).trimEnd()}…` : view.text}"`
-  })
-  return [`${total} cross-reference field${total === 1 ? "" : "s"} converted to text in paragraph${where.length === 1 ? "" : "s"} ${where.join(", ")}`]
 }
 
 async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) {
@@ -364,8 +579,15 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
       const changed = new Set(edits.map(edit => edit.ordinal))
       // The edited runs are those of the session the edits were written in,
       // which stays open until its own check has compared their formatting.
-      verifyPreservation(opened, reopened, changed)
-      if (target !== opened) verifyPreservation(target, reopened, changed)
+      const spans = new Map<number, ProtectedWordChange[]>()
+      for (const edit of edits) {
+        const previous = spans.get(edit.ordinal) ?? []
+        previous.push(...edit.changes.map(change => ({ offset: change.match.span.start - opened.paragraphs[edit.ordinal]!.match.span.start,
+          replaced: change.match.text, changed: change.replacement, author: author(edit) })))
+        spans.set(edit.ordinal, previous)
+      }
+      verifyPreservation(opened, reopened, changed, spans)
+      if (target !== opened) verifyPreservation(target, reopened, changed, spans)
       return {
         bytes: output,
         // The projection these edits were admitted against.
@@ -385,7 +607,7 @@ async function writeEdits(opened: Opened, edits: ReturnType<typeof admitted>[]) 
           limitation: [`changed text inherits first touched run formatting; structural edits and ${opened.options.pendingRevisions === "layer"
             ? "edits in paragraphs with pending tracked revisions" : "existing tracked revisions"} unsupported`,
             ...revisionAuthor ? [`changes tracked as ${[...new Set(edits.map(author))].join(", ")}`] : [],
-            ...unlinkedFields(opened, edits)].join("; "),
+            ].join("; "),
         },
       }
     } finally { reopened.session.close() }
@@ -657,6 +879,116 @@ function pendingAuthors(listed: Set<string> | undefined, paragraph: Element) {
   return [...new Set([...listed ?? [], ...marked.map(node => node.getAttributeNS(W, "author") ?? "")])]
 }
 
+// Coordinates are model context, never edit authority. SDK metadata owns the
+// logical grid; source ancestry verifies its exact nearest table and cell.
+function paragraphTableContexts(session: Session, paragraphs: { match: Match; node: Element; part: string }[],
+  tables: { token: string; xml: string }[], documents: Record<string, Document>) {
+  type Metadata = NonNullable<ReturnType<Session["getTableMetadata"]>["metadata"]>
+  type Row = Metadata["rows"][number]
+  type Cell = Row["cells"][number]
+  type RowCells = NonNullable<DocxTableContext["row_cells"]>
+  type Placement = { token: string; canonical: string; metadata: Metadata; cellCount: number; row: Row; cell: Cell }
+  const placements = new Map<string, Placement[]>()
+  for (const table of tables) {
+    try {
+      const result = session.getTableMetadata(table.token)
+      if (!result.success || !result.metadata) continue
+      const common = { token: table.token, canonical: canonical(parse(table.xml).documentElement),
+        metadata: result.metadata, cellCount: result.metadata.rows.reduce((n, row) => n + row.cells.length, 0) }
+      for (const row of result.metadata.rows) for (const cell of row.cells) for (const paragraph of cell.paragraphAnchors) {
+        const values = placements.get(paragraph.id) ?? []
+        values.push({ ...common, row, cell })
+        placements.set(paragraph.id, values)
+      }
+    } catch { /* Unsupported SDK geometry stays explicit uncertainty below. */ }
+  }
+  const cellText = new Map<Element, string[]>()
+  for (const paragraph of paragraphs) {
+    const cell = closest(paragraph.node, "tc")
+    if (cell) {
+      const text = cellText.get(cell) ?? []
+      text.push(paragraph.match.text)
+      cellText.set(cell, text)
+    }
+  }
+  // All caches live within this immutable source/session read. DOM nodes and SDK
+  // metadata objects are safe identity keys; nothing is retained for later Apply.
+  const pendingTables = new Map<Element, boolean>()
+  const pendingOwn = (table: Element) => {
+    if (!pendingTables.has(table)) pendingTables.set(table, ["tblPr", "tblGrid", "trPr", "tcPr"].some(name =>
+      elements(table, name).filter(node => closest(node, "tbl") === table).some(properties =>
+        [...REVISION_ELEMENTS, "cellIns", "cellDel", "cellMerge"].some(name => elements(properties, name).length))))
+    return pendingTables.get(table)!
+  }
+  const tableNumbers = new Map(Object.entries(documents).map(([part, doc]) => [part,
+    new Map(elements(doc, "tbl").map((table, index) => [table, index + 1]))]))
+  const tableInfo = new Map<Element, { number: number; canonical: string; rows: Element[]; rowCount: number; cellCount: number; legacy: boolean; pending: boolean }>()
+  const rowInfo = new Map<Row, { source: Element; sources: Map<Cell, Element>; cells: RowCells } | null>()
+  const sourceCanonical = new Map<Element, string>()
+  const nativeCanonical = new Map<Cell, string | null>()
+  const contexts = new Map<string, DocxTableContext>()
+  for (const paragraph of paragraphs) {
+    const table = closest(paragraph.node, "tbl")
+    if (!table) continue
+    if (!tableInfo.has(table)) {
+      const belongs = (name: string) => elements(table, name).filter(node => closest(node, "tbl") === table)
+      tableInfo.set(table, { number: tableNumbers.get(paragraph.part)?.get(table) ?? 0,
+        canonical: canonical(table), rows: children(table, "tr"), rowCount: belongs("tr").length,
+        cellCount: belongs("tc").length, legacy: belongs("hMerge").length > 0,
+        pending: governingTables(table).some(pendingOwn) })
+    }
+    const info = tableInfo.get(table)!
+    if (info.number < 1) throw new Error("unsupported_docx_projection_mapping")
+    const unavailable = (reason: NonNullable<DocxTableContext["unavailable_reason"]>): DocxTableContext => ({
+      table: info.number, row: null, column: null, row_context: [], unavailable_reason: reason,
+    })
+    if (info.pending) { contexts.set(paragraph.match.enclosingAnchor.id, unavailable("pending_table_structure")); continue }
+    contexts.set(paragraph.match.enclosingAnchor.id, unavailable("unsupported_table_geometry"))
+    const candidates = placements.get(paragraph.match.enclosingAnchor.id) ?? []
+    const sourceRow = closest(paragraph.node, "tr"), sourceCell = closest(paragraph.node, "tc")
+    const candidate = candidates.length === 1 ? candidates[0] : undefined
+    if (!candidate || !sourceRow || !sourceCell) continue
+    const { metadata, row, cell } = candidate
+    if (info.canonical !== candidate.canonical || metadata.anchor.id !== candidate.token
+      || metadata.rows.length !== info.rowCount || metadata.rows.length !== info.rows.length
+      || candidate.cellCount !== info.cellCount || info.legacy
+      || !Number.isSafeInteger(row.rowIndex) || row.rowIndex < 0 || info.rows[row.rowIndex] !== sourceRow
+      || row.tableAnchorId !== candidate.token || cell.tableAnchorId !== candidate.token
+      || cell.rowAnchorId !== row.anchor.id || cell.rowIndex !== row.rowIndex || cell.verticalMerge === "continue") continue
+    if (!rowInfo.has(row)) {
+      const sources = children(sourceRow, "tc")
+      const valid = sources.length === row.cells.length && row.cells.every(cell =>
+        Number.isSafeInteger(cell.columnIndex) && cell.columnIndex >= 0
+        && Number.isSafeInteger(cell.columnSpan) && cell.columnSpan > 0
+        && Number.isSafeInteger(cell.rowSpan) && (cell.verticalMerge === "continue" ? cell.rowSpan === 0 : cell.rowSpan > 0)
+        && cell.columnIndex + cell.columnSpan <= metadata.columns.length)
+      rowInfo.set(row, !valid ? null : { source: sourceRow, sources: new Map(row.cells.map((cell, i) => [cell, sources[i]])),
+        cells: row.cells.map((cell, i) => ({ column: cell.columnIndex + 1, column_span: cell.columnSpan,
+          row_span: cell.rowSpan, vertical_merge: cell.verticalMerge, text: (cellText.get(sources[i]) ?? []).join("\n") })) })
+    }
+    const rowView = rowInfo.get(row)
+    if (!rowView || rowView.source !== sourceRow || rowView.sources.get(cell) !== sourceCell) continue
+    if (!sourceCanonical.has(sourceCell)) sourceCanonical.set(sourceCell, canonical(sourceCell))
+    if (!nativeCanonical.has(cell)) {
+      try { nativeCanonical.set(cell, canonical(parse(session.raw.getXml(cell.anchor.id)).documentElement)) }
+      catch { nativeCanonical.set(cell, null) }
+    }
+    if (sourceCanonical.get(sourceCell) !== nativeCanonical.get(cell)) continue
+    contexts.set(paragraph.match.enclosingAnchor.id, {
+      table: info.number, row: row.rowIndex + 1, column: cell.columnIndex + 1,
+      row_span: cell.rowSpan, column_span: cell.columnSpan, vertical_merge: cell.verticalMerge,
+      row_context: rowView.cells.map(cell => cell.text), row_cells: rowView.cells,
+    })
+  }
+  return contexts
+}
+
+function governingTables(table: Element) {
+  const tables = [table]
+  for (let parent = closest(table, "tbl"); parent; parent = closest(parent, "tbl")) tables.push(parent)
+  return tables
+}
+
 export async function openRevision(source: Uint8Array, options: DocxRevisionOptions = {}) {
   const parts = unzipSync(source)
   const documents = xmlParts(parts)
@@ -672,7 +1004,7 @@ export async function openRevision(source: Uint8Array, options: DocxRevisionOpti
     const listed = layer ? listedRevisions(session) : undefined
     const projection = session.project()
     const tables = Object.entries(projection.anchorIndex).filter(([, anchor]) => anchor.kind === "tbl")
-      .map(([token, anchor]) => ({ ...anchor, xml: session.raw.getXml(token) }))
+      .map(([token, anchor]) => ({ ...anchor, token, xml: session.raw.getXml(token) }))
     const counts = new Map<string, number>()
     const paragraphs = session.grep("^[\\s\\S]*$", { scope: 63, whitespace: 0 }).map(match => {
       const owner = projection.anchorIndex[match.enclosingAnchor.id]
@@ -695,6 +1027,7 @@ export async function openRevision(source: Uint8Array, options: DocxRevisionOpti
     })
     if ([...counts].some(([part, count]) => elements(documents[part], "p").slice(count).some(node => !emptyParagraph(node))))
       throw new Error("incomplete_docx_projection")
+    const tableViews = paragraphTableContexts(session, paragraphs, tables, documents)
     const source_sha256 = digest(source)
     const headingsByScope = new Map<string, { level: number; text: string }[]>()
     const views = paragraphs.map((paragraph, ordinal) => {
@@ -709,17 +1042,7 @@ export async function openRevision(source: Uint8Array, options: DocxRevisionOpti
         while (headingStack.length && headingStack.at(-1)!.level >= level) headingStack.pop()
         headingStack.push({ level, text: shownText({ text: paragraph.match.text, label }) })
       }
-      const ancestors = [] as Element[]
-      for (let node = paragraph.node.parentNode; node && node.nodeType === 1; node = node.parentNode) ancestors.unshift(node as Element)
-      const table = ancestors.find(node => node.namespaceURI === W && node.localName === "tbl")
-      const row = ancestors.findLast(node => node.namespaceURI === W && node.localName === "tr")
-      const cell = ancestors.findLast(node => node.namespaceURI === W && node.localName === "tc")
-      const tableContext = table && row && cell ? {
-        table: elements(documents[paragraph.part], "tbl").indexOf(table) + 1,
-        row: children(table, "tr").indexOf(row) + 1,
-        column: children(row, "tc").indexOf(cell) + 1,
-        row_context: children(row, "tc").map(node => elements(node, "t").map(t => t.textContent).join("")),
-      } : null
+      const tableContext = tableViews.get(paragraph.match.enclosingAnchor.id) ?? null
       return { paragraph_handle: `paragraph-${digest(JSON.stringify([source_sha256, ordinal])).slice(0, 24)}`,
         scope,
         text: paragraph.match.text,
@@ -739,7 +1062,10 @@ export async function openRevision(source: Uint8Array, options: DocxRevisionOpti
     const markdown = views.map((view, ordinal) => {
       const part = view.scope !== (views[ordinal - 1]?.scope ?? "body") ? `[${partLabel(view.scope)}]\n\n` : ""
       const prefix = paragraphs[ordinal].match.enclosingAnchor.kind === "h" ? `${"#".repeat(view.headings.at(-1)!.level)} ` : ""
-      const context = view.table ? `> Table ${view.table.table}, row ${view.table.row}, column ${view.table.column}\n\n` : ""
+      const context = !view.table ? "" : view.table.row === null || view.table.column === null
+        ? `> Table ${view.table.table}, row and column unavailable (${view.table.unavailable_reason === "pending_table_structure" ? "pending table structure" : "unsupported table geometry"})\n\n`
+        : `> Table ${view.table.table}, row ${view.table.row}, column ${view.table.column}`
+          + (view.table.row_span! > 1 || view.table.column_span! > 1 ? ` (spans ${view.table.row_span} row(s), ${view.table.column_span} column(s))` : "") + "\n\n"
       const moved = view.moved_here ? `[${MOVED_HERE}]\n\n` : ""
       const escape = (text: string) => text.replace(/[\\`*_{}[\]<>|]/g, "\\$&")
       // A word's character: neither white space nor punctuation, as CommonMark has it.
@@ -762,7 +1088,9 @@ export async function openRevision(source: Uint8Array, options: DocxRevisionOpti
   } catch (error) { session.close(); throw error }
 }
 
-export function verifyPreservation(before: Awaited<ReturnType<typeof openRevision>>, saved: Awaited<ReturnType<typeof openRevision>>, changed: Set<number>) {
+type ProtectedWordChange = WordChange & { author?: string }
+
+export function verifyPreservation(before: Awaited<ReturnType<typeof openRevision>>, saved: Awaited<ReturnType<typeof openRevision>>, changed: Set<number>, spans?: Map<number, ProtectedWordChange[]>) {
   const after = before.options.revisionAuthor ? withoutTrackChangesSetting(before, saved) : saved
   if (before.paragraphs.length !== after.paragraphs.length) throw new Error("docx_paragraph_structure_changed")
   const ignoredBefore = new Set([...changed].map(ordinal => before.paragraphs[ordinal].node))
@@ -783,6 +1111,9 @@ export function verifyPreservation(before: Awaited<ReturnType<typeof openRevisio
     if (canonical(a.node.cloneNode(false)) !== canonical(b.node.cloneNode(false))
       || canonical(children(a.node, "pPr")[0]) !== canonical(children(b.node, "pPr")[0]))
       throw new Error("docx_paragraph_properties_changed")
+    verifyInlineControls(a.node, b.node, a.match.text, b.match.text, spans?.get(ordinal), before.options.revisionAuthor)
+    verifyFields(a.node, b.node)
+    verifyAssociations(a.node, b.node, a.match.text, b.match.text, spans?.get(ordinal), before.options.revisionAuthor, before.documents)
     // Native UNIDs are transient, but within this session identify original runs.
     const edited = parse(before.session.raw.getXml(a.match.enclosingAnchor.id))
     const remaining = new Map(elements(edited, "r").map(run => [run.getAttributeNS(PT, "Unid"), run]))
@@ -792,6 +1123,319 @@ export function verifyPreservation(before: Awaited<ReturnType<typeof openRevisio
         throw new Error("docx_existing_run_properties_changed")
     }
   }
+}
+
+// Field instructions and cached results must survive adjacent edits. Compare the
+// complete simple field and every XML element between a complex field's begin
+// and end, including result runs and their formatting.
+function verifyFields(before: Element, after: Element) {
+  const snapshot = (paragraph: Element) => {
+    const nodes = elements(paragraph, "*")
+    const simple = elements(paragraph, "fldSimple").map(node => canonical(node))
+    const complex = paragraphFields(paragraph).map(field => {
+      const start = nodes.indexOf(field.controls[0]!)
+      const end = nodes.indexOf(field.controls.at(-1)!)
+      if (start < 0 || end < start) throw new Error("docx_field_replacement")
+      return nodes.slice(start, end + 1).map(node => canonical(node))
+    })
+    const controls = nodes.filter(node => ["fldChar", "instrText"].includes(node.localName)).map(node => canonical(node))
+    return { simple, complex, controls }
+  }
+  if (JSON.stringify(snapshot(before)) !== JSON.stringify(snapshot(after)))
+    throw new Error("docx_field_replacement")
+}
+
+// A text edit does not authorize changing a note reference, link destination,
+// or the position of a live field. One plain-run link may be edited only when
+// its shell and both original and current text/run properties are proven.
+function verifyAssociations(before: Element, after: Element, oldText: string, newText: string, actualChanges?: ProtectedWordChange[], defaultAuthor?: string, sourceDocuments?: Record<string, Document>) {
+  assertAssociationAncestry(before); assertAssociationAncestry(after)
+  const names = ASSOCIATIONS
+  type Record = { kind: string; start: number; end: number; xml: string; namespaces: string; ancestry: string; node: Element }
+  const ancestry = (root: Element, paragraph: Element) => {
+    const shells: string[] = []
+    for (let node = root.parentNode; node && node !== paragraph; node = node.parentNode) {
+      if (node.nodeType !== 1) throw new Error("docx_protected_association_changed")
+      shells.push(canonical(node.cloneNode(false)))
+    }
+    return JSON.stringify(shells)
+  }
+  // Preserve all bindings visible to the association, including those used by
+  // QName-valued markup-compatibility attributes. Nested declarations need
+  // a per-node namespace proof, so this narrow check refuses that shape.
+  const bindings = (root: Element) => {
+    const xmlns = "http://www.w3.org/2000/xmlns/"
+    if (Array.from(root.getElementsByTagName("*")).some(node => Array.from(node.attributes).some(attr => attr.namespaceURI === xmlns)))
+      throw new Error("docx_protected_association_changed")
+    const result = new Map<string, string>()
+    for (let node: Node | null = root; node && node.nodeType === 1; node = node.parentNode) {
+      for (const attr of Array.from((node as Element).attributes)) {
+        if (attr.namespaceURI !== xmlns) continue
+        const prefix = attr.name === "xmlns" ? "" : attr.localName
+        if (!result.has(prefix)) result.set(prefix, attr.value)
+      }
+    }
+    return JSON.stringify([...result].sort(([a], [b]) => a.localeCompare(b)))
+  }
+  const inventory = (paragraph: Element) => {
+    let text = ""
+    const found: Record[] = []
+    const walk = (node: Element) => {
+      if (node.namespaceURI === W && ["pPr", "rPr"].includes(node.localName)) return
+      const hasAssociation = names.some(name => elements(node, name).length)
+      if (node.namespaceURI === W && ["del", "moveFrom"].includes(node.localName)) {
+        if (hasAssociation) found.push({ kind: node.localName, start: text.length, end: text.length, xml: canonical(node), namespaces: bindings(node), ancestry: ancestry(node, paragraph), node })
+        return
+      }
+      if (node.namespaceURI === W && ["ins", "moveTo"].includes(node.localName) && hasAssociation) {
+        const entry = { kind: node.localName, start: text.length, end: text.length, xml: canonical(node), namespaces: bindings(node), ancestry: ancestry(node, paragraph), node }
+        found.push(entry)
+        for (const child of Array.from(node.childNodes)) if (child.nodeType === 1) walk(child as Element)
+        entry.end = text.length
+        return
+      }
+      if (node.namespaceURI === W && node.localName === "t") { text += node.textContent ?? ""; return }
+      const association = node.namespaceURI === W && names.includes(node.localName)
+      const entry = association ? { kind: node.localName, start: text.length, end: text.length, xml: canonical(node), namespaces: bindings(node), ancestry: ancestry(node, paragraph), node } : undefined
+      if (entry) found.push(entry)
+      for (const child of Array.from(node.childNodes)) if (child.nodeType === 1) walk(child as Element)
+      if (entry) entry.end = text.length
+    }
+    walk(paragraph)
+    return { text, found }
+  }
+  const a = inventory(before), b = inventory(after)
+  if (!a.found.length && !b.found.length) return
+  if (a.text !== oldText || b.text !== newText) throw new Error("docx_protected_association_changed")
+  const changes: ProtectedWordChange[] = (actualChanges ?? wordChanges(oldText, newText)).filter(change => change.replaced || change.changed)
+  const map = (point: number) => point + changes.reduce((delta, change) => delta +
+    (change.offset < point && change.offset + change.replaced.length <= point ? change.changed.length - change.replaced.length : 0), 0)
+  if (a.found.length !== b.found.length || a.found.some((item, index) => {
+    const next = b.found[index]!
+    const touches = changes.some(change => change.replaced.length
+      ? change.offset < item.end && change.offset + change.replaced.length > item.start || item.start === item.end && change.offset < item.start && change.offset + change.replaced.length > item.start
+      : change.offset >= item.start && change.offset <= item.end)
+    const inside = item.kind === "hyperlink" && changes.filter(change => change.replaced.length
+      ? change.offset < item.end && change.offset + change.replaced.length > item.start
+      : change.offset >= item.start && change.offset <= item.end)
+    const asControl = (link: Element) => {
+      const doc = link.ownerDocument!, control = doc.createElementNS(W, "w:sdt")
+      control.appendChild(doc.createElementNS(W, "w:sdtPr"))
+      const content = doc.createElementNS(W, "w:sdtContent")
+      for (const child of Array.from(link.childNodes)) content.appendChild(child.cloneNode(true))
+      control.appendChild(content)
+      return control
+    }
+    const approved = inside && inside.length === 1 && actualChanges &&
+      canonical(item.node.cloneNode(false)) === canonical(next.node.cloneNode(false)) && (
+      (inside.every(change => change.offset > item.start && change.offset + change.replaced.length < item.end ||
+        change.offset === item.start && change.offset + change.replaced.length === item.end && !!change.changed) &&
+        safeControlTextEdit(asControl(item.node), asControl(next.node), oldText.slice(item.start, item.end),
+          newText.slice(map(item.start), map(item.end)), inside[0]!, inside[0]!.offset - item.start, inside[0]!.author ?? defaultAuthor)) ||
+      (changes.length === 1 && safeMultiRunLinkEdit(item.node, next.node, inside[0]!, inside[0]!.offset - item.start,
+        inside[0]!.author ?? defaultAuthor, sourceDocuments)))
+    return touches && !approved || item.kind !== next.kind || item.namespaces !== next.namespaces || item.ancestry !== next.ancestry || !approved && item.xml !== next.xml || map(item.start) !== next.start || map(item.end) !== next.end
+  })) throw new Error("docx_protected_association_changed")
+}
+
+// Prove both the complete control markup and its position in the visible
+// paragraph. Edits beside a control can shift that position. A single edit
+// strictly inside, or exactly replacing all text in, a narrowly supported
+// rich-text control may change its wording; other boundary crossings refuse.
+function verifyInlineControls(before: Element, after: Element, oldText: string, newText: string, actualChanges?: ProtectedWordChange[], defaultAuthor?: string) {
+  const annotations = (paragraph: Element) => {
+    let offset = 0
+    const found: { kind: string; start: number; end: number; xml: string; node: Element }[] = []
+    const walk = (node: Element) => {
+      if (node.namespaceURI === W && ["pPr", "rPr"].includes(node.localName)) return
+      if (node.namespaceURI === W && ["del", "moveFrom"].includes(node.localName)) {
+        if (["sdt", "bookmarkStart", "bookmarkEnd", "commentRangeStart", "commentRangeEnd", "commentReference"].some(name => elements(node, name).length))
+          found.push({ kind: node.localName, start: offset, end: offset, xml: canonical(node), node })
+        return
+      }
+      if (node.namespaceURI === W && node.localName === "t") { offset += node.textContent?.length ?? 0; return }
+      if (node.namespaceURI === W && node.localName === "ins" && ["sdt", "bookmarkStart", "bookmarkEnd", "commentRangeStart", "commentRangeEnd", "commentReference"].some(name => elements(node, name).length)) {
+        const record = { kind: "sdt", start: offset, end: offset, xml: canonical(node), node }
+        found.push(record)
+        for (const child of Array.from(node.childNodes)) if (child.nodeType === 1) walk(child as Element)
+        record.end = offset
+        return
+      }
+      if (node.namespaceURI === W && node.localName === "sdt") {
+        const record = { kind: "sdt", start: offset, end: offset, xml: canonical(node), node }
+        found.push(record)
+        for (const child of Array.from(node.childNodes)) if (child.nodeType === 1) walk(child as Element)
+        record.end = offset
+        return
+      }
+      if (node.namespaceURI === W && ["bookmarkStart", "bookmarkEnd", "commentRangeStart", "commentRangeEnd", "commentReference"].includes(node.localName))
+        found.push({ kind: node.localName, start: offset, end: offset, xml: canonical(node), node })
+      for (const child of Array.from(node.childNodes)) if (child.nodeType === 1) walk(child as Element)
+    }
+    walk(paragraph)
+    return found
+  }
+  const previous = annotations(before), current = annotations(after)
+  if (!previous.length && !current.length) return
+  const changes: ProtectedWordChange[] = (actualChanges ?? wordChanges(oldText, newText)).filter(change => change.replaced || change.changed)
+  const map = (point: number, includeAt = false) => point + changes.reduce((delta, change) =>
+    delta + (change.offset + change.replaced.length <= point && (change.offset < point || includeAt && !change.replaced.length && change.offset === point) ? change.changed.length - change.replaced.length : 0), 0)
+  if (previous.length !== current.length || previous.some((control, index) => {
+    const next = current[index]!
+    const inside = control.kind === "sdt" && changes.filter(change => change.replaced.length
+      ? change.offset < control.end && change.offset + change.replaced.length > control.start
+      : change.offset >= control.start && change.offset <= control.end)
+    const approved = inside && inside.length === 1 && actualChanges && inside.every(change =>
+      change.offset > control.start && change.offset + change.replaced.length < control.end ||
+      change.offset === control.start && change.offset + change.replaced.length === control.end &&
+      change.replaced === oldText.slice(control.start, control.end) && !!change.changed) && safeControlTextEdit(control.node, next.node,
+      oldText.slice(control.start, control.end), newText.slice(map(control.start), map(control.end)), inside[0]!, inside[0]!.offset - control.start, inside[0]!.author ?? defaultAuthor)
+    return changes.some(change => control.kind === "sdt" ? !approved && (change.replaced.length
+      ? change.offset < control.end && change.offset + change.replaced.length > control.start
+      : change.offset >= control.start && change.offset <= control.end)
+      : change.replaced.length ? change.offset < control.start && change.offset + change.replaced.length > control.start
+      : change.offset === control.start && !["bookmarkStart", "bookmarkEnd"].includes(control.kind)) ||
+      control.kind !== next.kind || (!approved && control.xml !== next.xml) || map(control.start, control.kind === "bookmarkEnd") !== next.start || map(control.end, control.kind === "bookmarkEnd") !== next.end
+  })) throw new Error("docx_protected_inline_content_changed")
+}
+
+// A single replacement wholly within one plain run of a multi-run link.
+// The linked shell is checked by the caller; compare both revision views by
+// UTF-16 unit and preserve every retained character's run shell and rPr.
+function safeMultiRunLinkEdit(before: Element, after: Element, change: WordChange, offset: number, author?: string, documents?: Record<string, Document>): boolean {
+  if (!change.replaced || !change.changed) return false
+  const direct = (node: Element) => Array.from(node.childNodes).filter((child): child is Element => child.nodeType === 1)
+  const cleanChildren = (node: Element) => Array.from(node.childNodes).every(child => child.nodeType === 1 || child.nodeType === 3 && !child.nodeValue?.trim())
+  const XML = "http://www.w3.org/XML/1998/namespace", XMLNS = "http://www.w3.org/2000/xmlns/"
+  type Unit = { value: string; style: string; space: boolean }
+  const run = (node: Element, deleted: boolean): Unit[] | undefined => {
+    if (node.namespaceURI !== W || node.localName !== "r" || !cleanChildren(node)) return
+    const items = direct(node), texts = items.filter(item => item.namespaceURI === W && item.localName === (deleted ? "delText" : "t"))
+    if (texts.length !== 1 || items.some(item => item.namespaceURI !== W || !["rPr", deleted ? "delText" : "t"].includes(item.localName)) || children(node, "rPr").length > 1 || elements(node, "rPrChange").length) return
+    const text = texts[0]!, value = text.textContent ?? ""
+    if (!value || Array.from(text.childNodes).some(child => child.nodeType !== 3 && child.nodeType !== 4) ||
+      Array.from(text.attributes).some(attr => attr.namespaceURI !== XMLNS && !(attr.namespaceURI === XML && attr.localName === "space" && attr.value === "preserve"))) return
+    const space = text.getAttributeNS(XML, "space") === "preserve"
+    if (/^\s|\s$/.test(value) && !space) return
+    const style = JSON.stringify([canonical(node.cloneNode(false)), canonical(children(node, "rPr")[0])])
+    return value.split("").map(value => ({ value, style, space }))
+  }
+  if (!cleanChildren(before) || !cleanChildren(after)) return false
+  const sourceRuns = direct(before)
+  if (sourceRuns.length < 2) return false
+  const source: Unit[] = [], ranges: { from: number; to: number }[] = []
+  for (const node of sourceRuns) {
+    const units = run(node, false)
+    if (!units) return false
+    const from = source.length; source.push(...units); ranges.push({ from, to: source.length })
+  }
+  const end = offset + change.replaced.length
+  const touched = ranges.filter(range => range.from <= offset && end <= range.to)
+  if (touched.length !== 1 || source.slice(offset, end).map(unit => unit.value).join("") !== change.replaced) return false
+  const boundary = (at: number) => at > 0 && at < source.length &&
+    /[\uD800-\uDBFF]/.test(source[at - 1]!.value) && /[\uDC00-\uDFFF]/.test(source[at]!.value)
+  if (boundary(offset) || boundary(end)) return false
+  const touchedStyle = source[offset]!
+  const expectedCurrent = [...source.slice(0, offset), ...change.changed.split("").map(value => ({ ...touchedStyle, value })), ...source.slice(end)]
+  const current: Unit[] = [], original: Unit[] = [], revisions: { kind: string; text: string; original: number; current: number }[] = []
+  if (!documents) return false
+  const revisionNodes = Object.values(documents).flatMap(doc => elements(doc, "*")).filter(node => /^(ins|del|moveFrom|moveTo|.*PrChange|.*GridChange|numberingChange|cellIns|cellDel|cellMerge|moveFromRange(?:Start|End)|moveToRange(?:Start|End)|customXml(?:Ins|Del|MoveFrom|MoveTo)Range(?:Start|End))$/.test(node.localName))
+  const oldIds = new Set<string>()
+  for (const node of revisionNodes) {
+    const id = node.getAttributeNS(W, "id")
+    if (!id || !/^\d+$/.test(id)) return false
+    oldIds.add(BigInt(id).toString())
+  }
+  const newIds = new Set<string>()
+  const validDate = (value: string) => {
+    const match = value.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/)
+    if (!match) return false
+    const timestamp = Date.parse(value)
+    return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === `${match[1]}.${(match[2] ?? "").padEnd(3, "0")}Z`
+  }
+  for (const node of direct(after)) {
+    if (node.namespaceURI !== W || !["r", "ins", "del"].includes(node.localName)) return false
+    const revised = node.localName !== "r", removed = node.localName === "del", inserted = node.localName === "ins"
+    if (revised) {
+      const id = node.getAttributeNS(W, "id")
+      if (!author || !id || !/^\d+$/.test(id) || oldIds.has(BigInt(id).toString()) || newIds.has(BigInt(id).toString()) || node.getAttributeNS(W, "author") !== author ||
+        !validDate(node.getAttributeNS(W, "date") ?? "") || !cleanChildren(node) ||
+        Array.from(node.attributes).some(attr => attr.namespaceURI !== XMLNS && (attr.namespaceURI !== W || !["id", "author", "date"].includes(attr.localName)))) return false
+      newIds.add(BigInt(id).toString())
+    }
+    const runs = revised ? direct(node) : [node]
+    if (!runs.length) return false
+    const startOriginal = original.length, startCurrent = current.length, units: Unit[] = []
+    for (const item of runs) { const part = run(item, removed); if (!part) return false; units.push(...part) }
+    if (!inserted) original.push(...units)
+    if (!removed) current.push(...units)
+    if (revised) revisions.push({ kind: node.localName, text: units.map(unit => unit.value).join(""), original: startOriginal, current: startCurrent })
+  }
+  const equal = (expected: Unit[], actual: Unit[]) => expected.length === actual.length && expected.every((unit, index) => {
+    const got = actual[index]!
+    // A generated split may add preserve, but never remove it from source text.
+    return unit.value === got.value && unit.style === got.style && (!unit.space || got.space)
+  })
+  if (!equal(expectedCurrent, current)) return false
+  if (!author) return revisions.length === 0
+  return equal(source, original) && JSON.stringify(revisions) === JSON.stringify([
+    { kind: "del", text: change.replaced, original: offset, current: offset },
+    { kind: "ins", text: change.changed, original: end, current: offset },
+  ])
+}
+
+// A deliberately narrow rich-text control: one unbound, unlocked, unnested
+// run with one text node and no existing markup in its content. Compare its
+// entire control shell and per-character run properties on both views.
+function safeControlTextEdit(before: Element, after: Element, oldText: string, newText: string, change: WordChange, localOffset: number, author?: string): boolean {
+  if (before.namespaceURI !== W || before.localName !== "sdt" || after.namespaceURI !== W || after.localName !== "sdt") return false
+  const direct = (node: Element) => Array.from(node.childNodes).filter((child): child is Element => child.nodeType === 1)
+  const b = direct(before), a = direct(after)
+  if (b.length !== 2 || a.length !== 2 || b[0]!.namespaceURI !== W || b[0]!.localName !== "sdtPr" ||
+    b[1]!.namespaceURI !== W || b[1]!.localName !== "sdtContent" || a[0]!.namespaceURI !== W || a[0]!.localName !== "sdtPr" ||
+    a[1]!.namespaceURI !== W || a[1]!.localName !== "sdtContent" || canonical(before.cloneNode(false)) !== canonical(after.cloneNode(false)) ||
+    canonical(b[0]) !== canonical(a[0]) || canonical(b[1]!.cloneNode(false)) !== canonical(a[1]!.cloneNode(false))) return false
+  if (!direct(b[0]!).every(node => node.namespaceURI === W && ["alias", "tag", "id"].includes(node.localName) && direct(node).length === 0)) return false
+  const plainText = (node: Element) => direct(node).length === 0 &&
+    (!/^\s|\s$/.test(node.textContent ?? "") || node.getAttributeNS("http://www.w3.org/XML/1998/namespace", "space") === "preserve") && Array.from(node.attributes).every(attr =>
+    attr.namespaceURI === "http://www.w3.org/2000/xmlns/" || attr.namespaceURI === "http://www.w3.org/XML/1998/namespace" &&
+      attr.localName === "space" && ["preserve", "default"].includes(attr.value))
+  const runs = direct(b[1]!)
+  if (runs.length !== 1 || runs[0]!.namespaceURI !== W || runs[0]!.localName !== "r") return false
+  const first = runs[0]!, fields = direct(first), text = fields.filter(node => node.namespaceURI === W && node.localName === "t")
+  if (text.length !== 1 || fields.some(node => node.namespaceURI !== W || !["rPr", "t"].includes(node.localName)) ||
+    children(first, "rPr").length > 1 || !plainText(text[0]!) || text[0]!.textContent !== oldText) return false
+  const attrs = canonical(first.cloneNode(false)), properties = canonical(children(first, "rPr")[0])
+  let current = "", original = "", revised = false
+  const revisions: { kind: string; text: string }[] = []
+  for (const node of direct(a[1]!)) {
+    if (node.namespaceURI !== W || !["r", "ins", "del"].includes(node.localName)) return false
+    const group = node.localName === "r" ? [node] : direct(node)
+    if (node.localName !== "r") {
+      revised = true
+      if (original.length !== localOffset + (node.localName === "ins" ? change.replaced.length : 0)) return false
+      if (Array.from(node.attributes).some(attr => attr.namespaceURI !== "http://www.w3.org/2000/xmlns/" &&
+        (attr.namespaceURI !== W || !["id", "author", "date"].includes(attr.localName)))) return false
+      if (!author || node.getAttributeNS(W, "author") !== author || !/^\d+$/.test(node.getAttributeNS(W, "id") ?? "") ||
+        !Number.isFinite(Date.parse(node.getAttributeNS(W, "date") ?? ""))) return false
+    }
+    if (!group.length) return false
+    let revisionText = ""
+    for (const run of group) {
+      if (run.namespaceURI !== W || run.localName !== "r" || canonical(run.cloneNode(false)) !== attrs || canonical(children(run, "rPr")[0]) !== properties) return false
+      const items = direct(run)
+      if (items.some(item => item.namespaceURI !== W || !["rPr", "t", "delText"].includes(item.localName)) || children(run, "rPr").length > 1) return false
+      const content = items.filter(item => item.localName === (node.localName === "del" ? "delText" : "t"))
+      if (content.length !== 1 || !plainText(content[0]!) || items.filter(item => ["t", "delText"].includes(item.localName)).length !== 1) return false
+      const value = content[0]!.textContent ?? ""
+      revisionText += value
+      if (node.localName !== "del") current += value
+      if (node.localName !== "ins") original += value
+    }
+    if (node.localName !== "r") revisions.push({ kind: node.localName, text: revisionText })
+  }
+  const expected = [...change.replaced ? [{ kind: "del", text: change.replaced }] : [], ...change.changed ? [{ kind: "ins", text: change.changed }] : []]
+  return current === newText && (author ? revised && original === oldText && JSON.stringify(revisions) === JSON.stringify(expected) : !revised)
 }
 
 // A tracked-change save switches Track Changes on: Docxodus adds

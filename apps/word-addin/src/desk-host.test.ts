@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test"
 import { connectDeskDialog, DeskRequestError, openDeskDialog, type DeskOffice } from "./desk-host"
 import { deskMessage, readDeskMessage } from "./desk-protocol"
+import { ChatAttachmentsUnavailable, openChatAttachments } from "./chat-attachments"
+import type { WordChatApi } from "./chat-client"
+import { WORD_ADDIN_VERSION } from "../../../dochaus/lib/word-addin-contract"
 
 const ORIGIN = "https://localhost:4612"
 
@@ -57,7 +60,8 @@ function install(expectedUrl = `${ORIGIN}/word-addin/desk.html?version=1`) {
   Object.defineProperty(globalThis, "window", {
     configurable: true,
     value: {
-      location: { origin: ORIGIN },
+      location: { origin: ORIGIN, href: `${ORIGIN}/word-addin/pane.html` },
+      Office: office,
       addEventListener: (event: string, listener: () => void) => {
         if (!listeners.has(event)) listeners.set(event, new Set())
         listeners.get(event)!.add(listener)
@@ -88,8 +92,8 @@ function install(expectedUrl = `${ORIGIN}/word-addin/desk.html?version=1`) {
   }
 }
 
-test("initial document view accepts only the two known modes without widening the secure URL boundary", async () => {
-  for (const view of ["documents", "compare"]) {
+test("known dialog modes preserve the secure URL boundary", async () => {
+  for (const view of ["documents", "compare", "attachments"]) {
     const url = `${ORIGIN}/word-addin/desk.html?version=1&view=${view}`
     const fixture = install(url)
     try {
@@ -107,6 +111,30 @@ test("initial document view accepts only the two known modes without widening th
       }
     } finally { fixture.restore() }
   }
+})
+
+test("attachment dialog stays pending until native close and shares the single-dialog guard", async () => {
+  const fixture = install(`${ORIGIN}/word-addin/desk.html?version=${WORD_ADDIN_VERSION}&view=attachments`)
+  const api: WordChatApi = { async request<T>() { return { materials: [], matterName: "Synthetic", documentName: "Draft.docx" } as T }, async upload() { throw new Error("Unexpected upload") } }
+  let finished = false
+  const opened = openChatAttachments(api, { conversationId: "parent-conversation", attached: [], onAttach() {} }).then(() => { finished = true })
+  let connection: Awaited<ReturnType<typeof connectDeskDialog>> | undefined
+  try {
+    await Promise.resolve(); await Promise.resolve()
+    connection = await connectDeskDialog({ office: fixture.office })
+    expect(await connection.request({ action: "chat-materials" })).toEqual({ materials: [], matterName: "Synthetic", documentName: "Draft.docx", attached: [] })
+    await expect(connection.request({ action: "selection" })).rejects.toThrow("Choose a file")
+    expect(finished).toBe(false)
+    await expect(openDeskDialog({ url: "/word-addin/desk.html?version=1", office: fixture.office, handleRequest: async () => {} })).rejects.toThrow("already open")
+    connection.close()
+    await opened
+    expect(finished).toBe(true)
+    expect(fixture.closed).toBe(1)
+    fixture.supported = false
+    const error = await openChatAttachments(api, { conversationId: "parent", attached: [], onAttach() {} }).catch(error => error)
+    expect(error).toBeInstanceOf(ChatAttachmentsUnavailable)
+    expect(error.message).toContain("Use Attach in the pane")
+  } finally { connection?.close(); fixture.unload(); fixture.restore() }
 })
 
 test("Office modeless messaging rejects foreign/missing origins, invalid actions and stale channels", async () => {

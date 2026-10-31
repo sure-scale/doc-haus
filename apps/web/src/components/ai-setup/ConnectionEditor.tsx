@@ -68,8 +68,8 @@ export default function ConnectionEditor({ provider, integration, reusable, draf
         <PasswordInput id={`${id}-key`} aria-describedby={`${id}-key-hint`} value={draft.key} disabled={disabled} onChange={key => onChange({ ...draft, key })} />
       </FieldRow>
     </> : <>
-      <FieldRow id={`${id}-method`} label="Connection method" hint="Choose a saved connection or add a new one.">
-        <select id={`${id}-method`} aria-describedby={`${id}-method-hint`} value={draft.choice} disabled={disabled} onChange={event => {
+      <FieldRow id={`${id}-method`} label="Connection method">
+        <select id={`${id}-method`} value={draft.choice} disabled={disabled} onChange={event => {
           const method = choices.find(item => item.value === event.target.value)?.method
           onChange({ ...draft, choice: event.target.value, key: "", answer: methodDefaults(method) })
         }}>
@@ -80,8 +80,8 @@ export default function ConnectionEditor({ provider, integration, reusable, draf
       </FieldRow>
       {endpoint && <FieldRow id={`${id}-url`} label="Endpoint" hint="An OpenAI-compatible address reachable from the computer running doc.haus."><input id={`${id}-url`} aria-describedby={`${id}-url-hint`} disabled={disabled} value={draft.options.baseURL ?? ""} onChange={event => setOption("baseURL", event.target.value)} /></FieldRow>}
       {draft.choice.startsWith("env:") && <p className="settings-hint muted">Uses the detected environment value. When you save, a copy is stored as a connection in this installation.</p>}
-      {method?.type === "key" && <FieldRow id={`${id}-key`} label="API key" hint="The new key is used for testing and becomes active when you save.">
-        <PasswordInput id={`${id}-key`} aria-describedby={`${id}-key-hint`} value={draft.key} disabled={disabled} onChange={key => onChange({ ...draft, key })} />
+      {method?.type === "key" && <FieldRow id={`${id}-key`} label="API key">
+        <PasswordInput id={`${id}-key`} value={draft.key} disabled={disabled} onChange={key => onChange({ ...draft, key })} />
       </FieldRow>}
       {visibleFields(fields, draft.answer).map(field => field.type === "external"
         ? <p key={field.key}><a href={field.url} target="_blank" rel="noreferrer">{field.title || field.key}</a> {field.description}</p>

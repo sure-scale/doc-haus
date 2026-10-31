@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { Effect, Fiber, Schema, Stream } from "effect"
+import { Deferred, Effect, Fiber, Schema, Stream } from "effect"
 import { Database } from "@opencode/core/database/database"
 import { Agent } from "@opencode/core/agent"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
@@ -14,6 +14,7 @@ import { Session } from "@opencode/core/session"
 import { SessionProjector } from "@opencode/core/session/projector"
 import { SessionExecution } from "@opencode/core/session/execution"
 import { SessionStore } from "@opencode/core/session/store"
+import { SessionEvent } from "@opencode/core/session/event"
 import { SessionTable } from "@opencode/core/session/sql"
 import { testEffect } from "./lib/effect"
 import { globalProjectNode } from "./lib/project"
@@ -31,6 +32,40 @@ const it = testEffect(
 const location = Location.Ref.make({ directory: AbsolutePath.make("/project") })
 
 describe("Session.log", () => {
+  it.effect("conditional rename preserves a newer title and leaves ordinary renames unchanged", () =>
+    Effect.gen(function* () {
+      const session = yield* Session.Service
+      const created = yield* session.create({ location, title: "Original" })
+      yield* session.rename({ sessionID: created.id, title: "Generated", expectedTitle: "Original" })
+      expect((yield* session.get(created.id)).title).toBe("Generated")
+      yield* session.rename({ sessionID: created.id, title: "Manual" })
+      yield* session.rename({ sessionID: created.id, title: "Stale", expectedTitle: "Original" })
+      expect((yield* session.get(created.id)).title).toBe("Manual")
+    }),
+  )
+
+  it.effect("conditional rename cannot commit after an intervening rename", () =>
+    Effect.gen(function* () {
+      const session = yield* Session.Service
+      const bus = yield* Bus.Service
+      const created = yield* session.create({ location, title: "Original" })
+      const held = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      yield* Effect.acquireRelease(bus.listen(event => event.type === SessionEvent.AgentSelected.type
+        ? Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release))) : Effect.void), unsubscribe => unsubscribe)
+      yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined))
+      const holder = yield* session.switchAgent({ sessionID: created.id, agent: Agent.ID.make("one") }).pipe(Effect.forkScoped({ startImmediately: true }))
+      yield* Deferred.await(held)
+      const manual = yield* session.rename({ sessionID: created.id, title: "Manual" }).pipe(Effect.forkScoped({ startImmediately: true }))
+      const conditional = yield* session.rename({ sessionID: created.id, title: "Generated", expectedTitle: "Original" }).pipe(Effect.forkScoped({ startImmediately: true }))
+      yield* Effect.yieldNow
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(holder)
+      yield* Fiber.join(manual)
+      yield* Fiber.join(conditional)
+      expect((yield* session.get(created.id)).title).toBe("Manual")
+    }),
+  )
   it.effect("replays public session events and marks synced at the aggregate watermark", () =>
     Effect.gen(function* () {
       const session = yield* Session.Service

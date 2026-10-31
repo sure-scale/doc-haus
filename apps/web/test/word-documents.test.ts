@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { fetchWordConfig, fetchWordDocuments, fetchWordOpenState, linkedWordDocument, prepareWordOpen, recoverWordEditing, revokeWordDocument, type WordOpenDocument } from "../src/api/ingest/word"
+import { copySavedWordRecovery, fetchWordConfig, fetchWordDocuments, fetchWordOpenState, linkedWordDocument, prepareWordOpen, recoverWordEditing, revokeWordDocument, type WordOpenDocument } from "../src/api/ingest/word"
 import { wordSetupReason, wordVersionsChanged, wordWarning } from "../src/components/WordDocuments"
 import { versionOrigin } from "../src/components/DocumentVersions"
 
@@ -77,7 +77,7 @@ describe("Word connection", () => {
   test("setup and write failures retain the service's actionable explanation", async () => {
     globalThis.fetch = stubFetch(async () => Response.json({ available: false, origin: null, manifestUrl: null, reason: "A trusted HTTPS connection has not been set up." }))
     const config = await fetchWordConfig()
-    expect(wordSetupReason(config)).toBe("Word is not ready. Set it up in Settings → Add-ins.")
+    expect(wordSetupReason(config)).toBe("Word is not ready. Set it up in Settings → Word add-in.")
     globalThis.fetch = stubFetch(async () => Response.json({ error: "Word setup must be completed before downloading a linked copy." }, { status: 503 }))
     await expect(linkedWordDocument("m", "Agreement.docx", "http://localhost")).rejects.toThrow("Word setup must be completed")
     await expect(revokeWordDocument("m", "Agreement.docx")).rejects.toThrow("Word setup must be completed")
@@ -110,4 +110,16 @@ describe("Word status semantics", () => {
   test("the explicit Word writer has a distinct saved-from-Word version label", () => {
     expect(versionOrigin({ id: "v-2", parent: "v-1", origin: "word" })).toBe("Saved from Word")
   })
+})
+
+
+test("pending Word recovery requests a separate saved version without forwarding operation credentials", async () => {
+  let sent: {url:string; init?:RequestInit} | undefined
+  globalThis.fetch = (async (url,init) => { sent = {url:String(url),init}; return Response.json({name:"Agreement (saved copy).docx"}) }) as typeof fetch
+  const pending = entry({documentId:"document-one", currentVersion:"version-one", nativeOperation:{sequence:7,state:"pending"}})
+  expect(await copySavedWordRecovery("matter",pending,"Agreement (saved copy).docx")).toEqual({name:"Agreement (saved copy).docx"})
+  expect(sent!.url).toContain("/matters/matter/documents/word/recovery-copy")
+  expect(JSON.parse(sent!.init!.body as string)).toEqual({source:"Agreement.docx",name:"Agreement (saved copy).docx",document:"document-one",version:"version-one",sequence:7})
+  expect(wordWarning([pending],"Agreement.docx")).toContain("Unsent Word edits will not be in the copy")
+  await expect(copySavedWordRecovery("matter",entry(),"copy.docx")).rejects.toThrow("Refresh Word status")
 })

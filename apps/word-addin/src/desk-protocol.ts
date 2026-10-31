@@ -1,9 +1,15 @@
 import type { WordSelectionSnapshot } from "./selection"
+import type { WordChatAttachment } from "../../../dochaus/lib/word-chat-contract"
 
 export type DeskView = "documents" | "compare"
 
 export function isDeskView(value: unknown): value is DeskView {
   return value === "documents" || value === "compare"
+}
+
+/** Attachment mode uses the same bridge, but never mounts the document desk. */
+export function isDeskDialogView(value: unknown): value is DeskView | "attachments" {
+  return isDeskView(value) || value === "attachments"
 }
 
 export type DeskRequest =
@@ -14,9 +20,18 @@ export type DeskRequest =
   | { action: "open"; sourceId: string; expectedHash: string }
   | { action: "versions" }
   | { action: "compare"; baseVersion: string; currentVersion: string }
+  | { action: "document-upload"; name: string; data: string }
+  | { action: "chat-materials" }
+  | { action: "chat-attach"; material: WordChatAttachment }
+  | { action: "chat-upload"; name: string; data: string; mode: "request" | "matter" }
 
 const PROTOCOL = "dochaus.source-desk"
 export const DESK_MESSAGE_LIMIT = 1024 * 1024
+export const CHAT_UPLOAD_MAX_BYTES = 16 * 1024 * 1024
+export const CHAT_UPLOAD_MAX_BASE64 = Math.ceil(CHAT_UPLOAD_MAX_BYTES / 3) * 4
+// Only a validated upload request gets this allowance. Existing previews,
+// responses and every other request retain the 1 MiB boundary.
+export const DESK_UPLOAD_MESSAGE_LIMIT = CHAT_UPLOAD_MAX_BASE64 + 8192
 
 type Base = { protocol: typeof PROTOCOL; version: 1; channel: string }
 export type DeskPayload =
@@ -42,6 +57,24 @@ function reference(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 512 && !/[\u0000-\u001f]/.test(value)
 }
 
+export function isChatUploadName(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 256 &&
+    !/[\\/\u0000-\u001f\u007f]/.test(value) && /\.(docx|pdf|txt|md|csv|xlsx|rtf)$/i.test(value)
+}
+
+function attachment(value: unknown): value is WordChatAttachment {
+  return record(value) && keys(value, ["kind", "id", "hash"]) &&
+    ["source", "playbook", "upload"].includes(String(value.kind)) && reference(value.id) &&
+    typeof value.hash === "string" && /^[a-f0-9]{64}$/.test(value.hash)
+}
+
+function uploadData(value: unknown): value is string {
+  if (typeof value !== "string" || !value.length || value.length > CHAT_UPLOAD_MAX_BASE64 || value.length % 4 !== 0 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) return false
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0
+  return value.length / 4 * 3 - padding <= CHAT_UPLOAD_MAX_BYTES
+}
+
 function snapshot(value: unknown): value is WordSelectionSnapshot {
   return (
     record(value) &&
@@ -65,7 +98,15 @@ export function isDeskRequest(value: unknown): value is DeskRequest {
     case "selection":
     case "sources":
     case "versions":
+    case "chat-materials":
       return keys(value, ["action"])
+    case "chat-attach":
+      return keys(value, ["action", "material"]) && attachment(value.material)
+    case "chat-upload":
+      return keys(value, ["action", "name", "data", "mode"]) && isChatUploadName(value.name) &&
+        uploadData(value.data) && (value.mode === "request" || value.mode === "matter")
+    case "document-upload":
+      return keys(value, ["action", "name", "data"]) && isChatUploadName(value.name) && uploadData(value.data)
     case "show":
       return keys(value, ["action", "selection"]) && snapshot(value.selection)
     case "source":
@@ -90,12 +131,14 @@ export function isDeskRequest(value: unknown): value is DeskRequest {
 
 export function deskMessage(channel: string, value: DeskPayload): string {
   const encoded = JSON.stringify({ protocol: PROTOCOL, version: 1, channel, ...value })
-  if (encoded.length > DESK_MESSAGE_LIMIT) throw new Error("This preview is too large. Choose a smaller document.")
+  const limit = value.kind === "request" && ["chat-upload", "document-upload"].includes(value.request.action) && isDeskRequest(value.request)
+    ? DESK_UPLOAD_MESSAGE_LIMIT : DESK_MESSAGE_LIMIT
+  if (encoded.length > limit) throw new Error("This file is too large. Choose a smaller document.")
   return encoded
 }
 
 export function readDeskMessage(encoded: unknown): DeskMessage | undefined {
-  if (typeof encoded !== "string" || encoded.length > DESK_MESSAGE_LIMIT) return
+  if (typeof encoded !== "string" || encoded.length > DESK_UPLOAD_MESSAGE_LIMIT) return
   let value: unknown
   try {
     value = JSON.parse(encoded)
@@ -103,6 +146,8 @@ export function readDeskMessage(encoded: unknown): DeskMessage | undefined {
     return
   }
   if (!record(value) || value.protocol !== PROTOCOL || value.version !== 1 || !identifier(value.channel)) return
+  if (encoded.length > DESK_MESSAGE_LIMIT &&
+    !(value.kind === "request" && isDeskRequest(value.request) && ["chat-upload", "document-upload"].includes(value.request.action))) return
   const base = ["protocol", "version", "channel", "kind"]
   if (["ready", "connected", "disconnect"].includes(String(value.kind))) {
     if (keys(value, base)) return value as DeskMessage

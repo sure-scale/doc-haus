@@ -5,15 +5,19 @@ import path from "node:path"
 import type { DeskComparison, DeskSource, DeskSourcePreview, DeskSources, DeskVersion, DeskVersions } from "../../../dochaus/lib/word-source-desk-contract"
 import { compareVersions } from "../../../dochaus/lib/version-compare"
 import { readCurrentVersion, readDocumentVersions, readVersion, readVersionBytes, sha256Hex, type VersionRow } from "./document-versions"
-import { extractDocumentText } from "./ingest"
+import { extractDocumentText, ingestDocument, SourceDocumentConflictError } from "./ingest"
+import { EmbeddingModelUnavailableError } from "./embed"
 import { documentPreviewBlocks } from "./document-preview"
 import { readDocumentTarget } from "./registered-document"
 import { documentRegistryIdentity } from "./document-identity"
 import type { WordGrant } from "./word-grants"
+import { serializeMatter } from "./matter-session"
 
 type Auth = { matter: { id: string; title: string; dir: string }; grant: WordGrant; target: { name: string; docPath: string } }
 type Registered = { id: number; name: string; doc_path: string; role: "source" | "deliverable" }
 const LIMIT = 128_000
+const UPLOAD_FILE_LIMIT = 16 * 1024 * 1024
+const UPLOAD_BODY_LIMIT = 17 * 1024 * 1024
 const refuse = (c: Context, status: 400 | 401 | 404 | 409 | 410 | 413 | 422, code: string, error: string) => c.json({ code, error }, status)
 const unavailable = (c: Context) => refuse(c, 401, "word_link_revoked", "This Word connection is no longer valid. Reopen the document from doc.haus.")
 
@@ -62,9 +66,66 @@ async function input(c: Context): Promise<Record<string, unknown> | undefined> {
   catch { return }
 }
 
-/** Source Desk reads use the existing linked-document grant and never touch the
- * editing lease or word_sessions. All version/preview bytes are retained bytes. */
+/** Source Desk uses the linked-document grant without touching editing ownership.
+ * Uploads keep both; version/preview reads use exact retained bytes. */
 export function installWordSourceDesk(app: Hono, authenticate: (c: Context) => Auth | undefined) {
+  app.post("/word/desk/upload", async c => {
+    const auth = authenticate(c)
+    if (!auth) return unavailable(c)
+    c.header("Cache-Control", "no-store")
+    const tooLarge = () => refuse(c, 413, "desk_upload_large", "Choose a document up to 16 MB.")
+    if (Number(c.req.header("content-length") ?? "0") > UPLOAD_BODY_LIMIT) return tooLarge()
+    if (!/^multipart\/form-data\s*;/i.test(c.req.header("content-type") ?? ""))
+      return refuse(c, 400, "invalid_desk_upload", "Choose a document to upload.")
+    // Bound chunked uploads before allocating a multipart body or parsing it.
+    const reader = c.req.raw.body?.getReader()
+    if (!reader) return refuse(c, 400, "invalid_desk_upload", "Choose a document to upload.")
+    const chunks: Uint8Array[] = []
+    let received = 0
+    try {
+      for (;;) {
+        const { value, done } = await reader.read()
+        if (done) break
+        received += value.byteLength
+        if (received > UPLOAD_BODY_LIMIT) { await reader.cancel().catch(() => {}); return tooLarge() }
+        chunks.push(value)
+      }
+    } catch { return refuse(c, 400, "desk_upload_interrupted", "The upload was interrupted. Choose the file again.") }
+    finally { reader.releaseLock() }
+    let form: FormData
+    try {
+      form = await new Request(c.req.url, { method: "POST", headers: { "Content-Type": c.req.header("content-type")! }, body: new Uint8Array(Buffer.concat(chunks)) }).formData()
+    } catch { return refuse(c, 400, "invalid_desk_upload", "Choose a document to upload.") }
+    const fields = [...form.entries()]
+    const value = fields[0]?.[1] as unknown
+    if (fields.length !== 1 || fields[0]?.[0] !== "file" || !(value instanceof File))
+      return refuse(c, 400, "invalid_desk_upload", "Upload one file without additional options.")
+    const file = value
+    if (file.size < 1) return refuse(c, 400, "desk_upload_empty", "Choose a document with content.")
+    if (file.size > UPLOAD_FILE_LIMIT) return tooLarge()
+    if (!file.name || file.name.length > 256 || /[\\/\u0000-\u001f\u007f]/.test(file.name) || !/\.(docx|pdf|txt|md|csv|xlsx|rtf)$/i.test(file.name))
+      return refuse(c, 400, "desk_upload_format", "Choose a Word, PDF, text, spreadsheet or RTF document.")
+    const bytes = Buffer.from(await file.arrayBuffer())
+    return serializeMatter(auth.matter.dir, async () => {
+      // Waiting for the upload and queue must not retain a revoked grant or
+      // move the write to a caller-selected matter. Every upload keeps both.
+      const live = authenticate(c)
+      if (!live || live.matter.id !== auth.matter.id || live.matter.dir !== auth.matter.dir ||
+        live.grant.document_id !== auth.grant.document_id || live.grant.token_hash !== auth.grant.token_hash) return unavailable(c)
+      try {
+        const result = await ingestDocument(live.matter.dir, file.name, bytes, { existing: "keep-both" })
+        if (!authenticate(c)) return unavailable(c)
+        return c.json({ name: result.name })
+      } catch (error) {
+        if (error instanceof EmbeddingModelUnavailableError)
+          return c.json({ code: "desk_upload_unavailable", error: "Document search is unavailable. Keep doc.haus running and try again." }, 503)
+        if (error instanceof SourceDocumentConflictError)
+          return refuse(c, 409, "desk_upload_changed", "The document list changed. Choose the file again.")
+        return refuse(c, 422, "desk_upload_failed", "This document could not be read. Check the file and try again.")
+      }
+    })
+  })
+
   app.post("/word/desk/sources", c => {
     const auth = authenticate(c)
     if (!auth) return unavailable(c)

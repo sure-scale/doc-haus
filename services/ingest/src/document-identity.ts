@@ -28,9 +28,7 @@ export function resolveMatterDocumentTarget(matterDir: string, fileName: string)
   return { name, docPath, identity: canonicalArtifactIdentity(root, name) }
 }
 
-export function documentRegistryIdentity(docPath: string) {
-  return canonicalArtifactIdentity(path.dirname(docPath), path.basename(docPath))
-}
+export { documentRegistryIdentity } from "../../../dochaus/lib/document-registry-role"
 
 function lstatOrUndefined(file: string) {
   try {

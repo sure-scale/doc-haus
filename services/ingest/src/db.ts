@@ -1,3 +1,4 @@
+import { documentRegistryRole } from "../../../dochaus/lib/document-registry-role"
 import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
 import path from "node:path"
@@ -370,6 +371,8 @@ export function openDb(matterDir: string, options: { startup?: boolean; commit?:
   `)
   if (!hasColumn(db, "redlines", "review_comment"))
     db.run("ALTER TABLE redlines ADD COLUMN review_comment TEXT NOT NULL DEFAULT ''")
+  if (!hasColumn(db, "redlines", "formatting_json"))
+    db.run("ALTER TABLE redlines ADD COLUMN formatting_json TEXT")
   if (!hasColumn(db, "redlines", "target_json"))
     db.run("ALTER TABLE redlines ADD COLUMN target_json TEXT")
   // Document versions (#268): see document-versions.ts.
@@ -412,13 +415,14 @@ export type RedlineRow = {
   id: number
   doc_path: string
   doc_name: string
-  scope: "phrase" | "clause"
+  scope: "phrase" | "clause" | "table_row" | "paragraph_spacing" | "paragraph_insert"
   find_text: string
   old_text: string
   new_text: string
   author: string
   review_comment: string
   anchor_id: string | null
+  formatting_json?: string | null
   target_json?: string | null
   // 'superseded': a later proposal on the same paragraph replaced this one before
   // review (set by the redline tools), so it never reaches the pending queue.
@@ -483,10 +487,7 @@ export function listSourceDocuments(db: Database) {
 }
 
 export function getDocumentRole(db: Database, docPath: string): "source" | "deliverable" | null {
-  const roles = [...new Set(matchingDocumentRows(db, docPath).map((row) => row.role))]
-  if (roles.length > 1)
-    throw new Error(`One physical matter document has conflicting source and deliverable registry roles.`)
-  return roles[0] ?? null
+  return documentRegistryRole(db, docPath)
 }
 
 export function getDocumentSourceProvenance(db: Database, docPath: string): "supplied-chronology" | null {

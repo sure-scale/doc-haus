@@ -75,6 +75,7 @@ const server = Bun.serve({
   async fetch(request) {
     const url = new URL(request.url)
     const route = `${request.method} ${url.pathname}`
+    if (route === "GET /favicon.ico") return new Response(null, { status: 204 })
     if (route === "GET /harness.js") return new Response(script, { headers: { "content-type": "text/javascript" } })
     if (route === "GET /") return new Response(`<html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{margin:0}${css}</style><div id="root" style="display:flex;flex-direction:column;height:100vh"></div><script type="module" src="/harness.js"></script></html>`, { headers: { "content-type": "text/html" } })
     if (route === "GET /ingest/matters") return json(Object.values(matters))

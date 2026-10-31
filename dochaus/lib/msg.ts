@@ -441,6 +441,18 @@ const MAX_RTF_NESTING = 32_000_000
 function rtfBody(compressed: Uint8Array): MsgBody | undefined {
   const rtf = inflateRtf(compressed)
   if (!rtf) return
+  return readRtfBody(rtf)
+}
+
+/** Standalone RTF uses the same bounded reader as Outlook's inflated body. */
+export function rtfToText(bytes: Buffer | Uint8Array): string | undefined {
+  if (bytes.length > MAX_RTF_BYTES) return
+  const rtf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  if (!/^\{\\rtf1\b/.test(rtf.subarray(0, 16).toString("ascii"))) return
+  return readRtfBody(rtf)?.text
+}
+
+function readRtfBody(rtf: Buffer): MsgBody | undefined {
   const shape = rtfShape(rtf)
   if (!shape) return
   if (shape.encapsulated) {

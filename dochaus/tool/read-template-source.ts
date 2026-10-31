@@ -1,6 +1,6 @@
 import { tool } from "./legacy-definition"
 import { attachedTemplateDraft, templateDraftRequest } from "../lib/template-draft-client"
-import type { DocxRevisionPacket } from "../lib/docx-amendments"
+import type { DocxRevisionPacket, DocxTableContext } from "../lib/docx-amendments"
 import { UNTRUSTED_DOCUMENT_NOTICE } from "../lib/untrusted"
 import { detectInjection } from "../lib/untrusted-text"
 
@@ -22,7 +22,7 @@ export default tool({
     if (offset > total || offset === total && textOffset > 0)
       throw new Error("The paragraph offset is beyond this document. Use the previous page's continuation or start at offset=0.")
     const page = [] as { index: number; paragraph_handle: string; scope: string; text: string; text_offset: number;
-      total_characters: number; table: { table: number; row: number; column: number } | null }[]
+      total_characters: number; table: Pick<DocxTableContext, "table" | "row" | "column" | "row_span" | "column_span" | "vertical_merge" | "unavailable_reason"> | null }[]
     let remaining = args.limit ?? 4000
     let index = offset
     let nextTextOffset = textOffset
@@ -34,7 +34,12 @@ export default tool({
       const returned = Array.from(text).length
       page.push({ index, paragraph_handle: paragraph.paragraph_handle, scope: paragraph.scope, text,
         text_offset: nextTextOffset, total_characters: characters.length,
-        table: paragraph.table ? { table: paragraph.table.table, row: paragraph.table.row, column: paragraph.table.column } : null })
+        table: paragraph.table ? { table: paragraph.table.table, row: paragraph.table.row, column: paragraph.table.column,
+          ...paragraph.table.row_span !== undefined ? { row_span: paragraph.table.row_span } : {},
+          ...paragraph.table.column_span !== undefined ? { column_span: paragraph.table.column_span } : {},
+          ...paragraph.table.vertical_merge ? { vertical_merge: paragraph.table.vertical_merge } : {},
+          ...paragraph.table.unavailable_reason ? { unavailable_reason: paragraph.table.unavailable_reason } : {},
+        } : null })
       remaining -= returned
       nextTextOffset += returned
       if (nextTextOffset < characters.length) break

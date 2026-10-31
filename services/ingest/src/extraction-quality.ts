@@ -31,6 +31,7 @@ export type ExtractionQuality =
 export type ExtractionFacts =
   | { format: "docx" }
   | { format: "markdown" }
+  | { format: "text" }
   | { format: "pdf"; pages: number }
   | { format: "email"; body: string; attachments: number; bodyUnreadable?: true }
   | { format: "workbook"; cells: number; formulasWithoutValue: number }

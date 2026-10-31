@@ -332,10 +332,12 @@ async function project(bytes: Uint8Array) {
 
 async function amend(bytes: Uint8Array, edits: DocxParagraphEdit[]) {
   try {
-    const edited = await applyDocxParagraphEdits(bytes, edits)
-    const cleaned = cleanChangedLinks(edited.bytes, edits)
+    // Remove the links that carry replaced source text before editing: the
+    // writer never changes a link's text, and these links are removed anyway.
+    const cleaned = cleanChangedLinks(bytes, edits)
+    let addressed = edits
     if (cleaned.notes.length) {
-      const before = await createDocxRevision(edited.bytes)
+      const before = await createDocxRevision(bytes)
       const after = await createDocxRevision(cleaned.bytes)
       const visible = (revision: typeof before) => revision.paragraphs.map(({ text, scope, style_id, formatting, table }) => ({
         text, scope, style_id, table,
@@ -344,8 +346,12 @@ async function amend(bytes: Uint8Array, edits: DocxParagraphEdit[]) {
         formatting: formatting.map(({ text, formatting: { hyperlinkUrl: _target, ...formatting } }) => ({ text, formatting })),
       }))
       if (JSON.stringify(visible(before)) !== JSON.stringify(visible(after))) throw new Error("link_cleanup_changed_visible_content")
+      // The same paragraphs in the same order: address each edit to its paragraph in the cleaned copy.
+      const handles = new Map(before.paragraphs.map((paragraph, index) => [paragraph.paragraph_handle, after.paragraphs[index]!.paragraph_handle]))
+      addressed = edits.map(edit => ({ ...edit, paragraph_handle: handles.get(edit.paragraph_handle) ?? edit.paragraph_handle }))
     }
-    return { ...edited, bytes: cleaned.bytes, notes: cleaned.notes }
+    const edited = await applyDocxParagraphEdits(cleaned.bytes, addressed)
+    return { ...edited, notes: cleaned.notes }
   } catch {
     throw new TemplateDraftError("The proposed edits could not be safely applied. Read the current template and use its exact paragraph handles and wording; structural or field edits need a clean Word copy.", 409)
   }

@@ -17,7 +17,7 @@ export function renderManifest(origin: string): string {
   <ProviderName>doc.haus</ProviderName>
   <DefaultLocale>en-GB</DefaultLocale>
   <DisplayName DefaultValue="doc.haus"/>
-  <Description DefaultValue="Save your Word document back to its matter in doc.haus."/>
+  <Description DefaultValue="Chat, review amendments and save your Word document to doc.haus."/>
   <IconUrl DefaultValue="${base}/assets/icon.png"/>
   <HighResolutionIconUrl DefaultValue="${base}/assets/icon.png"/>
   <SupportUrl DefaultValue="https://doc.haus"/>
@@ -44,7 +44,7 @@ export function renderManifest(origin: string): string {
       <bt:Images><bt:Image id="Icon" DefaultValue="${base}/assets/icon.png"/></bt:Images>
       <bt:Urls><bt:Url id="Pane.Url" DefaultValue="${pane}"/></bt:Urls>
       <bt:ShortStrings><bt:String id="Group.Label" DefaultValue="doc.haus"/><bt:String id="Button.Label" DefaultValue="doc.haus"/></bt:ShortStrings>
-      <bt:LongStrings><bt:String id="Button.Description" DefaultValue="Open the doc.haus pane to save, read matter documents and compare saved versions."/></bt:LongStrings>
+      <bt:LongStrings><bt:String id="Button.Description" DefaultValue="Chat, review amendments, read matter documents and compare saved versions."/></bt:LongStrings>
     </Resources>
   </VersionOverrides>
 </OfficeApp>

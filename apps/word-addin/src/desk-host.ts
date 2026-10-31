@@ -1,4 +1,4 @@
-import { deskMessage, isDeskRequest, isDeskView, readDeskMessage, type DeskRequest, type DeskPayload } from "./desk-protocol"
+import { deskMessage, isDeskRequest, isDeskDialogView, readDeskMessage, type DeskRequest, type DeskPayload } from "./desk-protocol"
 import { SelectionError } from "./selection"
 
 type Result<T> = { status: string; value: T }
@@ -64,6 +64,7 @@ export async function openDeskDialog(options: {
   handleRequest(request: DeskRequest): Promise<unknown>
   onClose?(): void
   office?: DeskOffice
+  dimensions?: { height: number; width: number }
 }): Promise<{ close(): void }> {
   const office = options.office ?? runtime()
   const origin = secureOrigin(window.location.origin)
@@ -77,7 +78,7 @@ export async function openDeskDialog(options: {
     Array.from(url.searchParams.keys()).some((key) => key !== "version" && key !== "view") ||
     url.searchParams.getAll("version").length > 1 ||
     url.searchParams.getAll("view").length > 1 ||
-    (url.searchParams.has("view") && !isDeskView(url.searchParams.get("view")))
+    (url.searchParams.has("view") && !isDeskDialogView(url.searchParams.get("view")))
   )
     throw new Error("The floating document window must use this doc.haus connection.")
   await office.onReady()
@@ -190,7 +191,8 @@ export async function openDeskDialog(options: {
       resolve({ close: () => finish(true) })
     }
     try {
-      office.context.ui.displayDialogAsync(url.href, { height: 75, width: 80, displayInIframe: false }, opened)
+      const { height, width } = options.dimensions ?? { height: 75, width: 80 }
+      office.context.ui.displayDialogAsync(url.href, { height, width, displayInIframe: false }, opened)
     } catch {
       activeDialog = false
       reject(new Error("Word could not open the floating desk. Use Open in this pane."))

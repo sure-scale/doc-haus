@@ -156,6 +156,8 @@ test("two initial panes only inspect; an explicit owner saves and syncs while th
   expect(first.sync.snapshot().canSave).toBe(true)
   expect(first.sync.snapshot().message).toContain("Ready to save")
   expect(await first.sync.refresh()).toBe(true) // Deliberate Start saving here.
+  expect(api.writes).toEqual([])
+  expect(await first.sync.save()).toBe(true)
   expect(api.events.indexOf("first:claim:v1")).toBeLessThan(api.events.indexOf("first:upload:v1:fence-1"))
   expect(first.sync.snapshot().status).toBe("saved")
   first.edit(2)
@@ -259,6 +261,8 @@ test("takeover uses the displayed version and generation; a raced observation ca
   await owner.sync.takeover() // No displayed other owner; cannot manufacture ownership.
   expect(api.events.some((event) => event.includes(":takeover:"))).toBe(false)
   await owner.sync.refresh()
+  expect(api.writes).toEqual([])
+  expect(await owner.sync.save()).toBe(true)
   const current = owner.sync.snapshot().acknowledgement!.base
   // A fresh copy of the current version can deliberately take over, never a stale copy.
   const currentStandby = pane(api.transport("standby"), { base: current })
@@ -286,6 +290,8 @@ test("release and expiry never silently reacquire; Check status does not unexpec
   const view = pane(api.transport("pane"))
   await view.sync.start()
   await view.sync.refresh()
+  expect(api.writes).toEqual([])
+  expect(await view.sync.save()).toBe(true)
   const writes = api.writes.length
   await view.sync.release()
   await view.sync.tick()

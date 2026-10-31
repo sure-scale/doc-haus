@@ -217,9 +217,14 @@ const decidable = (revision: MarkupRevision) => revision.status === "supported"
 const authorName = (name: string) => name.trim() || "No author named"
 
 // A paragraph's mark travels with a whole inserted, deleted or moved paragraph;
-// the reader shows it as a closing pilcrow, which the label says instead.
+// the reader shows it as a closing pilcrow, which the label says instead. A
+// table row or cell ends with its last paragraph's mark too; its badge names
+// the row or cell instead. Word reports a row as an insert or delete, so the
+// family, not the kind, says it is structural.
+const structural = (revision: MarkupRevision) =>
+  revision.kind === "structure" || (revision.kind !== "format" && STRUCTURE_DETAIL[revision.family] !== undefined)
 function wholeParagraph(revision: MarkupRevision) {
-  return revision.family !== "paragraph_mark" && revision.kind !== "format" && revision.text.endsWith("¶")
+  return revision.family !== "paragraph_mark" && revision.kind !== "format" && !structural(revision) && revision.text.endsWith("¶")
 }
 
 export function changeLabel(revision: MarkupRevision) {
@@ -252,12 +257,12 @@ function changeDetail(revision: MarkupRevision) {
   if (wholeParagraph(revision)) return "Whole paragraph"
   const container = revision.kind === "format" ? revision.locations.find((place) => place.container)?.container : undefined
   if (container) return CONTAINER_DETAIL[container]
-  return revision.kind === "structure" ? STRUCTURE_DETAIL[revision.family] : undefined
+  return structural(revision) ? STRUCTURE_DETAIL[revision.family] : undefined
 }
 
 function changeText(revision: MarkupRevision) {
   if (revision.family === "paragraph_mark") return ""
-  return wholeParagraph(revision) ? revision.text.slice(0, -1) : revision.text
+  return wholeParagraph(revision) || structural(revision) ? revision.text.replace(/¶$/, "") : revision.text
 }
 
 const clip = (text: string, max = 48) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text)

@@ -1,0 +1,17 @@
+.table-row-proposal { width: 100%; min-width: 0; max-width: 100%; margin: 0; color: var(--text); overflow-wrap: anywhere; }
+.table-row-proposal .table-row-title { margin: 0 0 8px; font-size: 0.8125rem; font-weight: 550; line-height: 1.5; }
+.table-row-unavailable { margin: 0 0 8px; color: var(--muted); font-size: 0.75rem; line-height: 1.5; overflow-wrap: anywhere; }
+.table-row-proposal .table-row-scroll { width: 100%; min-width: 0; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; border: 1px solid var(--border); border-radius: var(--radius-sm); scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.table-row-proposal .table-row-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.table-row-proposal table { width: 100%; table-layout: fixed; border-collapse: collapse; color: var(--text); font-family: inherit; font-size: 0.75rem; line-height: 1.5; text-align: left; }
+.table-row-proposal :is(th, td) { padding: 8px; border: 0; border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); vertical-align: top; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
+.table-row-proposal tr > :last-child { border-right: 0; }
+.table-row-proposal tbody tr:last-child > * { border-bottom: 0; }
+.table-row-proposal thead th { color: var(--muted); background: var(--bg); font-size: 0.625rem; font-weight: 500; }
+.table-row-proposal tr > th:first-child { width: 5.25rem; font-size: 0.625rem; font-weight: 550; }
+.table-row-proposal .table-row-reference { color: var(--text-secondary); }
+.table-row-proposal .table-row-new > * { color: var(--accent); background: var(--accent-soft); }
+.table-row-proposal .table-row-delete > * { color: var(--danger); background: var(--danger-soft); }
+.table-row-proposal .table-row-empty { color: var(--muted); white-space: inherit; }
+.table-row-proposal .table-row-cell-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.table-row-proposal .table-row-cell-note { display: block; width: fit-content; margin-top: 4px; padding: 1px 4px; border: 1px solid var(--border); border-radius: 3px; color: var(--muted); background: var(--panel); font-size: 0.625rem; font-style: italic; white-space: normal; }

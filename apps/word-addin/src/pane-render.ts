@@ -1,6 +1,7 @@
 import type { PaneState } from "./sync"
 import { savePresentation } from "./pane-presentation"
 import { WORD_LAUNCH_URL, loopbackWordOrigin } from "./bootstrap-contract"
+import { setupPaneLayout } from "./pane-layout"
 
 function update<T, K extends keyof T>(target: T, key: K, value: T[K]): void {
   if (target[key] !== value) target[key] = value
@@ -19,9 +20,12 @@ export function configureConnectionRecovery(document: Document, origin: string) 
 
 /** Update only changed DOM values; importing this module never starts Office. */
 export function createPaneRenderer(document: Document) {
+  setupPaneLayout(document)
   const element = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
   const badge = element("status"), message = element("message")
   const save = element<HTMLButtonElement>("save")
+  const version = element("save-version")
+  const details = element("save-details-toggle")
   const takeover = element<HTMLButtonElement>("takeover"), release = element<HTMLButtonElement>("release")
   return (state: PaneState): void => {
     const view = savePresentation(state)
@@ -32,8 +36,15 @@ export function createPaneRenderer(document: Document) {
     update(message, "textContent", view.message)
     update(save, "disabled", state.busy || !state.canSave || state.status === "done")
     const connection = state.connection
+    const number = connection?.version.base?.number ?? state.acknowledgement?.number
+    update(version, "textContent", number === undefined ? "" : `v${number}`)
+    update(version, "title", number === undefined ? "" : `This Word copy: version ${number}`)
+    update(version, "hidden", number === undefined)
+    const detailLabel = `${view.badge}${number === undefined ? "" : `, version ${number}`}. Show save status and recovery details`
+    if (details.getAttribute("aria-label") !== detailLabel) details.setAttribute("aria-label", detailLabel)
     const stale = connection?.version.state === "stale"
-    update(save, "hidden", stale)
+    const confirmed = view.tone === "saved" && state.content === "confirmed" && !state.busy && !state.connectionFailed
+    update(save, "hidden", stale || confirmed)
     update(element("load-latest"), "hidden", !stale)
     update(element("version-state"), "textContent", view.mismatch ?? "")
     update(element("version-state"), "hidden", !view.mismatch)

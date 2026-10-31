@@ -1,4 +1,5 @@
 import type { RedlineProposal } from "./turn-model"
+import { formattingDescription } from "../formatting-description"
 import { basename } from "./step-labels"
 
 // In-chat preview of the redlines a turn proposed: each shows the prior wording
@@ -20,6 +21,7 @@ export default function RedlineView({
           <div className="redline-doc">{basename(r.document)}</div>
           {r.oldText && <div className="redline-old">{r.oldText}</div>}
           <div className="redline-new">{r.newText}</div>
+          {r.formatting && <div className="redline-comment">{formattingDescription(r.formatting)}</div>}
           {r.comment && <div className="redline-comment">{r.comment}</div>}
           <button className="linklike redline-view" onClick={() => onView(basename(r.document), r.id)}>
             View in document

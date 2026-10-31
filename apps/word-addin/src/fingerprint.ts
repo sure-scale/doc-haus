@@ -1,5 +1,6 @@
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync } from "fflate"
+import { WORD_ADDIN_ID, WORD_LINK_SETTING } from "../../../dochaus/lib/word-addin-contract"
 
 const wordNamespaces = new Set([
   "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
@@ -13,8 +14,18 @@ const corePropertiesNamespace = "http://schemas.openxmlformats.org/package/2006/
 const dublinCoreTermsNamespace = "http://purl.org/dc/terms/"
 const schemaInstanceNamespace = "http://www.w3.org/2001/XMLSchema-instance"
 const xmlNamespace = "http://www.w3.org/XML/1998/namespace"
+const xmlnsNamespace = "http://www.w3.org/2000/xmlns/"
+const relationshipsNamespace = "http://schemas.openxmlformats.org/package/2006/relationships"
+const webextensionNamespace = "http://schemas.microsoft.com/office/webextensions/webextension/2010/11"
+const rootRelationshipTypes = new Set([
+  "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument",
+  "http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties",
+  "http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties",
+  "http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties",
+  "http://schemas.microsoft.com/office/2011/relationships/webextensiontaskpanes",
+])
 const word2010Namespace = "http://schemas.microsoft.com/office/word/2010/wordml"
-const cachedCountProperties = ["Words", "Characters", "Paragraphs", "CharactersWithSpaces"] as const
+const cachedCountProperties = ["Words", "Characters", "Lines", "Paragraphs", "CharactersWithSpaces"] as const
 const proofingAnchors = new Set(["spellStart", "spellEnd", "gramStart", "gramEnd"])
 const flowContainers = new Set(["body", "tbl", "tr", "tc", "sdt", "sdtContent", "footnote", "endnote", "comment"])
 // Only properties with ordinary character-format semantics. Other properties,
@@ -29,6 +40,34 @@ const simpleFormatAttributes: Record<string, readonly string[]> = {
   sz: ["val"],
   szCs: ["val"],
   color: ["val"],
+}
+
+/** Package-root relationship IDs are local labels, not document content. Word
+ * may reorder and relabel them on reopen. Only familiar standard records are
+ * compared this way; signatures, extensions and ambiguous IDs stay opaque. */
+function rootRelationshipContent(root: Element): Uint8Array | undefined {
+  if (root.namespaceURI !== relationshipsNamespace || root.localName !== "Relationships" ||
+    Array.from(root.attributes).some(attribute => attribute.namespaceURI !== xmlnsNamespace)) return
+  const ids = new Set<string>(), records: string[][] = []
+  for (const child of Array.from(root.childNodes)) {
+    if ((child.nodeType === 3 || child.nodeType === 4) && !child.nodeValue?.trim()) continue
+    if (child.nodeType !== 1) return
+    const element = child as Element
+    if (element.namespaceURI !== relationshipsNamespace || element.localName !== "Relationship" ||
+      element.childNodes.length || Array.from(element.attributes).some(attribute =>
+        Boolean(attribute.namespaceURI) || !["Id", "Type", "Target", "TargetMode"].includes(attribute.localName))) return
+    const id = element.getAttribute("Id"), type = element.getAttribute("Type"), target = element.getAttribute("Target")
+    const mode = element.hasAttribute("TargetMode") ? element.getAttribute("TargetMode") : null
+    if (!id || !/^[A-Za-z_][\w.-]*$/.test(id) || ids.has(id) || !type || !rootRelationshipTypes.has(type) ||
+      !target || (mode !== null && !["Internal", "External"].includes(mode))) return
+    ids.add(id)
+    records.push([type, target, mode ?? ""])
+  }
+  records.sort((left, right) => {
+    const a = JSON.stringify(left), b = JSON.stringify(right)
+    return a < b ? -1 : a > b ? 1 : 0
+  })
+  return strToU8(JSON.stringify(records))
 }
 
 function normalizeNumericProperties(root: Element, namespace: string, names: readonly string[], max: number): boolean {
@@ -284,11 +323,34 @@ function normalizeSeparatorParagraphIds(name: string, root: Element): boolean {
   return changed
 }
 
+function normalizeStyleSessionIds(name: string, root: Element): boolean {
+  if (name !== "word/styles.xml" || root.localName !== "styles") return false
+  const namespace = root.namespaceURI!
+  let changed = false
+  for (const node of Array.from(root.childNodes)) {
+    if (node.nodeType !== 1) continue
+    const style = node as Element
+    if (style.namespaceURI !== namespace || style.localName !== "style") continue
+    const markers = Array.from(style.childNodes).filter(child => child.nodeType === 1 &&
+      (child as Element).namespaceURI === namespace && (child as Element).localName === "rsid") as Element[]
+    if (markers.length !== 1) continue
+    const marker = markers[0]!, attribute = marker.attributes[0]
+    if (marker.childNodes.length || marker.attributes.length !== 1 || attribute?.namespaceURI !== namespace ||
+      attribute.localName !== "val" || !/^[\da-f]{8}$/i.test(attribute.value)) continue
+    // This leaf records when the style was edited, not its formatting or a
+    // tracked change. Word may omit it when reopening the same saved package.
+    style.removeChild(marker)
+    changed = true
+  }
+  return changed
+}
+
 function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
   const wordPart = name.startsWith("word/") && name.endsWith(".xml")
   const extendedProperties = name === "docProps/app.xml"
   const coreProperties = name === "docProps/core.xml"
-  if (!wordPart && !extendedProperties && !coreProperties) return bytes
+  const rootRelationships = name === "_rels/.rels"
+  if (!wordPart && !extendedProperties && !coreProperties && !rootRelationships) return bytes
   const text = strFromU8(bytes)
   const fail = () => {
     throw new Error("Word could not read the document for comparison. Keep the file and try saving again.")
@@ -300,6 +362,24 @@ function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
   )
   if (!doc.documentElement || doc.getElementsByTagName("parsererror").length) fail()
   const root = doc.documentElement
+  if (name.startsWith("word/webextensions/") && root.namespaceURI === webextensionNamespace && root.localName === "webextension") {
+    const refs = Array.from(root.getElementsByTagNameNS(webextensionNamespace, "reference"))
+    const properties = Array.from(root.getElementsByTagNameNS(webextensionNamespace, "property")).filter(property => property.getAttribute("name") === WORD_LINK_SETTING)
+    if (refs.length !== 1 || refs[0]!.getAttribute("id")?.toLowerCase() !== WORD_ADDIN_ID || properties.length !== 1) return bytes
+    const property = properties[0]!
+    if (property.childNodes.length || property.attributes.length !== 2 || !property.hasAttribute("name") || !property.hasAttribute("value")) return bytes
+    const raw = property.getAttribute("value")!
+    try {
+      const link: unknown = JSON.parse(raw)
+      if (!link || typeof link !== "object" || Array.isArray(link) || JSON.stringify(link) !== raw) return bytes
+      const data = link as Record<string, unknown>
+      if (data.version !== 1 || typeof data.baseVersion !== "string" || !data.baseVersion ||
+        !["origin", "apiOrigin", "matter", "document", "token"].every(key => typeof data[key] === "string" && data[key])) return bytes
+      property.setAttribute("value", JSON.stringify({ ...data, baseVersion: "" }))
+      return strToU8(new XMLSerializer().serializeToString(doc))
+    } catch { return bytes }
+  }
+  if (rootRelationships) return rootRelationshipContent(root) ?? bytes
   if (coreProperties) {
     if (root.namespaceURI !== corePropertiesNamespace || root.localName !== "coreProperties") return bytes
     let changed = normalizeNumericProperties(root, corePropertiesNamespace, ["revision"], Number.MAX_SAFE_INTEGER)
@@ -364,10 +444,22 @@ function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
     }
   }
   if (name === "word/settings.xml" && wordNamespaces.has(root.namespaceURI ?? "") && root.localName === "settings") {
+    const zoom = Array.from(root.childNodes).filter(node => node.nodeType === 1 &&
+      (node as Element).namespaceURI === root.namespaceURI && (node as Element).localName === "zoom")
     for (const node of Array.from(root.childNodes)) {
       if (node.nodeType !== 1) continue
       const element = node as Element
       if (wordNamespaces.has(element.namespaceURI ?? "") && element.localName === "rsids") {
+        root.removeChild(element)
+        changed = true
+      }
+      // Magnification is a view preference. Reopening Word may omit this
+      // direct leaf; preserve unknown attributes, duplicate or nested data.
+      if (zoom.length === 1 && zoom[0] === element &&
+        Array.from(element.attributes).every(attribute => attribute.namespaceURI === root.namespaceURI &&
+          (attribute.localName === "percent" ? /^\d{1,3}$/.test(attribute.value) && Number(attribute.value) > 0 && Number(attribute.value) <= 500 :
+            attribute.localName === "val" && ["none", "fullPage", "bestFit", "textFit"].includes(attribute.value))) &&
+        Array.from(element.childNodes).every(child => (child.nodeType === 3 || child.nodeType === 4) && !child.nodeValue?.trim())) {
         root.removeChild(element)
         changed = true
       }
@@ -391,6 +483,7 @@ function comparisonContent(name: string, bytes: Uint8Array): Uint8Array {
       }
     }
   }
+  changed = normalizeStyleSessionIds(name, root) || changed
   changed = normalizeSeparatorParagraphIds(name, root) || changed
   changed = normalizeTextFlow(name, root) || changed
   return changed ? strToU8(new XMLSerializer().serializeToString(doc)) : bytes

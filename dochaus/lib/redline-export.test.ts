@@ -183,11 +183,12 @@ test("a plain file previews a Request edits proposal and an older clause rewrite
 test("annotated exports reject missing, ambiguous, structural and missing-author targets instead of losing notes", async () => {
   const original = await document("Notice is five days.")
   expect(readDocxComments(await buildRedlined(original, [row(1, "five", "seven")]))).toHaveLength(1)
-  await expect(buildRedlined(original, [row(1, "missing", "seven")])).rejects.toThrow("missing or ambiguous")
+  await expect(buildRedlined(original, [row(1, "missing", "seven")])).rejects.toThrow("The change to “missing” cannot be written")
   await expect(buildRedlined(await document("Notice is five days.", "Notice is five days."), [row(1, "five", "seven")])).rejects.toThrow("ambiguous")
   await expect(buildRedlined(original, [row(1, "five", "seven\nmore")])).rejects.toThrow("paragraph-preserving")
   await expect(buildRedlined(original, [{ ...row(1, "five", "seven"), author: "" }])).rejects.toThrow("stored author")
-  await expect(buildRedlined(original, [row(1, "Notice is five days.", "")])).rejects.toThrow("exact changed paragraph")
+  // The preservation writer refuses to empty a paragraph before any comparison.
+  await expect(buildRedlined(original, [row(1, "Notice is five days.", "")])).rejects.toThrow("The change to “Notice is five days.”")
 })
 
 test("a regenerated comparison keeps first-made revision dates and exact bytes; only a new change takes the new time", async () => {

@@ -3970,13 +3970,23 @@ export type SessionUpdateInput = {
   readonly sessionID: { readonly sessionID: string }["sessionID"]
   readonly title?: {
     readonly title?: string | undefined
+    readonly expectedTitle?: string | undefined
     readonly metadata?: { readonly [x: string]: JsonValue } | undefined
     readonly permissions?:
       | ReadonlyArray<{ readonly action: string; readonly resource: string; readonly effect: "allow" | "deny" | "ask" }>
       | undefined
   }["title"]
+  readonly expectedTitle?: {
+    readonly title?: string | undefined
+    readonly expectedTitle?: string | undefined
+    readonly metadata?: { readonly [x: string]: JsonValue } | undefined
+    readonly permissions?:
+      | ReadonlyArray<{ readonly action: string; readonly resource: string; readonly effect: "allow" | "deny" | "ask" }>
+      | undefined
+  }["expectedTitle"]
   readonly metadata?: {
     readonly title?: string | undefined
+    readonly expectedTitle?: string | undefined
     readonly metadata?: { readonly [x: string]: JsonValue } | undefined
     readonly permissions?:
       | ReadonlyArray<{ readonly action: string; readonly resource: string; readonly effect: "allow" | "deny" | "ask" }>
@@ -3984,6 +3994,7 @@ export type SessionUpdateInput = {
   }["metadata"]
   readonly permissions?: {
     readonly title?: string | undefined
+    readonly expectedTitle?: string | undefined
     readonly metadata?: { readonly [x: string]: JsonValue } | undefined
     readonly permissions?:
       | ReadonlyArray<{ readonly action: string; readonly resource: string; readonly effect: "allow" | "deny" | "ask" }>

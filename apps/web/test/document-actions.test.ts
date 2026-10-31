@@ -102,3 +102,39 @@ test("uploaded document menus keep Word visible, dismiss accessibly and require 
     await browser.happyDOM.close()
   }
 })
+
+test("saved Word recovery explains the isolated copy and refreshes the document list", async () => {
+  const browser = new Window({ url: "http://localhost:5275" })
+  const names = ["window", "document", "HTMLElement", "Node", "Event", "IS_REACT_ACT_ENVIRONMENT"] as const
+  const saved = names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const)
+  Object.defineProperties(globalThis, Object.fromEntries(names.map(name => [name, {configurable:true,writable:true,value:name === "IS_REACT_ACT_ENVIRONMENT" ? true : browser[name as keyof Window]}])))
+  const originalFetch = globalThis.fetch
+  const { createRoot } = await import("react-dom/client")
+  const { WordOpenControl } = await import("../src/components/WordDocuments")
+  const container = document.createElement("div"); document.body.append(container)
+  const root = createRoot(container)
+  let changed = 0, copies = 0
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input)
+    if (url.endsWith("/word/config")) return Response.json({available:true,origin:"https://localhost:4502",manifestUrl:"https://localhost:4502/manifest.xml"})
+    if (url.endsWith("/documents/word")) return Response.json({documents:[{name:"Agreement.docx",open:false,overlap:false,currentVersion:"v1",currentNumber:1,documentId:"document",nativeOperation:{state:"pending",sequence:1},lease:{state:"other",expiresAt:null}}]})
+    if (url.endsWith("/documents/word/recovery-copy") && init?.method === "POST") { copies++; return Response.json({name:"Agreement (saved copy).docx"}) }
+    throw new Error("Unexpected request")
+  }) as typeof fetch
+  const button = (label:string) => [...container.querySelectorAll("button")].find(node => node.textContent === label)!
+  try {
+    await act(async () => root.render(createElement(WordDocumentsProvider, {matterId:"m",onChanged:() => {changed++},children:createElement(WordOpenControl,{matterId:"m",name:"Agreement.docx"})})))
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Open Agreement.docx in Word"]')!.disabled).toBe(true)
+    expect(container.textContent).not.toContain("Take over editing")
+    await act(async () => button("Create saved copy").click())
+    expect(container.textContent).toContain("Unsent local Word edits and the unconfirmed change are not included")
+    await act(async () => button("Create copy").click())
+    expect(copies).toBe(1)
+    expect(changed).toBe(1)
+  } finally {
+    await act(async () => root.unmount())
+    globalThis.fetch = originalFetch
+    for (const [name, descriptor] of saved) descriptor ? Object.defineProperty(globalThis,name,descriptor) : delete (globalThis as Record<string, unknown>)[name]
+    browser.happyDOM.abort()
+  }
+})
