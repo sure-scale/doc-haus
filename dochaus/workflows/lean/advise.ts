@@ -8,7 +8,7 @@ import { FIRST_DOCUMENT, planActingFor, stepDocument, stepStage, type StepID } f
 import { retryPrompt, tagged } from "./prompts"
 import { REQUEST_SOURCE, isAnswerSource, matterSourceIDs, quoteFound, quoteMissIssue } from "./quotes"
 import { nameWithProvenance, provenanceMapLine, sourceProvenance } from "../../lib/source-provenance"
-import { currentInstructions, INSTRUCTIONS_FILE } from "./instructions"
+import { currentInstructions, INSTRUCTIONS_FILE, type Instruction } from "./instructions"
 import { approvedResearch, researchHandoff } from "./research"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, stepSessionTitle, type LeanDeps } from "./stages"
 import { answeredQuestionsText, readLeanText, readQuestions, type LeanState, type Question, type QuestionAdvice, type QuestionOption } from "./state"
@@ -63,13 +63,81 @@ export async function adviseQuestion(directory: string, state: LeanState, step: 
       const checked = checkAdvice(directory, question, reply, { requireRelevance: true })
       issues = checked.issues
       appendLeanEvent(directory, { ...at, event: "checker", attempt: index, issues, wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
-      if (checked.advice) return { advice: checked.advice, ...(checked.group ? { group: checked.group } : {}) }
+      if (checked.advice) return { advice: await confirmedDecision(directory, state, step, deps, question, checked.advice), ...(checked.group ? { group: checked.group } : {}) }
     }
   } catch {
     // A runtime error ends this question's advice; a pause or a settings
     // change is the runner's to act on once every advice job has settled.
   }
   return { advice: { unavailable: { reason: ADVISOR_FAILED, reason_code: "advisor_failed" } } }
+}
+
+/** `advice`, keeping the instruction it says decides the question only when a
+ * focused job of its own confirms it (decidesPrompt): a question so decided is
+ * settled without being asked (settleByInstructions), so the advisor's word
+ * alone does not settle it. Unconfirmed, or when the job fails, the question
+ * is asked with the same advice. */
+async function confirmedDecision(directory: string, state: LeanState, step: StepID, deps: LeanDeps, question: Question, advice: QuestionAdvice): Promise<QuestionAdvice> {
+  const recommendation = "recommendation" in advice ? advice.recommendation : undefined
+  const item = recommendation?.decided_by ? currentInstructions(directory).find(row => row.id === recommendation.decided_by) : undefined
+  if (!recommendation?.decided_by) return advice
+  const { decided_by: _decidedBy, ...kept } = recommendation
+  const undecided = { ...advice, recommendation: kept }
+  const option = advice.options?.find(row => row.id === recommendation.option)
+  if (!item || !option || (question.kind !== "instruction" && question.kind !== "judgment") || question.mixed) return undecided
+  const agent = LEAN_STAGE_AGENTS.advise
+  const at = { stage: stepStage(step), document: stepDocument(step) ?? undefined, step: `decides ${question.id}` }
+  try {
+    const sessionID = await deps.sessions.createSession({ directory, parentID: state.owner_session_id, agent, title: stepSessionTitle(directory, step, `decides: ${question.id}`), model: state.model, permissions: LEAN_CHILD_PERMISSIONS })
+    let issues: string[] = []
+    for (let index = 0; index <= LEAN_MAX_RETRIES; index += 1) {
+      appendLeanEvent(directory, { ...at, event: index ? "retry" : "model_call", attempt: index, session_id: sessionID })
+      const asked = performance.now()
+      const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: index ? retryPrompt("advise", issues) : decidesPrompt(directory, question, item, option.text) })
+      const answered = performance.now()
+      const checked = checkDecides(directory, item, reply)
+      issues = checked.issues
+      appendLeanEvent(directory, { ...at, event: "checker", attempt: index, issues, wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
+      if (checked.decides !== undefined) return checked.decides ? advice : undecided
+    }
+  } catch {
+    // As for the advice itself: a runtime error leaves the question to be asked.
+  }
+  return undecided
+}
+
+/** One question for one instruction: whether its words answer the question,
+ * leaving the lawyer nothing to choose. */
+export function decidesPrompt(directory: string, question: Question, item: Instruction, option: string) {
+  return [
+    "This is a lean drafting run. Decide one thing: whether one of the lawyer's instructions answers a question raised while drafting, so that it is settled without asking the lawyer. A question so settled is never put to the lawyer, so settle it only when the lawyer has already made this choice.",
+    tagged("question", `Kind: ${question.kind}\n${question.question}`),
+    ...(question.context ? [tagged("context", question.context)] : []),
+    tagged("instruction", `[${item.id}] ${item.text}\nThe lawyer's words, in ${item.source_id}: "${item.quote}"`),
+    tagged("answer_if_settled", option),
+    tagged("all_instructions", readLeanText(directory, INSTRUCTIONS_FILE) ?? ""),
+    tagged("answers", answeredQuestionsText(directory) || "None."),
+    tagged("output_contract", [
+      "- The instruction decides the question only when its words make this choice: they cover the point the question asks, and the answer above is what they direct.",
+      "- It does not decide the question when the choice remains the lawyer's: the instruction is a preference, or is subject to a condition, exception or qualification the question turns on; another of the lawyer's instructions or answers bears on the same point the other way; or the question asks whether the instruction can or should be followed as given. An instruction that is related, points one way or needs inference to apply does not decide it.",
+      `- When it decides the question, reply {"decides":true,"quote":"..."}, with the words of the lawyer that make the choice, copied verbatim from ${item.source_id}. When it does not, reply {"decides":false,"reason":"what leaves the choice to the lawyer"}.`,
+      "- Answer from the inputs above; read-only tools are available if a source passage must be checked. The run saves and checks the reply.",
+    ].join("\n")),
+  ].join("\n\n")
+}
+
+const DECIDES_SHAPE = 'Reply with the JSON object only: {"decides":true,"quote":"..."} or {"decides":false,"reason":"..."}.'
+
+/** Reads the reply to decidesPrompt: true with words `item`'s source holds, or
+ * false with a reason. Every other reply is retried. */
+export function checkDecides(directory: string, item: Instruction, reply: string): { issues: string[]; decides?: boolean } {
+  const parsed = parseJsonObject(reply)
+  if (!parsed.ok || typeof parsed.value.decides !== "boolean") return { issues: [DECIDES_SHAPE] }
+  const { decides, quote, reason } = parsed.value
+  if (!decides) return typeof reason === "string" && reason.trim() ? { issues: [], decides: false } : { issues: [`"decides" is false, but "reason" is missing. ${DECIDES_SHAPE}`] }
+  if (typeof quote !== "string" || !quote.trim()) return { issues: [`"decides" is true, but "quote" is missing. ${DECIDES_SHAPE}`] }
+  const words = { source_id: item.source_id, quote: quote.trim() }
+  return quoteFound(directory, words) ? { issues: [], decides: true } : { issues: [quoteMissIssue(directory, "quote", words, "json")] }
 }
 
 export function advisePrompt(directory: string, question: Question) {

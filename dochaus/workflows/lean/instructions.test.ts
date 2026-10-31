@@ -15,9 +15,13 @@ const READY = JSON.stringify({ ready: true, jurisdiction: "Singapore law", scope
 const DELIVERY = { question: "Which delivery period should the note state?", kind: "judgment", context: "The delivery clause depends on it." }
 
 /** An advisor naming instruction `id` as deciding every question it is asked
- * that offers no options of its own; a code-written question gets no advice. */
-function deciding(id: string, quote: { source_id: string; quote: string }): Reply {
-  return prompt => prompt.includes("<options>")
+ * that offers no options of its own; a code-written question gets no advice.
+ * The job that checks that claim confirms it, quoting the lawyer's words,
+ * unless `confirmed` is false. */
+function deciding(id: string, quote: { source_id: string; quote: string }, confirmed = true): Reply {
+  return prompt => prompt.includes("<answer_if_settled>")
+    ? JSON.stringify(confirmed ? { decides: true, quote: quote.quote } : { decides: false, reason: "The instruction is only a preference." })
+    : prompt.includes("<options>")
     ? JSON.stringify({ unavailable: { reason: "The lawyer decides this." } })
     : JSON.stringify({ options: [{ text: "Follow the instruction" }, { text: "Another approach" }], recommendation: { option: 0, rationale: "The instruction decides it.", basis: [{ ...quote, relevance: "The lawyer's instruction for this work." }], decided_by: id } })
 }
@@ -44,6 +48,23 @@ test("a question the request's instruction decides is settled, not asked, and in
   // The settled answer is not the lawyer's words, so the list does not read it back.
   expect(answeredQuestionsText(directory, { settled: false })).toBe("")
   expect(model.prompts.filter(row => row.agent === AGENT.instructions)).toHaveLength(1)
+}, 120_000)
+
+test("a question the advisor says an instruction decides is asked when the check finds the choice still the lawyer's", async () => {
+  const directory = matter()
+  writeLeanText(directory, "request.md", REQUEST)
+  const law = { source_id: "request", quote: "under Singapore law" }
+  const model = scriptedModel({
+    ...quiet,
+    [AGENT.instructions]: () => JSON.stringify({ items: [{ text: "Use Singapore law.", ...law }], documents: [] }),
+    [AGENT.intake]: () => JSON.stringify({ questions: [LAW] }),
+    [AGENT.advise]: deciding("i1", law, false),
+  })
+  expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
+  // Asked with the advisor's recommendation, which no longer claims to settle it.
+  const [asked] = readQuestions(directory)
+  expect(asked).toMatchObject({ status: "open", advice: { recommendation: { option: "o1" } } })
+  expect(asked!.advice).not.toHaveProperty("recommendation.decided_by")
 }, 120_000)
 
 test("a fact question is asked even when the advisor names an instruction", async () => {
