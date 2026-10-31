@@ -148,6 +148,19 @@ test("a requested style is one tracked property change whose old properties are 
     expect(() => verifyStyled(jc, plain, xml, restyled)).toThrow("could not be verified")
 })
 
+test("Word's editing-session ids on the restyled paragraph are metadata, other attributes are not", () => {
+  // Shape captured from Word for Mac: a plain anchor followed by a new Heading 2.
+  const h2 = '<w:pStyle w:val="Heading2"/>' + change(""),
+    word = inserted("", plain, h2).replace(
+      'w14:paraId="11111111" w14:textId="12345678"',
+      'w14:paraId="11111111" w14:textId="12345678" w:rsidR="00BB2E32" w:rsidRDefault="009C6BC0" w:rsidP="009C6BC0"',
+    )
+  expect(verifyStyled("", plain, word, true)).toEqual(["Reviewer"])
+  expect(() => verifyStyled("", plain, word.replace('w:rsidP="009C6BC0"', 'w:rsidP="009C6BC0" w:other="1"'), true)).toThrow(
+    "could not be verified",
+  )
+})
+
 test("a heading anchor may be followed by an inheriting or Normal paragraph", () => {
   const h1 = '<w:pStyle w:val="Heading1"/><w:keepNext/>'
   expect(verifyStyled(h1, plain, inserted(h1, plain, h1), false)).toEqual(["Reviewer"])

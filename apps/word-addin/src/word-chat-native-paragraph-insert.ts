@@ -16,6 +16,9 @@ const fail = (): never => {
   throw Error("Native paragraph insertion could not be verified")
 }
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+// Word's editing-session ids on paragraphs and runs carry no content; Word
+// stamps rsidP/rsidRPr whenever paragraph or run properties change.
+const session = ["rsidR", "rsidRDefault", "rsidP", "rsidRPr"]
 function parse(xml: string) {
   if (xml.length > 16_000_000 || /<!DOCTYPE/i.test(xml)) return fail()
   const reject = () => {
@@ -54,7 +57,7 @@ function canon(n: Node): unknown {
       e.localName,
       Array.from(e.attributes)
         .filter(
-          (a) => a.namespaceURI !== XMLNS && !(a.namespaceURI === W && ["rsidR", "rsidRDefault"].includes(a.localName)),
+          (a) => a.namespaceURI !== XMLNS && !(a.namespaceURI === W && session.includes(a.localName)),
         )
         .map((a) => [a.namespaceURI, a.localName, a.value])
         .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
@@ -75,7 +78,7 @@ function validMeta(e: Element) {
   return Array.from(e.attributes).every(
     (a) =>
       a.namespaceURI === XMLNS ||
-      (a.namespaceURI === W && ["rsidR", "rsidRDefault"].includes(a.localName) && /^[0-9a-fA-F]{8}$/.test(a.value)) ||
+      (a.namespaceURI === W && session.includes(a.localName) && /^[0-9a-fA-F]{8}$/.test(a.value)) ||
       (a.namespaceURI === W14 && ["paraId", "textId"].includes(a.localName) && /^[0-9a-fA-F]{8}$/.test(a.value)),
   )
 }

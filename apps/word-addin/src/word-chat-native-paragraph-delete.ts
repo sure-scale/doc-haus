@@ -16,6 +16,9 @@ const fail = (): never => {
   throw Error("Native paragraph deletion could not be verified")
 }
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+// Word's editing-session ids on paragraphs and runs carry no content; Word
+// stamps rsidP/rsidRPr whenever paragraph or run properties change.
+const session = ["rsidR", "rsidRDefault", "rsidP", "rsidRPr"]
 const numeric = (s: string) => s.replace(/^0+(?=\d)/, "")
 const hex = (v: string | null) => /^[0-9a-fA-F]{8}$/.test(v ?? "")
 const blank = (n: Node) => n.nodeType === 3 && !n.nodeValue?.trim()
@@ -46,7 +49,7 @@ function canon(n: Node): unknown {
       e.localName,
       Array.from(e.attributes)
         .filter(
-          (a) => a.namespaceURI !== XMLNS && !(a.namespaceURI === W && ["rsidR", "rsidRDefault"].includes(a.localName)),
+          (a) => a.namespaceURI !== XMLNS && !(a.namespaceURI === W && session.includes(a.localName)),
         )
         .map((a) => [a.namespaceURI, a.localName, a.value])
         .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
@@ -66,7 +69,7 @@ function validMeta(e: Element) {
   return Array.from(e.attributes).every(
     (a) =>
       a.namespaceURI === XMLNS ||
-      (a.namespaceURI === W && ["rsidR", "rsidRDefault"].includes(a.localName) && /^[0-9a-fA-F]{8}$/.test(a.value)) ||
+      (a.namespaceURI === W && session.includes(a.localName) && /^[0-9a-fA-F]{8}$/.test(a.value)) ||
       (a.namespaceURI === W14 && ["paraId", "textId"].includes(a.localName) && /^[0-9a-fA-F]{8}$/.test(a.value)),
   )
 }
@@ -164,7 +167,7 @@ export function verifyNativeWordChatParagraphDeletion(
     a = parse(after.ooxml),
     actual = elements(a.body)[pos]
   if (!actual || actual.namespaceURI !== W || actual.localName !== "p") return fail()
-  // Only the target's evidenced textId and rsidDel may differ. rsidR/default are
+  // Only the target's evidenced textId and rsidDel may differ. Session ids are
   // handled by the same serialization canonicalization as the insertion verifier.
   if (
     oldP.getAttributeNS(W14, "paraId") !== actual.getAttributeNS(W14, "paraId") ||
@@ -172,7 +175,7 @@ export function verifyNativeWordChatParagraphDeletion(
     Array.from(actual.attributes).some(
       (x) =>
         x.namespaceURI !== XMLNS &&
-        !(x.namespaceURI === W && ["rsidR", "rsidRDefault", "rsidDel"].includes(x.localName) && hex(x.value)) &&
+        !(x.namespaceURI === W && [...session, "rsidDel"].includes(x.localName) && hex(x.value)) &&
         !(x.namespaceURI === W14 && ["paraId", "textId"].includes(x.localName) && hex(x.value)),
     )
   )
