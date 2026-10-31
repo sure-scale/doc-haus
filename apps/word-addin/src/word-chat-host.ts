@@ -183,6 +183,14 @@ function hasProtectedContent(value: string, authored = false, formatting = false
   } catch { return true }
 }
 
+/** Windows Word's Paragraph.text keeps tracked-deleted wording; Mac Word's
+ * already matches Current. Bind paragraphs to OOXML and reviewed text by Current. */
+async function nativeInventory(context: WordChatContext, items: Paragraph[]) {
+  const rows = items.map(p => ({ id: p.uniqueLocalId, current: p.getRange("Content").getReviewedText("Current"), tableNestingLevel: p.tableNestingLevel }))
+  await context.sync()
+  return rows.map(({ id, current, tableNestingLevel }) => ({ id, text: current.value, tableNestingLevel }))
+}
+
 /** Word Find has a short-query limit. Locate boundaries with a short literal
  * token, then check its exact offset inside the verified paragraph. This never
  * searches for a truncated clause or treats a first match as its identity. */
@@ -204,9 +212,9 @@ async function point(context: WordChatContext, range: WordChatRange, text: strin
     item,
     prefix: range.getRange("Start").expandTo(item.getRange("Start")),
   }))
-  for (const candidate of candidates) candidate.prefix.load("text")
+  const prefixes = candidates.map(candidate => candidate.prefix.getReviewedText("Current"))
   await context.sync()
-  const exact = candidates.filter((candidate) => candidate.prefix.text === text.slice(0, offset))
+  const exact = candidates.filter((_, i) => prefixes[i]!.value === text.slice(0, offset))
   if (exact.length !== 1) throw new WordChatHostError(changedMessage)
   return exact[0]!.item.getRange("Start")
 }
@@ -265,7 +273,8 @@ export class WordChatHost {
     const all = context.document.body.paragraphs
     all.load("items/text,items/uniqueLocalId,items/tableNestingLevel,items/styleBuiltIn,items/isListItem")
     await context.sync()
-    if (all.items.length !== projection.paragraphs.length || all.items.some((p,i) => p.uniqueLocalId !== projection.paragraphs[i]!.id || p.text !== projection.paragraphs[i]!.text || p.tableNestingLevel !== projection.paragraphs[i]!.nesting)) throw captureMismatch("The Word list changed during capture.")
+    const inventory = await nativeInventory(context, all.items), current = new Map(inventory.map(p => [p.id, p.text]))
+    if (inventory.length !== projection.paragraphs.length || inventory.some((p,i) => p.id !== projection.paragraphs[i]!.id || p.text !== projection.paragraphs[i]!.text || p.tableNestingLevel !== projection.paragraphs[i]!.nesting)) throw captureMismatch("The Word list changed during capture.")
     const items = all.items.filter(p => p.isListItem === true)
     for (const p of items) {
       if (!p.list?.paragraphs || !p.listItemOrNullObject) throw new Error("list_api_unavailable")
@@ -288,8 +297,8 @@ export class WordChatHost {
       if (nativeMembers.length !== members.length || nativeMembers.some((p,i) => p.uniqueLocalId !== members[i]!.uniqueLocalId || p.text !== members[i]!.text)) continue
       const decimal = members.every((p,i) => p.listItemOrNullObject!.level === 0 && p.listItemOrNullObject!.siblingIndex === i && p.listItemOrNullObject!.listString === `${i + 1}.`)
       const capture: WordChatListCapture = decimal
-        ? { id, format:"decimal", members: members.map(p => ({id:p.uniqueLocalId,text:p.text,level:p.listItemOrNullObject!.level,label:p.listItemOrNullObject!.listString})) }
-        : { id, format:"native", members: members.map(p => ({id:p.uniqueLocalId,text:p.text,level:p.listItemOrNullObject!.level,label:p.listItemOrNullObject!.listString,siblingIndex:p.listItemOrNullObject!.siblingIndex})) }
+        ? { id, format:"decimal", members: members.map(p => ({id:p.uniqueLocalId,text:current.get(p.uniqueLocalId)!,level:p.listItemOrNullObject!.level,label:p.listItemOrNullObject!.listString})) }
+        : { id, format:"native", members: members.map(p => ({id:p.uniqueLocalId,text:current.get(p.uniqueLocalId)!,level:p.listItemOrNullObject!.level,label:p.listItemOrNullObject!.listString,siblingIndex:p.listItemOrNullObject!.siblingIndex})) }
       if (members.some(p => p.tableNestingLevel !== 0 || p.styleBuiltIn !== "Normal") || !nativeWordChatDecimalList(projection,capture)) continue
       captures.push(capture)
     }
@@ -301,8 +310,9 @@ export class WordChatHost {
       const all = context.document.body.paragraphs, xml = context.document.body.getRange("Whole").getOoxml()
       all.load("items/text,items/uniqueLocalId,items/tableNestingLevel")
       await context.sync()
-      if (all.items.length !== snapshot.paragraphs.length || all.items.some((p,i) => p.uniqueLocalId !== snapshot.paragraphs[i]!.id || p.text !== snapshot.paragraphs[i]!.text)) return
-      const projection = projectNativeWordChatBody(xml.value,all.items.map(p => ({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})))
+      const inventory = await nativeInventory(context, all.items)
+      if (inventory.length !== snapshot.paragraphs.length || inventory.some((p,i) => p.id !== snapshot.paragraphs[i]!.id || p.text !== snapshot.paragraphs[i]!.text)) return
+      const projection = projectNativeWordChatBody(xml.value,inventory)
       const selected = snapshot.selection?.paragraphs.map(p => p.id)
       const lists = await this.observeNativeLists(context,projection,selected)
       const matches = selected ? lists.filter(l => selected.every(id => l.members.some(p => p.id === id))) : lists
@@ -320,7 +330,7 @@ export class WordChatHost {
       paragraphs.load("items/text,items/uniqueLocalId,items/tableNestingLevel")
       for (const table of tables.items) table.load("rowCount,isUniform,values")
       await context.sync()
-      const inventory = paragraphs.items.map(p => ({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel}))
+      const raw = new Map(paragraphs.items.map(p => [p.uniqueLocalId, p.text])), inventory = await nativeInventory(context, paragraphs.items)
       if (inventory.length !== snapshot.paragraphs.length || inventory.some((p, i) => p.id !== snapshot.paragraphs[i]!.id || p.text !== snapshot.paragraphs[i]!.text)) return
       const projection = projectNativeWordChatBody(xml.value, inventory)
       const fail = () => { throw new Error("Invalid table capture XML") }
@@ -369,7 +379,7 @@ export class WordChatHost {
         const rows = candidate.rows.map(row => row.map(({ collection, path }) => {
           if (collection.items.length !== 1) return undefined
           const p = collection.items[0]!, projected = projection.paragraphs.find(item => item.id === p.uniqueLocalId)
-          return p.tableNestingLevel === 1 && projected?.path === path && projected.text === p.text ? {id:p.uniqueLocalId,text:p.text} : undefined
+          return p.tableNestingLevel === 1 && projected?.path === path && raw.get(p.uniqueLocalId) === p.text ? {id:p.uniqueLocalId,text:projected.text} : undefined
         }))
         if (rows.some(row => row.some(cell => !cell))) return []
         const capture = {tableIndex:candidate.tableIndex,rows:rows as Array<Array<{id:string;text:string}>>}
@@ -385,11 +395,12 @@ export class WordChatHost {
       context.document.load("saved")
       const body = context.document.body
       body.load("text")
-      if (structured) body.paragraphs.load("items/text,items/uniqueLocalId")
+      if (structured) body.paragraphs.load("items/uniqueLocalId,items/tableNestingLevel")
       await context.sync()
-      const paragraphs = structured ? body.paragraphs.items.map(p => ({id:p.uniqueLocalId,text:p.text})) : []
-      const full = structured ? body.paragraphs.items.map(p => p.text).join("\r") : body.text
-      if (full.length > SNAPSHOT_LIMIT || paragraphs.length > 20_000)
+      const count = structured ? body.paragraphs.items.length : 0, inventory = structured && count <= 20_000 ? await nativeInventory(context, body.paragraphs.items) : []
+      const paragraphs = inventory.map(({ id, text }) => ({ id, text }))
+      const full = structured ? inventory.map(p => p.text).join("\r") : body.text
+      if (full.length > SNAPSHOT_LIMIT || count > 20_000)
         throw new WordChatHostError("This Word document exceeds the chat limit of 512,000 characters or 20,000 paragraphs. Use a shorter linked document, or open the matter in doc.haus to work with it. Your document is unchanged.")
       const snapshot: WordChatSnapshot = { text:full, paragraphs, saved: context.document.saved,
         capturedAt: new Date().toISOString(), truncated:false }
@@ -421,10 +432,11 @@ export class WordChatHost {
     if (!items.length || items.length > PARAGRAPH_LIMIT) throw new WordChatHostError("Select one clause or a short group of paragraphs.")
     const start = items[0]!.getRange("Start").expandTo(selection.getRange("Start"))
     const end = items.at(-1)!.getRange("Start").expandTo(selection.getRange("End"))
-    start.load("text"); end.load("text")
+    const [text, before, through] = [selection, start, end].map(range => range.getReviewedText("Current")), texts = items.map(p => p.getRange("Content").getReviewedText("Current"))
     await context.sync()
-    const target: WordChatTarget = { id: crypto.randomUUID(), text: selection.text,
-      paragraphs: items.map(p => ({id: p.uniqueLocalId,text: p.text})), startOffset: start.text.length, endOffset: end.text.length,
+    if (!text!.value.trim()) return
+    const target: WordChatTarget = { id: crypto.randomUUID(), text: text!.value,
+      paragraphs: items.map((p, i) => ({id: p.uniqueLocalId,text: texts[i]!.value})), startOffset: before!.value.length, endOffset: through!.value.length,
       saved: context.document.saved, capturedAt: new Date().toISOString() }
     validate(target)
     return target
@@ -432,28 +444,29 @@ export class WordChatHost {
   private async resolve(context: WordChatContext, target: WordChatTarget, allowNativeCell = false): Promise<{ range: WordChatRange; paragraphs: Paragraph[] }> {
     validate(target)
     const paragraphs = target.paragraphs.map((p) => context.document.getParagraphByUniqueLocalId(p.id))
-    for (const paragraph of paragraphs) paragraph.load("text,uniqueLocalId,tableNestingLevel")
+    for (const paragraph of paragraphs) paragraph.load("uniqueLocalId,tableNestingLevel")
+    const current = paragraphs.map(p => p.getRange("Content").getReviewedText("Current"))
     await context.sync()
+    const texts = current.map(text => text.value)
     // Word can alter list numbering outside a table when importing a scoped
     // paragraph fragment into a cell. Until that transport is proven safe,
     // refuse before authoring or mutation, including after the freshness read.
     if (paragraphs.some(paragraph => paragraph.tableNestingLevel !== 0 && !(allowNativeCell && paragraphs.length === 1 && paragraph.tableNestingLevel === 1)))
       throw new WordChatHostError("Amendments in Word tables are not supported safely yet. Make this change directly in Word; your document is unchanged.")
-    const changed = paragraphs.findIndex((p, i) => p.uniqueLocalId !== target.paragraphs[i]!.id || p.text !== target.paragraphs[i]!.text)
+    const changed = paragraphs.findIndex((p, i) => p.uniqueLocalId !== target.paragraphs[i]!.id || texts[i] !== target.paragraphs[i]!.text)
     if (changed >= 0)
-      throw captureMismatch(`Word could not match reviewed paragraph ${changed + 1} (${paragraphs[changed]!.text.length} Word characters; ${target.paragraphs[changed]!.text.length} reviewed).`)
+      throw captureMismatch(`Word could not match reviewed paragraph ${changed + 1} (${texts[changed]!.length} Word characters; ${target.paragraphs[changed]!.text.length} reviewed).`)
     const union = paragraphs[0]!.getRange("Content").expandTo(paragraphs.at(-1)!.getRange("Content"))
     union.paragraphs.load("items/uniqueLocalId")
     const location = union.compareLocationWith(context.document.body.getRange())
     await context.sync()
     if (!INSIDE.has(location.value) || union.paragraphs.items.length !== paragraphs.length || union.paragraphs.items.some((p, i) => p.uniqueLocalId !== paragraphs[i]!.uniqueLocalId))
       throw captureMismatch(`Word returned a different paragraph range (${union.paragraphs.items.length} paragraphs; ${paragraphs.length} reviewed).`)
-    const start = await point(context, paragraphs[0]!.getRange("Content"), paragraphs[0]!.text, target.startOffset)
-    const end = await point(context, paragraphs.at(-1)!.getRange("Content"), paragraphs.at(-1)!.text, target.endOffset)
-    const range = start.expandTo(end)
-    range.load("text")
+    const start = await point(context, paragraphs[0]!.getRange("Content"), texts[0]!, target.startOffset)
+    const end = await point(context, paragraphs.at(-1)!.getRange("Content"), texts.at(-1)!, target.endOffset)
+    const range = start.expandTo(end), text = range.getReviewedText("Current")
     await context.sync()
-    if (range.text !== target.text) throw captureMismatch(`Word returned different text for the reviewed range (${range.text.length} Word characters; ${target.text.length} reviewed).`)
+    if (text.value !== target.text) throw captureMismatch(`Word returned different text for the reviewed range (${text.value.length} Word characters; ${target.text.length} reviewed).`)
     return { range, paragraphs }
   }
 
@@ -469,9 +482,11 @@ export class WordChatHost {
     const comments = body.getRange().getComments()
     comments.load("items/author,items/content,items/resolved")
     await context.sync()
+    const texts = all.items.map(p => p.getRange("Content").getReviewedText("Current"))
+    await context.sync()
     return {
       current: current.value,
-      paragraphs: all.items.map(p => ({ id:p.uniqueLocalId, text:p.text, style:p.styleBuiltIn, before:p.spaceBefore, after:p.spaceAfter, line:p.lineSpacing })),
+      paragraphs: all.items.map((p, i) => ({ id:p.uniqueLocalId, text:texts[i]!.value, style:p.styleBuiltIn, before:p.spaceBefore, after:p.spaceAfter, line:p.lineSpacing })),
       changes: changes.items.map(change => ({ author:change.author, type:change.type, text:change.text })),
       comments: comments.items.map(comment => ({ author:comment.author, content:comment.content, resolved:comment.resolved })),
     }
@@ -547,7 +562,7 @@ export class WordChatHost {
         all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
         const body = context.document.body.getRange("Whole").getOoxml()
         await context.sync()
-        const inventory = all.items.map(p => ({ id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel }))
+        const inventory = await nativeInventory(context, all.items)
         const beforeXml = body.value
         const projection = projectNativeWordChatBody(beforeXml, inventory)
         const fail = () => { throw new Error("Invalid table XML") }
@@ -587,9 +602,10 @@ export class WordChatHost {
         const addedParagraphs = added.map(collection => {
           if (collection.items.length !== 1) throw new Error("Unexpected new cell paragraphs")
           const p = collection.items[0]!
-          return { id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel }
+          return { id:p.uniqueLocalId, tableNestingLevel:p.tableNestingLevel }
         })
-        const afterInventory = afterAll.items.map(p => ({ id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel }))
+        const afterInventory = await nativeInventory(context, afterAll.items)
+        const addedText = addedParagraphs.map(paragraph => afterInventory.find(p => p.id === paragraph.id)?.text)
         const observedXml = afterXml.value
         // A cell with any reviewed formatting is proved per segment below;
         // every other new cell must read uniformly plain as a whole.
@@ -597,7 +613,7 @@ export class WordChatHost {
         const contents = addedParagraphs.map(paragraph => context.document.getParagraphByUniqueLocalId(paragraph.id).getRange("Content") as WordChatRange & { font: { bold: boolean | null; italic: boolean | null; underline: string | null; load(properties: string): void } })
         const fonts = contents.map((range, i) => { if (formatted[i]) return undefined; range.font.load("bold,italic,underline"); return range.font })
         const after = await this.documentState(context)
-        if (observedTracking !== prepared.tracking || observedTrackFormatting !== prepared.trackFormatting || !observedTable.isUniform || observedTable.rowCount !== prepared.rowCount + 1 || observedTable.values.length !== prepared.rowCount + 1 || observedTable.values.some(row => row.length !== prepared.width) || addedParagraphs.some((paragraph, i) => paragraph.text !== proposal.cells[i] || paragraph.tableNestingLevel !== 1) || fonts.some(font => font && (font.bold !== false || font.italic !== false || font.underline !== "None")) || JSON.stringify(before.comments) !== JSON.stringify(after.comments)) throw new Error("Native row confirmation failed")
+        if (observedTracking !== prepared.tracking || observedTrackFormatting !== prepared.trackFormatting || !observedTable.isUniform || observedTable.rowCount !== prepared.rowCount + 1 || observedTable.values.length !== prepared.rowCount + 1 || observedTable.values.some(row => row.length !== prepared.width) || addedParagraphs.some((paragraph, i) => addedText[i] !== proposal.cells[i] || paragraph.tableNestingLevel !== 1) || fonts.some(font => font && (font.bold !== false || font.italic !== false || font.underline !== "None")) || JSON.stringify(before.comments) !== JSON.stringify(after.comments)) throw new Error("Native row confirmation failed")
         for (const [i, runs] of formatted.entries()) if (runs) await verifyNativeCellRuns(context, contents[i]!, proposal.cells[i]!, runs)
         const remainder = verifyNativeWordChatRowRemainder(beforeXml, observedXml, inventory, afterInventory, proposal.table, proposal.cells)
         if (remainder.addedParagraphIds.some((id, i) => id !== addedParagraphs[i]!.id)) throw new Error("Native row identity mismatch")
@@ -648,7 +664,7 @@ export class WordChatHost {
         all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
         const cells=proposal.cells.map((_,i)=>{const r=(table.getCell(proposal.rowIndex,i).body as unknown as {getRange(location:string):WordChatRange}).getRange("Content");return {current:r.getReviewedText("Current"),original:r.getReviewedText("Original")}})
         await context.sync()
-        const inventory=all.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})), beforeXml=body.value, originalText=original.value
+        const inventory=await nativeInventory(context, all.items), beforeXml=body.value, originalText=original.value
         const expectedValues=proposal.table.rows.map(row=>row.map(cell=>cell.text))
         if (!table.isUniform || table.rowCount!==proposal.table.rows.length || JSON.stringify(table.values)!==JSON.stringify(expectedValues) || table.rows.items.length!==table.rowCount || table.rows.items.some((r,i)=>r.rowIndex!==i || r.cellCount!==prepared.width) || table.rows.items[proposal.rowIndex]!.isHeader!==false || JSON.stringify(table.rows.items[proposal.rowIndex]!.values)!==JSON.stringify([proposal.cells]) || cells.some((c,i)=>c.current.value!==proposal.cells[i] || c.original.value!==proposal.cells[i])) throw captureMismatch("The reviewed row or table changed.")
         assertNativeWordChatRowDeletionTarget(beforeXml,inventory,proposal)
@@ -657,7 +673,7 @@ export class WordChatHost {
         freshAll.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
         table.load("rowCount,isUniform,values");table.rows.load("items/rowIndex,items/cellCount,items/isHeader,items/values")
         await context.sync()
-        const freshInventory=freshAll.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel}))
+        const freshInventory=await nativeInventory(context, freshAll.items)
         if (!sameNativeWordChatBodySnapshot(beforeXml,freshBody.value) || JSON.stringify(inventory)!==JSON.stringify(freshInventory) || !table.isUniform || table.rowCount!==prepared.rowCount || JSON.stringify(table.values)!==JSON.stringify(expectedValues) || table.rows.items.length!==prepared.rowCount || table.rows.items.some((r,i)=>r.rowIndex!==i || r.cellCount!==prepared.width) || table.rows.items[proposal.rowIndex]!.isHeader!==false || JSON.stringify(table.rows.items[proposal.rowIndex]!.values)!==JSON.stringify([proposal.cells])) throw captureMismatch("The reviewed table changed before deletion.")
         assertNativeWordChatRowDeletionTarget(freshBody.value,freshInventory,proposal)
         if (mayDispatch && !mayDispatch()) throw new WordChatHostError("The Word pane closed before the row was deleted. Your document is unchanged.")
@@ -674,7 +690,7 @@ export class WordChatHost {
         const afterCells=proposal.cells.map((_,i)=>{const r=(table.getCell(proposal.rowIndex,i).body as unknown as {getRange(location:string):WordChatRange}).getRange("Content");return {current:r.getReviewedText("Current"),original:r.getReviewedText("Original")}})
         await context.sync()
         const tracking=context.document.changeTrackingMode, trackFormatting=context.document.trackFormatting, values=table.values.map(row=>[...row]), count=table.rowCount, uniform=table.isUniform
-        const afterInventory=afterAll.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})), afterXmlValue=afterXml.value, bodyOriginal=afterOriginal.value
+        const afterInventory=await nativeInventory(context, afterAll.items), afterXmlValue=afterXml.value, bodyOriginal=afterOriginal.value
         const reviewed=afterCells.map(c=>({current:c.current.value,original:c.original.value}))
         const expectedAfter=expectedValues.map((row,i)=>i===proposal.rowIndex ? row.map(()=>"") : row)
         if (tracking!==prepared.tracking || trackFormatting!==prepared.trackFormatting || !uniform || count!==prepared.rowCount || JSON.stringify(values)!==JSON.stringify(expectedAfter) || bodyOriginal!==originalText || reviewed.some((c,i)=>c.current!=="" || c.original!==proposal.cells[i])) throw new Error("Native row deletion confirmation failed")
@@ -717,15 +733,15 @@ export class WordChatHost {
     const adjacent = faithfulProjection ? [] : neighbours.map(p => ({ id: p.id, xml: p.range.getOoxml() }))
     const bodyChanges = context.document.body.getRange().getTrackedChanges()
     bodyChanges.load("items/author,items/type,items/text")
-    selected.load("text")
-    for (const paragraph of paragraphs) paragraph.load("text")
+    const selectedCurrent = selected.getReviewedText("Current")
     await context.sync()
     const finalIds = all.items.map(p => p.uniqueLocalId)
     const finalAt = finalIds.indexOf(target.paragraphs[0]!.id)
     if (faithfulProjection && (finalAt !== at || JSON.stringify([finalIds[finalAt - 1], finalIds[finalAt + target.paragraphs.length]].filter((id): id is string => id !== undefined)) !== JSON.stringify(neighbours.map(p => p.id))))
       throw captureMismatch("The paragraphs beside this review changed during capture.")
     let projection: ReturnType<typeof projectNativeWordChatBody> | undefined
-    try { projection = bodyXml ? projectNativeWordChatBody(bodyXml.value, all.items.map(p => ({ id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel }))) : undefined }
+    const inventory = bodyXml ? await nativeInventory(context, all.items) : undefined
+    try { projection = bodyXml ? projectNativeWordChatBody(bodyXml.value, inventory!) : undefined }
     catch { throw captureMismatch("Word could not bind the exported body to its native paragraphs.") }
     const scoped = projection ? projection.scope(target.paragraphs.map((_, i) => at + i)) : xml!.value
     if (formatting && typeof context.document.trackFormatting !== "boolean")
@@ -743,7 +759,7 @@ export class WordChatHost {
     const currentMismatch = current.findIndex((text, index) => text.value !== target.paragraphs[index]!.text)
     if (currentMismatch >= 0)
       throw captureMismatch(`Word’s current tracked-change text differs at reviewed paragraph ${currentMismatch + 1} (${current[currentMismatch]!.value.length} current characters; ${target.paragraphs[currentMismatch]!.text.length} reviewed).`)
-    if (selected.text !== target.text || paragraphs.some((p, index) => p.text !== target.paragraphs[index]!.text))
+    if (selectedCurrent.value !== target.text)
       throw captureMismatch("Word’s paragraph or range text changed during capture.")
     const ids = all.items.map(p => p.uniqueLocalId)
     const index = ids.indexOf(target.paragraphs[0]!.id)
@@ -782,7 +798,7 @@ export class WordChatHost {
         all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
         await context.sync()
         if (typeof context.document.trackFormatting !== "boolean") throw captureMismatch("Word could not confirm formatting tracking. Your document is unchanged.")
-        const final = projectNativeWordChatBody(xml.value,all.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})))
+        const final = projectNativeWordChatBody(xml.value,await nativeInventory(context, all.items))
         if (!sameNativeProjectionGeometry(snap.projection,final) || !sameNativeWordChatBodySnapshot(snap.projection.ooxml,final.ooxml) || !nativeWordChatDecimalList(final,lists[0]!)) throw captureMismatch("The list or document changed during capture.")
         assertNativeWordChatInlineDependencies(snap.projection.ooxml,final.ooxml)
         if (anchor.styleBuiltIn !== "Normal" || anchor.isListItem !== true) throw captureMismatch("The reviewed list formatting changed.")
@@ -816,7 +832,7 @@ export class WordChatHost {
           const addition = position === "end" ? "\r" + plan.text : plan.text + "\r"
           const expected = fresh.current.slice(0,insertionAt) + addition + fresh.current.slice(insertionAt)
           if (context.document.changeTrackingMode !== fresh.tracking || context.document.trackFormatting !== fresh.trackFormatting || current.value !== expected || original.value !== fresh.original) throw new Error("list_reviewed_text")
-          const observed = projectNativeWordChatBody(body.value,all.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})))
+          const observed = projectNativeWordChatBody(body.value,await nativeInventory(context, all.items))
           const authors = verifyNativeWordChatListInsertion(fresh.projection,observed,input.target,plan.text,position)
           const inserted = all.items[fresh.index + (position === "end" ? 1 : 0)]
           if (!inserted || inserted.styleBuiltIn !== "Normal" || inserted.isListItem !== true) throw new Error("list_style")
@@ -868,7 +884,7 @@ export class WordChatHost {
         const targetCurrent=range.getReviewedText("Current"), targetOriginal=range.getReviewedText("Original"), xml=context.document.body.getRange("Whole").getOoxml(), all=context.document.body.paragraphs
         all.load("items/uniqueLocalId,items/text,items/tableNestingLevel");context.document.load("changeTrackingMode,trackFormatting")
         await context.sync()
-        const inventory=all.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})), originalXml=xml.value, currentText=current.value, originalText=original.value, targetCurrentText=targetCurrent.value, targetOriginalText=targetOriginal.value
+        const inventory=await nativeInventory(context, all.items), originalXml=xml.value, currentText=current.value, originalText=original.value, targetCurrentText=targetCurrent.value, targetOriginalText=targetOriginal.value
         const font=loadFormat(paragraph), finalXml=context.document.body.getRange("Whole").getOoxml();await context.sync()
         const values=format(paragraph,font)
         if (typeof context.document.trackFormatting!=="boolean" || !sameNativeWordChatBodySnapshot(originalXml,finalXml.value)) throw captureMismatch("The paragraph changed during capture.")
@@ -896,7 +912,7 @@ export class WordChatHost {
         const afterState=await this.documentState(context), all=context.document.body.paragraphs, xml=context.document.body.getRange("Whole").getOoxml(), body=context.document.body.getRange("Content")
         const current=body.getReviewedText("Current"), original=body.getReviewedText("Original")
         all.load("items/uniqueLocalId,items/text,items/tableNestingLevel");context.document.load("changeTrackingMode,trackFormatting");await context.sync()
-        const inventory=all.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})), observedXml=xml.value, currentText=current.value, originalText=original.value, tracking=context.document.changeTrackingMode, trackFormatting=context.document.trackFormatting
+        const inventory=await nativeInventory(context, all.items), observedXml=xml.value, currentText=current.value, originalText=original.value, tracking=context.document.changeTrackingMode, trackFormatting=context.document.trackFormatting
         const old=fresh.projection.paragraphs, prefixParagraph=inventory[fresh.index], suffixParagraph=inventory[fresh.index+1]
         if (inventory.length!==old.length+1 || !prefixParagraph || !suffixParagraph || prefixParagraph.text!==leftText || suffixParagraph.text!==rightText || suffixParagraph.id!==input.target.paragraphs[0]!.id || !prefixParagraph.id || old.some(p=>p.id===prefixParagraph.id) || inventory.some((p,i)=>i!==fresh.index && (i===fresh.index+1 ? false : p.id!==old[i<fresh.index?i:i-1]?.id))) throw Error("paragraph_split_identity")
         const pieces=[prefixParagraph,suffixParagraph].map(p=>context.document.getParagraphByUniqueLocalId(p.id)), fonts=pieces.map(loadFormat)
@@ -931,7 +947,7 @@ export class WordChatHost {
         const all = context.document.body.paragraphs
         all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
         await context.sync()
-        const inventory = all.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel}))
+        const inventory = await nativeInventory(context, all.items)
         const originalXml = whole.value, currentText = current.value, originalText = original.value, targetCurrentText = targetCurrent.value, targetOriginalText = targetOriginal.value
         for (const p of paragraphs) p.load("styleBuiltIn,isListItem,tableNestingLevel,spaceBefore,spaceAfter,lineSpacing,leftIndent,firstLineIndent")
         for (const f of fonts) f.load("bold,italic,underline,name,size,color")
@@ -976,7 +992,7 @@ export class WordChatHost {
         const body=context.document.body.getRange("Content"), current=body.getReviewedText("Current"), original=body.getReviewedText("Original"), xml=context.document.body.getRange("Whole").getOoxml(), all=context.document.body.paragraphs
         all.load("items/uniqueLocalId,items/text,items/tableNestingLevel");context.document.load("changeTrackingMode,trackFormatting")
         await context.sync()
-        const observed=projectNativeWordChatBody(xml.value,all.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})))
+        const observed=projectNativeWordChatBody(xml.value,await nativeInventory(context, all.items))
         const expected=fresh.current.slice(0,fresh.at)+input.replacement+fresh.current.slice(fresh.at+input.target.text.length)
         if (context.document.changeTrackingMode!==fresh.tracking || context.document.trackFormatting!==fresh.trackFormatting || current.value!==expected || original.value!==fresh.original || targetCurrent.value!==input.replacement || targetOriginal.value!==input.target.text || JSON.stringify(afterState.comments)!==JSON.stringify(fresh.comments)) throw Error("paragraph_merge_confirmation")
         const authors=verifyNativeWordChatParagraphMerge(fresh.projection,observed,input.target)
@@ -1034,7 +1050,7 @@ export class WordChatHost {
         await context.sync()
         if (context.document.changeTrackingMode !== fresh.tracking || !fresh.expected.includes(current.value))
           throw new Error("paragraph_delete_current")
-        const observed = projectNativeWordChatBody(body.value, all.items.map(p => ({ id: p.uniqueLocalId, text: p.text, tableNestingLevel: p.tableNestingLevel })))
+        const observed = projectNativeWordChatBody(body.value, await nativeInventory(context, all.items))
         const authors = verifyNativeWordChatParagraphDeletion(fresh.projection!, observed, input.target)
         this.applied.set(input.proposalId, { identity, authors, uncertain: false })
         return { status: "applied", tracked: true, saved: false, authors }
@@ -1096,7 +1112,7 @@ export class WordChatHost {
         const bodyXml = context.document.body.getRange("Whole").getOoxml()
         await context.sync()
         if (context.document.changeTrackingMode !== fresh.tracking || context.document.trackFormatting !== fresh.trackFormatting) throw new Error("paragraph_insert_tracking")
-        const observed = projectNativeWordChatBody(bodyXml.value, all.items.map(p => ({ id: p.uniqueLocalId, text: p.text, tableNestingLevel: p.tableNestingLevel })))
+        const observed = projectNativeWordChatBody(bodyXml.value, await nativeInventory(context, all.items))
         const authors = verifyNativeWordChatParagraphInsertion(fresh.projection, observed, input.target, plan.text, restyle)
         const inserted = all.items[fresh.index + 1]
         if (!inserted || inserted.styleBuiltIn !== (requested ?? fresh.style) || !restyle && inserted.isListItem !== fresh.listItem) throw new Error("paragraph_insert_style")
@@ -1169,7 +1185,7 @@ export class WordChatHost {
         await context.sync()
         assertNativeInlineWordChatRevisionIds(bodyXml.value)
         const verifiedAnnotations = normalizeNativeWordChatAnnotationIds(final.projection.ooxml, bodyXml.value)
-        const observed = projectNativeWordChatBody(verifiedAnnotations, all.items.map(p => ({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})))
+        const observed = projectNativeWordChatBody(verifiedAnnotations, await nativeInventory(context, all.items))
         if (context.document.changeTrackingMode !== final.tracking || context.document.trackFormatting !== final.trackFormatting || !sameNativeProjectionGeometry(final.projection, observed)) throw new Error("inline_geometry_or_tracking")
         if (!observed.paragraphs.every((p, i) => i === final.index || sameNativeInlineWordChatParagraph(final.projection!.paragraphs[i]!.xml, p.xml))) throw new Error("inline_unchanged_paragraph")
         if ((format.bold !== undefined && writeFont.bold !== format.bold) || (format.italic !== undefined && writeFont.italic !== format.italic) || (format.underline !== undefined && writeFont.underline !== (format.underline ? "Single" : "None"))) throw new Error("inline_effective_font")
@@ -1359,7 +1375,7 @@ export class WordChatHost {
     all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
     const bodyXml = context.document.body.getRange("Whole").getOoxml()
     await context.sync()
-    const pre = projectNativeWordChatBody(bodyXml.value, all.items.map(p => ({ id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel })))
+    const pre = projectNativeWordChatBody(bodyXml.value, await nativeInventory(context, all.items))
     if (!fresh.projection || !sameNativeProjectionGeometry(fresh.projection, pre) || !sameWordChatTargetSnapshot(pre.scope([at]), fresh.ooxml) ||
         !fresh.adjacent.every(item => { const i = pre.paragraphs.findIndex(p => p.id === item.id); return i >= 0 && sameWordChatParagraphContent(item.ooxml, pre.scope([i])) }))
       throw captureMismatch("Word returned different XML for the reviewed paragraph or its neighbours before the change.")
@@ -1384,7 +1400,7 @@ export class WordChatHost {
     afterAll.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
     const afterBodyXml = context.document.body.getRange("Whole").getOoxml()
     await context.sync()
-    const post = projectNativeWordChatBody(afterBodyXml.value, afterAll.items.map(p => ({ id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel })))
+    const post = projectNativeWordChatBody(afterBodyXml.value, await nativeInventory(context, afterAll.items))
     const targetAfter = post.scope([at])
     const { added, missing } = newWordChatRevisions(before.changes, after.changes)
     const wanted = authored.revisions.filter(change => change.type !== "Formatted")
@@ -1459,7 +1475,7 @@ export class WordChatHost {
     if (confirmed && JSON.stringify(all.items.map(p => p.uniqueLocalId)) !== JSON.stringify(fresh.ids)) { confirmed = false; failedStage = "format-paragraph-identity" }
     if (confirmed && current.value !== input.target.text) { confirmed = false; failedStage = "format-current-text" }
     try {
-      const projection = bodyXml ? projectNativeWordChatBody(bodyXml.value, all.items.map(p => ({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel}))) : undefined
+      const projection = bodyXml ? projectNativeWordChatBody(bodyXml.value, await nativeInventory(context, all.items)) : undefined
       const observed = projection ? projection.scope(input.target.paragraphs.map((_, i) => fresh.index + i)) : xml!.value
       checking = "format-authored-verification"
       authors = verifiedNativeWordChatFormatting(fresh.ooxml, authored.ooxml, observed, formatting, inserted)

@@ -4,7 +4,7 @@ type Collection<T> = { items: T[]; load(properties: string): void }
 type Paragraph = { uniqueLocalId: string; text: string; tableNestingLevel: number }
 type Font = { bold: boolean; italic: boolean; underline: string; load(properties: string): void }
 type Range = { font: Font }
-type Cell = { body: { paragraphs: Collection<Paragraph>; insertText(text: string, location: "End"): Range } }
+type Cell = { body: { paragraphs: Collection<Paragraph>; getRange(location: "Content"): { getReviewedText(version: "Current"): { value: string } }; insertText(text: string, location: "End"): Range } }
 type Table = {
   rowCount: number
   isUniform: boolean
@@ -41,14 +41,15 @@ export async function prepareNativeRow(context: NativeRowContext, binding: WordC
   const table = tables.items[binding.tableIndex]
   if (!table || !table.isUniform || table.rowCount !== binding.rows.length || !Array.isArray(table.values) || table.values.length !== table.rowCount || table.values.some(row => !Array.isArray(row) || row.length !== width)) return fail()
   const cells = binding.rows.map((row, ri) => row.map((_, ci) => {
-    const paragraphs = table.getCell(ri, ci).body.paragraphs
-    paragraphs.load("items/text,items/uniqueLocalId,items/tableNestingLevel")
-    return paragraphs
+    // Windows Word's Paragraph.text keeps tracked-deleted wording; bind Current.
+    const body = table.getCell(ri, ci).body, paragraphs = body.paragraphs
+    paragraphs.load("items/uniqueLocalId,items/tableNestingLevel")
+    return { paragraphs, current: body.getRange("Content").getReviewedText("Current") }
   }))
   await context.sync()
-  if (cells.some((row, ri) => row.some((paragraphs, ci) => {
+  if (cells.some((row, ri) => row.some(({ paragraphs, current }, ci) => {
     const p = paragraphs.items[0], expected = binding.rows[ri]![ci]!
-    return paragraphs.items.length !== 1 || !p || p.uniqueLocalId !== expected.id || p.text !== expected.text || p.tableNestingLevel !== 1
+    return paragraphs.items.length !== 1 || !p || p.uniqueLocalId !== expected.id || current.value !== expected.text || p.tableNestingLevel !== 1
   }))) return fail()
   if (typeof context.document.changeTrackingMode !== "string" || typeof context.document.trackFormatting !== "boolean") return fail()
   return { table, rowCount: table.rowCount, width, tracking: context.document.changeTrackingMode, trackFormatting: context.document.trackFormatting }

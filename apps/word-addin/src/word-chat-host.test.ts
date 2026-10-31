@@ -21,7 +21,7 @@ const escapeXml = (text: string) => text.replaceAll("&", "&amp;").replaceAll("<"
 const flatOpc = (content: string, extra = "") => `<pkg:package xmlns:pkg="${PACKAGE_XML}" xmlns:w="${WORD_XML}"><pkg:part pkg:name="/_rels/.rels" pkg:contentType="application/vnd.openxmlformats-package.relationships+xml"><pkg:xmlData><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/document.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"><pkg:xmlData><w:document><w:body>${content}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:body></w:document></pkg:xmlData></pkg:part>${extra}</pkg:package>`
 
 test("optional native table capture binds geometry to the same paragraph inventory and fails closed", async () => {
-  const paragraph = (id: string, text: string) => ({uniqueLocalId:id,text,tableNestingLevel:1})
+  const paragraph = (id: string, text: string) => ({uniqueLocalId:id,text,tableNestingLevel:1,getRange() { return {getReviewedText() { return {value:text} }} }})
   const cells = [[paragraph("a","One"),paragraph("b","Two")], [paragraph("c","Three"),paragraph("d","Four")]]
   const collection = <T>(items: T[]) => ({items,load() {}})
   const table = {rowCount:2,isUniform:true,values:cells.map(row => row.map(p => p.text)),load() {},getCell(r: number,c: number) { return {body:{paragraphs:collection([cells[r]![c]!])}} }}
@@ -65,6 +65,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     paragraphDeletions: 0, corruptParagraphDeletion: false, wrongDeletionCurrent: false,
     nativeFormatting: [] as string[], dropNativeFormatting: false, terminalBodyMark: false, cellWholeExpandsRow: false, refuseEmptyContentXml: false,
     omitContentProperties: false, paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
+    windowsText: false,
   }
   const text = () => state.paragraphs.map((p) => p.text).join(state.separator)
   const position = (id: string) => {
@@ -308,7 +309,15 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     state.saved = false
   })
   const paragraph = (p: NativeParagraph) => ({
-    get text() { return p.text }, get uniqueLocalId() { return p.id },
+    get text() {
+      if (!state.windowsText) return p.text
+      // Windows Word's Paragraph.text keeps tracked-deleted wording in place.
+      const at = position(p.id), whole = text(), deleted = state.nativeRevisions.filter(r => r.type === "Deleted" && r.text !== "\r" && at.start <= r.start && r.start <= at.end)
+      let result = "", cursor = at.start
+      for (const r of deleted.sort((x, y) => x.start - y.start)) { result += whole.slice(cursor, r.start) + r.text; cursor = r.start }
+      return result + whole.slice(cursor, at.end)
+    },
+    get uniqueLocalId() { return p.id },
     get style() { return p.style ?? "Normal" }, get styleBuiltIn() { return p.styleBuiltIn ?? "Normal" },
     set styleBuiltIn(value: string) { setFormat(p, "style", value) },
     get spaceBefore() { return 0 }, get spaceAfter() { return 10 }, get lineSpacing() { return 12 }, get leftIndent() { return 18 }, get firstLineIndent() { return -18 },
@@ -526,6 +535,17 @@ test("native text transport applies a single-paragraph wording change without im
   expect(state.nativeRevisions.map(revision => [revision.type, revision.author, revision.text])).toEqual([
     ["Deleted", "Word user", "clear"], ["Added", "Word user", "specific"],
   ])
+})
+
+test("native text transport confirms a tracked edit when Word's paragraph text includes deleted wording", async () => {
+  const { state, host, text } = office(["Control target alpha continues.", "Another earlier clause."], true), other = "Control target alpha continues.".length + 1
+  state.windowsText = true
+  state.nativeRevisions = [{ start: other + "Another ".length, end: other + "Another ".length, author: "Earlier reviewer", type: "Deleted", text: "old " }]
+  state.selection = [21, 30]
+  const target = (await host.selection())!
+  expect(target.paragraphs[0]!.text).toBe("Control target alpha continues.")
+  expect((await host.apply({ proposalId: "windows-wording", target, replacement: "remains" })).status).toBe("applied")
+  expect(text()).toBe("Control target alpha remains.\rAnother earlier clause.")
 })
 
 test("native text insertion after an earlier inserted paragraph by the same author is confirmed", async () => {
@@ -1625,7 +1645,7 @@ type RowSpan = { text: string; bold: boolean; italic: boolean; underline: boolea
  * per cell), and optionally what Word renders instead (fonts, sub-range text,
  * or a token match bound one character late). */
 type FormattedRowCase = { cells: string[]; runs: RowSpan[][]; xml: Array<Array<[string, string]>>; rendered?: RowSpan[][]; view?: string[]; misplace?: boolean }
-type MockRange = { start: number; end: number; text: string; font: { bold: boolean | null; italic: boolean | null; underline: string | null; load(): void }; load(): void;
+type MockRange = { start: number; end: number; text: string; getReviewedText(): { value: string }; font: { bold: boolean | null; italic: boolean | null; underline: string | null; load(): void }; load(): void;
   getRange(location?: string): MockRange; expandTo(other: MockRange): MockRange; search(query: string): { items: MockRange[]; load(): void } }
 /** A new cell paragraph's Content range over a per-character font model. */
 function mockCellRange(model: RowSpan[], view: string, misplace: boolean, counter: { searches: number }): MockRange {
@@ -1633,7 +1653,7 @@ function mockCellRange(model: RowSpan[], view: string, misplace: boolean, counte
   const at = (start: number, end: number): MockRange => {
     const slice = units.slice(start, end)
     const same = (key: "bold" | "italic" | "underline") => slice.length > 0 && slice.every(unit => unit[key] === slice[0]![key]) ? slice[0]![key] : null
-    return { start, end, get text() { return view.slice(start, end) }, load() {},
+    return { start, end, get text() { return view.slice(start, end) }, load() {}, getReviewedText: () => ({ value: view.slice(start, end) }),
       font: { get bold() { return same("bold") }, get italic() { return same("italic") }, get underline() { const u = same("underline"); return u === null ? null : u ? "Single" : "None" }, load() {} },
       getRange(location?: string) { return location === "Start" ? at(start, start) : location === "End" ? at(end, end) : at(start, end) },
       expandTo(other: MockRange) { return at(start, other.end) },
@@ -1679,11 +1699,11 @@ async function nativeRowOrchestrationFixture(lostSync = false, reloadInvalidates
   let applied = false, queued = false, rowWrites = 0, exports = 0, nestingInvalidated = false
   const counter = { searches: 0 }
   const para = (id:string,text:string,column?:number) => ({ uniqueLocalId:id, text, get tableNestingLevel() { if (nestingInvalidated) throw Error("PropertyNotLoaded: Paragraph.tableNestingLevel"); return 1 }, styleBuiltIn:"Normal", spaceBefore:0, spaceAfter:0, lineSpacing:12, load() {},
-    getRange() { return formatted && column !== undefined ? mockCellRange((formatted.rendered ?? formatted.runs)[column]!, formatted.view?.[column] ?? text, formatted.misplace === true, counter) : {font:{bold:false,italic:false,underline:"None",load(){}}} } })
+    getRange() { return Object.assign(formatted && column !== undefined ? mockCellRange((formatted.rendered ?? formatted.runs)[column]!, formatted.view?.[column] ?? text, formatted.misplace === true, counter) : {font:{bold:false,italic:false,underline:"None",load(){}}}, {getReviewedText: () => ({value:text})}) } })
   const oldParas = [para("a","Old"),para("b","Old two")], newParas = [para("c",cells[0]!,0),para("d",cells[1]!,1)]
   const collection = <T>(items:T[]) => ({items,load() {}})
   const nativeTable = { get rowCount() { return applied ? 2 : 1 }, isUniform:true, get values() { return applied ? [["Old","Old two"],cells] : [["Old","Old two"]] }, load() {},
-    getCell(row:number,col:number) { return {body:{paragraphs:collection([row ? newParas[col]! : oldParas[col]!]), insertText() { return {font:{bold:true,italic:true,underline:"Single",load(){}}} }}} },
+    getCell(row:number,col:number) { const p = row ? newParas[col]! : oldParas[col]!; return {body:{paragraphs:collection([p]), getRange() { return {getReviewedText() { return {value:p.text} }} }, insertText() { return {font:{bold:true,italic:true,underline:"Single",load(){}}} }}} },
     addRows() { queued = true; rowWrites++ }, }
   const body = { get paragraphs() { return { items:applied ? [...oldParas,...newParas] : oldParas, load(properties:string) { if (reloadInvalidates && applied) nestingInvalidated = !properties.includes("tableNestingLevel") } } }, tables:collection([nativeTable]),
     getRange() { return {getOoxml() {return {value:flatOpc(tableXml(applied ? addedXml : ""))}}, getReviewedText() {return {value:applied ? `Old\rOld two\r${cells.join("\r")}` : "Old\rOld two"}}, getTrackedChanges() {return collection([])}, getComments() {return collection([])} } } }

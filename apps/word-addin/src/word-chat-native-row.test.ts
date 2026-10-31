@@ -7,6 +7,7 @@ function fixture() {
     rowCount: 1, isUniform: true, values: [[`${prefix}1`, `${prefix}2`]], load() {},
     getCell(row: number, column: number) { return { body: {
       paragraphs: { items: [{ uniqueLocalId: `${prefix}${column}`, text: `${prefix}${column + 1}`, tableNestingLevel: 1 }], load() {} },
+      getRange() { return { getReviewedText() { return { value: `${prefix}${column + 1}` } } } },
       insertText(text: string, location: string) {
         queued.push(`text:${row}:${column}:${text}:${location}`)
         const font = new Proxy({ bold: true, italic: true, underline: "Single", load() {} }, { set(target, key, value) { queued.push(`font:${String(key)}:${value}`); return Reflect.set(target, key, value) } })
