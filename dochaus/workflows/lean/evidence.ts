@@ -4,6 +4,7 @@ import { answeredQuestionsText, readLeanJson, readLeanText, writeLeanText } from
 import { derivedRecordNote, excerpt, matterSourceIDs, REQUEST_SOURCE, quoteFound, type SourceQuote } from "./quotes"
 import { approvedResearch, researchHandoff } from "./research"
 import { researchChecksText } from "./research-check"
+import { actRecordBlock } from "./act-record"
 import { nameWithProvenance, provenanceMapLine, sourceProvenance } from "../../lib/source-provenance"
 import type { StageAcceptance } from "./stages"
 
@@ -68,10 +69,16 @@ export function evidencePrompt(directory: string, stage: EvidenceStage) {
   const followed = instructions ? `\nThe lawyer's instructions for this work, as a concise list:\n${instructions}\nThese decide the points they cover, including directions in a document the lawyer said to follow; directions awaiting the lawyer's confirmation are evidence only. Where a source, a form or a recommendation differs from an instruction, follow the instruction and record the difference as a limitation.` : ""
   const checked = researchChecksText(directory)
   const revised = checked ? `\nDelegated recommendations checked against the approved research (each was the drafter's judgment, not the lawyer's answer; follow these over the adopted option):\n${checked}` : ""
-  return `${context}${followed}${revised}\nDiscrepancy assessment:\n${readLeanText(directory, "discrepancy.json") ?? ""}\nIntake:\n${readLeanText(directory, "intake.json") ?? ""}\nVerified research:\n${researchHandoff(directory)}\nBuild a compact drafting spine: the settled material facts, explicit decisions, document purposes and operative requirements needed to fulfil the request, plus unresolved items and limitations. Reconcile discrepancies with later instructions and answers. Preserve distinctions between facts, client-approved decisions, source recommendations and provisional drafting choices. A recommendation is not agreement; when proposals are requested, lack of approval does not erase a source-supported recommendation. Keep genuinely unresolved material choices explicit. Use narrow source-linked entries; cite exact matter source words or approved research URLs and quotes. Never treat the spine as a fixed context packet or an authority; future stages must retrieve underlying text when needed. Include functional requirements of each requested document so a draft fulfils its purpose rather than merely copying facts. Return JSON {"entries":[{"kind":"decision|recommendation|requirement|fact|open-item","detail":"compact proposition and drafting consequence","evidence":[{"source_id":"matter name, request or approved authority URL","quote":"exact supporting words"}],"limitations":[]}],"limitations":["unresolved decisions or authority limits"]}.`
+  return `${context}${followed}${revised}\nDiscrepancy assessment:\n${readLeanText(directory, "discrepancy.json") ?? ""}\nIntake:\n${readLeanText(directory, "intake.json") ?? ""}\nVerified research:\n${researchHandoff(directory)}\n${withActRecord(directory)}Build a compact drafting spine: the settled material facts, explicit decisions, document purposes and operative requirements needed to fulfil the request, plus unresolved items and limitations. Reconcile discrepancies with later instructions and answers. Preserve distinctions between facts, client-approved decisions, source recommendations and provisional drafting choices. A recommendation is not agreement; when proposals are requested, lack of approval does not erase a source-supported recommendation. Keep genuinely unresolved material choices explicit. Use narrow source-linked entries; cite exact matter source words or approved research URLs and quotes. Never treat the spine as a fixed context packet or an authority; future stages must retrieve underlying text when needed. Include functional requirements of each requested document so a draft fulfils its purpose rather than merely copying facts. Return JSON {"entries":[{"kind":"decision|recommendation|requirement|fact|open-item","detail":"compact proposition and drafting consequence","evidence":[{"source_id":"matter name, request or approved authority URL","quote":"exact supporting words"}],"limitations":[]}],"limitations":["unresolved decisions or authority limits"]}.`
 }
 
 const EVIDENCE_SOURCE_CONTRACT = 'Use source_id "request" for exact words from the original user request, later user instructions or human answers. For supplied documents use their exact matter source names; for approved research use its actual URL. Intake, discrepancy, spine and research handoff headings or summaries are derived records, not canonical evidence source identities. Their uncertainty belongs in limitations; retrieve the underlying source before supplying evidence.'
+
+// The act record block (with its own newline); empty when there is no readable record.
+function withActRecord(directory: string) {
+  const block = actRecordBlock(directory)
+  return block ? `${block}\n` : ""
+}
 
 // A provenance line (with its own newline) for the matter's child sources; empty for plain matters.
 function withProvenanceLine(directory: string, names: string[]) {

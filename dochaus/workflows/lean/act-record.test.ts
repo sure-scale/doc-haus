@@ -4,11 +4,14 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import {
-  ACT_RECORD_AGENT, ACT_RECORD_SAMPLES, LEAN_ACTS_SCHEMA, actRecordPack, parseActHow, readActRecord, runActRecordStage, signerFlags,
+  ACT_RECORD_AGENT, ACT_RECORD_SAMPLES, LEAN_ACTS_SCHEMA, actRecordBlock, actRecordPack, parseActHow, readActRecord, runActRecordStage, signerFlags,
   type ActHow, type ActRecord, type ActWho, type ListedAct, type RecordedAct,
 } from "./act-record"
+import { evidencePrompt } from "./evidence"
+import { researchHandoff } from "./research"
+import { stageInputSha } from "./runner"
 import { LEAN_MAX_RETRIES, type StageSessionPort } from "./stages"
-import { initLeanState, type LeanState } from "./state"
+import { initLeanState, writeLeanText, type LeanState } from "./state"
 
 // The act record's jobs driven through runActRecordStage with a scripted model,
 // against a synthetic matter invented for these tests: a boatyard licensing a
@@ -224,4 +227,49 @@ test("every act-record prompt starts with the same pack, runs as the same agent 
   expect(new Set(model.prompts.map(prompt => prompt.agent))).toEqual(new Set([ACT_RECORD_AGENT]))
   expect(pack).toContain(SOURCE)
   expect(first.join("\n")).not.toContain("in the north shed")
+})
+
+describe("the spine's act record", () => {
+  const recordAs = (directory: string, saved: ActRecord) => writeLeanText(directory, "acts.json", `${JSON.stringify(saved, null, 2)}\n`)
+
+  test("a listed record shows each act's WHO, HOW and signer flag, then the deliverables, with the shared evidence in the spine's prompt", async () => {
+    const { directory } = await run(valid)
+    const block = actRecordBlock(directory)
+    expect(block).toBe([
+      "Act record:",
+      "The act record is a reading of the instructions to weigh, not an instruction or evidence: use it when deciding which documents carry which acts and who executes them; " +
+      "where the record and the sources differ, the sources govern and the difference becomes an open item.",
+      '1. "grant the storage licence"',
+      `   Directed by request: ${JSON.stringify(GRANT.quote)}`,
+      '   WHO: authorised by "Fenwick Boatyard Ltd"; performed by "Fenwick Boatyard Ltd".',
+      '   HOW: instrument "the storage licence, its grant clause"; executed by "Fenwick Boatyard Limited", "Harbourlight Rowing Club"; requires act 2 ("the Club Committee\'s approval of the licence fee").',
+      '2. "approve the licence fee"',
+      `   Directed by request: ${JSON.stringify(APPROVE.quote)}`,
+      '   WHO: authorised by "the Club Committee"; performed by "the Club Committee".',
+      `   HOW: instrument not settled; executed by not settled. Unsettled: ${APPROVE_HOW.reason}`,
+      '   Signer flag: "the Club Committee" must authorise the act but is not among its instrument\'s recorded signatories.',
+      "Deliverables:",
+      `- "a short cover note for the Club", asked for by request: ${JSON.stringify(NOTE.quote)}`,
+    ].join("\n"))
+    expect(evidencePrompt(directory, "spine")).toContain(`Verified research:\n${researchHandoff(directory)}\n${block}\nBuild a compact drafting spine`)
+  })
+
+  test("a record listing no act says so; an unchecked or missing record shows no block", async () => {
+    const { directory } = await run(job => job === "what" ? { acts: [] } : { deliverables: [] })
+    expect(actRecordBlock(directory)).toEndWith("\nThe act record found no act that the instructions direct.\nDeliverables: none listed.")
+    expect(evidencePrompt(directory, "spine")).toContain("The act record found no act that the instructions direct.")
+    recordAs(directory, { ...readActRecord(directory)!, status: "unchecked", deliverables: null })
+    expect(actRecordBlock(directory)).toBe("")
+    expect(evidencePrompt(directory, "spine")).not.toContain("Act record:")
+    expect(actRecordBlock(matter().directory)).toBe("")
+  })
+
+  test("a changed act record makes the spine stale; the same record rewritten does not", async () => {
+    const { directory, record: saved } = await run(valid)
+    const spine = stageInputSha(directory, "spine")
+    recordAs(directory, saved!)
+    expect(stageInputSha(directory, "spine")).toBe(spine)
+    recordAs(directory, { ...saved!, acts: saved!.acts.slice(0, 1) })
+    expect(stageInputSha(directory, "spine")).not.toBe(spine)
+  })
 })
