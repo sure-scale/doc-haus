@@ -556,3 +556,30 @@ test("the blackline carries none of the anchor ids the check keeps in left's acc
   expect(strFromU8(parts["word/comments.xml"]!)).toContain("Check the party names.")
   expect(Object.entries(parts).filter(([name, data]) => name.endsWith(".xml") && strFromU8(data).includes("powertools")).map(([name]) => name)).toEqual([])
 })
+
+test("a revision spanning paragraphs or a table row takes its reviewer's name on every piece, paragraph and row marks included", async () => {
+  // Pat inserts two new paragraphs, Sam a table row; each is one Word revision
+  // whose text spans paragraph marks, while the blackline carries it per paragraph.
+  const mark = (by: typeof PAT) => `<w:rPr><w:ins w:id="${revisionId++}" w:author="${by.author}" w:date="${by.date}"/></w:rPr>`
+  const cell = (inner: string) => `<w:tc><w:tcPr><w:tcW w:w="4000" w:type="dxa"/></w:tcPr>${inner}</w:tc>`
+  const table = (extra = "") => `<w:tbl><w:tblPr><w:tblW w:w="8000" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid>`
+    + `<w:tr>${cell(p("Milestone"))}${cell(p("Fee"))}</w:tr><w:tr>${cell(p("Kick-off"))}${cell(p("10 per cent"))}</w:tr>${extra}</w:tbl>`
+  const left = body(), right = body()
+  left.splice(10, 0, table())
+  right[3] = para(run(C.d11) + ins(" promptly", PAT))
+  right.splice(4, 0, para(ins("1.1A Deliverables means the written reports.", PAT), mark(PAT)), para(ins("1.1B Milestone means a stage of the Services.", PAT), mark(PAT)))
+  right.splice(12, 0, table(`<w:tr><w:trPr><w:ins w:id="${revisionId++}" w:author="${SAM.author}" w:date="${SAM.date}"/></w:trPr>`
+    + `${cell(para(ins("Final report", SAM), mark(SAM)))}${cell(para(ins("90 per cent", SAM), mark(SAM)))}</w:tr>`))
+  const result = await compare(sent(left), sent(right))
+  expect(result.right.authors.toSorted()).toEqual([PAT.author, SAM.author])
+  expect(result.attribution).toBe("authors")
+  const markup = revisions(result.blackline)
+  expect(markup.map(row => [row.tag, row.text, row.author, row.date])).toEqual([
+    ["ins", " promptly", PAT.author, PAT.date],
+    ["ins", "", PAT.author, PAT.date], ["ins", "1.1A Deliverables means the written reports.", PAT.author, PAT.date],
+    ["ins", "", PAT.author, PAT.date], ["ins", "1.1B Milestone means a stage of the Services.", PAT.author, PAT.date],
+    ["ins", "", SAM.author, SAM.date],
+    ["ins", "", SAM.author, SAM.date], ["ins", "Final report", SAM.author, SAM.date],
+    ["ins", "", SAM.author, SAM.date], ["ins", "90 per cent", SAM.author, SAM.date],
+  ])
+})

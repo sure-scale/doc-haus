@@ -307,9 +307,12 @@ function containerText(xml: string) {
 // check's comparison is an edit right made without tracking and is labelled as
 // such. Any other revision takes its input author (and date) only
 // when unambiguous: the right file has a single author, or its text matches
-// exactly one input revision. Otherwise it keeps the side label, as do
-// formatting changes. Returns nothing unless every untracked revision found its
-// counterpart.
+// exactly one input revision. A revision spanning paragraph marks or a table
+// row reaches the blackline as adjacent pieces of one kind (its paragraphs'
+// text, their marks, the row's own mark): together they take its author when
+// their joined text matches exactly one input revision. Otherwise it keeps the
+// side label, as do formatting changes. Returns nothing unless every untracked
+// revision found its counterpart.
 function relabel(plain: Uint8Array, check: Uint8Array, inputs: InputRevision[], label: string) {
   const parts = unzipSync(plain)
   const docs = storyDocuments(parts)
@@ -320,19 +323,46 @@ function relabel(plain: Uint8Array, check: Uint8Array, inputs: InputRevision[], 
     node.setAttributeNS(W, "w:author", author)
     if (date) node.setAttributeNS(W, "w:date", date)
   }
-  for (const row of carriers(docs)) {
+  const rows = carriers(docs)
+  const untracked = new Set<Element>(), signed = new Set<Element>()
+  const sameKind = (input: InputRevision, kind: "ins" | "del") => input.type === "move" || input.type === (kind === "ins" ? "insert" : "delete")
+  for (const row of rows) {
     if (!row.text) continue
     const count = pending.get(row.key) ?? 0
     if (count) {
       pending.set(row.key, count - 1)
       sign(row.node, untrackedAuthor(label))
+      untracked.add(row.node)
       continue
     }
-    const matches = inputs.filter(input => (input.type === "move" || input.type === (row.kind === "ins" ? "insert" : "delete"))
+    const matches = inputs.filter(input => sameKind(input, row.kind)
       && (input.family === "paragraph_mark" ? "¶" : input.text.replace(/¶$/, "")) === row.text)
-    if (matches.length === 1) sign(row.node, matches[0].author, matches[0].date)
-    else if (authors.length === 1) sign(row.node, authors[0], dates.length === 1 ? dates[0] : undefined)
+    if (matches.length === 1) {
+      sign(row.node, matches[0].author, matches[0].date)
+      signed.add(row.node)
+    }
   }
+  // Pieces are adjacent when no text of left lies between them: an insertion
+  // keeps its offset, a deletion advances by its own text.
+  const marks = (text: string) => text.replace(/^¶+|¶+$/g, "")
+  let run: typeof rows = []
+  for (const row of [...rows, undefined]) {
+    const last = run.at(-1)
+    if (last && row && !untracked.has(row.node) && row.part === last.part && row.kind === last.kind
+      && row.start === last.start + (row.kind === "del" ? last.text.length : 0)) {
+      run.push(row)
+      continue
+    }
+    const text = marks(run.map(piece => piece.text).join(""))
+    const matches = text && run.length > 1 ? inputs.filter(input => sameKind(input, run[0]!.kind) && marks(input.text) === text) : []
+    if (matches.length === 1) for (const piece of run) {
+      sign(piece.node, matches[0].author, matches[0].date)
+      signed.add(piece.node)
+    }
+    run = row && !untracked.has(row.node) ? [row] : []
+  }
+  if (authors.length === 1) for (const row of rows)
+    if (row.text && !untracked.has(row.node) && !signed.has(row.node)) sign(row.node, authors[0], dates.length === 1 ? dates[0] : undefined)
   if ([...pending.values()].some(count => count > 0)) return undefined
   for (const [name, doc] of docs) {
     // Word also reads a move's author from its range start.
@@ -355,11 +385,11 @@ function relabel(plain: Uint8Array, check: Uint8Array, inputs: InputRevision[], 
 // edit right made without tracking has the same key in the blackline and in the
 // check.
 function carriers(docs: Map<string, Document>) {
-  const rows: { key: string; kind: "ins" | "del"; text: string; node: Element }[] = []
+  const rows: { key: string; part: string; start: number; kind: "ins" | "del"; text: string; node: Element }[] = []
   for (const [part, doc] of docs) {
     let offset = 0
     const open: { kind: "ins" | "del"; start: number; text: string; node: Element }[] = []
-    const add = (row: (typeof open)[number]) => rows.push({ key: `${part}|${row.kind}|${row.start}|${row.text}`, kind: row.kind, text: row.text, node: row.node })
+    const add = (row: (typeof open)[number]) => rows.push({ key: `${part}|${row.kind}|${row.start}|${row.text}`, part, start: row.start, kind: row.kind, text: row.text, node: row.node })
     const visit = (node: Element) => {
       const name = node.namespaceURI === W ? node.localName : ""
       const kind = REVISION.get(name)
