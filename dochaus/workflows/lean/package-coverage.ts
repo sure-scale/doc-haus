@@ -61,8 +61,8 @@ const ACTS_SHAPE = 'Reply with the JSON object only: {"acts":[{"act":"...","sour
 const PLACEMENT_SHAPE = 'Reply with the JSON object only: {"placements":[{"act":0,"document":"planned id or null"}]}.'
 const READ_ONLY = "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply."
 
-/** The lawyer's instructions both coverage jobs read: the request, the later updates and the answers. */
-function instructionSections(directory: string) {
+/** The lawyer's instructions the coverage and act-record jobs read: the request, the later updates and the answers. */
+export function instructionSections(directory: string) {
   const updates = readLeanText(directory, "updated-notes.md")?.trim()
   const answers = answeredQuestionsText(directory)
   return [
@@ -139,7 +139,7 @@ function listedAct(row: unknown): InstructedAct | undefined {
  * is the request, updates and answers), and each party that neither the
  * instructions nor any matter document names. `texts` gives namingTexts, read
  * once per reply. */
-function listedActIssues(directory: string, where: string, act: InstructedAct, texts: () => string[]) {
+export function listedActIssues(directory: string, where: string, act: InstructedAct, texts: () => string[]) {
   const issues: string[] = []
   const sources = [REQUEST_SOURCE, ...matterSourceIDs(directory)]
   if (!sources.includes(act.source))
@@ -180,16 +180,17 @@ export function parseCoverageActs(reply: string, directory: string): Checked<Ins
   }) }
 }
 
-/** Two verified lists of the plan-blind job joined: every act of `first`, in
- * its order, then each act of `second` whose quote overlaps no quote of an act
- * already kept from the same source, in any reading of that source
- * (sourceReadings: one run may copy an email's bold marks and the other leave
- * them out), so an act either run listed is kept once. */
-export function mergeCoverageActs(first: InstructedAct[], second: InstructedAct[]): InstructedAct[] {
+/** Verified lists of separate runs joined, in run order: every act of the
+ * first list, in its order, then each act of a later list whose quote overlaps
+ * no quote of an act already kept from the same source, in any reading of that
+ * source (sourceReadings: one run may copy an email's bold marks and another
+ * leave them out), so an act any run listed is kept once. */
+export function mergeCoverageActs<T extends { source: string; quote: string }>(...lists: T[][]): T[] {
+  const [first = [], ...later] = lists
   const merged = [...first]
-  const same = (a: InstructedAct, b: InstructedAct) => a.source === b.source &&
+  const same = (a: T, b: T) => a.source === b.source &&
     sourceReadings(a.source).some(reading => overlaps(normalizeWithMap(a.quote, reading).text, normalizeWithMap(b.quote, reading).text))
-  for (const act of second) if (!merged.some(other => same(other, act))) merged.push(act)
+  for (const act of later.flat()) if (!merged.some(other => same(other, act))) merged.push(act)
   return merged
 }
 
@@ -892,7 +893,7 @@ function coverageView(document: PlannedDocument) {
 }
 
 /** The texts that can name a party: the lawyer's own words and each matter document. */
-function namingTexts(directory: string) {
+export function namingTexts(directory: string) {
   return [...lawyerWords(directory), ...matterSourceIDs(directory).map(id => sourceText(directory, id))]
 }
 
