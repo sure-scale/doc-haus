@@ -1,5 +1,5 @@
 import type { WordChatInlineFormat, WordChatListCapture, WordChatParagraphFormat, WordChatProposal, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatListInsertion } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatParagraphMerge, validWordChatListInsertion } from "../../../dochaus/lib/word-chat-amendment-contract"
 
 export type WordChatApplyEligibility = { supported: true } | { supported: false; reason: string }
 
@@ -12,6 +12,15 @@ export function nativeWordChatListInsertionEligible(target: WordChatTarget, repl
   const canonical = targetWordChatAmendment(snapshot, target.text)
   return !!canonical && canonical.startOffset === target.startOffset && canonical.endOffset === target.endOffset &&
     validWordChatListInsertion(snapshot, canonical, replacement, action, formatting, inlineFormatting)
+}
+
+/** Two complete adjacent paragraphs, with only their boundary joined. */
+export function nativeWordChatParagraphMergeEligible(target: WordChatTarget, replacement: string, action: unknown, formatting?: WordChatParagraphFormat[], inlineFormatting?: WordChatInlineFormat): boolean {
+  const snapshot = { text:target.paragraphs.map(p => p.text).join("\r"), paragraphs:target.paragraphs,
+    selection:target, saved:target.saved, capturedAt:target.capturedAt, truncated:false }
+  const canonical = targetWordChatAmendment(snapshot, target.text)
+  return !!canonical && canonical.startOffset === target.startOffset && canonical.endOffset === target.endOffset &&
+    validWordChatParagraphMerge(snapshot, canonical, replacement, action, formatting, inlineFormatting)
 }
 
 /** Explicit reviewed mark deletion, distinct from clearing paragraph text. */
@@ -49,6 +58,9 @@ export function nativeWordChatTextEligible(target: WordChatTarget, replacement: 
  * protection, comments/revisions, formatting and the authored artifact must
  * still pass their existing checks before any mutation. */
 export function wordChatApplyEligibility(target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[], nativeText = true, inlineFormatting?: WordChatInlineFormat, paragraphAction?: WordChatProposal["paragraphAction"], list?: WordChatListCapture): WordChatApplyEligibility {
+  if (paragraphAction === "merge") return nativeText && nativeWordChatParagraphMergeEligible(target, replacement, paragraphAction, formatting, inlineFormatting)
+    ? { supported: true }
+    : { supported: false, reason: "Review the complete adjacent paragraphs before merging them." }
   if (paragraphAction === "append_list_item") return nativeText && nativeWordChatListInsertionEligible(target, replacement, paragraphAction, list, formatting, inlineFormatting)
     ? { supported: true }
     : { supported: false, reason: "Prepare a new item at the end of the captured automatic list before applying it." }

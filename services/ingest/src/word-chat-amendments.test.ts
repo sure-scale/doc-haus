@@ -98,3 +98,13 @@ test("row deletion oracle binds all current table rows and exact requested targe
   const stale = {...table, rows:[[{...paragraphs[0]!,text:"Changed"},paragraphs[1]!],table.rows[1]!]}
   await expect(authorWordChatTableRowDeletion({...snapshot,table:stale,paragraphs:[{...paragraphs[0]!,text:"Changed"},...paragraphs.slice(1)]},{...proposal,table:stale},source)).rejects.toThrow("word_row_source_changed")
 })
+
+
+test("paragraph merge preparation binds the reviewed boundary without authoring a document", async () => {
+  const paragraphs=[{id:"first",text:"First."},{id:"second",text:"Second."}],context={text:"First.\rSecond.",paragraphs,capturedAt:"now",saved:false,truncated:false}
+  const target=targetWordChatAmendment(context,context.text)!
+  const proposal:WordChatProposal={id:"merge",documentId:"doc",before:context.text,after:"First. Second.",explanation:"Join",openItems:[],createdAt:"now",target,paragraphAction:"merge"}
+  expect(await authorWordChatAmendment("",proposal,context)).toEqual({kind:"paragraph_merge",proposalId:"merge",target})
+  await expect(authorWordChatAmendment("",{...proposal,after:"First.Second."},context)).rejects.toThrow("word_proposal_changed")
+  await expect(authorWordChatAmendment("",proposal,{...context,paragraphs:[paragraphs[1]!,paragraphs[0]!]})).rejects.toThrow("word_proposal_changed")
+})

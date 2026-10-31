@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatListInsertion, wordChatListCaptureCurrent, validWordChatTableRowInsertion, validWordChatTableRowDeletion, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatParagraphMerge, validWordChatListInsertion, wordChatListCaptureCurrent, validWordChatTableRowInsertion, validWordChatTableRowDeletion, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
 
 test("inline formatting binds exact native UTF-16 targets without trusting model offsets", () => {
   const text = "Keep 😀 terms and terms."
@@ -247,4 +247,21 @@ test("row deletion binds exact original cells and the captured row and refuses s
   expect(validWordChatTableRowDeletion(context,proposal)).toBe(true)
   for (const bad of [{...proposal,rowIndex:0},{...proposal,rowIndex:2},{...proposal,cells:["Fee","Ten"]},{...proposal,unknown:true},{...proposal,table:{...table,rows:[table.rows[1]]}}]) expect(validWordChatTableRowDeletion(context,bad)).toBe(false)
   expect(validWordChatTableRowDeletion({...context,table:{...table,rows:[table.rows[1]!,table.rows[0]!] }},proposal)).toBe(false)
+})
+
+
+test("paragraph merge binds two full adjacent paragraphs and exact boundary", () => {
+  const paragraphs=[{id:"a",text:"First sentence."},{id:"b",text:"Second sentence."},{id:"c",text:"Third."}]
+  const snapshot:WordChatSnapshot={text:paragraphs.map(p=>p.text).join("\r"),paragraphs,capturedAt:"now",saved:false,truncated:false}
+  const before="First sentence.\rSecond sentence.",after="First sentence. Second sentence.",target=targetWordChatAmendment(snapshot,before)!
+  expect(validWordChatParagraphMerge(snapshot,target,after,"merge")).toBe(true)
+  for (const [value, action, format, inline] of [["First sentence.Second sentence.","merge",undefined,undefined],[after,"delete",undefined,undefined],[after,"merge",[],undefined],[after,"merge",undefined,{bold:true}]] as const) expect(validWordChatParagraphMerge(snapshot,target,value,action,format,inline)).toBe(false)
+  expect(validWordChatParagraphMerge(snapshot,{...target,startOffset:1},after,"merge")).toBe(false)
+  expect(validWordChatParagraphMerge({...snapshot,paragraphs:[paragraphs[0]!,paragraphs[2]!,paragraphs[1]!] },target,after,"merge")).toBe(false)
+  expect(validWordChatParagraphMerge({...snapshot,paragraphs:[paragraphs[0]!,{...paragraphs[1]!,text:"Changed"},paragraphs[2]!] },target,after,"merge")).toBe(false)
+  expect(validWordChatParagraphMerge({...snapshot,list:{id:1,format:"decimal",members:[{...paragraphs[1]!,level:0,label:"1."}]}},target,after,"merge")).toBe(false)
+  const partial={id:"selected",text:"sentence.\rSecond sentence.",paragraphs:paragraphs.slice(0,2),startOffset:6,endOffset:paragraphs[1]!.text.length,capturedAt:"now",saved:false}
+  expect(validWordChatParagraphMerge({...snapshot,selection:partial},target,after,"merge")).toBe(false)
+  const duplicates={...snapshot,paragraphs:[...paragraphs,...paragraphs.slice(0,2).map((p,i)=>({...p,id:`copy-${i}`}))]}
+  expect(targetWordChatAmendment(duplicates,before)).toBeUndefined()
 })

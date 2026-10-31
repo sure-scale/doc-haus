@@ -7,11 +7,12 @@ import { verifyNativeWordChatAddedRow } from "./word-chat-native-row-verificatio
 import { assertNativeWordChatRowDeletionTarget, verifyReviewedWordChatRowDeletionOracle, verifyNativeWordChatDeletedRow } from "./word-chat-native-row-delete"
 import { normalizeNativeWordChatCommentIds as normalizeNativeWordChatAnnotationIds } from "./word-chat-native-comments"
 import { assertNativeWordChatParagraphInsertionTarget, verifyNativeWordChatParagraphInsertion } from "./word-chat-native-paragraph-insert"
+import { assertNativeWordChatParagraphMergeTarget, verifyNativeWordChatParagraphMerge } from "./word-chat-native-paragraph-merge"
 import { assertNativeWordChatParagraphDeletionTarget, verifyNativeWordChatParagraphDeletion } from "./word-chat-native-paragraph-delete"
 import { assertNativeWordChatListInsertionTarget, verifyNativeWordChatListInsertion } from "./word-chat-native-list-insert"
 import { nativeWordChatDecimalList } from "./word-chat-native-list-context"
 import { DOMParser } from "@xmldom/xmldom"
-import { nativeWordChatParagraphInsertionEligible, nativeWordChatParagraphDeletionEligible, nativeWordChatListInsertionEligible, wordChatApplyEligibility } from "./word-chat-apply"
+import { nativeWordChatParagraphMergeEligible, nativeWordChatParagraphInsertionEligible, nativeWordChatParagraphDeletionEligible, nativeWordChatListInsertionEligible, wordChatApplyEligibility } from "./word-chat-apply"
 
 type ClientResult<T> = { value: T }
 type Collection<T> = { items: T[]; load(properties: string): void }
@@ -437,9 +438,11 @@ export class WordChatHost {
     const insertion = this.nativeTextEnabled && nativeWordChatParagraphInsertionEligible(input.target, input.replacement, input.formatting, input.inlineFormatting)
     if (input.paragraphAction === "append_list_item" && (!this.nativeTextEnabled || !nativeWordChatListInsertionEligible(input.target, input.replacement, input.paragraphAction, input.list, input.formatting, input.inlineFormatting)))
       throw new WordChatHostError("Review a supported existing-list insertion before applying it. Your document is unchanged.")
-    if (input.paragraphAction !== undefined && input.paragraphAction !== "append_list_item" && (!this.nativeTextEnabled || !nativeWordChatParagraphDeletionEligible(input.target, input.replacement, input.paragraphAction, input.formatting, input.inlineFormatting)))
+    if (input.paragraphAction === "merge" && (!this.nativeTextEnabled || !nativeWordChatParagraphMergeEligible(input.target, input.replacement, input.paragraphAction, input.formatting, input.inlineFormatting)))
+      throw new WordChatHostError("Review two complete adjacent paragraphs before merging them. Your document is unchanged.")
+    if (input.paragraphAction !== undefined && input.paragraphAction !== "merge" && input.paragraphAction !== "append_list_item" && (!this.nativeTextEnabled || !nativeWordChatParagraphDeletionEligible(input.target, input.replacement, input.paragraphAction, input.formatting, input.inlineFormatting)))
       throw new WordChatHostError("Review deletion of one complete paragraph before applying it. Your document is unchanged.")
-    const promise = input.paragraphAction === "append_list_item" ? this.applyListInsertionOnce(input, identity) : input.paragraphAction !== undefined ? this.applyParagraphDeletionOnce(input, identity) : input.inlineFormatting !== undefined ? this.applyInlineOnce(input, identity) : insertion ? this.applyParagraphInsertionOnce(input, identity) : this.applyOnce(input, identity)
+    const promise = input.paragraphAction === "merge" ? this.applyParagraphMergeOnce(input, identity) : input.paragraphAction === "append_list_item" ? this.applyListInsertionOnce(input, identity) : input.paragraphAction !== undefined ? this.applyParagraphDeletionOnce(input, identity) : input.inlineFormatting !== undefined ? this.applyInlineOnce(input, identity) : insertion ? this.applyParagraphInsertionOnce(input, identity) : this.applyOnce(input, identity)
     this.pending.set(input.proposalId, { identity, promise })
     try { return await promise } finally { this.pending.delete(input.proposalId) }
   }
@@ -755,6 +758,80 @@ export class WordChatHost {
     } catch(error) {
       if (this.applied.get(input.proposalId)?.uncertain) { if (error instanceof WordChatHostError && error.mutationState === "uncertain") throw error; throw new WordChatHostError("Word may already contain this change. Inspect it and use Undo if needed.","uncertain",{cause:error}) }
       failure(error,"Word could not prepare the reviewed list insertion. Your document is unchanged.")
+    }
+  }
+
+  private async applyParagraphMergeOnce(input: WordChatApplyInput, identity: string): Promise<WordChatApplyResult> {
+    try {
+      const capture = async (context: WordChatContext) => {
+        const snapshot = await this.importSnapshot(context, input.target, false, false, false, false, true, true)
+        if (!snapshot.projection) throw captureMismatch("Word could not capture the reviewed paragraphs.")
+        const beforeState = await this.documentState(context)
+        const paragraphs = input.target.paragraphs.map(p => context.document.getParagraphByUniqueLocalId(p.id))
+        const fonts = paragraphs.map(p => { const f = p.getRange("Content").font; if (!f) throw Error("merge_font_unavailable"); return f })
+        context.document.load("changeTrackingMode,trackFormatting")
+        const body = context.document.body.getRange("Content"), whole = context.document.body.getRange("Whole").getOoxml()
+        const current = body.getReviewedText("Current"), original = body.getReviewedText("Original")
+        const span = paragraphs[0]!.getRange("Content").expandTo(paragraphs[1]!.getRange("Content"))
+        const targetCurrent = span.getReviewedText("Current"), targetOriginal = span.getReviewedText("Original")
+        const all = context.document.body.paragraphs
+        all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+        await context.sync()
+        const inventory = all.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel}))
+        const originalXml = whole.value, currentText = current.value, originalText = original.value, targetCurrentText = targetCurrent.value, targetOriginalText = targetOriginal.value
+        for (const p of paragraphs) p.load("styleBuiltIn,isListItem,tableNestingLevel,spaceBefore,spaceAfter,lineSpacing,leftIndent,firstLineIndent")
+        for (const f of fonts) f.load("bold,italic,underline,name,size,color")
+        const finalXml = context.document.body.getRange("Whole").getOoxml()
+        await context.sync()
+        if (!sameNativeWordChatBodySnapshot(originalXml,finalXml.value)) throw captureMismatch("The paragraphs changed during capture.")
+        const format = paragraphs.map((p,i) => {
+          const f=fonts[i]!, values=[f.bold,f.italic,f.underline,f.name,f.size,f.color,p.spaceBefore,p.spaceAfter,p.lineSpacing,p.leftIndent,p.firstLineIndent]
+          if (p.styleBuiltIn!=="Normal" || p.isListItem!==false || p.tableNestingLevel!==0 || typeof f.bold!=="boolean" || typeof f.italic!=="boolean" || typeof f.underline!=="string" || typeof f.name!=="string" || !f.name || typeof f.color!=="string" || !f.color || typeof f.size!=="number" || !Number.isFinite(f.size) || values.slice(6).some(v=>typeof v!=="number" || !Number.isFinite(v))) throw captureMismatch("Word cannot confirm compatible ordinary paragraph formatting.")
+          return values
+        })
+        if (JSON.stringify(format[0])!==JSON.stringify(format[1]) || typeof context.document.trackFormatting!=="boolean") throw captureMismatch("The paragraph formats are not compatible.")
+        const projection = projectNativeWordChatBody(finalXml.value,inventory)
+        if (!sameNativeProjectionGeometry(snapshot.projection,projection) || !sameNativeWordChatBodySnapshot(snapshot.projection.ooxml,projection.ooxml)) throw captureMismatch("The paragraphs changed during capture.")
+        assertNativeWordChatParagraphMergeTarget(projection,input.target)
+        const at=currentText.indexOf(input.target.text)
+        if (targetCurrentText!==input.target.text || targetOriginalText!==input.target.text || at<0 || at>0 && currentText[at-1]!=="\r" || at+input.target.text.length<currentText.length && currentText[at+input.target.text.length]!=="\r" || currentText.indexOf(input.target.text,at+1)!==-1) throw captureMismatch("Word could not uniquely confirm the reviewed paragraph boundary.")
+        return {...snapshot,projection,current:currentText,original:originalText,at,format,tracking:context.document.changeTrackingMode,trackFormatting:context.document.trackFormatting,comments:beforeState.comments}
+      }
+      const initial = await this.word.run(capture)
+      const plan = await input.author({ooxml:initial.ooxml})
+      if (!("kind" in plan) || plan.kind!=="paragraph_merge" || plan.proposalId!==input.proposalId || JSON.stringify(plan.target)!==JSON.stringify(input.target)) throw captureMismatch("The prepared merge differs from the reviewed change.")
+      return await this.word.run(async context => {
+        const fresh=await capture(context)
+        if (!sameNativeWordChatBodySnapshot(initial.projection.ooxml,fresh.projection.ooxml) || !sameNativeProjectionGeometry(initial.projection,fresh.projection) || initial.current!==fresh.current || initial.original!==fresh.original || JSON.stringify(initial.format)!==JSON.stringify(fresh.format) || JSON.stringify(initial.comments)!==JSON.stringify(fresh.comments)) throw captureMismatch("The paragraphs changed during review.")
+        const left=context.document.getParagraphByUniqueLocalId(input.target.paragraphs[0]!.id)
+        const matches=left.getRange("Whole").search("^p",{matchWildcards:false,matchCase:true,matchWholeWord:false})
+        matches.load("items/text"); await context.sync()
+        if (matches.items.length!==1 || matches.items[0]!.text!=="\r") throw captureMismatch("Word could not uniquely identify the paragraph mark.")
+        if (input.mayDispatch && !input.mayDispatch()) throw new WordChatHostError("The Word pane closed before the change was applied. Your document is unchanged.")
+        this.applied.set(input.proposalId,{identity,authors:[],uncertain:true})
+        context.document.changeTrackingMode="TrackAll"
+        matches.items[0]!.insertText(" ","After")
+        matches.items[0]!.delete()
+        context.document.changeTrackingMode=fresh.tracking
+        context.document.trackFormatting=fresh.trackFormatting
+        await context.sync()
+        const afterState=await this.documentState(context)
+        const paragraphs=input.target.paragraphs.map(p=>context.document.getParagraphByUniqueLocalId(p.id))
+        const span=paragraphs[0]!.getRange("Content").expandTo(paragraphs[1]!.getRange("Content"))
+        const targetCurrent=span.getReviewedText("Current"), targetOriginal=span.getReviewedText("Original")
+        const body=context.document.body.getRange("Content"), current=body.getReviewedText("Current"), original=body.getReviewedText("Original"), xml=context.document.body.getRange("Whole").getOoxml(), all=context.document.body.paragraphs
+        all.load("items/uniqueLocalId,items/text,items/tableNestingLevel");context.document.load("changeTrackingMode,trackFormatting")
+        await context.sync()
+        const observed=projectNativeWordChatBody(xml.value,all.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})))
+        const expected=fresh.current.slice(0,fresh.at)+input.replacement+fresh.current.slice(fresh.at+input.target.text.length)
+        if (context.document.changeTrackingMode!==fresh.tracking || context.document.trackFormatting!==fresh.trackFormatting || current.value!==expected || original.value!==fresh.original || targetCurrent.value!==input.replacement || targetOriginal.value!==input.target.text || JSON.stringify(afterState.comments)!==JSON.stringify(fresh.comments)) throw Error("paragraph_merge_confirmation")
+        const authors=verifyNativeWordChatParagraphMerge(fresh.projection,observed,input.target)
+        this.applied.set(input.proposalId,{identity,authors,uncertain:false})
+        return {status:"applied",tracked:true,saved:false,authors}
+      })
+    } catch(error) {
+      if (this.applied.get(input.proposalId)?.uncertain) throw new WordChatHostError("Word may contain the merge, but its tracked result could not be confirmed. Inspect it and use Undo if needed; do not apply it again.","uncertain",{cause:error})
+      failure(error,"Word could not prepare the reviewed paragraph merge. Your document is unchanged.")
     }
   }
 

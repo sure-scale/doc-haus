@@ -4,7 +4,7 @@ import { wordChatApplyPlan, wordChatTargetCurrent } from "../../../dochaus/lib/w
 import { ChatRequestError, type WordChatApi } from "./chat-client"
 import { nativeEventSession, subscribeNativeChatStream } from "../../../dochaus/lib/native-chat-stream"
 import type { WordChatApplyEligibility } from "./word-chat-apply"
-import { nativeWordChatParagraphInsertionEligible, nativeWordChatParagraphDeletionEligible, nativeWordChatListInsertionEligible } from "./word-chat-apply"
+import { nativeWordChatParagraphInsertionEligible, nativeWordChatParagraphDeletionEligible, nativeWordChatParagraphMergeEligible, nativeWordChatListInsertionEligible } from "./word-chat-apply"
 
 export type ChatHost = {
   documentName: string
@@ -311,10 +311,11 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     const eligibility = host.applyEligibility(proposal)
     const insertion = nativeWordChatParagraphInsertionEligible(proposal.target, proposal.after, formatting, inlineFormatting)
     const deletion = nativeWordChatParagraphDeletionEligible(proposal.target, proposal.after, proposal.paragraphAction, formatting, inlineFormatting)
+    const merge = nativeWordChatParagraphMergeEligible(proposal.target, proposal.after, proposal.paragraphAction, formatting, inlineFormatting)
     const listInsertion = nativeWordChatListInsertionEligible(proposal.target, proposal.after, proposal.paragraphAction, proposal.list, formatting, inlineFormatting)
-    const unavailable = !eligibility.supported ? eligibility.reason : !plan.supported && !insertion && !deletion && !listInsertion ? plan.reason : undefined
-    const card = document.createElement("section"); card.className = "chat-proposal"; card.setAttribute("aria-label", listInsertion ? "List item to review" : deletion ? "Paragraph deletion to review" : (formatting || inlineFormatting) && !wordingChanged ? "Formatting to review" : "Amendment to review")
-    card.append(line("h3", listInsertion ? "Add list item" : deletion ? "Review deletion" : wordingChanged ? "Review amendment" : "Review formatting"))
+    const unavailable = !eligibility.supported ? eligibility.reason : !plan.supported && !insertion && !deletion && !merge && !listInsertion ? plan.reason : undefined
+    const card = document.createElement("section"); card.className = "chat-proposal"; card.setAttribute("aria-label", merge ? "Paragraph join to review" : listInsertion ? "List item to review" : deletion ? "Paragraph deletion to review" : (formatting || inlineFormatting) && !wordingChanged ? "Formatting to review" : "Amendment to review")
+    card.append(line("h3", merge ? "Join paragraphs" : listInsertion ? "Add list item" : deletion ? "Review deletion" : wordingChanged ? "Review amendment" : "Review formatting"))
     if (listInsertion) {
       const context = document.createElement("details"); context.className = "chat-format-target"
       context.append(line("summary", "After"), line("pre", displayWordText(proposal.before)))

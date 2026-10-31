@@ -182,8 +182,10 @@ available. Suggestions are not a complete document review.
 
 A proposed amendment shows its before/after wording, formatting or table-row
 change and any open items. **Refine** keeps the original target. **Apply** uses
-Word-native tracked edits for supported operations, including adding a row or
-deleting an eligible existing row. A changed or unsupported passage requires a
+Word-native tracked edits for supported operations, including adding a row,
+deleting an eligible existing row, or joining two compatible ordinary paragraphs
+with one space. A join preserves the wording and tracks the changed boundary.
+A changed or unsupported passage requires a
 fresh review. Used action buttons disappear after application.
 Apply leaves the matter's version history alone: choose **Save** to synchronize
 Word's resulting document and wait for the saved-version acknowledgement.

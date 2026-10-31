@@ -60,3 +60,15 @@ test("inline formatting eligibility refuses changed wording, malformed propertie
   expect(wordChatApplyEligibility(target, target.text, [{ paragraph: 0, spacingAfter: 6 }], true, { italic: true }).supported).toBe(false)
   expect(wordChatApplyEligibility({ ...target, startOffset: 5 }, target.text, undefined, true, { underline: true }).supported).toBe(false)
 })
+
+test("paragraph merge requires exactly the two complete reviewed paragraphs and one space", () => {
+  const pair={id:"merge",text:"First\rSecond",paragraphs:[{id:"a",text:"First"},{id:"b",text:"Second"}],startOffset:0,endOffset:6,capturedAt:"now",saved:false}
+  expect(wordChatApplyEligibility(pair,"First Second",undefined,true,undefined,"merge").supported).toBe(true)
+  for (const replacement of ["FirstSecond","First  Second","Changed Second","First\rSecond"])
+    expect(wordChatApplyEligibility(pair,replacement,undefined,true,undefined,"merge").supported).toBe(false)
+  expect(wordChatApplyEligibility({...pair,startOffset:1},"First Second",undefined,true,undefined,"merge").supported).toBe(false)
+  expect(wordChatApplyEligibility({...pair,paragraphs:[pair.paragraphs[0]!,{id:"a",text:"Second"}]},"First Second",undefined,true,undefined,"merge").supported).toBe(false)
+  expect(wordChatApplyEligibility(pair,"First Second",[{paragraph:0,style:"Normal"}],true,undefined,"merge").supported).toBe(false)
+  expect(wordChatApplyEligibility(pair,"First Second",undefined,true,{bold:true},"merge").supported).toBe(false)
+  expect(wordChatApplyEligibility(pair,"First Second",undefined,false,undefined,"merge").supported).toBe(false)
+})

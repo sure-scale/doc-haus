@@ -1,6 +1,6 @@
 import { authorWordChatTarget } from "../../../dochaus/lib/docx-flat-opc"
 import type { WordChatPreparedAmendment, WordChatProposal, WordChatSnapshot, WordChatTableRowInsertionProposal, WordChatTableRowDeletionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatListInsertion, wordChatListCaptureCurrent, validWordChatTableRowInsertion, validWordChatTableRowDeletion } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatParagraphMerge, validWordChatListInsertion, wordChatListCaptureCurrent, validWordChatTableRowInsertion, validWordChatTableRowDeletion } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { authorDocxTableRowInsertion, docxTableRowInsertionTargets, type DocxTableRowInsertion } from "../../../dochaus/lib/docx-table-row-insertion"
 import { authorDocxTableRowDeletion, docxTableRowDeletionTargets, type DocxTableRowDeletion } from "../../../dochaus/lib/docx-table-row-deletion"
 import { parseZip } from "../../../dochaus/lib/zip"
@@ -23,6 +23,14 @@ export async function authorWordChatAmendment(ooxml: string, proposal: WordChatP
     return {kind:"list_insert", proposalId:proposal.id, target:structuredClone(proposal.target), text:proposal.after.slice(proposal.before.length + 1), list:structuredClone(proposal.list)}
   }
   if (proposal.list !== undefined) throw new Error("word_proposal_changed")
+  if (proposal.paragraphAction === "merge") {
+    if (!context || !proposal.id || proposal.before !== proposal.target.text || proposal.list !== undefined) throw new Error("word_proposal_changed")
+    const pinned = {...context, selection:proposal.target}, canonical = targetWordChatAmendment(pinned, proposal.before)
+    if (!canonical || canonical.startOffset !== proposal.target.startOffset || canonical.endOffset !== proposal.target.endOffset ||
+      canonical.paragraphs.length !== proposal.target.paragraphs.length || canonical.paragraphs.some((p,i) => p.id !== proposal.target.paragraphs[i]!.id || p.text !== proposal.target.paragraphs[i]!.text) ||
+      !validWordChatParagraphMerge(pinned,canonical,proposal.after,proposal.paragraphAction,proposal.formatting,proposal.inlineFormatting)) throw new Error("word_proposal_changed")
+    return {kind:"paragraph_merge",proposalId:proposal.id,target:structuredClone(proposal.target)}
+  }
   if (proposal.paragraphAction !== undefined) {
     if (!proposal.id || proposal.before !== proposal.target.text) throw new Error("word_proposal_changed")
     const target = proposal.target, snapshot = {text:target.paragraphs.map(p => p.text).join("\r"), paragraphs:target.paragraphs,

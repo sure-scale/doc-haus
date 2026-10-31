@@ -1816,3 +1816,34 @@ test("row deletion rejects a tampered oracle before opening Word", async () => {
   await expect(host.applyRowDeletion(proposal, async () => new Uint8Array([1]), async () => ({kind:"table_row_delete",proposalId:"wrong"} as never))).rejects.toMatchObject({mutationState:"unchanged"})
   expect(runs).toBe(0)
 })
+
+test("paragraph merge rejects a forged prepared command without writing", async () => {
+  const {state,nativeHost}=office(["First clause.","Second clause."],true)
+  state.selection=[0,"First clause.\rSecond clause.".length]
+  const target=(await nativeHost.selection())!
+  let calls=0
+  await expect(nativeHost.apply({proposalId:"merge-review",target,replacement:"First clause. Second clause.",paragraphAction:"merge",
+    author:async()=>{calls++;return {kind:"paragraph_merge" as const,proposalId:"different",target}}})).rejects.toMatchObject({mutationState:"unchanged"})
+  expect(calls).toBe(1);expect(state.writes).toHaveLength(0);expect(state.modeChanges).toEqual([])
+})
+
+test("paragraph merge fences an unconfirmed native write against replay", async () => {
+  const {state,nativeHost}=office(["First clause.","Second clause."],true)
+  state.selection=[0,"First clause.\rSecond clause.".length]
+  const target=(await nativeHost.selection())!
+  let leaseChecks=0
+  const input={proposalId:"merge-boundary",target,replacement:"First clause. Second clause.",paragraphAction:"merge" as const,
+    author:async()=>({kind:"paragraph_merge" as const,proposalId:"merge-boundary",target}),mayDispatch:()=>{leaseChecks++;return true}}
+  await expect(nativeHost.apply(input)).rejects.toMatchObject({mutationState:"uncertain"})
+  await expect(nativeHost.apply(input)).rejects.toMatchObject({mutationState:"uncertain"})
+  expect(leaseChecks).toBe(1);expect(state.modeChanges).toEqual(["TrackAll","Off"])
+})
+
+test("paragraph merge checks the lease before queuing the boundary change", async () => {
+  const {state,nativeHost}=office(["First clause.","Second clause."],true)
+  state.selection=[0,"First clause.\rSecond clause.".length]
+  const target=(await nativeHost.selection())!
+  await expect(nativeHost.apply({proposalId:"merge-lease",target,replacement:"First clause. Second clause.",paragraphAction:"merge",
+    author:async()=>({kind:"paragraph_merge" as const,proposalId:"merge-lease",target}),mayDispatch:()=>false})).rejects.toMatchObject({mutationState:"unchanged"})
+  expect(state.writes).toHaveLength(0);expect(state.modeChanges).toEqual([])
+})

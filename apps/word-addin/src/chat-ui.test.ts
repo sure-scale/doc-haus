@@ -1190,6 +1190,31 @@ test("paragraph deletion review shows the text and mark decision then consumes i
   }finally{f.restore()}
 })
 
+test("paragraph join review offers the native boundary change and consumes Apply once", async () => {
+  const paragraphs=[{id:"join-left",text:"The supplier shall deliver the services."},{id:"join-right",text:"The customer shall pay the fees."}]
+  const target:WordChatTarget={...passage,paragraphs,text:paragraphs.map(p=>p.text).join("\r"),endOffset:paragraphs[1]!.text.length}
+  const merge:WordChatProposal={...proposal,target,before:target.text,after:paragraphs.map(p=>p.text).join(" "),paragraphAction:"merge",explanation:"Join the two paragraphs without changing their words.",openItems:[]}
+  let calls=0
+  const f=fixture({turns:[turn({kind:"amendment",proposal:merge})],host:{
+    apply:async p=>{expect(p).toEqual(merge);calls++},
+    applyEligibility:p=>wordChatApplyEligibility(p.target,p.after,p.formatting,true,p.inlineFormatting,p.paragraphAction),
+  }})
+  try {
+    await f.chat.ready
+    const card=f.root.querySelector('[aria-label="Paragraph join to review"]')!
+    expect(card.querySelector("h3")?.textContent).toBe("Join paragraphs")
+    expect(card.querySelector(".chat-before")?.textContent).toBe(target.text.replace(/\r/g,"\n"))
+    expect(card.querySelector(".chat-after")?.textContent).toBe(merge.after)
+    const apply=[...card.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="Apply")!
+    expect(apply.disabled).toBe(false)
+    apply.click();await Bun.sleep(0)
+    expect(calls).toBe(1)
+    expect(f.root.querySelector(".chat-proposal-actions")).toBeNull()
+    expect(f.root.textContent).toContain("Applied in Word")
+    apply.click();expect(calls).toBe(1)
+  }finally{f.restore()}
+})
+
 test("automatic list review displays the next label and consumes the single approved append", async () => {
   let calls=0
   const append:WordChatProposal={...proposal,after:proposal.before+"\rA further obligation.",paragraphAction:"append_list_item",
