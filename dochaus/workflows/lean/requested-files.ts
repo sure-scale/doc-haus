@@ -98,7 +98,7 @@ export function requestedFilesPrompt(directory: string, documents: PlannedDocume
       "\"name\": the file name exactly as the lawyer writes it, or null when the lawyer gives no name; " +
       "\"quote\": the lawyer's exact words that ask for this file, copied verbatim, including the words that give its name.",
       `- Put each planned document${memo ? " and the memo" : ""} in one file at most. List only the files the lawyer's words ask for, and in each only what those words put in it.`,
-      "- A file the lawyer's words name as the output of the whole request holds everything the request asks for; a file they name for one document holds only that document. " +
+      "- A file the lawyer's words name as the output of the whole request holds everything the run drafts for it, including each planned document the plan adds to carry the request out; a file they name for one document holds only that document. " +
       `Put a planned document${memo ? " or the memo" : ""} in a file only where the lawyer's words place it.`,
       `- ${filesShape(Boolean(memo))}`,
       "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply.",
@@ -363,7 +363,7 @@ export function withRequestedNames<T extends { title: string; file?: string; del
  * with its instrument's title; a label printed as the heading keeps its text as
  * its display heading. The records' files hold the ids the documents then have.
  * Only new documents drafted without a template, comparison, left-out parts or
- * playbook review fold, none delivered as a redline and only the host combined
+ * playbook to review against fold, none delivered as a redline and only the host combined
  * with the memo; a file holding any other stays as recorded, a shape the run
  * cannot build (requestedFilesItems). With `separate` (the lawyer chose a file
  * of its own for an instrument: separateFileChosen) nothing folds. `at` gives,
@@ -371,7 +371,7 @@ export function withRequestedNames<T extends { title: string; file?: string; del
  * for each document of the result, its outline index. */
 export function foldRequestedFiles<T extends Omit<PlannedDocument, "id">>(documents: T[], requested: RequestedFiles, separate = false) {
   const at = documents.map((_, index) => index)
-  const foldable = (document: T, host: boolean) => (document.mode ?? "new") === "new" && !document.template && !document.comparison && !document.playbook_review &&
+  const foldable = (document: T, host: boolean) => (document.mode ?? "new") === "new" && !document.template && !document.comparison && !document.playbook_review?.sources.length &&
     !document.left_out?.length && document.deliverable !== "redline" && (host || document.deliverable !== "combined") && !document.parts.some(part => part.instrument)
   if (requested.stated && !separate) for (const file of requested.files) {
     const held = [...new Set(file.holds.filter(id => id !== MEMO).map(id => Number(id.slice(1)) - 1))].filter(index => documents[index]).toSorted((a, b) => a - b)

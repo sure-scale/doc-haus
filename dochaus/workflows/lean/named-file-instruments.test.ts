@@ -53,6 +53,12 @@ describe("one named file holding two planned documents", () => {
     unchanged([RESOLUTION, LETTER], { stated: true, files: [{ ...PACKED, holds: ["d1"] }, { ...PACKED, holds: ["d2"], name: "Other.docx" }] })
     unchanged([RESOLUTION, LETTER], { stated: true, files: [PACKED] }, true)
     unchanged([RESOLUTION, { ...LETTER, template: "Letter template.docx" }], { stated: true, files: [PACKED] })
+    unchanged([RESOLUTION, { ...LETTER, playbook_review: { sources: [{ source_id: "s1", quote: "Releases follow approval." }], reason: "The firm's release playbook." } }], { stated: true, files: [PACKED] })
+  })
+
+  test("folds when the outline records that no playbook applies", () => {
+    const none = { sources: [], reason: "No playbook supplied." }
+    expect(foldRequestedFiles([{ ...RESOLUTION, playbook_review: none }, { ...LETTER, playbook_review: none }], { stated: true, files: [PACKED] }).documents).toHaveLength(1)
   })
 })
 
