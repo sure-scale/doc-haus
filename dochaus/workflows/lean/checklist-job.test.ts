@@ -370,3 +370,32 @@ test("a departure disclosure verifies like current draft or notes evidence and n
   expect(port.prompts[1]!.text).toContain('departure_disclosure[0] text is not verified in current body evidence for document "draft.docx"')
   expect(port.prompts[2]!.text).toContain("departure_disclosure applies only to an unsatisfied, open or indeterminate status; otherwise omit it.")
 })
+
+test("a check prompt carries bounded source passages after the shared blocks, and a quote miss from them still fails", async () => {
+  const sentences = Array.from({ length: 60 }, (_, index) => `Term ${index + 1}: the supplier shall keep schedule ${index + 1} current.`)
+  const directory = matter(sentences.join(" "))
+  const cited = { document: SOURCE, locator: "term 30", quote: sentences[29]! }
+  const item = { ...checker.item, source_refs: [cited] }
+  const { input } = buildChecklistDocumentContext(directory, { item_id: checker.item_id, item, settled_instructions: [{ document: "request", locator: ".dochaus/lean/request.md", quote: "Draft the supply note." }] })
+  const [passage, ...rest] = input.source_passages ?? []
+  expect(rest).toEqual([])
+  expect(passage!.document).toBe(SOURCE)
+  expect(passage!.quote).toContain(cited.quote)
+  expect(passage!.quote.length).toBeLessThanOrEqual(2400)
+  expect(passage!.quote.length).toBeLessThan(sentences.join(" ").length)
+  const prompt = buildChecklistCheckerPrompt(input)
+  const packet = prompt.split("CHECK_INPUT:\n\n")[1]!
+  expect(Object.keys(JSON.parse(packet)).slice(0, 2)).toEqual(["settled_instructions", "retrieval"])
+  expect(packet.indexOf('"item_id"')).toBeGreaterThan(packet.indexOf('"retrieval"'))
+  // A neighbouring passage copied from the supplied excerpt verifies in one step;
+  // an altered one is returned with a specific miss, never accepted.
+  const neighbour = { document: SOURCE, locator: passage!.locator, quote: sentences[28]! }
+  expect(passage!.quote).toContain(neighbour.quote)
+  const exact = await runChecklistCheckJob(directory, { sessions: sessionPort([JSON.stringify({ ...finding, source_refs: [neighbour] })]).sessions, model: null }, input)
+  expect(exact).toMatchObject({ status: "succeeded", attempts: 1 })
+  const altered = JSON.stringify({ ...finding, source_refs: [{ ...neighbour, quote: neighbour.quote.replace("keep", "review") }] })
+  const port = sessionPort(Array(LEAN_MAX_RETRIES + 1).fill(altered))
+  const missed = await runChecklistCheckJob(directory, { sessions: port.sessions, model: null }, input)
+  expect(missed.status).toBe("failed")
+  expect(port.prompts[1]!.text).toContain("but those words are not in that document")
+})
