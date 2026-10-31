@@ -2,6 +2,7 @@ import { unzipSync } from "fflate"
 import type { WordChatAuthoredTableRow } from "../../../dochaus/lib/word-chat-contract"
 import { canonicalWordChatCellRuns, type WordChatCellRun, type WordChatTableRowInsertionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { docxRowFormatCascade } from "../../../dochaus/lib/docx-row-format-cascade"
+import { settleNativeWordChatTableRecords } from "./word-chat-native-row-verification"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { validWordChatFormatting, type WordChatAuthoredAmendment, type WordChatInlineFormat, type WordChatParagraphFormat, type WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { reviewedWordChatParagraphFormatting, wordChatParagraphFormatChanged } from "../../../dochaus/lib/word-chat-formatting-ooxml"
@@ -133,6 +134,7 @@ export function verifyNativeWordChatRowRemainder(
   const oldTables = tables(oldBody), newTables = tables(newBody)
   if (oldTables.length !== newTables.length || binding.tableIndex >= oldTables.length) return fail()
   const oldTable = oldTables[binding.tableIndex]!, newTable = newTables[binding.tableIndex]!
+  settleNativeWordChatTableRecords(oldTable); settleNativeWordChatTableRecords(newTable)
   const rows = (table: Element) => elements(table).filter(e => e.namespaceURI === W && e.localName === "tr")
   const oldRows = rows(oldTable), newRows = rows(newTable)
   if (oldRows.length !== binding.rows.length || newRows.length !== oldRows.length + 1) return fail()
@@ -184,6 +186,20 @@ export function verifyNativeWordChatRowRemainder(
     if (a.path !== b.path || a.node.namespaceURI !== b.node.namespaceURI || a.node.localName !== b.node.localName) return fail()
     const name = b.node.getAttributeNodeNS(W,"id")!.name
     b.node.removeAttributeNS(W,"id"); b.node.setAttributeNS(W,name,a.node.getAttributeNS(W,"id")!)
+  }
+  // Bookmark ids share Word's annotation counter, so new table records renumber
+  // them; compare pairing, and names and positions below, not raw ids.
+  const anchors = (body: Element) => Array.from(body.getElementsByTagNameNS(W, "*")).filter(e => ["bookmarkStart", "bookmarkEnd"].includes(e.localName))
+  const oldAnchors = anchors(oldBody), newAnchors = anchors(newBody), renumbered = new Map<string, string>(), taken = new Set<string>()
+  if (oldAnchors.length !== newAnchors.length) return fail()
+  for (let i = 0; i < oldAnchors.length; i++) {
+    const a = oldAnchors[i]!, b = newAnchors[i]!, from = b.getAttributeNS(W, "id"), to = a.getAttributeNS(W, "id")
+    if (a.localName !== b.localName || from === null || to === null) return fail()
+    const known = renumbered.get(from)
+    if (known === undefined) { if (taken.has(to)) return fail(); renumbered.set(from, to); taken.add(to) }
+    else if (known !== to) return fail()
+    const name = b.getAttributeNodeNS(W, "id")!.name
+    b.removeAttributeNS(W, "id"); b.setAttributeNS(W, name, to)
   }
   for (const body of [oldBody, newBody]) {
     const section = elements(body).at(-1)
@@ -327,7 +343,7 @@ function canonical(node: Node, paragraph = false): unknown {
   if (node.nodeType === 1) {
     const element = node as Element
     const attributes = Array.from(element.attributes).filter(attr => attr.namespaceURI !== XMLNS && !(
-      paragraph && (attr.namespaceURI === W && ["rsidR", "rsidRDefault"].includes(attr.localName)
+      paragraph && (attr.namespaceURI === W && ["rsidR", "rsidRDefault", "rsidTr"].includes(attr.localName)
         || element.namespaceURI === W && element.localName === "p" && attr.namespaceURI === W14 && attr.localName === "paraId")
     )).map(attr => [attr.namespaceURI || "", attr.localName, attr.value]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
     return [element.namespaceURI || "", element.localName, attributes, Array.from(element.childNodes).map(child => canonical(child, paragraph)).filter(child => child !== undefined)]

@@ -101,3 +101,18 @@ test("an added row may carry the reference row's own paragraph properties, and o
     [spaced(after).replace(`${spacing}<w:rPr><w:ins w:id="2"`,`${spacing}<w:pPrChange w:id="8" ${stamp}><w:pPr/></w:pPrChange><w:rPr><w:ins w:id="2"`),from], // inherited revision
   ] as Array<[string,string]>) expect(()=>check(xml,source)).toThrow()
 })
+test("Word's no-op table, grid, row and cell records and its fixed grid-total width settle before the row check",()=>{
+  const tblPr='<w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>', grid='<w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2600"/></w:tblGrid>', jc='<w:jc w:val="center"/>'
+  const rec=(name:string, id:number, inner:string)=>`<w:${name}Change w:id="${id}" ${stamp}>${inner}</w:${name}Change>`
+  const ref=old.replace("<w:tr>",`<w:tr><w:trPr>${jc}</w:trPr>`), from=wrap(`<w:tbl>${tblPr}${grid}${ref}</w:tbl>`)
+  const width=(w:string, type="dxa")=>`<w:tblPr><w:tblW w:w="${w}" w:type="${type}"/>${rec("tblPr",20,tblPr)}</w:tblPr>`
+  const recorded=(table=width("5000"), newRowPr=jc, cellPr=`<w:tcPr>${rec("tcPr",22,"<w:tcPr/>")}</w:tcPr>`)=>{
+    const oldRow=ref.replace(`<w:trPr>${jc}</w:trPr>`,`<w:trPr>${jc}${rec("trPr",21,`<w:trPr>${jc}</w:trPr>`)}</w:trPr>`).replace("<w:tr>",'<w:tr w:rsidTr="AABBCCDD">').replaceAll("<w:tcPr/>",cellPr)
+    const added=row.replace(`<w:trPr><w:ins w:id="1" ${stamp}/></w:trPr>`,`<w:trPr>${newRowPr}<w:ins w:id="1" ${stamp}/>${rec("trPr",23,`<w:trPr>${newRowPr}</w:trPr>`)}</w:trPr>`)
+    return wrap(`<w:tbl>${table}${grid.replace("</w:tblGrid>",rec("tblGrid",24,grid)+"</w:tblGrid>")}${oldRow}${added}</w:tbl>`,"Text","AABBCCDD")
+  }
+  const check=(xml:string)=>verifyNativeWordChatInsertedRow(from,xml,0,1,["New","Value"])
+  expect(check(recorded())).toEqual({authors:["Reviewer"]})
+  // The table and existing rows are the remainder check's to compare; here the new row must follow the reference row.
+  for(const newRowPr of ['<w:jc w:val="right"/>','']) expect(()=>check(recorded(undefined,newRowPr))).toThrow()
+})

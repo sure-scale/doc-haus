@@ -376,6 +376,31 @@ test("native row remainder checks bound geometry and all-depth prior revisions",
 })
 
 
+test("native row remainder settles Word's no-op table records and follows renumbered bookmarks", async () => {
+  const { verifyNativeWordChatRowRemainder: verify } = await import("./word-chat-host-ooxml")
+  const stamp = 'w:author="Reviewer" w:date="2026-01-01T00:00:00Z"'
+  const cell = (text: string, pr = "<w:tcPr/>") => `<w:tc>${pr}<w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`
+  const tblPr = '<w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>', grid = '<w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid>'
+  const jc = '<w:jc w:val="center"/>', row = `<w:tr><w:trPr>${jc}</w:trPr>${cell("First")}${cell("Second")}</w:tr>`, inserted = `<w:tr><w:trPr>${jc}</w:trPr>${cell("New")}${cell("Value")}</w:tr>`
+  const lead = (id: string) => `<w:p><w:bookmarkStart w:id="${id}" w:name="_dh_p1"/><w:r><w:t>Lead</w:t></w:r><w:bookmarkEnd w:id="${id}"/></w:p>`
+  const body = `${lead("5")}<w:tbl>${tblPr}${grid}${row}</w:tbl><w:p><w:r><w:t>Tail</w:t></w:r></w:p>`
+  const settled = (table = `<w:tblPr><w:tblW w:w="4800" w:type="dxa"/><w:tblPrChange w:id="20" ${stamp}>${tblPr}</w:tblPrChange></w:tblPr>`, id = "7") =>
+    `${lead(id)}<w:tbl>${table}${grid.replace("</w:tblGrid>", `<w:tblGridChange w:id="21" ${stamp}>${grid}</w:tblGridChange></w:tblGrid>`)}<w:tr w:rsidTr="00AA11BB"><w:trPr>${jc}<w:trPrChange w:id="22" ${stamp}><w:trPr>${jc}</w:trPr></w:trPrChange></w:trPr>${cell("First", `<w:tcPr><w:tcPrChange w:id="23" ${stamp}><w:tcPr/></w:tcPrChange></w:tcPr>`)}${cell("Second")}</w:tr>${inserted}</w:tbl><w:p><w:r><w:t>Tail</w:t></w:r></w:p>`
+  const beforeInv = [{id:"lead",text:"Lead",tableNestingLevel:0},{id:"a",text:"First",tableNestingLevel:1},{id:"b",text:"Second",tableNestingLevel:1},{id:"tail",text:"Tail",tableNestingLevel:0}]
+  const afterInv = [...beforeInv.slice(0,3),{id:"new1",text:"New",tableNestingLevel:1},{id:"new2",text:"Value",tableNestingLevel:1},beforeInv[3]!]
+  const binding = {tableIndex:0,rows:[[{id:"a",text:"First"},{id:"b",text:"Second"}]]}
+  const check = (xml: string) => verify(flat(body), flat(xml), beforeInv, afterInv, binding, ["New","Value"])
+  expect(() => check(settled())).not.toThrow()
+  for (const drift of [
+    settled(`<w:tblPr><w:tblW w:w="4700" w:type="dxa"/><w:tblPrChange w:id="20" ${stamp}>${tblPr}</w:tblPrChange></w:tblPr>`), // width is not the grid total
+    settled(`<w:tblPr><w:tblW w:w="0" w:type="auto"/><w:jc w:val="center"/><w:tblPrChange w:id="20" ${stamp}>${tblPr}</w:tblPrChange></w:tblPr>`), // a real table change
+    settled().replace(`<w:tcPrChange w:id="23"`, `<w:shd w:val="clear" w:fill="FF0000"/><w:tcPrChange w:id="23"`), // a real cell change
+    settled().replace(`<w:trPr>${jc}<w:trPrChange`, `<w:trPr><w:jc w:val="right"/><w:trPrChange`), // a real row change
+    settled(undefined, "7").replace('w:name="_dh_p1"', 'w:name="_dh_p2"'), // bookmark renamed
+    settled(undefined, "7").replace('<w:bookmarkEnd w:id="7"/>', '<w:bookmarkEnd w:id="8"/>'), // bookmark pairing broken
+  ]) expect(() => check(drift)).toThrow()
+})
+
 test("reviewed row oracle verifies the authored package and rejects tampering", async () => {
   const {zipSync,strToU8,strFromU8,unzipSync} = await import("fflate")
   const rowWriterPath = new URL("../../../dochaus/lib/docx-table-row-insertion.ts", import.meta.url).href
