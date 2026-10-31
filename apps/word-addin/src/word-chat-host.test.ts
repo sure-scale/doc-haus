@@ -1615,9 +1615,9 @@ async function nativeRowOrchestrationFixture(lostSync = false, reloadInvalidates
   const table = { tableIndex: 0, rows: [[{ id: "a", text: "Old" }, { id: "b", text: "Old two" }]] }
   const cells = formatted?.cells ?? ["New", "Value"]
   const proposal = { kind:"table_row_insert" as const, id:"native-row", documentId:"doc", explanation:"Add", openItems:["Disclosed"], createdAt:"now", position:"end" as const, table, cells, ...formatted ? { runs: formatted.runs } : {} }
-  const writerRequest = { source_sha256:packet.source_sha256, target_handle:packet.targets[0]!.target_handle, position:"after" as const, cells:proposal.cells, author:"doc.haus" }
+  const writerRequest = { source_sha256:packet.source_sha256, target_handle:packet.targets[0]!.target_handle, position:"after" as const, cells:proposal.cells, ...formatted ? { runs: formatted.runs } : {}, author:"doc.haus" }
   const authored = await authorDocxTableRowInsertion(source, writerRequest)
-  const oracle = { kind:"table_row_insert" as const, proposalId:proposal.id, sourceSha256:packet.source_sha256, table, cells:proposal.cells, author:"doc.haus" as const, writerRequest, authoredBase64:btoa(Array.from(authored.bytes as Uint8Array, x=>String.fromCharCode(x)).join("")), revisions:authored.revisions }
+  const oracle = { kind:"table_row_insert" as const, proposalId:proposal.id, sourceSha256:packet.source_sha256, table, cells:proposal.cells, ...formatted ? { runs: formatted.runs } : {}, author:"doc.haus" as const, writerRequest, authoredBase64:btoa(Array.from(authored.bytes as Uint8Array, x=>String.fromCharCode(x)).join("")), revisions:authored.revisions }
   const stamp = 'w:author="Reviewer" w:date="2026-01-01T00:00:00Z"'
   const runXml = ([props, text]: [string, string]) => `<w:r>${props ? `<w:rPr>${props}</w:rPr>` : ""}<w:t${/^\s|\s$/.test(text) ? ' xml:space="preserve"' : ""}>${text}</w:t></w:r>`
   const cell = (runs:Array<[string,string]>, mark:number, content:number) => `<w:tc><w:tcPr/><w:p><w:pPr><w:rPr><w:ins w:id="${mark}" ${stamp}/></w:rPr></w:pPr><w:ins w:id="${content}" ${stamp}>${runs.map(runXml).join("")}</w:ins></w:p></w:tc>`

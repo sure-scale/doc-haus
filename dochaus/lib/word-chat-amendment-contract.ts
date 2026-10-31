@@ -126,7 +126,7 @@ export function validWordChatTableRowInsertion(snapshot: WordChatSnapshot, value
     row.cells.length !== row.table.rows[0]!.length) return false
   return row.cells.some(cell => typeof cell === "string" && cell.length > 0) && row.cells.every(cell =>
     typeof cell === "string" && cell.length <= 4000 && cell === cell.trim() && wellFormedWordChatCell(cell) && !/[\u0000-\u001f\u007f]/.test(cell)) && row.cells.join("").length <= 24_000 &&
-    (row.runs === undefined || canonicalWordChatCellRuns(row.cells, row.runs) === row.runs)
+    (row.runs === undefined || Array.isArray(row.runs) && canonicalWordChatCellRuns(row.cells, row.runs) === row.runs)
 }
 const runFlags = ["bold", "italic", "underline"] as const
 /** Canonical cell runs: one entry per cell, non-empty texts that concatenate

@@ -66,6 +66,20 @@ test("row card applies once and disables all review actions while pending", asyn
   } finally { finish(); f.restore() }
 })
 
+test("formatted row review shows each reviewed span and names its formatting", async () => {
+  const formatted = {...rowProposal, cells:["Fee: 100","Note"], runs:[[{text:"Fee:",bold:true,italic:false,underline:false},{text:" 100",bold:false,italic:false,underline:false}],[{text:"Note",bold:false,italic:true,underline:true}]]}
+  const f = fixture({turns:[turn({kind:"amendment",rowProposal:formatted})],host:{applyRow:async () => {}}})
+  try {
+    await f.chat.ready
+    const items = [...f.root.querySelectorAll('[aria-label="Table row to review"] .chat-format-plan li')]
+    const spans = [...items[0]!.querySelectorAll("span")]
+    expect(spans.map(span => [span.textContent, span.style.fontWeight])).toEqual([["Fee:","700"],[" 100","400"]])
+    expect(items[0]!.textContent).toContain("Bold: “Fee:”")
+    expect(items[1]!.querySelector("span")!.style.textDecoration).toBe("underline")
+    expect(items[1]!.textContent).toContain("Italic, underline: “Note”")
+  } finally { f.restore() }
+})
+
 test("row deletion review identifies the existing row and consumes Apply once", async () => {
   const applied: WordChatTableRowProposal[] = []
   const f = fixture({turns:[turn({kind:"amendment",rowProposal:deletedRow})],host:{applyRow:async value => { applied.push(value) }}})

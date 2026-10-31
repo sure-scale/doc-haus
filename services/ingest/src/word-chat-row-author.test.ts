@@ -48,3 +48,17 @@ test("row authoring refuses altered table binding and oversized or malformed sou
   const oversized = zipSync({"big.xml":new Uint8Array(16 * 1024 * 1024 + 1)})
   await expect(authorWordChatTableRow(snapshot, proposal, oversized)).rejects.toThrow("word_row_source_archive")
 })
+
+test("a formatted row carries the proposal's spans into the writer request and oracle", async () => {
+  const source = fixture("Current"), {snapshot,proposal} = request("Current")
+  const runs = [[{text:"New",bold:true,italic:false,underline:false}], [{text:"Val",bold:false,italic:false,underline:false}, {text:"ue",bold:false,italic:true,underline:true}]]
+  const oracle = await authorWordChatTableRow(snapshot, {...proposal,runs}, source)
+  expect(oracle.runs).toEqual(runs)
+  expect(oracle.writerRequest.runs).toEqual(runs)
+  expect(oracle.revisions.filter(r => r.family === "properties_change")).toHaveLength(2)
+  const xml = strFromU8(unzipSync(oracle.authoredBytes)["word/document.xml"]!)
+  expect(xml).toMatch(/<w:b ?\/><w:rPrChange /)
+  expect(xml).toMatch(/<w:i ?\/><w:u w:val="single" ?\/><w:rPrChange /)
+  const plain = await authorWordChatTableRow(snapshot, proposal, source)
+  expect("runs" in plain || "runs" in plain.writerRequest).toBe(false)
+})

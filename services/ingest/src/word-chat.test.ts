@@ -992,6 +992,44 @@ test("reviewed row proposals bind host table, reject forgery and require an inde
   } finally { modelRawOutput = undefined; approveReview = true }
 })
 
+test("formatted row cell runs normalize from model output and reach review and refinement; mismatches are refused", async () => {
+  const id = await newConversation()
+  const paragraphs = ["Item","Note","Alpha","Plain"].map((text,i) => ({id:`runs-${i}`,text}))
+  const table = {tableIndex:0,rows:[paragraphs.slice(0,2),paragraphs.slice(2)]}
+  const native = {...context,text:paragraphs.map(p => p.text).join("\r"),paragraphs,table,selection:undefined}
+  const request = (extra: object = {}) => post("send", {conversationId:id,scope:"document",text:"Append a row with the first word in bold",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context:native,...extra})
+  const output = (row: object) => { modelRawOutput = JSON.stringify({answer:"Prepared.",citations:[],rowProposal:{explanation:"Add row",openItems:[],...row}}) }
+  const turnOf = async (extra: object = {}) => (await (await request(extra)).json() as {turn:WordChatTurn}).turn
+  const canonical = [[{text:"Beta",bold:true,italic:false,underline:false},{text:" due",bold:false,italic:false,underline:false}],[{text:"Later",bold:false,italic:false,underline:false}]]
+  try {
+    output({cells:["Beta due","Later"],cellRuns:[[{text:"Beta",bold:true},{text:""},{text:" d"},{text:"ue"}],[{text:"Later",italic:false}]]})
+    const approved = await turnOf()
+    if (approved.rowProposal?.kind !== "table_row_insert") throw Error("missing row insertion")
+    expect(approved.rowProposal.runs).toEqual(canonical)
+    const reviewer = [...sessions.values()].find(s => s.parentID === approved.id && s.metadata.type === "word-chat-review")!
+    expect(suppliedContext(sessionContext(reviewer.id)).proposal.runs).toEqual(canonical)
+    const refined = await turnOf({rowProposal:approved.rowProposal,context:{...native,table:undefined}})
+    expect(suppliedContext(sessionContext(refined.id)).refining.cellRuns).toEqual(canonical)
+
+    output({cells:["Beta due","Later"],cellRuns:[[{text:"Beta",bold:true}],[{text:"Later"}]]})
+    const mismatched = await turnOf()
+    expect(mismatched.rowProposal).toBeUndefined()
+    expect(mismatched.error).toBe("This table row could not be prepared for review. Select a supported table and try again.")
+
+    output({cells:["Beta due","Later"],cellRuns:[[{text:"Beta due"}],[{text:"Later",bold:false}]]})
+    const plain = await turnOf()
+    expect(plain.rowProposal?.kind).toBe("table_row_insert")
+    expect(plain.rowProposal && "runs" in plain.rowProposal).toBe(false)
+    const plainReviewer = [...sessions.values()].find(s => s.parentID === plain.id && s.metadata.type === "word-chat-review")!
+    expect(suppliedContext(sessionContext(plainReviewer.id)).proposal).not.toHaveProperty("runs")
+
+    output({action:"delete",cells:["Alpha","Plain"]})
+    expect((await turnOf()).rowProposal?.kind).toBe("table_row_delete")
+    output({action:"delete",cells:["Alpha","Plain"],cellRuns:[[{text:"Alpha",bold:true}],[{text:"Plain"}]]})
+    expect((await turnOf()).rowProposal).toBeUndefined()
+  } finally { modelRawOutput = undefined }
+})
+
 test("structured answer parts preserve literal brackets and verify explicit references without legacy fallback", async () => {
   const id = await newConversation(), ref = {type:"reference" as const,sourceId:"word",quote:context.text}
   const request = () => send(id,"document","Explain the current text")

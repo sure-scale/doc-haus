@@ -6,7 +6,7 @@ export type WordChatKind = "chat" | "amendment" | "formatting" | "suggestions"
 export type WordChatMode = "auto" | "qa" | "redline"
 export type WordChatAttachment = { kind: "source" | "playbook" | "upload"; id: string; hash: string }
 export type WordChatMaterial = WordChatAttachment & { name: string; description?: string; provenance: "saved-version" | "instructions" | "request-upload" }
-import type { WordChatSnapshot, WordChatProposal, WordChatTableRowInsertionProposal, WordChatTableRowProposal, WordChatTableRowDeletionProposal } from "./word-chat-amendment-contract"
+import type { WordChatSnapshot, WordChatProposal, WordChatTableRowInsertionProposal, WordChatTableRowProposal, WordChatTableRowDeletionProposal, WordChatCellRun } from "./word-chat-amendment-contract"
 export type { WordChatProposal } from "./word-chat-amendment-contract"
 export type WordChatContext = WordChatSnapshot
 export type WordChatSource = { id: string; contentHash?: string; name: string; quote: string; location: string; provenance: "word-buffer" | "saved-version" | "instructions" | "request-upload" }
@@ -57,7 +57,9 @@ export type WordChatMaterials = { materials: WordChatMaterial[]; matterName: str
 export type WordChatAuthoredTableRow = {
   kind: "table_row_insert"; proposalId: string; sourceSha256: string
   table: WordChatTableRowInsertionProposal["table"]; cells: string[]; author: "doc.haus"
-  writerRequest: { source_sha256: string; target_handle: string; position: "after"; cells: string[]; author: string }
+  /** The proposal's canonical spans; absent for a plain row. */
+  runs?: WordChatCellRun[][]
+  writerRequest: { source_sha256: string; target_handle: string; position: "after"; cells: string[]; runs?: WordChatCellRun[][]; author: string }
   authoredBase64: string; revisions: { id: string; family: string }[]
 }
 

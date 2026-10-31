@@ -1,5 +1,5 @@
 import { authorWordChatTarget } from "../../../dochaus/lib/docx-flat-opc"
-import type { WordChatPreparedAmendment, WordChatProposal, WordChatSnapshot, WordChatTableRowInsertionProposal, WordChatTableRowDeletionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatCellRun, WordChatPreparedAmendment, WordChatProposal, WordChatSnapshot, WordChatTableRowInsertionProposal, WordChatTableRowDeletionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatParagraphMerge, validWordChatParagraphSplit, validWordChatListInsertion, wordChatListCaptureCurrent, validWordChatTableRowInsertion, validWordChatTableRowDeletion } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { authorDocxTableRowInsertion, docxTableRowInsertionTargets, type DocxTableRowInsertion } from "../../../dochaus/lib/docx-table-row-insertion"
 import { authorDocxTableRowDeletion, docxTableRowDeletionTargets, type DocxTableRowDeletion } from "../../../dochaus/lib/docx-table-row-deletion"
@@ -105,6 +105,8 @@ export type WordChatAuthoredTableRow = {
   sourceSha256: string
   table: WordChatTableRowInsertionProposal["table"]
   cells: string[]
+  /** The proposal's canonical spans; absent for a plain row. */
+  runs?: WordChatCellRun[][]
   author: "doc.haus"
   writerRequest: DocxTableRowInsertion
   /** Verification oracle only. Never import these bytes into a live Word document. */
@@ -118,7 +120,7 @@ export async function authorWordChatTableRow(snapshot: WordChatSnapshot, proposa
   if (!validWordChatTableRowInsertion(snapshot, proposal)) throw new Error("word_row_proposal_changed")
   if (!(currentBytes instanceof Uint8Array) || !currentBytes.length || currentBytes.length > MAX_ROW_SOURCE_BYTES) throw new Error("word_row_source_size")
   const captured = {tableIndex:proposal.table.tableIndex,rows:proposal.table.rows.map(row => row.map(cell => ({...cell})))}
-  const cells = [...proposal.cells], proposalId = proposal.id
+  const cells = [...proposal.cells], proposalId = proposal.id, runs = proposal.runs && structuredClone(proposal.runs)
   const source = new Uint8Array(currentBytes)
   checkedWordRowPackage(source)
   const packet = await docxTableRowInsertionTargets(source)
@@ -129,10 +131,10 @@ export async function authorWordChatTableRow(snapshot: WordChatSnapshot, proposa
       matches[0]!.cells.some((text, col) => text !== cells[col]!.text)
   })) throw new Error("word_row_source_changed")
   const target = table.find(item => item.row === rows.length)!
-  const writerRequest: DocxTableRowInsertion = {source_sha256:packet.source_sha256,target_handle:target.target_handle,position:"after",cells:[...cells],author:"doc.haus"}
+  const writerRequest: DocxTableRowInsertion = {source_sha256:packet.source_sha256,target_handle:target.target_handle,position:"after",cells:[...cells],...runs && {runs:structuredClone(runs)},author:"doc.haus"}
   const authored = await authorDocxTableRowInsertion(source, writerRequest)
   return {kind:"table_row_insert", proposalId, sourceSha256:packet.source_sha256,
-    table:captured, cells,
+    table:captured, cells, ...runs && {runs},
     author:"doc.haus", writerRequest, authoredBytes:authored.bytes, revisions:authored.revisions}
 }
 

@@ -1,6 +1,7 @@
 import { unzipSync } from "fflate"
 import type { WordChatAuthoredTableRow } from "../../../dochaus/lib/word-chat-contract"
-import type { WordChatTableRowInsertionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { canonicalWordChatCellRuns, type WordChatCellRun, type WordChatTableRowInsertionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { docxRowFormatCascade } from "../../../dochaus/lib/docx-row-format-cascade"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { validWordChatFormatting, type WordChatAuthoredAmendment, type WordChatInlineFormat, type WordChatParagraphFormat, type WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { reviewedWordChatParagraphFormatting, wordChatParagraphFormatChanged } from "../../../dochaus/lib/word-chat-formatting-ooxml"
@@ -188,6 +189,13 @@ export function verifyNativeWordChatRowRemainder(
   return { addedParagraphIds: addedIds, carrierMap: old.map((item,i) => ({path:item.path, type:item.node.localName, before:oldIdsAll[i]!, after:currentIds[i]!})) }
 }
 
+/** A mixed-format row states only its "on" spans, so it needs a table whose styles apply none. */
+export class WordChatRowFormatRefusal extends Error {
+  constructor() { super("This table's style already applies bold, italic or underline, so a mixed-format row can't be added safely. Your document is unchanged."); this.name = "WordChatRowFormatRefusal" }
+}
+export function assertWordChatRowFormatNeutral(source: Uint8Array, proposal: WordChatTableRowInsertionProposal) {
+  if (proposal.runs && !docxRowFormatCascade(source, proposal.table.tableIndex).neutral) throw new WordChatRowFormatRefusal()
+}
 /** Verify the reviewed SDK oracle only; never import its bytes into Word. */
 export async function verifyReviewedWordChatRowOracle(source: Uint8Array, oracle: WordChatAuthoredTableRow, proposal: WordChatTableRowInsertionProposal) {
   const fail = (): never => { throw new Error("Reviewed row oracle mismatch") }
@@ -196,6 +204,9 @@ export async function verifyReviewedWordChatRowOracle(source: Uint8Array, oracle
   const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", source))).map(x => x.toString(16).padStart(2,"0")).join("")
   const req = oracle.writerRequest
   if (oracle.sourceSha256 !== digest || !req || req.source_sha256 !== digest || req.position !== "after" || req.author !== oracle.author || !req.target_handle || JSON.stringify(req.cells) !== JSON.stringify(proposal.cells)) return fail()
+  // Spans are the proposal's canonical runs, carried unchanged; absent for a plain row.
+  const runs = proposal.runs
+  if (runs !== undefined && canonicalWordChatCellRuns(proposal.cells, runs) !== runs || JSON.stringify(oracle.runs) !== JSON.stringify(runs) || JSON.stringify(req.runs) !== JSON.stringify(runs)) return fail()
   const encoded = oracle.authoredBase64
   if (typeof encoded !== "string" || !encoded.length || encoded.length > Math.ceil(max/3)*4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) return fail()
   let decoded: string
@@ -229,6 +240,7 @@ export async function verifyReviewedWordChatRowOracle(source: Uint8Array, oracle
   if (!table || !Number.isSafeInteger(table.tableIndex) || table.tableIndex<0 || at.length!==bt.length || table.tableIndex>=at.length || !table.rows.length || !proposal.cells.length || proposal.cells.length>32) return fail()
   const old=direct(at[table.tableIndex]!,"tr"), target=bt[table.tableIndex]!, next=direct(target,"tr")
   if (old.length!==table.rows.length || next.length!==old.length+1) return fail()
+  if (runs && !docxRowFormatCascade(source, table.tableIndex).neutral) throw new WordChatRowFormatRefusal()
   for (let i=0;i<old.length;i++) { const cells=direct(old[i]!,"tc"), expected=table.rows[i]!; if (cells.length!==proposal.cells.length || expected.length!==cells.length || cells.some((c,j)=>text(c,"Current")!==expected[j]!.text)) return fail() }
   const row=next.at(-1)!, cells=direct(row,"tc"), ref=direct(old.at(-1)!,"tc"), carriers:Element[]=[]
   const only=(e:Element,names:string[]) => elements(e).every(x=>x.namespaceURI===W && names.includes(x.localName))
@@ -236,6 +248,19 @@ export async function verifyReviewedWordChatRowOracle(source: Uint8Array, oracle
   const rp=direct(row,"trPr"), rm=rp.length===1?direct(rp[0]!,"ins"):[]
   if (row.attributes.length || !only(row,["trPr","tc"]) || cells.length!==proposal.cells.length || rp.length!==1 || rp[0]!.attributes.length || elements(rp[0]!).length!==1 || rm.length!==1 || rm[0]!.childNodes.length) return fail()
   mark(rm[0]!)
+  // The SDK's tracked span format: <w:rPr>[b][i][u]<w:rPrChange …><w:rPr/></w:rPrChange></w:rPr>, nothing else.
+  const spanFlags = (rPr: Element) => {
+    const props = elements(rPr), change = props.at(-1), flags = props.slice(0,-1), names = flags.map(e=>e.localName)
+    if (rPr.attributes.length || props.some(e=>e.namespaceURI!==W) || change?.localName!=="rPrChange" || !flags.length ||
+      JSON.stringify(names)!==JSON.stringify(["b","i","u"].filter(n=>names.includes(n))) ||
+      flags.some(e=>elements(e).length || (e.localName==="u" ? e.attributes.length!==1 || e.getAttributeNS(W,"val")!=="single" : e.attributes.length))) return fail()
+    const prior = elements(change)
+    if (!/^(0|[1-9]\d*)$/.test(change.getAttributeNS(W,"id")??"") || change.getAttributeNS(W,"author")!=="doc.haus" || !change.getAttributeNS(W,"date") ||
+      Array.from(change.attributes).some(a=>a.namespaceURI!==W || !["id","author","date"].includes(a.localName)) ||
+      prior.length!==1 || prior[0]!.namespaceURI!==W || prior[0]!.localName!=="rPr" || prior[0]!.attributes.length || elements(prior[0]!).length) return fail()
+    carriers.push(change)
+    return { bold:names.includes("b"), italic:names.includes("i"), underline:names.includes("u") }
+  }
   const cleanNodes = (node: Element): boolean => Array.from(node.childNodes).every(child => child.nodeType === 1 ? cleanNodes(child as Element) : child.nodeType === 3 && (node.namespaceURI === W && node.localName === "t" || !child.nodeValue?.trim()))
   if (!cleanNodes(row)) return fail()
   for (let i=0;i<cells.length;i++) {
@@ -244,7 +269,15 @@ export async function verifyReviewedWordChatRowOracle(source: Uint8Array, oracle
     const pp=direct(p[0]!,"pPr"), pr=pp.length===1?direct(pp[0]!,"rPr"):[], pm=pr.length===1?direct(pr[0]!,"ins"):[]
     if (!only(p[0]!,["pPr","ins"]) || pp.length!==1 || pp[0]!.attributes.length || elements(pp[0]!).length!==1 || pr.length!==1 || pr[0]!.attributes.length || elements(pr[0]!).length!==1 || pm.length!==1 || pm[0]!.childNodes.length) return fail()
     mark(pm[0]!)
-    for (const ins of direct(p[0]!,"ins")) { mark(ins); if (!only(ins,["r"])) return fail(); for (const run of direct(ins,"r")) { const ts=direct(run,"t"); if (run.attributes.length || ts.length!==1 || elements(run).length!==1 || elements(ts[0]!).length || Array.from(ts[0]!.childNodes).some(n=>n.nodeType!==3) || Array.from(ts[0]!.attributes).some(a=>a.namespaceURI!=="http://www.w3.org/XML/1998/namespace" || a.localName!=="space" || a.value!=="preserve")) return fail() } }
+    const spans: WordChatCellRun[] = []
+    for (const ins of direct(p[0]!,"ins")) { mark(ins); if (!only(ins,["r"])) return fail(); for (const run of direct(ins,"r")) {
+      const ts=direct(run,"t"), rPr=direct(run,"rPr")
+      if (run.attributes.length || ts.length!==1 || rPr.length>1 || rPr.length && (!runs || elements(run)[0]!==rPr[0]) || elements(run).length!==1+rPr.length || elements(ts[0]!).length || Array.from(ts[0]!.childNodes).some(n=>n.nodeType!==3) || Array.from(ts[0]!.attributes).some(a=>a.namespaceURI!=="http://www.w3.org/XML/1998/namespace" || a.localName!=="space" || a.value!=="preserve")) return fail()
+      const flags = rPr.length ? spanFlags(rPr[0]!) : { bold:false, italic:false, underline:false }, last = spans.at(-1), value = ts[0]!.textContent ?? ""
+      if (last && last.bold===flags.bold && last.italic===flags.italic && last.underline===flags.underline) last.text += value
+      else spans.push({ text:value, ...flags })
+    } }
+    if (runs && JSON.stringify(spans)!==JSON.stringify(runs[i]!.map(r=>({text:r.text,bold:r.bold,italic:r.italic,underline:r.underline})))) return fail()
   }
   const ids=carriers.map(c=>c.getAttributeNS(W,"id")!), oldIds=new Set(Array.from(da.getElementsByTagNameNS(W,"*")).flatMap(e=>e.hasAttributeNS(W,"id")?[e.getAttributeNS(W,"id")!.replace(/^\+?0+(?=\d)/, "")]:[]))
   if (new Set(ids).size!==ids.length || ids.some(id=>oldIds.has(id))) return fail()

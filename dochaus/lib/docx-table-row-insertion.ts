@@ -3,6 +3,8 @@ import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { z } from "zod"
 import { docxodus } from "./docxodus"
+import { docxRowFormatCascade } from "./docx-row-format-cascade"
+import { canonicalWordChatCellRuns, type WordChatCellRun } from "./word-chat-amendment-contract"
 
 // Source-bound authoring proof; callers own review and persistence. Never import its output into live Word.
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -15,6 +17,8 @@ type Metadata = NonNullable<ReturnType<Session["getTableMetadata"]>["metadata"]>
 type Package = ReturnType<typeof unpack>
 const requestSchema = z.object({ source_sha256: z.string().regex(/^[a-f0-9]{64}$/), target_handle: z.string().min(1),
   position: z.enum(["before", "after"]), cells: z.array(z.string().max(4000)).min(1).max(32),
+  // Optional canonical spans per cell; absent for a plain row.
+  runs: z.array(z.array(z.object({ text: z.string().max(4000), bold: z.boolean(), italic: z.boolean(), underline: z.boolean() }).strict()).max(64)).max(32).optional(),
   author: z.string().trim().min(1).max(100) }).strict()
 export type DocxTableRowInsertion = z.infer<typeof requestSchema>
 type Target = { target_handle: string; table: number; row: number; cells: string[]; columns: number }
@@ -33,7 +37,7 @@ function unpack(bytes: Uint8Array) {
   const parts = unzipSync(bytes)
   require(parts[BODY] && parts[SETTINGS], "existing_main_and_settings_required")
   const docs = Object.fromEntries(Object.entries(parts).filter(([name]) => /\.(xml|rels)$/.test(name)).map(([name, bytes]) => [name, parse(strFromU8(bytes))]))
-  return { parts, docs, body: docs[BODY]!, settings: docs[SETTINGS]! }
+  return { bytes, parts, docs, body: docs[BODY]!, settings: docs[SETTINGS]! }
 }
 // Preserve every namespace binding, attribute, text, PI and comment. Only XML
 // declarations/attribute order/empty-element serialization are non-semantic.
@@ -199,6 +203,7 @@ function request(value: DocxTableRowInsertion, source: Uint8Array) {
   const parsed = requestSchema.parse(value)
   require(parsed.source_sha256 === hash(source), "stale_source")
   require(parsed.cells.some(c => c.length) && parsed.cells.join("").length <= 24000 && parsed.cells.every(c => c === c.trim() && !/[\u0000-\u001f\u007f]/.test(c) && c.isWellFormed()), "unsupported_literal_cells")
+  require(canonicalWordChatCellRuns(parsed.cells, parsed.runs) === parsed.runs, "unsupported_cell_runs")
   return parsed
 }
 async function open(source: Uint8Array) {
@@ -214,6 +219,11 @@ function target(source: Package, session: Session, input: DocxTableRowInsertion)
   const found = locate(source, session, input.source_sha256).find(t => t.view.target_handle === input.target_handle)
   require(found && input.cells.length === found.view.columns, "target_or_cell_count_changed")
   require(session.listRevisions().every(r => r.resolutionStatus === "supported"), "unsupported_existing_revision")
+  // An absent run property means "off" only under a neutral style cascade.
+  if (input.runs) {
+    const cascade = docxRowFormatCascade(source.bytes, found.view.table - 1)
+    if (!cascade.neutral) throw new Error(`docx_row_insertion:format_cascade_not_neutral:${cascade.reason}`)
+  }
   return found
 }
 function literal(text: string) { return text.replace(/[\\`*_{}\[\]()#+.!<>|~\-]/g, "\\$&") }
@@ -228,7 +238,31 @@ function write(session: Session, cell: string, input: DocxTableRowInsertion) {
     if (!row.success) return row
     created = row.created.map(c => c.id)
     require(created.length === input.cells.length && new Set(created).size === created.length && row.created.every(c => c.kind === "tc"), "created_cell_identity_changed")
-    return [row, ...created.flatMap((id, i) => input.cells[i] ? [session.replaceCellContent(id, literal(input.cells[i]!))] : [])]
+    const results: ReturnType<Session["applyFormat"]>[] = [row]
+    for (const [i, id] of created.entries()) {
+      if (!input.cells[i]) continue
+      const filled = session.replaceCellContent(id, literal(input.cells[i]!))
+      results.push(filled)
+      if (!filled.success || !input.runs) continue
+      // Format only the "on" spans of the literal text; offsets are UTF-16.
+      const resolved = session.resolveTableCellAnchor(id), paragraphs = resolved.cell?.paragraphAnchors ?? []
+      require(resolved.success && paragraphs.length === 1, "created_paragraph_identity_changed")
+      let start = 0
+      for (const run of input.runs[i]!) {
+        // Omitted flags leave the plain run unchanged; false would request removal.
+        const op: Parameters<Session["applyFormat"]>[2] = {}
+        if (run.bold) op.bold = true
+        if (run.italic) op.italic = true
+        if (run.underline) op.underline = true
+        if (Object.keys(op).length) {
+          const formatted = session.applyFormat(paragraphs[0]!.id, { start, length: run.text.length }, op)
+          results.push(formatted)
+          if (!formatted.success) return results
+        }
+        start += run.text.length
+      }
+    }
+    return results
   } }], "atomic")
   if (!result.success) {
     require(session.getVersion() === version && packageDigest(session) === before, "failed_authoring_not_rolled_back")
@@ -255,7 +289,30 @@ function rowAndRemainder(source: Package, output: Package, located: Located, inp
   }
   return { row, at, remainder: clone }
 }
-type Carrier = { key: string; id: string; element: Element; kind: "RowMark" | "ParaMark" | "Content"; paragraph?: number }
+type Carrier = { key: string; id: string; element: Element; kind: "RowMark" | "ParaMark" | "Content" | "PropsChange"; paragraph?: number }
+type Span = WordChatCellRun
+const FLAGS = [["b", "bold"], ["i", "italic"], ["u", "underline"]] as const
+// Docxodus 14.2 tracks a span format on new text as <w:rPr>[b][i][u]<w:rPrChange><w:rPr/></w:rPrChange></w:rPr>:
+// bare b/i, u="single", an empty prior rPr, no CS counterparts. Bind exactly that.
+function spanFlags(run: Element, formatted: boolean, add: (el: Element, kind: Carrier["kind"]) => void): Omit<Span, "text"> {
+  const off = { bold: false, italic: false, underline: false }
+  const rPr = children(run, "rPr")
+  require(rPr.length <= 1 && (!rPr.length || kids(run)[0] === rPr[0]), "unexpected_literal_run")
+  if (!rPr.length) return off
+  require(formatted && !rPr[0]!.attributes.length, "unexpected_run_properties")
+  const props = Array.from(rPr[0]!.childNodes)
+  require(props.every(n => n.nodeType === 1 && (n as Element).namespaceURI === W), "unexpected_run_properties")
+  const change = props.at(-1) as Element | undefined, flags = props.slice(0, -1) as Element[]
+  require(change?.localName === "rPrChange" && flags.length > 0, "unexpected_run_properties")
+  const names = flags.map(el => el.localName), planned = FLAGS.filter(([name]) => names.includes(name))
+  require(JSON.stringify(names) === JSON.stringify(planned.map(([name]) => name)) && flags.every(el => !el.childNodes.length &&
+    (el.localName === "u" ? el.attributes.length === 1 && el.getAttributeNS(W, "val") === "single" : !el.attributes.length)), "unexpected_run_properties")
+  only(change, ["rPr"])
+  const prior = children(change, "rPr")
+  require(prior.length === 1 && !prior[0]!.attributes.length && !prior[0]!.childNodes.length, "unexpected_prior_run_properties")
+  add(change, "PropsChange")
+  return { bold: names.includes("b"), italic: names.includes("i"), underline: names.includes("u") }
+}
 function carriers(row: Element, input: DocxTableRowInsertion): Carrier[] {
   require(!row.attributes.length, "unexpected_new_row_attributes")
   only(row, ["trPr", "tc"])
@@ -269,7 +326,7 @@ function carriers(row: Element, input: DocxTableRowInsertion): Carrier[] {
     const id = el.getAttributeNS(W, "id")
     require(typeof id === "string" && /^(0|[1-9]\d*)$/.test(id) && el.getAttributeNS(W, "author") === input.author && !!el.getAttributeNS(W, "date") &&
       Array.from(el.attributes).every(a => a.namespaceURI === W && ["id", "author", "date"].includes(a.localName)), "invalid_revision_carrier")
-    found.push({ key: `kind=${kind}:${W}:ins:${id}`, id, element: el, kind, paragraph })
+    found.push({ key: `kind=${kind}:${W}:${el.localName}:${id}`, id, element: el, kind, paragraph })
   }
   require(!marks[0]!.childNodes.length, "invalid_row_revision")
   add(marks[0]!, "RowMark")
@@ -289,18 +346,24 @@ function carriers(row: Element, input: DocxTableRowInsertion): Carrier[] {
     const mark = children(rPr[0]!, "ins")
     require(mark.length === 1 && !mark[0]!.childNodes.length, "invalid_paragraph_mark")
     add(mark[0]!, "ParaMark", index)
+    const spans: Span[] = []
     for (const content of children(p, "ins")) {
       add(content, "Content", index)
       only(content, ["r"])
       for (const run of children(content, "r")) {
         require(!run.attributes.length, "unexpected_literal_run")
-        only(run, ["t"])
+        only(run, input.runs ? ["rPr", "t"] : ["t"])
         require(children(run, "t").length === 1, "unexpected_literal_run")
+        const flags = spanFlags(run, !!input.runs, (el, kind) => add(el, kind, index)), last = spans.at(-1)
+        // The SDK may split a literal into several runs; bind the merged spans.
+        if (last && FLAGS.every(([, flag]) => last[flag] === flags[flag])) last.text += plain(run)
+        else spans.push({ ...flags, text: plain(run) })
         const text = children(run, "t")[0]!
         require(!kids(text).length && Array.from(text.childNodes).every(n => n.nodeType === 3) &&
           Array.from(text.attributes).every(a => a.namespaceURI === "http://www.w3.org/XML/1998/namespace" && a.localName === "space" && a.value === "preserve"), "unexpected_literal_text")
       }
     }
+    if (input.runs) require(JSON.stringify(spans) === JSON.stringify(input.runs[index]!.map(({ text, bold, italic, underline }) => ({ bold, italic, underline, text }))), "inserted_cell_spans_changed")
   }
   require(new Set(found.map(c => c.id)).size === found.length, "duplicate_new_carrier_id")
   return found
@@ -322,16 +385,22 @@ function membership(source: Package, output: Package, row: Element, remainder: D
   const paragraphIds = meta.cells.map(c => { require(c.paragraphAnchors.length === 1, "new_paragraph_identity_unavailable"); return c.paragraphAnchors[0]!.id })
   const claimed = new Set<string>()
   for (const revision of added) {
-    require(revision.resolutionStatus === "supported" && revision.type === "insert" && revision.partUri === "/word/document.xml" && revision.scope === "body" && revision.author === input.author &&
-      ["row_insert", "content_insert"].includes(revision.family), "unexpected_revision")
+    const format = revision.family === "properties_change" && !!input.runs
+    require(revision.resolutionStatus === "supported" && revision.type === (format ? "format" : "insert") && revision.partUri === "/word/document.xml" && revision.scope === "body" && revision.author === input.author &&
+      (format || ["row_insert", "content_insert"].includes(revision.family)), "unexpected_revision")
     const owned = physical.filter(c => revision.constituentKeys.includes(c.key))
     require(owned.length > 0 && owned.length === revision.constituentKeys.length && new Set(revision.constituentKeys).size === owned.length &&
       JSON.stringify([...new Set(owned.map(c => c.id))].sort()) === JSON.stringify([...revision.constituentIds].sort()) &&
       owned.every(c => !claimed.has(c.key)), "revision_membership_changed")
     owned.forEach(c => claimed.add(c.key))
     if (revision.family === "row_insert") {
-      require(owned.length === input.cells.length + 1 && owned.every(c => c.kind !== "Content") && owned.some(c => c.kind === "RowMark") && revision.anchorId === meta.anchor.id &&
+      require(owned.length === input.cells.length + 1 && owned.every(c => c.kind === "RowMark" || c.kind === "ParaMark") && owned.some(c => c.kind === "RowMark") && revision.anchorId === meta.anchor.id &&
         JSON.stringify(revision.affectedAnchors.map(a => a.id).sort()) === JSON.stringify([meta.anchor.id, ...paragraphIds].sort()), "row_revision_extent_changed")
+    } else if (format) {
+      // A span format change is registered against its new cell.
+      const indices = new Set(owned.map(c => c.paragraph)), cell = meta.cells[owned[0]!.paragraph!]?.anchor.id
+      require(owned.every(c => c.kind === "PropsChange") && indices.size === 1 && cell && revision.anchorId === cell && revision.affectedAnchors.length === 1 &&
+        revision.affectedAnchors[0]!.id === cell && revision.text === owned.map(c => plain(c.element.parentNode!.parentNode as Element)).join(""), "format_revision_extent_changed")
     } else {
       const indices = new Set(owned.map(c => c.paragraph))
       require(owned.every(c => c.kind === "Content") && indices.size === 1, "content_revision_extent_changed")
@@ -377,7 +446,9 @@ export async function resolveDocxTableRowInsertion(sourceBytes: Uint8Array, auth
   const checked = await inspect(source, new Uint8Array(authored), input)
   try {
     const { session } = checked, digest = packageDigest(session), version = session.getVersion()
-    const order = checked.revisions.toSorted((a, b) => Number(a.family === "row_insert") - Number(b.family === "row_insert"))
+    // Span formats first, then their content, then the row that holds them.
+    const rank = (r: Revision) => ["properties_change", "content_insert", "row_insert"].indexOf(r.family)
+    const order = checked.revisions.toSorted((a, b) => rank(a) - rank(b))
     const result = session.executeBatch(order.map(r => ({ tool: "table", action: decision, mutation: () => decision === "accept" ? session.acceptRevision(r.id) : session.rejectRevision(r.id) })), "atomic")
     if (!result.success) {
       require(session.getVersion() === version && packageDigest(session) === digest, "failed_resolution_not_rolled_back")

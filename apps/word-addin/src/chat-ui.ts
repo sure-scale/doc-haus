@@ -429,7 +429,22 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       : `End of table ${proposal.table.tableIndex + 1}`, "chat-message-meta"))
     if (excerpt) card.append(line("p", `First row: ${excerpt}`, "chat-message-meta"))
     const list = document.createElement("ul"); list.className = "chat-format-plan"
-    proposal.cells.forEach((text, index) => { const item = document.createElement("li"); item.append(line("strong", `Column ${index + 1}`), line("p", text)); list.append(item) })
+    const runs = proposal.kind === "table_row_delete" ? undefined : proposal.runs
+    proposal.cells.forEach((text, index) => {
+      const item = document.createElement("li"); item.append(line("strong", `Column ${index + 1}`))
+      const cell = runs?.[index]
+      if (!cell?.some(run => run.bold || run.italic || run.underline)) { item.append(line("p", text)); list.append(item); return }
+      // Show the reviewed spans as Word will, and name them for readers who cannot see the styling.
+      const value = document.createElement("p"), named: string[] = []
+      for (const run of cell) {
+        const span = document.createElement("span"); span.textContent = run.text
+        span.style.fontWeight = run.bold ? "700" : "400"; span.style.fontStyle = run.italic ? "italic" : "normal"; span.style.textDecoration = run.underline ? "underline" : "none"
+        value.append(span)
+        const flags = [run.bold && "bold", run.italic && "italic", run.underline && "underline"].filter(Boolean).join(", ")
+        if (flags) named.push(`${flags[0]!.toUpperCase()}${flags.slice(1)}: “${run.text.trim()}”`)
+      }
+      item.append(value, line("p", named.join(" · "), "chat-message-meta")); list.append(item)
+    })
     card.append(list)
     if (proposal.explanation) card.append(line("p", proposal.explanation))
     if (proposal.openItems.length) {

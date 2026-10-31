@@ -250,3 +250,100 @@ test("only effective table and default paragraph style chains govern row eligibi
   const numberedDefault = baseStyles.replace('<w:name w:val="Normal"/>','<w:name w:val="Normal"/><w:pPr><w:numPr><w:numId w:val="5"/></w:numPr></w:pPr>')
   expect((await docxTableRowInsertionTargets(make(numberedDefault, look))).targets).toEqual([])
 })
+
+const span = (text: string, flags = "") => ({ text, bold: flags.includes("b"), italic: flags.includes("i"), underline: flags.includes("u") })
+const mixed = [[span("Bold", "b"), span(" then plain")], [span("a"), span("😀b", "iu")]]
+// Text and direct run-property names of each new-row run, in document order.
+const rowRuns = (bytes: Uint8Array, at = 1) => direct(parse(bytes).getElementsByTagNameNS(W, "tr")[at]!, "tc").map(cell =>
+  Array.from(cell.getElementsByTagNameNS(W, "r")).map(run => [direct(run, "t").map(t => t.textContent).join(""),
+    direct(run, "rPr").flatMap(rPr => Array.from(rPr.childNodes) as Element[]).map(el => el.localName + (el.getAttributeNS(W, "val") ? `=${el.getAttributeNS(W, "val")}` : "")).join(",")]))
+function styled(change: { defaults?: string; base?: string; character?: string; table?: string } = {}) {
+  const parts = unzipSync(fixture())
+  parts["word/styles.xml"] = strToU8(`<w:styles xmlns:w="${W}"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri"/>${change.defaults ?? ""}</w:rPr></w:rPrDefault></w:docDefaults>` +
+    `<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:basedOn w:val="Base"/></w:style>` +
+    `<w:style w:type="paragraph" w:styleId="Base"><w:name w:val="Base"/><w:rPr><w:sz w:val="22"/>${change.base ?? ""}</w:rPr></w:style>` +
+    `<w:style w:type="character" w:default="1" w:styleId="DefaultParagraphFont"><w:name w:val="Default Paragraph Font"/>${change.character ?? ""}</w:style>` +
+    `<w:style w:type="table" w:styleId="Grid"><w:name w:val="Grid"/><w:rPr><w:color w:val="333333"/>${change.table ?? ""}</w:rPr></w:style></w:styles>`)
+  parts["word/document.xml"] = strToU8(strFromU8(parts["word/document.xml"]!).replace("<w:tblPr></w:tblPr>", '<w:tblPr><w:tblStyle w:val="Grid"/></w:tblPr>'))
+  return zipSync(parts)
+}
+
+test("a mixed-format row binds exact spans, keeps prior revisions and resolves as one group", async () => {
+  const source = fixture(), original = new Uint8Array(source), request = { ...await input(source, ["Bold then plain", "a😀b"]), runs: mixed }
+  const authored = await authorDocxTableRowInsertion(source, request)
+  expect(authored.revisions.map(r => r.family).sort()).toEqual(["content_insert", "content_insert", "properties_change", "properties_change", "row_insert"])
+  expect(rowText(authored.bytes)[1]).toEqual(request.cells)
+  expect(rowRuns(authored.bytes)).toEqual([[["Bold", "b,rPrChange"], [" then plain", ""]], [["a", ""], ["😀b", "i,u=single,rPrChange"]]])
+  // The earlier same-author format change and insert/delete pair survive.
+  const prior = durableRecords(await revisions(source))
+  expect(durableRecords(await revisions(authored.bytes)).filter(r => prior.some(p => p.id === r.id))).toEqual(prior)
+  const accepted = await resolveDocxTableRowInsertion(source, authored.bytes, request, "accept")
+  expect(rowRuns(accepted)).toEqual([[["Bold", "b"], [" then plain", ""]], [["a", ""], ["😀b", "i,u=single"]]])
+  expect(durableRecords(await revisions(accepted))).toEqual(prior)
+  expect(await resolveDocxTableRowInsertion(source, authored.bytes, request, "reject")).toEqual(source)
+  expect(source).toEqual(original)
+})
+
+test("plain rows keep the unformatted path; runs must be canonical and match the cells", async () => {
+  const source = fixture(), request = await input(source, ["Bold then plain", "a😀b"])
+  const plain = await authorDocxTableRowInsertion(source, request)
+  expect(plain.revisions.map(r => r.family).sort()).toEqual(["content_insert", "content_insert", "row_insert"])
+  expect(rowRuns(plain.bytes).flat().every(([, props]) => props === "")).toBe(true)
+  for (const runs of [[[span("Bold then plain")], [span("a😀b")]], [[span("Bold", "b"), span(" then plain")], [span("a😀"), span("c", "i")]],
+    [[span("Bold", "b"), span(" then", "b"), span(" plain")], [span("a😀b")]], [[span("Bold then plain", "b")]]])
+    await expect(authorDocxTableRowInsertion(source, { ...request, runs })).rejects.toThrow("unsupported_cell_runs")
+  const formatted = await authorDocxTableRowInsertion(source, { ...request, runs: mixed })
+  // A formatted row cannot be verified as plain, nor plain bytes as formatted.
+  await expect(resolveDocxTableRowInsertion(source, formatted.bytes, request, "reject")).rejects.toThrow("unsupported_new_row_content")
+  await expect(resolveDocxTableRowInsertion(source, plain.bytes, { ...request, runs: mixed }, "reject")).rejects.toThrow("inserted_cell_spans_changed")
+})
+
+test("span binding refuses boundary drift, wrong flags, extra properties and untracked formatting", async () => {
+  const source = fixture(), request = { ...await input(source, ["Bold then plain", "a😀b"]), runs: mixed }
+  const authored = await authorDocxTableRowInsertion(source, request)
+  const tamper = (change: (runs: Element[], doc: Document) => void) => modify(authored.bytes, doc =>
+    change(Array.from(doc.getElementsByTagNameNS(W, "tr")[1]!.getElementsByTagNameNS(W, "r")), doc))
+  const drift = tamper(runs => { runs[0]!.getElementsByTagNameNS(W, "t")[0]!.textContent = "Bol"; runs[1]!.getElementsByTagNameNS(W, "t")[0]!.textContent = "d then plain" })
+  const flag = tamper((runs, doc) => { const b = runs[0]!.getElementsByTagNameNS(W, "b")[0]!; b.parentNode!.replaceChild(doc.createElementNS(W, "w:i"), b) })
+  const extra = tamper((runs, doc) => { const rPr = runs[0]!.getElementsByTagNameNS(W, "rPr")[0]!; rPr.insertBefore(doc.createElementNS(W, "w:bCs"), rPr.firstChild!.nextSibling) })
+  const style = tamper((runs, doc) => { const rPr = runs[0]!.getElementsByTagNameNS(W, "rPr")[0]!, ref = doc.createElementNS(W, "w:rStyle"); ref.setAttributeNS(W, "w:val", "Strong"); rPr.insertBefore(ref, rPr.firstChild) })
+  const off = tamper((runs, doc) => { const rPr = runs[0]!.getElementsByTagNameNS(W, "rPr")[0]!, i = doc.createElementNS(W, "w:i"); i.setAttributeNS(W, "w:val", "0"); rPr.insertBefore(i, rPr.lastChild) })
+  const untracked = tamper(runs => { const change = runs[0]!.getElementsByTagNameNS(W, "rPrChange")[0]!; change.parentNode!.removeChild(change) })
+  const prior = tamper((runs, doc) => { runs[0]!.getElementsByTagNameNS(W, "rPrChange")[0]!.getElementsByTagNameNS(W, "rPr")[0]!.appendChild(doc.createElementNS(W, "w:b")) })
+  for (const [bytes, reason] of [[drift, "inserted_cell_spans_changed"], [flag, "inserted_cell_spans_changed"], [extra, "unexpected_run_properties"], [style, "unexpected_run_properties"],
+    [off, "unexpected_run_properties"], [untracked, "unexpected_run_properties"], [prior, "unexpected_prior_run_properties"]] as const)
+    await expect(resolveDocxTableRowInsertion(source, bytes, request, "accept")).rejects.toThrow(reason)
+  expect(await resolveDocxTableRowInsertion(source, authored.bytes, request, "reject")).toEqual(source)
+})
+
+test("a formatted row needs a neutral style cascade; a plain row on the same table is unaffected", async () => {
+  const neutral = styled(), request = async (source: Uint8Array) => ({ ...await input(source, ["Bold then plain", "a😀b"]), runs: mixed })
+  const authored = await authorDocxTableRowInsertion(neutral, await request(neutral))
+  expect(rowRuns(authored.bytes)[0]).toEqual([["Bold", "b,rPrChange"], [" then plain", ""]])
+  for (const [change, reason] of [[{ defaults: "<w:i/>" }, "doc_defaults:i"], [{ defaults: '<w:b w:val="0"/>' }, "doc_defaults:b"], [{ base: "<w:b/>" }, "paragraph_style:b"],
+    [{ table: '<w:u w:val="single"/>' }, "table_style:u"], [{ character: "<w:rPr><w:iCs/></w:rPr>" }, "character_style:iCs"]] as const) {
+    const source = styled(change)
+    await expect(authorDocxTableRowInsertion(source, await request(source))).rejects.toThrow(`format_cascade_not_neutral:${reason}`)
+  }
+  const underlined = styled({ table: '<w:u w:val="single"/>' }), plain = await input(underlined, ["Bold then plain", "a😀b"])
+  expect(rowText((await authorDocxTableRowInsertion(underlined, plain)).bytes)[1]).toEqual(plain.cells)
+})
+
+test("a later format failure rolls back the whole SDK batch", async () => {
+  const source = fixture(), request = { ...await input(source, ["Bold then plain", "a😀b"]), runs: mixed }, s = (await docxodus()).openDocxSession(source, {})
+  const prototype = Object.getPrototypeOf(s) as typeof s; s.close()
+  const format = prototype.applyFormat, batch = prototype.executeBatch
+  let calls = 0, rolledBack = false
+  const fail = spyOn(prototype, "applyFormat").mockImplementation(function(this: typeof s, ...args: Parameters<typeof format>) {
+    if (++calls === 2) return { success: false, created: [], removed: [], modified: [], error: { code: "internal_error", message: "Synthetic later format failure" } }
+    return format.apply(this, args)
+  })
+  const observe = spyOn(prototype, "executeBatch").mockImplementation(function(this: typeof s, ...args: Parameters<typeof batch>) {
+    const before = this.getPackageManifest().rawPackageBytesDigest, version = this.getVersion(), result = batch.apply(this, args)
+    const after = this.getPackageManifest().rawPackageBytesDigest
+    rolledBack = !result.success && after.algorithm === before.algorithm && after.value === before.value && this.getVersion() === version
+    return result
+  })
+  try { await expect(authorDocxTableRowInsertion(source, request)).rejects.toThrow("authoring_failed_rolled_back"); expect(calls).toBe(2); expect(rolledBack).toBe(true) }
+  finally { fail.mockRestore(); observe.mockRestore() }
+})

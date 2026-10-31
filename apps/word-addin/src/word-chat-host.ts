@@ -1,6 +1,6 @@
 import type { WordChatAuthoredAmendment, WordChatCellRun, WordChatPreparedAmendment, WordChatParagraphFormat, WordChatInlineFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget, WordChatTableRowInsertionProposal, WordChatTableRowDeletionProposal, WordChatProposal, WordChatListCapture } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { validWordChatFormatting, validWordChatInlineFormatting, targetWordChatAmendment, validWordChatTableRowInsertion, validWordChatTableRowDeletion, wordChatApplyPlan, wordChatTableCaptureCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, sameNativeWordChatBodySnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody, verifyNativeWordChatRowRemainder, verifyReviewedWordChatRowOracle, assertNativeWordChatInlineTarget, assertNativeWordChatInlineDependencies, verifiedNativeWordChatInlineFormatting, sameNativeInlineWordChatParagraph, assertNativeInlineWordChatRevisionIds } from "./word-chat-host-ooxml"
+import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, sameNativeWordChatBodySnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody, verifyNativeWordChatRowRemainder, verifyReviewedWordChatRowOracle, assertWordChatRowFormatNeutral, WordChatRowFormatRefusal, assertNativeWordChatInlineTarget, assertNativeWordChatInlineDependencies, verifiedNativeWordChatInlineFormatting, sameNativeInlineWordChatParagraph, assertNativeInlineWordChatRevisionIds } from "./word-chat-host-ooxml"
 import type { WordChatAuthoredTableRow, WordChatAuthoredTableRowDeletion } from "../../../dochaus/lib/word-chat-contract"
 import { prepareNativeRow, queueNativeRow, type NativeRowContext } from "./word-chat-native-row"
 import { verifyNativeWordChatAddedRow } from "./word-chat-native-row-verification"
@@ -500,6 +500,7 @@ export class WordChatHost {
     try {
       const source = await exportCurrent()
       if (!(source instanceof Uint8Array) || !source.length || source.length > 16 * 1024 * 1024) throw new WordChatHostError("The current Word document is too large or unavailable to prepare this row. Your document is unchanged.")
+      assertWordChatRowFormatNeutral(source, proposal)
       const oracle = await author(source)
       await verifyReviewedWordChatRowOracle(source, oracle, proposal)
       return await this.word.run(async context => {
@@ -569,6 +570,7 @@ export class WordChatHost {
       })
     } catch (error) {
       if (this.applied.get(proposal.id)?.uncertain) throw new WordChatHostError("Word may have applied the row, but its tracked result could not be confirmed. Inspect it and use Undo if needed; do not apply it again.", "uncertain", { cause: error })
+      if (error instanceof WordChatRowFormatRefusal) throw new WordChatHostError(error.message, "unchanged", { cause: error })
       failure(error, "Word could not prepare the reviewed row. Your document is unchanged.")
     }
   }

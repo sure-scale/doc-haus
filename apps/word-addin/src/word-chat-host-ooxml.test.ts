@@ -394,6 +394,60 @@ function fixture(kind = "simple") {
   }
 })
 
+test("reviewed row oracle binds formatted spans and refuses a table whose styles already format text", async () => {
+  const {zipSync,strToU8,strFromU8,unzipSync} = await import("fflate")
+  const {docxTableRowInsertionTargets,authorDocxTableRowInsertion} = await import(new URL("../../../dochaus/lib/docx-table-row-insertion.ts", import.meta.url).href)
+  const {verifyReviewedWordChatRowOracle: verify, WordChatRowFormatRefusal} = await import("./word-chat-host-ooxml")
+  const RW = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", RR = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  const cell = (text: string) => `<w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`
+  const styles = (defaults = "") => strToU8(`<w:styles xmlns:w="${RW}"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri"/>${defaults}</w:rPr></w:rPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style></w:styles>`)
+  const source = zipSync({
+    "[Content_Types].xml": strToU8('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>'),
+    "_rels/.rels": strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="main" Type="${RR}/officeDocument" Target="word/document.xml"/></Relationships>`),
+    "word/_rels/document.xml.rels": strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="styles" Type="${RR}/styles" Target="styles.xml"/><Relationship Id="settings" Type="${RR}/settings" Target="settings.xml"/></Relationships>`),
+    "word/styles.xml": styles(), "word/settings.xml": strToU8(`<w:settings xmlns:w="${RW}"/>`),
+    "word/document.xml": strToU8(`<w:document xmlns:w="${RW}"><w:body><w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid><w:tr>${cell("Term")}${cell("Meaning")}</w:tr></w:tbl><w:p/><w:sectPr/></w:body></w:document>`),
+  }, { mtime: new Date(1980, 0, 1) })
+  const span = (text: string, flags = "") => ({ text, bold: flags.includes("b"), italic: flags.includes("i"), underline: flags.includes("u") })
+  const runs = [[span("Bold", "b"), span(" then plain")], [span("a"), span("tail", "iu")]], cells = ["Bold then plain", "atail"]
+  const table = {tableIndex:0,rows:[[{id:"a",text:"Term"},{id:"b",text:"Meaning"}]]}
+  const proposal = {kind:"table_row_insert" as const,id:"p",documentId:"d",explanation:"Add",openItems:[],createdAt:"now",position:"end" as const,table,cells,runs}
+  const packet = await docxTableRowInsertionTargets(source)
+  const writerRequest = {source_sha256:packet.source_sha256,target_handle:packet.targets[0]!.target_handle,position:"after" as const,cells,runs,author:"doc.haus"}
+  const authored = await authorDocxTableRowInsertion(source, writerRequest)
+  const encode = (bytes: Uint8Array) => btoa(Array.from(bytes, x => String.fromCharCode(x)).join(""))
+  const oracle = {kind:"table_row_insert" as const,proposalId:"p",sourceSha256:packet.source_sha256,table,cells,runs,author:"doc.haus" as const,writerRequest,authoredBase64:encode(authored.bytes),revisions:authored.revisions}
+  expect((await verify(source, oracle, proposal)).cells).toEqual(cells)
+  const tampered = (change: (xml: string) => string) => {
+    const parts = unzipSync(authored.bytes), xml = strFromU8(parts["word/document.xml"]!), next = change(xml)
+    expect(next).not.toBe(xml)
+    parts["word/document.xml"] = strToU8(next)
+    return {...oracle, authoredBase64:encode(zipSync(parts))}
+  }
+  for (const change of [(x: string) => x.replace(">Bold<", ">Bol<").replace("> then plain<", ">d then plain<"), (x: string) => x.replace(/<w:b ?\/>/, "<w:i/>"),
+    (x: string) => x.replace(/<w:b ?\/>/, "<w:b/><w:bCs/>"), (x: string) => x.replace(/<w:rPr ?\/><\/w:rPrChange>/, "<w:rPr><w:b/></w:rPr></w:rPrChange>"),
+    (x: string) => x.replace(/<w:rPrChange [^>]*><w:rPr ?\/><\/w:rPrChange>/, "")])
+    await expect(verify(source, tampered(change), proposal)).rejects.toThrow("Reviewed row oracle mismatch")
+  // Spans must equal the proposal's and travel unchanged through the writer request.
+  await expect(verify(source, {...oracle, runs:[runs[0]!, [span("atail")]]}, proposal)).rejects.toThrow("Reviewed row oracle mismatch")
+  await expect(verify(source, {...oracle, writerRequest:{...writerRequest, runs:undefined}}, proposal)).rejects.toThrow("Reviewed row oracle mismatch")
+  const {runs: _runs, ...plain} = proposal
+  await expect(verify(source, oracle, plain)).rejects.toThrow("Reviewed row oracle mismatch")
+  // Same oracle, one inherited italic in the source styles: the host refuses on its own.
+  const restyle = async (defaults: string) => {
+    const s = unzipSync(source), a = unzipSync(authored.bytes)
+    s["word/styles.xml"] = a["word/styles.xml"] = styles(defaults)
+    const bytes = zipSync(s), digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), x => x.toString(16).padStart(2, "0")).join("")
+    return [bytes, {...oracle, sourceSha256:digest, writerRequest:{...writerRequest, source_sha256:digest}, authoredBase64:encode(zipSync(a))}] as const
+  }
+  const [neutral, neutralOracle] = await restyle('<w:sz w:val="22"/>')
+  expect((await verify(neutral, neutralOracle, proposal)).cells).toEqual(cells)
+  const [italic, italicOracle] = await restyle("<w:i/>")
+  const refused = await verify(italic, italicOracle, proposal).catch((error: unknown) => error)
+  expect(refused).toBeInstanceOf(WordChatRowFormatRefusal)
+  expect((refused as Error).message).toBe("This table's style already applies bold, italic or underline, so a mixed-format row can't be added safely. Your document is unchanged.")
+})
+
 test("native inline verification preserves a marker within the reviewed span and rejects anchor drift", async () => {
   const { assertNativeWordChatInlineTarget, verifiedNativeWordChatInlineFormatting } = await import("./word-chat-host-ooxml")
   const marker = '<w:bookmarkStart w:id="4" w:name="place"/>'
