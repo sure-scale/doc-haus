@@ -7,7 +7,7 @@ import { renderNotesCoverage } from "../../lib/notes-coverage-report"
 import { hasOpenItemMarker } from "../../lib/open-items"
 import { draftingPlaceholders } from "../../lib/placeholder-resolution"
 import { normalize } from "../../lib/quote-verify"
-import { CITED, finalBodyParagraphs, readerIDs, standingIDPattern, type ApplyResult } from "./checks"
+import { CITED, finalBodyParagraphs, paragraphTextHolders, readerIDs, standingIDPattern, type ApplyResult } from "./checks"
 import { memoMode, questionNames, runItemIDs, withoutInternalIDs, withoutRefMarkers } from "./delivered-memo"
 import { FIRST_DOCUMENT, readLeanPlan, type DocID } from "./plan"
 import { isWithheldDeliveryItem, readPackageReview, withheldDeliveryItems } from "./package-review"
@@ -82,7 +82,7 @@ export type GateResult = {
   questions?: Question[]
 }
 
-type FinalBody = { paragraphs: Map<string, string>; body: string }
+type FinalBody = { paragraphs: Map<string, string>; rows: { pid: string; text: string }[]; body: string }
 
 type SettleContext = {
   directory: string
@@ -104,7 +104,7 @@ export function finalGate(directory: string): GateResult {
       // Deletion has no surviving paragraph in which to disclose a question.
       for (const row of applied) if (row.result_pids)
         paragraphs.set(row.pid, row.result_pids.map(pid => actual.get(pid) ?? "").join("\n"))
-      return [id, { paragraphs, body: normalize(rows.map(row => row.text).join("\n")) }]
+      return [id, { paragraphs, rows, body: normalize(rows.map(row => row.text).join("\n")) }]
     })),
     notes: readLeanText(directory, "drafting-notes.md") ?? "",
     questions: new Map(readQuestions(directory).map(question => [question.id, question])),
@@ -813,7 +813,7 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
 function inBody(final: FinalBody, text: string | undefined, pid: string | undefined) {
   if (!text) return false
   const haystack = pid ? final.paragraphs.get(pid) : final.body
-  return Boolean(haystack?.includes(normalize(text)))
+  return Boolean(haystack?.includes(normalize(text))) || Boolean(pid && paragraphTextHolders(final.rows, text).includes(pid))
 }
 
 function marked(final: FinalBody, pid: string) {
