@@ -205,10 +205,12 @@ describe("upgrade", () => {
     ]
     expect(upgradeInput(turns, 5)).toEqual({
       request: "Draft a covering email on the two invoices.\n\nLater messages from the lawyer, in order:\n- Make it shorter.",
+      from: 2,
       workingDraft: "Dear client, short version.",
     })
     expect(upgradeInput(turns, 3)).toEqual({
       request: "Draft a covering email on the two invoices.",
+      from: 2,
       workingDraft: "Dear client, first version.",
     })
     expect(upgradeInput(turns, 1)).toBeUndefined()
@@ -220,7 +222,7 @@ describe("upgrade", () => {
       turn("user", "Draft the termination notice.", undefined, "u1"),
       turn("assistant", "Quick draft can’t cover this request: it would end the lease.", QUICK_DRAFT, "a1"),
     ]
-    expect(upgradeInput(turns, 1)).toEqual({ request: "Draft the termination notice." })
+    expect(upgradeInput(turns, 1)).toEqual({ request: "Draft the termination notice.", from: 0 })
   })
 
   test("the form line is not working-draft text", () => {
@@ -228,7 +230,7 @@ describe("upgrade", () => {
       turn("user", "Draft a covering email on the two invoices.", undefined, "u1"),
       turn("assistant", "Form: advice letter\n\nDear client, both remain unpaid.", QUICK_DRAFT, "a1"),
     ]
-    expect(upgradeInput(turns, 1)).toEqual({ request: "Draft a covering email on the two invoices.", workingDraft: "Dear client, both remain unpaid." })
+    expect(upgradeInput(turns, 1)).toEqual({ request: "Draft a covering email on the two invoices.", from: 0, workingDraft: "Dear client, both remain unpaid." })
   })
 
   test("the banner is one line naming what did not run", () => {

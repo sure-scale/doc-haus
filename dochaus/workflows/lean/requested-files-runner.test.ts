@@ -37,6 +37,9 @@ const COMBINED = outline("Memo: cover memo", letter("Deliverable: combined"))
 /** The files job's reply naming these files. */
 const filesOf = (...files: RequestedFile[]): Reply => () => JSON.stringify({ stated: true, files })
 const PACKED: RequestedFile = { holds: ["memo", "d1"], name: "Kestrel Release Pack.docx", quote: PACK }
+/** The files agent: `files` for the files job, `asked` for whether the lawyer's words ask for a document the one file leaves out. */
+const filesAnd = (files: Reply, asked: string): Reply => (text, index, sessionID) =>
+  text.includes("whether they ask for one planned document themselves") ? asked : files(text, index, sessionID)
 /** The planned documents and memo every outline here gives. */
 const PLANNED = { titles: ["Release letter"], memo: "cover memo" }
 
@@ -156,7 +159,8 @@ describe("requested files through the run", () => {
     const notice = ["# Deposit notice", "Form: other", "Deliverable: redline", "## Deposit", "The deposit."]
     // The revision combines the letter and leaves out the notice's Deliverable line.
     const revised = outline("Memo: cover memo", letter("Deliverable: combined"), ...notice.filter(line => !line.startsWith("Deliverable")))
-    const model = scriptedModel(replies({ [AGENT.draft]: outliner(outline("Memo: cover memo", letter(), ...notice), revised), [AGENT.files]: filesOf(PACKED) }))
+    const model = scriptedModel(replies({ [AGENT.draft]: outliner(outline("Memo: cover memo", letter(), ...notice), revised),
+      [AGENT.files]: filesAnd(filesOf(PACKED), JSON.stringify({ asked: true, quote: "Also prepare a deposit notice for the Orchard Committee." })) }))
     await runLean(directory, { sessions: model.port })
 
     expect(revisions(model)).toHaveLength(1)
@@ -164,6 +168,19 @@ describe("requested files through the run", () => {
       expect.objectContaining({ id: "d1", title: "Release letter", deliverable: "combined", file: "Kestrel Release Pack.docx" }),
       expect.objectContaining({ id: "d2", title: "Deposit notice", deliverable: "redline" }),
     ])
+  }, 120_000)
+
+  test("a document the plan adds that the lawyer's words do not ask for goes in the one file they ask for, as a separate instrument", async () => {
+    const directory = prepared()
+    const approval = ["# Committee approval", "Form: other", "## Approval", "The approval."]
+    const model = scriptedModel(replies({ [AGENT.draft]: outliner(outline("Memo: cover memo", letter("Deliverable: combined"), ...approval)),
+      [AGENT.files]: filesAnd(filesOf(PACKED), '{"asked":false}') }))
+    expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
+
+    const [only, ...others] = readLeanPlan(directory)!.documents
+    expect(others).toEqual([])
+    expect(only).toMatchObject({ title: "Release letter", deliverable: "combined", file: "Kestrel Release Pack.docx" })
+    expect(only!.parts.map(part => part.instrument?.title)).toEqual([undefined, "Committee approval"])
   }, 120_000)
 
   test("a files revision changes only the deliverables: a file name the outline gives is kept, though the revision leaves out its line", async () => {

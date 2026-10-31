@@ -74,7 +74,7 @@ export function stagePrompt(directory: string, step: StepID, options: { outline?
   const working = workingDraftBlock(directory)
   const spine = readLeanText(directory, "spine.json")
   const spineBlock = spine ? tagged("drafting_spine", "Source-linked drafting decisions and unresolved points. Retrieve the underlying evidence as needed; this handoff does not replace it.\n" + spine) : ""
-  const answerBlock = answers ? tagged("answers", `The lawyer answered these decisions; their answers remain controlling and must not be re-asked under narrower or different wording:\n${answers}`) : ""
+  const answerBlock = answers ? tagged("answers", `The lawyer answered these decisions; their own answers remain controlling and must not be re-asked under narrower or different wording. An adopted recommendation is the drafter's judgment, as its label says:\n${answers}`) : ""
   const provenance = sourceProvenance(directory)
   const sources = tagged("sources", [
     "Matter documents (use these exact names with search-document and read-document, and as source names):",
@@ -325,6 +325,7 @@ function draftingNotesSections(directory: string, request: string) {
     loose.length ? tagged("open_items", openItemLines(loose)) : "",
     tagged("questions", questions.map(question => delegatedIDs.has(question.id)
       ? `- (${question.answer_class === "declined" ? "not answered" : "delegated"}; see delegated_decisions) ${question.question}`
+      : question.answer_kind === "instruction" ? `- (settled by the lawyer's instruction "${question.decided_by?.text}", not asked) ${question.question}\n  Answer: ${question.answer}`
       : `- (${question.status}) ${question.question}${question.answer ? `\n  Answer: ${question.answer}` : ""}`).join("\n") || "None."),
     delegated ? tagged("delegated_decisions", delegated) : "",
     tagged("output_contract", [
@@ -340,7 +341,7 @@ function draftingNotesSections(directory: string, request: string) {
       ...(memo ? ["- These notes are the requested memo; title it as that memo. Lead with the discrepancies found and the choices made, then give the recommendations and the open points, in plain language. The memo carries only what these records show."] : []),
       "- Say what each open item is and what the lawyer needs to do about it, and end that statement with the item's exact id as a trailing \"[ref: <id>]\". Write internal ids only in these markers, and name each document by its title or file name, never by its internal id; describe each change by what it does, never by its change id.",
       "- For each marked drafted default, say what was chosen and that the lawyer must confirm it.",
-      ...(delegated ? ['- delegated_decisions lists the questions the lawyer delegated to the drafter\'s judgment or did not answer. Give them a section of their own. For each decision taken, say in words what was decided, why, the evidence it rests on and the alternatives not taken, that the lawyer delegated it, and that it is for the lawyer to confirm. For each with no decision taken, say that the point stays open, why, and what the lawyer needs to do. End each statement with the question\'s exact id as "[ref: <id>]".'] : []),
+      ...(delegated ? ['- delegated_decisions lists the questions the lawyer delegated to the drafter\'s judgment or did not answer. Give them a section of their own. For each decision taken, say in words what was decided, why, the evidence it rests on and the alternatives not taken, that the lawyer delegated it, and that it is for the lawyer to confirm. Where the final documents depart from it, say what they do instead and why. For each with no decision taken, say that the point stays open, why, and what the lawyer needs to do. End each statement with the question\'s exact id as "[ref: <id>]".'] : []),
       "- Use applied_changes.evidence_basis and the actual sources array to describe a change’s evidential basis. application_mode describes only how text was applied; code or already_applied says nothing about source support. Where source passages are provided, assess them before claiming support or a gap. For no-source-passage changes, disclose drafting judgment or a view of the law and the required lawyer confirmation. Do not invent an open-item marker or confirmation requirement that the final body and evidence do not show.",
       "- operation describes the requested amendment, the only one for its paragraph; result_paragraphs reports the paragraph's actual final wording, and an empty result records deletion. Describe the actual result and disclose unresolved explanations honestly.",
       "- Quote sources only word for word as \"exact words\" [source: document name], and cite only authority supported by matter sources or the approved legal research handoff.",

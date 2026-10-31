@@ -217,7 +217,7 @@ export default function Questions({
               {recommendation.basis.map((passage, index) => (
                 <li key={index}>
                   <blockquote>{passage.quote}</blockquote>
-                  <cite>{passage.source_id === "request" ? "Your instructions" : passage.source_id}</cite>
+                  <cite>{sourceLabel(passage.source_id)}</cite>
                   {passage.relevance && <p className="question-basis-relevance">{passage.relevance}</p>}
                 </li>
               ))}
@@ -228,8 +228,14 @@ export default function Questions({
       {unavailable && <p className="question-advice is-unavailable">No recommendation: {unavailable.reason}</p>}
       {reviewing && (
         <div className="question-saved-answer">
-          <p className="question-label">{question.answer_kind === "adopted" ? "Adopted answer" : "Saved answer"}</p>
+          <p className="question-label">{question.answer_kind === "adopted" ? "Adopted answer" : question.answer_kind === "instruction" ? "Settled by your instructions" : "Saved answer"}</p>
           <p className="question-saved-text">{question.answer}</p>
+          {question.decided_by && (
+            <blockquote className="question-settled-by">
+              {question.decided_by.quote}
+              <cite>{sourceLabel(question.decided_by.source_id)}</cite>
+            </blockquote>
+          )}
           {correctionQueued ? <p ref={queuedNotice} role="status" tabIndex={-1}>Correction queued. Your saved answer will update when drafting applies it.</p> : !correcting && (
             <button ref={changeButton} type="button" disabled={busy || !drafts.loaded} onClick={() => {
               if (typeof drafts.answers[draftKey] !== "string") drafts.set(draftKey, question.answer ?? "")
@@ -294,6 +300,12 @@ export default function Questions({
       )}
     </section>
   )
+}
+
+function sourceLabel(sourceID: string) {
+  if (sourceID === "request") return "Your instructions"
+  if (sourceID.startsWith("answer:")) return "Your answer"
+  return sourceID
 }
 
 function Chevron({ points }: { points: string }) {

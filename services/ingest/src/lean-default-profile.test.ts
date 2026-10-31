@@ -97,6 +97,20 @@ test("drafting start without a profile runs lean; a legacy profile is refused; a
     expect(await readFile(path.join(upgraded.dir, ".dochaus", "lean", "request.md"), "utf8")).toBe(`${start.request}\n`)
     expect(await readFile(path.join(upgraded.dir, ".dochaus", "lean", "working-draft.md"), "utf8")).toBe("Dear client,\n\nThe two invoices remain unpaid.\n")
 
+    // Instructions the lawyer kept from the chat at Start follow the request
+    // in request.md under their own heading; text that is not a string is
+    // refused, and blank text adds nothing.
+    const chatted = await createMatter("Chat instructions")
+    expect((await request(`/matters/${chatted.id}/drafting-runs/start`, json({ ...start, chatInstructions: ["No cover memo."] }))).status).toBe(400)
+    expect(existsSync(path.join(chatted.dir, ".dochaus", "lean"))).toBe(false)
+    expect((await request(`/matters/${chatted.id}/drafting-runs/start`, json({ ...start, chatInstructions: " No cover memo.\r\n\r\nUse the buyer's short form. " }))).status).toBe(200)
+    expect(await readFile(path.join(chatted.dir, ".dochaus", "lean", "request.md"), "utf8")).toBe(
+      `${start.request}\n\nInstructions from this chat, given by the lawyer before this run started:\n\nNo cover memo.\n\nUse the buyer's short form.\n`,
+    )
+    const blank = await createMatter("Blank chat instructions")
+    expect((await request(`/matters/${blank.id}/drafting-runs/start`, json({ ...start, chatInstructions: "  \n" }))).status).toBe(200)
+    expect(await readFile(path.join(blank.dir, ".dochaus", "lean", "request.md"), "utf8")).toBe(`${start.request}\n`)
+
     const open = await createMatter("Blocked lean run")
     previousRun(open.dir, "blocked")
     const refused = await request(`/matters/${open.id}/drafting-runs/start`, json(start))

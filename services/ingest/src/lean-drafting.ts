@@ -76,7 +76,7 @@ export function draftingStartProfile(value: unknown): DraftingProfile | undefine
 
 export async function startLeanDraftingRun(
   directory: string,
-  input: { request: string; agent: string; model: LeanModel; workingDraft?: string },
+  input: { request: string; agent: string; model: LeanModel; workingDraft?: string; chatInstructions?: string },
   deps: LeanDeps = defaultDeps(),
 ) {
   if (running.has(directory)) throw new LeanDraftingConflictError("A lean drafting run is already in progress for this matter.", "lean_run_in_progress")
@@ -99,9 +99,17 @@ export async function startLeanDraftingRun(
     running.delete(directory)
     throw error
   })
-  initLeanState(directory, { request: input.request, ownerSessionID, model: input.model, workingDraft: input.workingDraft })
+  initLeanState(directory, { request: withChatInstructions(input.request, input.chatInstructions), ownerSessionID, model: input.model, workingDraft: input.workingDraft })
   launch(directory, deps)
   return { profile: "lean" as const, mode: "started" as const, ownerSessionID, status: leanDraftingStatus(directory) }
+}
+
+/** The request with the instructions the lawyer gave in the chat before
+ * Start, as they kept or edited them, under their own heading. Every stage
+ * reads request.md, so they are read as the lawyer's words. */
+function withChatInstructions(request: string, chatInstructions?: string) {
+  const carried = chatInstructions?.replace(/\r\n/g, "\n").trim()
+  return carried ? `${request.replace(/\r\n/g, "\n").trim()}\n\nInstructions from this chat, given by the lawyer before this run started:\n\n${carried}` : request
 }
 
 /** Continue: queues a request for the coordinator and starts it if it is not

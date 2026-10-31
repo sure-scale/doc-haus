@@ -784,7 +784,7 @@ function settle(item: OpenItem, context: SettleContext): OpenItem {
       const why = question.answer_class === "declined" ? "not answered; this needs your answer" : "you asked us to decide, but this needs your answer"
       return named || context.notes.includes(question.id) ? disclosed(`${why}; named in the drafting notes`) : open(`${why}; the drafting notes do not name it`)
     }
-    if (question?.status === "answered") return resolved(question.answer_kind === "adopted" ? "delegated by the lawyer; the recommended option was adopted" : "answered by the lawyer")
+    if (question?.status === "answered") return resolved(question.answer_kind === "adopted" ? "delegated by the lawyer; the recommended option was adopted" : question.answer_kind === "instruction" ? "settled by the lawyer's instruction" : "answered by the lawyer")
     // A question asked again by a later document points into that document; the
     // item's own paragraph is in the document it was found in.
     const pid = item.ref.pid ?? ((question?.document ?? FIRST_DOCUMENT) === document ? question?.pid : undefined)

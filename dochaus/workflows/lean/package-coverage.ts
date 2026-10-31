@@ -3,9 +3,10 @@ import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
 import { readActRecord, signerFlags } from "./act-record"
 import { FIRST_DOCUMENT, nameKey, namedIn, readLeanPlan, type ActingFor, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
+import { approvedResearch, researchHandoff } from "./research"
 import { EXCERPT, REQUEST_SOURCE, excerpt, lawyerWords, matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
 import { answeredScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows, type ScopeParties } from "./package-scope"
-import { answeredQuestionsText, hashStageInputs, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question } from "./state"
+import { answeredQuestionsText, hashStageInputs, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type QuestionOption } from "./state"
 import { sourceText } from "./template-structure"
 
 // Package coverage: an instructed act needs an instrument executed by the
@@ -659,12 +660,19 @@ function actIssues(act: CoverageAct, documents: PlannedDocument[], acts: Coverag
  * new document: it asks only which planned document carries each act, or
  * whether it is outside this request, since a document is added only by
  * stopping this draft and starting a new one, which plans the package from the
- * start: the run refuses a new drafting request while it is open. */
+ * start: the run refuses a new drafting request while it is open. When the
+ * request names the file of exactly one planned document, the question offers
+ * the choice of where a document carrying the acts goes (scopeFileOptions):
+ * first in that file, as a separate instrument, else in a file of its own, or
+ * outside this request; the lawyer may still answer in their own words. */
 export function coverageScopeQuestion(acts: CoverageAct[], documents: PlannedDocument[], answered: Question[] = [], options: { saved?: boolean } = {}): Question | undefined {
   const { ask: open, id } = actScopeAnswers(acts.filter(act => !act.excluded_by && actIssues(act, documents, acts).length), answered, acts)
   if (!open.length) return undefined
   const several = open.length > 1
+  const named = documents.filter(document => document.file)
+  const choices = !options.saved && named.length === 1 ? scopeFileOptions(named[0]!.file!) : undefined
   return {
+    ...(choices ? { options: choices } : {}),
     id,
     stage: "draft",
     question: [`The document plan leaves ${several ? "these instructed acts" : "this instructed act"} without a document executed by the parties who must take ${several ? "them" : "it"}:`,
@@ -678,6 +686,37 @@ export function coverageScopeQuestion(acts: CoverageAct[], documents: PlannedDoc
     status: "open",
     kind: "scope",
   }
+}
+
+/** Where a document carrying the plan step's uncovered acts goes when the
+ * request names one file: in that file, as a separate instrument the file's
+ * one body holds, under its own heading and executed by those parties
+ * (foldRequestedFiles); in a file of its own (SEPARATE_FILE); or nowhere. */
+function scopeFileOptions(file: string): QuestionOption[] {
+  return [
+    `In "${file}", the file the request names: as a separate instrument with its own heading and signature block, executed by the parties who must take it.`,
+    `${SEPARATE_FILE}: a separate document executed by the parties who must take it.`,
+    "Outside this request.",
+  ].map((text, index) => ({ id: `o${index + 1}`, text }))
+}
+
+const SEPARATE_FILE = "In a file of its own"
+
+/** Whether the lawyer picked, or adopted, a file of its own for an instrument
+ * on one of the plan step's package-scope questions (scopeFileOptions). */
+export function separateFileChosen(questions: Question[]) {
+  return questions.some(question => answeredScopeQuestion(question) && question.option_id !== undefined &&
+    questionOptions(question).find(option => option.id === question.option_id)?.text.startsWith(SEPARATE_FILE))
+}
+
+/** The record `coverage` of an outline whose documents foldRequestedFiles held
+ * in fewer, keyed on the plan saved from them (`documents`): each act moves
+ * with its document to the one now holding it (`at`, by outline index), and the
+ * issues are the saved plan's. An unchecked record keeps its check's issues. */
+export function foldedCoverage(directory: string, coverage: { acts?: CoverageAct[]; issues: string[] }, at: number[], documents: PlannedDocument[]) {
+  if (!coverage.acts) return coverage
+  const acts = coverage.acts.map(act => act.document ? { ...act, document: `d${at[Number(act.document.slice(1)) - 1]! + 1}` as DocID } : act)
+  return { acts, issues: planCoverageIssues(acts, documents, directory) }
 }
 
 /** The open items for the plan coverage the saved plan leaves open, derived
@@ -872,7 +911,7 @@ function plannedIn(act: CoverageAct, documents: PlannedDocument[]) {
 function coverageView(document: PlannedDocument) {
   return {
     id: document.id, title: document.title, purpose: document.purpose, executed_by: document.executed_by ?? null,
-    parts: document.parts.map(part => ({ heading: part.heading, scope: part.scope })), ...(document.left_out?.length ? { left_out: document.left_out } : {}),
+    parts: document.parts.map(part => ({ heading: part.heading, scope: part.scope, ...(part.instrument ? { instrument: part.instrument } : {}) })), ...(document.left_out?.length ? { left_out: document.left_out } : {}),
   }
 }
 

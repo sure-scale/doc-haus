@@ -74,8 +74,11 @@ export type LeanQuestion = {
   context: string
   status: "open" | "answered"
   answer?: string
-  answer_kind?: "option" | "adopted"
+  /** "instruction": settled by the lawyer's instruction in decided_by, never asked; the lawyer may change it. */
+  answer_kind?: "option" | "adopted" | "instruction"
   option_id?: string
+  /** The instruction that settled the question, and the words it rests on. */
+  decided_by?: { text: string; source_id: string; quote: string }
   /** Related questions share a topic; each keeps its own decision and answer. */
   group?: string
   kind?: LeanQuestionKind

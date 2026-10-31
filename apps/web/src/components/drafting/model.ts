@@ -6,6 +6,7 @@ import { delegatedOption } from "../../../../../dochaus/lib/question-delegation"
 // kind. Everything is derived from the run's status; nothing names a document.
 
 const STEP_NAMES: Record<string, string> = {
+  instructions: "List your instructions",
   discrepancy: "Assess source discrepancies",
   intake: "Resolve material questions",
   research: "Legal research",
@@ -29,7 +30,7 @@ const STEP_NAMES: Record<string, string> = {
   gate: "Final check",
 }
 
-const PREPARATION_STEPS = ["discrepancy", "intake", "research", "research-review", "acts", "spine"]
+const PREPARATION_STEPS = ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine"]
 
 /** A run-level step ("finalize", "gate") or a document step ("d2.review"). */
 export function stepName(step: string) {

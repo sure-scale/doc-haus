@@ -10,7 +10,7 @@ import { withSourceSnapshot } from "./quotes"
 import { drainLeanRequests, enqueueLeanRequest, type LeanRequest, type StoredLeanRequest } from "./requests"
 import { stageInputSha } from "./runner"
 import { stageInputs } from "./stages"
-import { answeredQuestionsText, answerQuestion, delegable, hashStageInputs, LeanQuestionError, readLeanJson, readQuestions, writeLeanText, writeQuestions, type Question, type QuestionAdvice } from "./state"
+import { ADOPTED_ANSWER, answeredQuestionsText, answerQuestion, delegable, hashStageInputs, LeanQuestionError, readLeanJson, readQuestions, writeLeanText, writeQuestions, type Question, type QuestionAdvice } from "./state"
 import { cleanupMatters, matter, SUPPORT } from "./test-support"
 
 // "Decide for me" adopts the advisor's recommendation as the lawyer's answer.
@@ -163,7 +163,7 @@ test("the same words typed or picked give the same answers text and keys; adopte
   expect(keys({ option_id: "o2" })).toEqual(typed)
   // An adopted recommendation reads as delegated in every step's answers, so each key moves.
   const adopted = keys({ adopt: true })
-  expect(adopted.answers).toContain(`- [q-cap] Q: ${OPEN.question}\n  A (delegated by the lawyer; the recommended option was adopted): ${RECOMMENDED}`)
+  expect(adopted.answers).toContain(`- [q-cap] Q: ${OPEN.question}\n  A (${ADOPTED_ANSWER}): ${RECOMMENDED}`)
   for (const step of Object.keys(typed)) expect([step, adopted[step] === typed[step]]).toEqual([step, false])
   // Other words are another answer.
   expect(keys({ option_id: "o1" }).intake).not.toBe(typed.intake)
@@ -179,18 +179,21 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // re-pinned when reviews were saved as typed findings (dN/<stage>.json) and the
 // change plan began keying the findings earlier documents forward to it. The
 // same pins hold for typed or picked words; an adopted recommendation reads as
-// delegated, which moves every key that reads the answers and no other.
+// delegated, which moves every key that reads the answers and no other. The
+// instructions step was added, and intake and spine were re-pinned when they
+// began keying the instruction list (instructions.md).
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
-const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", "  A (delegated by the lawyer; the recommended option was adopted): Singapore law.")
+const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", `  A (${ADOPTED_ANSWER}): Singapore law.`)
 // A draft keys its outline contract and plan entry, never answers.
 const UNANSWERED_STEPS = ["d1.draft"]
 const INPUTS: Record<string, string> = {
+  "instructions": "7db0182116d00b86390816e69312620dff6c36a8920d47b9190fb725b72906b6",
   "discrepancy": "8dac7eefaf1e988e35ffbe6c7f765a951943e9b1299546a9b94dc10e99950a72",
-  "intake": "1e491eea042fb2cb31d8340459e58993849d22ce04ec26793d0e495a840061c6",
+  "intake": "097361ef1ee9a3958bc6d602d33eac98ff61d441ea7aa050c405152bf241c65d",
   "research": "64a0d22c3dd780907955b2e56b3122b94ea72101092d694f899a15e2af0cb13b",
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
   "acts": "e8961f845ed4a354ccae854a6e75d5670280aca539860a18c217d201f97ab720",
-  "spine": "c038d3823819fc2e8ef176dc1cb855fd7f7a87e1fe077efb1c2aee41f922e076",
+  "spine": "92e11cbba45c603813204eeb77a7897a5f08bdd5495f2f54476da9e1e7db4674",
   "d1.draft": "68f34f0d87312276c4f5d676b490753a5050865d40c0448aaae368a7d6252376",
   "d1.review": "e80f5bbe084c8ef90d2864358d2caafa09139822584fb0f12cb14d0976e76416",
   "d1.review-independent": "9f1fe22f3e0db01ef5fffe96a09ddf917b5e371a89c58988eb875bcfbbae4aa4",
@@ -199,7 +202,7 @@ const INPUTS: Record<string, string> = {
   "d1.change-plan": "64bc4586e950cb2aaee6d57179adf09500aee75e27b358e054ae5076f770d7d8",
   "d1.change-prepare": "0e65f05f5cdbac92e874b5150ac1dd21f355a34be5b6a1b918b1be46f580591f",
   "d1.changes": "6c1572e8f947889bf8dcb84f6bb75ba8380fbade2de920ba3a2dcb28c2cf3449",
-  "d1.change-review": "0c98552192e0c314b273e3508140684f7d71a97934b771f9e644e5a8f3a0eddc",
+  "d1.change-review": "bad88376987d831cb3260d6afa264eb7195f1390460502fa489f277f94727cc4",
   "d1.apply": "3fc66df6877ed50af811c9f7a5bbdf1ccb1c269dc8b176cf392941cd2da83149",
   "finalize": "fcb7ded51c54fad4bb3fd616ba57fbdfe8aa15a2dc1becf5ec5df4e69b537793",
   "checklist-check": "725f51d8b50889f0f431847a3299d55942561e8fabc2bece75410442fd0fa5a7",
@@ -279,7 +282,7 @@ test("intake told a question is answered is told so however it was answered", ()
   for (const late of ["answered", "adopted"] as const) {
     const directory = spineMatter(late)
     const reply = JSON.stringify({ questions: [{ question: QUESTION, kind: "judgment", context: "Still silent." }] })
-    expect(intakeQuestions(directory, reply)!.issues.join(" ")).toContain("already has a lawyer's answer")
+    expect(intakeQuestions(directory, reply)!.issues.join(" ")).toContain("already has an answer")
   }
 })
 

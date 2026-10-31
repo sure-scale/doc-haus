@@ -23,13 +23,20 @@ import { REVIEW_STAGES, readLeanJson, readLeanText, writeLeanText, type ReviewSt
 export const DOC_STAGES = ["draft", ...REVIEW_STAGES, "review-playbook", "change-plan", "change-prepare", "changes", "change-review", "apply"] as const
 export type DocStage = (typeof DOC_STAGES)[number]
 export type DocID = `d${number}`
-export type StepID = `${DocID}.${DocStage}` | "discrepancy" | "intake" | "research" | "research-review" | "acts" | "spine" | "finalize" | "checklist-check" | "package-review" | "gate"
+export type StepID = `${DocID}.${DocStage}` | "instructions" | "discrepancy" | "intake" | "research" | "research-review" | "acts" | "spine" | "finalize" | "checklist-check" | "package-review" | "gate"
 
 /** heading identifies the drafting part; absent display_heading preserves it
  * in publication (a plan saved before labels were planned unheaded, or one
  * whose outline shows its headings), while an empty display_heading makes the
- * part unheaded. */
-export type PlannedPart = { heading: string; scope: string; display_heading?: string }
+ * part unheaded. `instrument` marks the first part of a separate instrument
+ * the document's file also holds (foldRequestedFiles): it and the parts after
+ * it, up to the next such part, are that instrument's, printed under its own
+ * title on a new page. */
+export type PlannedPart = { heading: string; scope: string; display_heading?: string; instrument?: PlannedInstrument }
+/** A separate instrument held in another document's file: its own title, what
+ * it is for, the parties who execute it and its form, as its outline entry
+ * gave them. */
+export type PlannedInstrument = { title: string; purpose?: string; executed_by?: string[]; form?: DocumentForm }
 /** A template part the outline leaves out on purpose, with its reason. */
 export type LeftOutPart = { part: string; reason: string }
 /** `template` names the matter document the document is drafted from, when the
@@ -41,7 +48,8 @@ export type LeftOutPart = { part: string; reason: string }
  * `combined`, to one file holding the requested memo and then the body.
  * `executed_by` names the parties who execute the document, from an
  * "Executed by:" line; an empty list says it takes no legal act, and an absent
- * one that the outline did not say. `form` is the kind of document it is, from
+ * one that the outline did not say; a document holding separate instruments is
+ * executed by the parties of each of them. `form` is the kind of document it is, from
  * a "Form:" line; it sets the document's page furniture, and a letter's parts
  * are planned unheaded unless the outline shows them. `furniture` is what the
  * request asks of its page furniture beyond the firm's settings, from "Legend:"
@@ -71,7 +79,7 @@ type Checked<T> = { issues: string[]; value?: T }
  * document's steps are known. */
 export function leanSteps(directory: string): StepID[] {
   const ids = readLeanPlan(directory)?.documents.map(document => document.id) ?? [FIRST_DOCUMENT]
-  return ["discrepancy", "intake", "research", "research-review", "acts", "spine", ...ids.flatMap(id => DOC_STAGES.filter(stage => stage !== "review-playbook" || reviewStages(directory, id).includes(stage)).map((stage): StepID => `${id}.${stage}`)), "finalize", "checklist-check", "package-review", "gate"]
+  return ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", ...ids.flatMap(id => DOC_STAGES.filter(stage => stage !== "review-playbook" || reviewStages(directory, id).includes(stage)).map((stage): StepID => `${id}.${stage}`)), "finalize", "checklist-check", "package-review", "gate"]
 }
 
 /** Planning selects guidance per body; legacy and unassigned bodies retain the ordinary reviews. */
@@ -88,7 +96,7 @@ export function stepDocument(step: StepID): DocID | null {
 }
 
 export function isStepID(value: string): value is StepID {
-  return ["discrepancy", "intake", "research", "research-review", "acts", "spine", "finalize", "checklist-check", "package-review", "gate"].includes(value) || new RegExp(`^d[1-9]\\d*\\.(${DOC_STAGES.join("|")})$`).test(value)
+  return ["instructions", "discrepancy", "intake", "research", "research-review", "acts", "spine", "finalize", "checklist-check", "package-review", "gate"].includes(value) || new RegExp(`^d[1-9]\\d*\\.(${DOC_STAGES.join("|")})$`).test(value)
 }
 
 export function readLeanPlan(directory: string): LeanPlan | undefined {
@@ -610,13 +618,29 @@ function isPlannedDocument(value: unknown): value is PlannedDocument {
   if (typeof value !== "object" || value === null) return false
   const row = value as PlannedDocument
   return typeof row.id === "string" && /^d[1-9]\d*$/.test(row.id) && typeof row.title === "string" && typeof row.purpose === "string" &&
-    Array.isArray(row.parts) && row.parts.length > 0 && row.parts.every(part => typeof part?.heading === "string" && typeof part.scope === "string" && (part.display_heading === undefined || typeof part.display_heading === "string")) &&
+    Array.isArray(row.parts) && row.parts.length > 0 && row.parts.every(part => typeof part?.heading === "string" && typeof part.scope === "string" && (part.display_heading === undefined || typeof part.display_heading === "string") &&
+      (part.instrument === undefined || isPlannedInstrument(part.instrument))) &&
     (row.playbook_review === undefined || isPlaybookReview(row.playbook_review)) &&
     (row.mode === undefined || ["new", "revise"].includes(row.mode)) && (row.deliverable === undefined || ["body", "redline", "combined"].includes(row.deliverable)) &&
     (row.comparison === undefined || typeof row.comparison === "string") && (row.template === undefined || typeof row.template === "string") && (row.file === undefined || typeof row.file === "string") &&
     (row.executed_by === undefined || (Array.isArray(row.executed_by) && row.executed_by.every(party => typeof party === "string"))) &&
     (row.form === undefined || DOCUMENT_FORMS.includes(row.form)) && (row.furniture === undefined || isPlannedFurniture(row.furniture)) &&
     (row.left_out === undefined || (Array.isArray(row.left_out) && row.left_out.every(item => typeof item?.part === "string" && typeof item.reason === "string")))
+}
+
+function isPlannedInstrument(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const row = value as PlannedInstrument
+  return typeof row.title === "string" && !!row.title.trim() && (row.purpose === undefined || typeof row.purpose === "string") &&
+    (row.executed_by === undefined || (Array.isArray(row.executed_by) && row.executed_by.every(party => typeof party === "string"))) &&
+    (row.form === undefined || DOCUMENT_FORMS.includes(row.form))
+}
+
+/** The separate instrument part `index` is in, when the plan folded one into
+ * the document (PlannedPart.instrument): the nearest marked part at or before
+ * it. Undefined for the document's own parts. */
+export function partInstrument(parts: PlannedPart[], index: number): PlannedInstrument | undefined {
+  for (let at = index; at >= 0; at--) if (parts[at]?.instrument) return parts[at]!.instrument
 }
 
 function isPlannedFurniture(value: unknown) {

@@ -171,7 +171,8 @@ export function upgradeInput(turns: Turn[], index: number) {
   // A quick answer that declined the request carries no draft. The form line
   // is not draft text: the full run plans its own form.
   const text = quickDraftAnswer(quick.text).text
-  return { request, ...(DECLINED.test(text) ? {} : { workingDraft: text }) }
+  // `from` is where the exchange starts: earlier turns are not the request.
+  return { request, from: start, ...(DECLINED.test(text) ? {} : { workingDraft: text }) }
 }
 
 // The first line quick-draft.md gives when a request is outside its scope.

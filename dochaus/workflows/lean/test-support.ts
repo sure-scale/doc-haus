@@ -75,6 +75,8 @@ export function scriptedModel(replies: Record<string, Reply>) {
         },
         [AGENT["change-prepare"]]: () => JSON.stringify({ amendments: [], questions: [] }),
         [AGENT["change-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [] }),
+        // Ordinary fixtures list no instruction, so no question is settled.
+        [AGENT.instructions]: () => JSON.stringify({ items: [], documents: [] }),
         [AGENT.discrepancy]: () => JSON.stringify({ entries: [], limitations: [] }),
         [AGENT.spine]: () => JSON.stringify({ entries: [], limitations: [] }),
         [AGENT["review-independent"]]: () => NO_FINDINGS,
