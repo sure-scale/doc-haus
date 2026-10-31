@@ -274,9 +274,11 @@ test("a spreadsheet batch lists its documents once, under one folder with their 
   // Each member once, inside the folder's group, in spreadsheet row order.
   const group = html.match(/<div id="doc-batch-b1" role="group" aria-label="Documents in NDA – 2026-10-31">([\s\S]*?)<\/ul><\/div>/)?.[1] ?? ""
   const names = [...group.matchAll(/<span class="drafted-name-text">([^<]*)<\/span>/g)].map(([, name]) => name)
-  expect(names).toEqual(["NDA – Acme Ltd – row 002.docx", "NDA – row 003.docx", "NDA – Birch LLP – row 004.docx"])
+  // Known by the value that tells it apart; a row without one keeps its file name.
+  expect(names).toEqual(["Acme Ltd", "NDA – row 003.docx", "Birch LLP"])
+  expect(group).toContain('title="Open NDA – Acme Ltd – row 002.docx"')
   for (const name of names) expect(text.split(name!).length - 1).toBe(1)
-  expect(group).toContain('title="From spreadsheet row 3 of Clients.xlsx">From spreadsheet row 3</span>')
+  expect(group).toContain('title="From spreadsheet row 3 of Clients.xlsx">Row 3</span>')
   // A generated document outside any batch still lists on its own.
   expect(group).not.toContain("Lease.docx")
   expect(text).toContain("Lease.docx")

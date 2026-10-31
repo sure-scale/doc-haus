@@ -430,8 +430,9 @@ export default function DocumentUpload({
                 onView={onView} onCompare={onCompare} pending={draftedPending}
                 origin={(output) => {
                   const from = byName.get(output.name)?.batch
-                  return from && { text: `From spreadsheet row ${from.row}`, title: `From spreadsheet row ${from.row} of ${from.source}` }
+                  return from && { text: `Row ${from.row}`, title: `From spreadsheet row ${from.row} of ${from.source}` }
                 }}
+                shownName={(output) => batchShownName(output.name, batch.folder)}
                 renderLabel={(output) => {
                   const document = byName.get(output.name)!
                   return <>
@@ -756,6 +757,16 @@ function batchFolders(documents: Document[]): BatchFolder[] {
   }
   for (const folder of folders.values()) folder.documents.sort((a, b) => a.batch!.row - b.batch!.row || a.name.localeCompare(b.name))
   return [...folders.values()]
+}
+
+// Inside its folder a batch document is known by what tells it apart: the
+// template stem the folder already names and the row suffix the row line
+// shows are dropped ("NDA – Acme Ltd – row 008.docx" → "Acme Ltd"). The full
+// file name stays on hover.
+function batchShownName(name: string, folder: string) {
+  const stem = folder.replace(/ – \d{4}-\d{2}-\d{2}$/, "")
+  const shown = name.replace(/\.docx$/i, "").replace(/ – row \d+(?: \(\d+\))?$/, "")
+  return shown.startsWith(`${stem} – `) ? shown.slice(stem.length + 3) : undefined
 }
 
 // A filled document whose spreadsheet row left fields empty: one small tag,

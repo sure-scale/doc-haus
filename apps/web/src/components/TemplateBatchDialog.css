@@ -45,8 +45,8 @@
 .template-batch-step { display: inline-grid; place-items: center; width: 40px; height: 40px; min-height: 40px; padding: 0; border-color: var(--border); border-radius: 50%; background: var(--panel); color: var(--text-secondary); }
 .template-batch-step:active:not(:disabled) { border-radius: 50%; }
 .template-batch-position { min-width: 6ch; text-align: center; font: var(--md-sys-typescale-title-medium); font-variant-numeric: tabular-nums; color: var(--text); }
-.template-batch-position:focus-visible { outline: 2px solid var(--md-sys-state-focus); outline-offset: 2px; border-radius: var(--radius-sm); }
-.template-batch-identity { margin: 0; font: var(--md-sys-typescale-title-large); color: var(--text); }
+.template-batch-identity:focus-visible { outline: 2px solid var(--md-sys-state-focus); outline-offset: 2px; border-radius: var(--radius-sm); }
+.template-batch-identity { display: inline-block; max-width: 100%; overflow-wrap: anywhere; margin: 0; font: var(--md-sys-typescale-title-large); color: var(--text); }
 .template-batch-skip { display: flex; align-items: center; gap: var(--space-1); margin-left: calc(-1 * var(--space-1)); }
 .template-batch-skip label { cursor: pointer; font-size: .9rem; }
 .template-batch-status { margin: 0; color: var(--text-secondary); font-size: .85rem; line-height: 1.6; }
@@ -61,8 +61,8 @@
 .template-batch-footer > .primary { margin-left: auto; }
 .template-batch-footer > .template-batch-error { flex: 1 1 100%; }
 .template-batch-menu { position: relative; display: inline-flex; }
-.template-batch-menu-list { top: auto; right: auto; bottom: calc(100% + 6px); left: 0; max-height: min(320px, 50vh); overflow-y: auto; }
-.template-batch-menu-list[hidden] { display: none; }
+.template-batch-menu .template-batch-menu-list { top: auto; right: auto; bottom: calc(100% + 6px); left: 0; max-height: min(320px, 50vh); overflow-y: auto; }
+.template-batch-menu .template-batch-menu-list[hidden] { display: none; }
 
 .template-batch-done { display: grid; justify-items: start; gap: var(--space-3); }
 .template-batch-done-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); }

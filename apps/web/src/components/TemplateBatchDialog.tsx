@@ -362,14 +362,15 @@ function PreviewRow({ position, total, sheetRow, title, missing, skipped, onStep
       <button type="button" className="template-batch-step" aria-label="Previous row" disabled={position === 0} onClick={() => onStep(-1)}>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
       </button>
-      <Tooltip label={`Spreadsheet row ${sheetRow}`}>
-        <span className="template-batch-position" tabIndex={0} aria-live="polite">{position + 1} of {total}</span>
-      </Tooltip>
+      <span className="template-batch-position" aria-live="polite">{position + 1} of {total}</span>
       <button type="button" className="template-batch-step" aria-label="Next row" disabled={position >= total - 1} onClick={() => onStep(1)}>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
       </button>
     </div>
-    <p className="template-batch-identity">{title}</p>
+    {/* The row number sits on the name, clear of the stepper's buttons. */}
+    <Tooltip label={`Spreadsheet row ${sheetRow}`}>
+      <span className="template-batch-identity" tabIndex={0}>{title}</span>
+    </Tooltip>
     <div className="template-batch-skip">
       <button id={id} type="button" role="switch" aria-checked={skipped} className={`switch${skipped ? " on" : ""}`} onClick={onSkip} />
       <label htmlFor={id}>Skip this row</label>

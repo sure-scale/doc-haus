@@ -10,7 +10,8 @@ import { OUTPUT_ROLE, type DraftedGroup, type DraftedOutput } from "./model"
 // run produced while the lawyer watched, for a one-time highlight. A combined
 // document's one file leads its group, with the draft it holds beneath it; a
 // combined file from an earlier run says so on its row. `origin` replaces a
-// row's "Created by Doc.Haus" line where it says more (a spreadsheet row).
+// row's "Created by Doc.Haus" line where it says more (a spreadsheet row), and
+// `shownName` a long file name where its folder already says the rest.
 export default function DraftedList({
   matterId,
   groups,
@@ -20,6 +21,7 @@ export default function DraftedList({
   fresh,
   renderLabel,
   origin,
+  shownName,
 }: {
   matterId: string
   groups: DraftedGroup[]
@@ -31,6 +33,7 @@ export default function DraftedList({
   fresh?: boolean
   renderLabel?: (output: DraftedOutput) => ReactNode
   origin?: (output: DraftedOutput) => { text: string; title?: string } | undefined
+  shownName?: (output: DraftedOutput) => string | undefined
 }) {
   return (
     <ul className={`drafted-list${fresh ? " is-fresh" : ""}`}>
@@ -41,13 +44,13 @@ export default function DraftedList({
             {group.combined ? (
               <CombinedRow matterId={matterId} name={group.combined} />
             ) : (
-              <OutputRow matterId={matterId} output={group.main} onView={onView} onCompare={onCompare} pending={pending?.get(group.main.name)} label={renderLabel?.(group.main)} origin={origin?.(group.main)} main />
+              <OutputRow matterId={matterId} output={group.main} onView={onView} onCompare={onCompare} pending={pending?.get(group.main.name)} label={renderLabel?.(group.main)} origin={origin?.(group.main)} shown={shownName?.(group.main)} main />
             )}
             {beneath.length > 0 && (
               <ul className="drafted-extras">
                 {beneath.map((output) => (
                   <li key={output.name}>
-                    <OutputRow matterId={matterId} output={output} onView={onView} onCompare={onCompare} pending={pending?.get(output.name)} label={renderLabel?.(output)} origin={origin?.(output)} />
+                    <OutputRow matterId={matterId} output={output} onView={onView} onCompare={onCompare} pending={pending?.get(output.name)} label={renderLabel?.(output)} origin={origin?.(output)} shown={shownName?.(output)} />
                   </li>
                 ))}
               </ul>
@@ -98,6 +101,7 @@ function OutputRow({
   main,
   label,
   origin,
+  shown,
 }: {
   matterId: string
   output: DraftedOutput
@@ -107,6 +111,7 @@ function OutputRow({
   main?: boolean
   label?: ReactNode
   origin?: { text: string; title?: string }
+  shown?: string
 }) {
   return (
     <div className={`drafted-row${main ? " is-main" : ""}`}>
@@ -114,11 +119,11 @@ function OutputRow({
       <div className="drafted-file-details">
         {onView ? (
           <button type="button" className="linklike drafted-name" onClick={() => onView(output.name)} title={`Open ${output.name}`}>
-            <span className="drafted-name-text">{output.name}</span>
+            <span className="drafted-name-text">{shown || output.name}</span>
           </button>
         ) : (
           <span className="drafted-name" title={output.name}>
-            <span className="drafted-name-text">{output.name}</span>
+            <span className="drafted-name-text">{shown || output.name}</span>
           </span>
         )}
         <div className="drafted-file-meta">
