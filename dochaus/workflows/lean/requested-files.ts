@@ -28,7 +28,10 @@ import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, short
 // withRequestedNames gives grounded names to the plan. Several planned
 // documents the lawyer's words put in one file are held as one document, the
 // others its separate instruments (foldRequestedFiles), before any of this
-// reads the plan. A shape the run cannot build (several documents in one file
+// reads the plan. When the lawyer's words ask for one file only, each planned
+// document it leaves out is asked about in a focused job of its own
+// (unheldDocumentPrompt), and those the words do not ask for go in that file
+// (withUnaskedDocuments). A shape the run cannot build (several documents in one file
 // that cannot be held so, or the memo after its document) is no revision issue; like any
 // file the final plan does not deliver as asked, it reaches the lawyer as an
 // open item derived from the record (requestedFilesItems), never stored. A job
@@ -77,16 +80,23 @@ export function requestedFilesWords(directory: string) {
   return shortHash(JSON.stringify([readLeanText(directory, "request.md") ?? "", readLeanText(directory, "updated-notes.md")?.trim() ?? "", answeredQuestionsText(directory)]))
 }
 
-/** The job's one question, over the lawyer's words and the planned documents and memo. */
-export function requestedFilesPrompt(directory: string, documents: PlannedDocument[], memo: string | undefined) {
+/** The lawyer's words the files jobs read: the request, the later instructions and the answers. */
+function wordsBlocks(directory: string) {
   const updates = readLeanText(directory, "updated-notes.md")?.trim()
   const answers = answeredQuestionsText(directory)
-  const contents = memo ? "the planned documents and the memo" : "the planned documents"
   return [
-    `This is a lean drafting run. Read the lawyer's words for one question: which files the lawyer asks to receive, and which of ${contents} go in each.`,
     tagged("request", readLeanText(directory, "request.md") ?? ""),
     updates ? tagged("user_updates", `Later instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n${updates}`) : "",
     answers ? tagged("answers", `The lawyer's answers; they remain controlling:\n${answers}`) : "",
+  ]
+}
+
+/** The job's one question, over the lawyer's words and the planned documents and memo. */
+export function requestedFilesPrompt(directory: string, documents: PlannedDocument[], memo: string | undefined) {
+  const contents = memo ? "the planned documents and the memo" : "the planned documents"
+  return [
+    `This is a lean drafting run. Read the lawyer's words for one question: which files the lawyer asks to receive, and which of ${contents} go in each.`,
+    ...wordsBlocks(directory),
     tagged("planned_documents", "The documents the run drafts, by id. Their titles are the plan's own choices, not the lawyer's words.\n" +
       JSON.stringify(documents.map(document => ({ id: document.id, title: document.title })), null, 2)),
     memo ? tagged("planned_memo", `The run also writes the memo the lawyer asks for, planned as "${memo}". In "holds", write it as "memo".`) : "",
@@ -292,6 +302,56 @@ export function requestedFilesRevision(directory: string, issues: FilesIssue[]) 
   const revisable = issues.filter(row => !row.ask)
   if (!revisable.length || answeredFiles(directory).any) return
   return { feedback: [FILES_REVISION_SCOPE, ...revisable.map(row => row.issue)], documents: new Set(revisable.flatMap(row => row.documents)) }
+}
+
+/** The planned documents no file holds when the lawyer's words ask for one
+ * file only, the file they might go in (unheldDocumentPrompt); none otherwise. */
+export function unheldDocuments(requested: RequestedFiles, documents: PlannedDocument[]) {
+  const [only, ...others] = requested.files
+  if (!requested.stated || !only || others.length) return []
+  return documents.filter(document => !only.holds.includes(document.id))
+}
+
+/** One focused question per planned document the one requested file leaves
+ * out: whether the lawyer's words ask for that document themselves. A document
+ * the plan adds to carry the request out is not asked for, so it goes in the
+ * one file the lawyer asks to receive (withUnaskedDocuments). */
+export function unheldDocumentPrompt(directory: string, document: PlannedDocument, file: RequestedFile) {
+  return [
+    "This is a lean drafting run. Read the lawyer's words for one question: whether they ask for one planned document themselves.",
+    ...wordsBlocks(directory),
+    tagged("planned_document", `The plan drafts this document. Its title and purpose are the plan's own choices, not the lawyer's words.\n${JSON.stringify({ title: document.title, purpose: document.purpose })}`),
+    tagged("requested_file", `The lawyer asks for one file${file.name ? `, ${file.name}` : ""}, in these words: "${file.quote}"`),
+    tagged("output_contract", [
+      "- Answer from the request, the lawyer's updates and answers only.",
+      "- The plan may add a document the lawyer's words do not ask for, to carry out what they ask. Such a document is not asked for, though it carries out an act or term the words ask for.",
+      '- When the words ask for this document themselves, by its name or its kind, reply {"asked":true,"quote":"..."}, with the lawyer\'s exact words that ask for it, copied verbatim. When they do not, reply {"asked":false}.',
+      "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply.",
+    ].join("\n")),
+  ].filter(Boolean).join("\n\n")
+}
+
+const ASKED_SHAPE = 'Reply with the JSON object only: {"asked":true,"quote":"..."} or {"asked":false}.'
+
+/** Reads the reply to unheldDocumentPrompt: true with a quote that is the
+ * lawyer's words (instructionFound), or false. Every other reply is retried. */
+export function parseUnheldDocument(reply: string, directory: string): Checked<boolean> {
+  if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
+  let value: unknown
+  try { value = JSON.parse(reply.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "")) } catch {}
+  if (!record(value) || typeof value.asked !== "boolean") return { issues: [ASKED_SHAPE] }
+  if (!value.asked) return { issues: [], value: false }
+  if (typeof value.quote !== "string" || !value.quote.trim()) return { issues: [`"asked" is true, but "quote" is missing. ${ASKED_SHAPE}`] }
+  if (!instructionFound(directory, value.quote)) return { issues: [quoteMissIssue(directory, "quote", { quote: value.quote.trim(), source_id: REQUEST_SOURCE }, "json")] }
+  return { issues: [], value: true }
+}
+
+/** `requested` with each document in `unasked` (by id) added to the lawyer's
+ * one file: the lawyer asks for that file only, and not for the document
+ * apart. */
+export function withUnaskedDocuments(requested: RequestedFiles, unasked: string[]): RequestedFiles {
+  const [only] = requested.files
+  return only && unasked.length ? { ...requested, files: [{ ...only, holds: [...only.holds, ...unasked] }] } : requested
 }
 
 /** The plan's file names with each grounded name the record gives: a file of

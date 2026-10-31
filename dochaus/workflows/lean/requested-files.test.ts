@@ -13,7 +13,7 @@ import { tagged } from "./prompts"
 import { REQUEST_SOURCE, openItem, quoteMissIssue } from "./quotes"
 import {
   FILES_REVISION_SCOPE, LEAN_REQUESTED_FILES_SCHEMA, parseRequestedFiles, readRequestedFiles, requestedFilesIssues, requestedFilesItems, requestedFilesPrompt, requestedFilesQuestion,
-  requestedFilesRevision, withRequestedNames, writeRequestedFiles, type LeanRequestedFiles, type RequestedFile, type RequestedFiles,
+  requestedFilesRevision, parseUnheldDocument, unheldDocuments, withRequestedNames, withUnaskedDocuments, writeRequestedFiles, type LeanRequestedFiles, type RequestedFile, type RequestedFiles,
 } from "./requested-files"
 import { writeLeanText, writeQuestions, type Question } from "./state"
 import { cleanupMatters, matter } from "./test-support"
@@ -396,6 +396,26 @@ describe("requested files issues", () => {
     const { issues } = requestedFilesIssues([planned("d1", "Share transfer form", { deliverable: "combined" }), planned("d2", "Board minute")], MEMO, ASKED)
     expect(issues).toHaveLength(2)
     expect(issues.map(row => row.issue).join(" ")).not.toMatch(/\bd[12]\b/)
+  })
+})
+
+describe("unheld documents", () => {
+  test("only the one file the lawyer asks for has documents left out to ask about; a document not asked for joins it", () => {
+    expect(unheldDocuments(stated(file(["memo", "d2"], PACK, "Kestrel Board Pack.docx")), DOCUMENTS)).toEqual([DOCUMENTS[0]])
+    expect(unheldDocuments(ASKED, DOCUMENTS)).toEqual([])
+    expect(unheldDocuments({ stated: false, files: [] }, DOCUMENTS)).toEqual([])
+    expect(withUnaskedDocuments(stated(file(["memo", "d2"], PACK)), ["d1"])).toEqual(stated(file(["memo", "d2", "d1"], PACK)))
+    expect(withUnaskedDocuments(stated(file(["memo", "d2"], PACK)), [])).toEqual(stated(file(["memo", "d2"], PACK)))
+  })
+
+  test("a document is asked for only with the lawyer's own words that ask for it", () => {
+    const directory = prepared()
+    expect(parseUnheldDocument('{"asked":false}', directory)).toEqual({ issues: [], value: false })
+    expect(parseUnheldDocument(JSON.stringify({ asked: true, quote: TRANSFER }), directory)).toEqual({ issues: [], value: true })
+    expect(parseUnheldDocument(JSON.stringify({ asked: true, quote: "Deliver the deposit notice apart." }), directory).issues).toEqual([
+      quoteMissIssue(directory, "quote", { quote: "Deliver the deposit notice apart.", source_id: REQUEST_SOURCE }, "json")])
+    expect(parseUnheldDocument('{"asked":true}', directory).value).toBeUndefined()
+    expect(parseUnheldDocument("It is not asked for.", directory).value).toBeUndefined()
   })
 })
 
