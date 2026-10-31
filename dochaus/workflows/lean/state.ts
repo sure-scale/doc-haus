@@ -75,7 +75,7 @@ export type OpenItem = {
     quote?: string
     placeholder?: string
     citation?: string
-    /** The words of a draft_status item that state the agreement's own status (draft-status.ts). */
+    /** Exact wording for a draft-status or unreadable prose-citation finding. */
     statement?: string
     repair_target?: "body" | "memo" | "research"
     question_id?: string

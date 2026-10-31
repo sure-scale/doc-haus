@@ -1,4 +1,4 @@
-import { decodeMarkupEntities, parseStructuredReportMarkdown } from "./structured-report"
+import { decodeMarkupEntities, parseStructuredReportMarkdown, unwrapTaskResult } from "./structured-report"
 import StructuredReportView from "./StructuredReportView"
 
 const TOOL_OUTPUT_TAGS = {
@@ -24,21 +24,36 @@ export type StructuredToolOutput = {
 }
 
 export function parseStructuredToolOutput(text: string): StructuredToolOutput {
-  const decoded = decodeMarkupEntities(text)
+  // Old transcripts sometimes stored a rendered/escaped read envelope. Decode
+  // that transport only; entities in an ordinary file body remain file data.
+  const decoded = /^\s*&lt;path&gt;/i.test(text) ? decodeMarkupEntities(text) : text
   const fields: StructuredToolOutputField[] = []
-  const pattern = /<([a-z][a-z0-9_-]*)\b[^>]*>([\s\S]*?)<\/\1>/gi
+  const pattern = /<(path|type|entries|content|warning|error)\b[^>]*>/gi
   let cursor = 0
   let sawKnownTag = false
   let filePath = ""
-  for (const match of decoded.matchAll(pattern)) {
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(decoded))) {
     const start = match.index
     const tag = match[1].toLowerCase()
     if (!isToolOutputTag(tag)) continue
-    if (sawKnownTag) appendToolOutputNote(fields, decoded.slice(cursor, start))
-    cursor = start + match[0].length
+    const bodyStart = start + match[0].length
+    const closing = new RegExp(`</${tag}\\s*>`, "gi")
+    closing.lastIndex = bodyStart
+    let end = closing.exec(decoded)
+    // The content body is opaque. A literal closing marker in a file must not
+    // cause its later text to be parsed as another tool/report envelope.
+    if (tag === "content" && end) {
+      let next: RegExpExecArray | null
+      while ((next = closing.exec(decoded))) end = next
+    }
+    if (!end && tag !== "content") continue
+    appendToolOutputNote(fields, decoded.slice(cursor, start))
+    cursor = end ? end.index + end[0].length : decoded.length
+    pattern.lastIndex = cursor
     sawKnownTag = true
 
-    const fieldText = match[2].trim()
+    const fieldText = decoded.slice(bodyStart, end?.index).trim()
     if (tag === "path") filePath = fieldText
     appendToolOutputField(fields, tag, fieldText, filePath)
   }
@@ -47,14 +62,21 @@ export function parseStructuredToolOutput(text: string): StructuredToolOutput {
   return { structured: true, fields }
 }
 
-export function ToolOutput({ children }: { children: string }) {
-  const report = parseStructuredReportMarkdown(children)
-  if (report.structured)
-    return (
-      <div className="step-output step-output-report">
-        <StructuredReportView report={report} />
-      </div>
-    )
+export function ToolOutput({ children, tool }: { children: string; tool?: string }) {
+  if (tool === "task") {
+    const text = unwrapTaskResult(children, true)
+    // Mixed or clipped transport envelopes have no safe unwrapping boundary.
+    // Keep them raw, including any surrounding warning or partial result.
+    if (text === children && /(?:<|&lt;)\/?task(?:\s|>|&gt;|_result)/i.test(children)) return <pre className="step-output">{children}</pre>
+    const report = parseStructuredReportMarkdown(text)
+    return <div className="step-output step-output-report">
+      {report.structured ? <StructuredReportView report={report} /> : <pre className="step-output">{text}</pre>}
+    </div>
+  }
+
+  // Read-style fields contain literal source content, not agent reports.
+  // Unknown tool origins retain the old field formatter without report guessing.
+  if (tool && tool !== "read") return <pre className="step-output">{children}</pre>
 
   const output = parseStructuredToolOutput(children)
   if (!output.structured) return <pre className="step-output">{children}</pre>

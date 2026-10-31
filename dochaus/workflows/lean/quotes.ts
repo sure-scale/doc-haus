@@ -7,37 +7,20 @@ import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearestGap, no
 import type { DocID } from "./plan"
 import { leanUserUpdates } from "./requests"
 import { readLeanText, readQuestions, shortHash, type OpenItem, type StageID } from "./state"
+import { scanSourceQuotes, type SourceQuote, type SourceQuoteScanOptions } from "./source-quote-scan"
 
 // Source-quote helpers shared by the lean stage checks and the final gate. A
 // quote passes when lib/quote-verify finds it in the named matter document
 // (verbatim, after folding curly quotes, whitespace and Markdown escapes in the
 // source). A miss names the quote so the authoring model can correct it.
 
-// A quotation may hold quoted words of its own ("the "Deposit" means …"), read
-// as part of it. An inner pair opens after a space or punctuation, before a
-// word, and closes after a word, before a space or punctuation, so separate
-// quotations on one line ("A" and "B" [source: X]) are not read as one: only
-// the one the citation follows is. Each citation is found first and its
-// quotation read back from the closing mark, so a line full of quotation marks
-// is read once, not once per mark. A quotation is at most QUOTE_CAP characters
-// (checked after the match), quoted words within it at most 500.
-// A source name may hold brackets of its own (ingest's "Name (2).docx"): a
-// citation in [ ] or ( ) ends at the bracket closing it, past a few balanced
-// pairs of the same kind in the name. A citation that does not close so
-// (mismatched or unbalanced brackets, or none) ends at the first ] or ), or at
-// the end of the line: its quotation is still read and checked, never dropped.
-const INNER_QUOTE = /(?<![\p{L}\p{N}])["“](?=\S)[^"“”\n]{0,500}?(?<=\S)["”](?![\p{L}\p{N}])/u
-const QUOTE_CAP = 2000
-const SOURCE_QUOTE = new RegExp(String.raw`(?=["”]\s*[[(]\s*source\s*:)(?<=["“]((?:[^"“”\n]|${INNER_QUOTE.source}){1,${QUOTE_CAP}}))["”]\s*` +
-  String.raw`(?:\[\s*source\s*:([^\[\]\n]*(?:\[[^\[\]\n]*\][^\[\]\n]*){0,8})\]|\(\s*source\s*:([^()\n]*(?:\([^()\n]*\)[^()\n]*){0,8})\)` +
-  String.raw`|[[(]\s*source\s*:([^\])\n]*)[\])]?)`, "giu")
 // Inside a quotation in double marks, quoted words are written in single ones:
 // "the 'Price' is payable" quotes a source's the "Price" is payable. They end
 // at the next single mark, past an apostrophe within a word ('Seller's Group').
 const NESTED_QUOTE = /(?<![\p{L}\p{N}])['‘](?=\S)((?:[^'‘’"“”\n]|(?<=[\p{L}\p{N}])['’](?=[\p{L}\p{N}]))+?)(?<=\S)['’](?![\p{L}\p{N}])/gu
 export const EXCERPT = 240
 
-export type SourceQuote = { quote: string; source_id: string }
+export type { SourceQuote } from "./source-quote-scan"
 
 /** The source name under which the lawyer's own words are quoted: the request
  * and the lawyer's answers. A matter document of the same name takes precedence. */
@@ -137,9 +120,18 @@ function readMatterSourceBasis(directory: string) {
 }
 
 /** Quotations written as "exact words" [source: document name]. */
-export function sourceQuotes(text: string): SourceQuote[] {
-  return [...text.matchAll(SOURCE_QUOTE)].filter(match => match[1]!.length <= QUOTE_CAP)
-    .map(match => ({ quote: match[1]!.trim(), source_id: (match[2] ?? match[3] ?? match[4])!.trim() }))
+export function sourceQuotes(text: string, options: SourceQuoteScanOptions = { format: "markdown" }): SourceQuote[] {
+  return scanSourceQuotes(text, options).quotes
+}
+
+/** Both unreadable attempted citations and recognized misquotations receive
+ * feedback; a syntax miss must never make the source check disappear. */
+export function proseQuoteIssues(directory: string, where: string, text: string, options: SourceQuoteScanOptions = { format: "markdown" }) {
+  const scanned = scanSourceQuotes(text, options)
+  return [
+    ...scanned.issues.map(issue => `${where} could not read a cited quotation: ${issue.message}. Write the exact quoted words followed by [source: exact source name].`),
+    ...scanned.quotes.filter(quote => !proseQuoteFound(directory, quote)).map(quote => quoteMissIssue(directory, where, quote)),
+  ]
 }
 
 export function quoteFound(directory: string, quote: SourceQuote) {
@@ -256,11 +248,14 @@ export function quoteMissIssue(directory: string, where: string, quote: SourceQu
 }
 
 /** Open items for quotations in `text` that the named source does not contain. */
-export function quoteMissItems(directory: string, stage: StageID, text: string, ref: OpenItem["ref"] = {}) {
-  return sourceQuotes(text)
-    .filter(quote => !proseQuoteFound(directory, quote))
-    .map(quote => openItem(stage, "quote_miss", `Quoted text was not found verbatim in source "${quote.source_id}".`,
-      { ...ref, source_id: quote.source_id, quote: quote.quote }))
+export function quoteMissItems(directory: string, stage: StageID, text: string, ref: OpenItem["ref"] = {}, options: SourceQuoteScanOptions = { format: "markdown" }) {
+  const scanned = scanSourceQuotes(text, options)
+  return [
+    ...scanned.issues.map(issue => openItem(stage, "quote_miss", `The text could not read a cited quotation: ${issue.message}.`, { ...ref, statement: issue.statement })),
+    ...scanned.quotes.filter(quote => !proseQuoteFound(directory, quote))
+      .map(quote => openItem(stage, "quote_miss", `Quoted text was not found verbatim in source "${quote.source_id}".`,
+        { ...ref, source_id: quote.source_id, quote: quote.quote })),
+  ]
 }
 
 export function excerpt(text: string, length = EXCERPT) {

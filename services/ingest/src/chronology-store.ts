@@ -9,7 +9,7 @@ import { verifyCitation } from "../../../dochaus/plugin/legal/citations"
 import {
   chronologyCalendarDayOffset,
   supportedNameAssociationQuote,
-  isSuppliedChronologyName,
+  isSuppliedChronologySource,
   SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE,
 } from "../../../dochaus/lib/chronology"
 import type {
@@ -444,6 +444,7 @@ type CurrentSource = {
   version: string
   docPath: string
   textExtracted: boolean
+  provenance: ChronologyEvidence["provenance"]
 }
 export function currentChronologySources(directory: string): CurrentSource[] {
   chronologyFile(directory)
@@ -451,13 +452,14 @@ export function currentChronologySources(directory: string): CurrentSource[] {
   try {
     const rows = db
       .query(
-        "SELECT id,name,doc_path,EXISTS(SELECT 1 FROM chunks WHERE document_id=documents.id AND length(trim(text))>0) AS text_extracted FROM documents WHERE role='source'",
+        "SELECT id,name,doc_path,source_provenance,EXISTS(SELECT 1 FROM chunks WHERE document_id=documents.id AND length(trim(text))>0) AS text_extracted FROM documents WHERE role='source'",
       )
       .all() as {
       id: number
       name: string
       doc_path: string
       text_extracted: number
+      source_provenance: string | null
     }[]
     const registered = rows.flatMap((row) => {
       if (!registeredDocumentName(row.name)) return []
@@ -478,6 +480,7 @@ export function currentChronologySources(directory: string): CurrentSource[] {
                 docPath: target.docPath,
                 version: createHash("sha256").update(bytes).digest("hex"),
                 textExtracted: !!row.text_extracted,
+                provenance: isSuppliedChronologySource(row.name, row.source_provenance) ? "supplied-chronology" as const : "source" as const,
               },
             ]
           : []
@@ -504,6 +507,7 @@ export function currentChronologySources(directory: string): CurrentSource[] {
                   docPath: target.docPath,
                   version: createHash("sha256").update(bytes).digest("hex"),
                   textExtracted: false,
+                  provenance: "supplied-chronology" as const,
                 },
               ]
             : []
@@ -561,6 +565,7 @@ export function projectChronologySources(directory: string, state = readChronolo
       }
   for (const coverage of next.coverage) {
     const source = sources.find((s) => s.sourceId === coverage.sourceId && s.documentName === coverage.documentName)
+    if (source) coverage.suppliedChronology = source.provenance === "supplied-chronology"
     if (!source) {
       coverage.uploaded = false
       coverage.textExtracted = false
@@ -590,7 +595,7 @@ export function projectChronologySources(directory: string, state = readChronolo
         completedKeys: [],
         events: 0,
         issues: ["Added since the chronology source set was enumerated."],
-        suppliedChronology: isSuppliedChronologyName(source.documentName),
+        suppliedChronology: source.provenance === "supplied-chronology",
       })
   return next
 }
@@ -616,7 +621,7 @@ export async function verifyChronologyProposals(directory: string, proposals: Ch
               "chronology_source_changed",
               409,
             )
-          assertEvidenceProvenance(evidence)
+          assertEvidenceProvenance(evidence, sources)
           const citation = await verifyCitation({ ...evidence, docPath: source.docPath }).catch(() => undefined)
           if (
             !citation ||
@@ -666,7 +671,7 @@ function assertCurrentProposalSources(directory: string, p: ChronologyProposal, 
     for (const account of event.accounts) {
       if (provenanceCorrectionAccount(state, p, account, sources) || historicalAccount(state, p, account)) continue
       for (const evidence of account.evidence) {
-        assertEvidenceProvenance(evidence)
+        assertEvidenceProvenance(evidence, sources)
         if (
           !evidence.verified ||
           !sources.some(
@@ -1349,8 +1354,8 @@ function stripProjectedDateFreshness(state: Chronology) {
   }
 }
 
-function assertEvidenceProvenance(evidence: ChronologyEvidence) {
-  const expected = isSuppliedChronologyName(evidence.documentName) ? "supplied-chronology" : "source"
+function assertEvidenceProvenance(evidence: ChronologyEvidence, sources: CurrentSource[]) {
+  const expected = sources.find((source) => source.sourceId === evidence.sourceId && source.documentName === evidence.documentName)?.provenance
   if (evidence.provenance !== expected)
     throw new ChronologyError("The proposed evidence provenance does not match the authorised source classification.")
 }
@@ -1393,13 +1398,13 @@ function isProvenanceOnlyCorrection(
         source.documentName === after.documentName &&
         source.version === after.version,
     )
-    const expected = isSuppliedChronologyName(after.documentName) ? "supplied-chronology" : "source"
     if (!current)
       throw new ChronologyError(
         "The provenance correction evidence changed. Refresh its current source before deciding.",
         "chronology_source_changed",
         409,
       )
+    const expected = current.provenance
     if (after.provenance !== expected)
       throw new ChronologyError("The proposed evidence provenance does not match the authorised source classification.")
     const issueUnchanged = before.issue === after.issue

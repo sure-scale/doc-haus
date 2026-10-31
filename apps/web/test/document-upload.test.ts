@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { DocumentExistsError, DuplicateUploadError, MATTER_DOCUMENT_EXTENSIONS, matterDocumentKind, type AttachmentStatus, type Document, type EmailAttachment, type IngestResult } from "../src/api/ingest/documents"
+import { DerivedChronologyError, DocumentExistsError, DuplicateUploadError, MATTER_DOCUMENT_EXTENSIONS, matterDocumentKind, type AttachmentStatus, type Document, type EmailAttachment, type IngestResult } from "../src/api/ingest/documents"
 import DocumentUpload, { AttachmentEntryRow, attachmentsSummary, documentTree, failedUpload, newUpload, uploadedToast, UploadRow } from "../src/components/DocumentUpload"
 
 const file = new File(["theirs"], "Agreement.docx")
@@ -13,6 +13,24 @@ const row = (upload: Parameters<typeof UploadRow>[0]["upload"]) => {
     html,
   }
 }
+
+test("a recognizable chronology export waits for coordinated review rather than duplicating actions inline", () => {
+  const failed = failedUpload(new DerivedChronologyError("My corrections.docx", "Chronology.docx", "This is a chronology export."), file)
+  expect(failed).toMatchObject({ status: "chronology", chronology: { name: "My corrections.docx", originalName: "Chronology.docx" } })
+  const rendered = row({ key: 8, file, status: "queued", choice: "keep-both", ...failed })
+  expect(rendered.buttons).toEqual([])
+  expect(rendered.status).toBe("Awaiting chronology review…")
+  const collision = row({ key: 8, file, status: "exists", chronology: { name: file.name }, existing: { name: file.name, role: "source" } })
+  expect(collision.buttons).toEqual([])
+  expect(collision.status).toBe("Awaiting chronology review…")
+})
+
+test("renamed supplied chronologies retain a visible source classification after reload", () => {
+  const documents: Document[] = [{ id: 20, name: "My corrections (2).docx", doc_path: "/m/My corrections (2).docx", created_at: 20, role: "source", source_provenance: "supplied-chronology" }]
+  const html = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {} }))
+  expect(html).toContain("My corrections (2).docx")
+  expect(html).toContain("Supplied chronology")
+})
 
 test("a same-name upload offers to save it as a new version of the existing document, keep both or cancel", () => {
   const exists = failedUpload(new DocumentExistsError("Agreement.docx", "source", "Agreement.docx is already in this matter."), file)

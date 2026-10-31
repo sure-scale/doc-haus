@@ -1,5 +1,7 @@
 import { INGEST_URL } from "../../config"
 import { ingestError } from "./errors"
+import type { ChronologyExportRequest, ChronologyExportSnapshot } from "../../../../../dochaus/lib/chronology-export"
+export type { ChronologyExportRequest, ChronologyExportSnapshot } from "../../../../../dochaus/lib/chronology-export"
 import type {
   Chronology,
   ChronologyAction,
@@ -64,6 +66,21 @@ async function request<T>(id: string, suffix = "", body?: unknown): Promise<T> {
   return response.json() as Promise<T>
 }
 export const getChronology = (id: string) => request<Chronology>(id)
+export const previewChronologyExport = (id: string, selection: ChronologyExportRequest) =>
+  request<ChronologyExportSnapshot>(id, "/export/preview", selection)
+export async function exportChronology(id: string, selection: ChronologyExportRequest) {
+  const response = await fetch(`${INGEST_URL}/matters/${encodeURIComponent(id)}/chronology/export`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(selection),
+  })
+  if (response.status === 409) {
+    const data = (await response.json().catch(() => ({}))) as { chronology?: Chronology; error?: string }
+    throw new ChronologyConflict(data.chronology, data.error)
+  }
+  if (!response.ok) throw new Error(await ingestError(response, "Could not export the chronology."))
+  return { blob: await response.blob(), name: response.headers.get("X-DocHaus-Export-Name") || "Chronology.docx" }
+}
 export const assessChronology = (id: string) => request<Chronology>(id, "/assess", {})
 export const chronologyPreflight = (id: string) => request<ChronologyPreflight>(id, "/preflight")
 export const chronologyAction = (id: string, expectedRevision: number, action: ChronologyAction) =>

@@ -1,4 +1,5 @@
 import { chronologyRoutes } from "./chronology-routes"
+import { DerivedChronologyExportError } from "./chronology-export-origin"
 import { dashboardRoutes } from "./dashboard"
 import { playbookLibraryRoutes } from "./playbook-library"
 import { clientRoutes } from "./clients"
@@ -159,7 +160,7 @@ process.on("unhandledRejection", (reason) => {
 // on localhost; a wildcard would let any site in a user's browser hit this
 // service. Non-browser callers (curl, the opencode server) send no Origin and are
 // unaffected.
-const localCors = cors({ origin: (origin) => (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null), exposeHeaders: ["X-DocHaus-Revision-Notice"] })
+const localCors = cors({ origin: (origin) => (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null), exposeHeaders: ["X-DocHaus-Revision-Notice", "X-DocHaus-Export-Name", "X-DocHaus-Chronology-Revision"] })
 app.use("*", async (c, next) => {
   if (wordTokenPath(c.req.path)) return wordCors(c, next)
   if (/^Bearer /i.test(c.req.header("Authorization") ?? ""))
@@ -658,6 +659,9 @@ app.post("/matters/:id/documents", async (c) => {
   const existing = body["existing"]
   if (existing !== undefined && existing !== "replace" && existing !== "keep-both")
     return c.json({ error: "Choose replace or keep-both for an existing document." }, 400)
+  const chronologyOrigin = body["chronology_origin"]
+  if (chronologyOrigin !== undefined && chronologyOrigin !== "supplied-chronology")
+    return c.json({ error: "Acknowledge the imported snapshot as supplied chronology, or leave its origin unset." }, 400)
   const buffer = Buffer.from(await file.arrayBuffer())
   // Bytes the matter already keeps for the document of that name add nothing,
   // whatever the choice: the upload is reported as a duplicate of the version
@@ -673,12 +677,16 @@ app.post("/matters/:id/documents", async (c) => {
     // attachment's name.
     if (isEmailName(name)) return c.json(await ingestEmailDocument(dir, name, buffer, { existing, version }))
     if (name.toLowerCase().endsWith(".zip")) return c.json(await ingestZipDocument(dir, name, buffer, { existing, version }))
-    return c.json(await ingestDocument(dir, name, buffer, { existing, links: { parentName: null }, version }))
+    return c.json(await ingestDocument(dir, name, buffer, { existing, links: { parentName: null }, version,
+      sourceProvenance: chronologyOrigin === "supplied-chronology" ? "supplied-chronology" : undefined,
+    }))
   } catch (error) {
     // Refused before anything of the zip was added.
     if (error instanceof ZipTooLargeError) return c.json({ error: error.message, code: "zip_too_large" }, 413)
     if (error instanceof ZipFormatError) return c.json({ error: `${name} could not be read as a zip file.` }, 400)
     if (error instanceof MsgFormatError) return c.json({ error: `${name} could not be read as an Outlook email.` }, 400)
+    if (error instanceof DerivedChronologyExportError)
+      return c.json({ error: error.message, code: "derived_chronology", name, original_name: error.originalName }, 409)
     if (error instanceof SourceDocumentExistsError)
       return c.json({ error: error.message, code: "source_exists", name: error.existing }, 409)
     if (error instanceof DeliverableDocumentExistsError)

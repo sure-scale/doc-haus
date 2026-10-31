@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test"
 import completed from "../../../dochaus/workflows/lean/fixtures/status-completed.json"
 import { createMatter, deleteMatterSession, renameMatter } from "../src/api/ingest/matters"
 import { dispatchMatterContinuation } from "../src/api/ingest/drafting-run"
-import { DocumentExistsError, DuplicateUploadError, uploadDocument } from "../src/api/ingest/documents"
+import { DerivedChronologyError, DocumentExistsError, DuplicateUploadError, uploadDocument } from "../src/api/ingest/documents"
 import { getDraftingStatus } from "../src/api/ingest/drafting-status"
 import { failedUpload } from "../src/components/DocumentUpload"
 import type { LeanDraftingStatus } from "../src/api/ingest/lean"
@@ -155,6 +155,26 @@ function scriptXhr(status: number, body: string) {
   } as unknown as typeof XMLHttpRequest
   return sent
 }
+
+test("a recognized chronology export needs an explicit acknowledgement, preserving collision choice", async () => {
+  const file = new File(["edited chronology"], "My corrections.docx")
+  const initial = scriptXhr(409, JSON.stringify({ code: "derived_chronology", name: file.name, original_name: "Chronology.docx", error: "This file is a chronology export." }))
+  const error = await uploadDocument("matter", file, { existing: "keep-both" }).catch((error: unknown) => error)
+  expect(error).toBeInstanceOf(DerivedChronologyError)
+  expect(error).toMatchObject({ documentName: file.name, originalName: "Chronology.docx" })
+  expect(initial[0]?.has("chronology_origin")).toBe(false)
+  expect(initial[0]?.get("existing")).toBe("keep-both")
+
+  const accepted = scriptXhr(200, JSON.stringify({ name: "My corrections (2).docx", docPath: "/matter/My corrections (2).docx", sections: 1, chunks: 1, injection: null, source_provenance: "supplied-chronology" }))
+  const result = await uploadDocument("matter", file, { existing: "keep-both", chronologyOrigin: "supplied-chronology" })
+  expect(result).toMatchObject({ name: "My corrections (2).docx", source_provenance: "supplied-chronology" })
+  expect(accepted[0]?.get("chronology_origin")).toBe("supplied-chronology")
+  expect(accepted[0]?.get("existing")).toBe("keep-both")
+  expect(await (accepted[0]?.get("file") as File).text()).toBe("edited chronology")
+
+  scriptXhr(503, JSON.stringify({ code: "derived_chronology", name: file.name, error: "Service unavailable." }))
+  expect(await uploadDocument("matter", file).catch((error: unknown) => error)).not.toBeInstanceOf(DerivedChronologyError)
+})
 
 test("a failed upload rejects with the ingest service's message instead of resolving its error body", async () => {
   scriptXhr(503, JSON.stringify({ error: "The embedding model could not be loaded.", code: "embedding_model_unavailable" }))

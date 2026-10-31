@@ -52,7 +52,7 @@ Wrote \`drafting-strategy.md\`. Classification: **Consent to Adoption** under **
   <outputs>drafting-strategy.md</outputs>
 </stage_packet>
 </task_result>
-</task>`)
+</task>`, true)
 
     expect(report.structured).toBe(true)
     expect(report.preamble).toBe("")
@@ -78,7 +78,7 @@ Source reconciliation complete. \`register.md\` written with 13 material rows.
 - **Confirmed-consistent identities**: Marcus &amp; Diana Holloway.
 &lt;/findings&gt;
 &lt;/task_result&gt;
-&lt;/task&gt;`)
+&lt;/task&gt;`, true)
 
     expect(report.structured).toBe(true)
     expect(report.preamble).toBe("")

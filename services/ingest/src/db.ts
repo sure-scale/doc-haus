@@ -104,6 +104,10 @@ export function openDb(matterDir: string, options: { startup?: boolean; commit?:
   if (!hasColumn(db, "documents", "role"))
     db.run("ALTER TABLE documents ADD COLUMN role TEXT NOT NULL DEFAULT 'source'")
   if (!hasColumn(db, "documents", "label")) db.run("ALTER TABLE documents ADD COLUMN label TEXT")
+  // An acknowledged chronology import is still a source account, but cannot
+  // become independent corroboration merely by being renamed or re-saved.
+  if (!hasColumn(db, "documents", "source_provenance"))
+    db.run("ALTER TABLE documents ADD COLUMN source_provenance TEXT CHECK (source_provenance IS NULL OR source_provenance = 'supplied-chronology')")
   // Email attachments (#238). parent_name: on a document extracted from an
   // email's attachment, the name of that email; NULL on everything a lawyer
   // uploaded. attachments: on an email, the JSON record of its attachments
@@ -469,12 +473,12 @@ export function pendingRedlineCounts(db: Database): Record<string, number> {
 }
 
 export function listDocuments(db: Database) {
-  return db.query("SELECT id, doc_path, name, created_at, role, label, parent_name, attachments, extraction_quality FROM documents ORDER BY created_at").all()
+  return db.query("SELECT id, doc_path, name, created_at, role, label, source_provenance, parent_name, attachments, extraction_quality FROM documents ORDER BY created_at").all()
 }
 
 export function listSourceDocuments(db: Database) {
   return db
-    .query("SELECT id, doc_path, name, created_at, role, parent_name, attachments FROM documents WHERE role = 'source' ORDER BY created_at")
+    .query("SELECT id, doc_path, name, created_at, role, source_provenance, parent_name, attachments FROM documents WHERE role = 'source' ORDER BY created_at")
     .all()
 }
 
@@ -483,6 +487,11 @@ export function getDocumentRole(db: Database, docPath: string): "source" | "deli
   if (roles.length > 1)
     throw new Error(`One physical matter document has conflicting source and deliverable registry roles.`)
   return roles[0] ?? null
+}
+
+export function getDocumentSourceProvenance(db: Database, docPath: string): "supplied-chronology" | null {
+  return matchingDocumentRows(db, docPath).some((row) => row.source_provenance === "supplied-chronology")
+    ? "supplied-chronology" : null
 }
 
 // Drop a document and its chunks from the index. Pairs with removing the source
@@ -527,6 +536,7 @@ export function upsertDocument(
   injectionReport: string | null,
   links: DocumentLinks = {},
   extractionQuality: string | null = null,
+  sourceProvenance?: "supplied-chronology",
 ): number {
   if (getDocumentRole(db, docPath) === "deliverable")
     throw new Error(`Cannot replace generated deliverable ${name} with a source document.`)
@@ -534,8 +544,8 @@ export function upsertDocument(
   // Prefer the current physical spelling. Legacy aliases collapse onto that
   // owner, or the oldest matching source when none uses the current spelling.
   const owner = previous.find((row) => row.doc_path === docPath) ?? previous.toSorted((a, b) => a.id - b.id)[0]
-  const metadata = owner ? db.query("SELECT label, parent_name, attachments FROM documents WHERE id = ?").get(owner.id) as
-    { label: string | null; parent_name: string | null; attachments: string | null } | null : null
+  const metadata = owner ? db.query("SELECT label, source_provenance, parent_name, attachments FROM documents WHERE id = ?").get(owner.id) as
+    { label: string | null; source_provenance: "supplied-chronology" | null; parent_name: string | null; attachments: string | null } | null : null
   const label = metadata?.label ?? null
   const kept = {
     parent_name: links.parentName === undefined ? metadata?.parent_name ?? null : links.parentName,
@@ -546,12 +556,12 @@ export function upsertDocument(
     db.run("UPDATE redlines SET doc_path = ?, doc_name = ? WHERE doc_path = ?", [docPath, name, row.doc_path])
     if (row.id !== owner?.id) db.run("DELETE FROM documents WHERE id = ?", [row.id])
   })
-  const values = [docPath, name, createdAt, injectionReport, label, kept.parent_name, kept.attachments, extractionQuality]
+  const values = [docPath, name, createdAt, injectionReport, label, sourceProvenance ?? metadata?.source_provenance ?? null, kept.parent_name, kept.attachments, extractionQuality]
   if (owner) {
-    db.run("UPDATE documents SET doc_path = ?, name = ?, created_at = ?, injection_report = ?, role = 'source', label = ?, parent_name = ?, attachments = ?, extraction_quality = ?, rev = NULL WHERE id = ?", [...values, owner.id])
+    db.run("UPDATE documents SET doc_path = ?, name = ?, created_at = ?, injection_report = ?, role = 'source', label = ?, source_provenance = ?, parent_name = ?, attachments = ?, extraction_quality = ?, rev = NULL WHERE id = ?", [...values, owner.id])
     return owner.id
   }
-  const result = db.run("INSERT INTO documents (doc_path, name, created_at, injection_report, role, label, parent_name, attachments, extraction_quality) VALUES (?, ?, ?, ?, 'source', ?, ?, ?, ?)", values)
+  const result = db.run("INSERT INTO documents (doc_path, name, created_at, injection_report, role, label, source_provenance, parent_name, attachments, extraction_quality) VALUES (?, ?, ?, ?, 'source', ?, ?, ?, ?, ?)", values)
   return Number(result.lastInsertRowid)
 }
 
@@ -613,12 +623,13 @@ type DocumentRegistryRow = {
   role: "source" | "deliverable"
   injection_report: string | null
   extraction_quality: string | null
+  source_provenance: "supplied-chronology" | null
 }
 
 function matchingDocumentRows(db: Database, docPath: string) {
   const identity = documentRegistryIdentity(docPath)
   return (db
-    .query("SELECT id, doc_path, name, role, injection_report, extraction_quality FROM documents")
+    .query("SELECT id, doc_path, name, role, injection_report, extraction_quality, source_provenance FROM documents")
     .all() as DocumentRegistryRow[]).filter((row) => documentRegistryIdentity(row.doc_path) === identity)
 }
 

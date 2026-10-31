@@ -513,13 +513,14 @@ try {
         blur: actual.backdropFilter,
         sharedBackground: shared.backgroundColor,
         sharedBlur: shared.backdropFilter,
+        compact: matchMedia("(max-width: 960px)").matches,
       }
       reference.remove()
       return result
     })
     assert.equal(backdrop.background, backdrop.sharedBackground, "chronology uses the shared pale modal backdrop")
     assert.equal(backdrop.blur, backdrop.sharedBlur, "chronology uses the shared modal blur")
-    assert.notEqual(backdrop.blur, "none", "modal background is blurred")
+    assert.equal(backdrop.blur, backdrop.compact ? "none" : "blur(6px)", "modal uses the shared responsive scrim")
   }
   await expectSharedBackdrop()
   await edit.getByRole("textbox", { name: "Event", exact: true }).fill("Equipment collected and sealed")
@@ -546,7 +547,7 @@ try {
       return { x: box.x, y: box.y, right: box.right, bottom: box.bottom, width: box.width }
     }),
   )
-  assert.equal(menuItems.length, 2)
+  assert.equal(menuItems.length, 3)
   assert.ok(menuItems[1]!.y >= menuItems[0]!.bottom, "overflow actions stack vertically")
   assert.ok(Math.abs(menuItems[0]!.x - menuItems[1]!.x) < 1, "overflow actions share a left edge")
   assert.ok(Math.abs(menuItems[0]!.width - menuItems[1]!.width) < 1, "overflow actions fill one column")
