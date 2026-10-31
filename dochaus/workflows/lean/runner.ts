@@ -21,6 +21,7 @@ import { changePlanPrompt, changeReviewPrompt, readChangeReview, runChangePrepar
 import { packageReviewPrompt, readPackageReview } from "./package-review"
 import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, repairedChecklistItems, startRepairRound } from "./repairs"
 import { acceptEvidenceReply, evidencePrompt } from "./evidence"
+import { checkAdoptedAgainstResearch } from "./research-check"
 import { researchPermissions, acceptResearchReply, researchPrompt, startResearchGapRound } from "./research"
 import { runApply } from "./apply-stage"
 import { DELIVERED_NOTES, forgetUnplannedDocuments, recordLeanDocuments } from "./deliverables"
@@ -652,6 +653,7 @@ function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDe
   if (stage === "changes" && document && focusedChecklistRepairs(directory, document)) return runChangeReconciliation(directory, state, deps, document, progress)
   if (stage === "change-prepare" && document) return runChangePreparation(directory, state, deps, document, progress)
   if (stage === "draft" && document) return runDraftStage(directory, state, deps, progress, document, planned)
+  if (stage === "spine") return checkAdoptedAgainstResearch(directory, state, deps).then(() => runModelStage(directory, state, step, deps, progress, prepared))
   return runModelStage(directory, state, step, deps, progress, prepared)
 }
 
