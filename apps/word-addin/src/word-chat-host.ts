@@ -994,18 +994,18 @@ export class WordChatHost {
     const capture = async (context: WordChatContext) => {
       const snapshot = await this.importSnapshot(context, input.target, false, false, false, false, true, true)
       if (!snapshot.projection) throw captureMismatch("Word could not capture the paragraph to delete.")
-      const index = assertNativeWordChatParagraphDeletionTarget(snapshot.projection, input.target)
-      const anchor = context.document.getParagraphByUniqueLocalId(input.target.paragraphs[0]!.id)
-      const following = context.document.getParagraphByUniqueLocalId(snapshot.projection.paragraphs[index + 1]!.id)
-      anchor.load("styleBuiltIn,isListItem"); following.load("styleBuiltIn,isListItem")
+      // Any style or list format: the verifier proves the following paragraph's
+      // properties and mark are unchanged, so accepting leaves its formatting.
+      assertNativeWordChatParagraphDeletionTarget(snapshot.projection, input.target)
       const current = context.document.body.getRange("Content").getReviewedText("Current")
       await context.sync()
-      if ([anchor, following].some(p => p.styleBuiltIn !== "Normal" || p.isListItem !== false))
-        throw new WordChatHostError("This paragraph boundary uses heading or list formatting. Your document is unchanged.")
-      const span = input.target.text + "\r", at = current.value.indexOf(span)
-      if (at < 0 || at > 0 && current.value[at - 1] !== "\r" || current.value.indexOf(span, at + 1) !== -1)
-        throw captureMismatch("Word could not uniquely confirm the paragraph and its following boundary.")
-      return { ...snapshot, current: current.value, expected: current.value.slice(0, at) + current.value.slice(at + span.length) }
+      // The text may repeat; the XML inverse binds the paragraph, so any
+      // boundary-aligned removal is an acceptable reviewed text.
+      const span = input.target.text + "\r", expected: string[] = []
+      for (let at = current.value.indexOf(span); at >= 0; at = current.value.indexOf(span, at + 1))
+        if (at === 0 || current.value[at - 1] === "\r") expected.push(current.value.slice(0, at) + current.value.slice(at + span.length))
+      if (!expected.length) throw captureMismatch("Word could not confirm the paragraph and its following boundary.")
+      return { ...snapshot, current: current.value, expected }
     }
     const initial = await this.word.run(capture)
     const plan = await input.author({ ooxml: initial.ooxml })
@@ -1032,7 +1032,7 @@ export class WordChatHost {
         const body = context.document.body.getRange("Whole").getOoxml()
         const current = context.document.body.getRange("Content").getReviewedText("Current")
         await context.sync()
-        if (context.document.changeTrackingMode !== fresh.tracking || current.value !== fresh.expected)
+        if (context.document.changeTrackingMode !== fresh.tracking || !fresh.expected.includes(current.value))
           throw new Error("paragraph_delete_current")
         const observed = projectNativeWordChatBody(body.value, all.items.map(p => ({ id: p.uniqueLocalId, text: p.text, tableNestingLevel: p.tableNestingLevel })))
         const authors = verifyNativeWordChatParagraphDeletion(fresh.projection!, observed, input.target)
@@ -1056,11 +1056,13 @@ export class WordChatHost {
     const capture = async (context: WordChatContext) => {
       const anchor = context.document.getParagraphByUniqueLocalId(input.target.paragraphs[0]!.id)
       anchor.load("styleBuiltIn,isListItem")
+      // Headings and style-linked lists are accepted; direct numbering is refused by the XML target rule.
+      const snapshot = await this.importSnapshot(context, input.target, false, false, false, false, true, true)
+      context.document.load("trackFormatting")
       await context.sync()
-      if (anchor.styleBuiltIn !== "Normal" || anchor.isListItem !== false)
-        throw new WordChatHostError("This insertion point uses heading or list formatting. Your document is unchanged.")
-      return this.importSnapshot(context, input.target, false, false, false, false, true, true)
+      return { ...snapshot, style: anchor.styleBuiltIn, listItem: anchor.isListItem, trackFormatting: context.document.trackFormatting }
     }
+    const requested = input.formatting?.[0]?.style
     const initial = await this.word.run(capture)
     if (!initial.projection) throw captureMismatch("Word could not capture the insertion point.")
     assertNativeWordChatParagraphInsertionTarget(initial.projection, input.target)
@@ -1072,27 +1074,32 @@ export class WordChatHost {
     return await this.word.run(async context => {
       const fresh = await capture(context)
       if (!fresh.projection || !sameWordChatTargetSnapshot(initial.ooxml, fresh.ooxml) ||
-        !sameNativeProjectionGeometry(initial.projection!, fresh.projection)) throw captureMismatch("The insertion point changed during review.")
+        !sameNativeProjectionGeometry(initial.projection!, fresh.projection) || fresh.style !== initial.style || fresh.listItem !== initial.listItem ||
+        fresh.trackFormatting !== initial.trackFormatting) throw captureMismatch("The insertion point changed during review.")
       assertNativeWordChatParagraphInsertionTarget(fresh.projection, input.target)
+      const restyle = requested !== undefined && requested !== fresh.style
+      if (restyle && typeof fresh.trackFormatting !== "boolean") throw new WordChatHostError("This version of Word cannot confirm formatting tracking. Your document is unchanged.")
       const anchor = context.document.getParagraphByUniqueLocalId(input.target.paragraphs[0]!.id)
       if (typeof anchor.insertParagraph !== "function") throw new WordChatHostError("Word cannot insert this paragraph. Your document is unchanged.")
       if (input.mayDispatch && !input.mayDispatch()) throw new WordChatHostError("The Word pane closed before the change was applied. Your document is unchanged.")
       this.applied.set(input.proposalId, { identity, authors: [], uncertain: true })
       try {
         context.document.changeTrackingMode = "TrackAll"
-        anchor.insertParagraph(plan.text, "After")
+        const added = anchor.insertParagraph(plan.text, "After")
+        // The requested style is a second tracked action on the new paragraph only.
+        if (restyle) { context.document.trackFormatting = true; added.styleBuiltIn = requested; context.document.trackFormatting = fresh.trackFormatting }
         context.document.changeTrackingMode = fresh.tracking
         await context.sync()
-        context.document.load("changeTrackingMode")
+        context.document.load("changeTrackingMode,trackFormatting")
         const all = context.document.body.paragraphs
         all.load("items/uniqueLocalId,items/text,items/tableNestingLevel,items/styleBuiltIn,items/isListItem")
         const bodyXml = context.document.body.getRange("Whole").getOoxml()
         await context.sync()
-        if (context.document.changeTrackingMode !== fresh.tracking) throw new Error("paragraph_insert_tracking")
+        if (context.document.changeTrackingMode !== fresh.tracking || context.document.trackFormatting !== fresh.trackFormatting) throw new Error("paragraph_insert_tracking")
         const observed = projectNativeWordChatBody(bodyXml.value, all.items.map(p => ({ id: p.uniqueLocalId, text: p.text, tableNestingLevel: p.tableNestingLevel })))
-        const authors = verifyNativeWordChatParagraphInsertion(fresh.projection, observed, input.target, plan.text)
+        const authors = verifyNativeWordChatParagraphInsertion(fresh.projection, observed, input.target, plan.text, restyle)
         const inserted = all.items[fresh.index + 1]
-        if (!inserted || inserted.styleBuiltIn !== "Normal" || inserted.isListItem !== false) throw new Error("paragraph_insert_style")
+        if (!inserted || inserted.styleBuiltIn !== (requested ?? fresh.style) || !restyle && inserted.isListItem !== fresh.listItem) throw new Error("paragraph_insert_style")
         this.applied.set(input.proposalId, { identity, authors, uncertain: false })
         return { status: "applied", tracked: true, saved: false, authors }
       } catch (cause) {

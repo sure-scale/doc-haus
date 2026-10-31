@@ -243,7 +243,8 @@ export type WordChatAuthoredAmendment = {
   wording?: { ooxml: string; unformattedOoxml?: string; revisions: WordChatAuthoredAmendment["revisions"] }
 }
 
-/** Bind one literal inserted paragraph to a uniquely resolved complete source paragraph. */
+/** Bind one literal inserted paragraph to a uniquely resolved complete source
+ * paragraph; its only optional property is one allowed style. */
 export function validWordChatParagraphInsertion(snapshot: WordChatSnapshot, target: WordChatTarget, replacement: unknown, formatting?: unknown, inlineFormatting?: unknown): boolean {
   if (!snapshot || !target || !Array.isArray(snapshot.paragraphs) || !Array.isArray(target.paragraphs) || target.paragraphs.length !== 1 ||
     typeof target.text !== "string" || !target.text.trim() || !wellFormedWordChatCell(target.text) ||
@@ -251,7 +252,7 @@ export function validWordChatParagraphInsertion(snapshot: WordChatSnapshot, targ
     !wordChatTargetCurrent(snapshot,target) || snapshot.selection && !wordChatTargetCurrent(snapshot,snapshot.selection) ||
     inlineFormatting !== undefined || typeof replacement !== "string" || !replacement.startsWith(target.text + "\r")) return false
   if (formatting !== undefined && (!Array.isArray(formatting) || formatting.length !== 1 || !formatting[0] || typeof formatting[0] !== "object" || Array.isArray(formatting[0]) ||
-    (Object.keys(formatting[0]).length !== 2 || Object.keys(formatting[0]).some(key => !["paragraph", "style"].includes(key))) || formatting[0].paragraph !== 1 || formatting[0].style !== "Normal")) return false
+    (Object.keys(formatting[0]).length !== 2 || Object.keys(formatting[0]).some(key => !["paragraph", "style"].includes(key))) || formatting[0].paragraph !== 1 || !["Title", "Heading1", "Heading2", "Heading3", "Normal"].includes(formatting[0].style))) return false
   const inserted = replacement.slice(target.text.length + 1)
   if (!inserted.trim() || inserted.length > 24_000 || !wellFormedWordChatCell(inserted) || /[\u0000-\u001f\u007f]/.test(inserted)) return false
   const resolved = targetWordChatAmendment(snapshot,target.text)

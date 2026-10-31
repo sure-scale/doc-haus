@@ -60,7 +60,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     groupRevisions: false,
     extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false, wholeOoxmlTrailingParagraph: false,
     inlineBold: false, inlineAfter: "", inlineWrites: 0, splitMixed: false,
-    paragraphInsertions: 0, corruptParagraphInsertion: false, insertedParagraphStyle: "Normal",
+    paragraphInsertions: 0, corruptParagraphInsertion: false, insertedParagraphStyle: "Normal", formatAuthor: "Word user",
     listInsertions: 0, listOriginal: "", listBadFont: false, listBadMarkup: false, listDispatches: [] as string[], listWriteModes: [] as string[],
     paragraphDeletions: 0, corruptParagraphDeletion: false, wrongDeletionCurrent: false,
     nativeFormatting: [] as string[], dropNativeFormatting: false, terminalBodyMark: false, cellWholeExpandsRow: false, refuseEmptyContentXml: false,
@@ -292,11 +292,11 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       const previous = properties.cloneNode(true)
       change = doc.createElementNS(WORD_XML, "w:pPrChange")
       change.setAttributeNS(WORD_XML, "w:id", "900")
-      change.setAttributeNS(WORD_XML, "w:author", "Word user")
+      change.setAttributeNS(WORD_XML, "w:author", state.formatAuthor)
       change.setAttributeNS(WORD_XML, "w:date", "2026-01-01T00:00:00Z")
       change.appendChild(previous); properties.appendChild(change)
       const at = position(p.id)
-      state.nativeRevisions.push({ start: at.start, end: at.end, author: "Word user", type: "Formatted", text: p.text })
+      state.nativeRevisions.push({ start: at.start, end: at.end, author: state.formatAuthor, type: "Formatted", text: p.text })
       state.nativeFormatting.push(p.id)
     }
     const name = field === "style" ? "pStyle" : "spacing"
@@ -392,25 +392,33 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
         }); return paragraph(p)
       }
       if (location !== "After") throw new Error("Unsupported insertion location")
+      // Word keeps the original mark and properties on the new paragraph.
+      const added: NativeParagraph = { id: "", text: value }
       queue.push(() => {
         const index = state.paragraphs.indexOf(p), oldId = p.id
         const oldXml = state.paragraphXml.get(oldId) ?? `<w:p><w:r><w:t>${escapeXml(p.text)}</w:t></w:r></w:p>`
         const stamp = 'w:author="Native user" w:date="2026-01-01T00:00:00Z"'
         state.paragraphInsertions++
         p.id = `retained-${state.paragraphInsertions}`
-        state.paragraphs.splice(index + 1, 0, { id: oldId, text: value, styleBuiltIn: state.insertedParagraphStyle })
+        Object.assign(added, { id: oldId, styleBuiltIn: p.styleBuiltIn === undefined ? state.insertedParagraphStyle : p.styleBuiltIn })
+        state.paragraphs.splice(index + 1, 0, added)
         state.paragraphXml.delete(oldId)
         const left = new DOMParser().parseFromString(flatOpc(oldXml), "application/xml").getElementsByTagNameNS(WORD_XML, "p")[0]!
         left.setAttributeNS("http://schemas.microsoft.com/office/word/2010/wordml", "w14:paraId", "00000003")
-        const properties = left.ownerDocument!.createElementNS(WORD_XML, "w:pPr")
+        const existing = Array.from(left.childNodes).find(n => n.nodeType === 1 && (n as Element).localName === "pPr") as Element | undefined
+        const copied = existing ? new XMLSerializer().serializeToString(existing) : ""
+        const properties = existing ?? left.ownerDocument!.createElementNS(WORD_XML, "w:pPr")
         const marker = new DOMParser().parseFromString(flatOpc(`<w:p><w:pPr><w:rPr><w:ins w:id="1" ${stamp}/></w:rPr></w:pPr></w:p>`), "application/xml").getElementsByTagNameNS(WORD_XML, "rPr")[0]!
         properties.appendChild(left.ownerDocument!.importNode(marker, true))
-        left.insertBefore(properties, left.firstChild)
+        if (!existing) left.insertBefore(properties, left.firstChild)
         state.paragraphXml.set(p.id, new XMLSerializer().serializeToString(left))
-        state.paragraphXml.set(oldId, `<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="00000001"><w:ins w:id="2" ${stamp}><w:r><w:t>${escapeXml(state.corruptParagraphInsertion ? value + "wrong" : value)}</w:t></w:r></w:ins></w:p>`)
+        state.paragraphXml.set(oldId, `<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="00000001">${copied}<w:ins w:id="2" ${stamp}><w:r><w:t>${escapeXml(state.corruptParagraphInsertion ? value + "wrong" : value)}</w:t></w:r></w:ins></w:p>`)
         state.saved = false
       })
-      return paragraph(p)
+      const handle = paragraph(added)
+      Object.defineProperty(handle, "styleBuiltIn", { get: () => added.styleBuiltIn ?? "Normal",
+        set: (style: string) => { setFormat(added, "style", style); queue.push(() => { added.styleBuiltIn = style }) } })
+      return handle
     },
     insertAnnotations(set: unknown) {
       const id = `annotation-${++state.annotationCounter}`
@@ -1819,6 +1827,42 @@ test("native paragraph insertion reports uncertainty when inserted style differs
   expect(state.paragraphInsertions).toBe(1)
 })
 
+test("native paragraph insertion applies a requested heading as one tracked style change on the new paragraph", async () => {
+  for (const tracking of ["Off", "TrackAll"]) for (const trackFormatting of [false, true]) {
+    const {state,nativeHost}=office(["Synthetic interpretation text."],true)
+    state.tracking=tracking;state.trackFormatting=trackFormatting;state.formatAuthor="Native user"
+    state.paragraphXml.set("paragraph-0",'<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="00000001"><w:r><w:t>Synthetic interpretation text.</w:t></w:r></w:p>')
+    const target=(await nativeHost.selection())!, formatting=[{paragraph:1,style:"Heading2" as const}]
+    const input={proposalId:"heading-insert",target,replacement:target.text+"\rConstruction",formatting,
+      author:async () => ({kind:"paragraph_insert" as const,proposalId:"heading-insert",target,text:"Construction",formatting})}
+    expect((await nativeHost.apply(input)).status).toBe("applied")
+    expect((await nativeHost.apply(input)).status).toBe("already-applied")
+    expect(state.paragraphs.map(p=>[p.text,p.styleBuiltIn ?? "Normal"])).toEqual([["Synthetic interpretation text.","Normal"],["Construction","Heading2"]])
+    expect(state.paragraphXml.get(state.paragraphs[1]!.id)).toContain("pPrChange")
+    expect(state.tracking).toBe(tracking);expect(state.trackFormatting).toBe(trackFormatting);expect(state.modeChanges).toEqual(["TrackAll",tracking])
+  }
+})
+
+test("native paragraph insertion after a heading inherits its style and refuses untrackable restyling before dispatch", async () => {
+  for (const formatting of [undefined, [{paragraph:1,style:"Heading1" as const}], [{paragraph:1,style:"Normal" as const}]]) {
+    const {state,nativeHost}=office(["Interpretation"],true)
+    state.paragraphs[0]!.styleBuiltIn="Heading1";state.formatAuthor="Native user"
+    if (formatting?.[0]!.style === "Normal") state.trackFormatting=undefined
+    state.paragraphXml.set("paragraph-0",'<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="00000001"><w:pPr><w:pStyle w:val="Heading1"/><w:keepNext/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>Inter</w:t></w:r><w:r><w:t>pretation</w:t></w:r></w:p>')
+    const target=(await nativeHost.selection())!
+    const input={proposalId:"heading-anchor",target,replacement:target.text+"\rDefinitions",formatting,
+      author:async () => ({kind:"paragraph_insert" as const,proposalId:"heading-anchor",target,text:"Definitions",formatting})}
+    if (formatting?.[0]!.style === "Normal") {
+      await expect(nativeHost.apply(input)).rejects.toMatchObject({mutationState:"unchanged"})
+      expect(state.paragraphInsertions).toBe(0);expect(state.modeChanges).toEqual([])
+      continue
+    }
+    expect((await nativeHost.apply(input)).status).toBe("applied")
+    expect(state.paragraphs.map(p=>p.styleBuiltIn)).toEqual(["Heading1","Heading1"])
+    expect(state.paragraphXml.get(state.paragraphs[1]!.id)).not.toContain("pPrChange")
+  }
+})
+
 test("explicit paragraph deletion tracks text and mark, preserves the following paragraph and never replays", async () => {
   for (const tracking of ["Off", "TrackAll"]) for (const corrupt of ["none", "markup", "current"]) {
     const {state,nativeHost}=office(["An existing obligation.","A following provision."],true)
@@ -1843,6 +1887,17 @@ test("explicit paragraph deletion tracks text and mark, preserves the following 
   }
 })
 
+test("paragraph deletion binds a repeated paragraph by identity, not its text", async () => {
+  const {state,nativeHost}=office(["Repeated clause.","Middle.","Repeated clause.","Last."],true)
+  const at="Repeated clause.\rMiddle.\r".length
+  state.selection=[at,at+"Repeated clause.".length]
+  const target=(await nativeHost.selection())!
+  expect(target.paragraphs[0]!.id).toBe("paragraph-2")
+  expect((await nativeHost.apply({proposalId:"repeat",target,replacement:"",paragraphAction:"delete",
+    author:async () => ({kind:"paragraph_delete" as const,proposalId:"repeat",target})})).status).toBe("applied")
+  expect(state.paragraphs.map(p=>p.text)).toEqual(["Repeated clause.","Middle.","","Last."])
+})
+
 test("paragraph deletion rejects a forged prepared action and final boundary without writing", async () => {
   const {state,nativeHost}=office(["An existing obligation.","A following provision."],true)
   state.selection=[0,"An existing obligation.".length]
@@ -1864,7 +1919,8 @@ test("paragraph operations classify preflight, author and fresh-capture failures
     const {state,nativeHost}=office(["An existing obligation.","A following provision."],true)
     state.selection=[0,"An existing obligation.".length]
     const target=(await nativeHost.selection())!
-    if (stage === "preflight") state.paragraphXml.set("paragraph-0",'<w:p><w:pPr><w:keepNext/></w:pPr><w:r><w:t>An existing obligation.</w:t></w:r></w:p>')
+    // Both accept any paragraph properties but not an anchor inside the target.
+    if (stage === "preflight") state.paragraphXml.set("paragraph-0",'<w:p><w:bookmarkStart w:id="9" w:name="Mark"/><w:r><w:t>An existing obligation.</w:t></w:r><w:bookmarkEnd w:id="9"/></w:p>')
     const input={proposalId:`${kind}-${stage}`,target,replacement:kind === "insert" ? `${target.text}\rNew paragraph.` : "",
       ...(kind === "delete" ? {paragraphAction:"delete" as const} : {}),
       author:async () => {

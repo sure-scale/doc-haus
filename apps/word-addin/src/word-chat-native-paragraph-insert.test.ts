@@ -108,3 +108,75 @@ test("only projection-qualified unbound terminal carrier may change physical ID"
     ),
   ).toThrow()
 })
+
+// Styled anchors: `props` is the anchor pPr body, `runs` its content.
+const prior = '<w:p w14:paraId="44444444"><w:r><w:t>Prior</w:t></w:r></w:p>'
+const styled = (props: string, runs: string) =>
+  `<w:p w14:paraId="11111111" w14:textId="77777777">${props && `<w:pPr>${props}</w:pPr>`}${runs}</w:p>${prior}`
+const inserted = (props: string, runs: string, newProps: string, added = "<w:r><w:t>Added</w:t></w:r>", tail = prior) =>
+  `<w:p w14:paraId="22222222" w14:textId="77777777"><w:pPr>${props}<w:rPr><w:ins w:id="1" ${stamp}/></w:rPr></w:pPr>${runs}</w:p><w:p w14:paraId="11111111" w14:textId="12345678">${newProps && `<w:pPr>${newProps}</w:pPr>`}<w:ins w:id="2" ${stamp}>${added}</w:ins></w:p>${tail}`
+const change = (old: string, id = "3", at = "2026-01-01T00:00:01Z", author = "Reviewer") =>
+  `<w:pPrChange w:id="${id}" w:author="${author}" w:date="${at}"><w:pPr>${old}</w:pPr></w:pPrChange>`
+const verifyStyled = (props: string, runs: string, xml: string, restyled: boolean) =>
+  verifyNativeWordChatParagraphInsertion(
+    projectNativeWordChatBody(flat(styled(props, runs)), beforeInv),
+    projectNativeWordChatBody(flat(xml), afterInv),
+    target,
+    "Added",
+    restyled,
+  )
+const plain = "<w:r><w:t>Original</w:t></w:r>"
+
+test("a requested style is one tracked property change whose old properties are the anchor's", () => {
+  const jc = '<w:jc w:val="both"/>',
+    h2 = '<w:pStyle w:val="Heading2"/>'
+  expect(verifyStyled(jc, plain, inserted(jc, plain, h2 + jc + change(jc)), true)).toEqual(["Reviewer"])
+  for (const [xml, restyled] of [
+    [inserted(jc, plain, h2 + jc), true], // restyled without a tracked change
+    [inserted(jc, plain, h2 + jc), false],
+    [inserted(jc, plain, h2 + jc + change("")), true], // old properties are not the anchor's
+    [inserted(jc, plain, h2 + change(jc)), true], // a direct property dropped
+    [inserted(jc, plain, jc + change(jc)), true], // no style change recorded
+    [inserted(jc, plain, h2 + jc + change(jc, "2")), true], // reused revision id
+    [inserted(jc, plain, h2 + jc + change(jc, "3", "2026-01-01T00:05:00Z")), true],
+    [inserted(jc, plain, h2 + jc + change(jc, "3", undefined, "Other")), true],
+    [inserted(jc, "<w:r><w:rPr><w:b/></w:rPr><w:t>Original</w:t></w:r>", h2 + jc + change(jc)), true], // anchor text altered
+    [inserted(jc, plain, h2 + jc + change(jc), undefined, prior.replace("<w:r>", '<w:pPr><w:jc w:val="right"/></w:pPr><w:r>')), true],
+    [inserted(jc, plain, h2 + '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>' + jc + change(jc)), true],
+    [inserted(jc, plain, jc), true], // style requested but unchanged
+  ] as const)
+    expect(() => verifyStyled(jc, plain, xml, restyled)).toThrow("could not be verified")
+})
+
+test("a heading anchor may be followed by an inheriting or Normal paragraph", () => {
+  const h1 = '<w:pStyle w:val="Heading1"/><w:keepNext/>'
+  expect(verifyStyled(h1, plain, inserted(h1, plain, h1), false)).toEqual(["Reviewer"])
+  expect(verifyStyled(h1, plain, inserted(h1, plain, "<w:keepNext/>" + change(h1)), true)).toEqual(["Reviewer"])
+  expect(verifyStyled(h1, plain, inserted(h1, plain, '<w:pStyle w:val="Normal"/><w:keepNext/>' + change(h1)), true)).toEqual([
+    "Reviewer",
+  ])
+  // An untracked style change would survive rejecting the insertion.
+  expect(() => verifyStyled(h1, plain, inserted(h1, plain, "<w:keepNext/>"), false)).toThrow()
+  expect(() => verifyStyled(h1, plain, inserted(h1, plain, ""), false)).toThrow()
+  expect(() => verifyStyled(h1, plain, inserted("<w:keepNext/>", plain, h1), false)).toThrow()
+})
+
+test("a multi-run formatted anchor accepts only inherited character properties on the new text", () => {
+  const runs = '<w:r><w:t>Orig</w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">inal</w:t></w:r>',
+    bold = "<w:r><w:rPr><w:b/></w:rPr><w:t>Added</w:t></w:r>"
+  expect(verifyStyled("", runs, inserted("", runs, "", bold), false)).toEqual(["Reviewer"])
+  expect(verifyStyled("", runs, inserted("", runs, ""), false)).toEqual(["Reviewer"])
+  expect(() => verifyStyled("", runs, inserted("", runs, "", bold.replace("<w:b/>", "<w:i/>")), false)).toThrow()
+  expect(() => verifyStyled("", runs, inserted("", runs.replace("<w:b/>", "<w:i/>"), "", bold), false)).toThrow()
+  const source = (runs: string, props = "") => projectNativeWordChatBody(flat(styled(props, runs)), beforeInv)
+  expect(assertNativeWordChatParagraphInsertionTarget(source(runs, "<w:keepNext/>"), target)).toBe(0)
+  for (const [refused, props] of [
+    ['<w:bookmarkStart w:id="9" w:name="x"/><w:r><w:t>Original</w:t></w:r><w:bookmarkEnd w:id="9"/>', ""],
+    ['<w:hyperlink w:anchor="x"><w:r><w:t>Original</w:t></w:r></w:hyperlink>', ""],
+    ['<w:fldSimple w:instr="PAGE"><w:r><w:t>Original</w:t></w:r></w:fldSimple>', ""],
+    ['<w:commentRangeStart w:id="1"/><w:r><w:t>Original</w:t></w:r><w:commentRangeEnd w:id="1"/>', ""],
+    [`<w:ins w:id="4" ${stamp}><w:r><w:t>Original</w:t></w:r></w:ins>`, ""],
+    [plain, '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>'],
+  ] as const)
+    expect(() => assertNativeWordChatParagraphInsertionTarget(source(refused, props), target)).toThrow("could not be verified")
+})

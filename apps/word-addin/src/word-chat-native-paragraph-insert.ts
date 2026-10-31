@@ -79,8 +79,17 @@ function validMeta(e: Element) {
       (a.namespaceURI === W14 && ["paraId", "textId"].includes(a.localName) && /^[0-9a-fA-F]{8}$/.test(a.value)),
   )
 }
-/** Ordinary top-level plain paragraph only. Native style/list checks are also
- * required at the call site; this does not authorize a list or heading. */
+// Content whose inverse would need more than this change's own carriers.
+const refused = new Set([
+  "ins", "del", "moveFrom", "moveTo", "moveFromRangeStart", "moveFromRangeEnd", "moveToRangeStart", "moveToRangeEnd",
+  "pPrChange", "rPrChange", "numPr", "sectPr", "framePr", "fldChar", "fldSimple", "instrText", "drawing", "pict",
+  "object", "commentRangeStart", "commentRangeEnd", "commentReference", "bookmarkStart", "bookmarkEnd", "permStart",
+  "permEnd", "hyperlink", "sdt", "customXml", "smartTag", "footnoteReference", "endnoteReference", "vanish",
+  "webHidden", "specVanish",
+])
+/** One complete top-level paragraph of literal runs, with any paragraph and
+ * run properties except direct numbering, frames, sections and revisions.
+ * Fields, objects, links and annotation anchors are refused. */
 export function assertNativeWordChatParagraphInsertionTarget(projection: Projection, target: WordChatTarget): number {
   if (
     !target ||
@@ -96,26 +105,53 @@ export function assertNativeWordChatParagraphInsertionTarget(projection: Project
     item = projection.paragraphs[index]
   if (!item || item.text !== target.text || item.nesting !== 0 || !/^body\/p\[\d+\]$/.test(item.path)) return fail()
   const p = paragraph(item.xml),
+    children = elements(p),
+    props = named(p, "pPr"),
     runs = named(p, "r")
   if (
     !validMeta(p) ||
-    elements(p).length !== 1 ||
-    runs.length !== 1 ||
-    elements(runs[0]!).length !== 1 ||
-    named(runs[0]!, "t").length !== 1 ||
-    runs[0]!.textContent !== target.text
+    props.length > 1 ||
+    (props.length === 1 && children[0] !== props[0]) ||
+    !runs.length ||
+    children.length !== props.length + runs.length ||
+    Array.from(p.getElementsByTagNameNS("*", "*")).some(
+      (e) =>
+        e.namespaceURI === W
+          ? refused.has(e.localName)
+          : (e.parentNode as Element | null)?.namespaceURI !== W || (e.parentNode as Element).localName !== "rPr",
+    )
   )
     return fail()
+  let value = ""
+  for (const run of runs) {
+    const kids = elements(run),
+      ts = named(run, "t"),
+      rp = named(run, "rPr")
+    if (
+      ts.length !== 1 ||
+      rp.length > 1 ||
+      kids.length !== ts.length + rp.length ||
+      (rp.length === 1 && kids[0] !== rp[0]) ||
+      elements(ts[0]!).length ||
+      Array.from(ts[0]!.childNodes).some((n) => n.nodeType !== 3)
+    )
+      return fail()
+    value += ts[0]!.textContent ?? ""
+  }
+  if (value !== target.text) return fail()
   return index
 }
 /** Verifies main-story structure/carriers, annotation graph and captured
- * style/numbering/font/theme dependencies. Word people/settings/relationship
+ * style/numbering/font/theme dependencies by undoing only this insertion's
+ * carriers. `restyled` requires one tracked style change on the new paragraph;
+ * the host proves its live style. Word people/settings/relationship
  * serialization and complete compressed-package identity remain a caller audit. */
 export function verifyNativeWordChatParagraphInsertion(
   before: Projection,
   after: Projection,
   target: WordChatTarget,
   text: string,
+  restyled = false,
 ): string[] {
   const index = assertNativeWordChatParagraphInsertionTarget(before, target)
   if (
@@ -206,29 +242,80 @@ export function verifyNativeWordChatParagraphInsertion(
         ? clean(c as Element)
         : c.nodeType === 3 && ((n.namespaceURI === W && n.localName === "t") || !c.nodeValue?.trim()),
     )
+  const blank = (e: Element) => !elements(e).length && Array.from(e.attributes).every((x) => x.namespaceURI === XMLNS)
+  const sig = (list: Element[]) => list.map(canon)
+  const is = (name: string) => (e: Element) => e.namespaceURI === W && e.localName === name
+  const anchorProps = named(oldP, "pPr")[0],
+    anchorMark = anchorProps && named(anchorProps, "rPr")[0],
+    base = anchorProps ? elements(anchorProps) : []
+  // The anchor text keeps a copy of its properties on Word's new inserted mark.
   const pp = named(leftP, "pPr"),
     pr = pp.length === 1 ? named(pp[0]!, "rPr") : [],
     mark = pr.length === 1 ? named(pr[0]!, "ins") : []
   if (
     pp.length !== 1 ||
+    elements(leftP)[0] !== pp[0] ||
     !clean(pp[0]!) ||
-    elements(pp[0]!).length !== 1 ||
     pr.length !== 1 ||
-    elements(pr[0]!).length !== 1 ||
     mark.length !== 1 ||
     mark[0]!.childNodes.length ||
     Array.from(pp[0]!.attributes).some((a) => a.namespaceURI !== XMLNS) ||
     Array.from(pr[0]!.attributes).some((a) => a.namespaceURI !== XMLNS)
   )
     return fail()
-  const content = named(newP, "ins")
-  if (!clean(newP) || elements(newP).length !== 1 || content.length !== 1 || !only(content[0]!, ["r"])) return fail()
+  // The new paragraph keeps the original mark: the anchor's properties, or the
+  // requested style with a tracked change whose old properties are the anchor's.
+  const np = named(newP, "pPr"),
+    content = named(newP, "ins"),
+    props = np[0],
+    changes = props ? named(props, "pPrChange") : []
+  if (
+    !clean(newP) ||
+    np.length > 1 ||
+    (props && elements(newP)[0] !== props) ||
+    content.length !== 1 ||
+    elements(newP).length !== np.length + 1 ||
+    !only(content[0]!, ["r"]) ||
+    (props && Array.from(props.attributes).some((a) => a.namespaceURI !== XMLNS)) ||
+    changes.length > 1
+  )
+    return fail()
+  const current = props ? elements(props).filter((e) => e !== changes[0]) : []
+  if (restyled) {
+    const change = changes[0],
+      prior = change ? named(change, "pPr") : [],
+      style = current.filter(is("pStyle")),
+      rest = (list: Element[]) => list.filter((e) => !is("pStyle")(e))
+    if (
+      !change ||
+      elements(props!).at(-1) !== change ||
+      elements(change).length !== 1 ||
+      prior.length !== 1 ||
+      Array.from(prior[0]!.attributes).some((a) => a.namespaceURI !== XMLNS) ||
+      !equal(sig(elements(prior[0]!)), sig(base.filter((e) => !is("rPr")(e)))) ||
+      style.length > 1 ||
+      !equal(sig(rest(current)), sig(rest(base))) ||
+      equal(sig(style), sig(base.filter(is("pStyle"))))
+    )
+      return fail()
+  } else if (changes.length || !equal(sig(current), sig(base))) return fail()
+  // Inserted text may only take the anchor mark's or final run's character properties.
+  const lastRun = named(oldP, "r").at(-1),
+    inherited = [anchorMark, lastRun && named(lastRun, "rPr")[0]].map((e) => (e ? sig(elements(e)) : []))
   let value = ""
   for (const run of named(content[0]!, "r")) {
-    const ts = named(run, "t")
+    const kids = elements(run),
+      rp = named(run, "rPr"),
+      ts = named(run, "t")
     if (
       !validMeta(run) ||
-      elements(run).length !== 1 ||
+      rp.length > 1 ||
+      (rp.length === 1 &&
+        (kids[0] !== rp[0] ||
+          blank(rp[0]!) ||
+          Array.from(rp[0]!.attributes).some((a) => a.namespaceURI !== XMLNS) ||
+          !inherited.some((x) => equal(x, sig(elements(rp[0]!)))))) ||
+      kids.length !== rp.length + 1 ||
       ts.length !== 1 ||
       elements(ts[0]!).length ||
       Array.from(ts[0]!.childNodes).some((n) => n.nodeType !== 3) ||
@@ -244,9 +331,12 @@ export function verifyNativeWordChatParagraphInsertion(
   const id = (e: Element) => e.getAttributeNS(W, "id"),
     author = mark[0]!.getAttributeNS(W, "author"),
     date = mark[0]!.getAttributeNS(W, "date"),
-    utc = mark[0]!.getAttributeNS(W16, "dateUtc")
-  for (const node of [mark[0]!, content[0]!]) {
-    const n = id(node)
+    utc = mark[0]!.getAttributeNS(W16, "dateUtc"),
+    owned = [mark[0]!, content[0]!, ...changes]
+  for (const node of owned) {
+    const n = id(node),
+      when = node.getAttributeNS(W, "date"),
+      at = when ? Date.parse(when) - Date.parse(date ?? "") : NaN
     if (
       !n ||
       !/^\d+$/.test(n) ||
@@ -254,9 +344,10 @@ export function verifyNativeWordChatParagraphInsertion(
       !date ||
       Number.isNaN(Date.parse(date)) ||
       node.getAttributeNS(W, "author") !== author ||
-      node.getAttributeNS(W, "date") !== date ||
-      node.getAttributeNS(W16, "dateUtc") !== utc ||
-      (utc && utc !== date) ||
+      // The style is a second Word action in the same batch; its stamp may tick.
+      (node === changes[0] ? !(at >= 0 && at <= 60_000) : when !== date) ||
+      (node.getAttributeNS(W16, "dateUtc") || when) !== when ||
+      (node !== changes[0] && node.getAttributeNS(W16, "dateUtc") !== utc) ||
       Array.from(node.attributes).some(
         (a) =>
           a.namespaceURI !== XMLNS &&
@@ -266,8 +357,12 @@ export function verifyNativeWordChatParagraphInsertion(
     )
       return fail()
   }
-  if (id(mark[0]!) === id(content[0]!)) return fail()
-  leftP.removeChild(pp[0]!)
+  if (new Set(owned.map(id)).size !== owned.length) return fail()
+  // Inverse: drop the inserted mark and any containers it alone needed, then the
+  // new paragraph; the anchor text and its copied properties must be unchanged.
+  pr[0]!.removeChild(mark[0]!)
+  if (!anchorMark && blank(pr[0]!)) pp[0]!.removeChild(pr[0]!)
+  if (!anchorProps && blank(pp[0]!)) leftP.removeChild(pp[0]!)
   a.body.removeChild(newP)
   if (oldParaId) {
     const attr = leftP.getAttributeNodeNS(W14, "paraId")
@@ -298,8 +393,7 @@ export function verifyNativeWordChatParagraphInsertion(
     newIds.some((x) => !x || !/^\d+$/.test(x)) ||
     new Set(oldIds).size !== old.length ||
     new Set(newIds).size !== now.length ||
-    newIds.includes(id(mark[0]!)) ||
-    newIds.includes(id(content[0]!))
+    owned.some((x) => newIds.includes(id(x)))
   )
     return fail()
   for (let i = 0; i < old.length; i++) {
