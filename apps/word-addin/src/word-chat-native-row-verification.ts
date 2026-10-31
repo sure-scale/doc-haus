@@ -1,5 +1,6 @@
 import { DOMParser } from "@xmldom/xmldom"
 import type { WordChatCellRun } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { nativeWordChatPeopleGrowth } from "./word-chat-native-people"
 
 const PKG = "http://schemas.microsoft.com/office/2006/xmlPackage"
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -10,8 +11,6 @@ const XML = "http://www.w3.org/XML/1998/namespace"
 const MAIN = "/word/document.xml"
 const RELS = "/word/_rels/document.xml.rels"
 const PEOPLE = "/word/people.xml"
-const W15 = "http://schemas.microsoft.com/office/word/2012/wordml"
-const MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
 const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 const REL = "http://schemas.openxmlformats.org/package/2006/relationships"
 const PEOPLE_TYPE = "http://schemas.microsoft.com/office/2011/relationships/people"
@@ -89,6 +88,7 @@ export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:strin
     }
     if(name === "/word/settings.xml" && part.getElementsByTagNameNS(W,"rsids").length!==other.getElementsByTagNameNS(W,"rsids").length) return fail()
     if(people && name === RELS) { peopleRelationships(part,other); continue }
+    if(name === PEOPLE) continue
     if(JSON.stringify(dependency(name,part))!==JSON.stringify(dependency(name,other))) return fail()
   }
   /** Word adds exactly one people relationship and may renumber only the
@@ -166,15 +166,8 @@ export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:strin
   // Reject comments, PIs or non-whitespace text outside literal text runs.
   const clean=(n:Element):boolean=>Array.from(n.childNodes).every(c=>c.nodeType===1?clean(c as Element):c.nodeType===3 && (n.namespaceURI===W && n.localName==="t" || !c.nodeValue?.trim()))
   if(!clean(row)) return fail()
-  if(people) {
-    // The new people part names exactly the row's single revision author.
-    const data=elements(people), list=Array.from(people.getElementsByTagNameNS(W15,"people")), persons=Array.from(people.getElementsByTagNameNS(W15,"person")), presence=persons.length===1 ? elements(persons[0]!) : []
-    if(data.length!==1 || data[0]!.namespaceURI!==PKG || data[0]!.localName!=="xmlData" || elements(data[0]!).length!==1 || list.length!==1 || elements(data[0]!)[0]!==list[0] ||
-       Array.from(list[0]!.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===MC && a.localName==="Ignorable")) || elements(list[0]!).length!==1 || persons.length!==1 || persons[0]!.parentNode!==list[0] ||
-       authors.size!==1 || persons[0]!.getAttributeNS(W15,"author")!==[...authors][0] || Array.from(persons[0]!.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===W15 && a.localName==="author")) ||
-       presence.length>1 || presence.some(e=>e.namespaceURI!==W15 || e.localName!=="presenceInfo" || elements(e).length || !e.getAttributeNS(W15,"providerId") || !e.getAttributeNS(W15,"userId") ||
-         Array.from(e.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===W15 && ["providerId","userId"].includes(a.localName))))) return fail()
-  }
+  // A new or grown people part lists only this row's revision author.
+  if(after.has(PEOPLE) && !nativeWordChatPeopleGrowth(before.get(PEOPLE), after.get(PEOPLE)!, authors)) return fail()
   return {authors:[...authors]}
 }
 

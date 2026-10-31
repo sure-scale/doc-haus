@@ -4,6 +4,7 @@ import type { WordChatTableRowDeletionProposal } from "../../../dochaus/lib/word
 import type { WordChatAuthoredTableRowDeletion } from "../../../dochaus/lib/word-chat-contract"
 import { assertNativeWordChatInlineDependencies, projectNativeWordChatBody } from "./word-chat-host-ooxml"
 import { normalizeNativeWordChatCommentIds } from "./word-chat-native-comments"
+import { nativeWordChatPeopleGrowth } from "./word-chat-native-people"
 
 type Inventory = Array<{ id: string; text: string; tableNestingLevel?: number }>
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", W14 = "http://schemas.microsoft.com/office/word/2010/wordml", W16 = "http://schemas.microsoft.com/office/word/2023/wordml/word16du", PKG = "http://schemas.microsoft.com/office/2006/xmlPackage", XMLNS = "http://www.w3.org/2000/xmlns/"
@@ -179,16 +180,10 @@ export function verifyNativeWordChatDeletedRow(beforeXml: string, afterXml: stri
   const leftParts = dependencyParts(old.doc), rightParts = dependencyParts(normalized.doc)
   const extra = [...rightParts.keys()].filter(name => !leftParts.has(name))
   if ([...leftParts.keys()].some(name => !rightParts.has(name)) || extra.some(name => name !== "/word/people.xml") || extra.length > 1) return fail("native preservation")
-  if (extra.length) {
-    const p = rightParts.get(extra[0]!)!, ns = "http://schemas.microsoft.com/office/word/2012/wordml"
-    const people = Array.from(p.getElementsByTagNameNS(ns, "people")), persons = Array.from(p.getElementsByTagNameNS(ns, "person"))
-    const data = elements(p)
-    if (data.length !== 1 || data[0]!.namespaceURI !== PKG || data[0]!.localName !== "xmlData" || elements(data[0]!).length !== 1 || people.length !== 1 || elements(data[0]!)[0] !== people[0] || elements(people[0]!).length !== 1 || persons.length !== 1 || persons[0]!.parentNode !== people[0] || !proof.authors.has(persons[0]!.getAttributeNS(ns, "author") ?? "") || Array.from(people[0]!.attributes).some(a => a.namespaceURI !== XMLNS && !(a.namespaceURI === "http://schemas.openxmlformats.org/markup-compatibility/2006" && a.localName === "Ignorable"))) return fail("native preservation")
-    const children = elements(persons[0]!)
-    if (children.length !== 1 || children[0]!.namespaceURI !== ns || children[0]!.localName !== "presenceInfo" || elements(children[0]!).length || !children[0]!.getAttributeNS(ns, "providerId") || !children[0]!.getAttributeNS(ns, "userId") || Array.from(persons[0]!.attributes).some(a => a.namespaceURI !== XMLNS && !(a.namespaceURI === ns && a.localName === "author")) || Array.from(children[0]!.attributes).some(a => a.namespaceURI !== XMLNS && !(a.namespaceURI === ns && ["providerId", "userId"].includes(a.localName)))) return fail("native preservation")
-  }
+  // A new or grown people part lists only this deletion's revision author.
+  if (rightParts.has("/word/people.xml") && !nativeWordChatPeopleGrowth(leftParts.get("/word/people.xml"), rightParts.get("/word/people.xml")!, proof.authors)) return fail("native preservation")
   for (const [name, left] of leftParts) {
-    if (name === "/word/document.xml") continue
+    if (name === "/word/document.xml" || name === "/word/people.xml") continue
     const right = rightParts.get(name)!
     const clean = (part: Element) => {
       const clone = part.cloneNode(true) as Element

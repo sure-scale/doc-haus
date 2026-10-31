@@ -74,3 +74,19 @@ test("first revision by a Word user may add its people part and move only the un
   const kept=moved("Reviewer",rel("rId1","styles","styles.xml")+rel("rId3","theme","theme/theme1.xml")+peopleRel.replace("rId3","rId4")).replace("<w:body>",`<w:body><w:p xmlns:r="${T}" r:id="rId3"/>`)
   expect(check(kept,cited)).toEqual({authors:["Reviewer"]})
 })
+test("a document that already lists other reviewers may gain only the row's author in its people part",()=>{
+  const W15="http://schemas.microsoft.com/office/word/2012/wordml"
+  const person=(author:string)=>`<w15:person w15:author="${author}"><w15:presenceInfo w15:providerId="None" w15:userId="${author}"/></w15:person>`
+  const people=(persons:string)=>`<pkg:part pkg:name="/word/people.xml"><pkg:xmlData><w15:people xmlns:w15="${W15}">${persons}</w15:people></pkg:xmlData></pkg:part>`
+  const add=(xml:string, persons:string)=>xml.replace("</pkg:package>",people(persons)+"</pkg:package>")
+  const prior=add(before,person("Prior"))
+  const check=(persons:string)=>verifyNativeWordChatInsertedRow(prior,add(after,persons),0,1,["New","Value"])
+  expect(check(person("Prior")+person("Reviewer"))).toEqual({authors:["Reviewer"]})
+  expect(check(person("Prior"))).toEqual({authors:["Reviewer"]})
+  for(const persons of [
+    person("Prior")+person("Someone else"),                  // added person is not the revision author
+    person("Reviewer"),                                      // prior reviewer dropped
+    person("Prior").replace('w15:userId="Prior"','w15:userId="Changed"')+person("Reviewer"), // prior reviewer changed
+    person("Prior")+person("Reviewer")+person("Reviewer"),   // duplicate addition
+  ]) expect(()=>check(persons)).toThrow()
+})

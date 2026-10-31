@@ -2,6 +2,7 @@ import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
 import type { WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { assertNativeWordChatInlineDependencies, projectNativeWordChatBody } from "./word-chat-host-ooxml"
 import { normalizeNativeWordChatCommentIds } from "./word-chat-native-comments"
+import { nativeWordChatPeopleGrowth } from "./word-chat-native-people"
 
 type Projection = ReturnType<typeof projectNativeWordChatBody>
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", W14 = "http://schemas.microsoft.com/office/word/2010/wordml", W16 = "http://schemas.microsoft.com/office/word/2023/wordml/word16du", PKG = "http://schemas.microsoft.com/office/2006/xmlPackage", XMLNS = "http://www.w3.org/2000/xmlns/", XML = "http://www.w3.org/XML/1998/namespace"
@@ -110,15 +111,11 @@ export function assertNativeWordChatStoryInverse(before:Projection, after:Projec
   // rsid inventory and a newly introduced people relationship/part.
   const extra=[...normalized.parts.keys()].filter(name=>!old.parts.has(name))
   if ([...old.parts.keys()].some(name=>!normalized.parts.has(name)) || extra.some(name=>name!=="/word/people.xml") || extra.length>1) return fail("package dependencies")
-  if(extra.length) {
-    if(!old.parts.has("/word/_rels/document.xml.rels")) return fail("people relationship")
-    const part=normalized.parts.get(extra[0]!)!, ns="http://schemas.microsoft.com/office/word/2012/wordml", data=elements(part), people=Array.from(part.getElementsByTagNameNS(ns,"people")), persons=Array.from(part.getElementsByTagNameNS(ns,"person"))
-    if(data.length!==1 || data[0]!.namespaceURI!==PKG || data[0]!.localName!=="xmlData" || elements(data[0]!).length!==1 || people.length!==1 || elements(data[0]!)[0]!==people[0] || elements(people[0]!).length!==1 || Array.from(people[0]!.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI==="http://schemas.openxmlformats.org/markup-compatibility/2006" && a.localName==="Ignorable")) || persons.length!==1 || persons[0]!.parentNode!==people[0] || persons[0]!.getAttributeNS(ns,"author")!==author) return fail("people metadata")
-    const c=elements(persons[0]!)
-    if(c.length!==1 || c[0]!.namespaceURI!==ns || c[0]!.localName!=="presenceInfo" || elements(c[0]!).length || !c[0]!.getAttributeNS(ns,"providerId") || !c[0]!.getAttributeNS(ns,"userId") || Array.from(persons[0]!.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===ns && a.localName==="author")) || Array.from(c[0]!.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===ns && ["providerId","userId"].includes(a.localName)))) return fail("people metadata")
-  }
+  if(extra.length && !old.parts.has("/word/_rels/document.xml.rels")) return fail("people relationship")
+  // A new or grown people part lists only this merge's revision author.
+  if(normalized.parts.has("/word/people.xml") && !nativeWordChatPeopleGrowth(old.parts.get("/word/people.xml"),normalized.parts.get("/word/people.xml")!,new Set([author]))) return fail("people metadata")
   for(const [name,prior] of old.parts) {
-    if(name==="/word/document.xml")continue
+    if(name==="/word/document.xml" || name==="/word/people.xml")continue
     const next=normalized.parts.get(name)!
     if(name==="/word/_rels/document.xml.rels" && extra.length) {
       const rel="http://schemas.openxmlformats.org/package/2006/relationships",type="http://schemas.microsoft.com/office/2011/relationships/people",theme="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme", ref="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
