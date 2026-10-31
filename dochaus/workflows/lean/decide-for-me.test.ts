@@ -179,17 +179,20 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // re-pinned when reviews were saved as typed findings (dN/<stage>.json) and the
 // change plan began keying the findings earlier documents forward to it. The
 // same pins hold for typed or picked words; an adopted recommendation reads as
-// delegated, which moves every key that reads the answers and no other.
+// delegated, which moves every key that reads the answers and no other. The
+// instructions step was added, and intake and spine were re-pinned when they
+// began keying the instruction list (instructions.md).
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
 const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", "  A (delegated by the lawyer; the recommended option was adopted): Singapore law.")
 // A draft keys its outline contract and plan entry, never answers.
 const UNANSWERED_STEPS = ["d1.draft"]
 const INPUTS: Record<string, string> = {
+  "instructions": "7db0182116d00b86390816e69312620dff6c36a8920d47b9190fb725b72906b6",
   "discrepancy": "8dac7eefaf1e988e35ffbe6c7f765a951943e9b1299546a9b94dc10e99950a72",
-  "intake": "1e491eea042fb2cb31d8340459e58993849d22ce04ec26793d0e495a840061c6",
+  "intake": "097361ef1ee9a3958bc6d602d33eac98ff61d441ea7aa050c405152bf241c65d",
   "research": "64a0d22c3dd780907955b2e56b3122b94ea72101092d694f899a15e2af0cb13b",
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
-  "spine": "c038d3823819fc2e8ef176dc1cb855fd7f7a87e1fe077efb1c2aee41f922e076",
+  "spine": "92e11cbba45c603813204eeb77a7897a5f08bdd5495f2f54476da9e1e7db4674",
   "d1.draft": "68f34f0d87312276c4f5d676b490753a5050865d40c0448aaae368a7d6252376",
   "d1.review": "e80f5bbe084c8ef90d2864358d2caafa09139822584fb0f12cb14d0976e76416",
   "d1.review-independent": "9f1fe22f3e0db01ef5fffe96a09ddf917b5e371a89c58988eb875bcfbbae4aa4",
@@ -278,7 +281,7 @@ test("intake told a question is answered is told so however it was answered", ()
   for (const late of ["answered", "adopted"] as const) {
     const directory = spineMatter(late)
     const reply = JSON.stringify({ questions: [{ question: QUESTION, kind: "judgment", context: "Still silent." }] })
-    expect(intakeQuestions(directory, reply)!.issues.join(" ")).toContain("already has a lawyer's answer")
+    expect(intakeQuestions(directory, reply)!.issues.join(" ")).toContain("already has an answer")
   }
 })
 

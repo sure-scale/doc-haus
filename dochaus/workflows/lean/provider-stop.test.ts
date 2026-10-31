@@ -35,7 +35,7 @@ test.each([
   // The lawyer's fix only, never the provider's own payload.
   expect(stopped.stop_reason).toBe(`discrepancy: ${PROVIDER_STOP_MESSAGES[kind]}`)
   expect(stopped.stages.discrepancy?.status).toBe("failed")
-  expect(broken.prompts.map(row => row.agent)).toEqual([AGENT.discrepancy])
+  expect(broken.prompts.map(row => row.agent)).toEqual([AGENT.instructions, AGENT.discrepancy])
 
   const fixed = scriptedModel(happyPath)
   const resumed = await runLean(directory, { sessions: fixed.port })

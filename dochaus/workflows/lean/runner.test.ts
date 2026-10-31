@@ -53,7 +53,7 @@ describe("lean drafting runner", () => {
     expect(state.status).toBe("failed")
     expect(state.stop_reason).toStartWith("d1.draft: outline: checker failed after 3 retries: ")
     expect(state.stop_reason).toContain("has no \"# \" title line")
-    expect(state.stages["d1.draft"]).toMatchObject({ status: "failed", attempts: 4, calls: 4, session_id: "ses_child6" })
+    expect(state.stages["d1.draft"]).toMatchObject({ status: "failed", attempts: 4, calls: 4, session_id: "ses_child7" })
     expect(state.stages["d1.review"]?.status).toBe("pending")
     expect(model.sessions.find(row => row.agent === AGENT.draft)).toMatchObject({ parentID: "ses_owner", agent: AGENT.draft, permissions: LEAN_CHILD_PERMISSIONS })
     expect(existsSync(leanFile(directory, "d1/draft.md"))).toBe(false)
@@ -75,7 +75,7 @@ describe("lean drafting runner", () => {
     ;["d1/body.docx", "d1/body-applied.docx", "drafting-notes.docx", "d1/redline.docx", "drafting-notes-coverage.md"].forEach(name =>
       expect(existsSync(leanFile(directory, name))).toBe(true))
     expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "execution_ready", disclosed: [] })
-    expect(Object.keys(state.stages)).toEqual(["discrepancy", "intake", "research", "research-review", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "checklist-check", "package-review", "gate"])
+    expect(Object.keys(state.stages)).toEqual(["instructions", "discrepancy", "intake", "research", "research-review", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "checklist-check", "package-review", "gate"])
     expect(Object.values(state.stages).every(stage => stage?.status === "done" && stage.input_sha)).toBe(true)
   }, 120_000)
 

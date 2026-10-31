@@ -325,6 +325,7 @@ function draftingNotesSections(directory: string, request: string) {
     loose.length ? tagged("open_items", openItemLines(loose)) : "",
     tagged("questions", questions.map(question => delegatedIDs.has(question.id)
       ? `- (${question.answer_class === "declined" ? "not answered" : "delegated"}; see delegated_decisions) ${question.question}`
+      : question.answer_kind === "instruction" ? `- (settled by the lawyer's instruction "${question.decided_by?.text}", not asked) ${question.question}\n  Answer: ${question.answer}`
       : `- (${question.status}) ${question.question}${question.answer ? `\n  Answer: ${question.answer}` : ""}`).join("\n") || "None."),
     delegated ? tagged("delegated_decisions", delegated) : "",
     tagged("output_contract", [

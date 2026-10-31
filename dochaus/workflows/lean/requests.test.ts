@@ -101,7 +101,7 @@ for (let i = 0; i < 20; i++) enqueueLeanRequest(process.argv[1], { kind: "contin
     expect((await runLean(directory, { sessions: model.port })).status).toBe("blocked")
     const questions = readQuestions(directory)
     expect(questions).toHaveLength(2)
-    expect(model.prompts.map(row => row.agent)).toEqual([AGENT.discrepancy, AGENT.intake, AGENT.advise, AGENT.advise])
+    expect(model.prompts.map(row => row.agent)).toEqual([AGENT.instructions, AGENT.discrepancy, AGENT.intake, AGENT.advise, AGENT.advise])
     expect(readLeanText(directory, "d1/draft.md")).toBeUndefined()
     expect(readLeanJson(directory, "plan.json")).toBeUndefined()
     enqueueLeanRequest(directory, { kind: "answer", question_id: questions[0]!.id, answer: "Singapore law." })

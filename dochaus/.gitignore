@@ -40,6 +40,7 @@ agent/*.md
 !agent/lean-draft.md
 !agent/lean-drafting-notes.md
 !agent/lean-files.md
+!agent/lean-instructions.md
 !agent/lean-intake.md
 !agent/lean-package-review.md
 !agent/lean-research.md

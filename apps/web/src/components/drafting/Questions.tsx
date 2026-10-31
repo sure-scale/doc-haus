@@ -228,8 +228,14 @@ export default function Questions({
       {unavailable && <p className="question-advice is-unavailable">No recommendation: {unavailable.reason}</p>}
       {reviewing && (
         <div className="question-saved-answer">
-          <p className="question-label">{question.answer_kind === "adopted" ? "Adopted answer" : "Saved answer"}</p>
+          <p className="question-label">{question.answer_kind === "adopted" ? "Adopted answer" : question.answer_kind === "instruction" ? "Settled by your instructions" : "Saved answer"}</p>
           <p className="question-saved-text">{question.answer}</p>
+          {question.decided_by && (
+            <blockquote className="question-settled-by">
+              {question.decided_by.quote}
+              <cite>{question.decided_by.source_id === "request" ? "Your instructions" : question.decided_by.source_id}</cite>
+            </blockquote>
+          )}
           {correctionQueued ? <p ref={queuedNotice} role="status" tabIndex={-1}>Correction queued. Your saved answer will update when drafting applies it.</p> : !correcting && (
             <button ref={changeButton} type="button" disabled={busy || !drafts.loaded} onClick={() => {
               if (typeof drafts.answers[draftKey] !== "string") drafts.set(draftKey, question.answer ?? "")

@@ -211,7 +211,7 @@ function elision(directory: string, quote: SourceQuote) {
  * words and are not included. */
 export function lawyerWords(directory: string) {
   return [readLeanText(directory, "request.md") ?? "", ...leanUserUpdates(directory).filter(update => update.status === "included").map(update => update.text), ...readQuestions(directory).flatMap(question =>
-    question.status === "answered" && question.answer ? [question.answer, ...(question.lawyer_words ? [question.lawyer_words] : [])] : [])]
+    question.status === "answered" && question.answer && question.answer_kind !== "instruction" ? [question.answer, ...(question.lawyer_words ? [question.lawyer_words] : [])] : [])]
 }
 
 /** Actionable retry feedback for one unverified quote. When the words are in a

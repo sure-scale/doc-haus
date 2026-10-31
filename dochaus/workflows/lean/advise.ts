@@ -8,6 +8,7 @@ import { FIRST_DOCUMENT, planActingFor, stepDocument, stepStage, type StepID } f
 import { retryPrompt, tagged } from "./prompts"
 import { REQUEST_SOURCE, matterSourceIDs, quoteFound, quoteMissIssue } from "./quotes"
 import { nameWithProvenance, provenanceMapLine, sourceProvenance } from "../../lib/source-provenance"
+import { currentInstructions, INSTRUCTIONS_FILE } from "./instructions"
 import { approvedResearch, researchHandoff } from "./research"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, stepSessionTitle, type LeanDeps } from "./stages"
 import { answeredQuestionsText, readLeanText, readQuestions, type LeanState, type Question, type QuestionAdvice, type QuestionOption } from "./state"
@@ -88,13 +89,14 @@ export function advisePrompt(directory: string, question: Question) {
     tagged("request", readLeanText(directory, "request.md") ?? ""),
     ...(updates ? [tagged("user_updates", updates)] : []),
     tagged("answers", answeredQuestionsText(directory) || "None."),
+    ...(readLeanText(directory, INSTRUCTIONS_FILE) ? [tagged("instructions", readLeanText(directory, INSTRUCTIONS_FILE)!)] : []),
     tagged("acting_for", acting.stated ? `The lawyer acts for: ${acting.party}.` : "The request does not say whom the lawyer acts for; recommend what is even-handed between the parties."),
     tagged("legal_research", researchHandoff(directory)),
     `Matter source names (use these exact names with search-document and read-document): ${JSON.stringify(matterSourceIDs(directory))}`,
     ...(provenanceLine ? [provenanceLine] : []),
     question.options
       ? `Reply with one JSON object only, including "group":"short topic": {"recommendation":{"option":0,"rationale":"why this option",${basis}}}, where "option" is the index of one of the options above; or, when no option is supported, {"unavailable":{"reason":"why no option can be recommended"}}. Do not return options of your own.`
-      : `Reply with one JSON object only, including "group":"short topic": {"options":[{"text":"one option the lawyer could choose"}],"recommendation":{"option":0,"rationale":"why this option",${basis}}}, with 2 to 4 distinct options and "option" the 0-based index of the one recommended; or, when no option is supported, {"options":[],"unavailable":{"reason":"why no option can be recommended"}}, with no options or 2 to 4.`,
+      : `Reply with one JSON object only, including "group":"short topic": {"options":[{"text":"one option the lawyer could choose"}],"recommendation":{"option":0,"rationale":"why this option",${basis},"decided_by":"i1"}}, with 2 to 4 distinct options and "option" the 0-based index of the one recommended; or, when no option is supported, {"options":[],"unavailable":{"reason":"why no option can be recommended"}}, with no options or 2 to 4. Give "decided_by" only when one item of <instructions> expressly decides this question, as that item's id, and recommend the option that follows it, quoting the item's own words in basis; otherwise leave it out. An item that is only related, or that would need inference to apply, does not decide the question.`,
   ].join("\n\n")
 }
 
@@ -117,8 +119,11 @@ export function checkAdvice(directory: string, question: Question, reply: string
     if (typeof row.rationale !== "string" || !row.rationale.trim()) issues.push('"recommendation.rationale" must say why that option is recommended.')
     const basis = basisIssues(directory, row.basis, options.requireRelevance, options.request)
     issues.push(...basis.issues)
+    const decided = row.decided_by === undefined || question.options ? undefined : row.decided_by
+    if (decided !== undefined && !currentInstructions(directory).some(item => item.id === decided))
+      issues.push(`"recommendation.decided_by" must be the id of one item listed in <instructions>, or left out.`)
     if (issues.length || !choices) return { issues }
-    return { issues: [], ...(group ? { group } : {}), advice: { ...kept, recommendation: { option: choices[row.option as number]!.id, rationale: (row.rationale as string).trim(), basis: basis.rows } } }
+    return { issues: [], ...(group ? { group } : {}), advice: { ...kept, recommendation: { option: choices[row.option as number]!.id, rationale: (row.rationale as string).trim(), basis: basis.rows, ...(typeof decided === "string" ? { decided_by: decided } : {}) } } }
   }
   const reason = record(unavailable) && typeof unavailable.reason === "string" ? unavailable.reason.trim() : ""
   if (!reason) issues.push('"unavailable.reason" must say why no option can be recommended.')

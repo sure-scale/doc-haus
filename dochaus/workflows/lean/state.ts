@@ -20,7 +20,7 @@ export function isReviewStage(stage: StageID): stage is ReviewStageID {
   return stage === "review-playbook" || (REVIEW_STAGES as readonly string[]).includes(stage)
 }
 
-export const LEAN_STAGES = ["discrepancy", "intake", "research", "research-review", "spine", "draft", ...REVIEW_STAGES, "review-playbook", "change-plan", "change-prepare", "changes", "change-review", "apply", "finalize", "checklist-check", "package-review", "gate"] as const
+export const LEAN_STAGES = ["instructions", "discrepancy", "intake", "research", "research-review", "spine", "draft", ...REVIEW_STAGES, "review-playbook", "change-plan", "change-prepare", "changes", "change-review", "apply", "finalize", "checklist-check", "package-review", "gate"] as const
 export type StageID = (typeof LEAN_STAGES)[number]
 
 export type LeanModel = { providerID: string; modelID: string }
@@ -131,7 +131,9 @@ export type QuestionOption = { id: string; text: string }
  * recommended. `options` are the advisor's own, absent when the question has
  * options of its own. It is never an answer. */
 export type QuestionAdvice =
-  | { options?: QuestionOption[]; recommendation: { option: string; rationale: string; basis: { source_id: string; quote: string; relevance?: string }[] } }
+  | { options?: QuestionOption[]; recommendation: { option: string; rationale: string; basis: { source_id: string; quote: string; relevance?: string }[]
+    /** The current instruction (instructions.md item id) that expressly decides the question. */
+    decided_by?: string } }
   | { options?: QuestionOption[]; unavailable: { reason: string; reason_code?: "advisor_failed" } }
 
 export type Question = {
@@ -150,10 +152,14 @@ export type Question = {
   /** How the lawyer gave the answer, when not in their own words: by picking
    * an offered option, or by adopting the recommended one (Decide for me).
    * Either way `answer` holds that option's words, and stage keys and prompts
-   * read those words alone (questionContent). */
-  answer_kind?: "option" | "adopted"
+   * read those words alone (questionContent). "instruction" marks a question
+   * code settled by the lawyer's instruction in decided_by, never asked: not a
+   * lawyer's answer (answeredQuestions), shown so the lawyer can change it. */
+  answer_kind?: "option" | "adopted" | "instruction"
   /** The option picked or adopted, with answer_kind. */
   option_id?: string
+  /** The instruction (instructions.ts) that settled the question, with answer_kind "instruction". */
+  decided_by?: { text: string; source_id: string; quote: string }
   /** How the lawyer's own words answer the question, read once before any
    * step reads them (answer-class.ts). A delegating answer to a question the
    * delegation settles is recorded as an adoption (classifiedAnswer). */
@@ -177,7 +183,7 @@ export const LEAN_STATE_SCHEMA = "dochaus.lean.state/2"
  * lawyer's words; one answered without words (an old hand-back) is left out
  * as an open one is. */
 export const LEAN_QUESTIONS_SCHEMA = "dochaus.lean.questions/2"
-const FIRST_STEPS: StepID[] = ["discrepancy", "intake", "research", "research-review", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "checklist-check", "package-review", "gate"]
+const FIRST_STEPS: StepID[] = ["instructions", "discrepancy", "intake", "research", "research-review", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "checklist-check", "package-review", "gate"]
 
 /** Runtime error text recorded in the run (stop reasons, events, apply results)
  * names matter files relative to the matter folder, so the lean state holds no
@@ -410,7 +416,7 @@ export function delegable(question: Question) {
  * not_delegable (an adoption the question cannot take). Writes nothing. */
 export function answerWith(target: Question | undefined, form: AnswerForm): Question {
   if (!target) throw new LeanQuestionError("No such question in this matter's lean drafting run.", "not_found")
-  const { answer_kind: _kind, option_id: _option, answer_class: _class, lawyer_words: _words, ...asked } = target
+  const { answer_kind: _kind, option_id: _option, answer_class: _class, lawyer_words: _words, decided_by: _decided, ...asked } = target
   const answered = (answer: string, how?: { answer_kind: "option" | "adopted"; option_id: string }): Question =>
     ({ ...asked, status: "answered", answer, ...how, answered_at: new Date().toISOString() })
   if ("text" in form) return answered(validateAnswerText(form.text))
@@ -483,16 +489,25 @@ export function undecidedQuestion(question: Question) {
   return question.status === "answered" && question.answer_kind !== "adopted" && (question.answer_class === "delegated" || question.answer_class === "declined")
 }
 
-/** Every answered question, ordered by id: questions.json's own order moves
- * when a step's questions replace its earlier ones. */
+/** Every question the lawyer answered, ordered by id: questions.json's own
+ * order moves when a step's questions replace its earlier ones. A question
+ * settled by an instruction is not one (instructionSettledQuestions). */
 export function answeredQuestions(directory: string) {
-  return readQuestions(directory).filter(question => question.status === "answered").toSorted((a, b) => a.id.localeCompare(b.id))
+  return readQuestions(directory).filter(question => question.status === "answered" && question.answer_kind !== "instruction").toSorted((a, b) => a.id.localeCompare(b.id))
 }
 
-/** Canonical text of every lawyer's answer, however given; the "answers" input
- * of every drafting stage and its key. */
-export function answeredQuestionsText(directory: string) {
-  return answeredQuestions(directory)
+/** Questions code settled by the lawyer's instruction instead of asking, ordered by id. */
+export function instructionSettledQuestions(directory: string) {
+  return readQuestions(directory).filter(question => question.status === "answered" && question.answer_kind === "instruction").toSorted((a, b) => a.id.localeCompare(b.id))
+}
+
+/** Canonical text of every lawyer's answer, however given, then each
+ * question settled by an instruction, marked as such; the "answers" input of
+ * every drafting stage and its key. The instructions step reads the lawyer's
+ * answers alone (`settled: false`): what an instruction settled is not a new
+ * instruction. */
+export function answeredQuestionsText(directory: string, options: { settled?: false } = {}) {
+  return [...answeredQuestions(directory), ...options.settled === false ? [] : instructionSettledQuestions(directory)]
     .map(question => `- [${question.id}] Q: ${question.question}\n  ${answerLabel(question)}: ${question.answer}`)
     .join("\n")
 }
@@ -505,6 +520,7 @@ export const SHORT_HASH_LENGTH = 10
  * still open was already put to the lawyer, so no step asks it again, however
  * reworded; the gate discloses it. */
 function answerLabel(question: Question) {
+  if (question.answer_kind === "instruction") return `A (settled by the lawyer's instruction "${question.decided_by?.text}", not asked; the lawyer may change it)`
   if (question.answer_kind === "adopted") return "A (delegated by the lawyer; the recommended option was adopted)"
   if (question.answer_class === "delegated") return `A (delegated by the lawyer, but it needs the lawyer's own answer, so ${STILL_OPEN})`
   if (question.answer_class === "declined") return `A (not answered by the lawyer, so ${STILL_OPEN})`
