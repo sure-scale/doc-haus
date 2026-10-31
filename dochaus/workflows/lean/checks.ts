@@ -8,7 +8,8 @@ import { retypedListLabel } from "../../lib/list-label"
 import { normalize } from "../../lib/quote-verify"
 import { changeListIDs, memoMode, mintedQuestionID, runItemIDs, withoutRefMarkers } from "./delivered-memo"
 import { notesForReader } from "./gate"
-import { excerpt, openItem, proseQuoteFound, quoteMissIssue, quoteMissItems, sourceQuotes } from "./quotes"
+import { excerpt, openItem, proseQuoteIssues, quoteMissItems } from "./quotes"
+import type { SourceQuoteScanOptions } from "./source-quote-scan"
 import { readLeanPlan, type DocID } from "./plan"
 import { researchFindingIDs } from "./research"
 import { raisedFindings } from "./review-findings"
@@ -166,7 +167,7 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
   const own = items.reduce((text, item) => text.replaceAll(item.id, " "), delivered).replace(QUOTED, " ")
   const gaps = options.final ? [] : textPlaceholders(own)
     .filter(placeholder => !recorded.has(placeholder.toLowerCase()) && !EDITORIAL_MARK.test(placeholder))
-  const misquoted = sourceQuotes(content).filter(quote => !proseQuoteFound(directory, quote))
+  const misquoted = proseQuoteIssues(directory, "The drafting notes", content)
   const unsupported = [...new Set(citationRowsForLeanText(directory, "drafting-notes.md", content)
     .filter(row => row.status === "unsupported").map(row => row.citation_text))]
   const reader = memo ? "The memo is" : "The notes are"
@@ -193,7 +194,7 @@ export function checkDraftingNotes(directory: string, content: string, items: Op
       ...(gaps.length
         ? [`The drafting notes leave these placeholders in their own text: ${gaps.join(", ")}. State the point in words, or quote the body's placeholder exactly as its open item records it.`]
         : []),
-      ...misquoted.map(quote => quoteMissIssue(directory, "The drafting notes", quote)),
+      ...misquoted,
       ...unsupported.map(citation => `The drafting notes cite "${citation}", which no matter source, research row or verified authority supports. Remove the citation or describe the point as needing research.`),
     ],
     openItems: [],
@@ -292,22 +293,27 @@ export function readChangeList(directory: string, document: DocID): ChangeList |
  * that carries it, so the gate can check that paragraph for a visible marker. */
 export function finalBodyItems(directory: string, rows: ParagraphRow[]) {
   const holding = (ref: OpenItem["ref"]) => {
-    const needle = normalize(ref.placeholder ?? ref.citation ?? ref.quote ?? "")
-    return needle ? rows.filter(row => normalize(row.text).includes(needle)).map(row => row.pid) : []
+    const needle = normalize(ref.placeholder ?? ref.citation ?? ref.quote ?? ref.statement ?? "")
+    return needle ? { pids: paragraphTextHolders(rows, needle), whole: rows.some(row => normalize(row.text).includes(needle)) }
+      : { pids: [], whole: false }
   }
   // The same marker in several paragraphs is one open point in each, disclosed
   // and settled where it stands. Blank ___ fields and other findings are
   // located at their first paragraph.
-  return bodyOpenItems(directory, "apply", rows.map(row => row.text).join("\n\n")).flatMap(item => {
-    const pids = holding(item.ref)
-    const located = item.kind === "placeholder" && !/^_+$/.test(item.ref.placeholder ?? "") ? pids : pids.slice(0, 1)
+  return bodyOpenItems(directory, "apply", rows.map(row => row.text).join("\n\n"), { format: "plain" }).flatMap(item => {
+    const { pids, whole } = holding(item.ref)
+    // A quotation crossing Word paragraphs is disclosed in the last affected
+    // paragraph, where its closing mark/source citation appears. The gate uses
+    // the same joined-text lookup to keep the complete quotation in scope.
+    const located = item.kind === "placeholder" && !/^_+$/.test(item.ref.placeholder ?? "") ? pids
+      : item.kind === "quote_miss" && !whole ? pids.slice(-1) : pids.slice(0, 1)
     return located.length
       ? located.map(pid => openItem("apply", item.kind, item.detail, { ...item.ref, pid }))
       : [openItem("apply", item.kind, item.detail, item.ref)]
   })
 }
 
-export function bodyOpenItems(directory: string, stage: StageID, content: string) {
+export function bodyOpenItems(directory: string, stage: StageID, content: string, options: SourceQuoteScanOptions = { format: "markdown" }) {
   const placeholders = textPlaceholders(content)
   const citations = [...new Map(citationRowsForLeanText(directory, `${stage}.md`, content)
     .filter(row => row.status === "unsupported").map(row => [row.normalized_key, row.citation_text])).values()]
@@ -315,8 +321,31 @@ export function bodyOpenItems(directory: string, stage: StageID, content: string
     ...placeholders.map(placeholder => openItem(stage, "placeholder", `The body contains the placeholder ${placeholder}.`, { placeholder })),
     ...citations.map(citation => openItem(stage, "citation_unsupported",
       `No matter source, research row or verified authority supports the citation "${citation}".`, { citation })),
-    ...quoteMissItems(directory, stage, content),
+    ...quoteMissItems(directory, stage, content, {}, options),
   ]
+}
+
+/** Read-only locations in the actual paragraph sequence, including quotations
+ * that span paragraph boundaries. These offsets are local to this check; no
+ * new persisted locator or authority record is introduced. */
+export function paragraphTextHolders(rows: { pid: string; text: string }[], text: string): string[] {
+  const needle = normalize(text)
+  if (!needle) return []
+  let length = 0
+  const spans = rows.flatMap(row => {
+    const value = normalize(row.text)
+    if (!value) return []
+    const start = length
+    length += value.length + 1
+    return [{ pid: row.pid, text: value, start, end: length - 1 }]
+  })
+  const body = spans.map(row => row.text).join(" ")
+  const holding = new Set<string>()
+  for (let start = body.indexOf(needle); start >= 0; start = body.indexOf(needle, start + 1)) {
+    const end = start + needle.length
+    for (const span of spans) if (span.start < end && span.end > start) holding.add(span.pid)
+  }
+  return [...holding]
 }
 
 /** The drafting placeholders and open-item markers in `content`; a line of

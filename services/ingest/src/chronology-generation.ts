@@ -4,7 +4,7 @@ import path from "node:path"
 import {
   chronologyCalendarDayOffset,
   supportedNameAssociationQuote,
-  isSuppliedChronologyName,
+  isSuppliedChronologySource,
   SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE,
 } from "../../../dochaus/lib/chronology"
 import type {
@@ -93,6 +93,7 @@ export function chronologySources(directory: string): ChronologySource[] {
       doc_path: string
       role: string
       extraction_quality: string | null
+      source_provenance: string | null
     }[]
     const seen = new Set<string>()
     const sources: ChronologySource[] = []
@@ -113,7 +114,7 @@ export function chronologySources(directory: string): ChronologySource[] {
         sourceId: String(row.id),
         documentName: row.name,
         version: available ? hash(readFileSync(target.docPath)) : "",
-        kind: isSuppliedChronologyName(row.name) ? "supplied-chronology" : "source",
+        kind: isSuppliedChronologySource(row.name, row.source_provenance) ? "supplied-chronology" : "source",
         extraction: !available
           ? "unavailable"
           : quality?.status === "no_readable_text"

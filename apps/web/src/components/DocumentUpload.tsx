@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import {
   deleteDocument,
+  DerivedChronologyError,
   DocumentExistsError,
   duplicateMessage,
   DuplicateUploadError,
@@ -27,6 +28,7 @@ import DraftedList from "./drafting/DraftedList"
 import { deliverableGroups, type DraftedOutput } from "./drafting/model"
 import Dropzone from "./Dropzone"
 import { useToast } from "./Toast"
+import UploadReviewDialog from "./UploadReviewDialog"
 import { WordBadge, WordOpenControl, WordSetup, WordWarning } from "./WordDocuments"
 
 // One row per file the lawyer added in this session, so a slow or failed upload
@@ -37,7 +39,7 @@ type Upload = {
   // not_indexed: added, but no readable text could be extracted, so nothing
   // was indexed (the extraction quality gate). Never shown as ready.
   // duplicate: identical to a version the matter already keeps; nothing saved.
-  status: "queued" | "uploading" | "reading" | "ready" | "not_indexed" | "failed" | "exists" | "duplicate"
+  status: "queued" | "uploading" | "reading" | "ready" | "not_indexed" | "failed" | "exists" | "duplicate" | "chronology"
   error?: string
   // A ready Word file saved with pending tracked changes: the notice stays in
   // its row until dismissed.
@@ -49,6 +51,9 @@ type Upload = {
   // keep both beside a generated deliverable, and the choice is sent on retry.
   existing?: { name: string; role: "source" | "deliverable" }
   choice?: ExistingSourceChoice
+  chronology?: { name: string; originalName?: string }
+  chronologyOrigin?: "supplied-chronology"
+  sourceProvenance?: "supplied-chronology"
   // A duplicate of an earlier version of a document: the row offers to make
   // that version current again (a restore, kept as the next version).
   match?: { name: string; version: { id: string; number: number } }
@@ -85,6 +90,7 @@ export default function DocumentUpload({
   const [uploads, setUploads] = useState<Upload[]>([])
   const [removing, setRemoving] = useState<string>()
   const [confirmId, setConfirmId] = useState<number | null>(null)
+  const [reviewKey, setReviewKey] = useState<number | null>(null)
   // A long attachment list the lawyer opened or closed, by parent name.
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const nextKey = useRef(0)
@@ -135,14 +141,22 @@ export default function DocumentUpload({
     queue.current = queue.current.then(() => run(upload))
   }
 
+  function retry(upload: Upload, patch: Partial<Upload> = {}) {
+    if (!upload.chronology) body.current?.focus()
+    const next = { ...upload, ...patch, status: "queued" as const, error: undefined }
+    update(upload.key, next)
+    enqueue(next)
+  }
+
   async function run(upload: Upload) {
     update(upload.key, { status: "uploading", error: undefined })
     try {
       const result = await uploadDocument(matterId, upload.file, {
         onSent: () => update(upload.key, { status: "reading" }),
         existing: upload.choice,
+        chronologyOrigin: upload.chronologyOrigin,
       })
-      update(upload.key, { status: result.quality?.status === "no_readable_text" ? "not_indexed" : "ready", notice: result.notice })
+      update(upload.key, { status: result.quality?.status === "no_readable_text" ? "not_indexed" : "ready", notice: result.notice, sourceProvenance: result.source_provenance })
       if (!result.notice) setTimeout(() => setUploads((prev) => prev.filter((u) => u.key !== upload.key)), READY_LINGER_MS)
       onUploaded()
       const { kind, message } = uploadedToast(result)
@@ -225,8 +239,8 @@ export default function DocumentUpload({
       node.attachment?.note === "may-contain-attachments" && "May contain further attachments",
       node.attachment?.flagged && "Suspicious name",
     ].filter(Boolean)
+    const wordAction = <WordOpenControl matterId={matterId} name={d.name} compact disabled={removing === d.name} />
     const actions = <>
-      <WordOpenControl matterId={matterId} name={d.name} compact disabled={removing === d.name} />
       <details className="viewer-more-actions doc-more-actions" inert={removing === d.name} onToggle={(event) => {
         const menu = event.currentTarget
         const popup = menu.querySelector<HTMLElement>(".viewer-more-menu")
@@ -310,19 +324,20 @@ export default function DocumentUpload({
               </span>
             ) : null}
             <WordBadge name={d.name} />
-            {child && <span className="doc-row-actions">{actions}</span>}
+            <span className="doc-row-actions">{child && wordAction}{actions}</span>
           </div>
+          {d.source_provenance === "supplied-chronology" && <div className="doc-row-provenance"><span className="supplied-chronology-label">Supplied chronology</span></div>}
           <QualityNote quality={d.quality} />
           {notes.length > 0 && <span className="doc-child-status">{notes.join(" · ")}</span>}
           {!child && (
             <div className="doc-row-meta">
-              <span className="document-origin" title={parent ? `Extracted from the ${parentWords(parent.name).parent} ${parent.name}` : undefined}>
+              {d.source_provenance !== "supplied-chronology" && <span className="document-origin" title={parent ? `Extracted from the ${parentWords(parent.name).parent} ${parent.name}` : undefined}>
                 {parent ? `From removed ${parentWords(parent.name).parent} ${parent.name}` : "Uploaded"}
-              </span>
+              </span>}
               <time className="document-time" dateTime={new Date(d.created_at).toISOString()} title={`Added to matter: ${formatDateTime(d.created_at)}`}>
                 {formatTime(d.created_at)}
               </time>
-              {actions}
+              {wordAction}
             </div>
           )}
           {confirmId === d.id && d.removal && (
@@ -406,15 +421,12 @@ export default function DocumentUpload({
             <UploadRow
               key={u.key}
               upload={u}
-              onRetry={() => {
-                update(u.key, { status: "queued", error: undefined })
-                enqueue(u)
+              onRetry={() => retry(u)}
+              onChoose={(choice) => retry(u, { choice })}
+              onDismiss={() => {
+                body.current?.focus()
+                setUploads((prev) => prev.filter((x) => x.key !== u.key))
               }}
-              onChoose={(choice) => {
-                update(u.key, { status: "queued", choice })
-                enqueue({ ...u, choice })
-              }}
-              onDismiss={() => setUploads((prev) => prev.filter((x) => x.key !== u.key))}
               onRestore={() => restoreMatch(u)}
             />
           ))}
@@ -451,6 +463,13 @@ export default function DocumentUpload({
     </span>
   )
 
+  // Hold the active file while its retry waits behind ordinary uploads. A late
+  // exception joins the queue rather than replacing the file being reviewed.
+  const reviewable = (upload: Upload) => Boolean(upload.chronology) && ["chronology", "exists", "queued", "uploading", "reading"].includes(upload.status)
+  const review = uploads.find((upload) => upload.key === reviewKey && reviewable(upload))
+    ?? uploads.find(reviewable)
+  useEffect(() => { setReviewKey(review?.key ?? null) }, [review?.key])
+
   return (
     <section className="docs-drawer-panel" aria-labelledby="docs-drawer-title">
       <div className="docs-drawer-head">
@@ -485,6 +504,19 @@ export default function DocumentUpload({
         />
         <p>Drop Word, PDF, email, Excel, Markdown or zip files here, or click to browse.</p>
       </footer>
+      {review && <UploadReviewDialog
+        reviewId={review.key}
+        fileName={review.file.name}
+        pending={review.status === "queued" || review.status === "uploading" || review.status === "reading" ? review.status : undefined}
+        collision={review.status === "exists"}
+        existing={review.existing}
+        choice={review.choice}
+        waiting={uploads.filter((upload) => upload.key !== review.key && upload.status === "chronology").length}
+        returnFocus={body}
+        onAccept={() => retry(review, { chronologyOrigin: "supplied-chronology" })}
+        onChoose={(choice) => retry(review, { choice })}
+        onSkip={() => setUploads((prev) => prev.filter((upload) => upload.key !== review.key))}
+      />}
     </section>
   )
 }
@@ -746,6 +778,7 @@ export function newUpload(key: number, file: File): Upload {
 // identical file says which version it matches. A lost connection or a service
 // failure can be retried; a refusal for this file (4xx) would only repeat.
 export function failedUpload(error: unknown, file: File): Partial<Upload> {
+  if (error instanceof DerivedChronologyError) return { status: "chronology", error: error.message, chronology: { name: error.documentName, originalName: error.originalName } }
   if (error instanceof DocumentExistsError) return { status: "exists", existing: { name: error.existing, role: error.role } }
   if (error instanceof DuplicateUploadError) {
     const earlier = error.version && !error.version.current ? { name: error.existing, version: { id: error.version.id, number: error.version.number } } : undefined
@@ -764,6 +797,7 @@ const UPLOAD_LABEL: Record<Upload["status"], string> = {
   failed: "Not added",
   exists: "Already in this matter. Save this as a new version of it, or keep both?",
   duplicate: "Already in this matter. Nothing was saved.",
+  chronology: "Awaiting chronology review…",
 }
 const DELIVERABLE_EXISTS = "A document created by Doc.Haus has this name. Keep both?"
 
@@ -794,17 +828,19 @@ export function UploadRow({ upload, onRetry, onChoose, onDismiss, onRestore }: {
     <li className={`doc-row upload-row is-${upload.status}${upload.notice ? " has-notice" : ""}`} aria-live="polite">
       <div className="doc-row-main">
         <span className="upload-icon" aria-hidden>
-          {upload.status === "failed" || upload.status === "exists" || upload.status === "not_indexed" || upload.status === "duplicate" || upload.notice
+          {upload.status === "failed" || upload.status === "exists" || upload.status === "chronology" || upload.status === "not_indexed" || upload.status === "duplicate" || upload.notice
             ? <IconAlert />
             : upload.status === "ready" ? <IconCheck /> : <span className="upload-spinner" />}
         </span>
         <span className="upload-name">{upload.file.name}</span>
+        {upload.sourceProvenance === "supplied-chronology" && <span className="document-origin">Supplied chronology</span>}
       </div>
       <div className="doc-row-meta">
         <span className="upload-status">
           {match && confirming
             ? restoreConfirmText(match.version.number)
-            : upload.error ?? upload.notice ?? (upload.existing?.role === "deliverable" ? DELIVERABLE_EXISTS : UPLOAD_LABEL[upload.status])}
+            : upload.status === "chronology" || (upload.status === "exists" && upload.chronology) ? UPLOAD_LABEL.chronology
+            : upload.error ?? upload.notice ?? (upload.status === "exists" && upload.existing?.role === "deliverable" ? DELIVERABLE_EXISTS : UPLOAD_LABEL[upload.status])}
         </span>
         {match && confirming && (
           <span className="upload-actions" role="group" aria-label={`Restore version ${match.version.number}`} onKeyDown={(event) => {
@@ -853,7 +889,7 @@ export function UploadRow({ upload, onRetry, onChoose, onDismiss, onRestore }: {
             </button>
           </span>
         )}
-        {upload.status === "exists" && (
+        {upload.status === "exists" && !upload.chronology && (
           <span className="upload-actions">
             {/* Neither choice loses anything. A new version of the same document
                 is the usual intent, so it leads; a generated document is never

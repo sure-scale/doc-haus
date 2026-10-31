@@ -11,7 +11,7 @@ import { EXPLICIT_ONLY } from "../../agents"
 // One row in the assistant's reasoning timeline: a thinking block or a tool call.
 export type Step =
   | { kind: "reasoning"; text: string; done: boolean }
-  | { kind: "tool"; label: string; status: "running" | "done" | "error"; detail?: string; templateResult?: TemplateResult; children?: Step[]; chronologyResult?: { matterId: string; proposalIds: string[] } }
+  | { kind: "tool"; tool?: string; label: string; status: "running" | "done" | "error"; detail?: string; templateResult?: TemplateResult; children?: Step[]; chronologyResult?: { matterId: string; proposalIds: string[] } }
 
 // A redline/tracked-change a turn proposed: the clause delta plus a pointer back
 // to the document, so the assistant bubble can preview the red/green change and
@@ -211,7 +211,8 @@ function partsToSteps(parts: Part[], matter: string, pool?: Part[]): Step[] {
       // The tool's own output (or error) — surfaced behind a disclosure so the
       // timeline stays a one-line narration but the underlying work it explored
       // (a search's passages, a read's content, a failure's reason) is one click
-      // away. Subagent task steps narrate through their nested children instead.
+      // away. A task's final result remains available alongside its child steps:
+      // those steps show the work, not the final findings or qualifications.
       const input = "input" in p.state ? (p.state.input as Record<string, unknown> | undefined) : undefined
       const raw =
         p.state.status === "completed" ? p.state.output : p.state.status === "error" ? p.state.error : undefined
@@ -228,7 +229,7 @@ function partsToSteps(parts: Part[], matter: string, pool?: Part[]): Step[] {
           ? `${code.trim()}\n\n--- output ---\n${raw.trim()}`
           : (code?.trim() ?? raw?.trim())
       const emptyTemplates = p.tool === "list-templates" && p.state.status === "completed" && body === "[]"
-      const detail = !children && body && !emptyTemplates ? body : undefined
+      const detail = body && !emptyTemplates ? body : undefined
       const formatted = p.state.status === "completed" && detail
         ? templateResult(p.tool, detail, p.state.metadata)
         : undefined
@@ -241,11 +242,11 @@ function partsToSteps(parts: Part[], matter: string, pool?: Part[]): Step[] {
         typeof input?.filePath === "string" &&
         /\.dochaus[\\/]profile\.md$/.test(input.filePath)
       )
-        return [{ kind: "tool", label: "No practice profile on file", status: "done", detail }]
+        return [{ kind: "tool", tool: p.tool, label: "No practice profile on file", status: "done", detail }]
       const meta = p.state.status === "completed" && p.tool === "propose-chronology-changes" ? p.state.metadata : undefined
       const chronologyResult = meta && typeof meta.chronologyMatterId === "string" && Array.isArray(meta.chronologyProposalIds) && meta.chronologyProposalIds.every(id => typeof id === "string")
         ? { matterId: meta.chronologyMatterId, proposalIds: meta.chronologyProposalIds as string[] } : undefined
-      return [{ kind: "tool", label: emptyTemplates ? "No saved templates found" : stepLabel(p, matter), status, detail, children, ...(formatted ? { templateResult: formatted } : {}), ...(chronologyResult ? { chronologyResult } : {}) }]
+      return [{ kind: "tool", tool: p.tool, label: emptyTemplates ? "No saved templates found" : stepLabel(p, matter), status, detail, children, ...(formatted ? { templateResult: formatted } : {}), ...(chronologyResult ? { chronologyResult } : {}) }]
     }
     return []
   })

@@ -1,10 +1,10 @@
 import ReactMarkdown from "react-markdown"
 import MarkdownContent from "./MarkdownContent"
 import StructuredReportView from "./StructuredReportView"
-import { parseStructuredReportMarkdown, unwrapTaskResult } from "./structured-report"
+import { parseStructuredReportMarkdown } from "./structured-report"
 
 export default function Markdown({ children }: { children: string }) {
-  const text = unwrapTaskResult(children)
+  const text = children
   const report = parseStructuredReportMarkdown(text)
   if (report.structured) return <StructuredReportView report={report} />
 

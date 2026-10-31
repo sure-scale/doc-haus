@@ -5,7 +5,7 @@ import { draftStatusAmendmentIssues } from "./draft-status"
 import { record, retypedLabelIssues, withoutListLabel, type ChangeList, type ParagraphRow, type StageCheck } from "./checks"
 import { paragraphShowsOpenItem } from "./gate"
 import { approvedResearch } from "./research"
-import { REQUEST_SOURCE, excerpt, matterSourceIDs, openItem, proseQuoteFound, quoteFound, quoteMissIssue, sourceQuotes } from "./quotes"
+import { REQUEST_SOURCE, excerpt, matterSourceIDs, openItem, proseQuoteIssues, quoteFound, quoteMissIssue } from "./quotes"
 import { FIRST_DOCUMENT, type DocID } from "./plan"
 import { questionKindIssues, readQuestions, shortHash, type Question, type QuestionKind } from "./state"
 
@@ -123,7 +123,7 @@ function explanationIssues(directory: string, item: unknown, index: number, rows
         return [`${at}.sources[${n}] must name a canonical source and a non-empty exact passage.`]
       return quoteFound(directory, { source_id: source.source_id.trim(), quote: source.quote }) ? [] : [quoteMissIssue(directory, `${at}.sources[${n}]`, { source_id: source.source_id.trim(), quote: source.quote })]
     })),
-    ...(typeof item.reason === "string" ? sourceQuotes(item.reason).filter(quote => !proseQuoteFound(directory, quote)).map(quote => quoteMissIssue(directory, `${at}.reason`, quote)) : []),
+    ...(typeof item.reason === "string" ? proseQuoteIssues(directory, `${at}.reason`, item.reason) : []),
   ]
 }
 
@@ -175,8 +175,7 @@ function amendmentQuoteIssues(directory: string, amendment: Amendment, index: nu
   return [
     ...amendment.sources.filter(source => !quoteFound(directory, source))
       .map(source => quoteMissIssue(directory, `${at}.sources`, source)),
-    ...sourceQuotes(amendmentText(amendment)).filter(quote => !proseQuoteFound(directory, quote))
-      .map(quote => quoteMissIssue(directory, `${at}.updated`, quote)),
+    ...proseQuoteIssues(directory, `${at}.updated`, amendmentText(amendment), { format: "plain" }),
   ]
 }
 

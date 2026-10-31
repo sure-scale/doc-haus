@@ -3,7 +3,8 @@ import path from "node:path"
 import { strFromU8, unzipSync } from "fflate"
 import mammoth from "mammoth"
 import { read, utils } from "xlsx"
-import { effectiveDocumentLinks, getDocumentRole, insertChunk, listDocuments, listSourceDocuments, openDb, upsertDocument, type DocumentLinks } from "./db"
+import { effectiveDocumentLinks, getDocumentRole, getDocumentSourceProvenance, insertChunk, listDocuments, listSourceDocuments, openDb, upsertDocument, type DocumentLinks } from "./db"
+import { DerivedChronologyExportError, recognizeChronologyExport } from "./chronology-export-origin"
 import { embedChunk, migrateEmbeddings } from "./embed"
 import { extractStructure, extractParties, migrateSections, migrateStructure, buildSectionPaths, chunkSection, recordSections, revision, sectionize } from "./structure"
 import { readPdf } from "./pdf"
@@ -90,6 +91,7 @@ export async function ingestDocument(
     // zip's files), and a replace choice over an existing file makes it a replace.
     version?: IngestVersion
     wordLeaseOwner?: WordLeaseOwner
+    sourceProvenance?: "supplied-chronology"
   } = {},
 ) {
   const { existing = "refuse" } = options
@@ -146,6 +148,7 @@ async function ingestDocumentLocked(
     links?: DocumentLinks
     version?: IngestVersion
     wordLeaseOwner?: WordLeaseOwner
+    sourceProvenance?: "supplied-chronology"
   },
 ) {
   const recovery = await recoverDocumentMutations(matterDir)
@@ -156,12 +159,17 @@ async function ingestDocumentLocked(
   assertWordEditAllowed(matterDir, docPath, options.wordLeaseOwner)
   const registry = openDb(matterDir)
   const role = getDocumentRole(registry, docPath)
+  const sourceProvenance = options.sourceProvenance ?? getDocumentSourceProvenance(registry, docPath)
   registry.close()
   if (role === "deliverable") throw new DeliverableDocumentExistsError(fileName)
   if (options.requireExistingSource && role !== "source")
     throw new SourceDocumentConflictError(`${fileName} is no longer a registered source document.`)
   if (options.existing === "refuse" && (role === "source" || existsSync(docPath)))
     throw new SourceDocumentExistsError(fileName)
+  if (!sourceProvenance) {
+    const origin = recognizeChronologyExport(matterDir, fileName, buffer)
+    if (origin) throw new DerivedChronologyExportError(origin.originalName)
+  }
   const version: VersionWrite = {
     ...options.version,
     origin: options.version?.origin ?? (options.existing === "replace" && existsSync(docPath) ? "replace" : "upload"),
@@ -253,6 +261,7 @@ async function ingestDocumentLocked(
       updateRegistry: options.updateRegistry,
       links: options.links ?? {},
       version,
+      sourceProvenance: sourceProvenance ?? undefined,
     })
     finalizeDocumentMutationLineage(db, mutation, artifacts.files)
     completeDocumentMutation(db, mutation)
@@ -265,6 +274,7 @@ async function ingestDocumentLocked(
   }
   return {
     name: fileName,
+    source_provenance: sourceProvenance,
     docPath,
     // documents.rev as recorded for this ingest.
     rev: revision(canonicalText(preparedChunks)),
@@ -362,6 +372,7 @@ async function commitIngestedDocument(
     updateRegistry?: (db: ReturnType<typeof openDb>) => void
     links: DocumentLinks
     version: VersionWrite
+    sourceProvenance?: "supplied-chronology"
   },
 ) {
   const links = effectiveDocumentLinks(db, input.fileName, input.links)
@@ -389,6 +400,7 @@ async function commitIngestedDocument(
         input.injectionReport,
         { parentName: links.parent_name, attachments: links.attachments },
         input.extractionQuality,
+        input.sourceProvenance,
       )
       input.chunks.forEach((chunk, chunkIndex) =>
         insertChunk(db, {

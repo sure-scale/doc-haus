@@ -3,8 +3,12 @@ import { Database } from "bun:sqlite"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { checkDraftingNotes } from "./checks"
-import { quoteFound, quoteMissIssue, quoteMissItems, sourceQuotes } from "./quotes"
+import { checkDraftingNotes, finalBodyItems } from "./checks"
+import { checkChanges } from "./change-checks"
+import { paragraphSha256 } from "../../lib/drafting-amendment"
+import { finalGate } from "./gate"
+import { writeLeanText, writeOpenItems } from "./state"
+import { proseQuoteIssues, quoteFound, quoteMissIssue, quoteMissItems, sourceQuotes } from "./quotes"
 import { SOURCE, cleanupMatters, matter } from "./test-support"
 
 // Quotation matching against indexed source text: exact words, tolerant only of
@@ -48,6 +52,197 @@ describe("lean prose quotation reading", () => {
   const prose = (directory: string, text: string) => checkDraftingNotes(directory, `# Drafting notes\n\n${text}`, []).issues
   const unread = (quote: string, source = SOURCE) =>
     `The drafting notes quotes "${quote}" as from "${source}", but those words are not in that document. Copy the exact words with read-document (or check them with verify-quote), or drop the quotation marks and paraphrase.`
+
+  test("wrapping a cited quotation does not change whether its words are verified", () => {
+    const directory = matter()
+    const wrong = "within sixty days of the order date"
+    expect(prose(directory, `The terms provide "${wrong}" [source: ${SOURCE}].`)).toEqual([unread(wrong)])
+    for (const newline of ["\n", "\r\n"]) {
+      const wrapped = wrong.replace("days of", `days${newline}of`)
+      expect(sourceQuotes(`"${wrapped}" [source: ${SOURCE}]`)).toEqual([{ quote: wrapped, source_id: SOURCE }])
+      expect(prose(directory, `The terms provide "${wrapped}" [source: ${SOURCE}].`)).toEqual([unread(wrong)])
+      expect(prose(directory, `The terms provide "${wrapped.replace("sixty", "thirty")}" [source: ${SOURCE}].`)).toEqual([])
+    }
+  })
+
+  test("line-wrapped nested quotations and nested source-name brackets are read whole", () => {
+    const quote = 'the "Deposit" means\nthe amount payable on signing'
+    expect(sourceQuotes(`The terms provide "${quote}" [source: Terms [execution [v2]].docx].`))
+      .toEqual([{ quote, source_id: "Terms [execution [v2]].docx" }])
+    expect(sourceQuotes(`The terms provide “${quote}” (source: Terms (execution (v2)).docx).`))
+      .toEqual([{ quote, source_id: "Terms (execution (v2)).docx" }])
+  })
+
+  test("consecutive source markers share the quotation and every different source is checked", () => {
+    const directory = matter()
+    const quote = "within thirty days of the order date"
+    const text = `The terms provide “${quote}" [source: ${SOURCE}] (source: ${SOURCE}).`
+    expect(sourceQuotes(text)).toEqual([{ quote, source_id: SOURCE }])
+    expect(prose(directory, text)).toEqual([])
+    expect(prose(directory, text.replace(`(source: ${SOURCE})`, "(source: unavailable.docx)")))
+      .toEqual([expect.stringContaining('as from "unavailable.docx"')])
+  })
+
+  test("an unreadable cited quotation produces feedback and an anchored open item", () => {
+    const directory = matter()
+    for (const text of [
+      `The terms provide within thirty days" [source: ${SOURCE}].`,
+      `The terms provide "within thirty days [source: ${SOURCE}].`,
+      `The terms provide "" [source: ${SOURCE}].`,
+      `The terms provide "within thirty days" [source:].`,
+    ]) {
+      expect([text, prose(directory, text)]).toEqual([text, [expect.stringContaining("could not read a cited quotation")]])
+      const items = quoteMissItems(directory, "draft", text)
+      expect(items).toHaveLength(1)
+      expect(items[0].detail).toContain("could not read a cited quotation")
+      expect(items[0].ref.statement).toBeTruthy()
+      expect(text).toContain(items[0].ref.statement!)
+    }
+    expect(prose(directory, "The source of funds is not yet known. The expression [source material] is ordinary prose.")).toEqual([])
+    const row = { pid: "p123456789abc", sha256: "unchanged", text: `The terms provide within thirty days" [source: ${SOURCE}].` }
+    expect(finalBodyItems(directory, [{ ...row, pid: "p000000000000", text: "Unrelated paragraph." }, row]).filter(item => item.kind === "quote_miss"))
+      .toEqual([expect.objectContaining({ ref: expect.objectContaining({ pid: row.pid, statement: row.text.slice(0, -1) }) })])
+    expect(checkChanges(directory, JSON.stringify({ amendments: [], explanations: [{ pid: row.pid, reason: row.text, sources: [] }], questions: [] }), [row]).issues)
+      .toEqual([expect.stringContaining("explanations[0].reason could not read a cited quotation")])
+  })
+
+  test("an overlong quotation or source name is reported rather than omitted", () => {
+    const directory = matter()
+    for (const text of [
+      `"${"x".repeat(2001)}" [source: ${SOURCE}]`,
+      `"within thirty days" [source: ${"x".repeat(4097)}]`,
+      `"within thirty days" [source: ${"x".repeat(4097)}`,
+    ]) expect(prose(directory, text)).toEqual([expect.stringContaining("could not read a cited quotation")])
+  })
+
+  test("unreadable quotation findings survive final readback, can be disclosed, and are replaced after repair", () => {
+    const directory = matter()
+    const text = `The terms state "within thirty days [source: ${SOURCE}].`
+    const save = (body: string) => {
+      const rows = [{ pid: "p123456789abc", sha256: paragraphSha256(body), text: body }]
+      const items = finalBodyItems(directory, rows)
+      writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify(rows))
+      writeOpenItems(directory, items)
+      return items
+    }
+    const [unreadable] = save(text)
+    expect(finalGate(directory).blocking).toContainEqual(expect.objectContaining({ id: unreadable.id, ref: expect.objectContaining({ pid: "p123456789abc", statement: expect.any(String) }) }))
+    const disclosed = save(`${text} [open item: confirm the source quotation]`)
+    writeLeanText(directory, "drafting-notes.md", `# Drafting notes\n\n${disclosed.map(item => `${item.detail} [ref: ${item.id}]`).join("\n")}`)
+    expect(finalGate(directory).disclosed).toContainEqual(expect.objectContaining({ kind: "quote_miss", status: "disclosed" }))
+    expect(save(`The terms state "within thirty days" [source: ${SOURCE}].`)).toEqual([])
+    expect(finalGate(directory)).toMatchObject({ status: "pass", blocking: [] })
+  })
+
+  test("amendment admission checks malformed cited wording and withholds it after the final retry", () => {
+    const directory = matter()
+    const text = "The supplier shall deliver the goods."
+    const row = { pid: "p123456789abc", sha256: paragraphSha256(text), text }
+    const reply = (updated: string) => JSON.stringify({ amendments: [{ pid: row.pid, updated, reason: "Quote the delivery period.",
+      sources: [{ source_id: SOURCE, quote: "within thirty days of the order date" }] }], questions: [] })
+    const correct = `The supplier shall deliver "within thirty days of the order date" [source: ${SOURCE}].`
+    expect(checkChanges(directory, reply(correct), [row]).issues).toEqual([])
+    const malformed = correct.replace('date"', "date")
+    expect(checkChanges(directory, reply(malformed), [row]).issues).toEqual([expect.stringContaining("could not read a cited quotation")])
+    const withheld = checkChanges(directory, reply(malformed), [row], { withholdUnverified: true })
+    expect(withheld.issues).toEqual([])
+    expect(withheld.changes).toMatchObject({ amendments: [], withheld: [{ issues: [expect.stringContaining("could not read a cited quotation")] }] })
+    expect(withheld.openItems).toContainEqual(expect.objectContaining({ kind: "unapplied_amendment", ref: expect.objectContaining({ pid: row.pid }) }))
+  })
+
+  test("literal quotation examples in Markdown code and comments are not source claims", () => {
+    const directory = matter()
+    const example = `"within sixty days" [source: invented.docx]`
+    for (const content of [
+      `An example is \`${example}\`.`,
+      `An example is \`\`${example}\`\`.`,
+      `\`\`\`\`text\n${example}\n\`\`\`\``,
+      `~~~text\n${example}\n~~~`,
+      `    ${example}`,
+      `<!-- ${example} -->`,
+    ]) {
+      expect([content, sourceQuotes(content)]).toEqual([content, []])
+      expect([content, prose(directory, content)]).toEqual([content, []])
+    }
+    expect(prose(directory, `\`${example}\`\n\nThe terms provide "within sixty days" [source: ${SOURCE}].`))
+      .toEqual([unread("within sixty days")])
+  })
+
+  test("actual Word body text cannot bypass source verification by looking like Markdown code", () => {
+    const directory = matter()
+    const quote = (days: string) => `The terms provide "within ${days} days of the order date" [source: ${SOURCE}].`
+    const wrappers = [
+      (text: string) => `    ${text}`,
+      (text: string) => `\t${text}`,
+      (text: string) => "`" + text + "`",
+      (text: string) => "```text\n" + text + "\n```",
+      (text: string) => "~~~text\n" + text + "\n~~~",
+      (text: string) => `<!-- ${text} -->`,
+    ]
+    const save = (text: string) => {
+      const rows = [{ pid: "p123456789abc", sha256: paragraphSha256(text), text }]
+      const items = finalBodyItems(directory, rows)
+      writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify(rows))
+      writeOpenItems(directory, items)
+      writeLeanText(directory, "drafting-notes.md", `# Notes\n\n${items.map(item => `${item.detail} [ref: ${item.id}]`).join("\n")}`)
+      return items
+    }
+    for (const wrap of wrappers) {
+      expect(save(wrap(quote("thirty"))).filter(item => item.kind === "quote_miss")).toEqual([])
+      const wrong = wrap(quote("sixty"))
+      const missed = save(wrong).filter(item => item.kind === "quote_miss")
+      expect(missed).toEqual([expect.objectContaining({ ref: expect.objectContaining({ pid: "p123456789abc", quote: "within sixty days of the order date" }) })])
+      expect(finalGate(directory).blocking).toContainEqual(expect.objectContaining({ kind: "quote_miss" }))
+      save(`${wrong} [open item: confirm the source quotation]`)
+      expect(finalGate(directory).disclosed).toContainEqual(expect.objectContaining({ kind: "quote_miss" }))
+      expect(proseQuoteIssues(directory, "Markdown notes", wrong)).toEqual([])
+      const row = { pid: "p123456789abc", sha256: paragraphSha256("Existing wording."), text: "Existing wording." }
+      const reply = JSON.stringify({ amendments: [{ pid: row.pid,
+        ...(wrong.includes("\n") ? { operation: "split", updated: wrong.split("\n") } : { updated: wrong }),
+        reason: "Quote the period.", sources: [{ source_id: SOURCE, quote: "within thirty days of the order date" }] }], questions: [] })
+      expect(checkChanges(directory, reply, [row]).issues).toContainEqual(expect.stringContaining("within sixty days"))
+    }
+  })
+
+  test("source-marker wording inside an exact outer quotation remains literal source content", () => {
+    for (const quote of [
+      "The placeholder [source: supplied later] is to be completed.",
+      'The words "payment term" [source: secondary note] appear in the template.',
+    ]) {
+      const directory = matter(quote)
+      const text = `The source states “${quote}” [source: ${SOURCE}].`
+      expect(sourceQuotes(text)).toEqual([{ quote, source_id: SOURCE }])
+      expect(prose(directory, text)).toEqual([])
+      expect(quoteMissItems(directory, "draft", text)).toEqual([])
+      expect(prose(directory, text.replace("is to be", "was never").replace("appear in", "do not appear in")))
+        .toEqual([expect.stringContaining("but those words are not in that document")])
+      expect(prose(directory, text.replace(`[source: ${SOURCE}]`, "[source: unknown.docx]")))
+        .toEqual([expect.stringContaining('as from "unknown.docx"')])
+    }
+  })
+
+  test("a source quotation across Word paragraphs remains blocking, can be disclosed at its citation, and resolves after repair", () => {
+    const directory = matter()
+    const save = (days: string, marked: boolean) => {
+      const rows = [
+        { pid: "p111111111111", text: `The terms state "within ${days} days` },
+        { pid: "p222222222222", text: `of the order date" [source: ${SOURCE}].${marked ? " [open item: confirm the source quotation]" : ""}` },
+      ].map(row => ({ ...row, sha256: paragraphSha256(row.text) }))
+      const items = finalBodyItems(directory, rows)
+      writeLeanText(directory, "d1/paragraphs-applied.json", JSON.stringify(rows))
+      writeOpenItems(directory, items)
+      writeLeanText(directory, "drafting-notes.md", `# Notes\n\n${items.map(item => `${item.detail} [ref: ${item.id}]`).join("\n")}`)
+      return items
+    }
+    expect(save("thirty", false).filter(item => item.kind === "quote_miss")).toEqual([])
+    expect(save("sixty", false)).toContainEqual(expect.objectContaining({ kind: "quote_miss", ref: expect.objectContaining({ pid: "p222222222222" }) }))
+    expect(finalGate(directory).blocking).toContainEqual(expect.objectContaining({ kind: "quote_miss" }))
+    save("sixty", true)
+    expect(finalGate(directory).blocking).toEqual([])
+    expect(finalGate(directory).disclosed).toContainEqual(expect.objectContaining({ kind: "quote_miss", ref: expect.objectContaining({ pid: "p222222222222" }) }))
+    expect(save("thirty", false)).toEqual([])
+    expect(finalGate(directory)).toMatchObject({ status: "pass", blocking: [] })
+  })
 
   test("a source name holding brackets of its own is read whole in either citation form", () => {
     const directory = matter()

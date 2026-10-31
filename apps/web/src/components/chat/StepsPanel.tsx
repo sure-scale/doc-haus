@@ -78,7 +78,7 @@ function StepRow({ step, busy, last }: { step: Step; busy: boolean; last: boolea
                 )}
               </div>
             ) : (
-              <ToolOutput>{step.detail}</ToolOutput>
+              <ToolOutput tool={step.tool}>{step.detail}</ToolOutput>
             )}
           </details>
         ) : (

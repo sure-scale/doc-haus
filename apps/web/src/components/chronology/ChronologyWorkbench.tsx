@@ -34,6 +34,7 @@ import EventDetail from "./EventDetail"
 import EventForm from "./EventForm"
 import ProposalReview from "./ProposalReview"
 import ChronologyTimeline from "./Timeline"
+import ChronologyExportDialog from "./ExportDialog"
 import SourceIcon from "./SourceIcon"
 import {
   chronologyChatReference,
@@ -62,6 +63,7 @@ export default function ChronologyWorkbench({
   onAsk,
   onClose,
   onActionsChange,
+  onDocumentsChanged,
 }: {
   matterId: string
   title: string
@@ -74,6 +76,7 @@ export default function ChronologyWorkbench({
   onAsk: (reference: ChronologyChatReference) => void
   onClose: () => void
   onActionsChange?: (actions: MatterMenuAction[]) => void
+  onDocumentsChanged?: () => void
 }) {
   const [state, setState] = useState(chronology)
   const [selectedId, setSelectedId] = useState<string | undefined>(initialEvent)
@@ -90,6 +93,7 @@ export default function ChronologyWorkbench({
   const busyRef = useRef(false)
   const [sourcesOpen, setSourcesOpen] = useState(false)
   const [updatesOpen, setUpdatesOpen] = useState(!!initialProposal)
+  const [exportOpen, setExportOpen] = useState(false)
   const [editing, setEditing] = useState<{ mode: "add" | "edit" | "merge" | "split"; event?: ChronologyEvent }>()
   const dateFormat = useChronologyDateFormat()
   const [sourceDate, setSourceDate] = useState(false)
@@ -296,6 +300,12 @@ export default function ChronologyWorkbench({
   const running = state?.run?.status === "running"
   const currentEvents = state?.events.filter((event) => !event.hidden && !event.supersededBy?.length) ?? []
   const menuActions: MatterMenuAction[] = [
+    {
+      id: "export",
+      label: "Export chronology to Word",
+      disabled: !state?.events.some((event) => !event.supersededBy?.length) || busy,
+      onSelect: () => setExportOpen(true),
+    },
     ...(running
       ? [
           {
@@ -786,6 +796,28 @@ export default function ChronologyWorkbench({
             </ChronologySurface>
           )}
         </>
+      )}
+      {exportOpen && state && (
+        <ChronologyExportDialog
+          matterId={matterId}
+          revision={state.revision}
+          onState={receive}
+          onDocumentsChanged={onDocumentsChanged}
+          onClose={() => setExportOpen(false)}
+          filteredIds={events.filter((event) => !event.hidden).map((event) => event.id)}
+          filteredIncludingHiddenIds={state.events
+            .filter(
+              (event) =>
+                !event.supersededBy?.length &&
+                matchesChronology(
+                  event,
+                  search,
+                  { ...filters, hidden: filters.hidden === "only" ? "only" : "include" },
+                  people.canonical,
+                ),
+            )
+            .map((event) => event.id)}
+        />
       )}
       {editing && (
         <EventForm

@@ -30,6 +30,7 @@ export type Document = {
   // On a source: ingest's extraction quality result. Absent on a document
   // ingested before the quality gate, which shows nothing.
   quality?: ExtractionQuality
+  source_provenance?: "supplied-chronology"
 }
 
 // The extraction quality gate's result for a source
@@ -117,6 +118,7 @@ export type IngestResult = {
   // plain notice that doc.haus edits wait until they are resolved.
   tracked_changes?: { count: number; authors: string[] }
   notice?: string
+  source_provenance?: "supplied-chronology"
 }
 
 // What an upload does when a source of the same name is already in the matter:
@@ -132,6 +134,14 @@ export type ExistingSourceChoice = "replace" | "keep-both"
 // or a generated deliverable. `existing` is its stored name.
 export class DocumentExistsError extends Error {
   constructor(readonly existing: string, readonly role: "source" | "deliverable", message: string) {
+    super(message)
+  }
+}
+
+// A recognizable export can be an intentionally corrected account. Adding it
+// requires an explicit supplied-chronology choice, separate from name clashes.
+export class DerivedChronologyError extends Error {
+  constructor(readonly documentName: string, readonly originalName: string | undefined, message: string) {
     super(message)
   }
 }
@@ -165,11 +175,12 @@ export function duplicateMessage(name: string, version: DuplicateUploadError["ve
 export function uploadDocument(
   id: string,
   file: File,
-  options: { onSent?: () => void; existing?: ExistingSourceChoice } = {},
+  options: { onSent?: () => void; existing?: ExistingSourceChoice; chronologyOrigin?: "supplied-chronology" } = {},
 ): Promise<IngestResult> {
   const form = new FormData()
   form.append("file", file)
   if (options.existing) form.append("existing", options.existing)
+  if (options.chronologyOrigin) form.append("chronology_origin", options.chronologyOrigin)
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open("POST", `${INGEST_URL}/matters/${id}/documents`)
@@ -179,6 +190,8 @@ export function uploadDocument(
     xhr.ontimeout = () => reject(new DOMException("Upload timed out", "TimeoutError"))
     xhr.onload = () => {
       const res = new Response(xhr.responseText, { status: xhr.status })
+      const chronology = derivedChronology(xhr.status, xhr.responseText)
+      if (chronology) return reject(chronology)
       const exists = documentExists(xhr.status, xhr.responseText)
       if (exists) return reject(exists)
       const duplicate = duplicateUpload(xhr.status, xhr.responseText)
@@ -188,6 +201,18 @@ export function uploadDocument(
     }
     xhr.send(form)
   })
+}
+
+function derivedChronology(status: number, text: string) {
+  if (status !== 409) return
+  try {
+    const body = JSON.parse(text) as { code?: unknown; name?: unknown; original_name?: unknown; error?: unknown }
+    if (body.code !== "derived_chronology" || typeof body.name !== "string") return
+    return new DerivedChronologyError(body.name, typeof body.original_name === "string" ? body.original_name : undefined,
+      typeof body.error === "string" ? body.error : "This file is a chronology export.")
+  } catch {
+    return
+  }
 }
 
 function documentExists(status: number, text: string) {

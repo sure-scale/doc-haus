@@ -309,6 +309,11 @@ export function supportedNameAssociationQuote(name: string, canonicalName: strin
 export const SUPPLIED_CHRONOLOGY_EVIDENCE_ISSUE =
   "Supported by a supplied chronology. Its underlying original source has not been independently established by this passage."
 
+/** Explicit intake provenance survives filenames that do not say chronology. */
+export function isSuppliedChronologySource(name: string, sourceProvenance?: string | null): boolean {
+  return sourceProvenance === "supplied-chronology" || isSuppliedChronologyName(name)
+}
+
 /** Recognise clearly named supplied chronologies without inferring a document's
  * role from its contents. Source registration/access is checked by the caller. */
 export function isSuppliedChronologyName(name: string): boolean {

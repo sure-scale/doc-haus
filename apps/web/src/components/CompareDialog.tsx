@@ -1,7 +1,7 @@
 import { useContext, useEffect, useRef, useState, type ReactNode } from "react"
 import { Closing } from "./useExit"
 import type { CompareOptions, CompareParams } from "../api/ingest/compare"
-import { duplicateMessage, DuplicateUploadError, uploadDocument, type Document } from "../api/ingest/documents"
+import { DerivedChronologyError, duplicateMessage, DuplicateUploadError, uploadDocument, type Document } from "../api/ingest/documents"
 import { humanizeError } from "../api/ingest/errors"
 import { fetchDocumentVersions, type DocumentVersions } from "../api/ingest/versions"
 import { previousVersion, versionOption, versionSideLabel, versionUnavailable } from "./DocumentVersions"
@@ -184,6 +184,8 @@ export default function CompareDialog({
           : cause.version && cause.version.id !== thisHeld ? VERSION + cause.version.id : undefined
         if (match) pick(match)
         setNotice(`${duplicateMessage(cause.existing, cause.version)}${match ? " It is selected." : ""}`)
+      } else if (cause instanceof DerivedChronologyError) {
+        setError("This file is a chronology export. Add it through Documents and choose Add as supplied chronology, then select it here to compare.")
       } else setError(humanizeError(cause, `Could not add ${file.name}.`))
     } finally {
       setUpload(undefined)
