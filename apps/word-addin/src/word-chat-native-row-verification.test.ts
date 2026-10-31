@@ -90,3 +90,14 @@ test("a document that already lists other reviewers may gain only the row's auth
     person("Prior")+person("Reviewer")+person("Reviewer"),   // duplicate addition
   ]) expect(()=>check(persons)).toThrow()
 })
+test("an added row may carry the reference row's own paragraph properties, and only those",()=>{
+  const spacing='<w:spacing w:after="40"/>', spaced=(xml:string)=>xml.replaceAll("<w:p><w:r>",`<w:p><w:pPr>${spacing}</w:pPr><w:r>`).replaceAll("<w:p><w:pPr><w:rPr>",`<w:p><w:pPr>${spacing}<w:rPr>`)
+  const from=spaced(before), check=(xml:string, source=from)=>verifyNativeWordChatInsertedRow(source,xml,0,1,["New","Value"])
+  expect(check(spaced(after))).toEqual({authors:["Reviewer"]})
+  for(const [xml,source] of [
+    [spaced(after).replaceAll(spacing,'<w:spacing w:after="80"/>').replace(spaced(old).replaceAll(spacing,'<w:spacing w:after="80"/>'),spaced(old)),from], // differs from the reference row
+    [spaced(after).replace(spaced(old),old),before],                                     // reference row has no paragraph properties
+    [spaced(after).replace(`${spacing}<w:rPr><w:ins w:id="2"`,`${spacing}<w:jc w:val="center"/><w:rPr><w:ins w:id="2"`),from], // extra property
+    [spaced(after).replace(`${spacing}<w:rPr><w:ins w:id="2"`,`${spacing}<w:pPrChange w:id="8" ${stamp}><w:pPr/></w:pPrChange><w:rPr><w:ins w:id="2"`),from], // inherited revision
+  ] as Array<[string,string]>) expect(()=>check(xml,source)).toThrow()
+})
