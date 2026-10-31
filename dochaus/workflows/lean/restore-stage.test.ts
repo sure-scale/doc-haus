@@ -1,14 +1,16 @@
 import { afterEach, expect, test } from "bun:test"
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
+import { LEAN_ACTS_SCHEMA } from "./act-record"
 import { readLeanDocuments } from "./deliverables"
 import { readLeanEvents } from "./events"
 import { writeLeanPlan } from "./plan"
+import { LEAN_COVERAGE_SCHEMA } from "./package-coverage"
 import { enqueueLeanRequest, pendingLeanRequests } from "./requests"
 import { restoreLeanStage } from "./restore-stage"
 import { runLean } from "./runner"
 import { LEAN_STAGE_AGENTS } from "./stages"
-import { leanDir, leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions } from "./state"
+import { leanDir, leanFile, readLeanJson, readLeanState, readOpenItems, readQuestions, writeLeanText } from "./state"
 import { changes, happyLeanReplies, leanFixtureMatter, sameSession, scriptedLeanModel } from "./test-support"
 
 const directories: string[] = []
@@ -90,9 +92,11 @@ test("restoring keeps a question whose answer is still queued, and the next run 
 test("restoring puts back the plan's coverage record with the plan, and restoring before the plan removes it", async () => {
   const directory = leanFixtureMatter("lean-restore-")
   directories.push(directory)
+  // The run's act record lists no act the lawyer's instructions direct.
+  writeLeanText(directory, "acts.json", JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status: "none", acts: [], deliverables: [], issues: [] }))
   expect((await runLean(directory, { sessions: scriptedLeanModel().port })).status).toBe("completed")
   const record = readFileSync(leanFile(directory, "coverage.json"), "utf8")
-  expect(JSON.parse(record)).toMatchObject({ status: "covered" })
+  expect(JSON.parse(record)).toMatchObject({ status: "no_acts" })
   // A later plan's record, as a later outline would leave it.
   writeFileSync(leanFile(directory, "coverage.json"), record.replace(/"plan": "[0-9a-f]+"/, `"plan": "${"0".repeat(64)}"`))
 
@@ -114,10 +118,9 @@ test("restoring a plan written by hand removes a coverage record its snapshot do
     parts: [{ heading: "Delivery", scope: "Delivery terms" }, { heading: "Payment", scope: "Payment terms" }] }])
   const first = scriptedLeanModel()
   expect((await runLean(directory, { sessions: first.port })).status).toBe("completed")
-  expect(first.agents()).not.toContain(LEAN_STAGE_AGENTS.coverageActs)
   expect(first.agents()).not.toContain(LEAN_STAGE_AGENTS.coverage)
   expect(existsSync(leanFile(directory, "coverage.json"))).toBe(false)
-  writeFileSync(leanFile(directory, "coverage.json"), `${JSON.stringify({ schema: "dochaus.lean.coverage/1", plan: "0".repeat(64), status: "covered", acts: [], issues: [] })}\n`)
+  writeFileSync(leanFile(directory, "coverage.json"), `${JSON.stringify({ schema: LEAN_COVERAGE_SCHEMA, plan: "0".repeat(64), status: "covered", acts: [], issues: [] })}\n`)
 
   restoreLeanStage(directory, "d1.changes")
   expect(existsSync(leanFile(directory, "coverage.json"))).toBe(false)

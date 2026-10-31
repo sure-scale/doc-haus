@@ -64,7 +64,7 @@ test("an adopted recommendation runs through the queue as the lawyer's answer, r
   const line = `- [${late.id}] Q: ${QUESTION}\n  A (delegated by the lawyer; the recommended option was adopted): ${CHOSEN}`
   expect(answeredQuestionsText(directory)).toContain(line)
   const prompts = model.prompts.slice(start)
-  for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.spine, AGENT.draft, AGENT.coverageActs,
+  for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.spine, AGENT.draft,
     AGENT.review, AGENT["review-independent"], AGENT["review-wording"], AGENT["review-client-disadvantage"], AGENT["change-plan"], AGENT.changes, AGENT["package-review"]])
     expect([agent, prompts.some(prompt => prompt.agent === agent && prompt.text.includes(line))]).toEqual([agent, true])
   const notes = prompts.find(prompt => prompt.agent === AGENT.finalize)!.text
@@ -78,8 +78,9 @@ test("an adopted recommendation runs through the queue as the lawyer's answer, r
   }
 
   // 3. The gate settles it as delegated by the lawyer and lists nothing as left to the drafter.
+  // No act record lists an instructed act here, which the review draft discloses for the lawyer to confirm.
   const gate = readLeanJson(directory, "gate.json") as GateResult
-  expect(gate).toMatchObject({ status: "pass", delivery: "execution_ready", blocking: [] })
+  expect(gate).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [] })
   expect(gate.items.filter(item => item.ref.question_id === late.id)).toEqual([])
   expect(JSON.stringify(gate)).not.toMatch(LEFT_TO_DRAFTER)
   writeOpenItems(directory, [...readOpenItems(directory), openItem("changes", "question", QUESTION, { question_id: late.id, pid: "p-none" })])

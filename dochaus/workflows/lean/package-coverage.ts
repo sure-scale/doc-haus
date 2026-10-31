@@ -1,21 +1,19 @@
 import { normalize, normalizeWithMap, sourceReadings } from "../../lib/quote-verify"
 import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
+import { readActRecord, signerFlags } from "./act-record"
 import { FIRST_DOCUMENT, nameKey, namedIn, readLeanPlan, type ActingFor, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { EXCERPT, REQUEST_SOURCE, excerpt, lawyerWords, matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
-import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
 import { answeredScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows, type ScopeParties } from "./package-scope"
 import { answeredQuestionsText, hashStageInputs, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question } from "./state"
 import { sourceText } from "./template-structure"
 
 // Package coverage: an instructed act needs an instrument executed by the
-// parties who must take it. Two focused jobs read the lawyer's instructions.
-// The first, blind to the plan so that the plan does not anchor it, lists each
-// legal act they direct and the parties who must take it; parseCoverageActs
-// verifies that list against the matter (each quote in its source, each party
-// named by the instructions or sources). It runs twice, in separate sessions,
-// and mergeCoverageActs joins the two verified lists, so an act one run misses
-// the other can still list. The second places each verified act in the planned
+// parties who must take it. The acts come from the run's act record
+// (act-record.ts, acts.json), read blind to the plan so that the plan does not
+// anchor it: each act the lawyer's instructions direct, verified against the
+// matter, with the parties whose approval authorises it and those who carry it
+// out (recordedActs). A focused job places each recorded act in the planned
 // document that carries it; parseCoveragePlacement holds every act to one
 // placement and parseCoverage verifies the placed acts (each document a planned
 // id, any excluded_by the lawyer's own words). planCoverageIssues then holds
@@ -32,6 +30,10 @@ import { sourceText } from "./template-structure"
 // no instructed act, and is disclosed as the check's reading for the lawyer to
 // confirm, with any such document still planned, or with the planned documents
 // a last attempt also listed it in.
+// An act record that lists no act gives no_acts, never "covered": an empty
+// list is disclosed for the lawyer to confirm, as is each act whose instrument,
+// as the act record reads it, is not executed by every party whose authority
+// the act needs (signerFlags).
 // What the saved plan still leaves open reaches the lawyer as open items derived
 // from that record (coverageItems), never stored. The gate reads the same record
 // (coverageCarries) to tell an instruction the plan carries from one it may
@@ -43,21 +45,37 @@ import { sourceText } from "./template-structure"
  * no document, `excluded_by` holds the lawyer's own words that leave the act's
  * document out of this package. */
 export type CoverageAct = { act: string; source: string; quote: string; parties: string[]; document: DocID | null; excluded_by?: string }
-/** One instructed act as the plan-blind job lists it: no document yet. */
+/** One instructed act as the act record lists it: no document yet. */
 export type InstructedAct = Omit<CoverageAct, "document" | "excluded_by">
 
-export const LEAN_COVERAGE_SCHEMA = "dochaus.lean.coverage/1"
-/** "covered": no issue is left; "uncovered": issues remain after the outline's
- * revisions; "unchecked": the coverage reply never passed its check, so `issues`
- * are that check's and no act is recorded. */
+export const LEAN_COVERAGE_SCHEMA = "dochaus.lean.coverage/2"
+/** "covered": at least one act is recorded and no issue is left; "uncovered":
+ * issues remain after the outline's revisions; "no_acts": the act record lists
+ * no act the instructions direct, so none is placed (`issues` holds any the
+ * plan's declared parties raise); "unchecked": the act record or the placement
+ * reply never passed its check, so `issues` are that check's and no act is
+ * recorded. */
 export type LeanCoverage = {
-  schema: typeof LEAN_COVERAGE_SCHEMA; plan: string; status: "covered" | "unchecked" | "uncovered"; acts: CoverageAct[]; issues: string[]
+  schema: typeof LEAN_COVERAGE_SCHEMA; plan: string; status: "covered" | "no_acts" | "unchecked" | "uncovered"; acts: CoverageAct[]; issues: string[]
+}
+
+/** The acts the run's act record lists, as placement reads them, each with the
+ * parties who must take it: those whose approval authorises it (WHO
+ * "authorised_by") when the record names any, otherwise those who carry it out
+ * ("performed_by"), otherwise none. [] when the record lists no act. A missing
+ * or unreadable record, or one whose listing never passed its check, gives its
+ * issues and no acts, as an unchecked listing. */
+export function recordedActs(directory: string): Checked<InstructedAct[]> {
+  const record = readActRecord(directory)
+  if (!record || record.status === "unchecked") return { issues: record?.issues.find(row => row.job === "what")?.issues ?? ["The act record (acts.json) is missing or unreadable."] }
+  return { issues: [], value: record.acts.map(({ act, source, quote, who }) => ({
+    act, source, quote, parties: who?.authorised_by.length ? who.authorised_by : who?.performed_by ?? [],
+  })) }
 }
 
 type Checked<T> = { issues: string[]; value?: T }
 
 const COVERAGE_SHAPE = 'Reply with the JSON object only: {"acts":[{"act":"...","source":"...","quote":"...","parties":["..."],"document":"planned id or null"}]}.'
-const ACTS_SHAPE = 'Reply with the JSON object only: {"acts":[{"act":"...","source":"...","quote":"...","parties":["..."]}]}.'
 const PLACEMENT_SHAPE = 'Reply with the JSON object only: {"placements":[{"act":0,"document":"planned id or null"}]}.'
 const READ_ONLY = "- Read-only tools are available; file-writing and publication tools are unavailable. The run saves and checks the reply."
 
@@ -70,31 +88,6 @@ export function instructionSections(directory: string) {
     updates ? tagged("user_updates", `Later instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n${updates}`) : "",
     answers ? tagged("answers", `The lawyer's answers; they remain controlling:\n${answers}`) : "",
   ]
-}
-
-/** The plan-blind job's one question: the legal acts the instructions direct,
- * in whichever document, and who must take each. */
-export function coverageActsPrompt(directory: string) {
-  const provenance = sourceProvenance(directory)
-  return [
-    "This is a lean drafting run. List the legal acts the lawyer's instructions direct to be taken, whichever document they are to be taken in.",
-    ...instructionSections(directory),
-    tagged("sources", [
-      "Matter documents (use these exact names with search-document and read-document, and as source names):",
-      ...matterSourceIDs(directory).map(name => `- ${nameWithProvenance(name, provenance)}`),
-      `To quote the request, the lawyer's updates or answers, use the source name "${REQUEST_SOURCE}".`,
-    ].join("\n")),
-    tagged("output_contract", [
-      "- List every legal act that the request, the lawyer's updates or answers direct to be taken or documented: in the requested document or in any other document, now or later. " +
-      "A matter document directs an act only where the request adopts it as instructions; an obligation a matter document merely describes is not an instructed act. Do not list an act the instructions say is not to be taken at all.",
-      "- For each act give \"act\": what is to be done, briefly; \"source\": the exact matter document name, or \"request\"; \"quote\": the exact words that direct it, copied verbatim from that source; " +
-      "\"parties\": every party who must take the act for it to be effective (for an authorisation, those who give it), each named as the sources name it, or [] when the record does not settle who must take it.",
-      "- Never supply a party by assumption.",
-      "- Read the sources you rely on with search-document or read-document, and check each quote with verify-quote.",
-      `- ${ACTS_SHAPE} Reply {"acts":[]} when the instructions direct no legal act.`,
-      READ_ONLY,
-    ].join("\n")),
-  ].filter(Boolean).join("\n\n")
 }
 
 /** The placement job's one question: which planned document carries each of
@@ -150,34 +143,6 @@ export function listedActIssues(directory: string, where: string, act: Instructe
     issues.push(`${where} names the party "${party}", but neither the request, the lawyer's updates and answers nor any matter document names that party. ` +
       "Name each party as the sources name it, and list only parties the record names ([] when it does not settle who must take the act).")
   return issues
-}
-
-/** Reads the plan-blind job's reply and verifies each act against the matter
- * (listedActIssues). A planned document's executed_by is not shown to the job,
- * so no party comes from the plan. Every defect is retry feedback; the acts are
- * returned only when there is none, each entry once (by act, parties, source
- * and quote, the quote as the quote checks normalise it). */
-export function parseCoverageActs(reply: string, directory: string): Checked<InstructedAct[]> {
-  if (printedToolCall(reply)) return { issues: [TOOL_SYNTAX_ISSUE] }
-  const value = replyJson(reply)
-  if (!record(value) || !Array.isArray(value.acts)) return { issues: [ACTS_SHAPE] }
-  let texts: string[] | undefined
-  const issues: string[] = []
-  const acts: InstructedAct[] = []
-  value.acts.forEach((row: unknown, index) => {
-    const act = listedAct(row)
-    if (!act) return void issues.push(`acts[${index}] needs nonempty "act", "source" and "quote" strings and "parties" as a list of names ([] when the record does not settle them). ${ACTS_SHAPE}`)
-    issues.push(...listedActIssues(directory, `acts[${index}] ("${excerpt(act.act, 80)}")`, act, () => texts ??= namingTexts(directory)))
-    acts.push(act)
-  })
-  if (issues.length) return { issues }
-  const seen = new Set<string>()
-  return { issues, value: acts.filter(act => {
-    const key = JSON.stringify([sameAct(act), act.source, normalize(act.quote)])
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  }) }
 }
 
 /** Verified lists of separate runs joined, in run order: every act of the
@@ -744,14 +709,15 @@ export function coverageItems(directory: string): OpenItem[] {
   const plan = readLeanPlan(directory)
   if (!plan) return []
   const saved = readLeanCoverage(directory)
-  const coverage = saved?.plan === coveragePlanHash(plan.documents, plan.acting_for) ? saved : undefined
+  const coverage = saved?.plan === coveragePlanHash(directory, plan.documents, plan.acting_for) ? saved : undefined
   const item = (detail: string) => openItem("finalize", "omission", detail, { repair_target: "memo" })
   const unknown = "so it is not known whether each act the instructions direct has a document executed by the parties who must take it. " +
     "The lawyer should confirm that each instructed act is carried by a document executed by the parties who must take it."
+  const signers = signerItems(directory)
   // No record of the saved plan: the check never ran on it.
-  if (!coverage) return plan.basis === undefined && readLeanText(directory, "coverage.json") === undefined ? []
-    : [item(`Plan coverage was not checked against the saved document plan: no current record of that check exists, ${unknown}`)]
-  if (coverage.status === "unchecked") return [item(`Plan coverage could not be checked: the check of the document plan against the instructions gave no usable result, ${unknown}`)]
+  if (!coverage) return plan.basis === undefined && readLeanText(directory, "coverage.json") === undefined ? signers
+    : [item(`Plan coverage was not checked against the saved document plan: no current record of that check exists, ${unknown}`), ...signers]
+  if (coverage.status === "unchecked") return [item(`Plan coverage could not be checked: the check of the document plan against the instructions gave no usable result, ${unknown}`), ...signers]
   const issuesOf = (act: CoverageAct) => actIssues(act, plan.documents, coverage.acts)
   const open = coverage.acts.filter(act => !act.excluded_by && issuesOf(act).length)
   // Every act's own issue reaches the lawyer in that act's item.
@@ -780,14 +746,35 @@ export function coverageItems(directory: string): OpenItem[] {
         "The lawyer should confirm that this act is to be dealt with outside this package."
   }
   const items = [
+    ...coverage.status === "no_acts" ? [item(NO_ACTS)] : [],
     ...coverage.acts.filter(act => act.excluded_by).map(act => item(`Plan coverage: the check of the document plan against the instructions read the lawyer's words ${lawyerQuote(act.excluded_by!)} ` +
       excludedReading(act, act.quote.replace(/\s+/g, " ").trim()) + stillPlanned(act))),
     ...open.map(act => item("Plan coverage: the document plan leaves this instructed act without a document executed by the parties who must take it: " +
       actLine(act, plan.documents, act.quote.replace(/\s+/g, " ").trim()) + after(act))),
     ...coverage.issues.filter(issue => !tied.has(issue)).map(issue => item("Plan coverage: the check of the document plan against the instructions left this open: " +
       withoutOutlineFix(issue))),
+    ...signers,
   ]
   return [...new Map(items.map(row => [row.id, row])).values()]
+}
+
+/** The disclosure of an act record that lists no act: an empty list is never read as covered. */
+const NO_ACTS = "No instructed act found: the act record found no legal act the lawyer's instructions direct; confirm the package needs none."
+
+/** One disclosed item per act whose instrument, as the act record reads it, is
+ * not executed by every party whose authority the act needs (signerFlags). The
+ * record's reading is a prompt for the lawyer to confirm, never an answer, so
+ * the item asks only that and blocks nothing; an act the record cannot check
+ * gives none. */
+function signerItems(directory: string): OpenItem[] {
+  const record = readActRecord(directory)
+  if (!record) return []
+  return signerFlags(record).filter(flag => flag.status === "flag").map(({ act: index, missing }) => {
+    const act = record.acts[index]!
+    const instrument = act.how?.instrument ? `the instrument "${act.how.instrument}"` : "the instrument"
+    return openItem("finalize", "omission", `Act record: ${instrument} that effects "${act.act}", directed by "${act.quote.replace(/\s+/g, " ").trim()}" [source: ${act.source}], ` +
+      `is not executed by ${quotedList(missing)}, whose authority the act needs; confirm the instrument.`, { repair_target: "memo" })
+  })
 }
 
 /** Whether the saved plan's coverage record has the planned `document` carrying
@@ -804,7 +791,7 @@ export function coverageItems(directory: string): OpenItem[] {
 export function coverageCarries(directory: string, refs: { document: string; quote: string }[], document: DocID) {
   const plan = readLeanPlan(directory)
   const saved = readLeanCoverage(directory)
-  if (!plan || !saved || saved.plan !== coveragePlanHash(plan.documents, plan.acting_for)) return false
+  if (!plan || !saved || saved.plan !== coveragePlanHash(directory, plan.documents, plan.acting_for)) return false
   const contains = (a: string, b: string) => {
     const [left, right] = [normalize(a), normalize(b)]
     return !!left && !!right && (left.includes(right) || right.includes(left))
@@ -838,7 +825,7 @@ function showsAct(question: Question, act: CoverageAct, acts: CoverageAct[]) {
 export function gateScopeParties(directory: string): (quotes: string[]) => ScopeParties {
   const plan = readLeanPlan(directory)
   const saved = readLeanCoverage(directory)
-  const acts = plan && saved?.plan === coveragePlanHash(plan.documents, plan.acting_for) ? saved.acts : []
+  const acts = plan && saved?.plan === coveragePlanHash(directory, plan.documents, plan.acting_for) ? saved.acts : []
   const asked = new Set(acts.filter(act => act.excluded_by || actIssues(act, plan!.documents, acts).length))
   const directed = (quotes: string[]) => directedActs(acts, quotes)
   return quotes => {
@@ -898,11 +885,13 @@ export function namingTexts(directory: string) {
 }
 
 /** Content key of a checked plan: what the placement job read of its documents
- * (coverageView) and whom the lawyer acts for. A document's delivery fields,
- * which the package review may write into the plan, do not change it. */
-export function coveragePlanHash(documents: PlannedDocument[], actingFor: ActingFor | undefined) {
+ * (coverageView), whom the lawyer acts for and the act record it placed, so a
+ * new act record checks the plan again. A document's delivery fields, which
+ * the package review may write into the plan, do not change it. */
+export function coveragePlanHash(directory: string, documents: PlannedDocument[], actingFor: ActingFor | undefined) {
   return hashStageInputs(`${FIRST_DOCUMENT}.draft`, LEAN_COVERAGE_SCHEMA, [
     { name: "documents", bytes: JSON.stringify(documents.map(coverageView)) }, { name: "acting_for", bytes: JSON.stringify(actingFor ?? null) },
+    { name: "acts.json", bytes: readLeanText(directory, "acts.json") ?? "" },
   ])
 }
 
@@ -911,14 +900,14 @@ export function coveragePlanHash(documents: PlannedDocument[], actingFor: Acting
  * missing, unreadable or earlier plan's record) the first document's draft step
  * is not done and checks the saved plan again. */
 export function planCoverageCurrent(directory: string, plan = readLeanPlan(directory)) {
-  return Boolean(plan) && (plan!.basis === undefined || readLeanCoverage(directory)?.plan === coveragePlanHash(plan!.documents, plan!.acting_for))
+  return Boolean(plan) && (plan!.basis === undefined || readLeanCoverage(directory)?.plan === coveragePlanHash(directory, plan!.documents, plan!.acting_for))
 }
 
 /** The saved coverage record, or undefined when it is missing or malformed,
  * including any act or issue not shaped as parseCoverage records it. */
 export function readLeanCoverage(directory: string): LeanCoverage | undefined {
   const value = readLeanJson(directory, "coverage.json")
-  if (!record(value) || value.schema !== LEAN_COVERAGE_SCHEMA || typeof value.plan !== "string" || !["covered", "unchecked", "uncovered"].includes(value.status as string) ||
+  if (!record(value) || value.schema !== LEAN_COVERAGE_SCHEMA || typeof value.plan !== "string" || !["covered", "no_acts", "unchecked", "uncovered"].includes(value.status as string) ||
     !Array.isArray(value.acts) || !value.acts.every(savedAct) || !strings(value.issues)) return
   return value as LeanCoverage
 }

@@ -60,7 +60,7 @@ function checklistMatter(findings: ChecklistFinding[], items: { id: string; item
  * plan step leaves it, and drafting notes naming the items it gives. */
 function recordCoverage(directory: string, acts: CoverageAct[]) {
   const plan = readLeanPlan(directory)!
-  writeLeanText(directory, "coverage.json", JSON.stringify({ schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(plan.documents, plan.acting_for), status: "uncovered", acts, issues: [] }))
+  writeLeanText(directory, "coverage.json", JSON.stringify({ schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(directory, plan.documents, plan.acting_for), status: "uncovered", acts, issues: [] }))
   writeLeanText(directory, "drafting-notes.md", coverageItems(directory).map(item => item.id).join("\n"))
   return directory
 }
@@ -398,7 +398,7 @@ const gap = (item_id: string, evidence = [MARKED]) => finding(item_id, "open", {
 function carried(findings: ChecklistFinding[], acts: CoverageAct[] = [DELIVER], options: { items?: typeof ITEMS; documents?: Omit<PlannedDocument, "id">[]; status?: LeanCoverage["status"] } = {}) {
   const directory = checklistMatter(findings, options.items)
   const plan = writeLeanPlan(directory, options.documents ?? [NOTE])
-  const coverage: LeanCoverage = { schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(plan.documents, plan.acting_for), status: options.status ?? "covered", acts, issues: [] }
+  const coverage: LeanCoverage = { schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(directory, plan.documents, plan.acting_for), status: options.status ?? "covered", acts, issues: [] }
   writeLeanText(directory, "coverage.json", JSON.stringify(coverage))
   return directory
 }
@@ -629,7 +629,7 @@ describe("scope matching: fix wave 3", () => {
     const [first, second] = cases[0]!
     const directory = matter()
     const plan = writeLeanPlan(directory, [DOCS[0]!])
-    writeLeanText(directory, "coverage.json", JSON.stringify({ schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(plan.documents, plan.acting_for), status: "uncovered", acts: [first, second], issues: [] }))
+    writeLeanText(directory, "coverage.json", JSON.stringify({ schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(directory, plan.documents, plan.acting_for), status: "uncovered", acts: [first, second], issues: [] }))
     const earlier = planAnswered([first!], plan.documents)
     writeQuestions(directory, [earlier])
     expect(coverageItems(directory).map(item => item.detail.includes(`The lawyer answered the package-scope question ${earlier.id}`))).toEqual([true, false])
@@ -805,7 +805,7 @@ describe("scope matching: fix wave 3", () => {
     const listed = { ...actOf(SENTENCE, ["the Seller"], "deliver the documents"), source: "Heads of Terms [signed].pdf" }
     const directory = matter()
     const plan = writeLeanPlan(directory, [DOCS[0]!])
-    writeLeanText(directory, "coverage.json", JSON.stringify({ schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(plan.documents, plan.acting_for), status: "uncovered",
+    writeLeanText(directory, "coverage.json", JSON.stringify({ schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(directory, plan.documents, plan.acting_for), status: "uncovered",
       acts: [listed, { ...listed, act: "pay the deposit", parties: ["the Buyer"] }], issues: [] }))
     const earlier = planAnswered([listed, beside], plan.documents)
     writeQuestions(directory, [earlier])
