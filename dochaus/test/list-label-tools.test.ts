@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { docxodus } from "../lib/docxodus"
 import { pendingRedlinesForDoc } from "../lib/redlines"
 import { renderMarkdownToDocx } from "../lib/render"
-import { bake, buildRedlined } from "../../services/ingest/src/redline"
+import { bake, buildRedlined, redlineState } from "../../services/ingest/src/redline"
 import { readDocxComments } from "../lib/docx-comments"
 import { strFromU8, unzipSync } from "fflate"
 import { listPendingRedlines, openDb } from "../../services/ingest/src/db"
@@ -80,8 +80,10 @@ async function clauses(bytes: Uint8Array) {
 }
 
 async function accepted(root: string, document: string) {
-  const rows = pendingRedlinesForDoc(root, document).map(row => ({ ...row, doc_path: document, doc_name: "supply.docx", old_text: row.find_text, status: "pending" as const, created_at: 0 }))
-  return clauses(await bake(await Bun.file(document).bytes(), rows))
+  // As Accept does: rows carry the stored canonical path and bake reads the unregistered file's state.
+  const file = realpathSync.native(document), bytes = await Bun.file(document).bytes()
+  const rows = pendingRedlinesForDoc(root, document).map(row => ({ ...row, doc_path: file, doc_name: "supply.docx", old_text: row.find_text, status: "pending" as const, created_at: 0 }))
+  return clauses(await bake(bytes, rows, await redlineState(bytes, rows, {}, null, file)))
 }
 
 test("a tracked change or redline whose find text without its copied number also opens other clauses is refused until it names one", async () => {
