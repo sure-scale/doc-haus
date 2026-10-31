@@ -23,7 +23,7 @@ import { LEAN_MAX_SUBSTANTIVE_REPAIRS, checklistRepairItems, readRepairRound, re
 import { acceptEvidenceReply, evidencePrompt } from "./evidence"
 import { checkAdoptedAgainstResearch } from "./research-check"
 import { researchPermissions, acceptResearchReply, researchPrompt, startResearchGapRound } from "./research"
-import { runApply } from "./apply-stage"
+import { runApply, writeProjectedNumbers } from "./apply-stage"
 import { DELIVERED_NOTES, forgetUnplannedDocuments, recordLeanDocuments } from "./deliverables"
 import { runDraftStage } from "./draft-sections"
 import { appendLeanEvent, leanElapsedMs } from "./events"
@@ -275,6 +275,8 @@ async function runPass(directory: string, initial: LeanState, sourceDeps: LeanDe
     // original as it is when the plan is keyed: deciding their changes
     // rewrites it, during a run as at any other time.
     if (stage === "change-plan" && document) await writeCounterpartyItems(directory, document, revisionOriginal(directory, document))
+    // Change review reads the projected body with the numbers apply will give it.
+    if (stage === "change-review" && document) await writeProjectedNumbers(directory, document)
     // The first draft can write the plan its own key reads; its key is then
     // taken again once the plan is saved.
     const keyed = performance.now()

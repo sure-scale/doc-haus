@@ -1,7 +1,8 @@
 // Run from dochaus/: bun test workflows/lean/apply-numbering.test.ts
 import { afterEach, expect, test } from "bun:test"
 import { renderMarkdownToDocx } from "../../lib/render"
-import { runApply } from "./apply-stage"
+import { runApply, writeProjectedNumbers } from "./apply-stage"
+import { projectedChangeParagraphs } from "./change-pipeline"
 import { readParagraphs, shownText, withoutListLabel, type ParagraphRow } from "./checks"
 import { writeLeanPlan } from "./plan"
 import { paragraphRows } from "./stages"
@@ -58,7 +59,7 @@ test("a later part of a split clause with the next number at its own level becom
 // heading). The changes renumber the runs after them as one list would.
 const RESOLUTIONS = "# Board Consent\n\n1. Bylaws. RESOLVED, that the Bylaws are adopted.\n\n2. Officers. RESOLVED, that the officers are elected.\n\n## Further Matters\n\n3. Ratification. RESOLVED, that the earlier actions are ratified.\n\n4. Fiscal Year. RESOLVED, that the fiscal year ends on December 31.\n\n## Signatures\n\nIN WITNESS WHEREOF, the directors sign.\n"
 
-async function applyResolutions(amendments: (rows: ParagraphRow[]) => Record<string, unknown>[]) {
+async function draftResolutions(amendments: (rows: ParagraphRow[]) => Record<string, unknown>[]) {
   const directory = matter()
   writeLeanPlan(directory, [{ title: "Board Consent", purpose: "", parts: [{ heading: "Resolutions", scope: "" }] }])
   writeLeanBytes(directory, "d1/body.docx", (await renderMarkdownToDocx(RESOLUTIONS)).bytes)
@@ -69,6 +70,11 @@ async function applyResolutions(amendments: (rows: ParagraphRow[]) => Record<str
     amendments: amendments(rows).map((row, index) => ({ id: `a${index + 1}`, existing_sha256: rows.find(entry => entry.pid === row.pid)!.sha256, reason: "Revise the resolutions.", sources, ...row })),
     explanations: [], questions: [],
   }))
+  return directory
+}
+
+async function applyResolutions(amendments: (rows: ParagraphRow[]) => Record<string, unknown>[]) {
+  const directory = await draftResolutions(amendments)
   expect(await runApply(directory, readLeanState(directory)!, "d1")).toMatchObject({ status: "done" })
   return (readLeanJson(directory, "d1/paragraphs-applied.json") as ParagraphRow[]).filter(row => row.label).map(shownText)
 }
@@ -91,6 +97,22 @@ test("a resolution a change numbers joins the list and a split part leaves it", 
     { pid: at(rows, "Further Matters"), updated: "3. Confirmation. RESOLVED, that the bank account is confirmed." },
     { pid: at(rows, "Ratification"), operation: "split", updated: ["Ratification. RESOLVED, that the earlier actions are ratified.", "Effect. These resolutions take effect today."] },
   ])).toEqual([
+    "1. Bylaws. RESOLVED, that the Bylaws are adopted.",
+    "2. Officers. RESOLVED, that the officers are elected.",
+    "3. Confirmation. RESOLVED, that the bank account is confirmed.",
+    "4. Ratification. RESOLVED, that the earlier actions are ratified.",
+    "5. Fiscal Year. RESOLVED, that the fiscal year ends on December 31.",
+  ])
+}, 60_000)
+
+// Change review reads the projected body with the numbers apply will give it,
+// not the drafted ones, which repeat a number after an added resolution.
+test("the projected body change review reads carries the numbers after apply", async () => {
+  const directory = await draftResolutions(rows => [
+    { pid: at(rows, "Further Matters"), updated: "3. Confirmation. RESOLVED, that the bank account is confirmed." },
+  ])
+  await writeProjectedNumbers(directory, "d1")
+  expect(projectedChangeParagraphs(directory, "d1").filter(row => row.label).map(shownText)).toEqual([
     "1. Bylaws. RESOLVED, that the Bylaws are adopted.",
     "2. Officers. RESOLVED, that the officers are elected.",
     "3. Confirmation. RESOLVED, that the bank account is confirmed.",
