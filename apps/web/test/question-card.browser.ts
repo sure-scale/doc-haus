@@ -32,6 +32,8 @@ const status = {
     { ...asked, id: "q-remedy", kind: "judgment", group: "Delivery", advice: { options, recommendation } },
     { ...asked, id: "q-storage", question: "Who bears the cost of storage?", kind: "judgment", group: "Delivery", advice: { options, recommendation } },
     { ...asked, id: "q-payment", question: "When is payment due?", status: "answered", answer: "30 days", answer_kind: "adopted" },
+    { ...asked, id: "q-law", question: "Which law governs the agreement?", status: "answered", answer: "English law", answer_kind: "instruction",
+      decided_by: { text: "The agreement is governed by English law.", source_id: "request", quote: "governed by English law" } },
   ],
 }
 const entry = path.join(directory, "harness.tsx")
@@ -109,9 +111,25 @@ try {
   }
   console.log("PASS topic navigation retains each decision and never submits an answer")
 
-  await card.getByRole("button", { name: "Answered (1)", exact: true }).click()
+  await card.getByRole("button", { name: "Answered (2)", exact: true }).click()
   await card.getByText("Adopted answer", { exact: true }).waitFor()
   assert.equal(await card.getByRole("button", { name: "Decide for me", exact: true }).count(), 0)
+  await card.getByRole("button", { name: "Next answer", exact: true }).click()
+  await card.getByText("Settled by your instructions", { exact: true }).waitFor()
+  assert.equal(await card.locator(".question-saved-text").innerText(), "English law")
+  const settled = card.locator("blockquote.question-settled-by")
+  assert.match(await settled.innerText(), /^governed by English law\s*Your instructions$/)
+  assert.equal(await settled.locator("cite").innerText(), "Your instructions")
+  await card.getByRole("button", { name: "Change answer", exact: true }).waitFor()
+  if (shots) {
+    await page.setViewportSize({ width: 1440, height: 1000 })
+    await page.screenshot({ path: path.join(shots, "question-settled-desktop.png"), fullPage: true })
+    await page.setViewportSize({ width: 400, height: 900 })
+    await page.screenshot({ path: path.join(shots, "question-settled-narrow.png"), fullPage: true })
+  }
+  console.log("PASS an answer settled by an instruction shows the quoted words and their source, and stays changeable")
+  await card.getByRole("button", { name: "Previous answer", exact: true }).click()
+  await card.getByText("Adopted answer", { exact: true }).waitFor()
   await card.getByRole("button", { name: "Change answer", exact: true }).click()
   const correction = card.getByLabel("Corrected answer", { exact: true })
   await correction.fill("45 days")
