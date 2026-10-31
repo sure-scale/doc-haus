@@ -10,7 +10,7 @@ import { withSourceSnapshot } from "./quotes"
 import { drainLeanRequests, enqueueLeanRequest, type LeanRequest, type StoredLeanRequest } from "./requests"
 import { stageInputSha } from "./runner"
 import { stageInputs } from "./stages"
-import { answeredQuestionsText, answerQuestion, delegable, hashStageInputs, LeanQuestionError, readLeanJson, readQuestions, writeLeanText, writeQuestions, type Question, type QuestionAdvice } from "./state"
+import { ADOPTED_ANSWER, answeredQuestionsText, answerQuestion, delegable, hashStageInputs, LeanQuestionError, readLeanJson, readQuestions, writeLeanText, writeQuestions, type Question, type QuestionAdvice } from "./state"
 import { cleanupMatters, matter, SUPPORT } from "./test-support"
 
 // "Decide for me" adopts the advisor's recommendation as the lawyer's answer.
@@ -163,7 +163,7 @@ test("the same words typed or picked give the same answers text and keys; adopte
   expect(keys({ option_id: "o2" })).toEqual(typed)
   // An adopted recommendation reads as delegated in every step's answers, so each key moves.
   const adopted = keys({ adopt: true })
-  expect(adopted.answers).toContain(`- [q-cap] Q: ${OPEN.question}\n  A (delegated by the lawyer; the recommended option was adopted): ${RECOMMENDED}`)
+  expect(adopted.answers).toContain(`- [q-cap] Q: ${OPEN.question}\n  A (${ADOPTED_ANSWER}): ${RECOMMENDED}`)
   for (const step of Object.keys(typed)) expect([step, adopted[step] === typed[step]]).toEqual([step, false])
   // Other words are another answer.
   expect(keys({ option_id: "o1" }).intake).not.toBe(typed.intake)
@@ -183,7 +183,7 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // instructions step was added, and intake and spine were re-pinned when they
 // began keying the instruction list (instructions.md).
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
-const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", "  A (delegated by the lawyer; the recommended option was adopted): Singapore law.")
+const ADOPTED_ANSWERS = ANSWERS.replace("  A: Singapore law.", `  A (${ADOPTED_ANSWER}): Singapore law.`)
 // A draft keys its outline contract and plan entry, never answers.
 const UNANSWERED_STEPS = ["d1.draft"]
 const INPUTS: Record<string, string> = {

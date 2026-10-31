@@ -521,11 +521,16 @@ export const SHORT_HASH_LENGTH = 10
  * reworded; the gate discloses it. */
 function answerLabel(question: Question) {
   if (question.answer_kind === "instruction") return `A (settled by the lawyer's instruction "${question.decided_by?.text}"${question.decided_by ? `, from their words "${question.decided_by.quote}" in ${question.decided_by.source_id}` : ""}; not asked; the lawyer may change it)`
-  if (question.answer_kind === "adopted") return "A (delegated by the lawyer; the recommended option was adopted)"
+  if (question.answer_kind === "adopted") return `A (${ADOPTED_ANSWER})`
   if (question.answer_class === "delegated") return `A (delegated by the lawyer, but it needs the lawyer's own answer, so ${STILL_OPEN})`
   if (question.answer_class === "declined") return `A (not answered by the lawyer, so ${STILL_OPEN})`
   return "A"
 }
+
+/** An adopted recommendation is the drafter's judgment, taken at intake
+ * before legal research, not the lawyer's choice: a later step may depart from
+ * it on the research or sources, and the notes disclose the departure. */
+export const ADOPTED_ANSWER = "the lawyer delegated this, so the recommended option was adopted before legal research; it is the drafter's judgment, not the lawyer's answer. Follow it unless the legal research or the sources show it cannot work as stated; then do what they support and disclose the departure in the notes. Do not ask it again"
 
 const STILL_OPEN = "it stays open as a disclosed placeholder or open item; do not ask it again"
 

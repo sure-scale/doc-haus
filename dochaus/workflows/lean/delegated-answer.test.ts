@@ -4,11 +4,11 @@ import { checkDraftingNotes } from "./checks"
 import { finalGate, type GateResult } from "./gate"
 import { writeLeanPlan } from "./plan"
 import { delegatedDecisionsText } from "./prompts"
-import { openItem, quoteFound } from "./quotes"
+import { derivedRecordNote, openItem, quoteFound } from "./quotes"
 import { enqueueLeanRequest } from "./requests"
 import { runLean, stageInputSha } from "./runner"
 import type { StageSessionPort } from "./stages"
-import { answeredQuestionsText, answerQuestion, classifiedAnswer, delegatedQuestions, readLeanJson, readOpenItems, readQuestions, recordAnswerClasses, writeLeanText, writeOpenItems, writeQuestions, type Question, type QuestionAdvice } from "./state"
+import { ADOPTED_ANSWER, answeredQuestionsText, answerQuestion, classifiedAnswer, delegatedQuestions, readLeanJson, readOpenItems, readQuestions, recordAnswerClasses, writeLeanText, writeOpenItems, writeQuestions, type Question, type QuestionAdvice } from "./state"
 import { AGENT, cleanupMatters, happyPath, matter, NO_FINDINGS, noChanges, scriptedModel, SOURCE, SUPPORT } from "./test-support"
 
 // A lawyer who delegates a question in their own words ("proceed on your own
@@ -59,6 +59,10 @@ test("a class is recorded once, only on the words that were read; later words of
   expect(late).toMatchObject({ answer: RECOMMENDED, answer_kind: "adopted", answer_class: "delegated", lawyer_words: DELEGATION })
   // The lawyer's own words stay quotable as theirs.
   expect(quoteFound(directory, { source_id: "request", quote: "Proceed on your own professional judgment" })).toBe(true)
+  // The recommendation adopted for them is not: no review may cite it as what the lawyer asked.
+  expect(quoteFound(directory, { source_id: "request", quote: RECOMMENDED })).toBe(false)
+  expect(quoteFound(directory, { source_id: "answer:q-late", quote: RECOMMENDED })).toBe(false)
+  expect(derivedRecordNote(directory, RECOMMENDED)).toContain("recommendation adopted for question q-late")
   // Words that changed since they were read keep no class.
   expect(law).not.toHaveProperty("answer_class")
   // A replayed class changes nothing.
@@ -85,7 +89,7 @@ test("a delegated decision reaches every stage as Decide for me does, marked as 
     recordAnswerClasses(directory, new Map([["q-late", { words: DELEGATION, answer_class: "delegated" as const }]]))
   })
   expect(typed.answers).toBe(`- [q-late] Q: ${QUESTION}\n  A: ${RECOMMENDED}`)
-  expect(delegated.answers).toBe(`- [q-late] Q: ${QUESTION}\n  A (delegated by the lawyer; the recommended option was adopted): ${RECOMMENDED}`)
+  expect(delegated.answers).toBe(`- [q-late] Q: ${QUESTION}\n  A (${ADOPTED_ANSWER}): ${RECOMMENDED}`)
   const { finalize: typedNotes, ...typedSteps } = typed
   const { finalize: adoptedNotes, ...adoptedSteps } = adopted
   const { finalize: delegatedNotes, ...delegatedSteps } = delegated
@@ -216,7 +220,7 @@ test("a question delegated in the lawyer's own words runs through the queue as a
   const prompts = model.prompts.slice(start)
   expect(prompts.filter(prompt => prompt.agent === AGENT.answer)).toHaveLength(1)
   // Bound: every stage reads the decision as a delegated one, never the delegating words.
-  const line = `- [${id}] Q: ${QUESTION}\n  A (delegated by the lawyer; the recommended option was adopted): ${RECOMMENDED}`
+  const line = `- [${id}] Q: ${QUESTION}\n  A (${ADOPTED_ANSWER}): ${RECOMMENDED}`
   for (const agent of [AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT.spine, AGENT.draft, AGENT.review, AGENT["change-plan"], AGENT.changes, AGENT["package-review"]])
     expect([agent, prompts.some(prompt => prompt.agent === agent && prompt.text.includes(line))]).toEqual([agent, true])
   for (const prompt of prompts.filter(prompt => prompt.agent !== AGENT.answer && prompt.agent !== AGENT.finalize))

@@ -249,17 +249,22 @@ function lawyerPassages(directory: string): { source_id: string; text: string }[
   return [readLeanText(directory, "request.md") ?? "", ...leanUserUpdates(directory).filter(update => update.status === "included").map(update => update.text)]
     .map(text => ({ source_id: REQUEST_SOURCE, text })).concat(readQuestions(directory).flatMap(question =>
       question.status === "answered" && question.answer && question.answer_kind !== "instruction"
-        ? [question.answer, ...(question.lawyer_words ? [question.lawyer_words] : [])].map(text => ({ source_id: answerSource(question.id), text }))
+        // An adopted recommendation's words are the run's, not the lawyer's.
+        ? [...question.answer_kind === "adopted" ? [] : [question.answer], ...(question.lawyer_words ? [question.lawyer_words] : [])].map(text => ({ source_id: answerSource(question.id), text }))
         : []))
 }
 
 /** When words quoted as the lawyer's are the run's own record (the instructions
- * list, or a question an instruction settled), where the lawyer's words are. */
+ * list, a question an instruction settled, or an adopted recommendation),
+ * where the lawyer's words are. */
 export function derivedRecordNote(directory: string, quote: string) {
   const settled = readQuestions(directory).find(question => question.answer_kind === "instruction" && question.decided_by &&
     lawyerWordsHold([question.question, question.answer ?? "", question.decided_by.text], quote))
   if (settled?.decided_by)
     return `Those words are the run's own record of question ${settled.id}, which an instruction settled; they are not the lawyer's words. The lawyer's words behind it are "${excerpt(settled.decided_by.quote)}" in "${settled.decided_by.source_id}".`
+  const adopted = readQuestions(directory).find(question => question.status === "answered" && question.answer_kind === "adopted" && lawyerWordsHold([question.answer ?? ""], quote))
+  if (adopted)
+    return `Those words are the recommendation adopted for question ${adopted.id}, which the lawyer delegated; they are not the lawyer's words. Quote the lawyer's request or the matter sources that support the point instead.`
   return lawyerWordsHold([readLeanText(directory, INSTRUCTIONS_FILE) ?? ""], quote)
     ? "Those words are the run's list of the lawyer's instructions, not the lawyer's words; quote the words the list shows from its named source, under that source's name."
     : ""
