@@ -513,13 +513,14 @@ try {
         blur: actual.backdropFilter,
         sharedBackground: shared.backgroundColor,
         sharedBlur: shared.backdropFilter,
+        compact: matchMedia("(max-width: 960px)").matches,
       }
       reference.remove()
       return result
     })
     assert.equal(backdrop.background, backdrop.sharedBackground, "chronology uses the shared pale modal backdrop")
     assert.equal(backdrop.blur, backdrop.sharedBlur, "chronology uses the shared modal blur")
-    assert.notEqual(backdrop.blur, "none", "modal background is blurred")
+    assert.equal(backdrop.blur, backdrop.compact ? "none" : "blur(6px)", "modal uses the shared responsive scrim")
   }
   await expectSharedBackdrop()
   await edit.getByRole("textbox", { name: "Event", exact: true }).fill("Equipment collected and sealed")

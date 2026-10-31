@@ -7,7 +7,7 @@ import { ToastProvider } from "../src/components/Toast"
 test("Open in Word uses the desktop handoff; failure exposes a deliberate linked-download fallback", async () => {
   const browser = new Window({ url: "http://localhost:5275" })
   const names = ["window", "document", "HTMLElement", "Node", "Event", "IS_REACT_ACT_ENVIRONMENT"] as const
-  const saved = names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const)
+  const saved = [...names, "setTimeout", "clearTimeout"].map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const)
   Object.defineProperties(globalThis, Object.fromEntries(names.map(name => [name, { configurable: true, writable: true,
     value: name === "IS_REACT_ACT_ENVIRONMENT" ? true : browser[name as keyof Window] }])))
   const originalFetch = globalThis.fetch
@@ -18,6 +18,11 @@ test("Open in Word uses the desktop handoff; failure exposes a deliberate linked
   URL.createObjectURL = () => "blob:synthetic-linked-word"
   URL.revokeObjectURL = () => {}
   const { createRoot } = await import("react-dom/client")
+  // Let React retain its native scheduler, then own the toasts' global timers.
+  Object.defineProperties(globalThis, {
+    setTimeout: { configurable: true, writable: true, value: browser.setTimeout.bind(browser) },
+    clearTimeout: { configurable: true, writable: true, value: browser.clearTimeout.bind(browser) },
+  })
   const container = document.createElement("div")
   document.body.append(container)
   const root = createRoot(container)
@@ -61,6 +66,7 @@ test("Open in Word uses the desktop handoff; failure exposes a deliberate linked
   } finally {
     await act(async () => root.unmount())
     container.remove()
+    await browser.happyDOM.close()
     globalThis.fetch = originalFetch
     browser.HTMLAnchorElement.prototype.click = originalClick
     URL.createObjectURL = originalCreate; URL.revokeObjectURL = originalRevoke
@@ -68,6 +74,5 @@ test("Open in Word uses the desktop handoff; failure exposes a deliberate linked
       if (descriptor) Object.defineProperty(globalThis, name, descriptor)
       else delete (globalThis as Record<string, unknown>)[name]
     }
-    await browser.happyDOM.close()
   }
 })
