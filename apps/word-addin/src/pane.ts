@@ -4,9 +4,9 @@ import { browserCheckpoints, WordSync, type PaneState } from "./sync"
 import { setupSourceDesk } from "./desk-entry"
 import { configureConnectionRecovery, createPaneRenderer } from "./pane-render"
 import { setupLatestVersion } from "./latest-version"
-import { chatClient } from "./chat-client"
+import { ChatRequestError, chatClient } from "./chat-client"
 import { mountWordChat } from "./chat-ui"
-import { captureCurrentWordContext, captureWordChatSelection, applyReviewedProposal, applyReviewedTableRow, applyWordChatRowDeletion } from "./word-chat-host"
+import { captureCurrentWordContext, captureWordChatSelection, applyReviewedProposal, applyReviewedTableRow, applyWordChatRowDeletion, WordChatHostError } from "./word-chat-host"
 import { watchWordChatSelection } from "./word-chat-selection"
 import { openChatAttachments } from "./chat-attachments"
 import { preferRoomyPane } from "./feature-tabs"
@@ -71,6 +71,15 @@ async function main(): Promise<void> {
       if (!localEditIdentity) throw new Error("Review the amendment before applying it in Word.")
       return { "x-dochaus-word-session": session, "x-dochaus-word-base-version": localEditIdentity.base, "x-dochaus-word-lease": localEditIdentity.generation }
     })
+    // Authoring precedes every Word mutation, so its refusal reason reaches the
+    // card instead of the host's generic fallback.
+    const prepare = async <T>(input: object): Promise<T> => {
+      try { return await chat.request<T>("prepare", input) }
+      catch (error) {
+        if (!(error instanceof ChatRequestError)) throw error
+        throw new WordChatHostError(/unchanged\.$/.test(error.message) ? error.message : `${error.message} Your document is unchanged.`, "unchanged", { cause: error })
+      }
+    }
     const chatPanel = element("pane-chat")
     const conversation = mountWordChat(chatPanel, chat, {
       documentName: link.documentName,
@@ -89,7 +98,7 @@ async function main(): Promise<void> {
               const chunks: string[] = []
               for (let start = 0; start < bytes.length; start += 32_768)
                 chunks.push(String.fromCharCode(...bytes.subarray(start, start + 32_768)))
-              return chat.request<T>("prepare", { ...request, docxBase64: btoa(chunks.join("")) })
+              return prepare<T>({ ...request, docxBase64: btoa(chunks.join("")) })
             }
             return proposal.kind === "table_row_delete"
               ? await applyWordChatRowDeletion(proposal, () => office.host.export(), bytes => prepareRow<WordChatAuthoredTableRowDeletion>(bytes), () => !sync.isDisposed())
@@ -102,7 +111,7 @@ async function main(): Promise<void> {
           if (sync.snapshot().busy) throw new Error("Wait for the current Save to finish, then Apply.")
           return sync.localEdit({ conversationId: request.conversationId, turnId: request.turnId }, async identity => {
             localEditIdentity = identity
-            try { return await applyReviewedProposal(proposal, ({ ooxml }) => chat.request<WordChatPreparedAmendment>("prepare", { ...request, ooxml }), () => !sync.isDisposed()) }
+            try { return await applyReviewedProposal(proposal, ({ ooxml }) => prepare<WordChatPreparedAmendment>({ ...request, ooxml }), () => !sync.isDisposed()) }
             finally { localEditIdentity = undefined }
           })
         })
