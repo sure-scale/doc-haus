@@ -1386,15 +1386,22 @@ export class WordChatHost {
     const sameParagraphs = after.paragraphs.length === before.paragraphs.length &&
       after.paragraphs.every((item, index) => item.id === before.paragraphs[index]!.id && (index !== at ||
         item.text === expectedParagraph) && (index === at || JSON.stringify(item) === JSON.stringify(before.paragraphs[index])))
-    const priorPreserved = !missing.length
-    const confirmed = context.document.changeTrackingMode === fresh.tracking && sameParagraphs && after.current === expectedText && priorPreserved && added.length > 0 &&
-      added.every(change => ["Added", "Deleted"].includes(change.type) && Boolean(change.author)) &&
-      JSON.stringify(texts(added, "Added")) === JSON.stringify(texts(wanted, "Added")) && JSON.stringify(texts(added, "Deleted")) === JSON.stringify(texts(wanted, "Deleted")) &&
-      sameNativeProjectionGeometry(pre, post) && sameWordChatParagraphProperties(pre.scope([at]), targetAfter) &&
-      sameWordChatHunkFormatting(pre.scope([at]), targetAfter, hunks) &&
-      fresh.adjacent.every(item => { const i = post.paragraphs.findIndex(p => p.id === item.id); return i >= 0 && sameWordChatParagraphContent(pre.scope([i]), post.scope([i])) }) &&
-      JSON.stringify(after.comments) === JSON.stringify(before.comments)
-    if (!confirmed) throw new WordChatHostError("Word applied the wording, but could not confirm that only the reviewed passage and tracked markup changed. Inspect it and use Undo if needed. Do not apply this proposal again.")
+    // Checked in order; the first failing stage is kept as the cause.
+    const checks: Array<[string, () => boolean]> = [
+      ["text-tracking-mode", () => context.document.changeTrackingMode === fresh.tracking],
+      ["text-paragraphs", () => sameParagraphs],
+      ["text-current", () => after.current === expectedText],
+      ["text-prior-revisions", () => !missing.length],
+      ["text-new-revisions", () => added.length > 0 && added.every(change => ["Added", "Deleted"].includes(change.type) && Boolean(change.author)) &&
+        JSON.stringify(texts(added, "Added")) === JSON.stringify(texts(wanted, "Added")) && JSON.stringify(texts(added, "Deleted")) === JSON.stringify(texts(wanted, "Deleted"))],
+      ["text-geometry", () => sameNativeProjectionGeometry(pre, post)],
+      ["text-paragraph-properties", () => sameWordChatParagraphProperties(pre.scope([at]), targetAfter)],
+      ["text-hunk-formatting", () => sameWordChatHunkFormatting(pre.scope([at]), targetAfter, hunks)],
+      ["text-adjacent", () => fresh.adjacent.every(item => { const i = post.paragraphs.findIndex(p => p.id === item.id); return i >= 0 && sameWordChatParagraphContent(pre.scope([i]), post.scope([i])) })],
+      ["text-comments", () => JSON.stringify(after.comments) === JSON.stringify(before.comments)],
+    ]
+    const failedStage = checks.find(([, check]) => !check())?.[0]
+    if (failedStage) throw new WordChatHostError("Word applied the wording, but could not confirm that only the reviewed passage and tracked markup changed. Inspect it and use Undo if needed. Do not apply this proposal again.", "unchanged", { cause: new Error(failedStage) })
     this.applied.set(input.proposalId, { identity, authors, uncertain: false })
     return { status: "applied", tracked: true, saved: false, authors, target: input.replacement.trim() ? {
       ...target, id: crypto.randomUUID(), text: input.replacement,
