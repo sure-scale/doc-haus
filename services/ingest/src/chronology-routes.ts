@@ -16,6 +16,12 @@ import {
   verifyChronologyProposals,
 } from "./chronology-store"
 import { assessChronology, chronologyPreflight, startChronologyRun, stopChronologyRun } from "./chronology-generation"
+import { validChronologyExportRequest } from "../../../dochaus/lib/chronology-export"
+import { chronologyExportSnapshot, writeChronologyExport } from "./chronology-export"
+import { chronologyDocx } from "./chronology-docx"
+import { attachmentDocumentDisposition } from "./content-disposition"
+import { oneLine } from "./document-versions"
+import { DeliverableConflictError } from "./deliverable"
 
 const revision = (x: unknown): x is number =>
   Number.isSafeInteger(x) && (x as number) >= 0 && (x as number) < Number.MAX_SAFE_INTEGER
@@ -25,6 +31,7 @@ export function chronologyRoutes(resolveMatter: (id: string) => string) {
   const app = new Hono()
   app.onError((error, c) => {
     if (error instanceof ChronologyError) return c.json({ error: error.message, code: error.code }, error.status)
+    if (error instanceof DeliverableConflictError) return c.json({ error: error.message }, 409)
     throw error
   })
   app.use("/matters/:id/chronology/*", async (c, next) => {
@@ -42,6 +49,28 @@ export function chronologyRoutes(resolveMatter: (id: string) => string) {
     await next()
   })
   app.get("/matters/:id/chronology", (c) => c.json(projectChronologySources(resolveMatter(c.req.param("id")))))
+  app.post("/matters/:id/chronology/export/preview", async (c) => {
+    const input = await c.req.json().catch(() => null)
+    if (!validChronologyExportRequest(input))
+      return c.json({ error: "Choose an export scope, hidden-entry preference and current chronology revision." }, 400)
+    return c.json(chronologyExportSnapshot(resolveMatter(c.req.param("id")), c.req.param("id"), input))
+  })
+  app.post("/matters/:id/chronology/export", async (c) => {
+    const input = await c.req.json().catch(() => null)
+    if (!validChronologyExportRequest(input))
+      return c.json({ error: "Choose an export scope, hidden-entry preference and current chronology revision." }, 400)
+    const exported = await writeChronologyExport(
+      resolveMatter(c.req.param("id")), c.req.param("id"), input, chronologyDocx,
+      oneLine(c.req.header("x-dochaus-actor")) || undefined,
+    )
+    return c.body(new Uint8Array(exported.bytes), 200, {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "Content-Disposition": attachmentDocumentDisposition(exported.name),
+      "X-DocHaus-Export-Name": exported.name,
+      "X-DocHaus-Chronology-Revision": String(exported.revision),
+      "Cache-Control": "no-store",
+    })
+  })
   app.get("/matters/:id/chronology/preflight", async (c) =>
     c.json(await chronologyPreflight(resolveMatter(c.req.param("id")))),
   )

@@ -1,0 +1,72 @@
+.chronology-dialog:has(.chronology-export-preview) {
+  width: min(900px, calc(100vw - 28px));
+}
+.chronology-export-preview h3 {
+  margin: 20px 0 10px;
+  font-size: 15px;
+}
+.chronology-export-table-scroll {
+  overflow: auto;
+  max-height: 340px;
+  border: 1px solid #e6e5e7;
+  border-radius: 6px;
+}
+.chronology-export-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 12px;
+}
+.chronology-export-table th,
+.chronology-export-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e6e5e7;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.chronology-export-table th {
+  background: #f6f6f7;
+  position: sticky;
+  top: 0;
+}
+.chronology-export-table th:first-child {
+  width: 22%;
+}
+.chronology-export-table th:last-child {
+  width: 30%;
+}
+.chronology-export-table small {
+  display: block;
+  margin-top: 5px;
+  color: #596274;
+}
+.chronology-export-preview details {
+  padding: 10px 0;
+  border-bottom: 1px solid #e6e5e7;
+}
+.chronology-export-preview summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.chronology-export-account {
+  margin: 12px 0;
+  padding-left: 12px;
+  border-left: 2px solid #e6e5e7;
+}
+.chronology-export-account blockquote {
+  margin: 8px 0;
+  white-space: pre-wrap;
+}
+.chronology-export-warnings {
+  padding-left: 20px;
+}
+.chronology-export-actions {
+  padding: 0 24px 20px;
+  margin-top: 0;
+}
+@media (max-width: 520px) {
+  .chronology-export-table th,
+  .chronology-export-table td {
+    padding: 8px;
+  }
+}

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import {
   deleteDocument,
+  DerivedChronologyError,
   DocumentExistsError,
   duplicateMessage,
   DuplicateUploadError,
@@ -37,7 +38,7 @@ type Upload = {
   // not_indexed: added, but no readable text could be extracted, so nothing
   // was indexed (the extraction quality gate). Never shown as ready.
   // duplicate: identical to a version the matter already keeps; nothing saved.
-  status: "queued" | "uploading" | "reading" | "ready" | "not_indexed" | "failed" | "exists" | "duplicate"
+  status: "queued" | "uploading" | "reading" | "ready" | "not_indexed" | "failed" | "exists" | "duplicate" | "chronology"
   error?: string
   // A ready Word file saved with pending tracked changes: the notice stays in
   // its row until dismissed.
@@ -49,6 +50,9 @@ type Upload = {
   // keep both beside a generated deliverable, and the choice is sent on retry.
   existing?: { name: string; role: "source" | "deliverable" }
   choice?: ExistingSourceChoice
+  chronology?: { name: string; originalName?: string }
+  chronologyOrigin?: "supplied-chronology"
+  sourceProvenance?: "supplied-chronology"
   // A duplicate of an earlier version of a document: the row offers to make
   // that version current again (a restore, kept as the next version).
   match?: { name: string; version: { id: string; number: number } }
@@ -141,8 +145,9 @@ export default function DocumentUpload({
       const result = await uploadDocument(matterId, upload.file, {
         onSent: () => update(upload.key, { status: "reading" }),
         existing: upload.choice,
+        chronologyOrigin: upload.chronologyOrigin,
       })
-      update(upload.key, { status: result.quality?.status === "no_readable_text" ? "not_indexed" : "ready", notice: result.notice })
+      update(upload.key, { status: result.quality?.status === "no_readable_text" ? "not_indexed" : "ready", notice: result.notice, sourceProvenance: result.source_provenance })
       if (!result.notice) setTimeout(() => setUploads((prev) => prev.filter((u) => u.key !== upload.key)), READY_LINGER_MS)
       onUploaded()
       const { kind, message } = uploadedToast(result)
@@ -317,7 +322,7 @@ export default function DocumentUpload({
           {!child && (
             <div className="doc-row-meta">
               <span className="document-origin" title={parent ? `Extracted from the ${parentWords(parent.name).parent} ${parent.name}` : undefined}>
-                {parent ? `From removed ${parentWords(parent.name).parent} ${parent.name}` : "Uploaded"}
+                {d.source_provenance === "supplied-chronology" ? "Supplied chronology" : parent ? `From removed ${parentWords(parent.name).parent} ${parent.name}` : "Uploaded"}
               </span>
               <time className="document-time" dateTime={new Date(d.created_at).toISOString()} title={`Added to matter: ${formatDateTime(d.created_at)}`}>
                 {formatTime(d.created_at)}
@@ -413,6 +418,10 @@ export default function DocumentUpload({
               onChoose={(choice) => {
                 update(u.key, { status: "queued", choice })
                 enqueue({ ...u, choice })
+              }}
+              onAcceptChronology={() => {
+                update(u.key, { status: "queued", error: undefined, chronologyOrigin: "supplied-chronology" })
+                enqueue({ ...u, chronologyOrigin: "supplied-chronology" })
               }}
               onDismiss={() => setUploads((prev) => prev.filter((x) => x.key !== u.key))}
               onRestore={() => restoreMatch(u)}
@@ -746,6 +755,7 @@ export function newUpload(key: number, file: File): Upload {
 // identical file says which version it matches. A lost connection or a service
 // failure can be retried; a refusal for this file (4xx) would only repeat.
 export function failedUpload(error: unknown, file: File): Partial<Upload> {
+  if (error instanceof DerivedChronologyError) return { status: "chronology", error: error.message, chronology: { name: error.documentName, originalName: error.originalName } }
   if (error instanceof DocumentExistsError) return { status: "exists", existing: { name: error.existing, role: error.role } }
   if (error instanceof DuplicateUploadError) {
     const earlier = error.version && !error.version.current ? { name: error.existing, version: { id: error.version.id, number: error.version.number } } : undefined
@@ -764,15 +774,17 @@ const UPLOAD_LABEL: Record<Upload["status"], string> = {
   failed: "Not added",
   exists: "Already in this matter. Save this as a new version of it, or keep both?",
   duplicate: "Already in this matter. Nothing was saved.",
+  chronology: "This is a chronology export. You can add an edited copy as a supplied account. It is not independent corroboration and will not replace the chronology workbench.",
 }
 const DELIVERABLE_EXISTS = "A document created by Doc.Haus has this name. Keep both?"
 
-export function UploadRow({ upload, onRetry, onChoose, onDismiss, onRestore }: {
+export function UploadRow({ upload, onRetry, onChoose, onDismiss, onRestore, onAcceptChronology }: {
   upload: Upload
   onRetry: () => void
   onChoose: (choice: ExistingSourceChoice) => void
   onDismiss: () => void
   onRestore?: () => void
+  onAcceptChronology?: () => void
 }) {
   const [confirming, setConfirming] = useState(false)
   // A cancelled confirmation hands focus back to the Restore button.
@@ -794,18 +806,28 @@ export function UploadRow({ upload, onRetry, onChoose, onDismiss, onRestore }: {
     <li className={`doc-row upload-row is-${upload.status}${upload.notice ? " has-notice" : ""}`} aria-live="polite">
       <div className="doc-row-main">
         <span className="upload-icon" aria-hidden>
-          {upload.status === "failed" || upload.status === "exists" || upload.status === "not_indexed" || upload.status === "duplicate" || upload.notice
+          {upload.status === "failed" || upload.status === "exists" || upload.status === "chronology" || upload.status === "not_indexed" || upload.status === "duplicate" || upload.notice
             ? <IconAlert />
             : upload.status === "ready" ? <IconCheck /> : <span className="upload-spinner" />}
         </span>
         <span className="upload-name">{upload.file.name}</span>
+        {upload.sourceProvenance === "supplied-chronology" && <span className="document-origin">Supplied chronology</span>}
       </div>
       <div className="doc-row-meta">
         <span className="upload-status">
           {match && confirming
             ? restoreConfirmText(match.version.number)
-            : upload.error ?? upload.notice ?? (upload.existing?.role === "deliverable" ? DELIVERABLE_EXISTS : UPLOAD_LABEL[upload.status])}
+            : upload.status === "chronology" ? UPLOAD_LABEL.chronology
+            : upload.error ?? upload.notice ?? (upload.status === "exists" && upload.existing?.role === "deliverable" ? DELIVERABLE_EXISTS : UPLOAD_LABEL[upload.status])}
         </span>
+        {upload.status === "chronology" && (
+          <span className="upload-actions">
+            <button type="button" className="icon-btn upload-choice-lead" onClick={onAcceptChronology}>
+              Add as supplied chronology
+            </button>
+            <button type="button" className="icon-btn" onClick={onDismiss}>Cancel</button>
+          </span>
+        )}
         {match && confirming && (
           <span className="upload-actions" role="group" aria-label={`Restore version ${match.version.number}`} onKeyDown={(event) => {
             if (event.key !== "Escape" || upload.restoring) return

@@ -72,7 +72,9 @@
 }
 
 .upload-row.is-not_indexed .upload-icon,
-.upload-row.is-not_indexed .upload-status {
+.upload-row.is-not_indexed .upload-status,
+.upload-row.is-chronology .upload-icon,
+.upload-row.is-chronology .upload-status {
   color: var(--warn);
 }
 
@@ -87,6 +89,7 @@
 
 .upload-row.is-failed .doc-row-meta,
 .upload-row.is-exists .doc-row-meta,
+.upload-row.is-chronology .doc-row-meta,
 .upload-row.is-duplicate .doc-row-meta,
 .upload-row.has-notice .doc-row-meta {
   align-items: flex-start;
@@ -98,6 +101,14 @@
   flex: 0 0 auto;
   gap: 6px;
   margin-left: auto;
+}
+
+.upload-row.is-chronology .doc-row-meta {
+  flex-wrap: wrap;
+}
+
+.upload-row.is-chronology .upload-actions {
+  flex-wrap: wrap;
 }
 
 .upload-actions .upload-choice-lead {

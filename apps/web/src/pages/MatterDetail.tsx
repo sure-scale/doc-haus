@@ -476,6 +476,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
         {view === "chronology" && (
           <ChronologyWorkbench
             onActionsChange={setChronologyActions}
+            onDocumentsChanged={refresh}
             key={matter.id}
             matterId={matter.id}
             title={matter.title}
