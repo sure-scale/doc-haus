@@ -5,7 +5,7 @@ import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
 import { readWorkingDocx } from "../../lib/working-docx"
 import { combinedDelivery, combinedFileItems, deliveryArtifactEvidence, deliveryStem, memoNotesFile, plannedRegistration, present, readLeanDocuments, redlineOfBody, requestedMemo } from "./deliverables"
 import { OTHER_FORMAT, formatStem, spelledNames } from "./delivery-selection"
-import { plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
+import { nameKey, normalizedHeading, plainFileName, readLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { REQUEST_SOURCE, excerpt, instructionFound, lawyerWords, matterSourceIDs, openItem, quoteMissIssue } from "./quotes"
 import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, shortHash, writeLeanText, type OpenItem, type Question } from "./state"
@@ -25,8 +25,11 @@ import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, short
 // revision. Once the lawyer has answered a requested-files question, no
 // revision is asked for (requestedFilesRevision), and only files no answered
 // question listed are asked about. A file name is no planning judgement, so
-// withRequestedNames gives grounded names to the plan. A shape the run cannot build (several documents
-// in one file, or the memo after its document) is no revision issue; like any
+// withRequestedNames gives grounded names to the plan. Several planned
+// documents the lawyer's words put in one file are held as one document, the
+// others its separate instruments (foldRequestedFiles), before any of this
+// reads the plan. A shape the run cannot build (several documents in one file
+// that cannot be held so, or the memo after its document) is no revision issue; like any
 // file the final plan does not deliver as asked, it reaches the lawyer as an
 // open item derived from the record (requestedFilesItems), never stored. A job
 // whose reply never passed its check is recorded as unchecked, and disclosed
@@ -350,6 +353,64 @@ export function withRequestedNames<T extends { title: string; file?: string; del
   }
 }
 
+/** The outline with each file the lawyer's words fill with several planned
+ * documents (RequestedFiles) held as one document, so the run delivers the one
+ * file asked for: the first of them in drafting order keeps its place, title,
+ * form and furniture, and each other one follows as a separate instrument, its
+ * parts after the host's, the first marked with its title, purpose, form and
+ * parties (PlannedPart.instrument). The document is executed by the parties of
+ * each. A part label another part of the document already uses is suffixed
+ * with its instrument's title; a label printed as the heading keeps its text as
+ * its display heading. The records' files hold the ids the documents then have.
+ * Only new documents drafted without a template, comparison, left-out parts or
+ * playbook review fold, none delivered as a redline and only the host combined
+ * with the memo; a file holding any other stays as recorded, a shape the run
+ * cannot build (requestedFilesItems). With `separate` (the lawyer chose a file
+ * of its own for an instrument: separateFileChosen) nothing folds. `at` gives,
+ * for each outline document, the index of the document now holding it; `from`,
+ * for each document of the result, its outline index. */
+export function foldRequestedFiles<T extends Omit<PlannedDocument, "id">>(documents: T[], requested: RequestedFiles, separate = false) {
+  const at = documents.map((_, index) => index)
+  const foldable = (document: T, host: boolean) => (document.mode ?? "new") === "new" && !document.template && !document.comparison && !document.playbook_review &&
+    !document.left_out?.length && document.deliverable !== "redline" && (host || document.deliverable !== "combined") && !document.parts.some(part => part.instrument)
+  if (requested.stated && !separate) for (const file of requested.files) {
+    const held = [...new Set(file.holds.filter(id => id !== MEMO).map(id => Number(id.slice(1)) - 1))].filter(index => documents[index]).toSorted((a, b) => a - b)
+    const [host, ...rest] = held
+    if (host === undefined || !rest.length || held.some(index => at[index] !== index) || !foldable(documents[host]!, true) || rest.some(index => !foldable(documents[index]!, false))) continue
+    for (const index of rest) at[index] = host
+  }
+  const hosts = documents.flatMap((_, index) => at[index] === index ? [index] : [])
+  const applied: string[] = []
+  const folded = hosts.map(host => {
+    const instruments = documents.flatMap((document, index) => index !== host && at[index] === host ? [document] : [])
+    if (!instruments.length) return documents[host]!
+    const document = documents[host]!
+    const used = new Set(document.parts.map(part => normalizedHeading(part.heading)))
+    const parts = [...document.parts, ...instruments.flatMap(instrument => instrument.parts.map((part, index) => {
+      const clash = used.has(normalizedHeading(part.heading))
+      const heading = clash ? `${part.heading} (${instrument.title})` : part.heading
+      used.add(normalizedHeading(heading))
+      return {
+        ...part, heading, ...(clash && part.display_heading === undefined ? { display_heading: part.heading } : {}),
+        ...(index ? {} : { instrument: {
+          title: instrument.title, ...(instrument.purpose ? { purpose: instrument.purpose } : {}),
+          ...(instrument.executed_by ? { executed_by: instrument.executed_by } : {}), ...(instrument.form ? { form: instrument.form } : {}),
+        } }),
+      }
+    }))]
+    const parties = [document, ...instruments].flatMap(row => row.executed_by ?? [])
+    const executing = [document, ...instruments].some(row => row.executed_by) ? [...new Map(parties.map(party => [nameKey(party), party])).values()] : undefined
+    applied.push(`${titles(instruments)} drafted as ${instruments.length > 1 ? "separate instruments" : "a separate instrument"} in "${document.title}", in one file as the lawyer's words ask`)
+    return { ...document, parts, ...(executing ? { executed_by: executing } : {}) }
+  })
+  const position = at.map(host => hosts.indexOf(host))
+  const holds = (file: RequestedFile) => [...new Set(file.holds.map(id => id === MEMO ? id : `d${position[Number(id.slice(1)) - 1]! + 1}`))]
+  return {
+    documents: folded, at: position, from: hosts, applied,
+    requested: applied.length ? { ...requested, files: requested.files.map(file => ({ ...file, holds: holds(file) })) } : requested,
+  }
+}
+
 /** The id of the requested-files question on the lawyer's words as they stand:
  * the request and the lawyer's updates. An answer or a later job's quoting does
  * not change it; an update does. */
@@ -618,7 +679,7 @@ function requestedFilesRaised(directory: string, told?: OpenItem[]): { item: Ope
     }
     const phrases = [...[...files.values()].map(describe), ...(file.holds.includes(MEMO) && !memo ? ["no memo"] : [])]
     const delivers = phrases.length ? serialList(phrases) : "none of them"
-    const reason = !shape ? file.holds.filter(held => held !== MEMO).length > 1 ? " The run cannot put more than one document in one file."
+    const reason = !shape ? file.holds.filter(held => held !== MEMO).length > 1 ? " The run puts several documents in one file only when it drafts each as a new document, with no template, comparison or playbook review, and none as a redline."
       : " The run can join the memo and a document in one file only with the memo first."
       : !check.unsupported && check.issue?.ask ? " The run cannot join the memo with a redline." : ""
     const refused = file.name === null ? file.refused_name : undefined

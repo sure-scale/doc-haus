@@ -950,7 +950,7 @@ describe("requested files items", () => {
 
   test("a shape the run cannot build always gives an item", () => {
     expect(requestedFilesItems(saved(AS_ASKED, record(file(["d1", "d2"], BOTH))))).toEqual([item(["Kestrel Transfer.docx", "Kestrel Board Pack.docx"], `the lawyer's words "${BOTH}" [source: request] ask for "Share transfer form" and "Board minute" in one file, ` +
-      'but the run delivers "Share transfer form" in "Kestrel Transfer.docx" and the memo and "Board minute" in one file named "Kestrel Board Pack.docx". The run cannot put more than one document in one file.')])
+      'but the run delivers "Share transfer form" in "Kestrel Transfer.docx" and the memo and "Board minute" in one file named "Kestrel Board Pack.docx". The run puts several documents in one file only when it drafts each as a new document, with no template, comparison or playbook review, and none as a redline.')])
     expect(requestedFilesItems(saved(AS_ASKED, record(file(["d2", "memo"], PACK, "Kestrel Board Pack.docx"))))).toEqual([item(["Kestrel Board Pack.docx"], `the lawyer's words "${PACK}" [source: request] ask for "Board minute" and the memo in one file named "Kestrel Board Pack.docx", ` +
       'but the run delivers the memo and "Board minute" in one file named "Kestrel Board Pack.docx". The run can join the memo and a document in one file only with the memo first.')])
   })

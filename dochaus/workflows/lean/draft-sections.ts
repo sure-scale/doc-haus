@@ -8,16 +8,16 @@ import { appendLeanEvent, leanElapsedMs } from "./events"
 import { matterSourceIDs } from "./quotes"
 import { memoNotesFile } from "./deliverables"
 import {
-  LEAN_COVERAGE_SCHEMA, coverageActsPrompt, coveragePlacementPrompt, coveragePlanHash, coverageScopeQuestion, mergeCoverageActs, parseCoverageActs, parseCoveragePlacement, planCoverageCurrent, planCoverageIssues,
+  LEAN_COVERAGE_SCHEMA, coverageActsPrompt, coveragePlacementPrompt, coveragePlanHash, coverageScopeQuestion, foldedCoverage, mergeCoverageActs, parseCoverageActs, parseCoveragePlacement, planCoverageCurrent, planCoverageIssues, separateFileChosen,
   type CoverageAct, type InstructedAct, type LeanCoverage,
 } from "./package-coverage"
 import { answeredScopeQuestion, openScopeQuestion } from "./package-scope"
 import {
-  LEAN_REQUESTED_FILES_SCHEMA, parseRequestedFiles, requestedFilesIssues, requestedFilesPlanned, requestedFilesPrompt, requestedFilesQuestion, requestedFilesRevision, requestedFilesWords, withRequestedNames, writeRequestedFiles,
+  LEAN_REQUESTED_FILES_SCHEMA, foldRequestedFiles, parseRequestedFiles, requestedFilesIssues, requestedFilesPlanned, requestedFilesPrompt, requestedFilesQuestion, requestedFilesRevision, requestedFilesWords, withRequestedNames, writeRequestedFiles,
   type RequestedFiles,
 } from "./requested-files"
 import {
-  FIRST_DOCUMENT, headingText, normalizedHeading, parsePlan, plannedDocument, readLeanPlan, runPosture, withDocumentIDs, writeLeanPlan,
+  FIRST_DOCUMENT, headingText, normalizedHeading, parsePlan, partInstrument, plannedDocument, readLeanPlan, runPosture, withDocumentIDs, writeLeanPlan,
   type ActingFor, type DocID, type LeanOutline, type PlannedDocument, type StepID,
 } from "./plan"
 import { REVISION_PREFERENCE_SCOPE, actingForBlock, packageCompositionBlock, retryPrompt, stagePrompt } from "./prompts"
@@ -182,7 +182,7 @@ export async function runDraftStage(
       (reply, final) => parseCoveragePlacement(reply, directory, documents, acts, { final }))
     return checked.value ? { acts: checked.value, issues: planCoverageIssues(checked.value, documents, directory) } : { issues: checked.issues }
   }
-  const recordCoverage = (documents: PlannedDocument[], actingFor: ActingFor | undefined, coverage: Coverage) => {
+  const writeCoverage = (documents: PlannedDocument[], actingFor: ActingFor | undefined, coverage: Coverage) => {
     const record: LeanCoverage = {
       schema: LEAN_COVERAGE_SCHEMA,
       plan: coveragePlanHash(documents, actingFor),
@@ -191,6 +191,10 @@ export async function runDraftStage(
       issues: coverage.issues,
     }
     writeLeanText(directory, "coverage.json", `${JSON.stringify(record, null, 2)}\n`)
+    return record
+  }
+  const recordCoverage = (documents: PlannedDocument[], actingFor: ActingFor | undefined, coverage: Coverage) => {
+    const record = writeCoverage(documents, actingFor, coverage)
     appendLeanEvent(directory, { stage: "draft", document, event: "coverage", step: "coverage", outcome: record.status, issues: record.issues })
   }
   // An instructed act still left without a document its parties execute is the
@@ -278,23 +282,39 @@ export async function runDraftStage(
     // same memo, spelled alike, and otherwise it is spent and the outline kept.
     // File names stay the outline's: code gives each file its name. Neither job
     // reads what it changes, so neither is asked again.
+    // Several planned documents the lawyer's words put in one file are held as
+    // one, the others its separate instruments (foldRequestedFiles), unless
+    // the lawyer chose a file of its own for one; the files, their revisions
+    // and the saved plan all read the outline so held.
     const filed = await filing(covered, value.memo)
-    const requested = filed?.value
+    const separate = separateFileChosen(readQuestions(directory))
+    const fold = (outline: LeanOutline) => filed?.value ? foldRequestedFiles(outline.documents, filed.value, separate) : undefined
+    let folded = fold(value)
+    let requested = folded?.requested
+    const held = () => folded?.documents ?? value!.documents
     const contents = (outline: LeanOutline) => JSON.stringify([outline.documents.map(row => normalizedHeading(row.title)), outline.memo ? normalizedHeading(outline.memo) : null])
     const delivered = ({ deliverable: _deliverable, ...row }: LeanOutline["documents"][number], revised: LeanOutline["documents"][number]) =>
       ({ ...row, ...(revised.deliverable ? { deliverable: revised.deliverable } : {}) })
-    let files = requested ? requestedFilesIssues(covered, value.memo, requested).issues : []
-    const revising = (documents: LeanOutline["documents"]) =>
-      requested && requestedFilesQuestion(directory, requested, withDocumentIDs(documents), files) ? requestedFilesRevision(directory, files) : undefined
-    for (let revision = 1, revise = revising(value.documents); requested && revise && revision <= PLAN_FILES_REVISIONS; revision++, revise = revising(value.documents)) {
+    let files = requested ? requestedFilesIssues(withDocumentIDs(held()), value.memo, requested).issues : []
+    const revising = () =>
+      requested && requestedFilesQuestion(directory, requested, withDocumentIDs(held()), files) ? requestedFilesRevision(directory, files) : undefined
+    for (let revision = 1, revise = revising(); requested && revise && revision <= PLAN_FILES_REVISIONS; revision++, revise = revising()) {
       delete best.value
       const revised = await ask<LeanOutline>(`outline files revision ${revision}/${PLAN_FILES_REVISIONS}`, retryPrompt("draft", revise.feedback), checkOutline, 0, revise.feedback)
       const next = revised.value ?? best.value
       if (!next || contents(next) !== contents(value)) continue
-      const concerned = revise.documents
-      const ids: DocID[] = withDocumentIDs(value.documents).map(row => row.id)
-      value = { ...value, documents: value.documents.map((row, index) => concerned.has(ids[index]!) ? delivered(row, next.documents[index]!) : row) }
-      files = requestedFilesIssues(withDocumentIDs(value.documents), value.memo, requested).issues
+      // The issues name the documents as held; each is its outline document.
+      const ids: DocID[] = withDocumentIDs(held()).map(row => row.id)
+      const concerned = new Set(ids.flatMap((id, index) => revise.documents.has(id) ? [folded?.from[index] ?? index] : []))
+      value = { ...value, documents: value.documents.map((row, index) => concerned.has(index) ? delivered(row, next.documents[index]!) : row) }
+      folded = fold(value)
+      requested = folded?.requested
+      files = requestedFilesIssues(withDocumentIDs(held()), value.memo, requested!).issues
+    }
+    if (folded?.applied.length) {
+      // The coverage record moves to the plan as held, so the saved plan's check stands.
+      writeCoverage(withDocumentIDs(folded.documents), value.acting_for, foldedCoverage(directory, coverage, folded.at, withDocumentIDs(folded.documents)))
+      value = { ...value, documents: folded.documents }
     }
     const documents = withDocumentIDs(value.documents)
     // A mismatch the revisions leave is the lawyer's call, asked once; once
@@ -309,8 +329,9 @@ export async function runDraftStage(
     const named = requested && withRequestedNames(value.documents, memo, requested)
     if (requested && named) {
       writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, words: requestedFilesWords(directory), planned: requestedFilesPlanned(named.documents, value.memo), stated: requested.stated, files: requested.files })
+      const applied = [...folded?.applied ?? [], ...named.applied]
       appendLeanEvent(directory, { stage: "draft", document, event: "requested_files", step: "files", outcome: requested.stated ? "stated" : "not_stated", issues: files.map(row => row.issue),
-        ...(named.applied.length ? { reason: named.applied.join("; ") } : {}) })
+        ...(applied.length ? { reason: applied.join("; ") } : {}) })
     } else if (filed) {
       // Disclosed from the record (requestedFilesItems), as an unchecked coverage record is.
       writeRequestedFiles(directory, { schema: LEAN_REQUESTED_FILES_SCHEMA, basis, words: requestedFilesWords(directory), planned: requestedFilesPlanned(value.documents, value.memo), status: "unchecked", stated: false, files: [] })
@@ -380,7 +401,7 @@ export async function runDraftStage(
     writeLeanText(directory, `${document}/draft-in-progress.md`, assembleDraft(plan, drafted, false))
   }
   const letter = isLetter(plan.form)
-  const presentation = letter || plan.parts.some(part => part.display_heading !== undefined)
+  const presentation = letter || plan.parts.some(part => part.display_heading !== undefined || part.instrument)
     ? { source: assembleDraft(plan, drafted, false), parts: drafted.map((text, part) => ({ heading: headingText(text.split("\n")[0]!.replace(/^##\s+/, "")), display_heading: printedDisplayHeading(plan, part, text), part })), ...(letter ? { title: false as const } : {}) }
     : undefined
   const accepted = await acceptStageReply(directory, step, assembleDraft(plan, drafted), { presentation })
@@ -401,12 +422,23 @@ export function sectionPrompt(outline: DraftOutline, index: number, template?: {
   const part = outline.parts[index]!
   const names = (labels: string[]) => labels.map(name => `"${name}"`).join("; ")
   const original = outline.mode === "revise" ? "the original" : template ? `the template "${template.source}"` : undefined
+  // A separate instrument in the document's file is drafted as its own
+  // document: its form, title, parties and numbering are its own.
+  const instrument = partInstrument(outline.parts, index)
+  const instruments = outline.parts.some(row => row.instrument)
+  const form = instrument ? instrument.form : outline.form
   // A new agreement has no source numbering to follow; clause numbering
   // (lib/docx-numbering.ts) becomes native Word numbering only from numbered
   // clause headings, whether or not a part heading is printed above them.
-  const numbered = outline.form === "agreement" && !original && !outline.template
+  const numbered = form === "agreement" && !original && !outline.template
+  const parties = (executing: string[] | undefined) => executing?.length ? `, executed by ${executing.map(name => `"${name}"`).join("; ")}` : ""
   return [
     `Draft part ${index + 1} of ${outline.parts.length} of "${outline.title}": ${part.heading}`,
+    ...(instrument
+      ? [`This part is in "${instrument.title}", a separate instrument in the same file${parties(instrument.executed_by)}. The renderer prints its title on a new page above its first part. ` +
+        "Its text, numbering and execution are its own: do not carry its acts into another instrument of the file, or theirs into it." +
+        (instrument.purpose ? ` It is for: ${instrument.purpose}` : "")]
+      : instruments ? [`This part is in "${outline.title}" itself. The same file also holds separate instruments, each under its own title with its own parties and execution.`] : []),
     ...(part.scope ? [`This part covers: ${part.scope}`] : []),
     ...(template
       ? [[
@@ -416,17 +448,20 @@ export function sectionPrompt(outline: DraftOutline, index: number, template?: {
       : []),
     "",
     "Outline:",
-    ...outline.parts.map((row, at) => `${at + 1}. ${row.heading}${at === index ? "  <- this part" : ""}${row.scope ? ` — ${row.scope}` : ""}`),
+    ...outline.parts.flatMap((row, at) => [
+      ...(row.instrument ? [`Separate instrument "${row.instrument.title}"${parties(row.instrument.executed_by)}:`] : []),
+      `${at + 1}. ${row.heading}${at === index ? "  <- this part" : ""}${row.scope ? ` — ${row.scope}` : ""}`,
+    ]),
     "",
     "Reply with the full text of this part only, in Markdown:",
     `- Begin with the line "## ${part.heading}". Use "### " or lower headings inside the part if it needs them.`,
     part.display_heading === undefined ? "- The renderer prints that first line as the part's heading. Do not repeat it in the body."
       : part.display_heading ? `- The renderer replaces that first line with the visible heading "${part.display_heading}". Do not repeat it in the body.`
       // A letter reads as one letter; another document's headings are in its text.
-      : isLetter(outline.form) ? "- That first line is an internal part label; the renderer omits it. Begin the body with the document text itself, without a replacement heading."
+      : isLetter(form) ? "- That first line is an internal part label; the renderer omits it. Begin the body with the document text itself, without a replacement heading."
       : "- That first line is an internal part label; the renderer omits it. Write the headings the document itself needs in the part's text, in its own style" +
         (original ? `, following the heading text and hierarchy of ${original} except where the outline or the instructions change them.` : "."),
-    ...(numbered ? ['- Number the clauses in one sequence across the whole document: each clause has a numbered heading ("### 3. <clause heading>") and its subclauses continue that number (3.1, 3.2). A part heading the renderer prints is not a clause and is not numbered.'] : []),
+    ...(numbered ? [`- Number the clauses in one sequence across the whole ${instruments ? "instrument, from 1" : "document"}: each clause has a numbered heading ("### 3. <clause heading>") and its subclauses continue that number (3.1, 3.2). A part heading the renderer prints is not a clause and is not numbered.`] : []),
     "- Do not repeat the title or write any other part. Keep defined terms, numbering and cross-references consistent with the outline, the instructions and the parts already drafted.",
     "- The source, quotation and open item rules of the first prompt still apply.",
   ].join("\n")
@@ -463,7 +498,7 @@ export function checkSection(reply: string, outline: DraftOutline, index: number
   const body = reply.trim().replace(/\r\n/g, "\n")
   const drafted = /^#{1,2}\s/.test(body) ? body : `## ${heading}\n\n${body}`
   const opening = openingRepeats(drafted, {
-    title: index === 0 && !isLetter(outline.form) ? outline.title : undefined,
+    title: titleAbove(outline, index),
     heading: display === undefined ? heading : display || undefined,
   })
   const text = opening.text
@@ -537,7 +572,16 @@ function printedDisplayHeading(outline: DraftOutline, index: number, text: strin
   if (!display) return display
   const opening = text.trim().split("\n").slice(1).find(line => line.trim())?.trim() ?? ""
   const heading = /^#{3,6}\s/.test(opening) ? plainLine(opening).replace(/^\d{1,3}(?:\.\d{1,3})*\.?\s+/, "") : undefined
-  return plainLine(display) === heading || index === 0 && !isLetter(outline.form) && plainLine(display) === plainLine(outline.title) ? "" : display
+  const title = titleAbove(outline, index)
+  return plainLine(display) === heading || title !== undefined && plainLine(display) === plainLine(title) ? "" : display
+}
+
+/** The title printed right above part `index`: the document's, above its first
+ * part (not in a letter), or a separate instrument's, above that instrument's
+ * first part (assembleDraft). */
+function titleAbove(outline: DraftOutline, index: number) {
+  const instrument = outline.parts[index]?.instrument
+  return instrument ? instrument.title : index === 0 && !isLetter(outline.form) ? outline.title : undefined
 }
 
 /** The draft from its parts. With `presentation`, each part label gives way to
@@ -545,12 +589,17 @@ function printedDisplayHeading(outline: DraftOutline, index: number, text: strin
  * up, keeping their relative depth, until the shallowest is a second-level
  * heading under the title, as presentDraft does in the Word body; without it,
  * the labels stay as the internal boundaries the renderer and paragraph
- * attribution read. */
+ * attribution read. A separate instrument's title is a "# " line above its
+ * first part, which the Word body starts on a new page (presentDraft). */
 export function assembleDraft(outline: DraftOutline, parts: string[], presentation = true) {
   return `# ${outline.title}\n\n${parts.map(part => {
     const text = part.trim()
     const label = headingText(text.split("\n")[0]!.replace(/^##\s+/, ""))
     const at = outline.parts.findIndex(row => normalizedHeading(row.heading) === normalizedHeading(label))
+    const instrument = outline.parts[at]?.instrument
+    return instrument ? `# ${instrument.title}\n\n${presented(text, at)}` : presented(text, at)
+  }).join("\n\n")}\n`
+  function presented(text: string, at: number) {
     const display = at < 0 ? undefined : printedDisplayHeading(outline, at, text)
     if (!presentation || display === undefined) return text
     const body = text.split("\n").slice(1).join("\n").trim()
@@ -559,5 +608,5 @@ export function assembleDraft(outline: DraftOutline, parts: string[], presentati
     if (!levels.length) return body
     const shift = Math.min(...levels) - 2
     return body.replace(/^([ \t]*)(#{3,6})(?=[ \t])/gm, (_, indent: string, marks: string) => `${indent}${"#".repeat(marks.length - shift)}`)
-  }).join("\n\n")}\n`
+  }
 }
