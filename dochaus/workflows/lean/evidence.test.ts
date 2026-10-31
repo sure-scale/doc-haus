@@ -42,7 +42,7 @@ test("later answers and same-name source revisions invalidate dependent work", (
 test("spine is source-linked and followed by four independent reviews", () => {
   const directory = matter()
   expect(acceptEvidenceReply(directory, "spine", JSON.stringify({ entries: [{ kind: "requirement", detail: "State payment timing", evidence: [{ source_id: SOURCE, quote: "Payment is due on delivery." }], limitations: [] }], limitations: [] })).issues).toEqual([])
-  expect(leanSteps(directory)).toEqual(["discrepancy", "intake", "research", "research-review", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "checklist-check", "package-review", "gate"])
+  expect(leanSteps(directory)).toEqual(["discrepancy", "intake", "research", "research-review", "acts", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "checklist-check", "package-review", "gate"])
   expect(evidencePrompt(directory, "spine")).toContain("future stages must retrieve underlying text")
 })
 

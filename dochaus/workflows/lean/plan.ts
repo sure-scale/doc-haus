@@ -23,7 +23,7 @@ import { REVIEW_STAGES, readLeanJson, readLeanText, writeLeanText, type ReviewSt
 export const DOC_STAGES = ["draft", ...REVIEW_STAGES, "review-playbook", "change-plan", "change-prepare", "changes", "change-review", "apply"] as const
 export type DocStage = (typeof DOC_STAGES)[number]
 export type DocID = `d${number}`
-export type StepID = `${DocID}.${DocStage}` | "discrepancy" | "intake" | "research" | "research-review" | "spine" | "finalize" | "checklist-check" | "package-review" | "gate"
+export type StepID = `${DocID}.${DocStage}` | "discrepancy" | "intake" | "research" | "research-review" | "acts" | "spine" | "finalize" | "checklist-check" | "package-review" | "gate"
 
 /** heading identifies the drafting part; absent display_heading preserves it
  * in publication (a plan saved before labels were planned unheaded, or one
@@ -71,7 +71,7 @@ type Checked<T> = { issues: string[]; value?: T }
  * document's steps are known. */
 export function leanSteps(directory: string): StepID[] {
   const ids = readLeanPlan(directory)?.documents.map(document => document.id) ?? [FIRST_DOCUMENT]
-  return ["discrepancy", "intake", "research", "research-review", "spine", ...ids.flatMap(id => DOC_STAGES.filter(stage => stage !== "review-playbook" || reviewStages(directory, id).includes(stage)).map((stage): StepID => `${id}.${stage}`)), "finalize", "checklist-check", "package-review", "gate"]
+  return ["discrepancy", "intake", "research", "research-review", "acts", "spine", ...ids.flatMap(id => DOC_STAGES.filter(stage => stage !== "review-playbook" || reviewStages(directory, id).includes(stage)).map((stage): StepID => `${id}.${stage}`)), "finalize", "checklist-check", "package-review", "gate"]
 }
 
 /** Planning selects guidance per body; legacy and unassigned bodies retain the ordinary reviews. */
@@ -88,7 +88,7 @@ export function stepDocument(step: StepID): DocID | null {
 }
 
 export function isStepID(value: string): value is StepID {
-  return ["discrepancy", "intake", "research", "research-review", "spine", "finalize", "checklist-check", "package-review", "gate"].includes(value) || new RegExp(`^d[1-9]\\d*\\.(${DOC_STAGES.join("|")})$`).test(value)
+  return ["discrepancy", "intake", "research", "research-review", "acts", "spine", "finalize", "checklist-check", "package-review", "gate"].includes(value) || new RegExp(`^d[1-9]\\d*\\.(${DOC_STAGES.join("|")})$`).test(value)
 }
 
 export function readLeanPlan(directory: string): LeanPlan | undefined {

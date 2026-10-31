@@ -378,7 +378,7 @@ test("a review without gaps keeps the research steps and inputs unchanged", asyn
   const directory = matter()
   const model = scriptedModel(happyPath)
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
-  expect(model.sessions.map(row => row.agent).slice(0, 5)).toEqual([AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], AGENT.spine])
+  expect(model.sessions.map(row => row.agent).slice(0, 10)).toEqual([AGENT.discrepancy, AGENT.intake, AGENT.research, AGENT["research-review"], ...Array(5).fill(AGENT.acts), AGENT.spine])
   expect(model.count(AGENT.research)).toBe(1)
   expect(model.count(AGENT["research-review"])).toBe(1)
   expect(stageInputs(directory, "research").map(part => part.name)).not.toContain("research-gaps")

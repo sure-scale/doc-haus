@@ -45,6 +45,8 @@ export function requestMemo(directory: string) {
 export function scriptedModel(replies: Record<string, Reply>) {
   const prompts: { agent: string; sessionID: string; text: string }[] = []
   const sessions: Parameters<StageSessionPort["createSession"]>[0][] = []
+  // Kept across prompts, so a retry answers as the job its session asked.
+  const actRecord = actRecordJobs({})
   const port: StageSessionPort = {
     async createSession(input) {
       sessions.push(input)
@@ -59,6 +61,10 @@ export function scriptedModel(replies: Record<string, Reply>) {
         // The outline's coverage job lists no act the lawyer's instructions
         // direct, so no act is placed.
         [AGENT.coverageActs]: () => JSON.stringify({ acts: [] }),
+        // The act record lists no act and no deliverable; its WHO and HOW jobs,
+        // asked only of listed acts, leave each act's parties and instrument
+        // unsettled with a reason.
+        [AGENT.acts]: actRecord,
         // The outline's files job finds no lawyer instruction on the files to deliver.
         [AGENT.files]: () => JSON.stringify({ stated: false, files: [] }),
         // The plan rejects every listed review finding: the scripted changes
@@ -95,6 +101,35 @@ export function scriptedModel(replies: Record<string, Reply>) {
   }
   const count = (agent: string) => prompts.filter(prompt => prompt.agent === agent).length
   return { port, prompts, sessions, count, counts: () => [AGENT.draft, AGENT.review, AGENT.changes, AGENT.finalize].map(count) }
+}
+
+export type ActRecordJob = "what" | "deliverables" | "who" | "how"
+
+/** Which act-record job a first prompt asks, by the reply shape its contract gives. */
+export function actRecordJob(prompt: string): ActRecordJob {
+  return prompt.includes('{"index":0,"how":{') ? "how" : prompt.includes('{"index":0,"who":{') ? "who" : prompt.includes('{"deliverables":[') ? "deliverables" : "what"
+}
+
+/** The act-record agent scripted per job: each job's session is told apart by
+ * its first prompt, and a retry in the same session answers as that job. A
+ * job without its own reply gets the default: WHAT lists no act, DELIVERABLES
+ * none, and WHO and HOW leave every act they are shown unsettled. */
+export function actRecordJobs(replies: Partial<Record<ActRecordJob, Reply>>): Reply {
+  const jobs = new Map<string | undefined, ActRecordJob>()
+  const unsettled = (prompt: string, field: "who" | "how") => JSON.stringify({ acts: listedActs(prompt).map(({ index }) => ({ index, [field]: field === "who"
+    ? { authorised_by: [], performed_by: [], basis: [], reason: "The scripted record does not settle the parties." }
+    : { instrument: null, executed_by: [], requires: [], basis: [], reason: "The scripted record does not settle the instrument." } })) })
+  const defaults: Record<ActRecordJob, Reply> = {
+    what: () => JSON.stringify({ acts: [] }),
+    deliverables: () => JSON.stringify({ deliverables: [] }),
+    who: prompt => unsettled(prompt, "who"),
+    how: prompt => unsettled(prompt, "how"),
+  }
+  return (prompt, index, sessionID) => {
+    if (!jobs.has(sessionID)) jobs.set(sessionID, actRecordJob(prompt))
+    const job = jobs.get(sessionID)!
+    return (replies[job] ?? defaults[job])(prompt, index, sessionID)
+  }
 }
 
 /** The acts a coverage placement prompt lists, by index. */

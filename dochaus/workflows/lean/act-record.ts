@@ -7,8 +7,9 @@ import { nameKey, namedIn } from "./plan"
 import { retryPrompt, tagged } from "./prompts"
 import { REQUEST_SOURCE, excerpt, matterSourceIDs, quoteFound, quoteMissIssue } from "./quotes"
 import { approvedResearch, researchHandoff } from "./research"
+import type { StageRun } from "./runner"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, type LeanDeps } from "./stages"
-import { readLeanJson, writeLeanText, type LeanStageState, type LeanState, type OpenItem, type StageID } from "./state"
+import { readLeanJson, writeLeanText, type LeanStageState, type LeanState } from "./state"
 
 // The act record: what the lawyer's instructions direct, read in focused jobs
 // that each answer one question. WHAT lists the legal acts the instructions
@@ -72,13 +73,7 @@ export type ActRecord = {
  * and "unchecked" when the record names no authorising party or no HOW. */
 export type SignerFlag = { act: number; status: "ok" | "flag" | "unchecked"; missing: string[] }
 
-/** The step's run: it always settles as done; a job that never passes is recorded, not failed. */
-export type ActRecordStageRun = { status: "done"; outputs: string[]; openItems: OpenItem[] }
-
 type Checked<T> = { issues: string[]; value?: T }
-
-// "acts" names this step in its events and retry feedback.
-const ACTS_STAGE = "acts" as string as StageID
 
 const BASIS_SHAPE = '[{"source":"...","quote":"..."}]'
 const WHAT_SHAPE = 'Reply with the JSON object only: {"acts":[{"act":"...","source":"...","quote":"..."}]}.'
@@ -425,9 +420,11 @@ export function readActRecord(directory: string): ActRecord | undefined {
  * act's WHO (null when WHO never passed). With no listed act, WHO and HOW are
  * not asked. Each job is one checked exchange in a session of its own: up to
  * LEAN_MAX_RETRIES retries hand its check's issues back to the same session.
- * Errors from the session calls, including a pause, propagate and leave the
- * record unwritten. */
-export async function runActRecordStage(directory: string, state: LeanState, deps: LeanDeps, progress: (patch: Partial<LeanStageState>) => void): Promise<ActRecordStageRun> {
+ * The step always settles as done: a job that never passes is recorded, not
+ * failed. One act_record event records the counts, for diagnosis only. Errors
+ * from the session calls, including a pause, propagate and leave the record
+ * unwritten. */
+export async function runActRecordStage(directory: string, state: LeanState, deps: LeanDeps, progress: (patch: Partial<LeanStageState>) => void): Promise<StageRun> {
   const pack = actRecordPack(directory)
   const sessionIDs: string[] = []
   const calls = { count: 0, attempts: 0 }
@@ -439,7 +436,7 @@ export async function runActRecordStage(directory: string, state: LeanState, dep
     progress({ ...(sessionIDs.length === 1 ? { session_id: id } : {}), session_ids: [...sessionIDs] })
     const step = `act record ${label}`
     const ask = async (text: string, attempt: number): Promise<Checked<T>> => {
-      appendLeanEvent(directory, { stage: ACTS_STAGE, event: attempt ? "retry" : "model_call", step, attempt, session_id: id })
+      appendLeanEvent(directory, { stage: "acts", event: attempt ? "retry" : "model_call", step, attempt, session_id: id })
       const asked = performance.now()
       const reply = await deps.sessions.prompt({ directory, sessionID: id, agent: ACT_RECORD_AGENT, text })
       const answered = performance.now()
@@ -448,9 +445,9 @@ export async function runActRecordStage(directory: string, state: LeanState, dep
       calls.count += 1
       calls.attempts = Math.max(calls.attempts, attempt + 1)
       progress({ attempts: calls.attempts, calls: calls.count, feedback: checked.issues })
-      appendLeanEvent(directory, { stage: ACTS_STAGE, event: "checker", step, attempt, issues: checked.issues, ...timing })
+      appendLeanEvent(directory, { stage: "acts", event: "checker", step, attempt, issues: checked.issues, ...timing })
       if (!checked.issues.length || attempt >= LEAN_MAX_RETRIES) return checked
-      return ask(retryPrompt(ACTS_STAGE, checked.issues), attempt + 1)
+      return ask(retryPrompt("acts", checked.issues), attempt + 1)
     }
     return ask([pack, ...tail].join("\n\n"), 0)
   }
@@ -488,5 +485,11 @@ export async function runActRecordStage(directory: string, state: LeanState, dep
     issues,
   }
   writeLeanText(directory, "acts.json", `${JSON.stringify(result, null, 2)}\n`)
+  const checkedJob = (row: Checked<unknown> | undefined) => !row ? "not_asked" : row.value ? "passed" : "failed"
+  appendLeanEvent(directory, {
+    stage: "acts", event: "act_record", outcome: result.status,
+    counts: { acts: result.acts.length, deliverables: result.deliverables?.length ?? 0, what_samples: samples.length, what_passed: passed.length },
+    jobs: { what: passed.length ? "passed" : "failed", deliverables: checkedJob(deliverables), who: checkedJob(who), how: checkedJob(how) },
+  })
   return { status: "done", outputs: ["acts.json"], openItems: [] }
 }

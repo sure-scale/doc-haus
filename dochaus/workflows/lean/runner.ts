@@ -24,6 +24,7 @@ import { researchPermissions, acceptResearchReply, researchPrompt, startResearch
 import { runApply } from "./apply-stage"
 import { DELIVERED_NOTES, forgetUnplannedDocuments, recordLeanDocuments } from "./deliverables"
 import { runDraftStage } from "./draft-sections"
+import { runActRecordStage } from "./act-record"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { checklistFindingLabel, deliveredNotes, finalGate, notesCoverageReport } from "./gate"
 import { issueRegister } from "./register"
@@ -100,7 +101,8 @@ import {
 // answers, approvals and repair allowances are left exactly as they were, so a
 // later Continue resumes from the first unfinished step.
 
-type StageRun =
+/** What one run of a step settles as. */
+export type StageRun =
   | { status: "restart" }
   | { status: "done" | "blocked"; outputs: string[]; openItems: OpenItem[]; questions?: Question[]; reason?: string }
   | { status: "failed"; reason: string }
@@ -632,6 +634,7 @@ function runStep(directory: string, state: LeanState, step: StepID, deps: LeanDe
   if (stage === "apply" && document) return runApply(directory, state, document)
   if (stage === "gate") return runGate(directory)
   if (stage === "checklist-check") return runChecklistStage(directory, state, deps, reinspectChecklist)
+  if (stage === "acts") return runActRecordStage(directory, state, deps, progress)
   // A review that re-ran since the plan has findings only a full plan sees.
   if (stage === "change-plan" && document && !roundPlanned(directory, state, recorded) && focusedChecklistRepairs(directory, document) && !unadjudicatedFindings(directory, document).length) return runFocusedRepairAdjudication(directory, state, deps, document, progress)
   if (stage === "change-review" && document && focusedChecklistRepairs(directory, document)) return runFocusedChangeReview(directory, state, deps, document, progress)

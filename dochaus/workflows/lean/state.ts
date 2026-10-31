@@ -20,7 +20,7 @@ export function isReviewStage(stage: StageID): stage is ReviewStageID {
   return stage === "review-playbook" || (REVIEW_STAGES as readonly string[]).includes(stage)
 }
 
-export const LEAN_STAGES = ["discrepancy", "intake", "research", "research-review", "spine", "draft", ...REVIEW_STAGES, "review-playbook", "change-plan", "change-prepare", "changes", "change-review", "apply", "finalize", "checklist-check", "package-review", "gate"] as const
+export const LEAN_STAGES = ["discrepancy", "intake", "research", "research-review", "acts", "spine", "draft", ...REVIEW_STAGES, "review-playbook", "change-plan", "change-prepare", "changes", "change-review", "apply", "finalize", "checklist-check", "package-review", "gate"] as const
 export type StageID = (typeof LEAN_STAGES)[number]
 
 export type LeanModel = { providerID: string; modelID: string }
@@ -177,7 +177,7 @@ export const LEAN_STATE_SCHEMA = "dochaus.lean.state/2"
  * lawyer's words; one answered without words (an old hand-back) is left out
  * as an open one is. */
 export const LEAN_QUESTIONS_SCHEMA = "dochaus.lean.questions/2"
-const FIRST_STEPS: StepID[] = ["discrepancy", "intake", "research", "research-review", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "checklist-check", "package-review", "gate"]
+const FIRST_STEPS: StepID[] = ["discrepancy", "intake", "research", "research-review", "acts", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "checklist-check", "package-review", "gate"]
 
 /** Runtime error text recorded in the run (stop reasons, events, apply results)
  * names matter files relative to the matter folder, so the lean state holds no

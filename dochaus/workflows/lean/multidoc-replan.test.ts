@@ -88,7 +88,7 @@ describe("lean drafting when a finished document's steps change", () => {
     expect(failed.status).toBe("failed")
     // d1's review and changes are scoped by the planned documents, so dropping d2 re-reviews d1; its draft is kept.
     expect(failing.counts()).toEqual([0, 1, 1, 4])
-    expect(Object.keys(failed.stages)).toEqual(["discrepancy", "intake", "research", "research-review", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "checklist-check", "package-review", "gate"])
+    expect(Object.keys(failed.stages)).toEqual(["discrepancy", "intake", "research", "research-review", "acts", "spine", "d1.draft", "d1.review", "d1.review-independent", "d1.review-wording", "d1.review-client-disadvantage", "d1.change-plan", "d1.change-prepare", "d1.changes", "d1.change-review", "d1.apply", "finalize", "checklist-check", "package-review", "gate"])
     expect(readOpenItems(directory).filter(item => item.ref.document === "d2")).toEqual([])
     expect(readLeanDocuments(directory)!.documents.map(row => row.document)).toEqual(["d1", "d1", null, null])
     expect(existsSync(path.join(directory, "Covering letter.docx"))).toBe(true)

@@ -6,6 +6,7 @@ import { ConfigAgentV1 } from "@opencode/core/v1/config/agent"
 import { ConfigMigrateV1 } from "@opencode/core/v1/config/migrate"
 import { Permission } from "@opencode/core/permission"
 import { LEAN_CHILD_PERMISSIONS, LEAN_READ_TOOLS, LEAN_STAGE_AGENTS } from "../workflows/lean/stages"
+import { ACT_RECORD_AGENT } from "../workflows/lean/act-record"
 
 // The lean stage agents load through the same native markdown + v1 migration
 // path the engine uses, and their own frontmatter (not only the session rules)
@@ -29,7 +30,9 @@ const TOOLS = [
 ]
 
 test("each lean stage agent loads as a hidden subagent whose own rules allow only the coordinator's read tools", () => {
-  expect(agents.toSorted()).toEqual(["lean-advise", "lean-answer", "lean-answer-reconcile", "lean-change-plan", "lean-change-prepare", "lean-change-review", "lean-changes", "lean-coverage", "lean-coverage-acts", "lean-discrepancy", "lean-draft", "lean-drafting-notes", "lean-files", "lean-intake", "lean-package-review", "lean-research-review", "lean-review", "lean-review-client-disadvantage", "lean-review-independent", "lean-review-playbook", "lean-review-wording", "lean-spine"])
+  expect(agents.toSorted()).toEqual(["lean-act-record", "lean-advise", "lean-answer", "lean-answer-reconcile", "lean-change-plan", "lean-change-prepare", "lean-change-review", "lean-changes", "lean-coverage", "lean-coverage-acts", "lean-discrepancy", "lean-draft", "lean-drafting-notes", "lean-files", "lean-intake", "lean-package-review", "lean-research-review", "lean-review", "lean-review-client-disadvantage", "lean-review-independent", "lean-review-playbook", "lean-review-wording", "lean-spine"])
+  // The act-record step's agent is the one its jobs run as.
+  expect(LEAN_STAGE_AGENTS.acts).toBe(ACT_RECORD_AGENT)
   for (const id of agents) {
     const agent = loadAgent(id)
     expect(agent.mode).toBe("subagent")

@@ -10,6 +10,7 @@ const STEP_NAMES: Record<string, string> = {
   intake: "Resolve material questions",
   research: "Legal research",
   "research-review": "Check legal research",
+  acts: "List the instructed acts",
   spine: "Build the drafting spine",
   draft: "Draft",
   review: "Review",
@@ -28,7 +29,7 @@ const STEP_NAMES: Record<string, string> = {
   gate: "Final check",
 }
 
-const PREPARATION_STEPS = ["discrepancy", "intake", "research", "research-review", "spine"]
+const PREPARATION_STEPS = ["discrepancy", "intake", "research", "research-review", "acts", "spine"]
 
 /** A run-level step ("finalize", "gate") or a document step ("d2.review"). */
 export function stepName(step: string) {
