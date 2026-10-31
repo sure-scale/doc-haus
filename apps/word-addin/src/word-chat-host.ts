@@ -109,7 +109,7 @@ const children = (node: Node) => Array.from(node.childNodes).filter(child => chi
  * revision beside an earlier one by the same person absorbs it. An absorbed
  * earlier revision counts as kept only as a leading or trailing piece of such
  * an item; the remainder is the new revision. */
-function newWordChatRevisions<T extends TrackedChange>(before: TrackedChange[], after: T[]) {
+function newWordChatRevisions(before: TrackedChange[], after: TrackedChange[]) {
   const signature = (change: TrackedChange) => JSON.stringify([change.author, change.type, change.text])
   const prior = new Map<string, number>()
   for (const change of before) prior.set(signature(change), (prior.get(signature(change)) ?? 0) + 1)
@@ -135,7 +135,8 @@ function newWordChatRevisions<T extends TrackedChange>(before: TrackedChange[], 
         missing.splice(index, 1); peeled = true; break
       }
     }
-    return text === change.text ? change : { ...change, text }
+    // Office.js properties are prototype getters, so copy them explicitly.
+    return { author: change.author, type: change.type, text }
   })
   return { added, missing }
 }

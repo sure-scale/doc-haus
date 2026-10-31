@@ -271,7 +271,8 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
             else items.push(revision)
             return items
           }, [] as typeof state.nativeRevisions),
-      ])
+      // Office.js exposes loaded properties as prototype getters, not own fields.
+      ].map(({ author, type, text }) => Object.create({ get author() { return author }, get type() { return type }, get text() { return text } }) as { author: string; type: string; text: string }))
     }
     select() { state.selected++ }
     highlight() { state.highlights++ }
