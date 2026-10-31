@@ -30,7 +30,7 @@ function matter() {
     `CREATE TABLE defined_terms (id INTEGER PRIMARY KEY, doc_path TEXT, doc_name TEXT, term TEXT, definition TEXT, char_start INTEGER, char_end INTEGER)`,
     `CREATE TABLE doc_relations (id INTEGER PRIMARY KEY, doc_path TEXT, doc_name TEXT, relation TEXT, target_name TEXT, char_start INTEGER, char_end INTEGER)`,
     `CREATE TABLE section_ops (id INTEGER PRIMARY KEY, doc_path TEXT, doc_name TEXT, section_label TEXT, operation TEXT, char_start INTEGER, char_end INTEGER)`,
-    `CREATE TABLE redlines (id INTEGER PRIMARY KEY, doc_path TEXT, doc_name TEXT, scope TEXT, find_text TEXT, old_text TEXT, new_text TEXT, author TEXT, review_comment TEXT NOT NULL DEFAULT '', anchor_id TEXT, status TEXT, created_at INTEGER)`,
+    `CREATE TABLE redlines (id INTEGER PRIMARY KEY, doc_path TEXT, doc_name TEXT, scope TEXT, find_text TEXT, old_text TEXT, new_text TEXT, author TEXT, review_comment TEXT NOT NULL DEFAULT '', anchor_id TEXT, target_json TEXT, status TEXT, created_at INTEGER)`,
     `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)`,
   ]) {
     db.run(sql)
