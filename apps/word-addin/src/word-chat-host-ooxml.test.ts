@@ -518,6 +518,19 @@ test("inline unchanged paragraph matches prior formatting revisions only by exac
   expect(same(before,after.replace('<w:r><w:t>Tail</w:t></w:r>','<w:ins w:id="9" w:author="Prior"><w:r><w:t>Tail</w:t></w:r></w:ins>'))).toBe(false)
 })
 
+test("inline unchanged paragraph matches a tracked paragraph mark through ID reassignment", async () => {
+  const {sameNativeInlineWordChatParagraph: same} = await import("./word-chat-host-ooxml")
+  // A paragraph inserted by an earlier tracked change carries its mark insertion
+  // in pPr/rPr; Word renumbers it when a new revision lands earlier in the story.
+  const para = (mark:string, body:string, change:string, author="Prior") => `<w:p xmlns:w="${W}"><w:pPr><w:rPr><w:ins w:id="${mark}" w:author="${author}" w:date="2026-01-01T00:00:00Z"/><w:b/></w:rPr></w:pPr><w:ins w:id="${body}" w:author="Prior" w:date="2026-01-01T00:00:00Z"><w:r><w:rPr><w:i/><w:rPrChange w:id="${change}" w:author="Prior" w:date="2026-01-01T00:00:00Z"><w:rPr/></w:rPrChange></w:rPr><w:t>Row cell</w:t></w:r></w:ins></w:p>`
+  const before = para("8","9","10")
+  expect(same(before,para("9","10","11"))).toBe(true)
+  expect(same(before,para("9","10","11","Other"))).toBe(false)
+  expect(same(before,para("9","10","11").replace(/<w:ins w:id="9"[^>]*\/>/,""))).toBe(false)
+  expect(same(before,para("9","10","11").replace('<w:b/></w:rPr></w:pPr>','</w:rPr></w:pPr>'))).toBe(false)
+  expect(same(before,para("10","10","11"))).toBe(false)
+})
+
 test("inline target retains prior formatting outside selection through ID reassignment", async () => {
   const {verifiedNativeWordChatInlineFormatting: verify} = await import("./word-chat-host-ooxml")
   const prior = (id:string) => `<w:rPrChange w:id="${id}" w:author="Prior" w:date="2026-01-01T00:00:00Z"><w:rPr/></w:rPrChange>`

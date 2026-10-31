@@ -501,12 +501,18 @@ function normalizeNativeNumberingOldProperties(captured: string, observed: strin
 }
 
 /** Word can renumber pre-existing inline revision IDs during a native save.
- * Match them in paragraph order with all other markup exact and unique IDs. */
+ * Match them in paragraph order with all other markup exact and unique IDs.
+ * A tracked paragraph mark (pPr/rPr/ins or del) is renumbered too. */
 function normalizeNativeRevisionIds(before: Element[], after: Element[]) {
   const collect = (paragraph: Element) => {
     const revisions: Element[] = []
     const visit = (node: Element) => {
-      if (node.namespaceURI === W && ["pPr", "rPr"].includes(node.localName)) return
+      if (node.namespaceURI === W && node.localName === "pPr") {
+        elements(node).filter(child => child.namespaceURI === W && child.localName === "rPr")
+          .forEach(mark => revisions.push(...elements(mark).filter(child => child.namespaceURI === W && ["ins", "del"].includes(child.localName))))
+        return
+      }
+      if (node.namespaceURI === W && node.localName === "rPr") return
       if (node.namespaceURI === W && ["ins", "del"].includes(node.localName)) { revisions.push(node); return }
       elements(node).forEach(visit)
     }
