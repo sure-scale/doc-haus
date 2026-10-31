@@ -23,7 +23,10 @@ export type DraftPresentation = { source: string; parts: { heading: string; disp
  * its Markdown differently, else by position when every label rendered as one.
  * A label the body does not show as a second-level heading is passed over
  * rather than failing the draft: it stays as rendered, and its paragraphs are
- * attributed to the part before it. */
+ * attributed to the part before it.
+ *
+ * A Heading 1 after the first is a separate instrument's title (assembleDraft)
+ * and starts a new page. */
 export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"], title = true, headingSpacing = true) {
   const entries = unzipSync(bytes)
   const document = new DOMParser().parseFromString(strFromU8(entries["word/document.xml"]!), "application/xml")
@@ -35,7 +38,8 @@ export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"
       text: Array.from(paragraph.getElementsByTagNameNS(namespace, "t")).map(node => node.textContent ?? "").join(""),
     }
   })
-  const titleAt = title ? -1 : paragraphs.findIndex(row => row.style === "Heading1")
+  const firstTitle = paragraphs.findIndex(row => row.style === "Heading1")
+  const titleAt = title ? -1 : firstTitle
   const labels = paragraphs.flatMap((row, at) => row.style === "Heading2" ? [at] : [])
   const plain = (text: string) => text.normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "")
   const reads = (text: string, heading: string) => text === visibleInlineText(heading)
@@ -77,6 +81,7 @@ export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"
       run.appendChild(value)
       paragraph.appendChild(run)
     }
+    if (style === "Heading1" && at > firstTitle) pageBreakBefore(paragraph)
     const owner = owners[at]
     const shift = owner === undefined ? 0 : shifts[owner]!
     if (!boundary && shift && /^Heading[3-6]$/.test(style ?? "")) {
@@ -86,6 +91,13 @@ export function presentDraft(bytes: Uint8Array, parts: DraftPresentation["parts"
     const part = owner === undefined ? null : parts[owner]!.part ?? null
     paragraphPointers(paragraph).forEach(pointer => attribution.set(pointer.pid, { draft_part: part, draft_heading: Boolean(boundary && boundary.part !== undefined) || style === "Heading1" }))
   })
+  function pageBreakBefore(paragraph: Element) {
+    const properties = paragraph.getElementsByTagNameNS(namespace, "pPr")[0] ?? paragraph.insertBefore(document.createElementNS(namespace, "w:pPr"), paragraph.firstChild)
+    if (properties.getElementsByTagNameNS(namespace, "pageBreakBefore").length) return
+    // CT_PPr order: pStyle, keepNext, keepLines, then pageBreakBefore.
+    const before = Array.from(properties.childNodes).filter(node => node.nodeType === 1 && ["pStyle", "keepNext", "keepLines"].includes((node as Element).localName)).at(-1)
+    properties.insertBefore(document.createElementNS(namespace, "w:pageBreakBefore"), before ? before.nextSibling : properties.firstChild)
+  }
   const xml = new XMLSerializer().serializeToString(document)
   // A promoted house heading takes its new style's spacing, as rendering
   // gives it; a template's headings keep their styles' own (`headingSpacing`).
