@@ -52,3 +52,49 @@ test("a later part of a split clause with the next number at its own level becom
   const limbs = await applySplit("# Supply Agreement\n\n## 1. Supply\n\n1.1 Payment is due:\n\n(a) on delivery; or\n\n(b) on invoice.\n\n1.2 Interest runs daily.\n", "on delivery", ["(a) on delivery;", "(b) on acceptance; or"])
   expect(limbs.applied.map(shownText).slice(2)).toEqual(["1.1 Payment is due:", "(a) on delivery;", "(b) on acceptance; or", "(c) on invoice.", "1.2 Interest runs daily."])
 }, 60_000)
+
+// A Markdown render numbers each run of a list on an instance of its own that
+// starts where the run's first item counts on (resolution 3 after the
+// heading). The changes renumber the runs after them as one list would.
+const RESOLUTIONS = "# Board Consent\n\n1. Bylaws. RESOLVED, that the Bylaws are adopted.\n\n2. Officers. RESOLVED, that the officers are elected.\n\n## Further Matters\n\n3. Ratification. RESOLVED, that the earlier actions are ratified.\n\n4. Fiscal Year. RESOLVED, that the fiscal year ends on December 31.\n\n## Signatures\n\nIN WITNESS WHEREOF, the directors sign.\n"
+
+async function applyResolutions(amendments: (rows: ParagraphRow[]) => Record<string, unknown>[]) {
+  const directory = matter()
+  writeLeanPlan(directory, [{ title: "Board Consent", purpose: "", parts: [{ heading: "Resolutions", scope: "" }] }])
+  writeLeanBytes(directory, "d1/body.docx", (await renderMarkdownToDocx(RESOLUTIONS)).bytes)
+  const rows = await paragraphRows(leanFile(directory, "d1/body.docx"))
+  writeLeanText(directory, "d1/paragraphs.json", `${JSON.stringify(rows, null, 2)}\n`)
+  const sources = [{ source_id: "instructions.txt", quote: "RESOLVED" }]
+  writeLeanText(directory, "d1/changes.json", JSON.stringify({
+    amendments: amendments(rows).map((row, index) => ({ id: `a${index + 1}`, existing_sha256: rows.find(entry => entry.pid === row.pid)!.sha256, reason: "Revise the resolutions.", sources, ...row })),
+    explanations: [], questions: [],
+  }))
+  expect(await runApply(directory, readLeanState(directory)!, "d1")).toMatchObject({ status: "done" })
+  return (readLeanJson(directory, "d1/paragraphs-applied.json") as ParagraphRow[]).filter(row => row.label).map(shownText)
+}
+
+const at = (rows: ParagraphRow[], starts: string) => rows.find(row => row.text.startsWith(starts))!.pid
+
+test("resolutions after a deleted one renumber across the runs of the list", async () => {
+  expect(await applyResolutions(rows => [{ pid: at(rows, "Bylaws"), operation: "delete", updated: "" }])).toEqual([
+    "1. Officers. RESOLVED, that the officers are elected.",
+    "2. Ratification. RESOLVED, that the earlier actions are ratified.",
+    "3. Fiscal Year. RESOLVED, that the fiscal year ends on December 31.",
+  ])
+}, 60_000)
+
+// A heading rewritten as a resolution with the list's next number joins the
+// list (the body's list is Word's default numbering, which no style binds); a
+// split resolution's later part without a number leaves it.
+test("a resolution a change numbers joins the list and a split part leaves it", async () => {
+  expect(await applyResolutions(rows => [
+    { pid: at(rows, "Further Matters"), updated: "3. Confirmation. RESOLVED, that the bank account is confirmed." },
+    { pid: at(rows, "Ratification"), operation: "split", updated: ["Ratification. RESOLVED, that the earlier actions are ratified.", "Effect. These resolutions take effect today."] },
+  ])).toEqual([
+    "1. Bylaws. RESOLVED, that the Bylaws are adopted.",
+    "2. Officers. RESOLVED, that the officers are elected.",
+    "3. Confirmation. RESOLVED, that the bank account is confirmed.",
+    "4. Ratification. RESOLVED, that the earlier actions are ratified.",
+    "5. Fiscal Year. RESOLVED, that the fiscal year ends on December 31.",
+  ])
+}, 60_000)

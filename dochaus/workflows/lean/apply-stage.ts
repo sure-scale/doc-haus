@@ -14,7 +14,7 @@ import { consistencyItems } from "./consistency"
 import { tableItems } from "./original-tables"
 import { exportAppliedChangeComments } from "./review-evidence"
 import { draftingAttribution, withGeneratedDocxAttribution } from "../../lib/docx-attribution"
-import { numberDocxClauses } from "../../lib/docx-numbering"
+import { continueListStarts, numberDocxClauses, numberedList } from "../../lib/docx-numbering"
 import { linkCrossReferences, referenceFields } from "../../lib/docx-crossrefs"
 import { paragraphFields, refInstruction, unlink } from "../../lib/docx-fields"
 import { shadeOpenItemsInDocx, unshadeOpenItems } from "../../lib/open-items"
@@ -57,7 +57,9 @@ export async function runApply(directory: string, state: LeanState, document: Do
   // A changed paragraph whose text now carries a clause number the body's list
   // supplies is numbered by the list, as at drafting. The later parts of a
   // split paragraph leave its list unless they open with its next number at
-  // the paragraph's own level or a deeper one. Cross-references then show
+  // the paragraph's own level or a deeper one. A run of the list that counted
+  // on from the one before it in the drafted body still does, so the numbers
+  // after an added or removed item follow on. Cross-references then show
   // their targets' new numbers; one whose target the changes removed becomes
   // an open-item marker, checked below like any other. A paragraph the changes
   // rewrote is linked again from its new text, as drafting links a document's
@@ -66,7 +68,9 @@ export async function runApply(directory: string, state: LeanState, document: Do
   // other paragraphs are only refreshed.
   const later = new Set(settled.result.applied.flatMap(row => row.result_pids?.slice(1) ?? []))
   const split = (paragraph: Element) => paragraphPointers(paragraph).some(pointer => later.has(pointer.pid))
-  const renumbered = numberDocxClauses(readFileSync(out), { house: false, split })
+  const applied = readFileSync(out)
+  const list = numberedList(applied)
+  const renumbered = continueListStarts(readFileSync(body), numberDocxClauses(applied, { house: false, split, ...(list ? { list } : {}) }))
   const rewritten = new Set(settled.result.applied.flatMap(row => row.mode === "code" ? row.result_pids ?? [row.pid] : []))
   const relink = (paragraph: Element) => paragraphPointers(paragraph).some(pointer => rewritten.has(pointer.pid))
   const links = draftedReferences(directory, document).links
