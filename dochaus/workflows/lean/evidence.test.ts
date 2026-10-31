@@ -20,6 +20,9 @@ test("discrepancy evidence must match canonical text and uncertainty stays expli
   expect(checkEvidence(directory, "discrepancy", { entries: [{ ...entry, evidence: [{ source_id: SOURCE, quote: "Invented delivery period" }] }], limitations: [] }).length).toBeGreaterThan(0)
   expect(checkEvidence(directory, "discrepancy", { entries: [{ ...entry, evidence: [], limitations: [] }], limitations: [] }).length).toBeGreaterThan(0)
   expect(checkEvidence(directory, "discrepancy", { entries: [{ ...entry, evidence: [], limitations: ["Original unavailable"], status: "unresolved", resolution: "" }], limitations: [] })).toEqual([])
+  expect(checkEvidence(directory, "discrepancy", { entries: [entry, { ...entry, resolution: " " }], limitations: [] })).toEqual([
+    "entries[1] has status benign with an empty resolution. Explain the evidence that settles it or the intentional distinction; leave resolution empty only for an unresolved or verify-source entry. Unresolved findings must never be silently corrected.",
+  ])
 })
 
 test("later answers and same-name source revisions invalidate dependent work", () => {
