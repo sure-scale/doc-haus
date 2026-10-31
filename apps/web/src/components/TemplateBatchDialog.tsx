@@ -327,19 +327,19 @@ function MatchStep({ sheet, mapping, manualKeys, onMap, onRestart }: {
         </select>
       </li>)}
     </ul>
+    {/* Sentences rather than dot separators, so a wrapped line never starts or
+        ends on a dot. */}
     <p className="template-batch-meta">
       {matched.length > 0 && <>
         <Tooltip label={<span className="template-batch-pairs">{matched.map((field) => <span key={field.key}>{field.label} ← {mapping[field.key]}</span>)}</span>}>
           <span className="template-batch-quiet" tabIndex={0}>{plural(matched.length, "field")} matched</span>
-        </Tooltip>
-        <span aria-hidden="true">·</span>
+        </Tooltip>.{" "}
       </>}
       {dropped > 0 ? <Tooltip label={`${plural(dropped, "row")} ignored: blank rows and repeated headings.`}>
         <span className="template-batch-quiet" tabIndex={0}>{plural(sheet.rows.length, "row")} in {sheet.source}</span>
-      </Tooltip> : <span>{plural(sheet.rows.length, "row")} in {sheet.source}</span>}
-      <span aria-hidden="true">·</span>
-      <button type="button" className="linklike" onClick={onRestart}>Use another spreadsheet</button>
+      </Tooltip> : <span>{plural(sheet.rows.length, "row")} in {sheet.source}</span>}.
     </p>
+    <button type="button" className="linklike template-batch-restart" onClick={onRestart}>Use another spreadsheet</button>
   </>
 }
 
@@ -367,18 +367,20 @@ function PreviewRow({ position, total, sheetRow, title, missing, skipped, onStep
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
       </button>
     </div>
-    {/* The row number sits on the name, clear of the stepper's buttons. */}
-    <Tooltip label={`Spreadsheet row ${sheetRow}`}>
-      <span className="template-batch-identity" tabIndex={0}>{title}</span>
-    </Tooltip>
+    {/* The spreadsheet's own row number, shown so it matches the row lists
+        and the documents' names. */}
+    <div className="template-batch-who">
+      <span className="template-batch-identity">{title}</span>
+      <span className="template-batch-sheet-row">Spreadsheet row {sheetRow}</span>
+    </div>
     <div className="template-batch-skip">
       <button id={id} type="button" role="switch" aria-checked={skipped} className={`switch${skipped ? " on" : ""}`} onClick={onSkip} />
       <label htmlFor={id}>Skip this row</label>
     </div>
     {skipped ? <p className="template-batch-status">This row will not be created.</p>
       : missing.length ? <p className="template-batch-status is-warn">Needs input: {missing.join(", ")}</p>
-      : <p className="template-batch-status">Every field is filled.</p>}
-    {onChangeMatching && <button type="button" className="linklike template-batch-change" onClick={onChangeMatching}>Change matching</button>}
+      : <p className="template-batch-status">Every field is filled.{onChangeMatching && " "}{onChangeMatching && <button type="button" className="linklike template-batch-change" onClick={onChangeMatching}>Change matching</button>}</p>}
+    {(skipped || missing.length > 0) && onChangeMatching && <button type="button" className="linklike template-batch-change" onClick={onChangeMatching}>Change matching</button>}
   </div>
 }
 

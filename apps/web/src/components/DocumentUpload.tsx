@@ -405,12 +405,10 @@ export default function DocumentUpload({
         <div className="doc-row is-uploaded is-batch">
           <div className="doc-row-main">
             <span className="doc-type is-folder" title="Folder" aria-hidden><IconFolder /></span>
-            <span className="doc-row-name">
-              {batch.folder} <span className="doc-batch-count">· {count} document{count === 1 ? "" : "s"}</span>
-            </span>
+            <span className="doc-row-name">{batch.folder}</span>
           </div>
           <div className="doc-row-meta">
-            <span className="document-origin is-created" title={`Filled from the spreadsheet ${batch.source}`}>From {batch.source}</span>
+            <span className="document-origin is-created" title={`Filled from the spreadsheet ${batch.source}`}>{count} document{count === 1 ? "" : "s"} from {batch.source}</span>
             <time className="document-time" dateTime={new Date(batch.createdAt).toISOString()} title={`Saved to matter: ${formatDateTime(batch.createdAt)}`}>
               {formatTime(batch.createdAt)}
             </time>

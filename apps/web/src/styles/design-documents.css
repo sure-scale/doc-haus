@@ -811,7 +811,6 @@ button:is(.change-id, .change-ref):hover { text-decoration: underline; }
 /* A batch filled from a spreadsheet (#208): a folder row named like a top-level
    document, its count quieter, its generated documents in the group beneath. */
 .doc-row.is-batch .doc-row-name { font-size: 0.8125rem; font-weight: 500; }
-.doc-batch-count { color: var(--muted); font-weight: 400; }
 .doc-children-group .drafted-row { padding-block: var(--space-2); }
 .doc-needs-input { flex: none; }
 .doc-needs-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

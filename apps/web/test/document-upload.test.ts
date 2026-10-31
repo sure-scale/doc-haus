@@ -270,7 +270,7 @@ test("a spreadsheet batch lists its documents once, under one folder with their 
   const html = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {} }))
   const text = html.replace(/<[^>]+>/g, "")
   expect(text.match(/NDA – 2026-10-31/g)).toHaveLength(1)
-  expect(text).toContain("NDA – 2026-10-31 · 3 documents")
+  expect(text).toContain("NDA – 2026-10-313 documents from Clients.xlsx")
   // Each member once, inside the folder's group, in spreadsheet row order.
   const group = html.match(/<div id="doc-batch-b1" role="group" aria-label="Documents in NDA – 2026-10-31">([\s\S]*?)<\/ul><\/div>/)?.[1] ?? ""
   const names = [...group.matchAll(/<span class="drafted-name-text">([^<]*)<\/span>/g)].map(([, name]) => name)
@@ -293,7 +293,7 @@ test("a long spreadsheet batch starts closed behind a toggle", () => {
     batch: { id: "b2", folder: "NDA – 2026-10-31", row: index + 2, source: "Clients.csv", missing: [] },
   }))
   const html = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {} }))
-  expect(html.replace(/<[^>]+>/g, "")).toContain("NDA – 2026-10-31 · 7 documents")
+  expect(html.replace(/<[^>]+>/g, "")).toContain("NDA – 2026-10-317 documents from Clients.csv")
   expect(html).toMatch(/<button type="button" class="doc-children-toggle" aria-expanded="false" aria-controls="doc-batch-b2">[\s\S]*?Show documents<\/button>/)
   expect(html).not.toContain("NDA – row 2.docx")
 })
