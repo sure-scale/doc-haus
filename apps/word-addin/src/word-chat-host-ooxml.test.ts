@@ -326,6 +326,16 @@ test("real author preserves original formatting for a mixed-run deletion", async
 })
 
 
+test("neighbour comparison follows Word renumbering bookmarks and comment anchors after an earlier revision", () => {
+  const paragraph = (b: string, c: string, d = "9") => `<w:p><w:bookmarkStart w:id="${b}" w:name="ExistingBookmark"/><w:commentRangeStart w:id="${c}"/><w:r><w:t>A repeated provision</w:t></w:r><w:bookmarkEnd w:id="${b}"/><w:commentRangeEnd w:id="${c}"/><w:r><w:commentReference w:id="${c}"/></w:r><w:commentRangeStart w:id="${d}"/><w:r><w:t> remains.</w:t></w:r><w:commentRangeEnd w:id="${d}"/><w:r><w:commentReference w:id="${d}"/></w:r></w:p>`
+  const before = flat(paragraph("1", "2")), after = flat(paragraph("3", "4", "11"))
+  expect(sameWordChatParagraphContent(before, after)).toBe(false)
+  expect(sameNativeWordChatParagraphContent(before, after)).toBe(true)
+  for (const drift of [after.replace('<w:bookmarkEnd w:id="3"/>', '<w:bookmarkEnd w:id="5"/>'), after.replace('<w:commentRangeEnd w:id="4"/>', '<w:commentRangeEnd w:id="11"/>'),
+    flat(paragraph("3", "4", "4")), after.replace('w:name="ExistingBookmark"', 'w:name="Other"'), after.replace('> remains.<', '> changed.<'), after.replace('<w:bookmarkEnd w:id="3"/>', '')])
+    expect(sameNativeWordChatParagraphContent(before, drift)).toBe(false)
+})
+
 test("post-format neighbour comparison accepts only validated inline revision ID reassignment", () => {
   const paragraph = '<w:p><w:pPr><w:spacing w:after="120"/></w:pPr><w:del w:id="3" w:author="Reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:rPr><w:b/></w:rPr><w:delText>old</w:delText></w:r></w:del><w:ins w:id="4" w:author="Reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:t>new</w:t></w:r></w:ins><w:bookmarkStart w:id="9" w:name="mark"/><w:bookmarkEnd w:id="9"/></w:p>'
   const before = flat(paragraph), after = flat(paragraph.replace('w:id="3"', 'w:id="13"').replace('w:id="4"', 'w:id="14"'))

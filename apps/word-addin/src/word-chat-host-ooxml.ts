@@ -642,14 +642,35 @@ export function sameWordChatParagraphContent(before: string, after: string): boo
   return JSON.stringify(view(before)) === JSON.stringify(view(after))
 }
 
-/** After a native formatting write, Word may renumber matching inline
- * revisions in neighbouring paragraphs. All remaining markup stays exact. */
+/** Word numbers bookmarks, comment anchors and revisions from one export
+ * sequence, so a new revision earlier in the story renumbers later anchors.
+ * Pair them in order; each old ID maps to one new ID within its family. */
+function normalizeNativeAnnotationIds(before: Element[], after: Element[]) {
+  const family = (name: string) => ["bookmarkStart", "bookmarkEnd"].includes(name) ? "bookmark" : ["commentRangeStart", "commentRangeEnd", "commentReference"].includes(name) ? "comment" : undefined
+  const collect = (nodes: Element[]) => nodes.flatMap(node => Array.from(node.getElementsByTagNameNS(W, "*")).filter(e => family(e.localName)))
+  const original = collect(before), observed = collect(after)
+  if (original.length !== observed.length) return false
+  const forward = new Map<string, string>(), backward = new Map<string, string>()
+  for (const [i, old] of original.entries()) {
+    const current = observed[i]!, kind = family(old.localName), oldId = old.getAttributeNS(W, "id"), newId = current.getAttributeNS(W, "id")
+    if (current.localName !== old.localName || !oldId || !newId || !/^\d+$/.test(oldId) || !/^\d+$/.test(newId)) return false
+    const key = `${kind}:${oldId}`, back = `${kind}:${newId}`
+    if ((forward.get(key) ?? newId) !== newId || (backward.get(back) ?? oldId) !== oldId) return false
+    forward.set(key, newId); backward.set(back, oldId)
+    const name = current.getAttributeNodeNS(W, "id")!.name
+    current.removeAttributeNS(W, "id"); current.setAttributeNS(W, name, oldId)
+  }
+  return true
+}
+
+/** After a native write, Word may renumber matching inline revisions, bookmarks
+ * and comment anchors in neighbouring paragraphs. All remaining markup stays exact. */
 export function sameNativeWordChatParagraphContent(before: string, after: string): boolean {
   const original = content(parse(before), true, true)
   const observed = content(parse(after), true, true)
   // The parsed observed package is private to this comparison; normalize its
   // bound paragraphs in place so the complete shape retains its table wrapper.
-  if (!normalizeNativeRevisionIds(original.nodes, observed.nodes)) return false
+  if (!normalizeNativeRevisionIds(original.nodes, observed.nodes) || !normalizeNativeAnnotationIds(original.nodes, observed.nodes)) return false
   return JSON.stringify(original.shape.map(node => canonical(node, true))) === JSON.stringify(observed.shape.map(node => canonical(node, true)))
 }
 

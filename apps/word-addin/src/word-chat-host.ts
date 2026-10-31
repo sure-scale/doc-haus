@@ -1397,7 +1397,7 @@ export class WordChatHost {
       ["text-geometry", () => sameNativeProjectionGeometry(pre, post)],
       ["text-paragraph-properties", () => sameWordChatParagraphProperties(pre.scope([at]), targetAfter)],
       ["text-hunk-formatting", () => sameWordChatHunkFormatting(pre.scope([at]), targetAfter, hunks)],
-      ["text-adjacent", () => fresh.adjacent.every(item => { const i = post.paragraphs.findIndex(p => p.id === item.id); return i >= 0 && sameWordChatParagraphContent(pre.scope([i]), post.scope([i])) })],
+      ["text-adjacent", () => fresh.adjacent.every(item => { const i = post.paragraphs.findIndex(p => p.id === item.id); return i >= 0 && sameNativeWordChatParagraphContent(pre.scope([i]), post.scope([i])) })],
       ["text-comments", () => JSON.stringify(after.comments) === JSON.stringify(before.comments)],
     ]
     const failedStage = checks.find(([, check]) => !check())?.[0]
