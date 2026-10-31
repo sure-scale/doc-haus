@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { Window } from "happy-dom"
-import { act, createElement } from "react"
+import { act, createElement, StrictMode } from "react"
 import { MemoryRouter } from "react-router-dom"
 import type { BatchSheet } from "../src/api/ingest/template-batch"
 
@@ -52,7 +52,8 @@ async function render(read: BatchSheet) {
   document.body.append(container)
   const root = createRoot(container)
   await act(async () => {
-    root.render(createElement(MemoryRouter, null, createElement(TemplateBatchDialog, { template: { name: "Mutual NDA.docx", description: "", placeholders: [] }, onClose: () => {} })))
+    // StrictMode as in main.tsx: its double mount once dropped every result.
+    root.render(createElement(StrictMode, null, createElement(MemoryRouter, null, createElement(TemplateBatchDialog, { template: { name: "Mutual NDA.docx", description: "", placeholders: [] }, onClose: () => {} }))))
   })
   const drop = async () => {
     const input = document.body.querySelector<HTMLInputElement>("input[type=file]")!

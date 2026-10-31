@@ -62,7 +62,12 @@ export default function TemplateBatchDialog({ template, onClose }: { template: T
   const [createError, setCreateError] = useState<string>()
   const [result, setResult] = useState<BatchResult>()
   const alive = useRef(true)
-  useEffect(() => () => { alive.current = false }, [])
+  // Set on every mount: React's development double mount runs this cleanup
+  // once before the dialog is really in use.
+  useEffect(() => {
+    alive.current = true
+    return () => { alive.current = false }
+  }, [])
 
   useEffect(() => {
     listMatters()
