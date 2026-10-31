@@ -8,6 +8,14 @@ const W16DU = "http://schemas.microsoft.com/office/word/2023/wordml/word16du"
 const XMLNS = "http://www.w3.org/2000/xmlns/"
 const XML = "http://www.w3.org/XML/1998/namespace"
 const MAIN = "/word/document.xml"
+const RELS = "/word/_rels/document.xml.rels"
+const PEOPLE = "/word/people.xml"
+const W15 = "http://schemas.microsoft.com/office/word/2012/wordml"
+const MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+const REL = "http://schemas.openxmlformats.org/package/2006/relationships"
+const PEOPLE_TYPE = "http://schemas.microsoft.com/office/2011/relationships/people"
+const THEME_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme"
 const elements = (n:Node) => Array.from(n.childNodes).filter((c):c is Element => c.nodeType === 1)
 const named = (n:Node, name:string) => elements(n).filter(e => e.namespaceURI === W && e.localName === name)
 const only = (n:Node, names:string[]) => elements(n).every(e => e.namespaceURI === W && names.includes(e.localName))
@@ -56,7 +64,9 @@ function directFlags(props:Element|undefined): Omit<WordChatCellRun,"text"> {
  * binding, current native fonts and full DOCX. */
 export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:string, tableIndex:number, priorRows:number, cells:string[], runs?:WordChatCellRun[][]): {authors:string[]} {
   const before=parts(beforeXml), after=parts(afterXml)
-  if(JSON.stringify([...before.keys()].sort())!==JSON.stringify([...after.keys()].sort())) return fail()
+  // A first revision by this Word user adds its people part and relationship.
+  const extra=[...after.keys()].filter(name=>!before.has(name)), people=extra.length===1 && extra[0]===PEOPLE ? after.get(PEOPLE)! : undefined
+  if([...before.keys()].some(name=>!after.has(name)) || extra.length && !people) return fail()
   const dependency = (name:string, part:Element) => {
     const copy=part.cloneNode(true) as Element
     if(name === "/word/comments.xml") for(const paragraph of Array.from(copy.getElementsByTagNameNS(W,"p"))) for(const attr of ["rsidR","rsidRDefault"]) {
@@ -78,7 +88,27 @@ export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:strin
       if(JSON.stringify(keys(part))!==JSON.stringify(keys(other))) return fail()
     }
     if(name === "/word/settings.xml" && part.getElementsByTagNameNS(W,"rsids").length!==other.getElementsByTagNameNS(W,"rsids").length) return fail()
+    if(people && name === RELS) { peopleRelationships(part,other); continue }
     if(JSON.stringify(dependency(name,part))!==JSON.stringify(dependency(name,other))) return fail()
+  }
+  /** Word adds exactly one people relationship and may renumber only the
+   * unreferenced theme relationship to make room for it. */
+  function peopleRelationships(left:Element, right:Element) {
+    const referenced=(map:Map<string,Element>, id:string) => [...map.values()].some(part=>Array.from(part.getElementsByTagName("*")).some(e=>Array.from(e.attributes).some(a=>a.namespaceURI===R && a.value===id)))
+    const all=(part:Element)=>Array.from(part.getElementsByTagNameNS(REL,"Relationship")), l=all(left), added=all(right).filter(e=>e.getAttribute("Type")===PEOPLE_TYPE), r=all(right).filter(e=>!added.includes(e))
+    const ids=(items:Element[])=>items.every(e=>Boolean(e.getAttribute("Id"))) && new Set(items.map(e=>e.getAttribute("Id"))).size===items.length
+    if(l.some(e=>e.getAttribute("Type")===PEOPLE_TYPE) || added.length!==1 || added[0]!.getAttribute("Target")!=="people.xml" || elements(added[0]!).length ||
+       Array.from(added[0]!.attributes).some(a=>a.namespaceURI!==XMLNS && (Boolean(a.namespaceURI) || !["Id","Type","Target"].includes(a.name))) || !ids(l) || !ids(all(right)) || l.length!==r.length) return fail()
+    const shell=(part:Element)=>{ const c=part.cloneNode(true) as Element; for(const e of all(c)) e.parentNode!.removeChild(e); return JSON.stringify(canon(c)) }
+    const sig=(e:Element)=>{ const c=e.cloneNode(true) as Element; c.removeAttribute("Id"); return JSON.stringify(canon(c)) }
+    if(shell(left)!==shell(right)) return fail()
+    const used=new Set<Element>()
+    for(const x of l) {
+      const matches=r.filter(y=>!used.has(y) && sig(x)===sig(y)); if(matches.length!==1) return fail()
+      const y=matches[0]!, oldId=x.getAttribute("Id")!, newId=y.getAttribute("Id")!
+      if(oldId!==newId && (x.getAttribute("Type")!==THEME_TYPE || referenced(before,oldId) || referenced(after,newId))) return fail()
+      used.add(y)
+    }
   }
   const main=after.get(MAIN)!, bodies=Array.from(main.getElementsByTagNameNS(W,"body")), oldBodies=Array.from(before.get(MAIN)!.getElementsByTagNameNS(W,"body"))
   if(bodies.length!==1 || oldBodies.length!==1 || !Number.isSafeInteger(tableIndex) || tableIndex<0 || !Number.isSafeInteger(priorRows) || priorRows<1 || !cells.length || cells.length>32 ||
@@ -136,6 +166,15 @@ export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:strin
   // Reject comments, PIs or non-whitespace text outside literal text runs.
   const clean=(n:Element):boolean=>Array.from(n.childNodes).every(c=>c.nodeType===1?clean(c as Element):c.nodeType===3 && (n.namespaceURI===W && n.localName==="t" || !c.nodeValue?.trim()))
   if(!clean(row)) return fail()
+  if(people) {
+    // The new people part names exactly the row's single revision author.
+    const data=elements(people), list=Array.from(people.getElementsByTagNameNS(W15,"people")), persons=Array.from(people.getElementsByTagNameNS(W15,"person")), presence=persons.length===1 ? elements(persons[0]!) : []
+    if(data.length!==1 || data[0]!.namespaceURI!==PKG || data[0]!.localName!=="xmlData" || elements(data[0]!).length!==1 || list.length!==1 || elements(data[0]!)[0]!==list[0] ||
+       Array.from(list[0]!.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===MC && a.localName==="Ignorable")) || elements(list[0]!).length!==1 || persons.length!==1 || persons[0]!.parentNode!==list[0] ||
+       authors.size!==1 || persons[0]!.getAttributeNS(W15,"author")!==[...authors][0] || Array.from(persons[0]!.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===W15 && a.localName==="author")) ||
+       presence.length>1 || presence.some(e=>e.namespaceURI!==W15 || e.localName!=="presenceInfo" || elements(e).length || !e.getAttributeNS(W15,"providerId") || !e.getAttributeNS(W15,"userId") ||
+         Array.from(e.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===W15 && ["providerId","userId"].includes(a.localName))))) return fail()
+  }
   return {authors:[...authors]}
 }
 

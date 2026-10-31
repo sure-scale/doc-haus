@@ -50,3 +50,27 @@ test("plain row keeps one off span per cell, with explicit off values and split 
   expect(plain(frow([['<w:b w:val="0"/><w:bCs w:val="0"/><w:i w:val="false"/><w:u w:val="none"/>',"Ne"],["","w"]],[["","Value"]]))).toEqual({authors:["Reviewer"]})
   for(const props of ['<w:b/>','<w:u w:val="single"/>','<w:i w:val="1"/>','<w:sz w:val="24"/>']) expect(()=>plain(frow([[props,"New"]],[["","Value"]]))).toThrow()
 })
+test("first revision by a Word user may add its people part and move only the unreferenced theme relationship",()=>{
+  const REL="http://schemas.openxmlformats.org/package/2006/relationships", T="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  const W15="http://schemas.microsoft.com/office/word/2012/wordml"
+  const rel=(id:string, type:string, target:string)=>`<Relationship Id="${id}" Type="${T}/${type}" Target="${target}"/>`
+  const rels=(items:string)=>`<pkg:part pkg:name="/word/_rels/document.xml.rels"><pkg:xmlData><Relationships xmlns="${REL}">${items}</Relationships></pkg:xmlData></pkg:part>`
+  const peopleRel='<Relationship Id="rId3" Type="http://schemas.microsoft.com/office/2011/relationships/people" Target="people.xml"/>'
+  const person=(author:string)=>`<pkg:part pkg:name="/word/people.xml"><pkg:xmlData><w15:people xmlns:w15="${W15}"><w15:person w15:author="${author}"><w15:presenceInfo w15:providerId="AD" w15:userId="S-1"/></w15:person></w15:people></pkg:xmlData></pkg:part>`
+  const add=(xml:string, parts:string)=>xml.replace("</pkg:package>",parts+"</pkg:package>")
+  const base=add(before,rels(rel("rId1","styles","styles.xml")+rel("rId3","theme","theme/theme1.xml")))
+  const moved=(author="Reviewer", relationships=rel("rId1","styles","styles.xml")+rel("rId4","theme","theme/theme1.xml")+peopleRel)=>add(after,rels(relationships)+person(author))
+  const check=(xml:string, from=base)=>verifyNativeWordChatInsertedRow(from,xml,0,1,["New","Value"])
+  expect(check(moved())).toEqual({authors:["Reviewer"]})
+  for(const changed of [
+    moved("Someone else"),                                                               // person is not the revision author
+    moved("Reviewer",rel("rId9","styles","styles.xml")+rel("rId3","theme","theme/theme1.xml")+peopleRel.replace("rId3","rId4")), // non-theme relationship renumbered
+    moved("Reviewer",rel("rId1","styles","styles.xml")+rel("rId4","theme","theme/theme1.xml")),                                 // part without its relationship
+    add(after,rels(rel("rId1","styles","styles.xml")+rel("rId3","theme","theme/theme1.xml"))+person("Reviewer").replace("/word/people.xml","/word/other.xml")), // other new part
+  ]) expect(()=>check(changed)).toThrow()
+  // A theme Id that the document references must not move.
+  const cited=base.replace("<w:body>",`<w:body><w:p xmlns:r="${T}" r:id="rId3"/>`), citedAfter=moved().replace("<w:body>",`<w:body><w:p xmlns:r="${T}" r:id="rId3"/>`)
+  expect(()=>check(citedAfter,cited)).toThrow()
+  const kept=moved("Reviewer",rel("rId1","styles","styles.xml")+rel("rId3","theme","theme/theme1.xml")+peopleRel.replace("rId3","rId4")).replace("<w:body>",`<w:body><w:p xmlns:r="${T}" r:id="rId3"/>`)
+  expect(check(kept,cited)).toEqual({authors:["Reviewer"]})
+})
