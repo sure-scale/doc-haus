@@ -6,6 +6,7 @@ import { DOMParser } from "@xmldom/xmldom"
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate"
 import { docxodus } from "./docxodus"
 import { compareVersions, roundTrips, type CompareOptions } from "./version-compare"
+import { wordDiff } from "./redline"
 
 // Synthetic Word-style fixtures built in code: neutral agreement text between
 // fictional parties, returned with tracked changes by fictional reviewers.
@@ -440,6 +441,19 @@ test("locations carry Word numbering of the clause and of its heading", async ()
     numbered("Payment", 0, "Heading1"), numbered("The Customer shall pay the Fees.", 1), numbered(`Late payments bear interest at ${fee}.`, 1)]
   const result = await compare(docx({ body: rows("4 per cent"), numbering: true }), docx({ body: rows("5 per cent"), numbering: true }))
   expect(result.changes.map(hunk => hunk.location)).toEqual([{ scope: "body", paragraph: 6, side: "right", heading: "2. Payment", number: "2.2" }])
+})
+
+test("a clause number typed before a tab keeps its gap in the change text and its heading", async () => {
+  // Numbers typed as text, then a tab, as many agreements are drafted.
+  const typed = (number: string, text: string, style?: string) => para(run(number) + `<w:r><w:tab/><w:t xml:space="preserve">${escape(text)}</w:t></w:r>`, style ? `<w:pStyle w:val="${style}"/>` : "")
+  const rows = (period: string) => [p(C.title, "Title"), typed("3.", "Milestones and Charges", "Heading1"), typed("3.1", "The Supplier shall meet each milestone."),
+    typed("3.2", `The Customer shall pay the charges ${period}.`)]
+  const result = await compare(docx({ body: rows("monthly") }), docx({ body: rows("quarterly") }))
+  expect(result.changes.map(hunk => [hunk.kind, hunk.location.heading, hunk.before, hunk.after])).toEqual([
+    ["modified", "3. Milestones and Charges", "3.2\tThe Customer shall pay the charges monthly.", "3.2\tThe Customer shall pay the charges quarterly."]])
+  // The tab is shared text: only the changed word is struck and inserted.
+  const pieces = wordDiff(result.changes[0]!.before!, result.changes[0]!.after!).filter(piece => piece.kind !== "same")
+  expect(pieces.map(piece => `${piece.kind}:${piece.text}`).toSorted()).toEqual(["del:monthly", "ins:quarterly"])
 })
 
 test("the round-trip gate refuses a blackline whose text no longer rejects to left", async () => {

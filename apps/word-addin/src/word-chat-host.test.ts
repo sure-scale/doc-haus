@@ -42,6 +42,27 @@ test("optional native table capture binds geometry to the same paragraph invento
   expect(ordinary.table).toBeUndefined()
 })
 
+test("with several tables, the pinned selection or the cursor's cell chooses the captured table", async () => {
+  const paragraph = (id: string, text: string, tableNestingLevel = 1) => ({uniqueLocalId:id,text,tableNestingLevel,getRange() { return {getReviewedText() { return {value:text} }} }})
+  const collection = <T>(items: T[]) => ({items,load() {}})
+  const intro = paragraph("p","Clause text.",0)
+  const grids = [[[paragraph("a","One"),paragraph("b","Two")]], [[paragraph("c","Three"),paragraph("d","Four")]]]
+  const tables = grids.map(cells => ({rowCount:1,isUniform:true,values:cells.map(row => row.map(p => p.text)),load() {},getCell(r: number,c: number) { return {body:{paragraphs:collection([cells[r]![c]!])}} }}))
+  const tableXml = (cells: typeof grids[number]) => `<w:tbl>${cells.map(row => `<w:tr>${row.map(p => `<w:tc><w:p><w:r><w:t>${p.text}</w:t></w:r></w:p></w:tc>`).join("")}</w:tr>`).join("")}</w:tbl>`
+  const xml = flatOpc(`<w:p><w:r><w:t>${intro.text}</w:t></w:r></w:p>${tableXml(grids[0]!)}${tableXml(grids[1]!)}`)
+  const all = [intro, ...grids.flat(2)]
+  let cursor = [grids[1]![0]![1]!]
+  const body = { text:all.map(p => p.text).join("\r"),load() {},paragraphs:collection(all),tables:collection(tables),getRange() { return {getOoxml() {return {value:xml}}} } }
+  const document = {saved:false,load() {},body,getSelection() { return {paragraphs:collection(cursor)} }}
+  const host = new WordChatHost({run: async (fn: (context: unknown) => Promise<unknown>) => fn({document,sync:async () => {}})} as WordChatWord, () => true)
+  const second = {tableIndex:1,rows:grids[1]!.map(row => row.map(p => ({id:p.uniqueLocalId,text:p.text})))}
+  expect((await host.capture()).table).toEqual(second)
+  cursor = [intro]
+  expect((await host.capture()).table).toBeUndefined()
+  const pinned = {id:"t",text:"One",paragraphs:[{id:"a",text:"One"}],startOffset:0,endOffset:3,saved:false,capturedAt:""}
+  expect((await host.capture(false, pinned)).table?.tableIndex).toBe(0)
+})
+
 /** A text-position Office host model: selections and paragraph ranges are real
  * offsets, searches return every occurrence, and writes execute only on sync. */
 function office(paragraphs = ["A clause with a clear obligation.", "Another clause."], nativeText = false) {

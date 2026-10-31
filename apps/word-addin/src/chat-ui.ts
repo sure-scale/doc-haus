@@ -8,7 +8,7 @@ import { nativeWordChatParagraphInsertionEligible, nativeWordChatParagraphDeleti
 
 export type ChatHost = {
   documentName: string
-  capture(includeSelection?: boolean): Promise<WordChatSnapshot>
+  capture(includeSelection?: boolean, pinned?: WordChatTarget): Promise<WordChatSnapshot>
   captureSelection(): Promise<WordChatTarget | undefined>
   watchSelection?(onChange: () => void): () => void
   openAttachments?(options: { conversationId: string; attached: WordChatMaterial[]; onAttach(material: WordChatMaterial): void }): Promise<void>
@@ -728,7 +728,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     sending = true; controls(); status("Reading current Word text…"); invalidateSuggestions()
     try {
       if (!retry || !pending) {
-        const context = await host.capture(false)
+        const context = await host.capture(false, requestSelection)
         if (disposed) return
         if (requestSelection && !wordChatTargetCurrent(context, requestSelection)) throw new Error("Selected text changed. Select it again or remove it before sending.")
         if (requestSelection) context.selection = requestSelection

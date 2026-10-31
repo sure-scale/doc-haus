@@ -247,13 +247,14 @@ export class WordChatHost {
   private ready() {
     if (!this.supports("WordApi", "1.6")) throw new WordChatHostError("Reviewed amendments require a current Microsoft 365 version of Word. Chat and Save remain available.")
   }
-  async capture(includeSelection = false): Promise<WordChatSnapshot> {
+  /** `pinned` is the request's pinned selection; it scopes optional table geometry when the document has several tables. */
+  async capture(includeSelection = false, pinned?: WordChatTarget): Promise<WordChatSnapshot> {
     const structured = this.supports("WordApi", "1.6")
     try {
       const snapshot = await this.readSnapshot(structured, includeSelection)
       if (structured) {
         try {
-          const table = await this.readTableCapture(snapshot)
+          const table = await this.readTableCapture(snapshot, (pinned ?? snapshot.selection)?.paragraphs.map(p => p.id))
           if (table && new TextEncoder().encode(JSON.stringify({ ...snapshot, table })).length <= SNAPSHOT_BYTES) snapshot.table = table
         } catch { /* Optional geometry must never prevent ordinary chat. */ }
         try {
@@ -320,13 +321,23 @@ export class WordChatHost {
       return matches.length === 1 ? matches[0] : undefined
     })
   }
-  private async readTableCapture(snapshot: WordChatSnapshot): Promise<WordChatTableCapture | undefined> {
+  private async readTableCapture(snapshot: WordChatSnapshot, scope?: string[]): Promise<WordChatTableCapture | undefined> {
     return this.word.run(async context => {
       const body = context.document.body, tables = body.tables, paragraphs = body.paragraphs
       if (!tables) return
       tables.load("items")
       await context.sync()
-      if (!tables.items.length || !snapshot.selection && tables.items.length !== 1) return
+      if (!tables.items.length) return
+      // With several tables, the lawyer's selection or the paragraph holding the
+      // cursor names the table; a cursor outside every table sends none.
+      let selected = scope
+      if (!selected && tables.items.length !== 1) {
+        const cursor = context.document.getSelection().paragraphs
+        cursor.load("items/uniqueLocalId")
+        await context.sync()
+        selected = cursor.items.map(p => p.uniqueLocalId)
+        if (!selected.length) return
+      }
       const xml = body.getRange("Whole").getOoxml()
       paragraphs.load("items/text,items/uniqueLocalId,items/tableNestingLevel")
       for (const table of tables.items) table.load("rowCount,isUniform,values")
@@ -386,7 +397,6 @@ export class WordChatHost {
         const capture = {tableIndex:candidate.tableIndex,rows:rows as Array<Array<{id:string;text:string}>>}
         return wordChatTableCaptureCurrent(snapshot, capture) ? [capture] : []
       })
-      const selected = snapshot.selection?.paragraphs.map(p => p.id)
       const matches = selected ? captures.filter(capture => selected.every(id => capture.rows.some(row => row.some(cell => cell.id === id)))) : captures
       return matches.length === 1 ? matches[0] : undefined
     })
@@ -1504,7 +1514,7 @@ export class WordChatHost {
 }
 let defaultHost: WordChatHost | undefined
 const host = () => defaultHost ??= new WordChatHost()
-export const captureCurrentWordContext = (includeSelection = false) => host().capture(includeSelection)
+export const captureCurrentWordContext = (includeSelection = false, pinned?: WordChatTarget) => host().capture(includeSelection, pinned)
 export const captureWordChatSelection = () => host().selection()
 export const applyReviewedProposal = (proposal: import("../../../dochaus/lib/word-chat-amendment-contract").WordChatProposal,
   author: WordChatApplyInput["author"], mayDispatch?: () => boolean) => {
