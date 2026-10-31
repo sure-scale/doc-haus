@@ -215,13 +215,17 @@ export function installWordChat(app: Hono, authenticate: (c: Context) => WordCha
       for (const part of parts) {
         if (!record(part)) { turn.status = "error"; break }
         if (part.type === "text" && Object.keys(part).every(key => ["type", "text"].includes(key)) && typeof part.text === "string") {
-          total += part.text.length
+          // Models often omit the space after a reference ("7.1.[1]Outside").
+          const text = validated.at(-1)?.type === "reference" && /^[\p{L}\p{N}("“‘]/u.test(part.text) ? ` ${part.text}` : part.text
+          total += text.length
           if (total > 24_000) { turn.status = "error"; break }
-          validated.push({type:"text",text:part.text})
+          validated.push({type:"text",text})
         } else if (part.type === "reference" && Object.keys(part).every(key => ["type", "sourceId", "quote"].includes(key)) && typeof part.sourceId === "string" && typeof part.quote === "string" && part.quote.length >= 3 && part.quote.length <= 1200) {
           const source = meta.sources.find(source => source.id === part.sourceId && source.quote.includes(part.quote as string))
           if (!source) { turn.status = "error"; break }
-          validated.push({type:"reference",sourceId:part.sourceId,quote:part.quote})
+          // Back-to-back references to one source render as one marker; every excerpt stays listed.
+          const previous = validated.at(-1)
+          if (previous?.type !== "reference" || previous.sourceId !== part.sourceId) validated.push({type:"reference",sourceId:part.sourceId,quote:part.quote})
           turn.sources.push({...source,quote:part.quote})
         } else { turn.status = "error"; break }
       }

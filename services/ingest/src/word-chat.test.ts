@@ -1030,6 +1030,18 @@ test("formatted row cell runs normalize from model output and reach review and r
   } finally { modelRawOutput = undefined }
 })
 
+test("structured answer parts space text after a reference and merge back-to-back references to one source", async () => {
+  const id = await newConversation(), ref = (quote: string) => ({type:"reference" as const,sourceId:"word",quote})
+  try {
+    modelStructuredRawOutput = JSON.stringify({answerParts:[{type:"text",text:"Delivery is weekly."},ref(context.text),ref("Tuesday delivery"),{type:"text",text:"It falls on Tuesday"},ref("Tuesday"),{type:"text",text:"."}]})
+    const turn = (await (await send(id,"document","When is delivery?")).json() as {turn:WordChatTurn}).turn
+    expect(turn.status).toBe("complete")
+    expect(turn.answerParts).toEqual([{type:"text",text:"Delivery is weekly."},ref(context.text),{type:"text",text:" It falls on Tuesday"},ref("Tuesday"),{type:"text",text:"."}])
+    expect(turn.answer).toBe("Delivery is weekly. It falls on Tuesday.")
+    expect(turn.sources.map(source => source.quote)).toEqual([context.text,"Tuesday delivery","Tuesday"])
+  } finally { modelStructuredRawOutput = undefined }
+})
+
 test("structured answer parts preserve literal brackets and verify explicit references without legacy fallback", async () => {
   const id = await newConversation(), ref = {type:"reference" as const,sourceId:"word",quote:context.text}
   const request = () => send(id,"document","Explain the current text")
