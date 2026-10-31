@@ -415,6 +415,37 @@ export function readActRecord(directory: string): ActRecord | undefined {
   return value as ActRecord
 }
 
+const ACT_RECORD_USE = "The act record is a reading of the instructions to weigh, not an instruction or evidence: use it when deciding which documents carry which acts and who executes them; " +
+  "where the record and the sources differ, the sources govern and the difference becomes an open item."
+
+/** The act record as the spine is shown it, built only from acts.json in a
+ * fixed order: each listed act with its WHO, HOW and signer flag, then the
+ * deliverables. Evidence for WHO and HOW is left to retrieval. Empty when the
+ * record is missing or unchecked, so the spine plans from the sources alone. */
+export function actRecordBlock(directory: string) {
+  const saved = readActRecord(directory)
+  if (!saved || saved.status === "unchecked") return ""
+  const names = (parties: string[]) => parties.length ? parties.map(party => JSON.stringify(party)).join(", ") : "not settled"
+  const unsettled = (reason: string | null) => reason ? ` Unsettled: ${reason}` : ""
+  const flags = signerFlags(saved)
+  const acts = saved.status === "none" ? ["The act record found no act that the instructions direct."] : saved.acts.flatMap((act, index) => {
+    const { who, how } = act
+    const requires = how?.requires.map(need => need.act === null ? JSON.stringify(need.need) : `act ${need.act + 1} (${JSON.stringify(need.need)})`) ?? []
+    const flag = flags[index]
+    return [
+      `${index + 1}. ${JSON.stringify(act.act)}`,
+      `   Directed by ${act.source}: ${JSON.stringify(act.quote)}`,
+      who ? `   WHO: authorised by ${names(who.authorised_by)}; performed by ${names(who.performed_by)}.${unsettled(who.reason)}` : "   WHO: not recorded.",
+      how ? `   HOW: instrument ${how.instrument === null ? "not settled" : JSON.stringify(how.instrument)}; executed by ${names(how.executed_by)}${requires.length ? `; requires ${requires.join(", ")}` : ""}.${unsettled(how.reason)}` : "   HOW: not recorded.",
+      ...(flag.status === "flag" ? [`   Signer flag: ${names(flag.missing)} must authorise the act but ${flag.missing.length > 1 ? "are" : "is"} not among its instrument's recorded signatories.`] : []),
+    ]
+  })
+  const deliverables = saved.deliverables === null ? ["Deliverables: not recorded."]
+    : saved.deliverables.length ? ["Deliverables:", ...saved.deliverables.map(row => `- ${JSON.stringify(row.deliverable)}, asked for by ${row.source}: ${JSON.stringify(row.quote)}`)]
+    : ["Deliverables: none listed."]
+  return ["Act record:", ACT_RECORD_USE, ...acts, ...deliverables].join("\n")
+}
+
 /** Runs the act-record jobs and writes acts.json. The WHAT samples run in
  * parallel; DELIVERABLES then runs alongside WHO, and HOW follows WHO, shown each
  * act's WHO (null when WHO never passed). With no listed act, WHO and HOW are

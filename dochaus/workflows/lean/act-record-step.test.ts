@@ -52,6 +52,9 @@ test("a listed act is described by WHO and HOW before the spine", async () => {
   expect(record?.status).toBe("listed")
   expect(record?.acts).toEqual([expect.objectContaining({ ...act, who: expect.objectContaining({ authorised_by: [] }), how: expect.objectContaining({ instrument: null }) })])
   expect(model.count(AGENT.acts)).toBe(UNLISTED_JOBS + 2)
+  // The spine plans with the record in view.
+  const spine = model.prompts.find(prompt => prompt.agent === AGENT.spine)!.text
+  expect(spine).toContain(`1. ${JSON.stringify(act.act)}\n   Directed by request: ${JSON.stringify(act.quote)}`)
 })
 
 test("a resumed unchanged run does not run the acts step again; a changed answer runs it once more", async () => {

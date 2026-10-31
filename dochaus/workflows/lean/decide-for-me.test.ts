@@ -178,6 +178,7 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // Form line and when part labels were planned unheaded. The checklist check, change plan, changes and change-review were
 // re-pinned when reviews were saved as typed findings (dN/<stage>.json) and the
 // change plan began keying the findings earlier documents forward to it. The
+// spine was re-pinned when it began keying the act record (acts.json). The
 // same pins hold for typed or picked words; an adopted recommendation reads as
 // delegated, which moves every key that reads the answers and no other.
 const ANSWERS = "- [package-scope-d1] Q: Which documents are in scope?\n  A: Only the supply note.\n- [q-law] Q: Which law should govern?\n  A: Singapore law."
@@ -190,7 +191,7 @@ const INPUTS: Record<string, string> = {
   "research": "64a0d22c3dd780907955b2e56b3122b94ea72101092d694f899a15e2af0cb13b",
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
   "acts": "e8961f845ed4a354ccae854a6e75d5670280aca539860a18c217d201f97ab720",
-  "spine": "c038d3823819fc2e8ef176dc1cb855fd7f7a87e1fe077efb1c2aee41f922e076",
+  "spine": "427a4df7c8bf759c74a75db1d3304473aa4dc8d026fc5d2c2a5c9e621da22141",
   "d1.draft": "68f34f0d87312276c4f5d676b490753a5050865d40c0448aaae368a7d6252376",
   "d1.review": "e80f5bbe084c8ef90d2864358d2caafa09139822584fb0f12cb14d0976e76416",
   "d1.review-independent": "9f1fe22f3e0db01ef5fffe96a09ddf917b5e371a89c58988eb875bcfbbae4aa4",
