@@ -217,9 +217,11 @@ const decidable = (revision: MarkupRevision) => revision.status === "supported"
 const authorName = (name: string) => name.trim() || "No author named"
 
 // A paragraph's mark travels with a whole inserted, deleted or moved paragraph;
-// the reader shows it as a closing pilcrow, which the label says instead.
+// the reader shows it as a closing pilcrow, which the label says instead. A
+// table row or cell ends with its last paragraph's mark too; its badge names
+// the row or cell instead.
 function wholeParagraph(revision: MarkupRevision) {
-  return revision.family !== "paragraph_mark" && revision.kind !== "format" && revision.text.endsWith("¶")
+  return revision.family !== "paragraph_mark" && revision.kind !== "format" && revision.kind !== "structure" && revision.text.endsWith("¶")
 }
 
 export function changeLabel(revision: MarkupRevision) {
@@ -257,7 +259,7 @@ function changeDetail(revision: MarkupRevision) {
 
 function changeText(revision: MarkupRevision) {
   if (revision.family === "paragraph_mark") return ""
-  return wholeParagraph(revision) ? revision.text.slice(0, -1) : revision.text
+  return wholeParagraph(revision) || revision.kind === "structure" ? revision.text.replace(/¶$/, "") : revision.text
 }
 
 const clip = (text: string, max = 48) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text)

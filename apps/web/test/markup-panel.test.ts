@@ -93,6 +93,17 @@ test("each decision is a named radio group of its own, with nothing chosen yet, 
   expect(html).toContain("Accept keeps the new formatting; Reject restores the old.")
 })
 
+test("an inserted table row is badged as a table row, not a whole paragraph, and drops its closing mark", () => {
+  const row = revision("rev2-row", { kind: "structure", family: "row_insert", text: "New key¶New value¶", locations: [{ paragraph: 21, context: "New key" }] })
+  const html = renderToStaticMarkup(createElement(MarkupPanel, {
+    matterId: "m-1", name: "Supply agreement.docx", markup: markup("a", [row]), onApplied: () => {}, onRefetch: () => {},
+  }))
+  expect(html).toContain('<span class="markup-kind-detail">Table row</span>')
+  expect(html).not.toContain("Whole paragraph")
+  expect(html).toContain(">New key¶New value</div>")
+  expect(decisionLabel(row)).toBe("Table row inserted by Avery Lindqvist: “New key New value”")
+})
+
 test("an edit inside a comment is placed in that comment's thread, and a list number is preferred to the paragraph's ordinal", () => {
   const comment: MarkupComment = {
     id: 4, author: "Morgan Okafor", initials: "MO", date: null, text: "Agreed only if the Buyer pays on time.", parent: null, resolved: null,
