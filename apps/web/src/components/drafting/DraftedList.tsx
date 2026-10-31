@@ -9,7 +9,8 @@ import { OUTPUT_ROLE, type DraftedGroup, type DraftedOutput } from "./model"
 // file in the viewer; the icon button downloads the .docx. `fresh` marks rows the
 // run produced while the lawyer watched, for a one-time highlight. A combined
 // document's one file leads its group, with the draft it holds beneath it; a
-// combined file from an earlier run says so on its row.
+// combined file from an earlier run says so on its row. `origin` replaces a
+// row's "Created by Doc.Haus" line where it says more (a spreadsheet row).
 export default function DraftedList({
   matterId,
   groups,
@@ -18,6 +19,7 @@ export default function DraftedList({
   pending,
   fresh,
   renderLabel,
+  origin,
 }: {
   matterId: string
   groups: DraftedGroup[]
@@ -28,6 +30,7 @@ export default function DraftedList({
   pending?: Map<string, number>
   fresh?: boolean
   renderLabel?: (output: DraftedOutput) => ReactNode
+  origin?: (output: DraftedOutput) => { text: string; title?: string } | undefined
 }) {
   return (
     <ul className={`drafted-list${fresh ? " is-fresh" : ""}`}>
@@ -38,13 +41,13 @@ export default function DraftedList({
             {group.combined ? (
               <CombinedRow matterId={matterId} name={group.combined} />
             ) : (
-              <OutputRow matterId={matterId} output={group.main} onView={onView} onCompare={onCompare} pending={pending?.get(group.main.name)} label={renderLabel?.(group.main)} main />
+              <OutputRow matterId={matterId} output={group.main} onView={onView} onCompare={onCompare} pending={pending?.get(group.main.name)} label={renderLabel?.(group.main)} origin={origin?.(group.main)} main />
             )}
             {beneath.length > 0 && (
               <ul className="drafted-extras">
                 {beneath.map((output) => (
                   <li key={output.name}>
-                    <OutputRow matterId={matterId} output={output} onView={onView} onCompare={onCompare} pending={pending?.get(output.name)} label={renderLabel?.(output)} />
+                    <OutputRow matterId={matterId} output={output} onView={onView} onCompare={onCompare} pending={pending?.get(output.name)} label={renderLabel?.(output)} origin={origin?.(output)} />
                   </li>
                 ))}
               </ul>
@@ -94,6 +97,7 @@ function OutputRow({
   pending,
   main,
   label,
+  origin,
 }: {
   matterId: string
   output: DraftedOutput
@@ -102,6 +106,7 @@ function OutputRow({
   pending?: number
   main?: boolean
   label?: ReactNode
+  origin?: { text: string; title?: string }
 }) {
   return (
     <div className={`drafted-row${main ? " is-main" : ""}`}>
@@ -117,7 +122,7 @@ function OutputRow({
           </span>
         )}
         <div className="drafted-file-meta">
-          <span className="document-origin is-created">Created by Doc.Haus{output.role === "earlier_combined" ? " in an earlier run" : ""}</span>
+          <span className="document-origin is-created" title={origin?.title}>{origin?.text ?? `Created by Doc.Haus${output.role === "earlier_combined" ? " in an earlier run" : ""}`}</span>
           {label ?? <span className={`drafted-tag is-${output.role}`}>{OUTPUT_ROLE[output.role]}</span>}
           <WordBadge name={output.name} />
           <WordOpenControl matterId={matterId} name={output.name} compact />

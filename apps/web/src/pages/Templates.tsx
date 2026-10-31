@@ -20,6 +20,8 @@ import ChatPanel from "../components/ChatPanel"
 import { useLibraryChatKey } from "../components/chat/use-library-chat-key"
 import LibraryLayout from "../components/LibraryLayout"
 import TemplateDraftBuilder from "../components/TemplateDraftBuilder"
+import TemplateBatchDialog from "../components/TemplateBatchDialog"
+import { SplitButton } from "../components/SplitButton"
 import { TEMPLATE_BUILDER } from "../agents"
 
 // The firm's global template library: the drafting bases shared across every
@@ -46,6 +48,8 @@ export default function Templates() {
   const [viewing, setViewing] = useState<Template>()
   // "Use" flow: the template being assembled into a matter the lawyer picks.
   const [using, setUsing] = useState<Template>()
+  // "Fill from spreadsheet": one document per spreadsheet row into a matter.
+  const [batching, setBatching] = useState<Template>()
   const navigate = useNavigate()
   // The session id the composer just minted, so the remount that follows the first
   // send keeps the cursor seated (same pattern as MatterDetail).
@@ -266,16 +270,20 @@ export default function Templates() {
                     </span>
                   </div>
                   <div className="list-row-actions">
-                    <button
-                      className="icon-btn is-primary"
-                      title="Draft a document from this template into a matter"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setUsing(t)
-                      }}
-                    >
-                      Use
-                    </button>
+                    <span className="template-use" onClick={(e) => e.stopPropagation()}>
+                      <SplitButton
+                        label="Use"
+                        title="Draft a document from this template into a matter"
+                        onClick={() => setUsing(t)}
+                        toggleLabel={`More ways to use ${t.name}`}
+                        items={[{
+                          label: "Fill from spreadsheet…",
+                          title: markers.length ? "Create one document per spreadsheet row" : "This template has no fields to fill",
+                          disabled: markers.length === 0,
+                          onSelect: () => setBatching(t),
+                        }]}
+                      />
+                    </span>
                     <button
                       className="icon-btn"
                       title="View template"
@@ -333,6 +341,10 @@ export default function Templates() {
 
       <Exit when={viewing}>{(viewing) => (
         <TemplateViewer name={viewing.name} placeholders={viewing.placeholders} onClose={() => setViewing(undefined)} />
+      )}</Exit>
+
+      <Exit when={batching}>{(batching) => (
+        <TemplateBatchDialog template={batching} onClose={() => setBatching(undefined)} />
       )}</Exit>
 
       <Exit when={using}>{(using) => (
