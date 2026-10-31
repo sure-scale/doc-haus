@@ -58,7 +58,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     driftInsertedRanges: false, renewImportedIds: false, omitNewRevisions: false, authorCalls: 0, duringAuthor: undefined as undefined | (() => void | Promise<void>),
     nativeRevisions: [] as Array<{ start: number; end: number; author: string; type: string; text: string }>,
     extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false, wholeOoxmlTrailingParagraph: false,
-    inlineBold: false, inlineAfter: "", inlineWrites: 0,
+    inlineBold: false, inlineAfter: "", inlineWrites: 0, splitMixed: false,
     paragraphInsertions: 0, corruptParagraphInsertion: false, insertedParagraphStyle: "Normal",
     listInsertions: 0, listOriginal: "", listBadFont: false, listBadMarkup: false,
     paragraphDeletions: 0, corruptParagraphDeletion: false, wrongDeletionCurrent: false,
@@ -87,7 +87,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
   class Range {
     constructor(public start: number, public end: number, public bodyWhole = false, public cellWhole = false, public paragraphContent = false, public bodyExport = false) { ranges.add(this) }
     get text() { return (text() + "\r").slice(this.start, this.end) }
-    get font() { return { load() {}, get bold() { return state.inlineBold }, set bold(value: boolean | null) { queue.push(() => { state.inlineWrites++; state.inlineBold = Boolean(value); if (state.inlineAfter) state.paragraphXml.set("paragraph-0", state.inlineAfter) }) }, italic: false, underline: "None", name:"Arial", size:11, get color() { return state.listBadFont && state.listInsertions ? "#FF0000" : "#000000" } } }
+    get font() { return { load() {}, get bold() { return state.splitMixed ? null : state.inlineBold }, set bold(value: boolean | null) { queue.push(() => { state.inlineWrites++; state.inlineBold = Boolean(value); if (state.inlineAfter) state.paragraphXml.set("paragraph-0", state.inlineAfter) }) }, get italic() { return state.splitMixed ? null : false }, get underline() { return state.splitMixed ? "Mixed" : "None" }, name:"Arial", size:11, get color() { return state.listBadFont && state.listInsertions ? "#FF0000" : "#000000" } } }
     get paragraphs() {
       return collection(state.paragraphs.filter((p) => {
         const at = position(p.id)
@@ -1846,4 +1846,45 @@ test("paragraph merge checks the lease before queuing the boundary change", asyn
   await expect(nativeHost.apply({proposalId:"merge-lease",target,replacement:"First clause. Second clause.",paragraphAction:"merge",
     author:async()=>({kind:"paragraph_merge" as const,proposalId:"merge-lease",target}),mayDispatch:()=>false})).rejects.toMatchObject({mutationState:"unchanged"})
   expect(state.writes).toHaveLength(0);expect(state.modeChanges).toEqual([])
+})
+
+test("paragraph split rejects forged preparation and a closed lease before writing", async () => {
+  for (const kind of ["forged","lease"] as const) {
+    const {state,nativeHost}=office(["First second."],true), target=(await nativeHost.selection())!
+    let calls=0
+    await expect(nativeHost.apply({proposalId:`split-${kind}`,target,replacement:"First\rsecond.",paragraphAction:"split",
+      author:async()=>{calls++;return {kind:"paragraph_split" as const,proposalId:kind==="forged"?"other":`split-${kind}`,target}},mayDispatch:()=>false})).rejects.toMatchObject({mutationState:"unchanged"})
+    expect(calls).toBe(1);expect(state.writes).toHaveLength(0);expect(state.modeChanges).toEqual([])
+  }
+})
+
+test("paragraph split fences an unconfirmed native write and does not replay", async () => {
+  const {state,nativeHost}=office(["First second."],true), target=(await nativeHost.selection())!
+  let calls=0
+  const input={proposalId:"split-uncertain",target,replacement:"First\rsecond.",paragraphAction:"split" as const,
+    author:async()=>({kind:"paragraph_split" as const,proposalId:"split-uncertain",target}),mayDispatch:()=>{calls++;return true}}
+  await expect(nativeHost.apply(input)).rejects.toMatchObject({mutationState:"uncertain"})
+  await expect(nativeHost.apply(input)).rejects.toMatchObject({mutationState:"uncertain"})
+  expect(calls).toBe(1);expect(state.modeChanges).toEqual(["TrackAll","Off"])
+})
+
+test("paragraph split refuses ambiguous literal fragments before dispatch", async () => {
+  const {state,nativeHost}=office(["Same Same"],true),target=(await nativeHost.selection())!
+  let leaseChecks=0
+  await expect(nativeHost.apply({proposalId:"split-ambiguous",target,replacement:"Same\rSame",paragraphAction:"split",
+    author:async()=>({kind:"paragraph_split" as const,proposalId:"split-ambiguous",target}),mayDispatch:()=>{leaseChecks++;return true}})).rejects.toMatchObject({mutationState:"unchanged"})
+  expect(leaseChecks).toBe(0);expect(state.writes).toHaveLength(0);expect(state.modeChanges).toEqual([])
+})
+
+test("paragraph split reaches reviewed preparation with mixed formatting and in a cell", async () => {
+  for (const cell of [false,true]) {
+    const {state,nativeHost}=office(["First second.","Another paragraph."],true)
+    state.splitMixed=true;state.paragraphs[0]!.inTable=cell
+    if (cell) state.separator="\t"
+    state.paragraphXml.set("paragraph-0",'<w:p><w:pPr><w:spacing w:before="120" w:after="180"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">First </w:t></w:r><w:r><w:rPr><w:i/></w:rPr><w:t>second.</w:t></w:r></w:p>')
+    const target=(await nativeHost.selection())!;let calls=0
+    await expect(nativeHost.apply({proposalId:`split-mixed-${cell}`,target,replacement:"First\rsecond.",paragraphAction:"split",
+      author:async()=>{calls++;return {kind:"paragraph_split" as const,proposalId:"forged",target}}})).rejects.toMatchObject({mutationState:"unchanged"})
+    expect(calls).toBe(1);expect(state.writes).toHaveLength(0);expect(state.modeChanges).toEqual([])
+  }
 })

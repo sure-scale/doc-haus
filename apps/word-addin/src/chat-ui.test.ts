@@ -1190,6 +1190,31 @@ test("paragraph deletion review shows the text and mark decision then consumes i
   }finally{f.restore()}
 })
 
+test("paragraph split review shows the new boundary and consumes Apply once", async () => {
+  const text="The supplier shall deliver the services. The customer shall pay the fees."
+  const target:WordChatTarget={...passage,text,paragraphs:[{id:"split-source",text}],endOffset:text.length}
+  const split:WordChatProposal={...proposal,target,before:text,after:"The supplier shall deliver the services.\rThe customer shall pay the fees.",paragraphAction:"split",explanation:"Separate the obligations without changing any words.",openItems:[]}
+  let calls=0
+  const f=fixture({turns:[turn({kind:"amendment",proposal:split})],host:{
+    apply:async p=>{expect(p).toEqual(split);calls++},
+    applyEligibility:p=>wordChatApplyEligibility(p.target,p.after,p.formatting,true,p.inlineFormatting,p.paragraphAction),
+  }})
+  try {
+    await f.chat.ready
+    const card=f.root.querySelector('[aria-label="Paragraph split to review"]')!
+    expect(card.querySelector("h3")?.textContent).toBe("Split paragraph")
+    expect(card.querySelector(".chat-before")?.textContent).toBe(text)
+    expect(card.querySelector(".chat-after")?.textContent).toBe(split.after.replace(/\r/g,"\n"))
+    const apply=[...card.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="Apply")!
+    expect(apply.disabled).toBe(false)
+    apply.click();await Bun.sleep(0)
+    expect(calls).toBe(1)
+    expect(f.root.querySelector(".chat-proposal-actions")).toBeNull()
+    expect(f.root.textContent).toContain("Applied in Word")
+    apply.click();expect(calls).toBe(1)
+  }finally{f.restore()}
+})
+
 test("paragraph join review offers the native boundary change and consumes Apply once", async () => {
   const paragraphs=[{id:"join-left",text:"The supplier shall deliver the services."},{id:"join-right",text:"The customer shall pay the fees."}]
   const target:WordChatTarget={...passage,paragraphs,text:paragraphs.map(p=>p.text).join("\r"),endOffset:paragraphs[1]!.text.length}

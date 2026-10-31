@@ -7,12 +7,13 @@ import { verifyNativeWordChatAddedRow } from "./word-chat-native-row-verificatio
 import { assertNativeWordChatRowDeletionTarget, verifyReviewedWordChatRowDeletionOracle, verifyNativeWordChatDeletedRow } from "./word-chat-native-row-delete"
 import { normalizeNativeWordChatCommentIds as normalizeNativeWordChatAnnotationIds } from "./word-chat-native-comments"
 import { assertNativeWordChatParagraphInsertionTarget, verifyNativeWordChatParagraphInsertion } from "./word-chat-native-paragraph-insert"
+import { assertNativeWordChatParagraphSplitTarget, verifyNativeWordChatParagraphSplit } from "./word-chat-native-paragraph-split"
 import { assertNativeWordChatParagraphMergeTarget, verifyNativeWordChatParagraphMerge } from "./word-chat-native-paragraph-merge"
 import { assertNativeWordChatParagraphDeletionTarget, verifyNativeWordChatParagraphDeletion } from "./word-chat-native-paragraph-delete"
 import { assertNativeWordChatListInsertionTarget, verifyNativeWordChatListInsertion } from "./word-chat-native-list-insert"
 import { nativeWordChatDecimalList } from "./word-chat-native-list-context"
 import { DOMParser } from "@xmldom/xmldom"
-import { nativeWordChatParagraphMergeEligible, nativeWordChatParagraphInsertionEligible, nativeWordChatParagraphDeletionEligible, nativeWordChatListInsertionEligible, wordChatApplyEligibility } from "./word-chat-apply"
+import { nativeWordChatParagraphSplitEligible, nativeWordChatParagraphMergeEligible, nativeWordChatParagraphInsertionEligible, nativeWordChatParagraphDeletionEligible, nativeWordChatListInsertionEligible, wordChatApplyEligibility } from "./word-chat-apply"
 
 type ClientResult<T> = { value: T }
 type Collection<T> = { items: T[]; load(properties: string): void }
@@ -438,11 +439,13 @@ export class WordChatHost {
     const insertion = this.nativeTextEnabled && nativeWordChatParagraphInsertionEligible(input.target, input.replacement, input.formatting, input.inlineFormatting)
     if (input.paragraphAction === "append_list_item" && (!this.nativeTextEnabled || !nativeWordChatListInsertionEligible(input.target, input.replacement, input.paragraphAction, input.list, input.formatting, input.inlineFormatting)))
       throw new WordChatHostError("Review a supported existing-list insertion before applying it. Your document is unchanged.")
+    if (input.paragraphAction === "split" && (!this.nativeTextEnabled || !nativeWordChatParagraphSplitEligible(input.target,input.replacement,input.paragraphAction,input.formatting,input.inlineFormatting)))
+      throw new WordChatHostError("Review a complete paragraph split before applying it. Your document is unchanged.")
     if (input.paragraphAction === "merge" && (!this.nativeTextEnabled || !nativeWordChatParagraphMergeEligible(input.target, input.replacement, input.paragraphAction, input.formatting, input.inlineFormatting)))
       throw new WordChatHostError("Review two complete adjacent paragraphs before merging them. Your document is unchanged.")
-    if (input.paragraphAction !== undefined && input.paragraphAction !== "merge" && input.paragraphAction !== "append_list_item" && (!this.nativeTextEnabled || !nativeWordChatParagraphDeletionEligible(input.target, input.replacement, input.paragraphAction, input.formatting, input.inlineFormatting)))
+    if (input.paragraphAction !== undefined && input.paragraphAction !== "split" && input.paragraphAction !== "merge" && input.paragraphAction !== "append_list_item" && (!this.nativeTextEnabled || !nativeWordChatParagraphDeletionEligible(input.target, input.replacement, input.paragraphAction, input.formatting, input.inlineFormatting)))
       throw new WordChatHostError("Review deletion of one complete paragraph before applying it. Your document is unchanged.")
-    const promise = input.paragraphAction === "merge" ? this.applyParagraphMergeOnce(input, identity) : input.paragraphAction === "append_list_item" ? this.applyListInsertionOnce(input, identity) : input.paragraphAction !== undefined ? this.applyParagraphDeletionOnce(input, identity) : input.inlineFormatting !== undefined ? this.applyInlineOnce(input, identity) : insertion ? this.applyParagraphInsertionOnce(input, identity) : this.applyOnce(input, identity)
+    const promise = input.paragraphAction === "split" ? this.applyParagraphSplitOnce(input, identity) : input.paragraphAction === "merge" ? this.applyParagraphMergeOnce(input, identity) : input.paragraphAction === "append_list_item" ? this.applyListInsertionOnce(input, identity) : input.paragraphAction !== undefined ? this.applyParagraphDeletionOnce(input, identity) : input.inlineFormatting !== undefined ? this.applyInlineOnce(input, identity) : insertion ? this.applyParagraphInsertionOnce(input, identity) : this.applyOnce(input, identity)
     this.pending.set(input.proposalId, { identity, promise })
     try { return await promise } finally { this.pending.delete(input.proposalId) }
   }
@@ -758,6 +761,76 @@ export class WordChatHost {
     } catch(error) {
       if (this.applied.get(input.proposalId)?.uncertain) { if (error instanceof WordChatHostError && error.mutationState === "uncertain") throw error; throw new WordChatHostError("Word may already contain this change. Inspect it and use Undo if needed.","uncertain",{cause:error}) }
       failure(error,"Word could not prepare the reviewed list insertion. Your document is unchanged.")
+    }
+  }
+
+  private async applyParagraphSplitOnce(input: WordChatApplyInput, identity: string): Promise<WordChatApplyResult> {
+    try {
+      const [leftText,rightText]=input.replacement.split("\r")
+      if (!leftText || !rightText || input.target.text!==leftText+" "+rightText) throw captureMismatch("The reviewed split does not identify one existing space.")
+      const format = (p:Paragraph,f:NonNullable<WordChatRange["font"]>) => {
+        const metrics=[p.spaceBefore,p.spaceAfter,p.lineSpacing,p.leftIndent,p.firstLineIndent]
+        if (p.styleBuiltIn!=="Normal" || p.isListItem!==false || ![0,1].includes(p.tableNestingLevel) || metrics.some(v=>typeof v!=="number" || !Number.isFinite(v))) throw captureMismatch("Word cannot confirm the paragraph formatting.")
+        const knownString=(v:unknown) => typeof v==="string" && v.trim() && v.toLowerCase()!=="mixed" ? v : null
+        return {nesting:p.tableNestingLevel,metrics,font:[knownString(f.name),typeof f.size==="number" && Number.isFinite(f.size) && f.size>0 ? f.size : null,knownString(f.color)]}
+      }
+      const loadFormat = (p:Paragraph) => {
+        p.load("styleBuiltIn,isListItem,tableNestingLevel,spaceBefore,spaceAfter,lineSpacing,leftIndent,firstLineIndent")
+        const font=p.getRange("Content").font; if (!font) throw Error("split_font_unavailable")
+        font.load("bold,italic,underline,name,size,color");return font
+      }
+      const capture = async (context: WordChatContext) => {
+        const snapshot=await this.importSnapshot(context,input.target,false,false,false,true,true,true)
+        if (!snapshot.projection) throw captureMismatch("Word could not capture the reviewed paragraph.")
+        const beforeState=await this.documentState(context), paragraph=context.document.getParagraphByUniqueLocalId(input.target.paragraphs[0]!.id)
+        const body=context.document.body.getRange("Content"), current=body.getReviewedText("Current"), original=body.getReviewedText("Original"), range=paragraph.getRange("Content")
+        const targetCurrent=range.getReviewedText("Current"), targetOriginal=range.getReviewedText("Original"), xml=context.document.body.getRange("Whole").getOoxml(), all=context.document.body.paragraphs
+        all.load("items/uniqueLocalId,items/text,items/tableNestingLevel");context.document.load("changeTrackingMode,trackFormatting")
+        await context.sync()
+        const inventory=all.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})), originalXml=xml.value, currentText=current.value, originalText=original.value, targetCurrentText=targetCurrent.value, targetOriginalText=targetOriginal.value
+        const font=loadFormat(paragraph), finalXml=context.document.body.getRange("Whole").getOoxml();await context.sync()
+        const values=format(paragraph,font)
+        if (typeof context.document.trackFormatting!=="boolean" || !sameNativeWordChatBodySnapshot(originalXml,finalXml.value)) throw captureMismatch("The paragraph changed during capture.")
+        const projection=projectNativeWordChatBody(finalXml.value,inventory)
+        if (!sameNativeProjectionGeometry(snapshot.projection,projection) || !sameNativeWordChatBodySnapshot(snapshot.projection.ooxml,projection.ooxml)) throw captureMismatch("The paragraph changed during capture.")
+        const index=assertNativeWordChatParagraphSplitTarget(projection,input.target), at=currentText.indexOf(input.target.text)
+        if (targetCurrentText!==input.target.text || targetOriginalText!==input.target.text || at<0 || values.nesting===0 && (at>0 && currentText[at-1]!=="\r" || at+input.target.text.length<currentText.length && currentText[at+input.target.text.length]!=="\r") || currentText.indexOf(input.target.text,at+1)!==-1) throw captureMismatch("Word could not uniquely confirm the paragraph to split.")
+        return {...snapshot,projection,index,current:currentText,original:originalText,at,format:values,tracking:context.document.changeTrackingMode,trackFormatting:context.document.trackFormatting,comments:beforeState.comments}
+      }
+      const initial=await this.word.run(capture), plan=await input.author({ooxml:initial.ooxml})
+      if (!("kind" in plan) || plan.kind!=="paragraph_split" || plan.proposalId!==input.proposalId || JSON.stringify(plan.target)!==JSON.stringify(input.target)) throw captureMismatch("The prepared split differs from the reviewed change.")
+      return await this.word.run(async context=>{
+        const fresh=await capture(context)
+        if (!sameNativeWordChatBodySnapshot(initial.projection.ooxml,fresh.projection.ooxml) || !sameNativeProjectionGeometry(initial.projection,fresh.projection) || initial.current!==fresh.current || initial.original!==fresh.original || JSON.stringify(initial.format)!==JSON.stringify(fresh.format) || JSON.stringify(initial.comments)!==JSON.stringify(fresh.comments)) throw captureMismatch("The paragraph changed during review.")
+        const paragraph=context.document.getParagraphByUniqueLocalId(input.target.paragraphs[0]!.id), range=paragraph.getRange("Content")
+        const prefix=range.search(leftText,{matchWildcards:false,matchCase:true,matchWholeWord:false}), suffix=range.search(rightText,{matchWildcards:false,matchCase:true,matchWholeWord:false})
+        prefix.load("items/text");suffix.load("items/text");await context.sync()
+        if (prefix.items.length!==1 || prefix.items[0]!.text!==leftText || suffix.items.length!==1 || suffix.items[0]!.text!==rightText) throw captureMismatch("Word could not uniquely identify both sides of the split.")
+        const separator=prefix.items[0]!.getRange("End").expandTo(suffix.items[0]!.getRange("Start"));separator.load("text");await context.sync()
+        if (separator.text!==" ") throw captureMismatch("Word could not confirm the original space to split.")
+        if (input.mayDispatch && !input.mayDispatch()) throw new WordChatHostError("The Word pane closed before the change was applied. Your document is unchanged.")
+        this.applied.set(input.proposalId,{identity,authors:[],uncertain:true})
+        context.document.changeTrackingMode="TrackAll";separator.insertText("\r","Replace");context.document.changeTrackingMode=fresh.tracking;context.document.trackFormatting=fresh.trackFormatting
+        await context.sync()
+        const afterState=await this.documentState(context), all=context.document.body.paragraphs, xml=context.document.body.getRange("Whole").getOoxml(), body=context.document.body.getRange("Content")
+        const current=body.getReviewedText("Current"), original=body.getReviewedText("Original")
+        all.load("items/uniqueLocalId,items/text,items/tableNestingLevel");context.document.load("changeTrackingMode,trackFormatting");await context.sync()
+        const inventory=all.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})), observedXml=xml.value, currentText=current.value, originalText=original.value, tracking=context.document.changeTrackingMode, trackFormatting=context.document.trackFormatting
+        const old=fresh.projection.paragraphs, prefixParagraph=inventory[fresh.index], suffixParagraph=inventory[fresh.index+1]
+        if (inventory.length!==old.length+1 || !prefixParagraph || !suffixParagraph || prefixParagraph.text!==leftText || suffixParagraph.text!==rightText || suffixParagraph.id!==input.target.paragraphs[0]!.id || !prefixParagraph.id || old.some(p=>p.id===prefixParagraph.id) || inventory.some((p,i)=>i!==fresh.index && (i===fresh.index+1 ? false : p.id!==old[i<fresh.index?i:i-1]?.id))) throw Error("paragraph_split_identity")
+        const pieces=[prefixParagraph,suffixParagraph].map(p=>context.document.getParagraphByUniqueLocalId(p.id)), fonts=pieces.map(loadFormat)
+        const span=pieces[0]!.getRange("Content").expandTo(pieces[1]!.getRange("Content")), targetCurrent=span.getReviewedText("Current"), targetOriginal=span.getReviewedText("Original"), finalXml=context.document.body.getRange("Whole").getOoxml()
+        await context.sync()
+        const formats=pieces.map((p,i)=>format(p,fonts[i]!)), observed=projectNativeWordChatBody(finalXml.value,inventory)
+        const expected=fresh.current.slice(0,fresh.at)+input.replacement+fresh.current.slice(fresh.at+input.target.text.length)
+        if (!sameNativeWordChatBodySnapshot(observedXml,finalXml.value) || tracking!==fresh.tracking || trackFormatting!==fresh.trackFormatting || currentText!==expected || originalText!==fresh.original || targetCurrent.value!==input.replacement || targetOriginal.value!==input.target.text || formats.some(v=>v.nesting!==fresh.format.nesting || JSON.stringify(v.metrics)!==JSON.stringify(fresh.format.metrics) || fresh.format.font.some((known,i)=>known!==null && known!==v.font[i])) || JSON.stringify(afterState.comments)!==JSON.stringify(fresh.comments)) throw Error("paragraph_split_confirmation")
+        const authors=verifyNativeWordChatParagraphSplit(fresh.projection,observed,input.target,input.replacement)
+        this.applied.set(input.proposalId,{identity,authors,uncertain:false})
+        return {status:"applied",tracked:true,saved:false,authors}
+      })
+    } catch(error) {
+      if (this.applied.get(input.proposalId)?.uncertain) throw new WordChatHostError("Word may contain the split, but its tracked result could not be confirmed. Inspect it and use Undo if needed; do not apply it again.","uncertain",{cause:error})
+      failure(error,"Word could not prepare the reviewed paragraph split. Your document is unchanged.")
     }
   }
 

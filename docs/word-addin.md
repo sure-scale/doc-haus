@@ -164,19 +164,20 @@ engine sessions or tools. The receiver accepts only its configured pane origin.
 
 ## Chat beside the document
 
-Ask a question or request a change in **Chat**. **Use selected text** adds the
-exact passage selected in Word; remove its chip to ask without it. **Attach**
+Ask a question or request a change in **Chat**. A selection in Word automatically
+adds its exact passage; remove its chip to ask without it. **Attach**
 adds a saved matter document, a playbook or a supported upload. Uploading for
 the chat leaves the matter's files alone; **Add to this matter** uses normal
 source ingestion. Referencing a playbook does not change the matter's default.
 
-Chat settings are behind the cog. **This document** uses the current Word text
+Default chat settings are in doc.haus **Settings → Word add-in**.
+The composer’s **This document** toggle uses the current Word text
 plus deliberately attached material. **Whole matter** can also retrieve saved
 matter sources and its playbook. Earlier broader answers remain visible but
 cannot supply evidence after switching to the restricted scope.
 
-**Prepare suggestions** is off initially. Enabling it permits bounded work for
-this document, either across sampled passages or about the current selection.
+Suggestions are on by default, with three clickable prompts in an empty chat.
+Preparation uses sampled document passages together with any current selection.
 Ideas never apply themselves. Pause stops new preparation; ordinary chat remains
 available. Suggestions are not a complete document review.
 
@@ -185,6 +186,9 @@ change and any open items. **Refine** keeps the original target. **Apply** uses
 Word-native tracked edits for supported operations, including adding a row,
 deleting an eligible existing row, or joining two compatible ordinary paragraphs
 with one space. A join preserves the wording and tracks the changed boundary.
+A paragraph split can replace an existing space with a paragraph break while
+retaining the source character formatting and paragraph properties, including
+qualified paragraphs inside a table cell. The new boundary is tracked too.
 A changed or unsupported passage requires a
 fresh review. Used action buttons disappear after application.
 Apply leaves the matter's version history alone: choose **Save** to synchronize
@@ -194,7 +198,7 @@ unsupported hosts retain chat and the existing save flow.
 
 ## Matter documents and version comparison
 
-The **Chat**, **Documents** and **Compare** tabs sit below the save controls.
+The **Chat**, **Documents** and **Compare** tabs switch the pane’s main view.
 Chat opens on first use; the pane remembers the last tab deliberately selected
 on this installation. Switching tabs keeps the chat draft and review in place.
 Documents lists files already saved in this matter, such as

@@ -108,3 +108,12 @@ test("paragraph merge preparation binds the reviewed boundary without authoring 
   await expect(authorWordChatAmendment("",{...proposal,after:"First.Second."},context)).rejects.toThrow("word_proposal_changed")
   await expect(authorWordChatAmendment("",proposal,{...context,paragraphs:[paragraphs[1]!,paragraphs[0]!]})).rejects.toThrow("word_proposal_changed")
 })
+
+
+test("paragraph split preparation returns a pinned native plan and refuses drift", async () => {
+  const paragraphs=[{id:"p",text:"First. Second."}],context={text:paragraphs[0]!.text,paragraphs,capturedAt:"now",saved:false,truncated:false},target=targetWordChatAmendment(context,context.text)!
+  const proposal:WordChatProposal={id:"split",documentId:"doc",before:context.text,after:"First.\rSecond.",explanation:"Split",openItems:[],createdAt:"now",target,paragraphAction:"split"}
+  expect(await authorWordChatAmendment("",proposal,context)).toEqual({kind:"paragraph_split",proposalId:"split",target})
+  await expect(authorWordChatAmendment("",{...proposal,after:"First.\rChanged."},context)).rejects.toThrow("word_proposal_changed")
+  await expect(authorWordChatAmendment("",proposal,{...context,paragraphs:[{...paragraphs[0]!,text:"Changed"}]})).rejects.toThrow("word_proposal_changed")
+})

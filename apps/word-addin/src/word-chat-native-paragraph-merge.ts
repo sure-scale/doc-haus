@@ -96,7 +96,16 @@ export function verifyNativeWordChatParagraphMerge(before:Projection, after:Proj
   if(!priorRunProps.length && empty(rp[0]!))lp[0]!.removeChild(rp[0]!)
   if(!priorProps.length && empty(lp[0]!))left.removeChild(lp[0]!)
   right.removeChild(ins)
-  const normalized=parse(normalizeNativeWordChatCommentIds(before.ooxml,new XMLSerializer().serializeToString(current.doc)))
+  assertNativeWordChatStoryInverse(before,after,new XMLSerializer().serializeToString(current.doc),author!,ids)
+  return [author!]
+}
+
+/** Compare the reconstructed whole story and dependencies, preserving prior review provenance. */
+export function assertNativeWordChatStoryInverse(before:Projection, after:Projection, inverseAfterXml:string, author:string, ids:string[]):void {
+  assertNativeWordChatInlineDependencies(before.ooxml,after.ooxml)
+  const old=parse(before.ooxml)
+  trimTerminal(old.body,before)
+  const normalized=parse(normalizeNativeWordChatCommentIds(before.ooxml,inverseAfterXml))
   // Preserve every available dependency, permitting only Word's qualified
   // rsid inventory and a newly introduced people relationship/part.
   const extra=[...normalized.parts.keys()].filter(name=>!old.parts.has(name))
@@ -136,5 +145,4 @@ export function verifyNativeWordChatParagraphMerge(before:Projection, after:Proj
     const last=elements(body).at(-1);if(last?.namespaceURI===W && last.localName==="sectPr"){if(last.hasAttributeNS(W,"rsidSect") && !/^[0-9A-Fa-f]{8}$/.test(last.getAttributeNS(W,"rsidSect")!))return fail("invalid section metadata");last.removeAttributeNS(W,"rsidSect")}
   }
   if(!equal(canon(old.body),canon(normalized.body)))return fail("main story inverse")
-  return [author!]
 }

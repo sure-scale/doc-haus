@@ -72,3 +72,14 @@ test("paragraph merge requires exactly the two complete reviewed paragraphs and 
   expect(wordChatApplyEligibility(pair,"First Second",undefined,true,{bold:true},"merge").supported).toBe(false)
   expect(wordChatApplyEligibility(pair,"First Second",undefined,false,undefined,"merge").supported).toBe(false)
 })
+
+test("paragraph split replaces exactly one existing space in the whole reviewed paragraph", () => {
+  const paragraph={id:"split",text:"First second",paragraphs:[{id:"p1",text:"First second"}],startOffset:0,endOffset:12,capturedAt:"now",saved:false}
+  expect(wordChatApplyEligibility(paragraph,"First\rsecond",undefined,true,undefined,"split").supported).toBe(true)
+  for(const after of ["First \rsecond","First\r second","First\rchanged","Firstsecond","First\rsecond\rthird"])
+    expect(wordChatApplyEligibility(paragraph,after,undefined,true,undefined,"split").supported).toBe(false)
+  expect(wordChatApplyEligibility({...paragraph,startOffset:1},"First\rsecond",undefined,true,undefined,"split").supported).toBe(false)
+  expect(wordChatApplyEligibility(paragraph,"First\rsecond",[{paragraph:0,style:"Normal"}],true,undefined,"split").supported).toBe(false)
+  expect(wordChatApplyEligibility(paragraph,"First\rsecond",undefined,true,{bold:true},"split").supported).toBe(false)
+  expect(wordChatApplyEligibility(paragraph,"First\rsecond",undefined,false,undefined,"split").supported).toBe(false)
+})

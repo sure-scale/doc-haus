@@ -1,5 +1,5 @@
 import type { WordChatInlineFormat, WordChatListCapture, WordChatParagraphFormat, WordChatProposal, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatParagraphMerge, validWordChatListInsertion } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatParagraphMerge, validWordChatParagraphSplit, validWordChatListInsertion } from "../../../dochaus/lib/word-chat-amendment-contract"
 
 export type WordChatApplyEligibility = { supported: true } | { supported: false; reason: string }
 
@@ -12,6 +12,13 @@ export function nativeWordChatListInsertionEligible(target: WordChatTarget, repl
   const canonical = targetWordChatAmendment(snapshot, target.text)
   return !!canonical && canonical.startOffset === target.startOffset && canonical.endOffset === target.endOffset &&
     validWordChatListInsertion(snapshot, canonical, replacement, action, formatting, inlineFormatting)
+}
+
+/** One complete paragraph with its existing space replaced by a mark. */
+export function nativeWordChatParagraphSplitEligible(target: WordChatTarget, replacement: string, action: unknown, formatting?: WordChatParagraphFormat[], inlineFormatting?: WordChatInlineFormat): boolean {
+  const snapshot = {text:target.paragraphs.map(p=>p.text).join("\r"),paragraphs:target.paragraphs,selection:target,saved:target.saved,capturedAt:target.capturedAt,truncated:false}
+  const canonical=targetWordChatAmendment(snapshot,target.text)
+  return !!canonical && canonical.startOffset===target.startOffset && canonical.endOffset===target.endOffset && validWordChatParagraphSplit(snapshot,canonical,replacement,action,formatting,inlineFormatting)
 }
 
 /** Two complete adjacent paragraphs, with only their boundary joined. */
@@ -58,6 +65,9 @@ export function nativeWordChatTextEligible(target: WordChatTarget, replacement: 
  * protection, comments/revisions, formatting and the authored artifact must
  * still pass their existing checks before any mutation. */
 export function wordChatApplyEligibility(target: WordChatTarget, replacement: string, formatting?: WordChatParagraphFormat[], nativeText = true, inlineFormatting?: WordChatInlineFormat, paragraphAction?: WordChatProposal["paragraphAction"], list?: WordChatListCapture): WordChatApplyEligibility {
+  if (paragraphAction === "split") return nativeText && nativeWordChatParagraphSplitEligible(target,replacement,paragraphAction,formatting,inlineFormatting)
+    ? {supported:true}
+    : {supported:false,reason:"Review one complete paragraph split at an existing space before applying it."}
   if (paragraphAction === "merge") return nativeText && nativeWordChatParagraphMergeEligible(target, replacement, paragraphAction, formatting, inlineFormatting)
     ? { supported: true }
     : { supported: false, reason: "Review the complete adjacent paragraphs before merging them." }

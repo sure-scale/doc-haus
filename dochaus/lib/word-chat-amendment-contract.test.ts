@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatParagraphMerge, validWordChatListInsertion, wordChatListCaptureCurrent, validWordChatTableRowInsertion, validWordChatTableRowDeletion, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatParagraphMerge, validWordChatParagraphSplit, validWordChatListInsertion, wordChatListCaptureCurrent, validWordChatTableRowInsertion, validWordChatTableRowDeletion, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
 
 test("inline formatting binds exact native UTF-16 targets without trusting model offsets", () => {
   const text = "Keep 😀 terms and terms."
@@ -264,4 +264,21 @@ test("paragraph merge binds two full adjacent paragraphs and exact boundary", ()
   expect(validWordChatParagraphMerge({...snapshot,selection:partial},target,after,"merge")).toBe(false)
   const duplicates={...snapshot,paragraphs:[...paragraphs,...paragraphs.slice(0,2).map((p,i)=>({...p,id:`copy-${i}`}))]}
   expect(targetWordChatAmendment(duplicates,before)).toBeUndefined()
+})
+
+
+test("paragraph split binds a unique complete paragraph and exactly one existing space", () => {
+  const paragraphs=[{id:"a",text:"First sentence. Second sentence."},{id:"b",text:"Other."}],snapshot:WordChatSnapshot={text:paragraphs.map(p=>p.text).join("\r"),paragraphs,capturedAt:"now",saved:false,truncated:false}
+  const target=targetWordChatAmendment(snapshot,paragraphs[0]!.text)!,after="First sentence.\rSecond sentence."
+  expect(validWordChatParagraphSplit(snapshot,target,after,"split")).toBe(true)
+  for (const bad of ["First sentence.\rChanged sentence.","First sentence.\r\rSecond sentence.","\rFirst sentence. Second sentence.","First sentence.\tSecond sentence.","First sentence.\rSecond\n sentence."]) expect(validWordChatParagraphSplit(snapshot,target,bad,"split")).toBe(false)
+  expect(validWordChatParagraphSplit(snapshot,target,after,"merge")).toBe(false)
+  expect(validWordChatParagraphSplit(snapshot,target,after,"split",[])).toBe(false)
+  expect(validWordChatParagraphSplit(snapshot,target,after,"split",undefined,{bold:true})).toBe(false)
+  expect(validWordChatParagraphSplit(snapshot,{...target,startOffset:1},after,"split")).toBe(false)
+  expect(validWordChatParagraphSplit({...snapshot,paragraphs:[{...paragraphs[0]!,text:"Changed"},paragraphs[1]!] },target,after,"split")).toBe(false)
+  expect(validWordChatParagraphSplit({...snapshot,list:{id:1,format:"decimal",members:[{...paragraphs[0]!,level:0,label:"1."}]}},target,after,"split")).toBe(false)
+  const selection={id:"partial",text:"sentence. Second sentence.",paragraphs:[paragraphs[0]!],startOffset:6,endOffset:paragraphs[0]!.text.length,capturedAt:"now",saved:false}
+  expect(validWordChatParagraphSplit({...snapshot,selection},target,after,"split")).toBe(false)
+  expect(targetWordChatAmendment({...snapshot,paragraphs:[...paragraphs,{id:"copy",text:paragraphs[0]!.text}]},paragraphs[0]!.text)).toBeUndefined()
 })

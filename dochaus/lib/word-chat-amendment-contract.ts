@@ -151,7 +151,7 @@ export type WordChatProposal = {
   target: WordChatTarget
   createdAt: string
   /** Explicit structural action, separate from ordinary wording replacement. */
-  paragraphAction?: "delete" | "append_list_item" | "merge"
+  paragraphAction?: "delete" | "append_list_item" | "merge" | "split"
   /** Captured by the host and attached by the server for list insertion only. */
   list?: WordChatListCapture
   /** Optional reviewed paragraph properties, indexed against the resulting text. */
@@ -175,10 +175,11 @@ export type WordChatParagraphInsertionPlan = {
   text: string
   formatting?: WordChatParagraphFormat[]
 }
+export type WordChatParagraphSplitPlan = { kind: "paragraph_split"; proposalId: string; target: WordChatTarget }
 export type WordChatParagraphMergePlan = { kind: "paragraph_merge"; proposalId: string; target: WordChatTarget }
 export type WordChatParagraphDeletionPlan = { kind: "paragraph_delete"; proposalId: string; target: WordChatTarget }
 export type WordChatListInsertionPlan = { kind: "list_insert"; proposalId: string; target: WordChatTarget; text: string; list: WordChatListCapture }
-export type WordChatPreparedAmendment = WordChatListInsertionPlan | WordChatAuthoredAmendment | WordChatInlineFormattingPlan | WordChatParagraphInsertionPlan | WordChatParagraphDeletionPlan | WordChatParagraphMergePlan
+export type WordChatPreparedAmendment = WordChatListInsertionPlan | WordChatAuthoredAmendment | WordChatInlineFormattingPlan | WordChatParagraphInsertionPlan | WordChatParagraphDeletionPlan | WordChatParagraphMergePlan | WordChatParagraphSplitPlan
 export type WordChatParagraphFormat = {
   /** Zero-based index within the resulting complete paragraphs. */
   paragraph: number
@@ -250,6 +251,20 @@ export function validWordChatParagraphMerge(snapshot: WordChatSnapshot, target: 
   return !!resolved && resolved.id === target.id && resolved.capturedAt === target.capturedAt && resolved.saved === target.saved &&
     resolved.startOffset === target.startOffset && resolved.endOffset === target.endOffset && resolved.paragraphs.length === 2 &&
     resolved.paragraphs.every((p,i) => p.id === target.paragraphs[i]!.id && p.text === target.paragraphs[i]!.text)
+}
+/** Replace exactly one existing space with a paragraph boundary. */
+export function validWordChatParagraphSplit(snapshot: WordChatSnapshot, target: WordChatTarget, replacement: unknown, action: unknown, formatting?: unknown, inlineFormatting?: unknown): boolean {
+  if (!snapshot || !target || !Array.isArray(target.paragraphs) || target.paragraphs.length !== 1 || action !== "split" || formatting !== undefined || inlineFormatting !== undefined ||
+    typeof replacement !== "string" || !wordChatTargetCurrent(snapshot,target) || snapshot.selection && !wordChatTargetCurrent(snapshot,snapshot.selection)) return false
+  const paragraph = target.paragraphs[0]!, pieces = replacement.split("\r")
+  if (target.startOffset !== 0 || target.endOffset !== paragraph.text.length || target.text !== paragraph.text || pieces.length !== 2 ||
+    pieces.some(piece => !piece.trim() || !wellFormedWordChatCell(piece) || /[\u0000-\u001f\u007f]/.test(piece)) ||
+    !wellFormedWordChatCell(target.text) || /[\u0000-\u001f\u007f]/.test(target.text) || target.text !== pieces[0] + " " + pieces[1] ||
+    snapshot.list?.members.some(member => member.id === paragraph.id)) return false
+  const resolved = targetWordChatAmendment(snapshot,target.text)
+  return !!resolved && resolved.id === target.id && resolved.capturedAt === target.capturedAt && resolved.saved === target.saved &&
+    resolved.startOffset === target.startOffset && resolved.endOffset === target.endOffset && resolved.paragraphs.length === 1 &&
+    resolved.paragraphs[0]!.id === paragraph.id && resolved.paragraphs[0]!.text === paragraph.text
 }
 /** Bind inline properties to the unique resolved native paragraph and UTF-16
  * offsets. The model supplies wording, never an identity or offset. */

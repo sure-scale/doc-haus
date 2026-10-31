@@ -1510,3 +1510,38 @@ test("paragraph merge review, refinement and stored preparation remain bound to 
   try {const response=await prepare();expect(response.status).toBe(200);expect((await response.json() as {kind:string}).kind).toBe("paragraph_merge");invalidate=true;expect((await prepare()).status).toBe(409)}
   finally {db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",[turn!.id,owner.document]);settleWordNativeOperation(db,owner,seq+1,"merge-prepare","not-dispatched");clearWordEditLease(db,owner.document);db.close()}
 })
+
+test("paragraph split review and preparation keep the exact boundary and lease", async () => {
+  const id=await newConversation(), paragraphs=[{id:"split-a",text:"First sentence. Second sentence."},{id:"split-b",text:"Other."}]
+  const native={...context,text:paragraphs.map(p=>p.text).join("\r"),paragraphs,selection:undefined}
+  const request=(extra:object={})=>post("send",{conversationId:id,scope:"document",text:"Split the first paragraph",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context:native,...extra})
+  const output=(action:unknown="split",after="First sentence.\rSecond sentence.")=>{modelRawOutput=JSON.stringify({answer:"Prepared.",citations:[],proposal:{before:paragraphs[0]!.text,after,paragraphAction:action,explanation:"Split",openItems:[]}})}
+  let turn:WordChatTurn
+  try {
+    output();turn=(await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(turn.proposal?.paragraphAction).toBe("split")
+    const reviewer=[...sessions.values()].find(s=>s.parentID===turn.id&&s.metadata.type==="word-chat-review")!
+    expect(sessionContext(reviewer.id)).toContain("replace exactly one existing space")
+    const original=turn.proposal!
+    output("delete","");expect((await (await request({proposal:original})).json() as {turn:WordChatTurn}).turn.proposal).toBeUndefined()
+    output();const refined=(await (await request({proposal:original})).json() as {turn:WordChatTurn}).turn
+    expect(refined.proposal?.target).toEqual(original.target);expect(refined.proposal?.paragraphAction).toBe("split")
+    output("split","First sentence.\rChanged sentence.");expect((await (await request()).json() as {turn:WordChatTurn}).turn.proposal).toBeUndefined()
+  } finally {modelRawOutput=undefined}
+  const current=readCurrentVersion(directory,"Draft.docx")!,db=openDb(directory)
+  db.run("INSERT OR IGNORE INTO word_grants(token_hash,document_id,origin,issued_version,created_at) VALUES (?,?,?,?,?)",[auth.grant.token_hash,auth.grant.document_id,auth.grant.origin,auth.grant.issued_version,Date.now()])
+  const owner=claimWordEditLease(db,{document:auth.grant.document_id,tokenHash:auth.grant.token_hash,session:"split-prepare-session"})
+  const seq=(db.query("SELECT native_sequence FROM word_edit_leases WHERE document_id = ?").get(owner.document) as {native_sequence:number}).native_sequence
+  beginWordNativeOperation(db,owner,seq,"split-prepare",undefined,{conversationId:id,turnId:turn!.id})
+  let invalidate=false
+  const preparing=new Hono()
+  installWordChat(preparing,()=>auth,{fetch:transport,engineURL:"http://synthetic.invalid",authorAmendment:async (_xml,proposal,stored)=>{
+    expect(proposal).toEqual(turn!.proposal!);expect(stored?.paragraphs).toEqual(paragraphs)
+    if(invalidate)db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",["other",owner.document])
+    return {kind:"paragraph_split",proposalId:proposal.id,target:proposal.target}
+  }})
+  const headers={"content-type":"application/json","x-dochaus-word-session":owner.session,"x-dochaus-word-lease":owner.generation,"x-dochaus-word-base-version":current.current.id}
+  const prepare=()=>preparing.request("/word/chat/prepare",{method:"POST",headers,body:JSON.stringify({conversationId:id,turnId:turn!.id,ooxml:"current",proposal:{...turn!.proposal,after:"forged"}})})
+  try {const response=await prepare();expect(response.status).toBe(200);expect((await response.json() as {kind:string}).kind).toBe("paragraph_split");invalidate=true;expect((await prepare()).status).toBe(409)}
+  finally {db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",[turn!.id,owner.document]);settleWordNativeOperation(db,owner,seq+1,"split-prepare","not-dispatched");clearWordEditLease(db,owner.document);db.close()}
+})
