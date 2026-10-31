@@ -134,7 +134,7 @@ test("saved Word recovery explains the isolated copy and refreshes the document 
   } finally {
     await act(async () => root.unmount())
     globalThis.fetch = originalFetch
-    for (const [name, descriptor] of saved) descriptor ? Object.defineProperty(globalThis,name,descriptor) : Reflect.deleteProperty(globalThis,name)
+    for (const [name, descriptor] of saved) descriptor ? Object.defineProperty(globalThis,name,descriptor) : delete (globalThis as Record<string, unknown>)[name]
     browser.happyDOM.abort()
   }
 })

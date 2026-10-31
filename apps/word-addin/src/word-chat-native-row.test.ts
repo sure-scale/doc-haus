@@ -10,7 +10,7 @@ function fixture() {
       getRange() { return { getReviewedText() { return { value: `${prefix}${column + 1}` } } } },
       insertText(text: string, location: string) {
         queued.push(`text:${row}:${column}:${text}:${location}`)
-        const font = new Proxy({ bold: true, italic: true, underline: "Single", load() {} }, { set(target, key, value) { queued.push(`font:${String(key)}:${value}`); return Reflect.set(target, key, value) } })
+        const font = new Proxy({ bold: true, italic: true, underline: "Single", load() {} }, { set(target, key, value) { queued.push(`font:${String(key)}:${value}`); (target as Record<PropertyKey, unknown>)[key] = value; return true } })
         return { font }
       },
     } } },
