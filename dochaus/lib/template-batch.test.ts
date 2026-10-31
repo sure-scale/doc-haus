@@ -192,3 +192,15 @@ test("a named placeholder left unfilled is shaded", async () => {
     .map((match) => [match[2], match[1]])
   expect(shaded).toContainEqual(["[Client Name]", OPEN_ITEM_HIGHLIGHT_FILL])
 })
+
+test("a kept component whose marker opens its paragraph starts with its own text", async () => {
+  const { bytes: opening } = await renderMarkdownToDocx(
+    "# Synthetic letter\n\nOpening text.\n\n[optional: Confidentiality] This request is confidential.\n\nClosing text.",
+  )
+  const { fields } = templateBatchFields(await placeholders(opening))
+  const columns = ["Include: Confidentiality"]
+  const { bytes } = await fillTemplateDocx(opening, rowFill(fields, columns, ["yes"], autoMatch(fields, columns)))
+  const lines = documentText(bytes).split("\n")
+  expect(lines).toContain("This request is confidential.")
+  expect(lines.some((line) => /^\s+This request/.test(line))).toBe(false)
+})

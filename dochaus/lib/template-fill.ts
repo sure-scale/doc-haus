@@ -102,6 +102,14 @@ export async function fillTemplate(template: Uint8Array, options: TemplateFillOp
   }
 
   // Kept optional components lose their marker so it never reaches the draft.
+  // A marker that opens its paragraph goes with the space after it; the strip
+  // below absorbs whitespace only between words, so it would leave the text
+  // starting with a space.
+  for (const { match } of session.findPlaceholders(dx.PlaceholderKinds.AlternativeClause)) {
+    const space = /^\s+/.exec(match.contextAfter)?.[0]
+    if (match.text.startsWith("[optional:") && space && !match.contextBefore.trim())
+      session.replaceTextRange(match.enclosingAnchor.id, match.text + space, "", { maxReplacements: 1 })
+  }
   session.fillPlaceholders((p) => (p.match.text.startsWith("[optional:") ? "" : null), {
     kinds: dx.PlaceholderKinds.AlternativeClause,
     coalesceWhitespaceAroundEmptyFill: true,
