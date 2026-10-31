@@ -1,5 +1,5 @@
 {
-  "version": 21,
-  "name": "2.1.1",
-  "notes": "Compare agreements in review tables: start from ready questions with a fictional worked example, and after Fill AI compares each question's answers across your documents and marks those that differ. Each answer shows one clear marker, and Review next walks you through flagged answers first. Suggest review questions with AI, preview chat workflows before they start, and set and test how many AI requests run in parallel. Small UI improvements and minor bug fixes."
+  "version": 22,
+  "name": "2.2.0",
+  "notes": "Chat with doc.haus in Word: ask about the open document or the whole matter from a Chat tab beside your draft, and apply reviewed amendments as tracked changes you can accept, reject or undo in Word. Export chronologies to Word, with clearer chronology reimports. Various UI improvements and minor bug fixes."
 }
