@@ -1240,7 +1240,7 @@ test("paragraph join review offers the native boundary change and consumes Apply
   }finally{f.restore()}
 })
 
-test("automatic list review displays the next label and consumes the single approved append", async () => {
+test("automatic list review displays its actual anchor and consumes the single approved append", async () => {
   let calls=0
   const append:WordChatProposal={...proposal,after:proposal.before+"\rA further obligation.",paragraphAction:"append_list_item",
     list:{id:17,format:"decimal",members:[{id:passage.paragraphs[0]!.id,text:passage.text,level:0,label:"1."}]}}
@@ -1252,8 +1252,8 @@ test("automatic list review displays the next label and consumes the single appr
     await f.chat.ready
     const card=f.root.querySelector('[aria-label="List item to review"]')!
     expect(card.textContent).toContain("Add list item")
-    expect(card.querySelector(".chat-after")?.textContent).toBe("2. A further obligation.")
-    expect(card.textContent).toContain("automatic list")
+    expect(card.querySelector(".chat-after")?.textContent).toBe("A further obligation.")
+    expect(card.querySelector("summary")?.textContent).toBe("After 1.")
     const apply=[...card.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="Apply")!
     apply.click();await Bun.sleep(0)
     expect(calls).toBe(1)
@@ -1261,4 +1261,20 @@ test("automatic list review displays the next label and consumes the single appr
     expect(f.root.textContent).toContain("Applied in Word")
     apply.click();expect(calls).toBe(1)
   }finally{f.restore()}
+})
+
+test("nested list Before review uses the captured label without inventing a new number", async () => {
+  const before: WordChatProposal = { ...proposal, after: "A further obligation.\r" + proposal.before, paragraphAction: "insert_list_item_before",
+    list: { id: 17, format: "native", members: [{ id: passage.paragraphs[0]!.id, text: passage.text, level: 2, label: "(iv)", siblingIndex: 3 }] } }
+  const f = fixture({ turns: [turn({ kind: "amendment", proposal: before })], host: {
+    applyEligibility: p => wordChatApplyEligibility(p.target, p.after, p.formatting, true, p.inlineFormatting, p.paragraphAction, p.list),
+  } })
+  try {
+    await f.chat.ready
+    const card = f.root.querySelector('[aria-label="List item to review"]')!
+    expect(card.querySelector("summary")?.textContent).toBe("Before (iv)")
+    expect(card.querySelector(".chat-after")?.textContent).toBe("A further obligation.")
+    expect(card.querySelector("details pre")?.textContent).toBe(proposal.before)
+    expect([...card.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === "Apply")?.disabled).toBe(false)
+  } finally { f.restore() }
 })

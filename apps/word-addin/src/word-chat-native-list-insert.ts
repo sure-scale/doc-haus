@@ -81,9 +81,10 @@ function validMeta(e: Element) {
       (a.namespaceURI === W14 && ["paraId", "textId"].includes(a.localName) && /^[0-9a-fA-F]{8}$/.test(a.value)),
   )
 }
-/** A plain top-level last list item with only direct level-zero numbering.
+/** A plain top-level last list item with explicit direct numbering.
  * Caller must independently verify native list membership and last-item identity. */
-export function assertNativeWordChatListInsertionTarget(projection: Projection, target: WordChatTarget): number {
+export function assertNativeWordChatListInsertionTarget(projection: Projection, target: WordChatTarget, position: "end" | "before_final" = "end"): number {
+  if (position !== "end" && position !== "before_final") return fail()
   if (
     !target ||
     !target.id ||
@@ -106,7 +107,35 @@ export function assertNativeWordChatListInsertionTarget(projection: Projection, 
   if (!noAttrs(pp[0]!) || elements(pp[0]!).length !== 1 || num.length !== 1 || !noAttrs(num[0]!)) return fail()
   const level = named(num[0]!, "ilvl"), id = named(num[0]!, "numId")
   const valOnly = (e: Element) => Array.from(e.attributes).every(a => a.namespaceURI === XMLNS || a.namespaceURI === W && a.localName === "val") && !elements(e).length
-  if (elements(num[0]!).length !== 2 || level.length !== 1 || id.length !== 1 || !valOnly(level[0]!) || !valOnly(id[0]!) || level[0]!.getAttributeNS(W,"val") !== "0" || !/^[0-9]+$/.test(id[0]!.getAttributeNS(W,"val") || "") || Number(id[0]!.getAttributeNS(W,"val")) <= 0) return fail()
+  if (elements(num[0]!).length !== 2 || level.length !== 1 || id.length !== 1 || !valOnly(level[0]!) || !valOnly(id[0]!) || !/^[0-8]$/.test(level[0]!.getAttributeNS(W,"val") || "") || !/^[0-9]+$/.test(id[0]!.getAttributeNS(W,"val") || "") || Number(id[0]!.getAttributeNS(W,"val")) <= 0) return fail()
+  // The paragraph can be locally plain yet lie inside a whole-story range or
+  // complex field. Track the structural graph up to and across both edges.
+  const {body}=parse(projection.ooxml), path=/^body\/p\[(\d+)\]$/.exec(item.path)
+  if (!path) return fail()
+  const physical=elements(body)[Number(path[1])]
+  if (!physical || physical.namespaceURI!==W || physical.localName!=="p") return fail()
+  const active=new Set<string>(); let fields=0
+  const starts:Record<string,string>={commentRangeStart:"comment",bookmarkStart:"bookmark",permStart:"perm",moveFromRangeStart:"moveFrom",moveToRangeStart:"moveTo",customXmlInsRangeStart:"customIns",customXmlDelRangeStart:"customDel",customXmlMoveFromRangeStart:"customMoveFrom",customXmlMoveToRangeStart:"customMoveTo"}
+  const ends:Record<string,string>={commentRangeEnd:"comment",bookmarkEnd:"bookmark",permEnd:"perm",moveFromRangeEnd:"moveFrom",moveToRangeEnd:"moveTo",customXmlInsRangeEnd:"customIns",customXmlDelRangeEnd:"customDel",customXmlMoveFromRangeEnd:"customMoveFrom",customXmlMoveToRangeEnd:"customMoveTo"}
+  const walk=(e:Element) => {
+    if (e===physical && (active.size || fields)) return fail()
+    if (e.namespaceURI===W) {
+      const family=starts[e.localName] ?? ends[e.localName]
+      if (family) {
+        const id=e.getAttributeNS(W,"id"), key=`${family}:${id}`
+        if (!id || starts[e.localName] && active.has(key) || ends[e.localName] && !active.has(key)) return fail()
+        if (starts[e.localName]) active.add(key); else active.delete(key)
+      }
+      if (e.localName==="fldChar") {
+        const kind=e.getAttributeNS(W,"fldCharType")
+        if (kind==="begin") fields++
+        else if (kind==="end") { if (!fields) return fail(); fields-- }
+      }
+    }
+    for (const child of elements(e)) walk(child)
+    if (e===physical && (active.size || fields)) return fail()
+  }
+  walk(body); if (active.size || fields) return fail()
   return index
 }
 /** Verifies main-story structure/carriers, annotation graph and captured
@@ -117,8 +146,9 @@ export function verifyNativeWordChatListInsertion(
   after: Projection,
   target: WordChatTarget,
   text: string,
+  position: "end" | "before_final" = "end",
 ): string[] {
-  const index = assertNativeWordChatListInsertionTarget(before, target)
+  const index = assertNativeWordChatListInsertionTarget(before, target, position)
   if (
     typeof text !== "string" ||
     !text.trim() ||
@@ -128,30 +158,17 @@ export function verifyNativeWordChatListInsertion(
     after.paragraphs.length !== before.paragraphs.length + 1
   )
     return fail()
-  const left = after.paragraphs[index],
-    inserted = after.paragraphs[index + 1]
-  if (
-    !left ||
-    !inserted ||
-    left.text !== target.text ||
-    inserted.text !== text ||
-    left.nesting !== 0 ||
-    inserted.nesting !== 0 ||
-    inserted.id !== target.paragraphs[0]!.id ||
-    left.id === inserted.id
-  )
-    return fail()
-  for (let i = 0; i < before.paragraphs.length; i++)
-    if (i !== index) {
-      const next = after.paragraphs[i + (i > index ? 1 : 0)]!
-      if (
-        !next ||
-        next.id !== before.paragraphs[i]!.id ||
-        next.text !== before.paragraphs[i]!.text ||
-        next.nesting !== before.paragraphs[i]!.nesting
-      )
-        return fail()
-    }
+  const beforePosition = position === "before_final"
+  const left = after.paragraphs[index], right = after.paragraphs[index + 1]
+  const inserted = beforePosition ? left : right, anchor = beforePosition ? right : left
+  if (!inserted || !anchor || anchor.text !== target.text || inserted.text !== text ||
+    anchor.nesting !== 0 || inserted.nesting !== 0 || anchor.id === inserted.id ||
+    (beforePosition ? anchor.id !== target.paragraphs[0]!.id : inserted.id !== target.paragraphs[0]!.id)) return fail()
+  for (let i = 0; i < before.paragraphs.length; i++) {
+    if (i === index && !beforePosition) continue
+    const next = after.paragraphs[i + (beforePosition ? (i >= index ? 1 : 0) : (i > index ? 1 : 0))]
+    if (!next || next.id !== before.paragraphs[i]!.id || next.text !== before.paragraphs[i]!.text || next.nesting !== before.paragraphs[i]!.nesting) return fail()
+  }
   assertNativeWordChatInlineDependencies(before.ooxml, after.ooxml)
   const b = parse(before.ooxml),
     a = parse(after.ooxml)
@@ -225,8 +242,9 @@ export function verifyNativeWordChatListInsertion(
     Array.from(pr[0]!.attributes).some((a) => a.namespaceURI !== XMLNS)
   )
     return fail()
-  const content = named(newP, "ins"), newProps = named(newP, "pPr"), oldProps = named(oldP, "pPr")
-  if (!clean(newP) || elements(newP).length !== 2 || newProps.length !== 1 || content.length !== 1 || elements(newP)[0] !== newProps[0] || elements(newP)[1] !== content[0] || oldProps.length !== 1 || !equal(canon(newProps[0]!), canon(oldProps[0]!)) || !only(content[0]!, ["r"]) || named(content[0]!, "r").length !== 1) return fail()
+  const contentP = beforePosition ? leftP : newP
+  const content = named(contentP, "ins"), newProps = named(contentP, "pPr"), oldProps = named(oldP, "pPr")
+  if (!clean(contentP) || elements(contentP).length !== 2 || newProps.length !== 1 || content.length !== 1 || elements(contentP)[0] !== newProps[0] || elements(contentP)[1] !== content[0] || oldProps.length !== 1 || (!beforePosition && !equal(canon(newProps[0]!), canon(oldProps[0]!))) || !only(content[0]!, ["r"]) || named(content[0]!, "r").length !== 1) return fail()
   let value = ""
   for (const run of named(content[0]!, "r")) {
     const ts = named(run, "t")
@@ -273,13 +291,24 @@ export function verifyNativeWordChatListInsertion(
   if (id(mark[0]!) === id(content[0]!)) return fail()
   pp[0]!.removeChild(pr[0]!)
   if (!equal(canon(pp[0]!), canon(oldProps[0]!))) return fail()
-  a.body.removeChild(newP)
-  if (oldParaId) {
-    const attr = leftP.getAttributeNodeNS(W14, "paraId")
-    if (!attr) return fail()
-    const name = attr.name
-    leftP.removeAttributeNS(W14, "paraId")
-    leftP.setAttributeNS(W14, name, oldParaId)
+  if (beforePosition) {
+    a.body.removeChild(leftP)
+    // Word retains the anchor paraId while regenerating its textId on Before.
+    // Rebind only that observed metadata; all anchor content/properties are
+    // still compared by the full-body inverse below.
+    const oldTextId = oldP.getAttributeNodeNS(W14, "textId")
+    const currentTextId = newP.getAttributeNodeNS(W14, "textId")
+    if (oldTextId) {
+      if (!currentTextId) return fail()
+      newP.setAttributeNS(W14, currentTextId.name, oldTextId.value)
+    } else if (currentTextId) return fail()
+  } else {
+    a.body.removeChild(newP)
+    if (oldParaId) {
+      const attr = leftP.getAttributeNodeNS(W14, "paraId")
+      if (!attr) return fail()
+      leftP.setAttributeNS(W14, attr.name, oldParaId)
+    }
   }
   const normalized = normalizeNativeWordChatCommentIds(before.ooxml, new XMLSerializer().serializeToString(a.doc)),
     derived = parse(normalized)

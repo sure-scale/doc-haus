@@ -20,19 +20,24 @@ export type WordChatSnapshot = {
   table?: WordChatTableCapture
   list?: WordChatListCapture
 }
-/** Host-captured simple automatic decimal list; native identity is never model-authored. */
-export type WordChatListCapture = { id: number; format: "decimal"; members: Array<{ id: string; text: string; level: number; label: string }> }
+/** Host-captured automatic list; native identity is never model-authored. */
+type WordChatListMember = { id: string; text: string; level: number; label: string }
+export type WordChatListCapture =
+  | { id: number; format: "decimal"; members: WordChatListMember[] }
+  | { id: number; format: "native"; members: Array<WordChatListMember & { siblingIndex: number }> }
 export function wordChatListCaptureCurrent(snapshot: WordChatSnapshot, value: unknown): value is WordChatListCapture {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const list = value as WordChatListCapture
-  if (Object.keys(list).some(k => !["id", "format", "members"].includes(k)) || !Number.isSafeInteger(list.id) || list.id < 0 || list.format !== "decimal" ||
+  if (Object.keys(list).some(k => !["id", "format", "members"].includes(k)) || !Number.isSafeInteger(list.id) || list.id < 0 || !(["decimal", "native"] as unknown[]).includes(list.format) ||
     !Array.isArray(list.members) || !list.members.length || list.members.length > 1000) return false
   const ids = new Set<string>()
   let totalText = 0
   for (const [index, member] of list.members.entries()) {
-    if (!member || typeof member !== "object" || Array.isArray(member) || Object.keys(member).some(k => !["id", "text", "level", "label"].includes(k)) ||
+    if (!member || typeof member !== "object" || Array.isArray(member) || Object.keys(member).some(k => !(list.format === "native" ? ["id", "text", "level", "label", "siblingIndex"] : ["id", "text", "level", "label"]).includes(k)) ||
       typeof member.id !== "string" || !member.id || ids.has(member.id) || typeof member.text !== "string" || member.text.length > 24_000 ||
-      member.level !== 0 || member.label !== `${index + 1}.`) return false
+      (list.format === "decimal" ? member.level !== 0 || member.label !== `${index + 1}.` :
+        !Number.isSafeInteger(member.level) || member.level < 0 || member.level > 8 || typeof member.label !== "string" || !member.label.trim() || member.label.length > 256 ||
+        !("siblingIndex" in member) || typeof member.siblingIndex !== "number" || !Number.isSafeInteger(member.siblingIndex) || member.siblingIndex < 0)) return false
     ids.add(member.id)
     totalText += member.text.length
     if (totalText > 24_000) return false
@@ -151,7 +156,7 @@ export type WordChatProposal = {
   target: WordChatTarget
   createdAt: string
   /** Explicit structural action, separate from ordinary wording replacement. */
-  paragraphAction?: "delete" | "append_list_item" | "merge" | "split"
+  paragraphAction?: "delete" | "append_list_item" | "insert_list_item_before" | "merge" | "split"
   /** Captured by the host and attached by the server for list insertion only. */
   list?: WordChatListCapture
   /** Optional reviewed paragraph properties, indexed against the resulting text. */
@@ -178,7 +183,7 @@ export type WordChatParagraphInsertionPlan = {
 export type WordChatParagraphSplitPlan = { kind: "paragraph_split"; proposalId: string; target: WordChatTarget }
 export type WordChatParagraphMergePlan = { kind: "paragraph_merge"; proposalId: string; target: WordChatTarget }
 export type WordChatParagraphDeletionPlan = { kind: "paragraph_delete"; proposalId: string; target: WordChatTarget }
-export type WordChatListInsertionPlan = { kind: "list_insert"; proposalId: string; target: WordChatTarget; text: string; list: WordChatListCapture }
+export type WordChatListInsertionPlan = { kind: "list_insert"; proposalId: string; target: WordChatTarget; text: string; list: WordChatListCapture; position?: "end" | "before_final" }
 export type WordChatPreparedAmendment = WordChatListInsertionPlan | WordChatAuthoredAmendment | WordChatInlineFormattingPlan | WordChatParagraphInsertionPlan | WordChatParagraphDeletionPlan | WordChatParagraphMergePlan | WordChatParagraphSplitPlan
 export type WordChatParagraphFormat = {
   /** Zero-based index within the resulting complete paragraphs. */
@@ -220,9 +225,14 @@ export function validWordChatParagraphInsertion(snapshot: WordChatSnapshot, targ
 /** An explicit list action is bound to the last captured complete member. */
 export function validWordChatListInsertion(snapshot: WordChatSnapshot, target: WordChatTarget, replacement: unknown, action: unknown, formatting?: unknown, inlineFormatting?: unknown): boolean {
   const list = snapshot?.list
-  return action === "append_list_item" && formatting === undefined && inlineFormatting === undefined &&
-    wordChatListCaptureCurrent(snapshot, list) && list.members.at(-1)!.id === target?.paragraphs?.[0]?.id &&
-    list.members.at(-1)!.text === target?.text && validWordChatParagraphInsertion(snapshot, target, replacement)
+  if ((action !== "append_list_item" && action !== "insert_list_item_before") || formatting !== undefined || inlineFormatting !== undefined ||
+    !wordChatListCaptureCurrent(snapshot, list) || list.members.at(-1)!.id !== target?.paragraphs?.[0]?.id ||
+    list.members.at(-1)!.text !== target?.text || typeof replacement !== "string") return false
+  if (action === "append_list_item") return validWordChatParagraphInsertion(snapshot, target, replacement)
+  const suffix = `\r${target.text}`
+  if (!replacement.endsWith(suffix)) return false
+  const inserted = replacement.slice(0, -suffix.length)
+  return validWordChatParagraphInsertion(snapshot, target, `${target.text}\r${inserted}`)
 }
 
 /** An explicit action distinguishes removing the paragraph mark from clearing text. */

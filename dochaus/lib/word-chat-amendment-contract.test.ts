@@ -282,3 +282,19 @@ test("paragraph split binds a unique complete paragraph and exactly one existing
   expect(validWordChatParagraphSplit({...snapshot,selection},target,after,"split")).toBe(false)
   expect(targetWordChatAmendment({...snapshot,paragraphs:[...paragraphs,{id:"copy",text:paragraphs[0]!.text}]},paragraphs[0]!.text)).toBeUndefined()
 })
+
+
+test("native list captures bind the last anchor and explicit insertion direction",()=>{
+  const paragraphs=[{id:"parent",text:"Parent"},{id:"child",text:"Child"},{id:"last",text:"Last"}]
+  const list={id:7,format:"native" as const,members:[{...paragraphs[0]!,level:0,label:"1.",siblingIndex:0},{...paragraphs[1]!,level:1,label:"a)",siblingIndex:0},{...paragraphs[2]!,level:2,label:"i)",siblingIndex:0}]}
+  const snapshot:WordChatSnapshot={text:paragraphs.map(p=>p.text).join("\r"),paragraphs,capturedAt:"now",saved:false,truncated:false,list}
+  const target=targetWordChatAmendment(snapshot,"Last")!
+  expect(wordChatListCaptureCurrent(snapshot,list)).toBe(true)
+  expect(validWordChatListInsertion(snapshot,target,"Last\rNew","append_list_item")).toBe(true)
+  expect(validWordChatListInsertion(snapshot,target,"New\rLast","insert_list_item_before")).toBe(true)
+  for(const replacement of ["Last\rNew","New\rMore\rLast","\rLast","New\rLast\r"])expect(validWordChatListInsertion(snapshot,target,replacement,"insert_list_item_before")).toBe(false)
+  expect(validWordChatListInsertion(snapshot,targetWordChatAmendment(snapshot,"Child")!,"New\rChild","insert_list_item_before")).toBe(false)
+  expect(validWordChatListInsertion(snapshot,target,"New\rLast","insert_list_item_before",undefined,{bold:true})).toBe(false)
+  for(const bad of [{...list,members:[...list.members.slice(0,2),{...list.members[2]!,level:9}]},{...list,members:[...list.members.slice(0,2),{...list.members[2]!,siblingIndex:-1}]},{...list,members:[...list.members.slice(0,2),{...list.members[2]!,label:" "}]},{...list,members:[...list.members.slice(0,2),{...list.members[2]!,label:"x".repeat(257)}]},{...list,members:[...list.members.slice(0,2),{...list.members[2]!,siblingIndex:1.5}]},{...list,members:[...list.members.slice(0,2),{...list.members[2]!,id:"child"}]}]) expect(wordChatListCaptureCurrent(snapshot,bad)).toBe(false)
+  expect(wordChatListCaptureCurrent({...snapshot,paragraphs:[paragraphs[0]!,paragraphs[2]!,paragraphs[1]!] },list)).toBe(false)
+})

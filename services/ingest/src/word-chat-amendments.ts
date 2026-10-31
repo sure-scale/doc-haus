@@ -13,14 +13,16 @@ export { MAX_WORD_AMENDMENT_OOXML_BYTES, WordAmendmentError, WordFormattingError
  * resolve its stored proposal and current editing lease before calling this.
  * Neither this function nor the shared Docxodus writer publishes a version. */
 export async function authorWordChatAmendment(ooxml: string, proposal: WordChatProposal, context?: WordChatSnapshot): Promise<WordChatPreparedAmendment> {
-  if (proposal.paragraphAction === "append_list_item") {
+  if (proposal.paragraphAction === "append_list_item" || proposal.paragraphAction === "insert_list_item_before") {
     const pinnedContext = context && { ...context, selection:proposal.target }
     const canonical = pinnedContext && targetWordChatAmendment(pinnedContext, proposal.before)
     if (!context || !canonical || !proposal.id || proposal.before !== proposal.target.text || !wordChatListCaptureCurrent(context, proposal.list) ||
       JSON.stringify(context.list) !== JSON.stringify(proposal.list) ||
       canonical.paragraphs[0]?.id !== proposal.target.paragraphs[0]?.id || canonical.startOffset !== proposal.target.startOffset || canonical.endOffset !== proposal.target.endOffset ||
       !validWordChatListInsertion(pinnedContext!, canonical, proposal.after, proposal.paragraphAction, proposal.formatting, proposal.inlineFormatting)) throw new Error("word_proposal_changed")
-    return {kind:"list_insert", proposalId:proposal.id, target:structuredClone(proposal.target), text:proposal.after.slice(proposal.before.length + 1), list:structuredClone(proposal.list)}
+    return {kind:"list_insert", proposalId:proposal.id, target:structuredClone(proposal.target),
+      text:proposal.paragraphAction === "insert_list_item_before" ? proposal.after.slice(0, -proposal.before.length - 1) : proposal.after.slice(proposal.before.length + 1),
+      list:structuredClone(proposal.list), ...(proposal.paragraphAction === "insert_list_item_before" ? { position:"before_final" as const } : {})}
   }
   if (proposal.list !== undefined) throw new Error("word_proposal_changed")
   if (proposal.paragraphAction === "split") {

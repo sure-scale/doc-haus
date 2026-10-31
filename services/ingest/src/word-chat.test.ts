@@ -1545,3 +1545,21 @@ test("paragraph split review and preparation keep the exact boundary and lease",
   try {const response=await prepare();expect(response.status).toBe(200);expect((await response.json() as {kind:string}).kind).toBe("paragraph_split");invalidate=true;expect((await prepare()).status).toBe(409)}
   finally {db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",[turn!.id,owner.document]);settleWordNativeOperation(db,owner,seq+1,"split-prepare","not-dispatched");clearWordEditLease(db,owner.document);db.close()}
 })
+
+test("before-final native list proposal stays bound through review and rejects forged list and direction changes",async()=>{
+  const id=await newConversation(),text=context.text
+  const list={id:3,format:"native" as const,members:[{...context.paragraphs[0]!,level:2,label:"i)",siblingIndex:0}]}
+  const listContext={...context,list}
+  const request=(extra:object={})=>post("send",{conversationId:id,scope:"document",text:"Insert before",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context:listContext,...extra})
+  const output=(extra:object={})=>{modelStructuredRawOutput=JSON.stringify({answerParts:[{type:"text",text:"Prepared."}],proposal:{before:text,after:"Another item\r"+text,paragraphAction:"insert_list_item_before",explanation:"Add",openItems:[],...extra}})}
+  try {
+    output();const turn=(await (await request()).json() as {turn:WordChatTurn}).turn
+    expect(turn.proposal?.list).toEqual(list);expect(turn.proposal?.paragraphAction).toBe("insert_list_item_before")
+    expect(sessionContext(turn.id)).toContain("insert_list_item_before")
+    const reviewer=[...sessions.values()].find(s=>s.parentID===turn.id && s.metadata.type==="word-chat-review")!
+    expect(sessionContext(reviewer.id)).toContain("placement")
+    expect((await request({proposal:turn.proposal,context:{...listContext,list:{...list,id:4}}})).status).toBe(409)
+    output({list});expect((await (await request()).json() as {turn:WordChatTurn}).turn.proposal).toBeUndefined()
+    output({paragraphAction:"append_list_item",after:text+"\rAnother item"});const changed=await request({proposal:turn.proposal});expect(changed.status).toBe(200);expect((await changed.json() as {turn:WordChatTurn}).turn.proposal).toBeUndefined()
+  } finally {modelStructuredRawOutput=undefined}
+})

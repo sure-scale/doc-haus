@@ -71,9 +71,9 @@ export function wordChatApplyEligibility(target: WordChatTarget, replacement: st
   if (paragraphAction === "merge") return nativeText && nativeWordChatParagraphMergeEligible(target, replacement, paragraphAction, formatting, inlineFormatting)
     ? { supported: true }
     : { supported: false, reason: "Review the complete adjacent paragraphs before merging them." }
-  if (paragraphAction === "append_list_item") return nativeText && nativeWordChatListInsertionEligible(target, replacement, paragraphAction, list, formatting, inlineFormatting)
+  if (paragraphAction === "append_list_item" || paragraphAction === "insert_list_item_before") return nativeText && nativeWordChatListInsertionEligible(target, replacement, paragraphAction, list, formatting, inlineFormatting)
     ? { supported: true }
-    : { supported: false, reason: "Prepare a new item at the end of the captured automatic list before applying it." }
+    : { supported: false, reason: "Review the new item and its position in the captured automatic list before applying it." }
   if (paragraphAction !== undefined) return nativeText && nativeWordChatParagraphDeletionEligible(target, replacement, paragraphAction, formatting, inlineFormatting)
     ? { supported: true }
     : { supported: false, reason: "Review deletion of one complete paragraph, with its paragraph mark, before applying it." }

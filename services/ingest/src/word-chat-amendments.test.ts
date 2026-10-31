@@ -117,3 +117,15 @@ test("paragraph split preparation returns a pinned native plan and refuses drift
   await expect(authorWordChatAmendment("",{...proposal,after:"First.\rChanged."},context)).rejects.toThrow("word_proposal_changed")
   await expect(authorWordChatAmendment("",proposal,{...context,paragraphs:[{...paragraphs[0]!,text:"Changed"}]})).rejects.toThrow("word_proposal_changed")
 })
+
+
+test("before-final list plan binds the native list and extracts the new text",async()=>{
+  const paragraphs=[{id:"a",text:"Parent"},{id:"b",text:"Last"}]
+  const list={id:4,format:"native" as const,members:[{...paragraphs[0]!,level:0,label:"1.",siblingIndex:0},{...paragraphs[1]!,level:1,label:"a)",siblingIndex:0}]}
+  const snapshot={text:"Parent\rLast",paragraphs,capturedAt:"now",saved:false,truncated:false,list}
+  const target=targetWordChatAmendment(snapshot,"Last")!
+  const proposal:WordChatProposal={id:"before",documentId:"doc",before:"Last",after:"New\rLast",target,paragraphAction:"insert_list_item_before",list,explanation:"Add",openItems:[],createdAt:"now"}
+  expect(await authorWordChatAmendment("unused",proposal,snapshot)).toEqual({kind:"list_insert",proposalId:"before",target,text:"New",list,position:"before_final"})
+  await expect(authorWordChatAmendment("unused",{...proposal,after:"Last\rNew"},snapshot)).rejects.toThrow("word_proposal_changed")
+  await expect(authorWordChatAmendment("unused",proposal,{...snapshot,list:{...list,id:8}})).rejects.toThrow("word_proposal_changed")
+})

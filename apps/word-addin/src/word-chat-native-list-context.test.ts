@@ -27,3 +27,16 @@ test("pending inserted mark and text may remain while list definition binding st
   const c={...capture,members:inventory.map((p,i)=>({id:p.id,text:p.text,level:0,label:`${i+1}.`}))}
   expect(nativeWordChatDecimalList(projectNativeWordChatBody(flat(after),inventory),c)).toBe(true)
 })
+
+test("native capture binds each observed level to the actual list definition without label guesses",()=>{
+  const nestedBody=p("One")+p("Two").replace('w:ilvl w:val="0"','w:ilvl w:val="2"')
+  const nestedNumbering=numbering.replace('</w:abstractNum>', '<w:lvl w:ilvl="2"><w:start w:val="1"/><w:numFmt w:val="lowerRoman"/><w:lvlText w:val="%3)"/></w:lvl></w:abstractNum>')
+  const native={id:17,format:"native" as const,members:[{id:"a",text:"One",level:0,label:"1.",siblingIndex:0},{id:"b",text:"Two",level:2,label:"i)",siblingIndex:0}]}
+  const check=(b=nestedBody,n=nestedNumbering,c=native)=>nativeWordChatDecimalList(projectNativeWordChatBody(flat(b,n),inv),c)
+  expect(check()).toBe(true)
+  expect(check(nestedBody,nestedNumbering,{...native,members:[native.members[0]!,{...native.members[1]!,label:"arbitrary Word label"}]})).toBe(true)
+  expect(check(nestedBody,nestedNumbering.replace('w:ilvl="2"','w:ilvl="3"'))).toBe(false)
+  expect(check(nestedBody,nestedNumbering,{...native,members:[native.members[0]!,{...native.members[1]!,level:1}]})).toBe(false)
+  expect(check(nestedBody,nestedNumbering,{...native,members:[native.members[0]!]})).toBe(false)
+  expect(check(nestedBody,nestedNumbering.replace('<w:abstractNumId w:val="7"/>','<w:abstractNumId w:val="7"/><w:lvlOverride w:ilvl="2"/>'))).toBe(false)
+})

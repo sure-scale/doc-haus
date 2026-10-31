@@ -60,7 +60,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false, wholeOoxmlTrailingParagraph: false,
     inlineBold: false, inlineAfter: "", inlineWrites: 0, splitMixed: false,
     paragraphInsertions: 0, corruptParagraphInsertion: false, insertedParagraphStyle: "Normal",
-    listInsertions: 0, listOriginal: "", listBadFont: false, listBadMarkup: false,
+    listInsertions: 0, listOriginal: "", listBadFont: false, listBadMarkup: false, listDispatches: [] as string[], listWriteModes: [] as string[],
     paragraphDeletions: 0, corruptParagraphDeletion: false, wrongDeletionCurrent: false,
     nativeFormatting: [] as string[], dropNativeFormatting: false, terminalBodyMark: false, cellWholeExpandsRow: false, refuseEmptyContentXml: false,
     omitContentProperties: false, paragraphLoads: [] as Array<{ id: string; properties: string }>, metadataUnavailable: false, metadataFailures: 0,
@@ -314,20 +314,20 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
         if (location !== "End") throw new Error("invalid location")
         queue.push(() => {
           const last=state.paragraphs.filter(q => q.list?.id===id).at(-1)!, index=state.paragraphs.indexOf(last), oldId=last.id
-          state.listOriginal=text(); state.listInsertions++
+          state.listOriginal=text(); state.listInsertions++; state.listDispatches.push("End"); state.listWriteModes.push(state.tracking)
           const source=state.paragraphXml.get(oldId)!, doc=new DOMParser().parseFromString(flatOpc(source),"application/xml"), left=doc.getElementsByTagNameNS(WORD_XML,"p")[0]!
           const oldParaId=left.getAttributeNS("http://schemas.microsoft.com/office/word/2010/wordml","paraId")
           left.setAttributeNS("http://schemas.microsoft.com/office/word/2010/wordml","w14:paraId","00000009")
           const pp=left.getElementsByTagNameNS(WORD_XML,"pPr")[0]!, marker=doc.createElementNS(WORD_XML,"w:rPr"), ins=doc.createElementNS(WORD_XML,"w:ins")
           ins.setAttributeNS(WORD_XML,"w:id","11"); ins.setAttributeNS(WORD_XML,"w:author","Native user"); ins.setAttributeNS(WORD_XML,"w:date","2026-01-01T00:00:00Z"); marker.appendChild(ins);pp.appendChild(marker)
           last.id="retained-list"; state.paragraphXml.delete(oldId);state.paragraphXml.set(last.id,new XMLSerializer().serializeToString(left))
-          state.paragraphs.splice(index+1,0,{id:oldId,text:value,list:{id,level:0,label:`${state.paragraphs.filter(q=>q.list?.id===id).length+1}.`}})
-          state.paragraphXml.set(oldId,`<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="${oldParaId}"><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="5"/></w:numPr></w:pPr><w:ins w:id="12" w:author="Native user" w:date="2026-01-01T00:00:00Z"><w:r><w:t>${escapeXml(state.listBadMarkup ? value+"wrong" : value)}</w:t></w:r></w:ins></w:p>`)
+          state.paragraphs.splice(index+1,0,{id:oldId,text:value,list:{id,level:last.list!.level,label:last.list!.label === "a)" ? "b)" : `${state.paragraphs.filter(q=>q.list?.id===id).length+1}.`}})
+          state.paragraphXml.set(oldId,`<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="${oldParaId}"><w:pPr><w:numPr><w:ilvl w:val="${last.list!.level}"/><w:numId w:val="5"/></w:numPr></w:pPr><w:ins w:id="12" w:author="Native user" w:date="2026-01-01T00:00:00Z"><w:r><w:t>${escapeXml(state.listBadMarkup ? value+"wrong" : value)}</w:t></w:r></w:ins></w:p>`)
           state.saved=false
         }); return paragraph(p)
       } }
     },
-    get listItemOrNullObject() { if (!p.list) return undefined; return {level:p.list.level,listString:p.list.label,siblingIndex:state.paragraphs.filter(q=>q.list?.id===p.list!.id).indexOf(p),load(){}} },
+    get listItemOrNullObject() { if (!p.list) return undefined; return {level:p.list.level,listString:p.list.label,siblingIndex:state.paragraphs.filter(q=>q.list?.id===p.list!.id && q.list.level===p.list!.level).indexOf(p),load(){}} },
     get listItem() { if (!p.list) throw new Error("ItemNotFound"); return { level: p.list.level, listString: p.list.label, load() {} } },
     load(properties: string) {
       state.paragraphLoads.push({ id: p.id, properties })
@@ -365,6 +365,22 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
       })
     },
     insertParagraph(value: string, location: string) {
+      if (location === "Before" && p.list) {
+        queue.push(() => {
+          const index=state.paragraphs.indexOf(p), source=state.paragraphXml.get(p.id)!, id=p.list!.id, level=p.list!.level, label=p.list!.label
+          state.listOriginal=text(); state.listInsertions++; state.listDispatches.push("Before"); state.listWriteModes.push(state.tracking)
+          const doc=new DOMParser().parseFromString(flatOpc(source),"application/xml"), block=doc.getElementsByTagNameNS(WORD_XML,"p")[0]!
+          block.setAttributeNS("http://schemas.microsoft.com/office/word/2010/wordml","w14:paraId","00000009")
+          const pp=block.getElementsByTagNameNS(WORD_XML,"pPr")[0]!, marker=doc.createElementNS(WORD_XML,"w:rPr"), mark=doc.createElementNS(WORD_XML,"w:ins")
+          for(const [k,v] of [["id","11"],["author","Native user"],["date","2026-01-01T00:00:00Z"]] as const)mark.setAttributeNS(WORD_XML,`w:${k}`,v)
+          marker.appendChild(mark);pp.appendChild(marker)
+          const run=Array.from(block.childNodes).find(n=>n.nodeType===1&&(n as Element).localName==="r")!, inserted=doc.createElementNS(WORD_XML,"w:ins")
+          for(const [k,v] of [["id","12"],["author","Native user"],["date","2026-01-01T00:00:00Z"]] as const)inserted.setAttributeNS(WORD_XML,`w:${k}`,v)
+          run.firstChild!.textContent=state.listBadMarkup ? value+"wrong" : value;block.removeChild(run);inserted.appendChild(run);block.appendChild(inserted)
+          const freshId="new-list-before";state.paragraphs.splice(index,0,{id:freshId,text:value,list:{id,level,label}});p.list!.label=label==="a)"?"b)":"2."
+          state.paragraphXml.set(freshId,new XMLSerializer().serializeToString(block));state.saved=false
+        }); return paragraph(p)
+      }
       if (location !== "After") throw new Error("Unsupported insertion location")
       queue.push(() => {
         const index = state.paragraphs.indexOf(p), oldId = p.id
@@ -1886,5 +1902,77 @@ test("paragraph split reaches reviewed preparation with mixed formatting and in 
     await expect(nativeHost.apply({proposalId:`split-mixed-${cell}`,target,replacement:"First\rsecond.",paragraphAction:"split",
       author:async()=>{calls++;return {kind:"paragraph_split" as const,proposalId:"forged",target}}})).rejects.toMatchObject({mutationState:"unchanged"})
     expect(calls).toBe(1);expect(state.writes).toHaveLength(0);expect(state.modeChanges).toEqual([])
+  }
+})
+
+test("native-format list End and Before bind sibling levels, tracking and identities", async () => {
+  for (const position of ["end", "before_final"] as const) for (const tracking of ["Off", "TrackAll"]) for (const trackFormatting of [false,true]) {
+    const {state,nativeHost}=office(["Existing item."],true)
+    state.tracking=tracking;state.trackFormatting=trackFormatting
+    state.paragraphs[0]!.list={id:7,level:2,label:"a)"}
+    state.paragraphXml.set("paragraph-0",'<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="00000001"><w:pPr><w:numPr><w:ilvl w:val="2"/><w:numId w:val="5"/></w:numPr></w:pPr><w:r><w:t>Existing item.</w:t></w:r></w:p>')
+    state.extraParts='<pkg:part pkg:name="/word/numbering.xml"><pkg:xmlData><w:numbering><w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="2"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%3)"/></w:lvl></w:abstractNum><w:num w:numId="5"><w:abstractNumId w:val="7"/></w:num></w:numbering></pkg:xmlData></pkg:part>'
+    const snapshot=await nativeHost.capture(),list=snapshot.list!,target=(await nativeHost.selection())!
+    expect(list.format).toBe("native");expect(list.members[0]!.level).toBe(2)
+    const before=position==="before_final", input={proposalId:`list-${position}`,target,replacement:before?`New item.\r${target.text}`:`${target.text}\rNew item.`,paragraphAction:before?"insert_list_item_before" as const:"append_list_item" as const,list,
+      author:async()=>({kind:"list_insert" as const,proposalId:`list-${position}`,target,text:"New item.",list,...(before?{position:"before_final" as const}:{})})}
+    expect((await nativeHost.apply(input)).status).toBe("applied")
+    expect(state.listDispatches).toEqual([before?"Before":"End"]);expect(state.listWriteModes).toEqual(["TrackAll"])
+    expect(state.paragraphs.map(p=>p.text)).toEqual(before?["New item.","Existing item."]:["Existing item.","New item."])
+    expect(state.paragraphs.map(p=>p.id)).toEqual(before?["new-list-before","paragraph-0"]:["retained-list","paragraph-0"])
+    expect(state.paragraphs.map(p=>p.list!.level)).toEqual([2,2]);expect(state.paragraphs.map(p=>p.list!.label)).toEqual(["a)","b)"])
+    expect(state.tracking).toBe(tracking);expect(state.trackFormatting).toBe(trackFormatting);expect(state.modeChanges).toEqual(["TrackAll",tracking])
+    expect((await nativeHost.apply(input)).status).toBe("already-applied");expect(state.listInsertions).toBe(1)
+  }
+})
+
+test("native-format list rejects wrong-position plan and fences uncertain Before result", async () => {
+  for(const failure of ["wrong-position","markup"] as const){
+    const {state,nativeHost}=office(["Existing item."],true)
+    state.trackFormatting=false;state.paragraphs[0]!.list={id:7,level:0,label:"a)"}
+    state.paragraphXml.set("paragraph-0",'<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="00000001"><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="5"/></w:numPr></w:pPr><w:r><w:t>Existing item.</w:t></w:r></w:p>')
+    state.extraParts='<pkg:part pkg:name="/word/numbering.xml"><pkg:xmlData><w:numbering><w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%1)"/></w:lvl></w:abstractNum><w:num w:numId="5"><w:abstractNumId w:val="7"/></w:num></w:numbering></pkg:xmlData></pkg:part>'
+    const list=(await nativeHost.capture()).list!,target=(await nativeHost.selection())!
+    state.listBadMarkup=failure==="markup"
+    const input={proposalId:`failure-${failure}`,target,replacement:`New item.\r${target.text}`,paragraphAction:"insert_list_item_before" as const,list,
+      author:async()=>({kind:"list_insert" as const,proposalId:`failure-${failure}`,target,text:"New item.",list,position:failure==="wrong-position"?"end" as const:"before_final" as const})}
+    expect(await nativeHost.apply(input).catch(e=>e.mutationState)).toBe(failure==="wrong-position"?"unchanged":"uncertain")
+    if(failure==="markup")expect(await nativeHost.apply(input).catch(e=>e.mutationState)).toBe("uncertain")
+    expect(state.listInsertions).toBe(failure==="markup"?1:0);expect(state.trackFormatting).toBe(false)
+    expect(state.modeChanges).toEqual(failure==="markup"?["TrackAll","Off"]:[])
+  }
+})
+
+test("list insertion refuses unavailable formatting tracking before authoring or dispatch", async () => {
+  for (const position of ["end", "before_final"] as const) for (const stage of ["initial", "fresh"] as const) {
+    const {state,nativeHost}=office(["Existing list item."],true)
+    state.paragraphs[0]!.list={id:0,level:0,label:"1."}
+    state.paragraphXml.set("paragraph-0",'<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="00000001"><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="5"/></w:numPr></w:pPr><w:r><w:t>Existing list item.</w:t></w:r></w:p>')
+    state.extraParts='<pkg:part pkg:name="/word/numbering.xml"><pkg:xmlData><w:numbering><w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="5"><w:abstractNumId w:val="7"/></w:num></w:numbering></pkg:xmlData></pkg:part>'
+    const list=(await nativeHost.capture()).list!,target=(await nativeHost.selection())!,before=position==="before_final"
+    if (stage === "initial") state.trackFormatting=undefined
+    let authorCalls=0
+    const input={proposalId:`tracking-${position}-${stage}`,target,replacement:before?`New item.\r${target.text}`:`${target.text}\rNew item.`,paragraphAction:before?"insert_list_item_before" as const:"append_list_item" as const,list,
+      author:async()=>{authorCalls++;if(stage==="fresh")state.trackFormatting=undefined;return {kind:"list_insert" as const,proposalId:`tracking-${position}-${stage}`,target,text:"New item.",list,...(before?{position:"before_final" as const}:{})}}}
+    expect(await nativeHost.apply(input).catch(e=>e.mutationState)).toBe("unchanged")
+    expect(authorCalls).toBe(stage==="initial"?0:1)
+    expect(state.listInsertions).toBe(0);expect(state.listDispatches).toEqual([]);expect(state.modeChanges).toEqual([])
+    expect(state.paragraphs.map(p=>p.text)).toEqual(["Existing list item."]);expect(state.trackFormatting).toBeUndefined()
+  }
+})
+
+test("list insertion refuses changed numbering dependencies before dispatch", async () => {
+  for (const position of ["end", "before_final"] as const) {
+    const {state,nativeHost}=office(["Existing list item."],true)
+    state.paragraphs[0]!.list={id:0,level:0,label:"1."}
+    state.paragraphXml.set("paragraph-0",'<w:p xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" w14:paraId="00000001"><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="5"/></w:numPr></w:pPr><w:r><w:t>Existing list item.</w:t></w:r></w:p>')
+    state.extraParts='<pkg:part pkg:name="/word/numbering.xml"><pkg:xmlData><w:numbering><w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="5"><w:abstractNumId w:val="7"/></w:num></w:numbering></pkg:xmlData></pkg:part>'
+    const list=(await nativeHost.capture()).list!,target=(await nativeHost.selection())!,before=position==="before_final"
+    let authorCalls=0
+    const input={proposalId:`dependency-${position}`,target,replacement:before?`New item.\r${target.text}`:`${target.text}\rNew item.`,paragraphAction:before?"insert_list_item_before" as const:"append_list_item" as const,list,
+      author:async()=>{authorCalls++;state.extraParts=state.extraParts.replace('</w:lvl>','<w:lvlJc w:val="right"/></w:lvl>');return {kind:"list_insert" as const,proposalId:`dependency-${position}`,target,text:"New item.",list,...(before?{position:"before_final" as const}:{})}}}
+    expect(await nativeHost.apply(input).catch(e=>e.mutationState)).toBe("unchanged")
+    expect(authorCalls).toBe(1);expect(state.listInsertions).toBe(0);expect(state.listDispatches).toEqual([]);expect(state.modeChanges).toEqual([])
+    expect(state.paragraphs.map(p=>p.text)).toEqual(["Existing list item."])
   }
 })

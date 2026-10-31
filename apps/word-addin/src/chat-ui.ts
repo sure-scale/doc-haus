@@ -318,10 +318,12 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     const card = document.createElement("section"); card.className = "chat-proposal"; card.setAttribute("aria-label", split ? "Paragraph split to review" : merge ? "Paragraph join to review" : listInsertion ? "List item to review" : deletion ? "Paragraph deletion to review" : (formatting || inlineFormatting) && !wordingChanged ? "Formatting to review" : "Amendment to review")
     card.append(line("h3", split ? "Split paragraph" : merge ? "Join paragraphs" : listInsertion ? "Add list item" : deletion ? "Review deletion" : wordingChanged ? "Review amendment" : "Review formatting"))
     if (listInsertion) {
+      const before = proposal.paragraphAction === "insert_list_item_before"
+      const member = proposal.list!.members.at(-1)!
+      const text = before ? proposal.after.slice(0, -(proposal.before.length + 1)) : proposal.after.slice(proposal.before.length + 1)
       const context = document.createElement("details"); context.className = "chat-format-target"
-      context.append(line("summary", "After"), line("pre", displayWordText(proposal.before)))
-      card.append(line("pre", `${proposal.list!.members.length + 1}. ${displayWordText(proposal.after.slice(proposal.before.length + 1))}`, "chat-after"),
-        line("p", "Continue the automatic list with matching formatting.", "chat-message-meta"), context)
+      context.append(line("summary", `${before ? "Before" : "After"} ${member.label}`), line("pre", displayWordText(proposal.before)))
+      card.append(line("pre", displayWordText(text), "chat-after"), context)
     } else if (deletion) {
       card.append(line("pre", displayWordText(proposal.before), "chat-before"), line("p", "Delete this paragraph, including its paragraph mark.", "chat-message-meta"))
     } else if (wordingChanged) {

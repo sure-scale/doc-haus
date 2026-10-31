@@ -54,6 +54,19 @@ test("native paragraph insertion requires a complete unchanged anchor and one ne
   expect(wordChatApplyEligibility(whole, "Alpha beta\rNew paragraph.", [{ paragraph: 0, spacingAfter: 6 }]).supported).toBe(false)
 })
 
+test("native list Before keeps the reviewed anchor after the new item and does not accept an End proposal", () => {
+  const whole = { ...target, text: "Final clause", paragraphs: [{ id: "p", text: "Final clause" }], startOffset: 0, endOffset: 12 }
+  const list = { id: 17, format: "native" as const, members: [
+    { id: "parent", text: "Main clause", level: 0, label: "3.", siblingIndex: 2 },
+    { id: "p", text: whole.text, level: 1, label: "(iv)", siblingIndex: 3 },
+  ] }
+  expect(wordChatApplyEligibility(whole, "New clause\rFinal clause", undefined, true, undefined, "insert_list_item_before", list).supported).toBe(true)
+  expect(wordChatApplyEligibility(whole, "Final clause\rNew clause", undefined, true, undefined, "insert_list_item_before", list).supported).toBe(false)
+  expect(wordChatApplyEligibility(whole, "New clause\rFinal clause", undefined, true, undefined, "append_list_item", list).supported).toBe(false)
+  expect(wordChatApplyEligibility(whole, "New clause\rFinal clause", undefined, true, undefined, "insert_list_item_before").supported).toBe(false)
+  expect(wordChatApplyEligibility(whole, "New clause\rFinal clause", undefined, true, { bold: true }, "insert_list_item_before", list).supported).toBe(false)
+})
+
 test("inline formatting eligibility refuses changed wording, malformed properties, mixed formatting, and mismatched native offsets", () => {
   expect(wordChatApplyEligibility(target, "changed", undefined, true, { bold: true }).supported).toBe(false)
   expect(wordChatApplyEligibility(target, target.text, undefined, true, { bold: "true" } as never).supported).toBe(false)

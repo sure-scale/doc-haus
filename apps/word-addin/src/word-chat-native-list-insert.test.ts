@@ -114,7 +114,44 @@ test("only projection-qualified unbound terminal carrier may change physical ID"
 })
 
 
-test("preflight refuses list format beyond the qualified direct level zero", () => {
-  for (const source of [old.replace('w:ilvl w:val="0"', 'w:ilvl w:val="1"'), old.replace('w:numId w:val="5"', 'w:numId w:val="0"'), old.replace('<w:numPr>', '<w:pStyle w:val="ListNumber"/><w:numPr>'), old.replace('<w:r><w:t>Original', '<w:r><w:rPr><w:b/></w:rPr><w:t>Original')])
+test("preflight requires bounded direct list numbering and plain target", () => {
+  expect(assertNativeWordChatListInsertionTarget(projectNativeWordChatBody(flat(old.replace('w:ilvl w:val="0"', 'w:ilvl w:val="2"')),beforeInv),target)).toBe(0)
+  expect(() => assertNativeWordChatListInsertionTarget(projectNativeWordChatBody(flat(old.replace('w:ilvl w:val="0"', 'w:ilvl w:val="9"')),beforeInv),target)).toThrow()
+  for (const source of [old.replace('w:numId w:val="5"', 'w:numId w:val="0"'), old.replace('<w:numPr>', '<w:pStyle w:val="ListNumber"/><w:numPr>'), old.replace('<w:r><w:t>Original', '<w:r><w:rPr><w:b/></w:rPr><w:t>Original')])
     expect(() => assertNativeWordChatListInsertionTarget(projectNativeWordChatBody(flat(source),beforeInv),target)).toThrow()
+})
+
+
+test("before-final insertion keeps the anchor identity and verifies both tracked marks", () => {
+  const inserted = `<w:p w14:paraId="22222222" w14:textId="77777777"><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="5"/></w:numPr><w:rPr><w:ins w:id="1" ${stamp}/></w:rPr></w:pPr><w:ins w:id="2" ${stamp}><w:r><w:t>Added</w:t></w:r></w:ins></w:p>`
+  const anchor = old.replace('w14:textId="77777777"','w14:textId="ABCDEF12"').replace('w:id="5"','w:id="7"')
+  const inventory = [{id:"new",text:"Added",tableNestingLevel:0},...beforeInv]
+  const source = projectNativeWordChatBody(flat(old),beforeInv)
+  const checkBefore = (xml:string, inv=inventory) => verifyNativeWordChatListInsertion(source,projectNativeWordChatBody(xml,inv),target,"Added","before_final")
+  expect(checkBefore(flat(inserted+anchor))).toEqual(["Reviewer"])
+  expect(()=>checkBefore(flat(inserted.replace('w:id="2"','w:id="1"')+anchor))).toThrow()
+  expect(()=>checkBefore(flat(inserted+anchor.replace('>Prior<','>Changed<')))).toThrow()
+  expect(()=>checkBefore(flat(inserted+anchor), [{...inventory[0]!,id:"orig"},{...inventory[1]!,id:"new"},inventory[2]!])).toThrow()
+  expect(()=>verifyNativeWordChatListInsertion(source,projectNativeWordChatBody(flat(inserted+anchor),inventory),target,"Added")).toThrow()
+})
+
+test("whole-story protected ranges must not cross the list target", () => {
+  const markerPairs = [
+    ['<w:commentRangeStart w:id="8"/>','<w:commentRangeEnd w:id="8"/>'],
+    ['<w:bookmarkStart w:id="8" w:name="Keep"/>','<w:bookmarkEnd w:id="8"/>'],
+    ['<w:permStart w:id="8" w:ed="everyone"/>','<w:permEnd w:id="8"/>'],
+    ['<w:moveFromRangeStart w:id="8" w:name="Move"/>','<w:moveFromRangeEnd w:id="8"/>'],
+    ['<w:moveToRangeStart w:id="8" w:name="Move"/>','<w:moveToRangeEnd w:id="8"/>'],
+    ['<w:customXmlInsRangeStart w:id="8"/>','<w:customXmlInsRangeEnd w:id="8"/>'],
+    ['<w:r><w:fldChar w:fldCharType="begin"/></w:r>','<w:r><w:fldChar w:fldCharType="end"/></w:r>'],
+  ]
+  const pre=(inside:string)=>`<w:p w14:paraId="AAAAAAAA">${inside}<w:r><w:t>Before</w:t></w:r></w:p>`
+  const post=(inside:string)=>`<w:p w14:paraId="BBBBBBBB">${inside}<w:r><w:t>After</w:t></w:r></w:p>`
+  const inv=[{id:"pre",text:"Before",tableNestingLevel:0},...beforeInv,{id:"post",text:"After",tableNestingLevel:0}]
+  for(const [start,end] of markerPairs) for(const position of ["end","before_final"] as const) {
+    const disjoint=projectNativeWordChatBody(flat(pre(start+end)+old+post("")),inv)
+    const crossing=projectNativeWordChatBody(flat(pre(start)+old+post(end)),inv)
+    expect(assertNativeWordChatListInsertionTarget(disjoint,target,position)).toBe(1)
+    expect(()=>assertNativeWordChatListInsertionTarget(crossing,target,position)).toThrow()
+  }
 })
