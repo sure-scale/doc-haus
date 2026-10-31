@@ -156,7 +156,7 @@ export function instructionsText(directory: string) {
       "",
       `## Awaiting the lawyer's confirmation: ${document.source_id}`,
       "",
-      `${document.source_id} gives directions for this work (${document.from}). They are not the lawyer's instructions until the lawyer confirms them; until then they are evidence.`,
+      `${document.source_id} gives directions for this work (${document.from}). Whether the drafting follows them is asked with intake's questions; until the lawyer answers, they are read as evidence.`,
       "",
       ...items.filter(item => item.source_id === document.source_id).map(line),
     ]),
@@ -179,7 +179,7 @@ export function confirmationQuestions(directory: string): Question[] {
     stage: "intake",
     question: `Should the drafting follow ${document.source_id} as your instructions for this work?`,
     context: [
-      `${document.source_id} gives directions for this work (${document.from}). If you follow it, these directions decide the points they cover, and any other source that differs is flagged in the notes. Otherwise it is read as evidence only, and the points it would decide are asked.`,
+      `${document.source_id} gives directions for this work (${document.from}). If you follow it, these directions decide the points they cover, and any other source that differs is flagged in the notes. If you treat it as evidence only, the points it would decide are asked.`,
       ...items.filter(item => item.source_id === document.source_id).map(item => `- ${item.text}`),
     ].join("\n"),
     status: "open",
