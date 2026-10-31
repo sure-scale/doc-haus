@@ -77,7 +77,7 @@ describe("requested files prompt", () => {
 
   test("a file named for the whole request holds everything it asks for, a file named for one document only that document", () => {
     const directory = prepared()
-    const rule = (contents: string) => "- A file the lawyer's words name as the output of the whole request holds everything the request asks for; " +
+    const rule = (contents: string) => "- A file the lawyer's words name as the output of the whole request holds everything the run drafts for it, including each planned document the plan adds to carry the request out; " +
       `a file they name for one document holds only that document. Put ${contents} in a file only where the lawyer's words place it.`
     const prompt = requestedFilesPrompt(directory, DOCUMENTS, MEMO)
     expect(prompt).toContain(rule("a planned document or the memo"))
