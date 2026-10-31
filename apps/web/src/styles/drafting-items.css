@@ -367,6 +367,45 @@ button.question-dock-cta:focus-visible {
   font-weight: 500;
 }
 
+/* Instructions from this chat: the lawyer's earlier messages offered at Start,
+   included by default, with the text itself behind Review or edit. */
+.chat-instructions {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+* + .chat-instructions {
+  margin-top: var(--space-3);
+}
+
+.chat-instructions > legend {
+  padding: 0;
+}
+
+.chat-instructions-include {
+  display: block;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.chat-instructions-edit {
+  margin-top: 6px;
+}
+
+.chat-instructions-edit > summary {
+  width: fit-content;
+  color: var(--accent);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.chat-instructions-edit > textarea {
+  margin-top: var(--space-2);
+}
+
 .question-answer {
   display: block;
   box-sizing: border-box;
