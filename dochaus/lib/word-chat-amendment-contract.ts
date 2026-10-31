@@ -62,7 +62,11 @@ export type WordChatTableRowInsertionProposal = {
   position: "end"
   table: WordChatTableCapture
   cells: string[]
+  /** Reviewed character formatting per cell, aligned with cells. Absent for a
+   * plain row; every flag is explicit so the executor sets each segment. */
+  runs?: WordChatCellRun[][]
 }
+export type WordChatCellRun = { text: string; bold: boolean; italic: boolean; underline: boolean }
 export type WordChatTableRowDeletionProposal = {
   kind: "table_row_delete"
   id: string
@@ -111,7 +115,7 @@ export function wordChatTableCaptureCurrent(snapshot: WordChatSnapshot, value: u
 export function validWordChatTableRowInsertion(snapshot: WordChatSnapshot, value: unknown): value is WordChatTableRowInsertionProposal {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const row = value as WordChatTableRowInsertionProposal
-  if (Object.keys(row).some(key => !["kind", "id", "documentId", "explanation", "openItems", "createdAt", "position", "table", "cells"].includes(key)) ||
+  if (Object.keys(row).some(key => !["kind", "id", "documentId", "explanation", "openItems", "createdAt", "position", "table", "cells", "runs"].includes(key)) ||
     row.kind !== "table_row_insert" || row.position !== "end" || typeof row.id !== "string" || !row.id ||
     typeof row.documentId !== "string" || !row.documentId || typeof row.explanation !== "string" ||
     typeof row.createdAt !== "string" || !Array.isArray(row.openItems) || row.openItems.some(item => typeof item !== "string") ||
@@ -121,7 +125,41 @@ export function validWordChatTableRowInsertion(snapshot: WordChatSnapshot, value
       cells.some((cell, j) => cell.id !== snapshot.table!.rows[i]![j]!.id || cell.text !== snapshot.table!.rows[i]![j]!.text)) || !Array.isArray(row.cells) ||
     row.cells.length !== row.table.rows[0]!.length) return false
   return row.cells.some(cell => typeof cell === "string" && cell.length > 0) && row.cells.every(cell =>
-    typeof cell === "string" && cell.length <= 4000 && cell === cell.trim() && wellFormedWordChatCell(cell) && !/[\u0000-\u001f\u007f]/.test(cell)) && row.cells.join("").length <= 24_000
+    typeof cell === "string" && cell.length <= 4000 && cell === cell.trim() && wellFormedWordChatCell(cell) && !/[\u0000-\u001f\u007f]/.test(cell)) && row.cells.join("").length <= 24_000 &&
+    (row.runs === undefined || canonicalWordChatCellRuns(row.cells, row.runs) === row.runs)
+}
+const runFlags = ["bold", "italic", "underline"] as const
+/** Canonical cell runs: one entry per cell, non-empty texts that concatenate
+ * to the cell, adjacent runs that differ, and at least one formatted span.
+ * Returns the same array when already canonical, a normalized copy for loose
+ * model output (missing flags are off; empty texts dropped; equal neighbours
+ * merged), undefined for a plain row, or null when the runs do not match. */
+export function canonicalWordChatCellRuns(cells: string[], value: unknown): WordChatCellRun[][] | undefined | null {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length !== cells.length) return null
+  let canonical = true, formatted = false, count = 0
+  const result: WordChatCellRun[][] = []
+  for (const [index, entry] of value.entries()) {
+    if (!Array.isArray(entry) || entry.length > 64) return null
+    const merged: WordChatCellRun[] = []
+    for (const run of entry) {
+      if (!run || typeof run !== "object" || Array.isArray(run) || Object.keys(run).some(key => key !== "text" && !(runFlags as readonly string[]).includes(key)) ||
+        typeof run.text !== "string" || !wellFormedWordChatCell(run.text) || runFlags.some(flag => run[flag] !== undefined && typeof run[flag] !== "boolean")) return null
+      if (runFlags.some(flag => run[flag] === undefined)) canonical = false
+      const next: WordChatCellRun = { text: run.text, bold: run.bold === true, italic: run.italic === true, underline: run.underline === true }
+      if (!next.text) { canonical = false; continue }
+      const last = merged.at(-1)
+      if (last && runFlags.every(flag => last[flag] === next[flag])) { canonical = false; last.text += next.text; continue }
+      merged.push(next)
+      formatted ||= runFlags.some(flag => next[flag])
+    }
+    if (merged.map(run => run.text).join("") !== cells[index]) return null
+    count += merged.length
+    result.push(merged)
+  }
+  if (count > 256) return null
+  if (!formatted) return undefined
+  return canonical ? value as WordChatCellRun[][] : result
 }
 /** A deletion binds the exact existing row and same-read capture. */
 export function validWordChatTableRowDeletion(snapshot: WordChatSnapshot, value: unknown): value is WordChatTableRowDeletionProposal {

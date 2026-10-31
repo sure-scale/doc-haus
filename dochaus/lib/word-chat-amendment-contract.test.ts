@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatParagraphMerge, validWordChatParagraphSplit, validWordChatListInsertion, wordChatListCaptureCurrent, validWordChatTableRowInsertion, validWordChatTableRowDeletion, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatParagraphMerge, validWordChatParagraphSplit, validWordChatListInsertion, wordChatListCaptureCurrent, validWordChatTableRowInsertion, validWordChatTableRowDeletion, canonicalWordChatCellRuns, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
 
 test("inline formatting binds exact native UTF-16 targets without trusting model offsets", () => {
   const text = "Keep 😀 terms and terms."
@@ -45,6 +45,32 @@ test("row insertion binds ordered native cell identities and literal cells to th
   expect(wordChatTableCaptureCurrent(context, {...table, rows:[[paragraphs[1],paragraphs[0]],table.rows[1]]})).toBe(false)
   expect(wordChatTableCaptureCurrent(context, {...table, rows:[[...table.rows[0]!], [{...paragraphs[2]!,text:"Changed"},paragraphs[3]]]})).toBe(false)
   expect(wordChatTableCaptureCurrent(context, {...table, rows:[table.rows[0], [paragraphs[2]]]})).toBe(false)
+})
+
+test("formatted row runs are canonical, aligned with cells and never smuggle text", () => {
+  const paragraphs = [{id:"a",text:"Term"},{id:"b",text:"Value"}]
+  const table = {tableIndex:0,rows:[paragraphs]}
+  const context: WordChatSnapshot = {text:"Term\rValue",paragraphs,table,saved:false,capturedAt:"now",truncated:false}
+  const run = (text: string, bold = false, italic = false, underline = false) => ({text,bold,italic,underline})
+  const cells = ["Fee: 100", ""]
+  const runs = [[run("Fee:", true), run(" 100")], []]
+  const proposal = {kind:"table_row_insert",id:"proposal",documentId:"document",explanation:"Append a row",openItems:[],createdAt:"now",position:"end",table,cells,runs}
+  expect(validWordChatTableRowInsertion(context, proposal)).toBe(true)
+  // Plain rows carry no runs, so an all-off run set is not canonical.
+  expect(validWordChatTableRowInsertion(context, {...proposal, runs:[[run("Fee: 100")], []]})).toBe(false)
+  expect(validWordChatTableRowInsertion(context, {...proposal, runs:[[run("Fee:", true), run(" 10")], []]})).toBe(false)
+  expect(validWordChatTableRowInsertion(context, {...proposal, runs:[[run("Fee:", true), run(" 100", true)], []]})).toBe(false)
+  expect(validWordChatTableRowInsertion(context, {...proposal, runs:[[run("Fee:", true), run(" 100")]]})).toBe(false)
+  expect(validWordChatTableRowInsertion(context, {...proposal, runs:[[{...run("Fee:", true), size:12}, run(" 100")], []]})).toBe(false)
+  expect(validWordChatTableRowInsertion(context, {...proposal, runs:[[{text:"Fee:",bold:true}, run(" 100")], []]})).toBe(false)
+  expect(validWordChatTableRowInsertion(context, {...proposal, runs:[[{...run("Fee:"), bold:"yes"}, run(" 100")], []]})).toBe(false)
+  // Loose model output normalizes to the canonical shape or is refused.
+  expect(canonicalWordChatCellRuns(cells, [[{text:"Fee:",bold:true},{text:""},{text:" 1"},{text:"00"}], []])).toEqual(runs)
+  expect(canonicalWordChatCellRuns(cells, runs)).toBe(runs)
+  expect(canonicalWordChatCellRuns(cells, [[{text:"Fee: 100"}], []])).toBeUndefined()
+  expect(canonicalWordChatCellRuns(cells, undefined)).toBeUndefined()
+  expect(canonicalWordChatCellRuns(cells, [[{text:"Fee: 100 extra",bold:true}], []])).toBeNull()
+  expect(canonicalWordChatCellRuns(["😀"], [[{text:"\ud83d",bold:true},{text:"\ude00"}]])).toBeNull()
 })
 
 const snapshot = (): WordChatSnapshot => ({text: "Pay within thirty days.\rPay within thirty days.",
