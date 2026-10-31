@@ -1,5 +1,8 @@
 // Run from dochaus/: bun test workflows/lean/apply-numbering.test.ts
 import { afterEach, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
+import { DOMParser } from "@xmldom/xmldom"
+import { strFromU8, unzipSync } from "fflate"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { runApply, writeProjectedNumbers } from "./apply-stage"
 import { projectedChangeParagraphs } from "./change-pipeline"
@@ -76,13 +79,22 @@ async function draftResolutions(amendments: (rows: ParagraphRow[]) => Record<str
 async function applyResolutions(amendments: (rows: ParagraphRow[]) => Record<string, unknown>[]) {
   const directory = await draftResolutions(amendments)
   expect(await runApply(directory, readLeanState(directory)!, "d1")).toMatchObject({ status: "done" })
-  return (readLeanJson(directory, "d1/paragraphs-applied.json") as ParagraphRow[]).filter(row => row.label).map(shownText)
+  return { directory, numbered: (readLeanJson(directory, "d1/paragraphs-applied.json") as ParagraphRow[]).filter(row => row.label).map(shownText) }
+}
+
+const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+// The w:pStyle of the applied body's paragraph whose text starts with `starts`.
+function appliedStyle(directory: string, starts: string) {
+  const doc = new DOMParser().parseFromString(strFromU8(unzipSync(readFileSync(leanFile(directory, "d1/body-applied.docx")))["word/document.xml"]!), "application/xml")
+  const paragraph = Array.from(doc.getElementsByTagNameNS(W, "p")).find(node => (node.textContent ?? "").startsWith(starts))!
+  return paragraph.getElementsByTagNameNS(W, "pStyle")[0]?.getAttributeNS(W, "val") ?? undefined
 }
 
 const at = (rows: ParagraphRow[], starts: string) => rows.find(row => row.text.startsWith(starts))!.pid
 
 test("resolutions after a deleted one renumber across the runs of the list", async () => {
-  expect(await applyResolutions(rows => [{ pid: at(rows, "Bylaws"), operation: "delete", updated: "" }])).toEqual([
+  expect((await applyResolutions(rows => [{ pid: at(rows, "Bylaws"), operation: "delete", updated: "" }])).numbered).toEqual([
     "1. Officers. RESOLVED, that the officers are elected.",
     "2. Ratification. RESOLVED, that the earlier actions are ratified.",
     "3. Fiscal Year. RESOLVED, that the fiscal year ends on December 31.",
@@ -91,12 +103,16 @@ test("resolutions after a deleted one renumber across the runs of the list", asy
 
 // A heading rewritten as a resolution with the list's next number joins the
 // list (the body's list is Word's default numbering, which no style binds); a
-// split resolution's later part without a number leaves it.
+// split resolution's later part without a number leaves it. The joined
+// paragraph takes its list siblings' style, not the heading's.
 test("a resolution a change numbers joins the list and a split part leaves it", async () => {
-  expect(await applyResolutions(rows => [
+  const { directory, numbered } = await applyResolutions(rows => [
     { pid: at(rows, "Further Matters"), updated: "3. Confirmation. RESOLVED, that the bank account is confirmed." },
     { pid: at(rows, "Ratification"), operation: "split", updated: ["Ratification. RESOLVED, that the earlier actions are ratified.", "Effect. These resolutions take effect today."] },
-  ])).toEqual([
+  ])
+  expect(appliedStyle(directory, "Confirmation")).toBe(appliedStyle(directory, "Officers"))
+  expect(appliedStyle(directory, "Signatures")).toBe("Heading2")
+  expect(numbered).toEqual([
     "1. Bylaws. RESOLVED, that the Bylaws are adopted.",
     "2. Officers. RESOLVED, that the officers are elected.",
     "3. Confirmation. RESOLVED, that the bank account is confirmed.",

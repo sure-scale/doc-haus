@@ -161,7 +161,15 @@ export function numberDocxClauses(bytes: Uint8Array, options: { house?: false; s
     if (kind === "strip") continue
     let style = paragraph.style
     const bound = levelStyles.get(level)
-    if (bound && bound !== style && !(paragraph.heading && !catalog.headingLike(bound))) {
+    // A paragraph a change numbers into a settled list reads as one more of its
+    // items: it takes the style (or none) of the nearest item at its level.
+    const at = paragraphs.indexOf(paragraph)
+    const item = (row: Paragraph) => row !== paragraph && !row.table && !row.split && row.member?.abstract === list.abstract && row.member.level === level
+    const sibling = options.house === false ? paragraphs.slice(0, at).findLast(item) ?? paragraphs.slice(at + 1).find(item) : undefined
+    if (sibling) {
+      copyParagraphStyle(paragraph.node, sibling.node)
+      style = sibling.style
+    } else if (bound && bound !== style && !(paragraph.heading && !catalog.headingLike(bound))) {
       setParagraphStyle(paragraph.node, bound)
       style = bound
     }
@@ -547,6 +555,13 @@ function removeEmptyRun(node: Element) {
 
 function setParagraphStyle(paragraph: Element, style: string) {
   place(properties(paragraph), element(paragraph.ownerDocument!, "pStyle", { val: style }), PPR_ORDER)
+}
+
+function copyParagraphStyle(paragraph: Element, from: Element) {
+  const style = child(child(from, "pPr"), "pStyle")
+  if (style) return place(properties(paragraph), style.cloneNode(true) as Element, PPR_ORDER)
+  const own = child(child(paragraph, "pPr"), "pStyle")
+  if (own) own.parentNode!.removeChild(own)
 }
 
 function setParagraphNumbering(paragraph: Element, level: number, numId: string) {
