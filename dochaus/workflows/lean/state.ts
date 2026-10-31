@@ -501,13 +501,17 @@ export function answeredQuestionsText(directory: string) {
 export const SHORT_HASH_LENGTH = 10
 
 /** How every step reads an answer: a delegated decision or a point still open
- * is marked as such, so no step reads it as the lawyer's own answer. */
+ * is marked as such, so no step reads it as the lawyer's own answer. A point
+ * still open was already put to the lawyer, so no step asks it again, however
+ * reworded; the gate discloses it. */
 function answerLabel(question: Question) {
   if (question.answer_kind === "adopted") return "A (delegated by the lawyer; the recommended option was adopted)"
-  if (question.answer_class === "delegated") return "A (delegated by the lawyer, but it needs the lawyer's own answer, so it stays open)"
-  if (question.answer_class === "declined") return "A (not answered by the lawyer, so it stays open)"
+  if (question.answer_class === "delegated") return `A (delegated by the lawyer, but it needs the lawyer's own answer, so ${STILL_OPEN})`
+  if (question.answer_class === "declined") return `A (not answered by the lawyer, so ${STILL_OPEN})`
   return "A"
 }
+
+const STILL_OPEN = "it stays open as a disclosed placeholder or open item; do not ask it again"
 
 export function shortHash(text: string, length = SHORT_HASH_LENGTH) {
   return createHash("sha1").update(text).digest("hex").slice(0, length)

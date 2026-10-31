@@ -260,9 +260,10 @@ test("a delegated question no decision could take stays open for the lawyer at t
   const changesItem = openItem("changes", "question", "Question for the lawyer: When does risk pass?", { question_id: "q-risk" })
   writeOpenItems(directory, [changesItem])
   const items = () => finalGate(directory).items.filter(item => item.kind === "question")
-  // Stages read the undecided ones as open, in the lawyer's words.
-  expect(answeredQuestionsText(directory)).toContain(`- [q-sign] Q: Who signs for the buyer?\n  A (delegated by the lawyer, but it needs the lawyer's own answer, so it stays open): ${DELEGATION}`)
-  expect(answeredQuestionsText(directory)).toContain(`- [q-title] Q: Should title pass on delivery?\n  A (not answered by the lawyer, so it stays open): I do not know.`)
+  // Stages read the undecided ones as open, in the lawyer's words, and as
+  // already asked: intake re-asked a reworded delegated fact question otherwise.
+  expect(answeredQuestionsText(directory)).toContain(`- [q-sign] Q: Who signs for the buyer?\n  A (delegated by the lawyer, but it needs the lawyer's own answer, so it stays open as a disclosed placeholder or open item; do not ask it again): ${DELEGATION}`)
+  expect(answeredQuestionsText(directory)).toContain(`- [q-title] Q: Should title pass on delivery?\n  A (not answered by the lawyer, so it stays open as a disclosed placeholder or open item; do not ask it again): I do not know.`)
 
   writeLeanText(directory, "drafting-notes.md", "# Notes\n\nNothing listed.\n")
   expect(items().map(item => [item.ref.question_id, item.status, item.detail])).toEqual([
