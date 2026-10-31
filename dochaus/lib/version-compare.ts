@@ -277,8 +277,9 @@ async function side(bytes: Uint8Array, wanted: string[]) {
       }
       const paragraph = (ordinals.get(anchor.scope) ?? 0) + 1
       ordinals.set(anchor.scope, paragraph)
-      const text = texts.get(id) ?? ""
-      if (anchor.kind === "h" && body) heading = [anchor.autoNumberPrefix, text || anchor.textPreview].filter(Boolean).join(" ")
+      const text = withTabs(session.raw.getXml(id), texts.get(id) ?? "")
+      // A heading is a one-line label: its typed number's tab reads as a space, as Word's own number does.
+      if (anchor.kind === "h" && body) heading = [anchor.autoNumberPrefix, (text || anchor.textPreview).replace(/\t+/g, " ")].filter(Boolean).join(" ")
       blocks.set(id, { text, location: { scope: scopeOf(anchor.scope), paragraph,
         ...body && heading ? { heading } : {}, ...anchor.autoNumberPrefix ? { number: anchor.autoNumberPrefix } : {} } })
       for (const row of waiting.filter(row => row.scope === anchor.scope))
@@ -297,10 +298,21 @@ async function side(bytes: Uint8Array, wanted: string[]) {
 // else as its paragraphs, one per line.
 function containerText(xml: string) {
   const node = new DOMParser().parseFromString(xml, "application/xml").documentElement
-  const paragraphs = (element: Element) => elements(element, "p").map(paragraph => elements(paragraph, "*")
-    .map(child => child.localName === "t" ? child.textContent ?? "" : child.localName === "tab" && (child.parentNode as Element).localName === "r" ? "\t" : "").join(""))
+  const paragraphs = (element: Element) => elements(element, "p").map(paragraphText)
   const row = (element: Element) => childElements(element, "tc").map(cell => paragraphs(cell).join(" ")).join(" | ")
   return node.localName === "tr" ? row(node) : node.localName === "tbl" ? childElements(node, "tr").map(row).join("\n") : paragraphs(node).join("\n")
+}
+
+const paragraphText = (paragraph: Element) => elements(paragraph, "*")
+  .map(child => child.localName === "t" ? child.textContent ?? "" : child.localName === "tab" && (child.parentNode as Element).localName === "r" ? "\t" : "").join("")
+
+// Docxodus's paragraph text drops a run's tab, gluing a clause number typed
+// before one to its text ("3.3The"). The paragraph's own runs restore it when,
+// tabs aside, they read exactly as Docxodus's text; otherwise its text stands.
+function withTabs(xml: string, text: string) {
+  if (!/<w:tab[\s/>]/.test(xml)) return text
+  const typed = paragraphText(new DOMParser().parseFromString(xml, "application/xml").documentElement)
+  return typed.replace(/\t/g, "") === text ? typed : text
 }
 
 // Re-labels the plain blackline. A revision whose key matches one in the
