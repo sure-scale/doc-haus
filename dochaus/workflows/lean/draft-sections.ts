@@ -64,7 +64,7 @@ import { originalTables, originalTablesBlock, partTableIssues, tableParts } from
 // package-scope question is open, the step asks none of its own: it saves the
 // plan, the act is disclosed, and the open question stays the one to answer. A
 // coverage reply that never passed its check (unchecked) does not stop the step,
-// nor does an act record that lists no act (no_acts), which is disclosed.
+// nor does an act record that lists no act (no_acts).
 // When the outline plans a memo or more than one document and no package-scope
 // question stops the step, a files job in its own session then reads which
 // files the lawyer's words ask to receive (requested-files.ts). Where the plan

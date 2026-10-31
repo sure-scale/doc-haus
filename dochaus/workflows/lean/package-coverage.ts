@@ -30,10 +30,11 @@ import { sourceText } from "./template-structure"
 // no instructed act, and is disclosed as the check's reading for the lawyer to
 // confirm, with any such document still planned, or with the planned documents
 // a last attempt also listed it in.
-// An act record that lists no act gives no_acts, never "covered": an empty
-// list is disclosed for the lawyer to confirm, as is each act whose instrument,
-// as the act record reads it, is not executed by every party whose authority
-// the act needs (signerFlags).
+// An act record that lists no act gives no_acts, never "covered": the record
+// keeps the empty result, which raises no item, since most packages direct no
+// act. Each act whose instrument, as the act record reads it, is not executed
+// by every party whose authority the act needs (signerFlags) is disclosed for
+// the lawyer to confirm.
 // What the saved plan still leaves open reaches the lawyer as open items derived
 // from that record (coverageItems), never stored. The gate reads the same record
 // (coverageCarries) to tell an instruction the plan carries from one it may
@@ -746,7 +747,6 @@ export function coverageItems(directory: string): OpenItem[] {
         "The lawyer should confirm that this act is to be dealt with outside this package."
   }
   const items = [
-    ...coverage.status === "no_acts" ? [item(NO_ACTS)] : [],
     ...coverage.acts.filter(act => act.excluded_by).map(act => item(`Plan coverage: the check of the document plan against the instructions read the lawyer's words ${lawyerQuote(act.excluded_by!)} ` +
       excludedReading(act, act.quote.replace(/\s+/g, " ").trim()) + stillPlanned(act))),
     ...open.map(act => item("Plan coverage: the document plan leaves this instructed act without a document executed by the parties who must take it: " +
@@ -757,9 +757,6 @@ export function coverageItems(directory: string): OpenItem[] {
   ]
   return [...new Map(items.map(row => [row.id, row])).values()]
 }
-
-/** The disclosure of an act record that lists no act: an empty list is never read as covered. */
-const NO_ACTS = "No instructed act found: the act record found no legal act the lawyer's instructions direct; confirm the package needs none."
 
 /** One disclosed item per act whose instrument, as the act record reads it, is
  * not executed by every party whose authority the act needs (signerFlags). The

@@ -274,15 +274,13 @@ describe("plan coverage open items", () => {
     expect(gate(directory, notesNaming(items))).toMatchObject({ status: "pass", delivery: "review_draft", disclosed: [expect.objectContaining({ id: items[0]!.id })] })
   })
 
-  test("an act record that found no act yields one visible item, never none, which the notes disclose and the gate delivers", () => {
+  test("an act record that found no act is recorded as no_acts and raises no item, so the gate can deliver an execution-ready package", () => {
     const directory = prepared()
     recordActs(directory, "none")
     const plan = writeLeanPlan(directory, [RELEASE], "0".repeat(64))
     recordCoverage(directory, plan, "no_acts", [], [])
     expect(readLeanCoverage(directory)).toMatchObject({ status: "no_acts", acts: [] })
-    const items = coverageItems(directory)
-    expect(items).toEqual([openItem("finalize", "omission", "No instructed act found: the act record found no legal act the lawyer's instructions direct; confirm the package needs none.", { repair_target: "memo" })])
-    expect(gate(directory, notesNaming(items))).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [], disclosed: [expect.objectContaining({ id: items[0]!.id, status: "disclosed" })] })
+    expect(coverageItems(directory)).toEqual([])
   })
 
   test("an instrument the act record finds not executed by a party whose authority its act needs yields one item to confirm it; a signer spelt with another legal form raises none", () => {

@@ -112,12 +112,12 @@ describe("requested files through the run", () => {
       reason: '"Release letter": file "Kestrel Release Pack.docx"' })])
 
     // Delivered as asked: one combined file under the lawyer's name, nothing to ask, and
-    // nothing about the files to disclose; only the act record's finding of no act is.
+    // nothing about the files to disclose.
     expect(combinedDelivery(directory)).toEqual({ document: "d1", name: "Kestrel Release Pack" })
     expect(requestedFilesItems(directory)).toEqual([])
     expect(readQuestions(directory)).toEqual([])
     expect(gateOf(directory)).toMatchObject({ status: "pass", blocking: [] })
-    expect(gateOf(directory).disclosed).toEqual([expect.objectContaining({ detail: expect.stringMatching(/^No instructed act found:/) })])
+    expect(gateOf(directory).disclosed).toEqual([])
   }, 120_000)
 
   test("a files revision that also renames a document is not adopted: it is spent, and the next revision starts from the earlier outline", async () => {
