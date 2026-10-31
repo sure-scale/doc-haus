@@ -57,6 +57,7 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     throwAfterWrite: false, syncFailure: undefined as Error | undefined, corruptWrite: false, afterSync: undefined as undefined | (() => void),
     driftInsertedRanges: false, renewImportedIds: false, omitNewRevisions: false, authorCalls: 0, duringAuthor: undefined as undefined | (() => void | Promise<void>),
     nativeRevisions: [] as Array<{ start: number; end: number; author: string; type: string; text: string }>,
+    groupRevisions: false,
     extraParts: "", formattedTextEmpty: false, leakAdjacentFormatting: false, wholeOoxmlTrailingParagraph: false,
     inlineBold: false, inlineAfter: "", inlineWrites: 0, splitMixed: false,
     paragraphInsertions: 0, corruptParagraphInsertion: false, insertedParagraphStyle: "Normal",
@@ -261,7 +262,15 @@ function office(paragraphs = ["A clause with a clear obligation.", "Another clau
     getTrackedChanges() {
       return collection([
         ...state.revisions.filter(([start, end]) => intersects(this.start, this.end, start, end)).map(([start, end]) => ({ author: "Earlier reviewer", type: "Added", text: text().slice(start, end) })),
-        ...state.nativeRevisions.filter(revision => intersects(this.start, this.end, revision.start, revision.end)).sort((a, b) => a.start - b.start),
+        ...state.nativeRevisions.filter(revision => intersects(this.start, this.end, revision.start, revision.end)).sort((a, b) => a.start - b.start)
+          // Word lists contiguous revisions by one author and type as one item.
+          .reduce((items, revision) => {
+            const last = items.at(-1)
+            if (state.groupRevisions && last && last.author === revision.author && last.type === revision.type && revision.start <= last.end + 1)
+              items[items.length - 1] = { ...last, end: revision.end, text: last.text + text().slice(last.end, revision.start) + revision.text }
+            else items.push(revision)
+            return items
+          }, [] as typeof state.nativeRevisions),
       ])
     }
     select() { state.selected++ }
@@ -508,6 +517,19 @@ test("native text transport applies a single-paragraph wording change without im
   expect(state.nativeRevisions.map(revision => [revision.type, revision.author, revision.text])).toEqual([
     ["Deleted", "Word user", "clear"], ["Added", "Word user", "specific"],
   ])
+})
+
+test("native text insertion after an earlier inserted paragraph by the same author is confirmed", async () => {
+  // Word lists the new insertion and the earlier paragraph as one item.
+  const inserted = "Earlier inserted clause."
+  const { state, host, text } = office([inserted, "clause continues."], true), at = inserted.length + 1
+  state.groupRevisions = true
+  state.nativeRevisions = [{ start: 0, end: at, author: "Word user", type: "Added", text: inserted + "\r" }]
+  state.selection = [at, at + "clause".length]
+  const target = (await host.selection())!
+  expect((await host.apply({ proposalId: "grouped-wording", target, replacement: "new clause" })).status).toBe("applied")
+  expect(text()).toBe("Earlier inserted clause.\rnew clause continues.")
+  expect(state.nativeRevisions.map(revision => [revision.type, revision.text])).toEqual([["Added", inserted + "\r"], ["Added", "new "]])
 })
 
 test("native text transport refuses a target that changed after review before authoring", async () => {
@@ -808,6 +830,28 @@ test("native final-boundary formatting verifies each requested property and prio
   expect(state.nativeFormatting).toEqual(["paragraph-1", "paragraph-2", "paragraph-3"])
   expect(state.nativeRevisions.filter(r => r.author === "Earlier reviewer")).toHaveLength(2)
   expect(state.writes).toHaveLength(0)
+})
+
+test("native formatting beside an earlier formatting revision by the same author is confirmed", async () => {
+  // Word lists the new revision and the earlier one as one item.
+  const { state, host, texts } = formattedOffice(), start = texts[0]!.length + 1
+  state.selection = [start, start + texts[1]!.length]
+  state.groupRevisions = true
+  state.nativeRevisions.push({ start: 0, end: texts[0]!.length, author: "Word user", type: "Formatted", text: texts[0]! })
+  const target = (await host.selection())!
+  expect((await host.apply({ proposalId: "grouped-format", target, replacement: target.text, formatting: [{ paragraph: 0, style: "Heading1" }] })).status).toBe("applied")
+  expect(state.nativeFormatting).toEqual(["paragraph-1"])
+})
+
+test("native formatting refuses when an earlier same-author revision is not kept whole", async () => {
+  const { state, host, texts } = formattedOffice(), start = texts[0]!.length + 1
+  state.selection = [start, start + texts[1]!.length]
+  state.groupRevisions = true
+  state.nativeRevisions.push({ start: 0, end: texts[0]!.length, author: "Word user", type: "Formatted", text: texts[0]! })
+  const target = (await host.selection())!
+  // The earlier revision loses its first word while the new one joins it.
+  state.afterSync = () => { if (state.nativeFormatting.length) { Object.assign(state.nativeRevisions[2]!, { start: 8, text: texts[0]!.slice(8) }); state.afterSync = undefined } }
+  await expect(host.apply({ proposalId: "grouped-format-lost", target, replacement: target.text, formatting: [{ paragraph: 0, style: "Heading1" }] })).rejects.toThrow("could not confirm")
 })
 
 test.skip("mixed inserted heading and wording retain prior inline revisions before native formatting", async () => {

@@ -104,6 +104,42 @@ const protectedContent = new Set([
 ])
 const children = (node: Node) => Array.from(node.childNodes).filter(child => child.nodeType === 1) as Element[]
 
+/** Revisions added since `before`, and earlier revisions no longer found.
+ * Word lists contiguous revisions by one author and type as one item, so a new
+ * revision beside an earlier one by the same person absorbs it. An absorbed
+ * earlier revision counts as kept only as a leading or trailing piece of such
+ * an item; the remainder is the new revision. */
+function newWordChatRevisions<T extends TrackedChange>(before: TrackedChange[], after: T[]) {
+  const signature = (change: TrackedChange) => JSON.stringify([change.author, change.type, change.text])
+  const prior = new Map<string, number>()
+  for (const change of before) prior.set(signature(change), (prior.get(signature(change)) ?? 0) + 1)
+  const exact = after.filter(change => {
+    const key = signature(change), count = prior.get(key) ?? 0
+    if (count) { prior.set(key, count - 1); return false }
+    return true
+  })
+  const missing = before.filter(change => {
+    const key = signature(change), count = prior.get(key) ?? 0
+    if (count) { prior.set(key, count - 1); return true }
+    return false
+  })
+  const added = exact.map(change => {
+    let text = change.text
+    for (let peeled = true; peeled;) {
+      peeled = false
+      for (const [index, earlier] of missing.entries()) {
+        if (earlier.author !== change.author || earlier.type !== change.type || !earlier.text || earlier.text.length >= text.length) continue
+        if (text.startsWith(earlier.text)) text = text.slice(earlier.text.length)
+        else if (text.endsWith(earlier.text)) text = text.slice(0, -earlier.text.length)
+        else continue
+        missing.splice(index, 1); peeled = true; break
+      }
+    }
+    return text === change.text ? change : { ...change, text }
+  })
+  return { added, missing }
+}
+
 function sameNativeProjectionGeometry(a: ReturnType<typeof projectNativeWordChatBody>, b: ReturnType<typeof projectNativeWordChatBody>) {
   return a.geometry === b.geometry && a.paragraphs.length === b.paragraphs.length &&
     a.paragraphs.every((p, i) => p.id === b.paragraphs[i]?.id && p.path === b.paragraphs[i]?.path)
@@ -1235,14 +1271,7 @@ export class WordChatHost {
         const importedXml = importedRange?.getOoxml(), importedText = importedRange?.getReviewedText("Current")
         const adjacent = fresh.adjacent.map(p => ({ before: p.ooxml, after: context.document.getParagraphByUniqueLocalId(p.id).getRange("Whole").getOoxml() }))
         await context.sync()
-        const signature = (change: TrackedChange) => JSON.stringify([change.author, change.type, change.text])
-        const prior = new Map<string, number>()
-        for (const change of fresh.changes) prior.set(signature(change), (prior.get(signature(change)) ?? 0) + 1)
-        const added = changes.items.filter(change => {
-          const key = signature(change), count = prior.get(key) ?? 0
-          if (count) { prior.set(key, count - 1); return false }
-          return true
-        })
+        const { added, missing } = newWordChatRevisions(fresh.changes, changes.items)
         const matches = (observed: TrackedChange[], wanted: TrackedChange[]) => {
           if (formatting) return observed.length === wanted.length && observed.every(change => change.author === "doc.haus" && change.type === "Formatted") && wanted.every(change => change.type === "Formatted")
           if (observed.some(change => change.author !== "doc.haus" || !["Added", "Deleted"].includes(change.type))) return false
@@ -1253,7 +1282,7 @@ export class WordChatHost {
           const native = (value: string) => plan.structure ? value.replace(/\r/g, "") : value
           return ["Added", "Deleted"].every(type => native(words(observed, type)) === native(words(wanted, type)))
         }
-        const priorConfirmed = ![...prior.values()].some(Boolean), additionsConfirmed = matches(added, authored.revisions)
+        const priorConfirmed = !missing.length, additionsConfirmed = matches(added, authored.revisions)
         const textConfirmed = importedText?.value === expected.join("\r") &&
           (Boolean(plan.structure) || actual.every((item, index) => item.text.value === expected[index] && (formatting || wordingImport || matches(item.changes.items, authoredChanges[index]!))))
         let viewDifference: string | undefined = "unavailable", inlineConfirmed = !wordingImport, neighboursConfirmed = false
@@ -1328,9 +1357,6 @@ export class WordChatHost {
       throw captureMismatch("Word returned different XML for the reviewed paragraph or its neighbours before the change.")
     if (before.current !== prefix.value + paragraph.text + suffix.value) throw captureMismatch("Word returned inconsistent surrounding document text.")
     const expectedText = prefix.value + expectedParagraph + suffix.value
-    const signature = (change: { author: string; type: string; text: string }) => JSON.stringify([change.author, change.type, change.text])
-    const prior = new Map<string, number>()
-    for (const change of before.changes) prior.set(signature(change), (prior.get(signature(change)) ?? 0) + 1)
     if (input.mayDispatch && !input.mayDispatch()) throw new WordChatHostError("The Word pane closed before the change was applied. Your document is unchanged.")
     // All reads are complete. Fence before queuing tracking or any write; a
     // lost final sync is uncertain and must never trigger a second dispatch.
@@ -1352,19 +1378,14 @@ export class WordChatHost {
     await context.sync()
     const post = projectNativeWordChatBody(afterBodyXml.value, afterAll.items.map(p => ({ id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel })))
     const targetAfter = post.scope([at])
-    const remaining = new Map(prior)
-    const added = after.changes.filter(change => {
-      const key = signature(change), count = remaining.get(key) ?? 0
-      if (count) { remaining.set(key, count - 1); return false }
-      return true
-    })
+    const { added, missing } = newWordChatRevisions(before.changes, after.changes)
     const wanted = authored.revisions.filter(change => change.type !== "Formatted")
     const texts = (changes: Array<{ type: string; text: string }>, type: string) => changes.filter(change => change.type === type).map(change => change.text).sort()
     const authors = [...new Set(added.map(change => change.author).filter(Boolean))]
     const sameParagraphs = after.paragraphs.length === before.paragraphs.length &&
       after.paragraphs.every((item, index) => item.id === before.paragraphs[index]!.id && (index !== at ||
         item.text === expectedParagraph) && (index === at || JSON.stringify(item) === JSON.stringify(before.paragraphs[index])))
-    const priorPreserved = ![...remaining.values()].some(Boolean)
+    const priorPreserved = !missing.length
     const confirmed = context.document.changeTrackingMode === fresh.tracking && sameParagraphs && after.current === expectedText && priorPreserved && added.length > 0 &&
       added.every(change => ["Added", "Deleted"].includes(change.type) && Boolean(change.author)) &&
       JSON.stringify(texts(added, "Added")) === JSON.stringify(texts(wanted, "Added")) && JSON.stringify(texts(added, "Deleted")) === JSON.stringify(texts(wanted, "Deleted")) &&
@@ -1434,15 +1455,8 @@ export class WordChatHost {
       checking = "format-neighbours"
       if (confirmed && !(projection && fresh.projection ? fresh.adjacent.every(p => { const i = projection.paragraphs.findIndex(q => q.id === p.id); return i >= 0 && sameNativeWordChatParagraphContent(p.ooxml, projection.scope([i])) }) : adjacent.every(p => sameNativeWordChatParagraphContent(p.before, p.after.value)))) { confirmed = false; failedStage = checking }
       checking = "format-revisions"
-      const signature = (change: TrackedChange) => JSON.stringify([change.author, change.type, change.text])
-      const prior = new Map<string, number>()
-      for (const change of fresh.changes) prior.set(signature(change), (prior.get(signature(change)) ?? 0) + 1)
-      const added = changes.items.filter(change => {
-        const key = signature(change), count = prior.get(key) ?? 0
-        if (count) { prior.set(key, count - 1); return false }
-        return true
-      })
-      if (confirmed && [...prior.values()].some(Boolean)) { confirmed = false; failedStage = "format-prior-revisions" }
+      const { added, missing } = newWordChatRevisions(fresh.changes, changes.items)
+      if (confirmed && missing.length) { confirmed = false; failedStage = "format-prior-revisions" }
       if (confirmed && expectedFormatCount !== 0 && added.length === 0) { confirmed = false; failedStage = "format-missing-revision" }
       if (confirmed && !added.every(change => change.type === "Formatted" && authors.includes(change.author))) { confirmed = false; failedStage = "format-new-revisions" }
     } catch (error) { confirmed = false; failedStage ??= checking; verificationError = error }
