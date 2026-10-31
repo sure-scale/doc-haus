@@ -6,7 +6,7 @@ import DocumentUpload, { AttachmentEntryRow, attachmentsSummary, documentTree, f
 
 const file = new File(["theirs"], "Agreement.docx")
 const row = (upload: Parameters<typeof UploadRow>[0]["upload"]) => {
-  const html = renderToStaticMarkup(createElement(UploadRow, { upload, onRetry: () => {}, onChoose: () => {}, onDismiss: () => {}, onRestore: () => {}, onAcceptChronology: () => {} }))
+  const html = renderToStaticMarkup(createElement(UploadRow, { upload, onRetry: () => {}, onChoose: () => {}, onDismiss: () => {}, onRestore: () => {} }))
   return {
     status: html.match(/<span class="upload-status">([^<]*)<\/span>/)?.[1]?.trim(),
     buttons: [...html.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].map(([, label]) => label!.trim()),
@@ -14,14 +14,15 @@ const row = (upload: Parameters<typeof UploadRow>[0]["upload"]) => {
   }
 }
 
-test("a recognizable chronology export offers an explicit supplied-account choice and cancel", () => {
+test("a recognizable chronology export waits for coordinated review rather than duplicating actions inline", () => {
   const failed = failedUpload(new DerivedChronologyError("My corrections.docx", "Chronology.docx", "This is a chronology export."), file)
   expect(failed).toMatchObject({ status: "chronology", chronology: { name: "My corrections.docx", originalName: "Chronology.docx" } })
   const rendered = row({ key: 8, file, status: "queued", choice: "keep-both", ...failed })
-  expect(rendered.buttons).toEqual(["Add as supplied chronology", "Cancel"])
-  expect(rendered.html).toContain("not independent corroboration")
-  expect(rendered.html).toContain("will not replace the chronology workbench")
-  expect(rendered.buttons).not.toContain("Retry")
+  expect(rendered.buttons).toEqual([])
+  expect(rendered.status).toBe("Awaiting chronology review…")
+  const collision = row({ key: 8, file, status: "exists", chronology: { name: file.name }, existing: { name: file.name, role: "source" } })
+  expect(collision.buttons).toEqual([])
+  expect(collision.status).toBe("Awaiting chronology review…")
 })
 
 test("renamed supplied chronologies retain a visible source classification after reload", () => {

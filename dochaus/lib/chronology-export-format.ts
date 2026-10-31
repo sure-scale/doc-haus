@@ -1,12 +1,49 @@
 import type { ChronologyCoverage, ChronologyDate, ChronologyEvent } from "./chronology"
 
 const unique = (values: string[]) => [...new Set(values.filter(Boolean))]
-export function chronologyExportDate(date: ChronologyDate): string {
-  const period = date.start ? `${date.start}${date.end && date.end !== date.start ? ` to ${date.end}` : ""}` : "Undated"
-  return unique([
-    period,
-    date.original !== period ? date.original : "",
-    date.precision !== "exact" ? `Date precision: ${date.precision}` : "",
+const months = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+]
+
+/** Only these explicit calendar spellings are equivalent; source prose is never inferred away. */
+function calendarDate(value: string): { label: string; forms: string[] } {
+  const parts = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/.exec(value)
+  if (!parts) return { label: value, forms: [value] }
+  const [, year, month, day] = parts
+  if (!month) return { label: year, forms: [value] }
+  const name = months[Number(month) - 1]
+  if (!name) return { label: value, forms: [value] }
+  const short = name.slice(0, 3)
+  if (!day) return { label: `${short} ${year}`, forms: [value, `${short} ${year}`, `${name} ${year}`] }
+  const parsed = new Date(0)
+  parsed.setUTCFullYear(Number(year), Number(month) - 1, Number(day))
+  if (parsed.getUTCMonth() !== Number(month) - 1 || parsed.getUTCDate() !== Number(day))
+    return { label: value, forms: [value] }
+  return {
+    label: `${Number(day)} ${short} ${year}`,
+    forms: [
+      value,
+      `${Number(day)} ${short} ${year}`,
+      `${day} ${short} ${year}`,
+      `${Number(day)} ${name} ${year}`,
+      `${day} ${name} ${year}`,
+    ],
+  }
+}
+
+function dateDetails(date: ChronologyDate): string[] {
+  return [
     date.rangeKind ? (date.rangeKind === "duration" ? "Known period" : "Uncertain date range") : "",
     date.time
       ? `Time: ${date.time}${date.timezone ? ` ${date.timezone}` : " (timezone not supplied)"}`
@@ -17,6 +54,36 @@ export function chronologyExportDate(date: ChronologyDate): string {
     date.anchorFreshness && date.anchorFreshness !== "current"
       ? `Date anchor ${date.anchorFreshness}: ${date.anchorIssue ?? "check the supporting source"}`
       : "",
+  ]
+}
+
+export function chronologyExportDate(date: ChronologyDate): string {
+  const start = date.start ? calendarDate(date.start) : { label: "Undated", forms: ["Undated"] }
+  const end = date.end && date.end !== date.start ? calendarDate(date.end) : undefined
+  const period = `${start.label}${end ? ` to ${end.label}` : ""}`
+  const forms = end ? start.forms.flatMap((from) => end.forms.map((to) => `${from} to ${to}`)) : start.forms
+  const comparable = (value: string) => value.trim().toLowerCase()
+  const originalIsCalendar = forms.some((form) => comparable(form) === comparable(date.original))
+  const precision = {
+    exact: "",
+    approximate: "Approximate",
+    month: "Month only",
+    year: "Year only",
+    ambiguous: "Ambiguous date",
+    relative: "Relative date",
+    undated: date.start ? "Recorded as undated" : "",
+  }[date.precision]
+  return unique([period, originalIsCalendar ? "" : date.original, precision, ...dateDetails(date)]).join(" · ")
+}
+
+/** Evidence notes retain the normalized values and original expression without compacting either. */
+function fullDate(date: ChronologyDate): string {
+  const period = date.start ? `${date.start}${date.end && date.end !== date.start ? ` to ${date.end}` : ""}` : "Undated"
+  return unique([
+    period,
+    date.original !== period ? date.original : "",
+    date.precision !== "exact" ? `Date precision: ${date.precision}` : "",
+    ...dateDetails(date),
   ]).join("; ")
 }
 
@@ -45,7 +112,7 @@ export function chronologyExportQualifications(event: ChronologyEvent): string[]
 
 function dateNotes(date: ChronologyDate): string[] {
   return [
-    `Date: ${chronologyExportDate(date)}`,
+    `Date: ${fullDate(date)}`,
     ...(date.documentDate ? [`Document date: ${date.documentDate}`] : []),
     ...(date.relative
       ? [
@@ -57,7 +124,7 @@ function dateNotes(date: ChronologyDate): string[] {
       : []),
     ...(date.correction
       ? [
-          `Date corrected by ${date.correction.actor} at ${new Date(date.correction.at).toISOString()}; original: ${chronologyExportDate(date.correction.original)}`,
+          `Date corrected by ${date.correction.actor} at ${new Date(date.correction.at).toISOString()}; original: ${fullDate(date.correction.original)}`,
         ]
       : []),
   ]
@@ -83,7 +150,7 @@ export function chronologyExportEventNotes(event: ChronologyEvent): ChronologyEx
       ? [
           note(`Original entry: ${event.original.title}`),
           note(event.original.detail),
-          note(`Original date: ${chronologyExportDate(event.original.date)}`),
+          note(`Original date: ${fullDate(event.original.date)}`),
         ]
       : []),
     ...event.accounts.flatMap((account, accountIndex) => [

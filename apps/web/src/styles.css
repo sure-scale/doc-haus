@@ -2472,6 +2472,36 @@ li.list-row {
   gap: var(--space-2);
 }
 
+/* Keep the task hierarchy without spending the phone's reading width on
+   repeated timeline indents and a separate metadata column. */
+@media (max-width: 640px) {
+  .steps .step-list {
+    margin-left: 0;
+  }
+
+  .steps .step {
+    padding-left: var(--space-4);
+  }
+
+  .steps .step .step {
+    padding-left: var(--space-3);
+  }
+
+  .step-output {
+    padding-inline: var(--space-2);
+  }
+
+  .tool-output-structured {
+    gap: var(--space-3);
+    max-height: min(55dvh, 420px);
+  }
+
+  .tool-output-field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
+  }
+}
+
 /* Sources: deduplicated citations behind a collapsed disclosure, so the answer
    stays the focus and the evidence is one click away. */
 .sources {
@@ -4116,7 +4146,7 @@ button.linklike:hover:not(:disabled) {
 .structured-report {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-3);
 }
 
 .report-section {
@@ -4125,7 +4155,7 @@ button.linklike:hover:not(:disabled) {
 }
 
 .report-section-title {
-  margin: 0 0 5px;
+  margin: 0 0 var(--space-1);
   color: var(--muted);
   font-size: 11px;
   font-weight: 700;
@@ -4188,6 +4218,14 @@ button.linklike:hover:not(:disabled) {
 .report-narration[open] > summary::before,
 .report-section-collapsed[open] > summary::before {
   transform: rotate(90deg);
+}
+
+@media (max-width: 640px) {
+  .report-section,
+  .report-narration,
+  .report-section-collapsed {
+    padding-left: var(--space-2);
+  }
 }
 
 /* Toasts: transient notifications stacked top-centre, above the doc viewer

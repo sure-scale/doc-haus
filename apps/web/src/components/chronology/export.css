@@ -5,6 +5,17 @@
   margin: 20px 0 10px;
   font-size: 15px;
 }
+.chronology-export-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 24px;
+}
+.chronology-dialog-body .chronology-export-hidden-rule {
+  margin: 4px 0 8px;
+}
+.chronology-dialog-body .chronology-export-scope-help {
+  margin: 8px 0 0;
+}
 .chronology-export-table-scroll {
   overflow: auto;
   max-height: 340px;
@@ -41,6 +52,15 @@
   margin-top: 5px;
   color: #596274;
 }
+.chronology-export-source-inline {
+  display: none;
+}
+.chronology-export-notes {
+  padding-top: 24px;
+}
+.chronology-export-notes h3 {
+  margin-top: 0;
+}
 .chronology-export-preview details {
   padding: 10px 0;
   border-bottom: 1px solid #e6e5e7;
@@ -66,6 +86,25 @@
   margin-top: 0;
 }
 @media (max-width: 520px) {
+  .chronology-export-table {
+    min-width: 0;
+    table-layout: fixed;
+  }
+  .chronology-export-table th:first-child {
+    width: 30%;
+  }
+  .chronology-export-table .chronology-export-source-cell {
+    display: none;
+  }
+  .chronology-export-source-inline {
+    display: block;
+    margin-top: 12px;
+  }
+  .chronology-export-source-label {
+    display: block;
+    margin-bottom: 3px;
+    font-weight: 600;
+  }
   .chronology-export-table th,
   .chronology-export-table td {
     padding: 8px;

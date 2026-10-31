@@ -82,6 +82,7 @@ export async function chronologyDocx(snapshot: ChronologyExportSnapshot): Promis
       ...snapshot.events.map(
         (event, i) =>
           new TableRow({
+            cantSplit: true,
             children: [
               cell(0, [chronologyExportDate(event.date)]),
               cell(1, [`${i + 1}. ${event.title}`, chronologyExportQualifications(event).join("; ")], false, true),

@@ -128,3 +128,50 @@
   border-top-color: var(--accent);
   animation: btn-spin 0.9s linear infinite;
 }
+
+/* Exceptional chronology imports get one compact review, independent of the
+   ordinary progress rows and of the drawer's responsive layout. */
+.upload-review-dialog {
+  width: min(520px, calc(var(--viewport-inline, 100vw) - 32px));
+  max-width: none;
+  max-height: calc(var(--viewport-block, 100dvh) - 32px);
+  padding: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--md-sys-color-surface, #fff);
+  color: var(--text);
+  box-shadow: var(--shadow-xl, 0 16px 64px #18223833);
+  font: 13px/1.6 var(--font-sans, system-ui, sans-serif);
+}
+
+.upload-review-dialog::backdrop { background: rgb(20 28 24 / 28%); }
+.upload-review-content { padding: 24px 24px 20px; }
+.upload-review-content h2 { margin: 0 0 12px; font: 600 20px/1.3 var(--font-sans, system-ui, sans-serif); }
+.upload-review-content h2:focus { outline: none; }
+.upload-review-content p { margin: 0 0 12px; }
+.upload-review-content p:last-child { margin-bottom: 0; }
+.upload-review-name { overflow-wrap: anywhere; font-weight: 600; }
+.upload-review-collision { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.upload-review-content .upload-review-detail { color: var(--muted); font-size: 12px; }
+.upload-review-progress { color: var(--text-secondary); }
+.upload-review-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; padding: 16px 24px; border-top: 1px solid var(--border); }
+.upload-review-actions > .icon-btn { min-height: 40px; max-width: 100%; padding: 8px 12px; font-size: 12px; line-height: 1.4; white-space: normal; }
+.upload-review-actions > .icon-btn:first-child { margin-right: auto; }
+.upload-review-actions .upload-choice-lead { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-border); font-weight: 600; }
+.upload-review-dialog :focus-visible { outline: 2px solid var(--md-sys-state-focus); outline-offset: 2px; }
+
+.matter-files-collection .doc-row-main > .doc-row-actions { align-self: flex-start; }
+.doc-row-provenance { margin: 3px 0 0 28px; }
+.docs-drawer .doc-row-provenance { margin-left: 38px; }
+.supplied-chronology-label { display: inline-block; padding: 1px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--muted); font-size: 10px; line-height: 1.5; }
+
+@media (max-width: 480px) {
+  .upload-review-content { padding: 20px; }
+  .upload-review-actions { padding: 14px 20px; }
+  .upload-review-actions > .icon-btn { flex: 1 1 auto; }
+}
+
+@media (pointer: coarse) {
+  .upload-review-actions > .icon-btn { min-height: max(44px, calc(44px / var(--ui-scale))); }
+}
