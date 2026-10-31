@@ -13,7 +13,7 @@ import {
 } from "./package-coverage"
 import { answeredScopeQuestion, openScopeQuestion } from "./package-scope"
 import {
-  LEAN_REQUESTED_FILES_SCHEMA, foldRequestedFiles, parseRequestedFiles, requestedFilesIssues, requestedFilesPlanned, requestedFilesPrompt, requestedFilesQuestion, requestedFilesRevision, requestedFilesWords, withRequestedNames, writeRequestedFiles,
+  LEAN_REQUESTED_FILES_SCHEMA, foldRequestedFiles, parseRequestedFiles, requestedFilesIssues, requestedFilesPlanned, requestedFilesPrompt, requestedFilesQuestion, requestedFilesRevision, parseUnheldDocument, requestedFilesWords, unheldDocumentPrompt, unheldDocuments, withRequestedNames, withUnaskedDocuments, writeRequestedFiles,
   type RequestedFiles,
 } from "./requested-files"
 import {
@@ -230,6 +230,19 @@ export async function runDraftStage(
     const refused = new Map<string, string>()
     return exchange({ id, agent: filesAgent })("files", requestedFilesPrompt(directory, documents, memo), (reply, final) => parseRequestedFiles(reply, directory, documents, memo, { final, refused }))
   }
+  // Whether the lawyer's words ask for each planned document the one
+  // requested file leaves out, each in a fresh session of its own; the ids of
+  // those they do not. A reply that never passed its check keeps its document
+  // as the files job placed it.
+  const unasked = async (requested: RequestedFiles, documents: PlannedDocument[]) => {
+    const filesAgent = LEAN_STAGE_AGENTS.files
+    const verdicts = await Promise.all(unheldDocuments(requested, documents).map(async row => {
+      const id = await coverageSession(filesAgent, `files: ${row.id} asked`)
+      const checked = await exchange({ id, agent: filesAgent })(`files asked ${row.id}`, unheldDocumentPrompt(directory, row, requested.files[0]!), reply => parseUnheldDocument(reply, directory))
+      return checked.value === false ? [row.id as string] : []
+    }))
+    return verdicts.flat()
+  }
   // Once saved, the plan is followed as it stands, including a lawyer's edits;
   // only its coverage record is refreshed when it no longer matches the plan.
   const outlined = document === FIRST_DOCUMENT && !readLeanPlan(directory)
@@ -286,9 +299,14 @@ export async function runDraftStage(
     // one, the others its separate instruments (foldRequestedFiles), unless
     // the lawyer chose a file of its own for one; the files, their revisions
     // and the saved plan all read the outline so held.
+    // When the lawyer's words ask for one file only, each planned document
+    // the files job left out of it goes in it too, unless the lawyer's words
+    // ask for that document themselves (unasked) or the lawyer chose a file of
+    // its own for one.
     const filed = await filing(covered, value.memo)
     const separate = separateFileChosen(readQuestions(directory))
-    const fold = (outline: LeanOutline) => filed?.value ? foldRequestedFiles(outline.documents, filed.value, separate) : undefined
+    const asked = filed?.value && !separate ? withUnaskedDocuments(filed.value, await unasked(filed.value, covered)) : filed?.value
+    const fold = (outline: LeanOutline) => asked ? foldRequestedFiles(outline.documents, asked, separate) : undefined
     let folded = fold(value)
     let requested = folded?.requested
     const held = () => folded?.documents ?? value!.documents
