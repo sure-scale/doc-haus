@@ -670,6 +670,8 @@ export function sameNativeWordChatParagraphContent(before: string, after: string
   const observed = content(parse(after), true, true)
   // The parsed observed package is private to this comparison; normalize its
   // bound paragraphs in place so the complete shape retains its table wrapper.
+  // Word also renumbers the IDs of tracked run and paragraph format changes.
+  if (original.nodes.length !== observed.nodes.length || !original.nodes.every((node, i) => normalizeInlinePriorFormatIds(node, observed.nodes[i]!))) return false
   if (!normalizeNativeRevisionIds(original.nodes, observed.nodes) || !normalizeNativeAnnotationIds(original.nodes, observed.nodes)) return false
   return JSON.stringify(original.shape.map(node => canonical(node, true))) === JSON.stringify(observed.shape.map(node => canonical(node, true)))
 }

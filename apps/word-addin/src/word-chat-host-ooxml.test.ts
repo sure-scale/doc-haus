@@ -350,6 +350,15 @@ test("post-format neighbour comparison accepts only validated inline revision ID
   expect(sameNativeWordChatParagraphContent(duplicate, duplicate)).toBe(false)
 })
 
+test("neighbour comparison follows Word renumbering a tracked run format change inside a tracked insertion", () => {
+  // A tracked-inserted row paragraph whose run carries a tracked bold change, as Word records when the row inherits formatting.
+  const paragraph = (ins: string, fmt: string) => `<w:p><w:pPr><w:rPr><w:ins w:id="1" w:author="Reviewer" w:date="2026-01-01T00:00:00Z"/></w:rPr></w:pPr><w:ins w:id="${ins}" w:author="Reviewer" w:date="2026-01-01T00:00:00Z"><w:r><w:rPr><w:b/><w:rPrChange w:id="${fmt}" w:author="Reviewer" w:date="2026-01-01T00:00:00Z"><w:rPr/></w:rPrChange></w:rPr><w:t>New key</w:t></w:r></w:ins></w:p>`
+  const before = flat(paragraph("2", "3")), after = flat(paragraph("12", "13").replace('w:id="1"', 'w:id="11"'))
+  expect(sameNativeWordChatParagraphContent(before, after)).toBe(true)
+  for (const drift of [after.replace("<w:rPr/></w:rPrChange>", "<w:rPr><w:i/></w:rPr></w:rPrChange>"), after.replace('w:id="13" w:author="Reviewer"', 'w:id="13" w:author="Other"'), after.replace('w:id="13"', 'w:id="12"'), after.replace("<w:b/>", "")])
+    expect(sameNativeWordChatParagraphContent(before, drift)).toBe(false)
+})
+
 test("native row remainder checks bound geometry and all-depth prior revisions", async () => {
   const { verifyNativeWordChatRowRemainder: verify } = await import("./word-chat-host-ooxml")
   const cell = (text: string) => `<w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`
