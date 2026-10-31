@@ -3,7 +3,7 @@ import { ACT_RECORD_SAMPLES, readActRecord } from "./act-record"
 import { readLeanEvents } from "./events"
 import { runLean } from "./runner"
 import { writeQuestions, type Question } from "./state"
-import { AGENT, actRecordJobs, cleanupMatters, happyPath, matter, scriptedModel } from "./test-support"
+import { AGENT, actRecordJobs, cleanupMatters, happyPath, listedActs, matter, scriptedModel } from "./test-support"
 
 // The act-record step in the lean walk, driven through the real coordinator
 // with a scripted model: where it runs, what it records and when a resume
@@ -41,7 +41,11 @@ test("the acts step runs once, after research review and before the spine, and r
 test("a listed act is described by WHO and HOW before the spine", async () => {
   const directory = matter()
   const act = { act: "prepare the supply note", source: "request", quote: "Draft a short supply note" }
-  const model = scriptedModel({ ...happyPath, [AGENT.acts]: actRecordJobs({ what: () => JSON.stringify({ acts: [act] }) }) })
+  const model = scriptedModel({
+    ...happyPath, [AGENT.acts]: actRecordJobs({ what: () => JSON.stringify({ acts: [act] }) }),
+    // The outline's placement job, now shown the listed act, places it in the one planned document.
+    [AGENT.coverage]: prompt => JSON.stringify({ placements: listedActs(prompt).map(({ index }) => ({ act: index, document: "d1" })) }),
+  })
 
   expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
   const record = readActRecord(directory)

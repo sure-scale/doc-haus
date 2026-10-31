@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { effectivePosture } from "../../lib/matter-client"
-import { LEAN_ACTS_SCHEMA } from "./act-record"
 import { combinedDelivery, memoNotesFile } from "./deliverables"
 import { PLAN_FILES_REVISIONS } from "./draft-sections"
 import { readLeanEvents } from "./events"
@@ -13,7 +12,7 @@ import { FILES_REVISION_SCOPE, LEAN_REQUESTED_FILES_SCHEMA, readRequestedFiles, 
 import { runLean } from "./runner"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, disclosableItems, outlineBasis } from "./stages"
 import { leanFile, readLeanJson, readLeanText, readQuestions, writeLeanText } from "./state"
-import { AGENT, NO_FINDINGS, cleanupMatters, coverageJobs, draftingNotes, matter, noChanges, registering, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, actRecordOf, cleanupMatters, draftingNotes, matter, noChanges, placementJob, registering, scriptedModel, type Reply } from "./test-support"
 
 // Requested files through the whole run (runLean): the outline's files job,
 // its revision requests to the outline session, the plan-time question on a
@@ -54,18 +53,9 @@ const replies = (extra: Record<string, Reply>): Record<string, Reply> => ({
   ...extra,
 })
 
-type RecordedAct = { act: string; source: string; quote: string; parties: string[] }
-/** Writes the run's act record, as its acts step leaves it: by default one that
- * found no act, so no act needs placing. */
-const recordActs = (directory: string, acts: RecordedAct[] = []) => writeLeanText(directory, "acts.json", JSON.stringify({
-  schema: LEAN_ACTS_SCHEMA, status: acts.length ? "listed" : "none", deliverables: [], issues: [],
-  acts: acts.map(({ act, source, quote, parties }) => ({ act, source, quote, who: { authorised_by: parties, performed_by: [], basis: [], reason: null }, how: null })),
-}))
-
 function prepared(request = REQUEST) {
   const directory = matter(SOURCE_TEXT)
   writeLeanText(directory, "request.md", request)
-  recordActs(directory)
   return directory
 }
 
@@ -203,9 +193,8 @@ describe("requested files through the run", () => {
     const request = "Prepare the papers so that the Orchard Committee approves the revised schedule, and a release letter for Kestrel Works with a cover memo."
     const directory = prepared(request)
     const act = { act: "approve the revised schedule", source: "request", quote: "the Orchard Committee approves the revised schedule", parties: ["the Orchard Committee"], document: "d1" }
-    recordActs(directory, [act])
     const misplaced = outline("Memo: cover memo", letter("Executed by: Kestrel Works"))
-    const model = scriptedModel(replies({ [AGENT.draft]: outliner(misplaced), ...coverageJobs(() => JSON.stringify({ acts: [act] })) }))
+    const model = scriptedModel(replies({ [AGENT.acts]: actRecordOf([act]), [AGENT.draft]: outliner(misplaced), ...placementJob(() => JSON.stringify({ acts: [act] })) }))
     const state = await runLean(directory, { sessions: model.port })
 
     expect(state.status).toBe("blocked")

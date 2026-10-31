@@ -17,7 +17,7 @@ import {
   currentOpenItems, readLeanJson, readLeanState, readOpenItems, readQuestions, replaceStageOpenItems, updateLeanStage, writeLeanText, writeOpenItems, writeQuestions,
   type OpenItem,
 } from "./state"
-import { AGENT, NO_FINDINGS, SOURCE, cleanupMatters, coverageJobs, draftingNotes, matter, noChanges, scriptedModel, type Reply } from "./test-support"
+import { AGENT, NO_FINDINGS, SOURCE, actRecordOf, cleanupMatters, draftingNotes, matter, noChanges, placementJob, scriptedModel, type Reply } from "./test-support"
 
 // Plan coverage left open after the plan step reaches the lawyer: the open
 // items are derived from the current coverage.json, never stored, so the
@@ -416,24 +416,25 @@ describe("plan coverage open items", () => {
 const ONE = "Acting for: not stated\n# Release letter\nExecuted by: Kestrel Works\n## Terms\nThe release."
 /** The outline keeps one document, revised or not; each part gets one plain paragraph. */
 const outliner: Reply = text => /^Draft part \d+ of \d+ of "/m.test(text) ? "The terms are recorded." : ONE
-const replies: Record<string, Reply> = {
+/** A whole run's replies, for one scripted model: the act record lists the act. */
+const replies = (): Record<string, Reply> => ({
+  [AGENT.acts]: actRecordOf([act]),
   [AGENT.draft]: outliner,
-  ...coverageJobs(() => JSON.stringify({ acts: [act] })),
+  ...placementJob(() => JSON.stringify({ acts: [act] })),
   [AGENT.review]: () => NO_FINDINGS,
   [AGENT.changes]: noChanges,
   [AGENT.finalize]: draftingNotes,
-}
+})
 
 describe("plan coverage open items through the run", () => {
   test("after the answered scope question the drafting notes are asked to name the act's item and the passed gate delivers it", async () => {
     const directory = prepared()
-    recordActs(directory, "listed", [recorded(act)])
-    await runLean(directory, { sessions: scriptedModel(replies).port })
+    await runLean(directory, { sessions: scriptedModel(replies()).port })
     const [question] = readQuestions(directory)
     expect(question?.id.startsWith(PACKAGE_SCOPE_QUESTION)).toBe(true)
     enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: ANSWER })
 
-    const model = scriptedModel(replies)
+    const model = scriptedModel(replies())
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
     const items = coverageItems(directory)
     expect(items).toEqual([expect.objectContaining({ detail: expect.stringContaining(question!.id) })])
@@ -448,14 +449,13 @@ describe("plan coverage open items through the run", () => {
     const naming = "Save the letter as release-letter.docx."
     const directory = matter(SOURCE_TEXT)
     writeLeanText(directory, "request.md", `${REQUEST} ${naming}`)
-    recordActs(directory, "listed", [recorded(act)])
     const delivery = [{ document: "d1", role: "body", file: "release-letter.docx", instruction_quote: naming }]
-    const named = { ...replies, [AGENT["package-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [], delivery }) }
-    await runLean(directory, { sessions: scriptedModel(named).port })
+    const named = () => ({ ...replies(), [AGENT["package-review"]]: () => JSON.stringify({ status: "pass", findings: [], limitations: [], delivery }) })
+    await runLean(directory, { sessions: scriptedModel(named()).port })
     const [question] = readQuestions(directory)
     enqueueLeanRequest(directory, { kind: "answer", question_id: question!.id, answer: ANSWER })
 
-    const model = scriptedModel(named)
+    const model = scriptedModel(named())
     expect((await runLean(directory, { sessions: model.port })).status).toBe("completed")
     expect(readLeanPlan(directory)!.documents[0]).toMatchObject({ file: "release-letter.docx", deliverable: "body" })
     // The answer re-plans once (an outline and its revisions); the renaming asks for no further check.

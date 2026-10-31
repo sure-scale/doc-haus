@@ -1,19 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { LEAN_ACTS_SCHEMA } from "./act-record"
 import { readLeanEvents } from "./events"
 import { readLeanCoverage, type CoverageAct } from "./package-coverage"
 import { leanSteps, readLeanPlan } from "./plan"
 import { runLean } from "./runner"
 import { readQuestions, writeLeanText, writeQuestions, type Question } from "./state"
-import { AGENT, NO_FINDINGS, cleanupMatters, draftingNotes, listedActs, matter, noChanges, scriptedModel } from "./test-support"
+import { AGENT, NO_FINDINGS, actRecordOf, cleanupMatters, draftingNotes, listedActs, matter, noChanges, scriptedModel } from "./test-support"
 
 // An answer that moves an instructed act to a separate document keeps that act
 // in the package: the act record lists it, blind to the plan, and the placement
 // job places it in no planned document with no excluded_by, so the plan that leaves it out is
 // not taken as covered. Its
 // issue goes back to the outline, whose revision plans the separate document,
-// and the run drafts it. Synthetic parties and acts only; the act record is
-// written as the run's acts step leaves it, and the model is scripted.
+// and the run drafts it. Synthetic parties and acts only; the model is
+// scripted, the act record's jobs included.
 
 afterEach(cleanupMatters)
 
@@ -35,8 +34,7 @@ const released: CoverageAct = { act: "release the deposit", source: "request", q
 const approved: CoverageAct = { act: "approve the revised schedule", source: "request", quote: APPROVE, parties: ["the Orchard Committee"], document: null }
 
 /** The act record: both acts the instructions direct, whichever document is to carry them. */
-const record = JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status: "listed", deliverables: [], issues: [], acts: [released, approved].map(({ act, source, quote, parties }) =>
-  ({ act, source, quote, who: { authorised_by: parties, performed_by: [], basis: [], reason: null }, how: null })) })
+const record = actRecordOf([released, approved])
 /** The placement job: the release in the release letter, and the approval in
  * the planned document the committee executes, or in none, never left out. */
 const placement = (text: string) => {
@@ -54,9 +52,8 @@ describe("an act an answer moves to a separate document", () => {
     const directory = matter(SOURCE_TEXT)
     writeLeanText(directory, "request.md", REQUEST)
     writeQuestions(directory, [ANSWERED])
-    writeLeanText(directory, "acts.json", record)
     const model = scriptedModel({
-      [AGENT.draft]: outliner, [AGENT.coverage]: placement, [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: noChanges, [AGENT.finalize]: draftingNotes,
+      [AGENT.acts]: record, [AGENT.draft]: outliner, [AGENT.coverage]: placement, [AGENT.review]: () => NO_FINDINGS, [AGENT.changes]: noChanges, [AGENT.finalize]: draftingNotes,
     })
     const state = await runLean(directory, { sessions: model.port })
     expect(state.status).toBe("completed")
