@@ -150,7 +150,7 @@ function sameNativeProjectionGeometry(a: ReturnType<typeof projectNativeWordChat
  * body-level section layout even for one selected word. Inspect only selected
  * main-document content. A section break inside a paragraph remains protected;
  * the final body sectPr is package context and is outside our text-only edits. */
-function hasProtectedContent(value: string, authored = false, formatting = false, insertedMarks = false, allowComments = false): boolean {
+function hasProtectedContent(value: string, authored = false, formatting = false, insertedMarks: boolean | "any" = false, allowComments = false): boolean {
   try {
     const fail = () => { throw new Error("Invalid native XML") }
     const doc = new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(value, "application/xml")
@@ -167,7 +167,8 @@ function hasProtectedContent(value: string, authored = false, formatting = false
     if (!wordNamespaces.has(content.namespaceURI ?? "") || !["document", "body", "p", "r"].includes(content.localName)) return true
     const inspect = (node: Element): boolean => {
       const inlineRevision = ["ins", "del"].includes(node.localName) && !(wordNamespaces.has((node.parentNode as Element | null)?.namespaceURI ?? "") && (node.parentNode as Element).localName === "rPr")
-      const insertedMark = insertedMarks && node.localName === "ins" && node.getAttributeNS(node.namespaceURI!, "author") === "doc.haus" &&
+      // "any": Word marks the paragraph before a tracked insertion as inserted, whoever inserted it.
+      const insertedMark = insertedMarks && node.localName === "ins" && (insertedMarks === "any" || node.getAttributeNS(node.namespaceURI!, "author") === "doc.haus") &&
         (node.parentNode as Element | null)?.localName === "rPr" && (node.parentNode?.parentNode as Element | null)?.localName === "pPr"
       const comment = allowComments && ["commentRangeStart", "commentRangeEnd", "commentReference"].includes(node.localName)
       if (wordNamespaces.has(node.namespaceURI ?? "") && protectedContent.has(node.localName) && !comment &&
@@ -746,7 +747,7 @@ export class WordChatHost {
     const scoped = projection ? projection.scope(target.paragraphs.map((_, i) => at + i)) : xml!.value
     if (formatting && typeof context.document.trackFormatting !== "boolean")
       throw new WordChatHostError("This version of Word cannot confirm formatting tracking. Your document is unchanged.")
-    if (!inline && (comments.items.length || (!formatting && revisions.items.length) || formatting && revisions.items.some(revision => !["Added", "Deleted"].includes((revision as TrackedChange).type)) || hasProtectedContent(scoped, false, formatting, insertedMarks)))
+    if (!inline && (comments.items.length || (!formatting && revisions.items.length) || formatting && revisions.items.some(revision => !["Added", "Deleted"].includes((revision as TrackedChange).type)) || hasProtectedContent(scoped, false, formatting, formatting && !wordingImport ? "any" : insertedMarks)))
       throw new WordChatHostError("This paragraph contains existing revisions, comments or a linked Word object. Review that passage in Word first, then prepare a fresh suggestion for ordinary text.")
     let captured: string[]
     try { captured = capturedWordChatParagraphs(scoped) }

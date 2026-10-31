@@ -141,7 +141,10 @@ function bodyParagraphs(doc: Document, unrevised: boolean, formatting = false, e
   }
   require(paragraphs.length > 0 && paragraphs.length <= 64)
   if (unrevised) require(!paragraphs.some(p => protectedContent.some(name => !(formatting && ["ins", "del"].includes(name)) && !(exactControl && name === "sdt") && all(p, W, name).length)))
-  if (formatting) require(!paragraphs.some(p => all(p, W, "pPr").some(properties => all(properties, W, "ins").length || all(properties, W, "del").length)))
+  // A prior inserted paragraph mark (Word's record of a tracked paragraph inserted
+  // after this one) stays outside our format change; other property revisions refuse.
+  if (formatting) require(!paragraphs.some(p => all(p, W, "pPr").some(properties => [...all(properties, W, "ins"), ...all(properties, W, "del")]
+    .some(node => !(node.localName === "ins" && node.parentNode === paragraphMarkProperties(properties))))))
   require(!paragraphs.some(p => all(p, W, "br").some(br => br.getAttributeNS(W, "type") && br.getAttributeNS(W, "type") !== "textWrapping")))
   return { body, paragraphs }
 }
@@ -235,7 +238,11 @@ async function authorParagraphFormatting(source: ReturnType<typeof packageFromFl
     const previous = children(before[index]!).find(node => node.namespaceURI === W && node.localName === "pPr")
     const change = doc.createElementNS(W, "w:pPrChange")
     change.setAttributeNS(W, "w:id", String(++id)); change.setAttributeNS(W, "w:author", AUTHOR); change.setAttributeNS(W, "w:date", new Date().toISOString())
-    change.appendChild(previous ? doc.importNode(previous, true) : doc.createElementNS(W, "w:pPr"))
+    const prior = previous ? doc.importNode(previous, true) as Element : doc.createElementNS(W, "w:pPr")
+    // Recorded properties (CT_PPrBase) exclude the mark's run properties, which stay live.
+    const priorMark = paragraphMarkProperties(prior)
+    if (priorMark) prior.removeChild(priorMark)
+    change.appendChild(prior)
     properties.appendChild(change)
   }
   if (!changed) throw new WordFormattingError("These paragraphs already use the proposed formatting. Choose a different change.")
@@ -257,6 +264,10 @@ async function authorParagraphFormatting(source: ReturnType<typeof packageFromFl
     } finally { resolved.close() }
   }
   return { ooxml: importFlatOpc(parts, source.types), paragraphs: before.map(paragraphText), revisions, author: AUTHOR, formatting }
+}
+
+function paragraphMarkProperties(properties: Element) {
+  return children(properties).find(p => p.namespaceURI === W && p.localName === "rPr")
 }
 
 function paragraphMark(paragraph: Element) {

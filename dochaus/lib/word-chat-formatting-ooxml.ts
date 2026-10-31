@@ -25,6 +25,12 @@ const properties = (paragraph: Element) => child(paragraph, "pPr")
 function normalized(properties: Element | undefined) {
   return properties && (properties.attributes.length || elements(properties).length) ? properties : undefined
 }
+// A recorded property change (CT_PPrBase) has no paragraph-mark run properties.
+function withoutMark(pPr: Element | undefined) {
+  const copy = pPr?.cloneNode(true) as Element | undefined, mark = child(copy, "rPr")
+  if (mark) copy!.removeChild(mark)
+  return copy
+}
 function withoutProperties(paragraph: Element) {
   const copy = paragraph.cloneNode(true) as Element
   const pPr = properties(copy)
@@ -98,7 +104,7 @@ export function reviewedWordChatParagraphFormatting(before: Element[], after: El
     const old = change && elements(change)
     if (!change || change.getAttributeNS(W, "author") !== "doc.haus" || !/^\d+$/.test(change.getAttributeNS(W, "id") ?? "") ||
       !Number.isFinite(Date.parse(change.getAttributeNS(W, "date") ?? "")) || old?.length !== 1 || old[0]!.namespaceURI !== W || old[0]!.localName !== "pPr" ||
-      !same(normalized(properties(original)), normalized(old[0]))) throw new Error("Formatting revision does not preserve the captured properties")
+      !same(normalized(withoutMark(properties(original))), normalized(withoutMark(old[0])))) throw new Error("Formatting revision does not preserve the captured properties")
     return [{ author: "doc.haus", type: "Formatted" as const, text: currentText(original) }]
   })
   if (!revisions.flat().length) throw new Error("Formatting makes no change")

@@ -788,6 +788,24 @@ test("native formatting permits only matched neighbouring revision ID reassignme
   expect(state.nativeFormatting).toHaveLength(1)
 })
 
+test("native formatting keeps a prior inserted paragraph mark and still refuses a deleted one", async () => {
+  // Word records a tracked paragraph inserted after this one on this paragraph's mark.
+  const mark = (kind: "ins" | "del") => `<w:p><w:pPr><w:spacing w:after="100"/><w:rPr><w:${kind} w:id="51" w:author="Earlier" w:date="2026-01-01T00:00:00Z"/></w:rPr></w:pPr><w:r><w:rPr><w:i/></w:rPr><w:t>Unchanged selected boundary paragraph.</w:t></w:r></w:p>`
+  const { state, host } = formattedOffice()
+  state.paragraphXml.set("paragraph-3", mark("ins"))
+  const target = (await host.selection())!
+  expect((await host.apply({ proposalId:"format-inserted-mark", target, replacement:target.text,
+    formatting:[{paragraph:target.paragraphs.length - 1,spacingAfter:6}] })).status).toBe("applied")
+  expect(state.nativeFormatting).toHaveLength(1)
+  expect(state.paragraphXml.get("paragraph-3")).toContain('<w:ins w:id="51" w:author="Earlier"')
+  const deleted = formattedOffice()
+  deleted.state.paragraphXml.set("paragraph-3", mark("del"))
+  const deletedTarget = (await deleted.host.selection())!
+  await expect(deleted.host.apply({ proposalId:"format-deleted-mark", target:deletedTarget, replacement:deletedTarget.text,
+    formatting:[{paragraph:deletedTarget.paragraphs.length - 1,spacingAfter:6}] })).rejects.toThrow("Word cannot safely apply this formatting change yet")
+  expect(deleted.state.nativeFormatting).toHaveLength(0)
+})
+
 test("projected native formatting rejects a neighboring paragraph property change", async () => {
   const { state, host } = formattedOffice(), target = (await host.selection())!
   state.afterSync = () => {
