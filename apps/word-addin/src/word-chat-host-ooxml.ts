@@ -87,6 +87,10 @@ export function projectNativeWordChatBody(xml: string, inventory: Array<{ id: st
     }
   }
   replaceParagraphs(skeleton)
+  // Outside paragraphs only table and section revision marks carry w:id, and
+  // Word renumbers them in story order on every export. Kind, author and date
+  // stay in the comparison.
+  for (const node of Array.from(skeleton.getElementsByTagNameNS(W, "*"))) node.removeAttributeNS(W, "id")
   return {
     ooxml: xml,
     paragraphs: nodes.map((n, i) => ({ id: inventory[i]!.id, text: inventory[i]!.text, path: n.path, nesting: n.nesting, xml: serializer.serializeToString(n.node) })),

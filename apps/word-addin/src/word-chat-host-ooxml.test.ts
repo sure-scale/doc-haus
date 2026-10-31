@@ -47,6 +47,17 @@ test("native body projection binds table order and retains real empty paragraph 
   expect(layout.geometry).not.toBe(projection.geometry)
 })
 
+test("native body geometry ignores Word's export renumbering of tracked row IDs, not the row revision", async () => {
+  const { projectNativeWordChatBody } = await import("./word-chat-host-ooxml")
+  const inv = [{id:"a",text:"Same"},{id:"b",text:"Cell",tableNestingLevel:1}]
+  const body = (id: string, mark = "ins", author = "Prior") => `<w:p><w:r><w:t>Same</w:t></w:r></w:p><w:tbl><w:tr><w:trPr><w:${mark} w:id="${id}" w:author="${author}" w:date="2026-01-01T00:00:00Z"/></w:trPr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:sectPr/>`
+  const geometry = (xml: string) => projectNativeWordChatBody(flat(xml), inv).geometry
+  // A new revision earlier in the story shifts every later export ID.
+  expect(geometry(body("11"))).toBe(geometry(body("10")))
+  expect(geometry(body("10", "del"))).not.toBe(geometry(body("10")))
+  expect(geometry(body("10", "ins", "Other"))).not.toBe(geometry(body("10")))
+})
+
 test("native body projection refuses unbound or substantive terminal carriers", async () => {
   const { projectNativeWordChatBody } = await import("./word-chat-host-ooxml")
   const inv = [{id:"a",text:"One"}], p = '<w:p><w:r><w:t>One</w:t></w:r></w:p>'
