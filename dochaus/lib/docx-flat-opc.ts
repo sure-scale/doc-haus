@@ -193,7 +193,7 @@ async function authorParagraphFormatting(source: ReturnType<typeof packageFromFl
     for (const op of formatting) {
       let anchor = anchors[op.paragraph]!
       const membership = (id: string) => { const value = session.getListMembership(id); return value ? { ...value, anchorId: undefined } : null }
-      const numbered = JSON.stringify(membership(anchor))
+      const prior = membership(anchor), numbered = JSON.stringify(prior)
       if (op.style !== undefined) {
         if (!session.listStyles().some(style => style.id === op.style && style.type === "paragraph"))
           throw new WordFormattingError("That paragraph style is not available in this document. Choose an existing style in Word, then prepare the change again.")
@@ -207,7 +207,14 @@ async function authorParagraphFormatting(source: ReturnType<typeof packageFromFl
           ...(op.spacingAfter !== undefined ? { spacingAfter: op.spacingAfter * 20 } : {}),
           ...(op.lineSpacing !== undefined ? { lineSpacing: op.lineSpacing * 240, lineSpacingRule: "auto" as const } : {}),
         }).success)
-      if (JSON.stringify(membership(anchor)) !== numbered)
+      // A style linked to an outline list owns the paragraph's level: H2→H1
+      // moves within that list and Normal→H3 joins it, exactly as the style
+      // defines. Direct numPr is never fromStyle, so it keeps the exact check;
+      // leaving or switching a list stays refused.
+      const next = membership(anchor)
+      const outline = op.style !== undefined && next?.fromStyle === true &&
+        (!prior || prior.fromStyle && prior.numId === next.numId && prior.abstractNumId === next.abstractNumId)
+      if (JSON.stringify(next) !== numbered && !outline)
         throw new WordFormattingError("That style would change this paragraph’s numbering. Keep its current style and adjust the spacing, or change the numbering directly in Word.")
     }
     // Deliver only the SDK-authored main part; styles/numbering and all other

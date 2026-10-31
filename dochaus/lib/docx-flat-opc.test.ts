@@ -309,3 +309,28 @@ test("refuses ambiguous or protected inline controls before shared authoring", a
   expect((await authorWordChatTarget(flat(normalTable), selected, "blue")).paragraphs).toEqual(["A blue clause"])
   await expect(authorWordChatTarget(flat(rowControl), selected, "blue")).rejects.toThrow()
 })
+
+test("style-linked outline numbering follows a heading style change; leaving or switching a list stays refused", async () => {
+  const heading = (n: number, num: number) => `<w:style w:type="paragraph" w:styleId="Heading${n}"><w:name w:val="heading ${n}"/><w:basedOn w:val="Normal"/><w:pPr><w:numPr><w:ilvl w:val="${n - 1}"/><w:numId w:val="${num}"/></w:numPr><w:outlineLvl w:val="${n - 1}"/></w:pPr></w:style>`
+  const level = (i: number) => `<w:lvl w:ilvl="${i}"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:pStyle w:val="Heading${i + 1}"/><w:lvlText w:val="${["%1.", "%1.%2", "(%3)"][i]}"/></w:lvl>`
+  const outline = (pPr: string, h1 = 1) => flat(`<w:p>${pPr && `<w:pPr>${pPr}</w:pPr>`}<w:r><w:t>Invoices</w:t></w:r></w:p>`,
+    `<pkg:part pkg:name="/word/styles.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"><pkg:xmlData><w:styles><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>${heading(1, h1)}${heading(2, 1)}${heading(3, 1)}</w:styles></pkg:xmlData></pkg:part>` +
+    `<pkg:part pkg:name="/word/numbering.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"><pkg:xmlData><w:numbering><w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="multilevel"/>${[0, 1, 2].map(level).join("")}</w:abstractNum><w:abstractNum w:abstractNumId="5"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="upperRoman"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="5"/></w:num></w:numbering></pkg:xmlData></pkg:part>`,
+    styleRelation + `<Relationship Id="rNumber" Type="${O}/numbering" Target="numbering.xml"/>`)
+  const selected = target(["Invoices"]), as = (style: "Heading1" | "Heading3" | "Normal") => [{ paragraph: 0, style }]
+  const pStyle = (id: string) => `<w:pStyle w:val="${id}"/>`, body = (xml: string) => parsed(xml).getElementsByTagNameNS(W, "p")[0]!
+  // Promotion within the outline and joining it via the style: only pStyle changes; no direct numbering is written.
+  for (const [pPr, style] of [[pStyle("Heading2"), "Heading1"], ["", "Heading3"]] as const) {
+    const result = await authorWordChatTarget(outline(pPr), selected, selected.text, as(style))
+    expect(result.revisions).toEqual([{ author: "doc.haus", type: "Formatted", text: "Invoices" }])
+    const p = body(result.ooxml)
+    expect(p.getElementsByTagNameNS(W, "pStyle")[0]!.getAttributeNS(W, "val")).toBe(style)
+    expect(p.getElementsByTagNameNS(W, "numPr")).toHaveLength(0)
+  }
+  // Leaving the list, or a style linked to a different list, changes numbering the review did not show.
+  await expect(authorWordChatTarget(outline(pStyle("Heading1")), selected, selected.text, as("Normal"))).rejects.toThrow("numbering")
+  await expect(authorWordChatTarget(outline(pStyle("Heading2"), 2), selected, selected.text, as("Heading1"))).rejects.toThrow("numbering")
+  // Direct numbering outranks the style: membership is unchanged and kept exactly.
+  const direct = await authorWordChatTarget(outline(pStyle("Heading2") + '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="2"/></w:numPr>'), selected, selected.text, as("Heading1"))
+  expect(body(direct.ooxml).getElementsByTagNameNS(W, "numId")[0]!.getAttributeNS(W, "val")).toBe("2")
+})
