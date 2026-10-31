@@ -1,4 +1,5 @@
 import { DOMParser } from "@xmldom/xmldom"
+import type { WordChatCellRun } from "../../../dochaus/lib/word-chat-amendment-contract"
 
 const PKG = "http://schemas.microsoft.com/office/2006/xmlPackage"
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -30,10 +31,30 @@ function parts(xml:string) {
   if(!result.has(MAIN)) return fail()
   return result
 }
-/** Proves the new row's native carrier ownership and literal plain runs, and
- * exact available non-main Flat OPC dependencies. Caller separately proves
- * old-body remainder, fresh binding, current native fonts and full DOCX. */
-export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:string, tableIndex:number, priorRows:number, cells:string[]): {authors:string[]} {
+/** Direct run flags: only b/bCs/i/iCs/u with a bare val. A toggle is on when
+ * present without val or with an on value; a complex-script counterpart must be
+ * absent or agree; underline is exactly single or none. Anything else fails. */
+function directFlags(props:Element|undefined): Omit<WordChatCellRun,"text"> {
+  const direct=props ? elements(props).filter(e=>e.localName!=="rPrChange") : []
+  if(new Set(direct.map(e=>e.localName)).size!==direct.length || direct.some(e=>!only(e,[]) || Array.from(e.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===W && a.localName==="val")))) return fail()
+  const find=(name:string)=>direct.find(e=>e.localName===name)
+  const toggle=(e:Element|undefined)=>{
+    if(!e) return undefined
+    if(!e.hasAttributeNS(W,"val")) return true
+    const value=e.getAttributeNS(W,"val")??""
+    return ["1","true","on"].includes(value) ? true : ["0","false","off"].includes(value) ? false : fail()
+  }
+  const bold=toggle(find("b"))??false, boldCs=toggle(find("bCs")), italic=toggle(find("i"))??false, italicCs=toggle(find("iCs")), u=find("u")
+  if(boldCs!==undefined && boldCs!==bold || italicCs!==undefined && italicCs!==italic || u && !u.hasAttributeNS(W,"val")) return fail()
+  const underline=!u || u.getAttributeNS(W,"val")==="none" ? false : u.getAttributeNS(W,"val")==="single" ? true : fail()
+  return {bold,italic,underline}
+}
+/** Proves the new row's native carrier ownership, literal runs whose direct
+ * flags group into exactly the reviewed spans (plain rows: one off span per
+ * cell), and exact available non-main Flat OPC dependencies. Word may split a
+ * span across runs. Caller separately proves old-body remainder, fresh
+ * binding, current native fonts and full DOCX. */
+export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:string, tableIndex:number, priorRows:number, cells:string[], runs?:WordChatCellRun[][]): {authors:string[]} {
   const before=parts(beforeXml), after=parts(afterXml)
   if(JSON.stringify([...before.keys()].sort())!==JSON.stringify([...after.keys()].sort())) return fail()
   const dependency = (name:string, part:Element) => {
@@ -60,7 +81,8 @@ export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:strin
     if(JSON.stringify(dependency(name,part))!==JSON.stringify(dependency(name,other))) return fail()
   }
   const main=after.get(MAIN)!, bodies=Array.from(main.getElementsByTagNameNS(W,"body")), oldBodies=Array.from(before.get(MAIN)!.getElementsByTagNameNS(W,"body"))
-  if(bodies.length!==1 || oldBodies.length!==1 || !Number.isSafeInteger(tableIndex) || tableIndex<0 || !Number.isSafeInteger(priorRows) || priorRows<1 || !cells.length || cells.length>32) return fail()
+  if(bodies.length!==1 || oldBodies.length!==1 || !Number.isSafeInteger(tableIndex) || tableIndex<0 || !Number.isSafeInteger(priorRows) || priorRows<1 || !cells.length || cells.length>32 ||
+     runs!==undefined && (!Array.isArray(runs) || runs.length!==cells.length || runs.some(cell=>!Array.isArray(cell)))) return fail()
   const tables=named(bodies[0]!,"tbl"), oldTables=named(oldBodies[0]!,"tbl"); if(tableIndex>=tables.length || oldTables.length!==tables.length) return fail()
   const rows=named(tables[tableIndex]!,"tr"), oldRows=named(oldTables[tableIndex]!,"tr"); if(rows.length!==priorRows+1 || oldRows.length!==priorRows) return fail()
   const referenceCells=named(oldRows.at(-1)!,"tc"); if(referenceCells.length!==cells.length) return fail()
@@ -88,6 +110,7 @@ export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:strin
     if(elements(pr[0]!).some(e=>e.localName!=="ins" && (!only(e,[]) || Array.from(e.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===W && a.localName==="val"))))) return fail()
     mark(pm[0]!)
     let value=""
+    const groups:WordChatCellRun[]=[]
     for(const ins of named(p,"ins")) {
       mark(ins);if(!only(ins,["r"])) return fail()
       for(const run of named(ins,"r")) {
@@ -95,13 +118,20 @@ export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:strin
         const props=named(run,"rPr"), ts=named(run,"t"); if(props.length>1 || ts.length!==1) return fail()
         if(props.length) {
           const r=props[0]!, changes=named(r,"rPrChange")
-          if(!noAttrs(r) || !only(r,["b","bCs","i","iCs","u","rPrChange"]) || changes.length>1 || elements(r).some(e=>e.localName!=="rPrChange" && (!(["0","false","off","none"].includes(e.getAttributeNS(W,"val")??"")) || !only(e,[]) || Array.from(e.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===W && a.localName==="val"))))) return fail()
+          if(!noAttrs(r) || !only(r,["b","bCs","i","iCs","u","rPrChange"]) || changes.length>1) return fail()
           for(const change of changes) { mark(change);const old=named(change,"rPr");if(old.length!==1 || !only(change,["rPr"]) || !basic(old[0]!)) return fail() }
         }
-        const t=ts[0]!;if(elements(t).length || Array.from(t.childNodes).some(n=>n.nodeType!==3) || Array.from(t.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===XML && a.localName==="space" && a.value==="preserve"))) return fail();value+=t.textContent??""
+        const flags=directFlags(props[0])
+        const t=ts[0]!;if(elements(t).length || Array.from(t.childNodes).some(n=>n.nodeType!==3) || Array.from(t.attributes).some(a=>a.namespaceURI!==XMLNS && !(a.namespaceURI===XML && a.localName==="space" && a.value==="preserve"))) return fail()
+        const text=t.textContent??"", last=groups.at(-1);value+=text
+        if(!text) continue
+        if(last && last.bold===flags.bold && last.italic===flags.italic && last.underline===flags.underline) last.text+=text
+        else groups.push({text,...flags})
       }
     }
-    if(value!==cells[i] || cells[i] && !named(p,"ins").length) return fail()
+    const planned=runs?.[i]?.length ? runs[i]! : cells[i] ? [{text:cells[i]!,bold:false,italic:false,underline:false}] : []
+    if(value!==cells[i] || cells[i] && !named(p,"ins").length || groups.length!==planned.length ||
+       groups.some((g,k)=>g.text!==planned[k]!.text || g.bold!==planned[k]!.bold || g.italic!==planned[k]!.italic || g.underline!==planned[k]!.underline)) return fail()
   }
   // Reject comments, PIs or non-whitespace text outside literal text runs.
   const clean=(n:Element):boolean=>Array.from(n.childNodes).every(c=>c.nodeType===1?clean(c as Element):c.nodeType===3 && (n.namespaceURI===W && n.localName==="t" || !c.nodeValue?.trim()))
@@ -109,6 +139,6 @@ export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:strin
   return {authors:[...authors]}
 }
 
-export function verifyNativeWordChatAddedRow(beforeXml:string, afterXml:string, binding:{tableIndex:number;rows:unknown[]}, cells:string[]): string[] {
-  return verifyNativeWordChatInsertedRow(beforeXml, afterXml, binding.tableIndex, binding.rows.length, cells).authors
+export function verifyNativeWordChatAddedRow(beforeXml:string, afterXml:string, binding:{tableIndex:number;rows:unknown[]}, cells:string[], runs?:WordChatCellRun[][]): string[] {
+  return verifyNativeWordChatInsertedRow(beforeXml, afterXml, binding.tableIndex, binding.rows.length, cells, runs).authors
 }

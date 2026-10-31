@@ -48,3 +48,32 @@ test("rejects a stale ordinal or changed cell without queuing a mutation", async
     expect(f.queued).toEqual([])
   }
 })
+
+test("a formatted row inserts each reviewed run with explicit flags in the same tracked flush", async () => {
+  const f = fixture(), prepared = await prepareNativeRow(f.context, f.binding)
+  const run = (text: string, bold = false, italic = false, underline = false) => ({ text, bold, italic, underline })
+  const witness = queueNativeRow(f.context, prepared, ["Fee: 100", "Note"], [[run("Fee:", true), run(" 100")], [run("Note", false, true, true)]])
+  expect(witness.ranges).toHaveLength(3)
+  await f.context.sync()
+  expect(f.batches[3]).toEqual([
+    'tracking:TrackAll', 'row:End:1:[["",""]]',
+    'text:1:0:Fee::End', 'font:bold:true', 'font:italic:false', 'font:underline:None',
+    'text:1:0: 100:End', 'font:bold:false', 'font:italic:false', 'font:underline:None',
+    'text:1:1:Note:End', 'font:bold:false', 'font:italic:true', 'font:underline:Single',
+    'tracking:Off', 'formatting:false',
+  ])
+  // An empty cell in a formatted row carries no runs and stays a plain insertion.
+  const g = fixture(), ready = await prepareNativeRow(g.context, g.binding)
+  queueNativeRow(g.context, ready, ["Fee:", ""], [[run("Fee:", true)], []])
+  await g.context.sync()
+  expect(g.batches[3]!.slice(6)).toEqual(['text:1:1::End', 'font:bold:false', 'font:italic:false', 'font:underline:None', 'tracking:Off', 'formatting:false'])
+})
+
+test("formatting that does not match its cells refuses before queuing any write", async () => {
+  const run = (text: string, bold = false) => ({ text, bold, italic: false, underline: false })
+  for (const runs of [[[run("Fee:", true), run(" 10")], []], [[run("Fee:", true), run(" 100")]], [[{ ...run("Fee:"), bold: "yes" as unknown as boolean }, run(" 100")], []], [[run("", true), run("Fee: 100")], []]]) {
+    const f = fixture(), prepared = await prepareNativeRow(f.context, f.binding)
+    expect(() => queueNativeRow(f.context, prepared, ["Fee: 100", ""], runs)).toThrow("formatting does not match")
+    expect(f.queued).toEqual([])
+  }
+})

@@ -1,4 +1,4 @@
-import type { WordChatAuthoredAmendment, WordChatPreparedAmendment, WordChatParagraphFormat, WordChatInlineFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget, WordChatTableRowInsertionProposal, WordChatTableRowDeletionProposal, WordChatProposal, WordChatListCapture } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatAuthoredAmendment, WordChatCellRun, WordChatPreparedAmendment, WordChatParagraphFormat, WordChatInlineFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget, WordChatTableRowInsertionProposal, WordChatTableRowDeletionProposal, WordChatProposal, WordChatListCapture } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { validWordChatFormatting, validWordChatInlineFormatting, targetWordChatAmendment, validWordChatTableRowInsertion, validWordChatTableRowDeletion, wordChatApplyPlan, wordChatTableCaptureCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, sameNativeWordChatBodySnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody, verifyNativeWordChatRowRemainder, verifyReviewedWordChatRowOracle, assertNativeWordChatInlineTarget, assertNativeWordChatInlineDependencies, verifiedNativeWordChatInlineFormatting, sameNativeInlineWordChatParagraph, assertNativeInlineWordChatRevisionIds } from "./word-chat-host-ooxml"
 import type { WordChatAuthoredTableRow, WordChatAuthoredTableRowDeletion } from "../../../dochaus/lib/word-chat-contract"
@@ -172,6 +172,25 @@ async function point(context: WordChatContext, range: WordChatRange, text: strin
   const exact = candidates.filter((candidate) => candidate.prefix.text === text.slice(0, offset))
   if (exact.length !== 1) throw new WordChatHostError(changedMessage)
   return exact[0]!.item.getRange("Start")
+}
+
+/** Re-bind each reviewed run of a new cell by its cumulative offset and require
+ * its exact text and effective font. A mixed cell's whole-range font is null,
+ * so only these per-segment reads can prove the reviewed spans. */
+async function verifyNativeCellRuns(context: WordChatContext, range: WordChatRange, text: string, runs: WordChatCellRun[]) {
+  const offsets = runs.reduce((all, run) => [...all, all.at(-1)! + run.text.length], [0])
+  if (offsets.at(-1) !== text.length) throw new Error("Native row segments do not match the cell")
+  const points: WordChatRange[] = []
+  for (const offset of offsets) points.push(await point(context, range, text, offset))
+  const segments = runs.map((run, i) => {
+    const segment = points[i]!.expandTo(points[i + 1]!), font = segment.font
+    if (!font) throw new Error("Native row segment font unavailable")
+    segment.load("text"); font.load("bold,italic,underline")
+    return { run, segment, font }
+  })
+  await context.sync()
+  if (segments.some(({ run, segment, font }) => segment.text !== run.text || font.bold !== run.bold || font.italic !== run.italic ||
+    font.underline !== (run.underline ? "Single" : "None"))) throw new Error("Native row segment confirmation failed")
 }
 
 /** Host-only adapter. No save, session, source or model authority is held here. */
@@ -514,7 +533,7 @@ export class WordChatHost {
         }
         if (mayDispatch && !mayDispatch()) throw new WordChatHostError("The Word pane closed before the row was applied. Your document is unchanged.")
         this.applied.set(proposal.id, { identity, authors: [], uncertain: true })
-        queueNativeRow(native, prepared, proposal.cells)
+        queueNativeRow(native, prepared, proposal.cells, proposal.runs)
         await context.sync()
         context.document.load("changeTrackingMode,trackFormatting")
         prepared.table.load("rowCount,isUniform,values")
@@ -534,15 +553,17 @@ export class WordChatHost {
         })
         const afterInventory = afterAll.items.map(p => ({ id:p.uniqueLocalId, text:p.text, tableNestingLevel:p.tableNestingLevel }))
         const observedXml = afterXml.value
-        const fonts = addedParagraphs.map(paragraph => {
-          const range = context.document.getParagraphByUniqueLocalId(paragraph.id).getRange("Content") as WordChatRange & { font: { bold: boolean; italic: boolean; underline: string; load(properties: string): void } }
-          range.font.load("bold,italic,underline"); return range.font
-        })
+        // A cell with any reviewed formatting is proved per segment below;
+        // every other new cell must read uniformly plain as a whole.
+        const formatted = proposal.cells.map((_, i) => proposal.runs?.[i]?.some(run => run.bold || run.italic || run.underline) ? proposal.runs[i] : undefined)
+        const contents = addedParagraphs.map(paragraph => context.document.getParagraphByUniqueLocalId(paragraph.id).getRange("Content") as WordChatRange & { font: { bold: boolean | null; italic: boolean | null; underline: string | null; load(properties: string): void } })
+        const fonts = contents.map((range, i) => { if (formatted[i]) return undefined; range.font.load("bold,italic,underline"); return range.font })
         const after = await this.documentState(context)
-        if (observedTracking !== prepared.tracking || observedTrackFormatting !== prepared.trackFormatting || !observedTable.isUniform || observedTable.rowCount !== prepared.rowCount + 1 || observedTable.values.length !== prepared.rowCount + 1 || observedTable.values.some(row => row.length !== prepared.width) || addedParagraphs.some((paragraph, i) => paragraph.text !== proposal.cells[i] || paragraph.tableNestingLevel !== 1) || fonts.some(font => font.bold !== false || font.italic !== false || font.underline !== "None") || JSON.stringify(before.comments) !== JSON.stringify(after.comments)) throw new Error("Native row confirmation failed")
+        if (observedTracking !== prepared.tracking || observedTrackFormatting !== prepared.trackFormatting || !observedTable.isUniform || observedTable.rowCount !== prepared.rowCount + 1 || observedTable.values.length !== prepared.rowCount + 1 || observedTable.values.some(row => row.length !== prepared.width) || addedParagraphs.some((paragraph, i) => paragraph.text !== proposal.cells[i] || paragraph.tableNestingLevel !== 1) || fonts.some(font => font && (font.bold !== false || font.italic !== false || font.underline !== "None")) || JSON.stringify(before.comments) !== JSON.stringify(after.comments)) throw new Error("Native row confirmation failed")
+        for (const [i, runs] of formatted.entries()) if (runs) await verifyNativeCellRuns(context, contents[i]!, proposal.cells[i]!, runs)
         const remainder = verifyNativeWordChatRowRemainder(beforeXml, observedXml, inventory, afterInventory, proposal.table, proposal.cells)
         if (remainder.addedParagraphIds.some((id, i) => id !== addedParagraphs[i]!.id)) throw new Error("Native row identity mismatch")
-        const authors = verifyNativeWordChatAddedRow(beforeXml, observedXml, proposal.table, proposal.cells)
+        const authors = verifyNativeWordChatAddedRow(beforeXml, observedXml, proposal.table, proposal.cells, proposal.runs)
         this.applied.set(proposal.id, { identity, authors, uncertain: false })
         return { status: "applied", tracked: true, saved: false, authors }
       })

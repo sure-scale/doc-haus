@@ -1,4 +1,4 @@
-import type { WordChatTableCapture } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatCellRun, WordChatTableCapture } from "../../../dochaus/lib/word-chat-amendment-contract"
 
 type Collection<T> = { items: T[]; load(properties: string): void }
 type Paragraph = { uniqueLocalId: string; text: string; tableNestingLevel: number }
@@ -55,17 +55,26 @@ export async function prepareNativeRow(context: NativeRowContext, binding: WordC
 }
 
 /** Queue the native insertion without syncing. The caller must fence first and
- * perform exactly one final sync; any lost sync leaves the result uncertain. */
-export function queueNativeRow(context: NativeRowContext, prepared: PreparedNativeRow, cells: string[]): { ranges: Range[] } {
+ * perform exactly one final sync; any lost sync leaves the result uncertain.
+ * A cell with reviewed runs is inserted run by run, and every run sets all
+ * three flags because text appended at End inherits its neighbour's font. */
+export function queueNativeRow(context: NativeRowContext, prepared: PreparedNativeRow, cells: string[], runs?: WordChatCellRun[][]): { ranges: Range[] } {
   if (!Array.isArray(cells) || cells.length !== prepared.width || cells.some(cell => typeof cell !== "string")) throw new Error("The reviewed row does not match the table width.")
+  if (runs !== undefined && (!Array.isArray(runs) || runs.length !== cells.length || runs.some((cell, column) => !Array.isArray(cell) ||
+    cell.some(run => !run || typeof run.text !== "string" || !run.text || [run.bold, run.italic, run.underline].some(flag => typeof flag !== "boolean")) ||
+    cell.map(run => run.text).join("") !== cells[column]))) throw new Error("The reviewed row formatting does not match its cells.")
   context.document.changeTrackingMode = "TrackAll"
   prepared.table.addRows("End", 1, [cells.map(() => "")])
-  const ranges = cells.map((text, column) => {
-    const range = prepared.table.getCell(prepared.rowCount, column).body.insertText(text, "End")
-    range.font.bold = false
-    range.font.italic = false
-    range.font.underline = "None"
-    return range
+  const ranges = cells.flatMap((text, column) => {
+    const body = prepared.table.getCell(prepared.rowCount, column).body
+    const planned = runs?.[column]?.length ? runs[column]! : [{ text, bold: false, italic: false, underline: false }]
+    return planned.map(run => {
+      const range = body.insertText(run.text, "End")
+      range.font.bold = run.bold
+      range.font.italic = run.italic
+      range.font.underline = run.underline ? "Single" : "None"
+      return range
+    })
   })
   context.document.changeTrackingMode = prepared.tracking
   context.document.trackFormatting = prepared.trackFormatting

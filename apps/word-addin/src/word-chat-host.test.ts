@@ -1567,7 +1567,37 @@ test("tampered row oracle refuses before opening a Word mutation batch", async (
   expect(runs).toBe(0)
 })
 
-async function nativeRowOrchestrationFixture(lostSync = false, reloadInvalidates = false) {
+type RowSpan = { text: string; bold: boolean; italic: boolean; underline: boolean }
+/** A formatted new row: reviewed runs, Word's physical runs ([rPr children, text]
+ * per cell), and optionally what Word renders instead (fonts, sub-range text,
+ * or a token match bound one character late). */
+type FormattedRowCase = { cells: string[]; runs: RowSpan[][]; xml: Array<Array<[string, string]>>; rendered?: RowSpan[][]; view?: string[]; misplace?: boolean }
+type MockRange = { start: number; end: number; text: string; font: { bold: boolean | null; italic: boolean | null; underline: string | null; load(): void }; load(): void;
+  getRange(location?: string): MockRange; expandTo(other: MockRange): MockRange; search(query: string): { items: MockRange[]; load(): void } }
+/** A new cell paragraph's Content range over a per-character font model. */
+function mockCellRange(model: RowSpan[], view: string, misplace: boolean, counter: { searches: number }): MockRange {
+  const units = model.flatMap(run => Array.from({ length: run.text.length }, () => run))
+  const at = (start: number, end: number): MockRange => {
+    const slice = units.slice(start, end)
+    const same = (key: "bold" | "italic" | "underline") => slice.length > 0 && slice.every(unit => unit[key] === slice[0]![key]) ? slice[0]![key] : null
+    return { start, end, get text() { return view.slice(start, end) }, load() {},
+      font: { get bold() { return same("bold") }, get italic() { return same("italic") }, get underline() { const u = same("underline"); return u === null ? null : u ? "Single" : "None" }, load() {} },
+      getRange(location?: string) { return location === "Start" ? at(start, start) : location === "End" ? at(end, end) : at(start, end) },
+      expandTo(other: MockRange) { return at(start, other.end) },
+      search(query: string) {
+        counter.searches++
+        const items: MockRange[] = []
+        for (let i = view.indexOf(query, start); i >= 0 && i + query.length <= end; i = view.indexOf(query, i + 1)) {
+          const shift = misplace ? 1 : 0, item = at(i + shift, i + shift + query.length)
+          items.push(misplace ? { ...item, text: query } : item)
+        }
+        return { items, load() {} }
+      } }
+  }
+  return at(0, view.length)
+}
+
+async function nativeRowOrchestrationFixture(lostSync = false, reloadInvalidates = false, formatted?: FormattedRowCase) {
   const { zipSync, strToU8 } = await import("fflate")
   const writerPath = new URL("../../../dochaus/lib/docx-table-row-insertion.ts", import.meta.url).href
   const { docxTableRowInsertionTargets, authorDocxTableRowInsertion } = await import(writerPath)
@@ -1583,25 +1613,30 @@ async function nativeRowOrchestrationFixture(lostSync = false, reloadInvalidates
   })
   const packet = await docxTableRowInsertionTargets(source)
   const table = { tableIndex: 0, rows: [[{ id: "a", text: "Old" }, { id: "b", text: "Old two" }]] }
-  const proposal = { kind:"table_row_insert" as const, id:"native-row", documentId:"doc", explanation:"Add", openItems:["Disclosed"], createdAt:"now", position:"end" as const, table, cells:["New", "Value"] }
+  const cells = formatted?.cells ?? ["New", "Value"]
+  const proposal = { kind:"table_row_insert" as const, id:"native-row", documentId:"doc", explanation:"Add", openItems:["Disclosed"], createdAt:"now", position:"end" as const, table, cells, ...formatted ? { runs: formatted.runs } : {} }
   const writerRequest = { source_sha256:packet.source_sha256, target_handle:packet.targets[0]!.target_handle, position:"after" as const, cells:proposal.cells, author:"doc.haus" }
   const authored = await authorDocxTableRowInsertion(source, writerRequest)
   const oracle = { kind:"table_row_insert" as const, proposalId:proposal.id, sourceSha256:packet.source_sha256, table, cells:proposal.cells, author:"doc.haus" as const, writerRequest, authoredBase64:btoa(Array.from(authored.bytes as Uint8Array, x=>String.fromCharCode(x)).join("")), revisions:authored.revisions }
   const stamp = 'w:author="Reviewer" w:date="2026-01-01T00:00:00Z"'
-  const cell = (text:string, mark:number, content:number) => `<w:tc><w:tcPr/><w:p><w:pPr><w:rPr><w:ins w:id="${mark}" ${stamp}/></w:rPr></w:pPr><w:ins w:id="${content}" ${stamp}><w:r><w:t>${text}</w:t></w:r></w:ins></w:p></w:tc>`
-  const addedXml = `<w:tr><w:trPr><w:ins w:id="1" ${stamp}/></w:trPr>${cell("New",2,3)}${cell("Value",4,5)}</w:tr>`
+  const runXml = ([props, text]: [string, string]) => `<w:r>${props ? `<w:rPr>${props}</w:rPr>` : ""}<w:t${/^\s|\s$/.test(text) ? ' xml:space="preserve"' : ""}>${text}</w:t></w:r>`
+  const cell = (runs:Array<[string,string]>, mark:number, content:number) => `<w:tc><w:tcPr/><w:p><w:pPr><w:rPr><w:ins w:id="${mark}" ${stamp}/></w:rPr></w:pPr><w:ins w:id="${content}" ${stamp}>${runs.map(runXml).join("")}</w:ins></w:p></w:tc>`
+  const physical = formatted?.xml ?? cells.map(text => [["", text] as [string, string]])
+  const addedXml = `<w:tr><w:trPr><w:ins w:id="1" ${stamp}/></w:trPr>${cell(physical[0]!,2,3)}${cell(physical[1]!,4,5)}</w:tr>`
   let applied = false, queued = false, rowWrites = 0, exports = 0, nestingInvalidated = false
-  const para = (id:string,text:string) => ({ uniqueLocalId:id, text, get tableNestingLevel() { if (nestingInvalidated) throw Error("PropertyNotLoaded: Paragraph.tableNestingLevel"); return 1 }, styleBuiltIn:"Normal", spaceBefore:0, spaceAfter:0, lineSpacing:12, load() {}, getRange() { return {font:{bold:false,italic:false,underline:"None",load(){}}} } })
-  const oldParas = [para("a","Old"),para("b","Old two")], newParas = [para("c","New"),para("d","Value")]
+  const counter = { searches: 0 }
+  const para = (id:string,text:string,column?:number) => ({ uniqueLocalId:id, text, get tableNestingLevel() { if (nestingInvalidated) throw Error("PropertyNotLoaded: Paragraph.tableNestingLevel"); return 1 }, styleBuiltIn:"Normal", spaceBefore:0, spaceAfter:0, lineSpacing:12, load() {},
+    getRange() { return formatted && column !== undefined ? mockCellRange((formatted.rendered ?? formatted.runs)[column]!, formatted.view?.[column] ?? text, formatted.misplace === true, counter) : {font:{bold:false,italic:false,underline:"None",load(){}}} } })
+  const oldParas = [para("a","Old"),para("b","Old two")], newParas = [para("c",cells[0]!,0),para("d",cells[1]!,1)]
   const collection = <T>(items:T[]) => ({items,load() {}})
-  const nativeTable = { get rowCount() { return applied ? 2 : 1 }, isUniform:true, get values() { return applied ? [["Old","Old two"],["New","Value"]] : [["Old","Old two"]] }, load() {},
+  const nativeTable = { get rowCount() { return applied ? 2 : 1 }, isUniform:true, get values() { return applied ? [["Old","Old two"],cells] : [["Old","Old two"]] }, load() {},
     getCell(row:number,col:number) { return {body:{paragraphs:collection([row ? newParas[col]! : oldParas[col]!]), insertText() { return {font:{bold:true,italic:true,underline:"Single",load(){}}} }}} },
     addRows() { queued = true; rowWrites++ }, }
   const body = { get paragraphs() { return { items:applied ? [...oldParas,...newParas] : oldParas, load(properties:string) { if (reloadInvalidates && applied) nestingInvalidated = !properties.includes("tableNestingLevel") } } }, tables:collection([nativeTable]),
-    getRange() { return {getOoxml() {return {value:flatOpc(tableXml(applied ? addedXml : ""))}}, getReviewedText() {return {value:applied ? "Old\rOld two\rNew\rValue" : "Old\rOld two"}}, getTrackedChanges() {return collection([])}, getComments() {return collection([])} } } }
+    getRange() { return {getOoxml() {return {value:flatOpc(tableXml(applied ? addedXml : ""))}}, getReviewedText() {return {value:applied ? `Old\rOld two\r${cells.join("\r")}` : "Old\rOld two"}}, getTrackedChanges() {return collection([])}, getComments() {return collection([])} } } }
   const document = {body, changeTrackingMode:"Off", trackFormatting:false, load() {}, getParagraphByUniqueLocalId(id:string) {return [...oldParas,...newParas].find(p=>p.uniqueLocalId===id)!} }
   const word = {async run(fn:(context:unknown)=>Promise<unknown>) {return fn({document, async sync() { if (queued) {queued=false; applied=true; if (lostSync) throw Error("lost final sync") } }})}} as WordChatWord
-  return {host:new WordChatHost(word,()=>true), proposal, exportCurrent:async()=>{exports++;return source}, author:async()=>oracle, counts:()=>({rowWrites,exports})}
+  return {host:new WordChatHost(word,()=>true), proposal, exportCurrent:async()=>{exports++;return source}, author:async()=>oracle, counts:()=>({rowWrites,exports}), searches:()=>counter.searches}
 }
 
 test("native row confirms once and a duplicate does not re-export or append", async () => {
@@ -1622,6 +1657,36 @@ test("lost native row mutation sync is uncertain and cannot replay", async () =>
   await expect(f.host.applyRow(f.proposal, f.exportCurrent, f.author)).rejects.toMatchObject({mutationState:"uncertain"})
   await expect(f.host.applyRow(f.proposal, f.exportCurrent, f.author)).rejects.toMatchObject({mutationState:"uncertain"})
   expect(f.counts()).toEqual({rowWrites:1,exports:1})
+})
+
+const span = (text: string, bold = false, italic = false, underline = false): RowSpan => ({ text, bold, italic, underline })
+const BOLD = "<w:b/><w:bCs/>", ITALIC_UNDERLINE = '<w:i/><w:iCs/><w:u w:val="single"/>'
+const formattedRow = (change: Partial<FormattedRowCase> = {}): FormattedRowCase => ({ cells: ["Fee: 100", "Value"],
+  runs: [[span("Fee:", true), span(" "), span("100", false, true, true)], [span("Value")]],
+  xml: [[[BOLD, "Fee:"], ["", " "], [ITALIC_UNDERLINE, "100"]], [["", "Value"]]], ...change })
+
+test("formatted native row proves every reviewed span by font and OOXML before reporting success", async () => {
+  const f = await nativeRowOrchestrationFixture(false, false, formattedRow())
+  expect(await f.host.applyRow(f.proposal, f.exportCurrent, f.author)).toEqual({status:"applied",tracked:true,saved:false,authors:["Reviewer"]})
+  // The mixed cell's whole font reads null; only its two inner boundaries need a token search.
+  expect(f.searches()).toBe(2)
+  expect((await f.host.applyRow(f.proposal, f.exportCurrent, f.author)).status).toBe("already-applied")
+  expect(f.counts()).toEqual({rowWrites:1,exports:1})
+})
+
+test("a formatted row whose segment font, text, offset or physical runs differ is uncertain and never replays", async () => {
+  for (const change of [
+    { rendered: [[span("Fee: ", true), span("100", false, true, true)], [span("Value")]] },  // bold reaches the space
+    { rendered: [[span("Fee:", true), span(" "), span("100", false, true)], [span("Value")]] }, // underline missing
+    { rendered: [[span("Fee:", true), span(" "), span("100", false, true, true)], [span("Value", true)]] }, // plain cell turned bold
+    { view: ["Fee: 1OO", "Value"] },                                                          // segment text drift
+    { misplace: true },                                                                       // token bound at the wrong offset
+    { xml: [[[BOLD, "Fee: "], [ITALIC_UNDERLINE, "100"]], [["", "Value"]]] as Array<Array<[string, string]>> }, // OOXML extent differs
+  ] satisfies Partial<FormattedRowCase>[]) {
+    const f = await nativeRowOrchestrationFixture(false, false, formattedRow(change))
+    await expect(f.host.applyRow(f.proposal, f.exportCurrent, f.author)).rejects.toMatchObject({mutationState:"uncertain"})
+    expect(f.counts()).toEqual({rowWrites:1,exports:1})
+  }
 })
 
 
