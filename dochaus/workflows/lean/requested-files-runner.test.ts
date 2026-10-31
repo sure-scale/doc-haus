@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { effectivePosture } from "../../lib/matter-client"
+import { LEAN_ACTS_SCHEMA } from "./act-record"
 import { combinedDelivery, memoNotesFile } from "./deliverables"
 import { PLAN_FILES_REVISIONS } from "./draft-sections"
 import { readLeanEvents } from "./events"
@@ -53,9 +54,18 @@ const replies = (extra: Record<string, Reply>): Record<string, Reply> => ({
   ...extra,
 })
 
+type RecordedAct = { act: string; source: string; quote: string; parties: string[] }
+/** Writes the run's act record, as its acts step leaves it: by default one that
+ * found no act, so no act needs placing. */
+const recordActs = (directory: string, acts: RecordedAct[] = []) => writeLeanText(directory, "acts.json", JSON.stringify({
+  schema: LEAN_ACTS_SCHEMA, status: acts.length ? "listed" : "none", deliverables: [], issues: [],
+  acts: acts.map(({ act, source, quote, parties }) => ({ act, source, quote, who: { authorised_by: parties, performed_by: [], basis: [], reason: null }, how: null })),
+}))
+
 function prepared(request = REQUEST) {
   const directory = matter(SOURCE_TEXT)
   writeLeanText(directory, "request.md", request)
+  recordActs(directory)
   return directory
 }
 
@@ -64,7 +74,7 @@ const revisions = (model: Model) => model.prompts.filter(prompt => prompt.agent 
 const outlinePrompt = (model: Model) => model.prompts.find(prompt => prompt.agent === AGENT.draft)!
 const partPrompts = (model: Model) => model.prompts.filter(prompt => /^Draft part \d+ of /m.test(prompt.text))
 const filesSessions = (model: Model) => model.sessions.filter(session => session.agent === AGENT.files)
-const coverageSessions = (model: Model) => model.sessions.filter(session => session.agent === AGENT.coverageActs || session.agent === AGENT.coverage)
+const coverageSessions = (model: Model) => model.sessions.filter(session => session.agent === AGENT.coverage)
 const filesEvents = (directory: string) => readLeanEvents(directory).filter(row => row.event === "requested_files")
 const gateOf = (directory: string) => readLeanJson(directory, "gate.json") as GateResult
 /** The plan the outline gives as code saved it before the files job. */
@@ -86,9 +96,8 @@ describe("requested files through the run", () => {
     // One files job, in a fresh session of its own; one revision, in the outline's session, carrying its one issue.
     expect(filesSessions(model)).toEqual([expect.objectContaining({ title: "Lean drafting: draft: files", permissions: LEAN_CHILD_PERMISSIONS })])
     expect(model.count(AGENT.files)).toBe(1)
-    // The revision changes only the delivery, so the coverage jobs are not asked
-    // again either: the acts are listed once, by two runs, and none needs placing.
-    expect(coverageSessions(model)).toHaveLength(2)
+    // The act record found no act, so the placement job is never asked.
+    expect(coverageSessions(model)).toEqual([])
     expect(revisions(model)).toEqual([expect.objectContaining({ sessionID: outlinePrompt(model).sessionID })])
     expect(revisions(model)[0]!.text.split("\n").filter(line => line.startsWith("- "))).toEqual([
       `- ${FILES_REVISION_SCOPE}`,
@@ -102,11 +111,13 @@ describe("requested files through the run", () => {
     expect(filesEvents(directory)).toEqual([expect.objectContaining({ stage: "draft", document: "d1", step: "files", outcome: "stated", issues: [],
       reason: '"Release letter": file "Kestrel Release Pack.docx"' })])
 
-    // Delivered as asked: one combined file under the lawyer's name, nothing to disclose or ask.
+    // Delivered as asked: one combined file under the lawyer's name, nothing to ask, and
+    // nothing about the files to disclose; only the act record's finding of no act is.
     expect(combinedDelivery(directory)).toEqual({ document: "d1", name: "Kestrel Release Pack" })
     expect(requestedFilesItems(directory)).toEqual([])
     expect(readQuestions(directory)).toEqual([])
-    expect(gateOf(directory)).toMatchObject({ status: "pass", disclosed: [], blocking: [] })
+    expect(gateOf(directory)).toMatchObject({ status: "pass", blocking: [] })
+    expect(gateOf(directory).disclosed).toEqual([expect.objectContaining({ detail: expect.stringMatching(/^No instructed act found:/) })])
   }, 120_000)
 
   test("a files revision that also renames a document is not adopted: it is spent, and the next revision starts from the earlier outline", async () => {
@@ -120,7 +131,7 @@ describe("requested files through the run", () => {
     const issue = `- The lawyer's words "${PACK}" ask for the memo and "Release letter" in one file. Write "Deliverable: combined" under "Release letter".`
     expect(revisions(model).map(prompt => prompt.text.split("\n").filter(line => line.startsWith("- ")))).toEqual([[`- ${FILES_REVISION_SCOPE}`, issue], [`- ${FILES_REVISION_SCOPE}`, issue]])
     expect(readLeanPlan(directory)!.documents).toEqual([expect.objectContaining({ id: "d1", title: "Release letter", deliverable: "combined", file: "Kestrel Release Pack.docx" })])
-    expect(coverageSessions(model)).toHaveLength(2)
+    expect(coverageSessions(model)).toEqual([])
     expect(filesSessions(model)).toHaveLength(1)
     expect(readRequestedFiles(directory)).toMatchObject({ planned: PLANNED, files: [PACKED] })
   }, 120_000)
@@ -135,7 +146,7 @@ describe("requested files through the run", () => {
     const plan = readLeanPlan(directory)!
     expect(plan.documents).toEqual([expect.objectContaining({ id: "d1", title: "Release letter", deliverable: "combined", file: "Kestrel Release Pack.docx" })])
     expect(plan.documents[0]!.parts.map(part => part.heading)).toEqual(["Release"])
-    expect(coverageSessions(model)).toHaveLength(2)
+    expect(coverageSessions(model)).toEqual([])
     expect(filesSessions(model)).toHaveLength(1)
   }, 120_000)
 
@@ -192,6 +203,7 @@ describe("requested files through the run", () => {
     const request = "Prepare the papers so that the Orchard Committee approves the revised schedule, and a release letter for Kestrel Works with a cover memo."
     const directory = prepared(request)
     const act = { act: "approve the revised schedule", source: "request", quote: "the Orchard Committee approves the revised schedule", parties: ["the Orchard Committee"], document: "d1" }
+    recordActs(directory, [act])
     const misplaced = outline("Memo: cover memo", letter("Executed by: Kestrel Works"))
     const model = scriptedModel(replies({ [AGENT.draft]: outliner(misplaced), ...coverageJobs(() => JSON.stringify({ acts: [act] })) }))
     const state = await runLean(directory, { sessions: model.port })

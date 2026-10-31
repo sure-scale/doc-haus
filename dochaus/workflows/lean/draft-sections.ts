@@ -8,7 +8,7 @@ import { appendLeanEvent, leanElapsedMs } from "./events"
 import { matterSourceIDs } from "./quotes"
 import { memoNotesFile } from "./deliverables"
 import {
-  LEAN_COVERAGE_SCHEMA, coverageActsPrompt, coveragePlacementPrompt, coveragePlanHash, coverageScopeQuestion, mergeCoverageActs, parseCoverageActs, parseCoveragePlacement, planCoverageCurrent, planCoverageIssues,
+  LEAN_COVERAGE_SCHEMA, coveragePlacementPrompt, coveragePlanHash, coverageScopeQuestion, parseCoveragePlacement, planCoverageCurrent, planCoverageIssues, recordedActs,
   type CoverageAct, type InstructedAct, type LeanCoverage,
 } from "./package-coverage"
 import { answeredScopeQuestion, openScopeQuestion } from "./package-scope"
@@ -49,9 +49,10 @@ import { originalTables, originalTablesBlock, partTableIssues, tableParts } from
 // issues; code assembles the parts in outline order and the assembled document
 // goes through the ordinary draft check, render and paragraph pointers. The
 // outline comes from the model; nothing here knows what a document should hold.
-// Before the plan is saved, coverage jobs in sessions of their own check it
-// against the lawyer's instructions (package-coverage.ts): the acts they direct
-// are listed blind to the plan, then placed in it. The issues go back to the
+// Before the plan is saved, a coverage job in a session of its own checks it
+// against the lawyer's instructions (package-coverage.ts): the acts they direct,
+// as the run's act record lists them blind to the plan (acts.json), are placed
+// in it. The issues go back to the
 // outline session for at most PLAN_COVERAGE_REVISIONS revised outlines, and the
 // result is recorded in coverage.json without failing the step. When an
 // instructed act is still left without a document its parties execute and no
@@ -62,7 +63,8 @@ import { originalTables, originalTablesBlock, partTableIssues, tableParts } from
 // never asked about again. While the gate's
 // package-scope question is open, the step asks none of its own: it saves the
 // plan, the act is disclosed, and the open question stays the one to answer. A
-// coverage reply that never passed its check (unchecked) does not stop the step.
+// coverage reply that never passed its check (unchecked) does not stop the step,
+// nor does an act record that lists no act (no_acts), which is disclosed.
 // When the outline plans a memo or more than one document and no package-scope
 // question stops the step, a files job in its own session then reads which
 // files the lawyer's words ask to receive (requested-files.ts). Where the plan
@@ -156,23 +158,18 @@ export async function runDraftStage(
     progress({ ...(sessionIDs.length === 1 ? { session_id: id } : {}), session_ids: [...sessionIDs] })
     return id
   }
-  // The acts the instructions direct are listed blind to the plan, so they are
-  // listed once per step, on first use, and serve every outline revision and
-  // the saved plan's recheck. Two runs in sessions of their own list them in
-  // parallel and their verified lists are joined (mergeCoverageActs); when
-  // neither passes its check, the first run's issues are the step's.
-  let instructed: Promise<Checked<InstructedAct[]>> | undefined
-  const listing = () => instructed ??= Promise.all([1, 2].map(async run => {
-    const id = await coverageSession(LEAN_STAGE_AGENTS.coverageActs, `coverage acts ${run}`)
-    return exchange({ id, agent: LEAN_STAGE_AGENTS.coverageActs })("coverage acts", coverageActsPrompt(directory), reply => parseCoverageActs(reply, directory))
-  })).then(([first, second]): Checked<InstructedAct[]> => first!.value && second!.value ? { issues: [], value: mergeCoverageActs(first!.value, second!.value) }
-    : first!.value ? first! : second!.value ? second! : { issues: first!.issues })
+  // The acts the instructions direct are the act record's (recordedActs), read
+  // once per step: they serve every outline revision and the saved plan's
+  // recheck. A record that is missing or never passed its listing check leaves
+  // coverage unchecked.
+  let instructed: Checked<InstructedAct[]> | undefined
+  const listing = () => instructed ??= recordedActs(directory)
   // The placement job reads the plan in a fresh session of its own for each
   // plan it checks, so the outline's reasoning does not steer it; with no act
   // listed it is not asked. Errors from the session calls, including a pause or
   // restart, propagate and leave the plan unwritten.
   const covering = async (documents: PlannedDocument[]): Promise<Coverage> => {
-    const listed = await listing()
+    const listed = listing()
     if (!listed.value) return { issues: listed.issues }
     const acts = listed.value
     if (!acts.length) return { acts: [], issues: planCoverageIssues([], documents, directory) }
@@ -185,8 +182,9 @@ export async function runDraftStage(
   const recordCoverage = (documents: PlannedDocument[], actingFor: ActingFor | undefined, coverage: Coverage) => {
     const record: LeanCoverage = {
       schema: LEAN_COVERAGE_SCHEMA,
-      plan: coveragePlanHash(documents, actingFor),
-      status: !coverage.acts ? "unchecked" : coverage.issues.length ? "uncovered" : "covered",
+      plan: coveragePlanHash(directory, documents, actingFor),
+      // Only an act record that lists no act leaves a checked plan with none placed.
+      status: !coverage.acts ? "unchecked" : !coverage.acts.length ? "no_acts" : coverage.issues.length ? "uncovered" : "covered",
       acts: coverage.acts ?? [],
       issues: coverage.issues,
     }

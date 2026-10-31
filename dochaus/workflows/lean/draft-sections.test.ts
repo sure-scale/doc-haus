@@ -8,6 +8,7 @@ import { referenceFields } from "../../lib/docx-crossrefs"
 import { compareDocxWithPointers, paragraphSha256 } from "../../lib/drafting-amendment"
 import { renderMarkdownToDocx } from "../../lib/render"
 import { readParagraphs, shownText } from "./checks"
+import { LEAN_ACTS_SCHEMA } from "./act-record"
 import { assembleDraft, checkSection, runDraftStage, sectionPrompt } from "./draft-sections"
 import { readLeanEvents } from "./events"
 import { NOT_STATED, leanPlanIssue, operativeDocument, parsePlan, readLeanPlan, writeLeanPlan, type PlannedDocument } from "./plan"
@@ -33,7 +34,10 @@ function matter() {
   db.run("CREATE TABLE chunks (doc_name TEXT, section TEXT, text TEXT, char_start INTEGER, char_end INTEGER)")
   db.query("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)").run(SOURCE, "1", "Notice must be given in writing.", 0, 32)
   db.close()
-  return { directory, state: initLeanState(directory, { request: "Draft a short notice letter.", ownerSessionID: "ses_owner", model: null }) }
+  const state = initLeanState(directory, { request: "Draft a short notice letter.", ownerSessionID: "ses_owner", model: null })
+  // The run's act record lists no act the lawyer's instructions direct.
+  writeLeanText(directory, "acts.json", JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status: "none", acts: [], deliverables: [], issues: [] }))
+  return { directory, state }
 }
 
 function scripted(reply: (text: string, index: number) => string) {
@@ -41,8 +45,6 @@ function scripted(reply: (text: string, index: number) => string) {
   const sessions: StageSessionPort = {
     createSession: async () => "ses_draft",
     prompt: async input => {
-      // The outline's coverage job lists no act the lawyer's instructions direct.
-      if (input.agent === LEAN_STAGE_AGENTS.coverageActs) return JSON.stringify({ acts: [] })
       prompts.push({ sessionID: input.sessionID, text: input.text })
       expect(input.agent).toBe(LEAN_STAGE_AGENTS.draft)
       return reply(input.text, prompts.length - 1)
@@ -363,10 +365,9 @@ describe("sectioned draft stage", () => {
       "## Notice", "", "\"Notice must be given in writing\" [source: terms.docx].", "",
       "## Next steps", "", "### Timing", "", "We will wait for a reply. [open item: reply deadline]", "",
     ].join("\n"))
-    // Seven calls, the outline's two coverage listings included; the hardest
-    // step (the retried part) took two tries. The accepted draft's key is
+    // Five calls; the hardest step (the retried part) took two tries. The accepted draft's key is
     // recorded with it.
-    expect(progress.slice(-2)).toEqual([{ attempts: 2, calls: 7, feedback: [] }, { input_sha: stageInputSha(directory, "d1.draft") }])
+    expect(progress.slice(-2)).toEqual([{ attempts: 2, calls: 5, feedback: [] }, { input_sha: stageInputSha(directory, "d1.draft") }])
 
     // Every listed paragraph carries its hidden pointer bookmark in the body docx.
     const rows = readParagraphs(directory, "d1")
@@ -377,8 +378,8 @@ describe("sectioned draft stage", () => {
 
     const events = readLeanEvents(directory).map(event => `${event.event}:${event.step}`)
     expect(events).toEqual([
-      // The two coverage listings run in parallel; with no act listed, no act is placed.
-      "model_call:outline", "checker:outline", "model_call:coverage acts", "model_call:coverage acts", "checker:coverage acts", "checker:coverage acts", "coverage:coverage",
+      // The act record lists no act, so no act is placed.
+      "model_call:outline", "checker:outline", "coverage:coverage",
       "model_call:part 1/3", "checker:part 1/3",
       "model_call:part 2/3", "checker:part 2/3", "retry:part 2/3", "checker:part 2/3",
       "model_call:part 3/3", "checker:part 3/3",

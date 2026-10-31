@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { TOOL_SYNTAX_ISSUE, checkDraftingNotes } from "./checks"
 import {
-  LEAN_COVERAGE_SCHEMA, coverageActsPrompt, coverageCarries, coverageItems, coveragePlacementPrompt, coveragePlanHash, coverageScopeQuestion, mergeCoverageActs, parseCoverage,
-  parseCoverageActs, parseCoveragePlacement, planCoverageIssues, type CoverageAct, type InstructedAct, type LeanCoverage,
+  LEAN_COVERAGE_SCHEMA, coverageCarries, coverageItems, coveragePlacementPrompt, coveragePlanHash, coverageScopeQuestion, mergeCoverageActs, parseCoverage,
+  parseCoveragePlacement, planCoverageIssues, type CoverageAct, type InstructedAct, type LeanCoverage,
 } from "./package-coverage"
 import { writeLeanPlan, type DocID, type PlannedDocument } from "./plan"
 import { EXCERPT, instructionFound } from "./quotes"
@@ -10,8 +10,8 @@ import { disclosableItems } from "./stages"
 import { writeLeanText, writeQuestions } from "./state"
 import { SOURCE, cleanupMatters, matter } from "./test-support"
 
-// Package coverage: the plan-blind job's acts and the placement job's reply are
-// verified against the matter, and the plan is held to the verified acts.
+// Package coverage: the placement job's reply is verified against the matter,
+// and the plan is held to the act record's acts.
 // Synthetic parties and acts only.
 
 afterEach(cleanupMatters)
@@ -98,12 +98,11 @@ describe("plan coverage issues", () => {
     ])
   })
 
-  test("an act whose parties the record does not settle raises nothing once a document not declared as executed by none carries it, and no acts raise nothing", () => {
+  test("an act whose parties the record does not settle raises nothing once a document not declared as executed by none carries it", () => {
     const directory = prepared()
     expect(planCoverageIssues([act({ parties: [] })], [planned("d1", "Release letter", ["Kestrel Works"])], directory)).toEqual([])
     // No "Executed by:" line: no party is supplied for the plan to declare.
     expect(planCoverageIssues([act({ parties: [] })], [planned("d1", "Release letter")], directory)).toEqual([])
-    expect(planCoverageIssues([], [planned("d1", "Release letter", ["Kestrel Works"]), planned("d2", "Advice note", [])], directory)).toEqual([])
   })
 
   test("an act carried by a document executed by no party is planned in a document a party executes", () => {
@@ -685,55 +684,7 @@ describe("refusal hint: fix wave 2", () => {
   })
 })
 
-describe("the plan-blind listing job's reply", () => {
-  const ACTS_SHAPE = 'Reply with the JSON object only: {"acts":[{"act":"...","source":"...","quote":"...","parties":["..."]}]}.'
-  const listedRow = (fields: Partial<CoverageAct> = {}): InstructedAct => {
-    const { document: _document, excluded_by: _excluded, ...own } = act(fields)
-    return own
-  }
-  const listing = (...acts: Partial<CoverageAct>[]) => JSON.stringify({ acts: acts.map(fields => listedRow(fields)) })
-
-  test("verified acts are returned with no document, from a bare or fenced reply", () => {
-    const directory = prepared()
-    const release = { act: "release the deposit", source: SOURCE, quote: RELEASE, parties: ["Kestrel Works"] }
-    expect(parseCoverageActs("```json\n" + listing({}, release, { parties: [] }) + "\n```", directory))
-      .toEqual({ issues: [], value: [listedRow(), listedRow(release), listedRow({ parties: [] })] })
-    expect(parseCoverageActs('{"acts":[]}', directory)).toEqual({ issues: [], value: [] })
-    // A document or excluded_by the job gives anyway is not read: the plan places the act.
-    expect(parseCoverageActs(reply({ document: "d3" as DocID, excluded_by: "Not a sentence" }), directory)).toEqual({ issues: [], value: [listedRow()] })
-  })
-
-  test("a printed tool call, a reply that is not the acts object and a malformed act are retried with the listing shape", () => {
-    const directory = prepared()
-    expect(parseCoverageActs('<tool_call>{"name":"read-document","arguments":{"document":"x"}}</tool_call>', directory)).toEqual({ issues: [TOOL_SYNTAX_ISSUE] })
-    for (const text of ["The acts are listed below.", '{"acts":"x"}', '{"placements":[]}', "[]"]) expect(parseCoverageActs(text, directory)).toEqual({ issues: [ACTS_SHAPE] })
-    const rows: unknown[] = ["x", { ...listedRow(), source: "" }, { ...listedRow(), parties: "Kestrel Works" }, { ...listedRow(), act: " " }]
-    expect(parseCoverageActs(JSON.stringify({ acts: rows }), directory)).toEqual({
-      issues: rows.map((_, index) => `acts[${index}] needs nonempty "act", "source" and "quote" strings and "parties" as a list of names ([] when the record does not settle them). ${ACTS_SHAPE}`),
-    })
-  })
-
-  test("an unknown source, a quote not in its source and an unnamed party are retried, each naming the act and never a document", () => {
-    const directory = prepared()
-    const parsed = parseCoverageActs(listing({ source: "minutes.docx" }, { source: SOURCE, quote: "the Orchard Committee shall approve every schedule" }, { parties: ["Lantern Group"] }), directory)
-    expect(parsed).toEqual({ issues: [
-      `acts[0] ("approve the revised schedule") gives the source "minutes.docx", which is not a matter document. Use one of "request", "${SOURCE}".`,
-      expect.stringContaining(`quotes "the Orchard Committee shall approve every schedule" as from "${SOURCE}", but those words are not in that document.`),
-      unnamedParty("Lantern Group").replace("acts[0]", "acts[2]"),
-    ] })
-    expect(parsed.issues.filter(issue => /document"|excluded_by|planned/.test(issue))).toEqual([])
-  })
-
-  test("an act listed again, differing only in spacing, case or party naming, is kept once", () => {
-    const directory = prepared()
-    expect(parseCoverageActs(listing({}, { act: " Approve  the revised SCHEDULE ", parties: ["Orchard committee"] }), directory)).toEqual({ issues: [], value: [listedRow()] })
-    // Other parties, or another quote, make another act.
-    expect(parseCoverageActs(listing({}, { parties: [] }, { quote: "Orchard Committee approves the revised schedule" }), directory))
-      .toEqual({ issues: [], value: [listedRow(), listedRow({ parties: [] }), listedRow({ quote: "Orchard Committee approves the revised schedule" })] })
-  })
-})
-
-describe("the two listings merged", () => {
+describe("listings merged", () => {
   const listedRow = (fields: Partial<InstructedAct> = {}): InstructedAct => ({ act: "approve the revised schedule", source: "request", quote: APPROVE, parties: ["the Orchard Committee"], ...fields })
   const APPROVED = listedRow()
   const RELEASED = listedRow({ act: "release the deposit", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works"] })
@@ -815,7 +766,6 @@ describe("the placement job's reply", () => {
 })
 
 describe("coverage prompts", () => {
-  const ACTS_SHAPE = 'Reply with the JSON object only: {"acts":[{"act":"...","source":"...","quote":"...","parties":["..."]}]}.'
   const PLACEMENT_SHAPE = 'Reply with the JSON object only: {"placements":[{"act":0,"document":"planned id or null"}]}.'
   const documents = [planned("d1", "Resolution", ["the Orchard Committee"]), planned("d2", "Release letter", ["Kestrel Works"])]
   const TERMS = [{ heading: "Terms", scope: "" }]
@@ -823,24 +773,6 @@ describe("coverage prompts", () => {
   const RELEASED: InstructedAct = { act: "release the deposit", source: SOURCE, quote: RELEASE, parties: [] }
   const plannedView = (prompt: string): unknown => JSON.parse(/<planned_documents>\n[^\n]*\n([\s\S]*)\n<\/planned_documents>/.exec(prompt)![1]!)
   const placement = (directory: string, plan = documents) => coveragePlacementPrompt(directory, plan, [APPROVED, RELEASED])
-
-  test("the listing prompt carries the request and the source names, and nothing of the plan", () => {
-    const prompt = coverageActsPrompt(prepared())
-    expect(prompt).toContain(`<request>\n${REQUEST}\n</request>`)
-    expect(prompt).toContain("<sources>\nMatter documents (use these exact names with search-document and read-document, and as source names):\n" +
-      `- ${SOURCE}\nTo quote the request, the lawyer's updates or answers, use the source name "request".\n</sources>`)
-    expect(prompt).toContain(`- ${ACTS_SHAPE} Reply {"acts":[]} when the instructions direct no legal act.`)
-    for (const absent of ["<planned_documents>", "<acts>", "Resolution", "excluded_by", '"document"', "<user_updates>", "<answers>"]) expect(prompt).not.toContain(absent)
-  })
-
-  test("acts come from the lawyer's instructions, in whichever document, and an authorisation is the act of the party who gives it", () => {
-    const prompt = coverageActsPrompt(prepared())
-    expect(prompt).toContain("- List every legal act that the request, the lawyer's updates or answers direct to be taken or documented: in the requested document or in any other document, now or later. " +
-      "A matter document directs an act only where the request adopts it as instructions; an obligation a matter document merely describes is not an instructed act. ")
-    expect(prompt).toContain("\"parties\": every party who must take the act for it to be effective (for an authorisation, those who give it), each named as the sources name it, or [] when the record does not settle who must take it.")
-    expect(prompt).not.toContain("authorise a later act")
-    expect(prompt).not.toContain('"party"')
-  })
 
   test("the placement prompt shows the verified acts by index and asks for each one's planned document", () => {
     const prompt = placement(prepared())
@@ -857,14 +789,14 @@ describe("coverage prompts", () => {
       'do not leave it out: give the planned document that carries the act, or null when none does, without "excluded_by". Leave "excluded_by" out of every other act.\n')
   })
 
-  test("the lawyer's later instructions and answered questions appear under their own tags in both prompts", () => {
+  test("the lawyer's later instructions and answered questions appear under their own tags in the placement prompt", () => {
     const directory = prepared()
     writeLeanText(directory, "updated-notes.md", "Kestrel Works also returns the keys.\n")
     writeQuestions(directory, [
       { id: "q-1", stage: "intake", question: "Who countersigns?", context: "Needed to plan.", status: "answered", answer: "Wren Atelier countersigns." },
       { id: "q-2", stage: "intake", question: "Which schedule applies?", context: "Needed to plan.", status: "open" },
     ])
-    for (const prompt of [coverageActsPrompt(directory), placement(directory)]) {
+    for (const prompt of [placement(directory)]) {
       expect(prompt).toContain("<user_updates>\nLater instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n" +
         "Kestrel Works also returns the keys.\n</user_updates>")
       expect(prompt).toContain("<answers>\nThe lawyer's answers; they remain controlling:\n- [q-1] Q: Who countersigns?\n  A: Wren Atelier countersigns.\n</answers>")
@@ -905,7 +837,7 @@ describe("final attempt: fix wave 2", () => {
   function recorded(directory: string, acts: CoverageAct[]) {
     const plan = writeLeanPlan(directory, documents)
     const issues = planCoverageIssues(acts, plan.documents, directory)
-    const record: LeanCoverage = { schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(plan.documents, plan.acting_for), status: issues.length ? "uncovered" : "covered", acts, issues }
+    const record: LeanCoverage = { schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(directory, plan.documents, plan.acting_for), status: issues.length ? "uncovered" : "covered", acts, issues }
     writeLeanText(directory, "coverage.json", `${JSON.stringify(record, null, 2)}\n`)
     const items = coverageItems(directory)
     const notes = ["# Drafting notes", "", "The committee resolution records the approval.", "", ...items.map(item => `- ${item.detail.replace(/\bd\d+ (?=")/g, "")} [ref: ${item.id}]`)].join("\n")
@@ -1085,7 +1017,7 @@ describe("dedup key", () => {
   function recorded(directory: string, acts: CoverageAct[]) {
     const plan = writeLeanPlan(directory, documents)
     const issues = planCoverageIssues(acts, plan.documents, directory)
-    const record: LeanCoverage = { schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(plan.documents, plan.acting_for), status: issues.length ? "uncovered" : "covered", acts, issues }
+    const record: LeanCoverage = { schema: LEAN_COVERAGE_SCHEMA, plan: coveragePlanHash(directory, plan.documents, plan.acting_for), status: issues.length ? "uncovered" : "covered", acts, issues }
     writeLeanText(directory, "coverage.json", `${JSON.stringify(record, null, 2)}\n`)
   }
 
