@@ -2,6 +2,7 @@ import { normalize, normalizeWithMap, sourceReadings } from "../../lib/quote-ver
 import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
 import { FIRST_DOCUMENT, nameKey, namedIn, readLeanPlan, type ActingFor, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
+import { approvedResearch, researchHandoff } from "./research"
 import { EXCERPT, REQUEST_SOURCE, excerpt, lawyerWords, matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
 import { answeredScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows, type ScopeParties } from "./package-scope"
@@ -79,6 +80,7 @@ export function coverageActsPrompt(directory: string) {
   return [
     "This is a lean drafting run. List the legal acts the lawyer's instructions direct to be taken, whichever document they are to be taken in.",
     ...instructionSections(directory),
+    approvedResearch(directory).length ? tagged("legal_research", "The run's approved legal research, as evidence of who must take an act; it directs no act itself.\n" + researchHandoff(directory)) : "",
     tagged("sources", [
       "Matter documents (use these exact names with search-document and read-document, and as source names):",
       ...matterSourceIDs(directory).map(name => `- ${nameWithProvenance(name, provenance)}`),
@@ -89,6 +91,8 @@ export function coverageActsPrompt(directory: string) {
       "A matter document directs an act only where the request adopts it as instructions; an obligation a matter document merely describes is not an instructed act. Do not list an act the instructions say is not to be taken at all.",
       "- For each act give \"act\": what is to be done, briefly; \"source\": the exact matter document name, or \"request\"; \"quote\": the exact words that direct it, copied verbatim from that source; " +
       "\"parties\": every party who must take the act for it to be effective (for an authorisation, those who give it), each named as the sources name it, or [] when the record does not settle who must take it.",
+      "- Who must take an act for it to be effective is settled by the law and the record, not by which document the instructions put it in. " +
+      "Where the legal research says a party of some kind must take or authorise an act of that kind, name the party of that kind the request or matter documents name, even when the instructions put the act in another party's document.",
       "- Never supply a party by assumption.",
       "- Read the sources you rely on with search-document or read-document, and check each quote with verify-quote.",
       `- ${ACTS_SHAPE} Reply {"acts":[]} when the instructions direct no legal act.`,
