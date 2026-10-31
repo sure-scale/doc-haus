@@ -1081,6 +1081,38 @@ test("a cached Apply callback rechecks transport availability before calling the
 })
 
 
+test("an unappliable proposal over table cells is prepared again with the cursor in that table", async () => {
+  const placed: Array<[string, boolean]> = []
+  const f = fixture({ turns: [turn({ kind: "amendment", text: "Add a tax row", proposal })], request: async action => action === "send" ? { turn: turn({ id: "turn-two", kind: "amendment", text: "Add a tax row", answer: "Prepared." }) } : undefined, host: {
+    applyEligibility: () => ({ supported: false, reason: "Word cannot safely apply this change yet. Make it directly in Word." }),
+    tableTarget: async (target, place = false) => { placed.push([target.id, place]); return true },
+  } })
+  try {
+    await f.chat.ready; await Bun.sleep(0)
+    const card = f.root.querySelector(".chat-proposal")!
+    expect(card.textContent).toContain("This change is in a table.")
+    expect([...card.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].map(b => b.textContent)).toEqual(["Prepare as table change", "Decline"])
+    ;[...card.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === "Prepare as table change")!.click()
+    await Bun.sleep(0); await Bun.sleep(0)
+    expect(placed).toEqual([[passage.id, false], [passage.id, true]])
+    expect(f.calls.filter(c => c.action === "send").map(c => (c.input as WordChatSend).text)).toEqual(["Add a tax row"])
+    expect(f.root.textContent).toContain("Prepared again as a table change.")
+  } finally { f.restore() }
+})
+
+test("an unappliable proposal outside tables keeps the plain limitation", async () => {
+  const f = fixture({ turns: [turn({ kind: "amendment", proposal })], host: {
+    applyEligibility: () => ({ supported: false, reason: "Word cannot safely apply this change yet. Make it directly in Word." }),
+    tableTarget: async () => false,
+  } })
+  try {
+    await f.chat.ready; await Bun.sleep(0)
+    const card = f.root.querySelector(".chat-proposal")!
+    expect(card.textContent).toContain("Make it directly in Word.")
+    expect([...card.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].map(b => b.textContent)).toEqual(["Refine", "Decline"])
+  } finally { f.restore() }
+})
+
 test("a reconstructed pane shows a confirmed proposal as applied", async () => {
   let writes = 0
   const f = fixture({ turns: [turn({ kind: "amendment", proposal, proposalApplied: true })], host: { apply: async () => { writes++ } } })

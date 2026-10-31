@@ -15,6 +15,8 @@ export type ChatHost = {
   apply(proposal: WordChatProposal, request: { conversationId: string; turnId: string }): Promise<unknown>
   applyRow?(proposal: WordChatTableRowProposal, request: { conversationId: string; turnId: string }): Promise<unknown>
   applyEligibility(proposal: WordChatProposal): WordChatApplyEligibility
+  /** Whether the target is table-cell text; `place` moves the Word cursor into it. */
+  tableTarget?(target: WordChatTarget, place?: boolean): Promise<boolean>
   sourceUrl?(source: WordChatSource): string | undefined
   now?: () => number
   schedule?: (run: () => void, delay: number) => () => void
@@ -97,6 +99,9 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   let stream: AbortController | undefined, streamEpoch = 0, conversationEpoch = 0, metadataRequest = 0
   const dismissed = new Set<string>(), applied = new Set<string>(), declined = new Set<string>(), uncertain = new Set<string>()
   const proposalErrors = new Map<string, string>()
+  // A wording proposal over table cells sent without table context cannot be
+  // applied; the lawyer can prepare it again with the cursor in that table.
+  const tableRetry = new Map<string, "check" | "yes" | "no" | "sent">()
   const nodes = new Map<string, { stamp: string; node: HTMLElement }>()
   get("document-info-content").textContent = host.documentName
   let documentInfoPinned = false
@@ -386,8 +391,32 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (declined.has(proposal.id)) { card.append(line("p", "Declined. Your document is unchanged.", "chat-message-meta")); return card }
     const error = proposalErrors.get(proposal.id)
     if (error) { const note = line("p", error, "chat-proposal-error"); note.setAttribute("role", "alert"); card.append(note) }
-    if (unavailable) card.append(line("p", unavailable, "chat-proposal-limit"))
+    let tableChange = false
+    if (unavailable && host.tableTarget) {
+      const state = tableRetry.get(proposal.id)
+      if (state === "sent") { card.append(line("p", "Prepared again as a table change.", "chat-message-meta")); return card }
+      if (!state) {
+        tableRetry.set(proposal.id, "check")
+        void host.tableTarget(proposal.target).catch(() => false).then(yes => { tableRetry.set(proposal.id, yes ? "yes" : "no"); if (yes && !disposed) renderTurns() })
+      }
+      tableChange = state === "yes"
+    }
+    if (unavailable) card.append(line("p", tableChange ? "This change is in a table. Prepare it again as a table change to review it here." : unavailable, "chat-proposal-limit"))
     const actions = document.createElement("div"); actions.className = "chat-proposal-actions"
+    if (tableChange) {
+      const retarget = document.createElement("button"); retarget.type = "button"; retarget.className = "chat-send"; retarget.textContent = "Prepare as table change"
+      retarget.disabled = applying || sending
+      retarget.onclick = async () => {
+        if (applying || sending || proposalFinished(proposal.id) || tableRetry.get(proposal.id) !== "yes") return
+        const placed = await host.tableTarget!(proposal.target, true).catch(() => false)
+        if (disposed) return
+        if (!placed) { tableRetry.set(proposal.id, "no"); proposalErrors.set(proposal.id, "Click in the table in Word, then send your request again."); renderTurns(); return }
+        tableRetry.set(proposal.id, "sent"); clearProposalContext(proposal); message.value = turn.text; renderTurns(); void submit()
+      }
+      const decline = document.createElement("button"); decline.type = "button"; decline.className = "chat-subtle"; decline.textContent = "Decline"; decline.disabled = applying
+      decline.onclick = () => { if (applying || proposalFinished(proposal.id)) return; declined.add(proposal.id); proposalErrors.delete(proposal.id); renderTurns() }
+      actions.append(retarget, decline); card.append(actions); return card
+    }
     const refine = document.createElement("button"); refine.type = "button"; refine.className = "chat-subtle"; refine.textContent = "Refine"
     refine.disabled = applying
     refine.onclick = () => { if (applying || proposalFinished(proposal.id)) return; cancelSelectionCapture(); refinement = proposal; rowRefinement = undefined; renderChips(); controls(); message.placeholder = "How should this change?"; message.focus() }
@@ -500,7 +529,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       const proposal = turn.status === "complete" ? turn.proposal as WordChatProposal | undefined : undefined
       const row = turn.status === "complete" ? turn.rowProposal : undefined
       const selectedProposal = proposal ?? row
-      const stamp = JSON.stringify([turn, selectedProposal && applied.has(selectedProposal.id), selectedProposal && declined.has(selectedProposal.id), selectedProposal && uncertain.has(selectedProposal.id), selectedProposal && proposalErrors.get(selectedProposal.id), proposal && host.applyEligibility(proposal), Boolean(host.applyRow)])
+      const stamp = JSON.stringify([turn, selectedProposal && applied.has(selectedProposal.id), selectedProposal && declined.has(selectedProposal.id), selectedProposal && uncertain.has(selectedProposal.id), selectedProposal && proposalErrors.get(selectedProposal.id), proposal && host.applyEligibility(proposal), proposal && tableRetry.get(proposal.id), Boolean(host.applyRow)])
       let cached = nodes.get(turn.id)
       if (cached?.stamp === stamp) continue
       const wrapper = document.createElement("div"); wrapper.dataset.turn = turn.id

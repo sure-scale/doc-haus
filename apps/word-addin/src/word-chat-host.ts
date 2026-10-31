@@ -28,6 +28,7 @@ type WordChatRange = {
   paragraphs: Collection<Paragraph>
   load(properties: string): void
   getRange(location?: string): WordChatRange
+  select?(selectionMode?: "Select" | "Start" | "End"): void
   expandTo(other: WordChatRange): WordChatRange
   compareLocationWith(other: WordChatRange): ClientResult<string>
   search(query: string, options: Record<string, boolean>): Collection<WordChatRange>
@@ -270,6 +271,25 @@ export class WordChatHost {
       // Read current text in a fresh Office batch; never substitute a saved copy.
       return this.readSnapshot(false, false)
     }
+  }
+  /** Whether every target paragraph is an ordinary table-cell paragraph. With
+   * `place`, the cursor moves to the first one so the next capture names that
+   * table; nothing in the document changes. */
+  async tableTarget(target: WordChatTarget, place = false): Promise<boolean> {
+    if (!this.supports("WordApi", "1.6")) return false
+    return this.word.run(async context => {
+      const all = context.document.body.paragraphs
+      all.load("items/uniqueLocalId,items/tableNestingLevel")
+      await context.sync()
+      const ids = new Set(target.paragraphs.map(p => p.id)), found = all.items.filter(p => ids.has(p.uniqueLocalId))
+      if (!found.length || found.length !== ids.size || found.some(p => p.tableNestingLevel !== 1)) return false
+      if (place) {
+        const start = found[0]!.getRange("Start")
+        if (!start.select) return false
+        start.select("Start"); await context.sync()
+      }
+      return true
+    })
   }
   private async observeNativeLists(context: WordChatContext, projection: ReturnType<typeof projectNativeWordChatBody>, selected?: string[]): Promise<WordChatListCapture[]> {
     const all = context.document.body.paragraphs
@@ -1516,6 +1536,7 @@ let defaultHost: WordChatHost | undefined
 const host = () => defaultHost ??= new WordChatHost()
 export const captureCurrentWordContext = (includeSelection = false, pinned?: WordChatTarget) => host().capture(includeSelection, pinned)
 export const captureWordChatSelection = () => host().selection()
+export const wordChatTableTarget = (target: WordChatTarget, place = false) => host().tableTarget(target, place)
 export const applyReviewedProposal = (proposal: import("../../../dochaus/lib/word-chat-amendment-contract").WordChatProposal,
   author: WordChatApplyInput["author"], mayDispatch?: () => boolean) => {
   if (proposal.before !== proposal.target.text) throw new WordChatHostError("Review a fresh amendment before applying it.")
