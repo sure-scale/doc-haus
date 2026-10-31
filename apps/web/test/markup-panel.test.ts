@@ -94,7 +94,7 @@ test("each decision is a named radio group of its own, with nothing chosen yet, 
 })
 
 test("an inserted table row is badged as a table row, not a whole paragraph, and drops its closing mark", () => {
-  const row = revision("rev2-row", { kind: "structure", family: "row_insert", text: "New key¶New value¶", locations: [{ paragraph: 21, context: "New key" }] })
+  const row = revision("rev2-row", { kind: "insert", family: "row_insert", text: "New key¶New value¶", locations: [{ paragraph: 21, context: "New key" }] })
   const html = renderToStaticMarkup(createElement(MarkupPanel, {
     matterId: "m-1", name: "Supply agreement.docx", markup: markup("a", [row]), onApplied: () => {}, onRefetch: () => {},
   }))
