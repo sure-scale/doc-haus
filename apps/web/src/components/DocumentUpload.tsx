@@ -400,6 +400,7 @@ export default function DocumentUpload({
     const open = expanded[key] ?? !long
     const id = `doc-batch-${batch.id.replace(/[^\w-]/g, "_")}`
     const byName = new Map(batch.documents.map((d) => [d.name, d]))
+    const needInput = batch.documents.filter((d) => d.batch?.missing.length).length
     return (
       <>
         <div className="doc-row is-uploaded is-batch">
@@ -409,6 +410,12 @@ export default function DocumentUpload({
           </div>
           <div className="doc-row-meta">
             <span className="document-origin is-created" title={`Filled from the spreadsheet ${batch.source}`}>{count} document{count === 1 ? "" : "s"} from {batch.source}</span>
+            {needInput > 0 && (
+              <button type="button" className="linklike doc-batch-attention" aria-controls={id}
+                onClick={() => setExpanded((prev) => ({ ...prev, [key]: true }))}>
+                {needInput} need{needInput === 1 ? "s" : ""} input
+              </button>
+            )}
             <time className="document-time" dateTime={new Date(batch.createdAt).toISOString()} title={`Saved to matter: ${formatDateTime(batch.createdAt)}`}>
               {formatTime(batch.createdAt)}
             </time>

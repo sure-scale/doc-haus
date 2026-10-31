@@ -270,7 +270,7 @@ test("a spreadsheet batch lists its documents once, under one folder with their 
   const html = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {} }))
   const text = html.replace(/<[^>]+>/g, "")
   expect(text.match(/NDA – 2026-10-31/g)).toHaveLength(1)
-  expect(text).toContain("NDA – 2026-10-313 documents from Clients.xlsx")
+  expect(text).toContain("NDA – 2026-10-313 documents from Clients.xlsx1 needs input")
   // Each member once, inside the folder's group, in spreadsheet row order.
   const group = html.match(/<div id="doc-batch-b1" role="group" aria-label="Documents in NDA – 2026-10-31">([\s\S]*?)<\/ul><\/div>/)?.[1] ?? ""
   const names = [...group.matchAll(/<span class="drafted-name-text">([^<]*)<\/span>/g)].map(([, name]) => name)
