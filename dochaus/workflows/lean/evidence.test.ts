@@ -25,6 +25,16 @@ test("discrepancy evidence must match canonical text and uncertainty stays expli
   ])
 })
 
+test("a quotation of the run's own record of a settled question points to the lawyer's words behind it", () => {
+  const directory = matter()
+  const decided_by = { text: "Keep it in one document.", source_id: SOURCE, quote: SOURCE_TEXT }
+  writeQuestions(directory, [{ id: "q-one", stage: "intake", question: "One document or two?", context: "", status: "answered", answer: "Keep one combined document", answer_kind: "instruction", decided_by }])
+  const entry = { detail: "One document is wanted", evidence: [{ source_id: "request", quote: "Keep one combined document" }], limitations: [], material: false, status: "resolved", resolution: "The instruction settles it." }
+  const [issue] = checkEvidence(directory, "discrepancy", { entries: [entry], limitations: [] })
+  expect(issue).toContain(`Those words are the run's own record of question q-one, which an instruction settled; they are not the lawyer's words. The lawyer's words behind it are "${SOURCE_TEXT}" in "${SOURCE}".`)
+  expect(evidencePrompt(directory, "discrepancy")).toContain(`from their words "${SOURCE_TEXT}" in ${SOURCE}`)
+})
+
 test("later answers and same-name source revisions invalidate dependent work", () => {
   const directory = matter()
   const before = stageInputSha(directory, "discrepancy")

@@ -5,6 +5,7 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import { SHORT_QUOTE, elidedParts, elisionGap, locateElidedQuote, nearestGap, normalize, quotePlaces, verifyQuote } from "../../lib/quote-verify"
 import type { DocID } from "./plan"
+import { INSTRUCTIONS_FILE } from "./instructions"
 import { leanUserUpdates } from "./requests"
 import { readLeanText, readQuestions, shortHash, type OpenItem, type StageID } from "./state"
 
@@ -252,6 +253,18 @@ function lawyerPassages(directory: string): { source_id: string; text: string }[
         : []))
 }
 
+/** When words quoted as the lawyer's are the run's own record (the instructions
+ * list, or a question an instruction settled), where the lawyer's words are. */
+export function derivedRecordNote(directory: string, quote: string) {
+  const settled = readQuestions(directory).find(question => question.answer_kind === "instruction" && question.decided_by &&
+    lawyerWordsHold([question.question, question.answer ?? "", question.decided_by.text], quote))
+  if (settled?.decided_by)
+    return `Those words are the run's own record of question ${settled.id}, which an instruction settled; they are not the lawyer's words. The lawyer's words behind it are "${excerpt(settled.decided_by.quote)}" in "${settled.decided_by.source_id}".`
+  return lawyerWordsHold([readLeanText(directory, INSTRUCTIONS_FILE) ?? ""], quote)
+    ? "Those words are the run's list of the lawyer's instructions, not the lawyer's words; quote the words the list shows from its named source, under that source's name."
+    : ""
+}
+
 /** Actionable retry feedback for one unverified quote. When the words are in a
  * different matter document, that document is named. When an ellipsis in the
  * middle joins passages of the named source, the feedback says so and shows
@@ -282,7 +295,7 @@ export function quoteMissIssue(directory: string, where: string, quote: SourceQu
     short
       ? `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}". A passage around the "…" is too short to locate on its own.`
       : request
-        ? `${where} quotes "${excerpt(quote.quote)}" as from "${REQUEST_SOURCE}", but those words are not in the request, user updates or any one of the lawyer's answers.`
+        ? [`${where} quotes "${excerpt(quote.quote)}" as from "${REQUEST_SOURCE}", but those words are not in the request, user updates or any one of the lawyer's answers.`, derivedRecordNote(directory, quote.quote)].filter(Boolean).join(" ")
         : answer
         ? `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in the lawyer's answer to that question.`
         : `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in that document.`,

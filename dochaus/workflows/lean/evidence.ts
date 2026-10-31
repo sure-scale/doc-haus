@@ -1,7 +1,7 @@
 import { INSTRUCTIONS_FILE } from "./instructions"
 import { boundPlaybookContext } from "../../lib/playbook-source"
 import { answeredQuestionsText, readLeanJson, readLeanText, writeLeanText } from "./state"
-import { excerpt, matterSourceIDs, REQUEST_SOURCE, quoteFound, type SourceQuote } from "./quotes"
+import { derivedRecordNote, excerpt, matterSourceIDs, REQUEST_SOURCE, quoteFound, type SourceQuote } from "./quotes"
 import { approvedResearch, researchHandoff } from "./research"
 import { nameWithProvenance, provenanceMapLine, sourceProvenance } from "../../lib/source-provenance"
 import type { StageAcceptance } from "./stages"
@@ -19,7 +19,9 @@ export function checkEvidence(directory: string, stage: EvidenceStage, value: un
     const issues = row.evidence.flatMap((ref: unknown) => {
       if (!record(ref) || typeof ref.source_id !== "string" || typeof ref.quote !== "string" || !ref.quote.trim()) return ["Evidence must name a source and exact supporting quote."]
       if (!sources.includes(ref.source_id)) return [`Unknown evidence source_id "${ref.source_id}". Allowed source_id values: ${JSON.stringify(sources)}. ${EVIDENCE_SOURCE_CONTRACT} Retrieve the canonical evidence behind a handoff or record the derived uncertainty in limitations without an evidence quotation.`]
-      return quoteFound(directory, ref as SourceQuote) ? [] : [`The supporting quotation ${JSON.stringify(excerpt(ref.quote))} in ${JSON.stringify(ref.source_id)} was not found in that canonical source. ${EVIDENCE_SOURCE_CONTRACT} Copy exact supporting words from the named source or disclose the limitation without invented evidence.`]
+      if (quoteFound(directory, ref as SourceQuote)) return []
+      const derived = ref.source_id === REQUEST_SOURCE ? derivedRecordNote(directory, ref.quote) : ""
+      return [`The supporting quotation ${JSON.stringify(excerpt(ref.quote))} in ${JSON.stringify(ref.source_id)} was not found in that canonical source. ${derived ? `${derived} ` : ""}${EVIDENCE_SOURCE_CONTRACT} Copy exact supporting words from the named source or disclose the limitation without invented evidence.`]
     })
     if (!row.evidence.length && !row.limitations.length) issues.push("An entry without evidence must disclose its uncertainty in limitations.")
     if (stage === "discrepancy") issues.push(...discrepancyIssues(row, index))

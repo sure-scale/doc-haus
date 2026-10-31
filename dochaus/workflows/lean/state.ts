@@ -520,7 +520,7 @@ export const SHORT_HASH_LENGTH = 10
  * still open was already put to the lawyer, so no step asks it again, however
  * reworded; the gate discloses it. */
 function answerLabel(question: Question) {
-  if (question.answer_kind === "instruction") return `A (settled by the lawyer's instruction "${question.decided_by?.text}", not asked; the lawyer may change it)`
+  if (question.answer_kind === "instruction") return `A (settled by the lawyer's instruction "${question.decided_by?.text}"${question.decided_by ? `, from their words "${question.decided_by.quote}" in ${question.decided_by.source_id}` : ""}; not asked; the lawyer may change it)`
   if (question.answer_kind === "adopted") return "A (delegated by the lawyer; the recommended option was adopted)"
   if (question.answer_class === "delegated") return `A (delegated by the lawyer, but it needs the lawyer's own answer, so ${STILL_OPEN})`
   if (question.answer_class === "declined") return `A (not answered by the lawyer, so ${STILL_OPEN})`
