@@ -38,7 +38,8 @@ const COMBINED = outline("Memo: cover memo", letter("Deliverable: combined"))
 const filesOf = (...files: RequestedFile[]): Reply => () => JSON.stringify({ stated: true, files })
 const PACKED: RequestedFile = { holds: ["memo", "d1"], name: "Kestrel Release Pack.docx", quote: PACK }
 /** The files agent: `files` for the files job, `asked` for whether the lawyer's words ask for a document the one file leaves out. */
-const filesAnd = (files: Reply, asked: string): Reply => text => text.includes("whether they ask for one planned document themselves") ? asked : files(text)
+const filesAnd = (files: Reply, asked: string): Reply => (text, index, sessionID) =>
+  text.includes("whether they ask for one planned document themselves") ? asked : files(text, index, sessionID)
 /** The planned documents and memo every outline here gives. */
 const PLANNED = { titles: ["Release letter"], memo: "cover memo" }
 
