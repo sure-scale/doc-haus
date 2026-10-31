@@ -155,3 +155,19 @@ test("whole-story protected ranges must not cross the list target", () => {
     expect(()=>assertNativeWordChatListInsertionTarget(crossing,target,position)).toThrow()
   }
 })
+
+test("End rebinds only a valid regenerated retained-anchor textId", () => {
+  const changed = next.replace('w14:paraId="22222222" w14:textId="77777777"','w14:paraId="22222222" w14:textId="ABCDEF12"')
+  expect(check(flat(changed))).toEqual(["Reviewer"])
+  for (const bad of [
+    changed.replace('w14:textId="ABCDEF12"','w14:textId="invalid"'),
+    changed.replace(' w14:textId="ABCDEF12"',''),
+    changed.replace('>Original<','>Changed<'),
+    changed.replace('<w:numPr>','<w:pStyle w:val="Other"/><w:numPr>'),
+    changed.replace('w:author="Earlier"','w:author="Other"'),
+  ]) expect(()=>check(flat(bad))).toThrow()
+  const priorWithTextId=old.replace('w14:paraId="44444444"','w14:paraId="44444444" w14:textId="11111111"')
+  const changedPrior=changed.replace('w14:paraId="44444444"','w14:paraId="44444444" w14:textId="22222222"')
+  expect(()=>verifyNativeWordChatListInsertion(projectNativeWordChatBody(flat(priorWithTextId),beforeInv),projectNativeWordChatBody(flat(changedPrior),afterInv),target,"Added")).toThrow()
+  expect(()=>check(flat(changed,"Other"))).toThrow()
+})

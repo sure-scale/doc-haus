@@ -291,24 +291,26 @@ export function verifyNativeWordChatListInsertion(
   if (id(mark[0]!) === id(content[0]!)) return fail()
   pp[0]!.removeChild(pr[0]!)
   if (!equal(canon(pp[0]!), canon(oldProps[0]!))) return fail()
+  const retained = beforePosition ? newP : leftP
   if (beforePosition) {
     a.body.removeChild(leftP)
-    // Word retains the anchor paraId while regenerating its textId on Before.
-    // Rebind only that observed metadata; all anchor content/properties are
-    // still compared by the full-body inverse below.
-    const oldTextId = oldP.getAttributeNodeNS(W14, "textId")
-    const currentTextId = newP.getAttributeNodeNS(W14, "textId")
-    if (oldTextId) {
-      if (!currentTextId) return fail()
-      newP.setAttributeNS(W14, currentTextId.name, oldTextId.value)
-    } else if (currentTextId) return fail()
   } else {
     a.body.removeChild(newP)
     if (oldParaId) {
-      const attr = leftP.getAttributeNodeNS(W14, "paraId")
+      const attr = retained.getAttributeNodeNS(W14, "paraId")
       if (!attr) return fail()
-      leftP.setAttributeNS(W14, attr.name, oldParaId)
+      retained.setAttributeNS(W14, attr.name, oldParaId)
     }
+  }
+  // Word may regenerate textId on the retained anchor in either operation.
+  // Rebind only that validated metadata; the full inverse still compares all
+  // paragraph content, properties, revisions and other paragraph metadata.
+  const oldTextId = oldP.getAttributeNodeNS(W14, "textId")
+  const retainedTextId = retained.getAttributeNodeNS(W14, "textId")
+  if (Boolean(oldTextId) !== Boolean(retainedTextId)) return fail()
+  if (oldTextId && retainedTextId) {
+    if (!/^[0-9a-fA-F]{8}$/.test(oldTextId.value) || !/^[0-9a-fA-F]{8}$/.test(retainedTextId.value)) return fail()
+    retained.setAttributeNS(W14, retainedTextId.name, oldTextId.value)
   }
   const normalized = normalizeNativeWordChatCommentIds(before.ooxml, new XMLSerializer().serializeToString(a.doc)),
     derived = parse(normalized)
