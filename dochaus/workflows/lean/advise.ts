@@ -6,7 +6,7 @@ import { readParagraphs, record, shownText } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { FIRST_DOCUMENT, planActingFor, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, tagged } from "./prompts"
-import { REQUEST_SOURCE, matterSourceIDs, quoteFound, quoteMissIssue } from "./quotes"
+import { REQUEST_SOURCE, isAnswerSource, matterSourceIDs, quoteFound, quoteMissIssue } from "./quotes"
 import { nameWithProvenance, provenanceMapLine, sourceProvenance } from "../../lib/source-provenance"
 import { currentInstructions, INSTRUCTIONS_FILE } from "./instructions"
 import { approvedResearch, researchHandoff } from "./research"
@@ -153,7 +153,8 @@ export function basisIssues(directory: string, value: unknown, requireRelevance 
   const rows = value.map(row => record(row) && typeof row.source_id === "string" && typeof row.quote === "string" ? { source_id: row.source_id.trim(), quote: row.quote, ...(typeof row.relevance === "string" && row.relevance.trim() ? { relevance: row.relevance.trim() } : {}) } : undefined)
   const issues = rows.flatMap((row, index) => {
     const at = `recommendation.basis[${index}]`
-    if (!row || !sources.has(row.source_id)) return [`${at}.source_id must be "request", an exact matter source name or an approved research URL.`]
+    // An instruction from one of the lawyer's answers is cited as that answer (instructions.ts).
+    if (!row || !(sources.has(row.source_id) || isAnswerSource(row.source_id))) return [`${at}.source_id must be "request", an exact matter source name or an approved research URL.`]
     if (!row.quote.trim()) return [`${at}.quote must be non-empty words copied exactly from that source.`]
     if (requireRelevance && !row.relevance) return [`${at}.relevance must explain how this passage supports this answer in the affected matter, document and conditions.`]
     const found = request !== undefined && row.source_id === REQUEST_SOURCE ? normalize(request).includes(normalize(row.quote)) : quoteFound(directory, row)

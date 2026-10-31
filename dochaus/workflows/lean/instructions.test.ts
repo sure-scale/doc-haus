@@ -3,7 +3,7 @@ import { writeLegalCompactionPrompt } from "../../plugin/legal/compaction"
 import { checkInstructions, confirmationQuestionID, INSTRUCTIONS_FILE } from "./instructions"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
-import { answeredQuestionsText, readLeanText, readQuestions, writeLeanText } from "./state"
+import { answeredQuestionsText, readLeanText, readQuestions, writeLeanText, writeQuestions } from "./state"
 import { AGENT, NO_FINDINGS, SOURCE, cleanupMatters, happyPath, matter, noChanges, scriptedModel, type Reply } from "./test-support"
 
 afterEach(cleanupMatters)
@@ -91,6 +91,17 @@ test("the list keeps only instructions resting on verified words from the lawyer
   expect(checkInstructions(directory, { items: [{ text: "Use English law.", source_id: "request", quote: "under English law" }], documents: [] }).issues).toHaveLength(1)
   expect(checkInstructions(directory, { items: [{ text: "Deliver in thirty days.", source_id: SOURCE, quote: "within thirty days" }], documents: [] }).issues[0]).toContain("a document listed in documents")
   expect(checkInstructions(directory, { items: [], documents: [{ source_id: SOURCE, from: "the client", quote: "within thirty days", designated_by: "follow the supply terms" }] }).issues).toHaveLength(1)
+})
+
+test("an instruction from the lawyer's answer is cited as that answer, verified against its words", () => {
+  const directory = matter()
+  writeLeanText(directory, "request.md", REQUEST)
+  writeQuestions(directory, [{ id: "q-delivery", stage: "intake", question: DELIVERY.question, context: DELIVERY.context, kind: "judgment", status: "answered", answer: "Deliver within thirty days of the order." }])
+  const item = (quote: string) => ({ items: [{ text: "Deliver within thirty days.", source_id: "request", quote }], documents: [] })
+  expect(checkInstructions(directory, item("within thirty days")).list?.items[0]).toMatchObject({ source_id: "answer:q-delivery", quote: "within thirty days" })
+  // Words in the request stay cited as the request; words in no answer are refused.
+  expect(checkInstructions(directory, item("under Singapore law")).list?.items[0]?.source_id).toBe("request")
+  expect(checkInstructions(directory, item("within forty days")).issues).toHaveLength(1)
 })
 
 test("the compaction handoff carries the confirmed instruction list as written", () => {

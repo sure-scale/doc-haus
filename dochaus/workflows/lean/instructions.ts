@@ -1,7 +1,7 @@
 import { boundPlaybookContext } from "../../lib/playbook-source"
 import { nameWithProvenance, sourceProvenance } from "../../lib/source-provenance"
 import { parseJsonObject } from "./change-checks"
-import { excerpt, matterSourceIDs, quoteFound, quoteMissIssue, REQUEST_SOURCE } from "./quotes"
+import { excerpt, isAnswerSource, lawyerQuoteSource, matterSourceIDs, quoteFound, quoteMissIssue, REQUEST_SOURCE } from "./quotes"
 import type { StageAcceptance } from "./stages"
 import { answeredQuestionsText, readLeanJson, readLeanText, readQuestions, shortHash, writeLeanText, type Question } from "./state"
 
@@ -78,13 +78,17 @@ export function checkInstructions(directory: string, value: unknown): { issues: 
       continue
     }
     if (row.text.trim().length > MAX_TEXT) issues.push(`${at}.text must be one concise instruction of at most ${MAX_TEXT} characters.`)
-    if (row.source_id !== REQUEST_SOURCE && !documents.some(document => document.source_id === row.source_id)) {
+    const document = documents.some(document => document.source_id === row.source_id)
+    if (row.source_id !== REQUEST_SOURCE && !isAnswerSource(row.source_id) && !document) {
       issues.push(`${at}.source_id must be "request" or a document listed in documents.`)
       continue
     }
-    if (!quoteFound(directory, { source_id: row.source_id, quote: row.quote }))
+    // The lawyer's words are cited where they are: the request (or an
+    // update), or the one answer that holds them.
+    const source_id = document ? row.source_id : lawyerQuoteSource(directory, row.quote)
+    if (!source_id || !quoteFound(directory, { source_id, quote: row.quote }))
       issues.push(quoteMissIssue(directory, `${at}.quote`, { source_id: row.source_id, quote: row.quote }, "json"))
-    items.push({ id: `i${items.length + 1}`, text: row.text.trim(), source_id: row.source_id, quote: row.quote })
+    items.push({ id: `i${items.length + 1}`, text: row.text.trim(), source_id: source_id ?? row.source_id, quote: row.quote })
   }
   return issues.length ? { issues } : { issues: [], list: { items, documents } }
 }
@@ -132,7 +136,8 @@ export function currentInstructions(directory: string): (Instruction & { standin
   if (!list) return []
   const standing = new Map(list.documents.map(document => [document.source_id, documentStanding(directory, document)]))
   return list.items.flatMap(item => {
-    const of = item.source_id === REQUEST_SOURCE ? "lawyer" as const : standing.get(item.source_id) ?? "evidence"
+    const lawyer = item.source_id === REQUEST_SOURCE || (isAnswerSource(item.source_id) && !standing.has(item.source_id))
+    const of = lawyer ? "lawyer" as const : standing.get(item.source_id) ?? "evidence"
     return of === "evidence" ? [] : [{ ...item, standing: of }]
   })
 }
@@ -149,7 +154,7 @@ export function instructionsText(directory: string) {
   return [
     "# The lawyer's instructions",
     "",
-    "Each item is from the lawyer's words, or a document the lawyer said to follow, quoted after it. An explicit later instruction supersedes an earlier one on that point.",
+    "Each item is from the lawyer's words (request: the request or a later instruction; answer:<question id>: the lawyer's answer to that question), or a document the lawyer said to follow, quoted after it. An explicit later instruction supersedes an earlier one on that point.",
     "",
     ...(followed.length ? followed.map(line) : ["- None beyond the request."]),
     ...awaiting.flatMap(document => [
