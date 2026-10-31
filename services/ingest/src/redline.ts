@@ -179,6 +179,7 @@ export async function buildRedlined(original: Uint8Array, rows: RedlineRow[], st
     const paragraphs = readDocxCommentParagraphPositions(written.bytes)
     return await commentRedline(original, written.bytes, rows, written.positions.map(at => paragraphs.findIndex(row => at !== undefined && row.xml_paragraph_indexes.includes(at))))
   } catch (error) {
+    if (error instanceof RedlinePreviewConflictError) throw error
     if (error instanceof RedlineReplayError) throw new RedlinePreviewConflictError(error.refusal)
     const protection = docxProtectionMessage(error)
     throw new RedlinePreviewConflictError(protection ?? "The proposals cannot be safely previewed. Prepare a fresh change list.")
@@ -407,6 +408,9 @@ async function bakeOlder(original: Uint8Array, rows: RedlineRow[], tracked = fal
     }
     if (row.scope === "phrase") {
       const before = locate && row.review_comment.trim() ? readDocxCommentParagraphPositions(bytes) : undefined
+      // Every occurrence is replaced; a review comment needs one paragraph.
+      if (before && before.filter(paragraph => paragraph.paragraph_text.includes(row.find_text)).length > 1)
+        throw new RedlineReplayError(row, `Review comment for proposal #${row.id} has an ambiguous paragraph target: its wording appears in more than one paragraph. Prepare a fresh change list before exporting.`, true)
       try {
         bytes = (await applyLegacyPhrase(bytes, row.find_text, row.new_text,
           { ...options, pendingRevisions: "layer", ownAuthors: ours([rowAuthor(row)]), ...(tracked ? { revisionAuthor: rowAuthor(row) } : {}) })).bytes
