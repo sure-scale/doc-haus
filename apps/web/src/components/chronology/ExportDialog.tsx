@@ -189,8 +189,8 @@ export default function ChronologyExportDialog({
         <section aria-label="Word export preview" className="chronology-export-preview">
           <h3>Preview</h3>
           <p>
-            {snapshot.events.length} of {snapshot.totalEvents} saved entries · {snapshot.excludedHidden} hidden entries
-            excluded · revision {snapshot.revision}
+            {snapshot.events.length} of {snapshot.totalEvents} saved entries · {snapshot.excludedHidden} hidden{" "}
+            {snapshot.excludedHidden === 1 ? "entry" : "entries"} excluded · revision {snapshot.revision}
           </p>
           <p className="chronology-muted">
             Snapshot {new Date(snapshot.snapshotAt).toLocaleString()}. Source access is checked again when saving;
@@ -252,7 +252,9 @@ export default function ChronologyExportDialog({
             </details>
           ))}
           <details>
-            <summary>Source coverage ({snapshot.coverage.length} sources)</summary>
+            <summary>
+              Source coverage ({snapshot.coverage.length} {snapshot.coverage.length === 1 ? "source" : "sources"})
+            </summary>
             <p>
               Coverage includes matter sources with no selected entry. Complete processing does not establish
               completeness or accuracy of events.

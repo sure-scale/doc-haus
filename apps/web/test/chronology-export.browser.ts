@@ -163,6 +163,7 @@ try {
   await open()
   const dialog = page.getByRole("dialog", { name: "Export chronology to Word" })
   await expect(dialog.getByText("2 of 3 saved entries", { exact: false })).toBeVisible()
+  await expect(dialog).toContainText("1 hidden entry excluded")
   assert.equal(requests.at(-1)!.includeHidden, false)
   await expect(dialog.locator("tbody tr")).toHaveCount(2)
   await expect(dialog.getByText("Inspection correction", { exact: false })).toHaveCount(0)
@@ -220,6 +221,20 @@ try {
     assert.ok(geometry.scroll <= geometry.client + 1, `no dialog overflow at ${width}`)
     if (process.env.CHRONOLOGY_EXPORT_QA_DIR)
       await page.screenshot({ path: path.join(process.env.CHRONOLOGY_EXPORT_QA_DIR, `export-${width}.png`) })
+    if (width === 375) {
+      const table = dialog.getByRole("region", { name: "Exported chronology entries" })
+      await table.scrollIntoViewIfNeeded()
+      assert.ok(await table.evaluate(element => element.scrollWidth > element.clientWidth), "phone table scrolls locally")
+      const dateWidth = await dialog.locator("th").first().evaluate(element => element.getBoundingClientRect().width)
+      assert.ok(dateWidth >= 120, "phone date column keeps a readable width")
+      await table.focus()
+      await page.keyboard.press("ArrowRight")
+      await expect.poll(() => table.evaluate(element => element.scrollLeft)).toBeGreaterThan(0)
+      await table.evaluate(element => element.scrollTo({ left: 0, behavior: "instant" }))
+      await expect.poll(() => table.evaluate(element => element.scrollLeft)).toBeLessThanOrEqual(1)
+      if (process.env.CHRONOLOGY_EXPORT_QA_DIR)
+        await page.screenshot({ path: path.join(process.env.CHRONOLOGY_EXPORT_QA_DIR, "export-375-table.png") })
+    }
   }
   await page.keyboard.press("Escape")
   await expect(dialog).toHaveCount(0)

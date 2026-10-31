@@ -103,12 +103,13 @@
   margin-left: auto;
 }
 
-.upload-row.is-chronology .doc-row-meta {
+.upload-row:is(.is-chronology, .is-exists) .doc-row-meta {
   flex-wrap: wrap;
 }
 
-.upload-row.is-chronology .upload-actions {
+.upload-row:is(.is-chronology, .is-exists) .upload-actions {
   flex-wrap: wrap;
+  max-width: 100%;
 }
 
 .upload-actions .upload-choice-lead {

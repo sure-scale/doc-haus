@@ -412,18 +412,25 @@ export default function DocumentUpload({
               key={u.key}
               upload={u}
               onRetry={() => {
+                // This action disappears while the row is processed again.
+                body.current?.focus()
                 update(u.key, { status: "queued", error: undefined })
                 enqueue(u)
               }}
               onChoose={(choice) => {
+                body.current?.focus()
                 update(u.key, { status: "queued", choice })
                 enqueue({ ...u, choice })
               }}
               onAcceptChronology={() => {
+                body.current?.focus()
                 update(u.key, { status: "queued", error: undefined, chronologyOrigin: "supplied-chronology" })
                 enqueue({ ...u, chronologyOrigin: "supplied-chronology" })
               }}
-              onDismiss={() => setUploads((prev) => prev.filter((x) => x.key !== u.key))}
+              onDismiss={() => {
+                body.current?.focus()
+                setUploads((prev) => prev.filter((x) => x.key !== u.key))
+              }}
               onRestore={() => restoreMatch(u)}
             />
           ))}

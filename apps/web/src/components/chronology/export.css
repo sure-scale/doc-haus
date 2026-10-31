@@ -13,6 +13,7 @@
 }
 .chronology-export-table {
   width: 100%;
+  min-width: 600px;
   border-collapse: collapse;
   text-align: left;
   font-size: 12px;

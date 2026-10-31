@@ -70,10 +70,20 @@ try {
   assert.match(await page.locator(".upload-status").innerText(), /not independent corroboration/)
   await page.getByRole("button", { name: "Add as supplied chronology", exact: true }).click()
   await page.getByRole("button", { name: "Keep both", exact: true }).waitFor()
+  assert.equal(
+    await page.locator('.docs-drawer-body[aria-label="Documents"]').evaluate(element => element === document.activeElement),
+    true,
+    "focus stays in Documents when acknowledgement changes the row",
+  )
   assert.equal(requests[1]!.origin, "supplied-chronology")
   assert.equal(requests[1]!.existing, null)
   await page.getByRole("button", { name: "Keep both", exact: true }).click()
   await page.getByRole("button", { name: "Warning-first (2).docx", exact: true }).waitFor()
+  assert.equal(
+    await page.locator('.docs-drawer-body[aria-label="Documents"]').evaluate(element => element === document.activeElement),
+    true,
+    "focus stays in Documents after keeping both",
+  )
   assert.deepEqual(requests[2], { name: "Warning-first.docx", bytes: "edited synthetic chronology", existing: "keep-both", origin: "supplied-chronology" })
   assert.match(await page.locator(".docs-timeline").innerText(), /Supplied chronology/)
 
