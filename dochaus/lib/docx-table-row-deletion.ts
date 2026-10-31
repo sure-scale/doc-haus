@@ -5,7 +5,8 @@ import { z } from "zod"
 import { docxodus } from "./docxodus"
 import { docxTableRowInsertionTargets } from "./docx-table-row-insertion"
 
-// Offline proof only. No route, proposal recorder or Word import uses deletion.
+// Backend authoring and verification oracle. The Word add-in executes the
+// reviewed deletion natively instead of importing this package into Word.
 const W14 = "http://schemas.microsoft.com/office/word/2010/wordml"
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", XML = "http://www.w3.org/XML/1998/namespace"
 const BODY = "word/document.xml", SETTINGS = "word/settings.xml"

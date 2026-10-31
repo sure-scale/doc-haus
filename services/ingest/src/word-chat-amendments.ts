@@ -1,7 +1,8 @@
 import { authorWordChatTarget } from "../../../dochaus/lib/docx-flat-opc"
-import type { WordChatPreparedAmendment, WordChatProposal, WordChatSnapshot, WordChatTableRowInsertionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatListInsertion, wordChatListCaptureCurrent, validWordChatTableRowInsertion } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatPreparedAmendment, WordChatProposal, WordChatSnapshot, WordChatTableRowInsertionProposal, WordChatTableRowDeletionProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatListInsertion, wordChatListCaptureCurrent, validWordChatTableRowInsertion, validWordChatTableRowDeletion } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { authorDocxTableRowInsertion, docxTableRowInsertionTargets, type DocxTableRowInsertion } from "../../../dochaus/lib/docx-table-row-insertion"
+import { authorDocxTableRowDeletion, docxTableRowDeletionTargets, type DocxTableRowDeletion } from "../../../dochaus/lib/docx-table-row-deletion"
 import { parseZip } from "../../../dochaus/lib/zip"
 
 export { MAX_WORD_AMENDMENT_OOXML_BYTES, WordAmendmentError, WordFormattingError } from "../../../dochaus/lib/docx-flat-opc"
@@ -115,4 +116,22 @@ export async function authorWordChatTableRow(snapshot: WordChatSnapshot, proposa
   return {kind:"table_row_insert", proposalId, sourceSha256:packet.source_sha256,
     table:captured, cells,
     author:"doc.haus", writerRequest, authoredBytes:authored.bytes, revisions:authored.revisions}
+}
+
+/** Prepare a source-bound deletion oracle, retaining the entire captured table. */
+export async function authorWordChatTableRowDeletion(snapshot: WordChatSnapshot, proposal: WordChatTableRowDeletionProposal, currentBytes: Uint8Array) {
+  if (!validWordChatTableRowDeletion(snapshot, proposal)) throw new Error("word_row_proposal_changed")
+  if (!(currentBytes instanceof Uint8Array) || !currentBytes.length || currentBytes.length > MAX_ROW_SOURCE_BYTES) throw new Error("word_row_source_size")
+  const source = new Uint8Array(currentBytes), table = structuredClone(proposal.table), cells = [...proposal.cells]
+  checkedWordRowPackage(source)
+  const discovered = await docxTableRowInsertionTargets(source), rows = discovered.targets.filter(t => t.table === table.tableIndex + 1)
+  if (rows.length !== table.rows.length || table.rows.some((row, index) => {
+    const found = rows.filter(t => t.row === index + 1)
+    return found.length !== 1 || found[0]!.columns !== row.length || found[0]!.cells.length !== row.length || found[0]!.cells.some((value, col) => value !== row[col]!.text)
+  })) throw new Error("word_row_source_changed")
+  const eligible = await docxTableRowDeletionTargets(source), target = eligible.targets.filter(t => t.table === table.tableIndex + 1 && t.row === proposal.rowIndex + 1)
+  if (eligible.source_sha256 !== discovered.source_sha256 || target.length !== 1) throw new Error("word_row_target_unsupported")
+  const writerRequest: DocxTableRowDeletion = {source_sha256:eligible.source_sha256,target_handle:target[0]!.target_handle,author:"doc.haus"}
+  const authored = await authorDocxTableRowDeletion(source, writerRequest)
+  return {kind:"table_row_delete" as const, proposalId:proposal.id, sourceSha256:eligible.source_sha256, table, rowIndex:proposal.rowIndex, cells, author:"doc.haus" as const, writerRequest, authoredBytes:authored.bytes, revisions:authored.revisions}
 }

@@ -976,7 +976,7 @@ test("reviewed row proposals bind host table, reject forgery and require an inde
     expect(approved.proposal).toBeUndefined()
     const reviewer = [...sessions.values()].find(s => s.parentID === approved.id && s.metadata.type === "word-chat-review")!
     const review = suppliedContext(sessionContext(reviewer.id))
-    expect(review.proposal.table).toEqual({columns:2,firstRow:["Name","Amount"],referenceRow:["Fee","Ten"]})
+    expect(review.proposal.table).toEqual({columns:2,firstRow:["Name","Amount"],referenceRow:["Fee","Ten"],rows:[["Name","Amount"],["Fee","Ten"]]})
     expect(sessionContext(reviewer.id)).not.toContain("cell-0")
     const forged = {...approved.rowProposal!,cells:["Other","Five"]}
     expect((await request({rowProposal:forged})).status).toBe(409)
@@ -1096,7 +1096,7 @@ test("row prepare uses stored review and current bytes, and rechecks the pending
   let changed = false
   const preparing = new Hono()
   const validator = installWordChat(preparing, () => auth, {fetch:transport,engineURL:"http://synthetic.invalid",authorTableRow:async (stored, proposal, bytes) => {
-    expect(stored.table).toEqual(native.table); expect(proposal).toEqual(turn.rowProposal!); expect(Buffer.from(bytes).toString()).toBe("current unsaved bytes")
+    expect(stored.table).toEqual(native.table); expect(turn.rowProposal).toEqual(proposal); expect(Buffer.from(bytes).toString()).toBe("current unsaved bytes")
     if (changed) db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",["other-turn",owner.document])
     return {kind:"table_row_insert",proposalId:proposal.id,sourceSha256:"source",table:proposal.table,cells:proposal.cells,author:"doc.haus",writerRequest:{source_sha256:"source",target_handle:"handle",position:"after",cells:proposal.cells,author:"doc.haus"},authoredBytes:new Uint8Array([1,2]),revisions:[]}
   }})
@@ -1402,4 +1402,76 @@ test("reviewed decimal list append is server bound through preparation and rejec
     expect(await response.json()).toEqual({kind:"list_insert",proposalId:turn.proposal!.id,target:turn.proposal!.target,text:"Another item",list})
     db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",["other",owner.document]); expect((await prepare()).status).toBe(409)
   } finally {db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",[turn.id,owner.document]);settleWordNativeOperation(db,owner,seq+1,"list-prepare","not-dispatched");clearWordEditLease(db,owner.document);db.close()}
+})
+
+
+test("row deletion resolves only a unique exact row or a same-read selection and keeps refinement bound", async () => {
+  const id = await newConversation(), paragraphs = ["Heading", "Value", "Repeat", "Two", "Repeat", "Two", "Other", "Three"].map((text,i)=>({id:`delete-${i}`,text}))
+  const table = {tableIndex:0,rows:[paragraphs.slice(0,2),paragraphs.slice(2,4),paragraphs.slice(4,6),paragraphs.slice(6,8)]}
+  const native = {...context,text:paragraphs.map(p=>p.text).join("\r"),paragraphs,table,selection:undefined}
+  const request = (extra:object={}) => post("send",{conversationId:id,scope:"document",text:"Delete the requested row",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context:native,...extra})
+  const output = (cells:string[], action:unknown="delete") => {modelRawOutput=JSON.stringify({answer:"Prepared.",citations:[],rowProposal:{action,cells,explanation:"Remove row",openItems:[]}})}
+  try {
+    output(["Repeat","Two"])
+    expect((await (await request()).json() as {turn:WordChatTurn}).turn.rowProposal).toBeUndefined()
+    const crossing = {...native,selection:{id:"crossing",text:"Repeat\rTwo\rOther",paragraphs:paragraphs.slice(4,7),startOffset:0,endOffset:5,capturedAt:native.capturedAt,saved:false}}
+    expect((await (await request({context:crossing})).json() as {turn:WordChatTurn}).turn.rowProposal).toBeUndefined()
+    const selected = {...native,selection:{id:"selection",text:"Repeat",paragraphs:[paragraphs[4]!],startOffset:0,endOffset:6,capturedAt:native.capturedAt,saved:false}}
+    const first = (await (await request({context:selected})).json() as {turn:WordChatTurn}).turn
+    expect(first.rowProposal?.kind).toBe("table_row_delete"); if (first.rowProposal?.kind !== "table_row_delete") throw Error("missing delete proposal")
+    expect(first.rowProposal.rowIndex).toBe(2)
+    const reviewer = [...sessions.values()].find(s=>s.parentID===first.id&&s.metadata.type==="word-chat-review")!
+    expect(sessionContext(reviewer.id)).toContain("exact existing row")
+    output(["Other","Three"])
+    expect((await (await request({rowProposal:first.rowProposal,context:selected})).json() as {turn:WordChatTurn}).turn.rowProposal).toBeUndefined()
+    output(["Other","Three"])
+    const unique = (await (await request()).json() as {turn:WordChatTurn}).turn.rowProposal
+    expect(unique?.kind === "table_row_delete" && unique.rowIndex).toBe(3)
+  } finally {modelRawOutput=undefined}
+})
+
+test("deletion prepare uses stored target and rechecks the lease after authoring", async () => {
+  const id = await newConversation(), paragraphs = ["Heading","Value","Remove","Row"].map((text,i)=>({id:`prepare-delete-${i}`,text}))
+  const table = {tableIndex:0,rows:[paragraphs.slice(0,2),paragraphs.slice(2)]}
+  const native = {...context,text:paragraphs.map(p=>p.text).join("\r"),paragraphs,table,selection:undefined}
+  modelRawOutput=JSON.stringify({answer:"Prepared.",citations:[],rowProposal:{action:"delete",cells:["Remove","Row"],explanation:"Remove",openItems:[]}})
+  let turn: WordChatTurn
+  try { turn = (await (await post("send",{conversationId:id,scope:"document",text:"Delete the row",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context:native})).json() as {turn:WordChatTurn}).turn }
+  finally {modelRawOutput=undefined}
+  if (turn.rowProposal?.kind !== "table_row_delete") throw Error("missing deletion")
+  const current=readCurrentVersion(directory,"Draft.docx")!, db=openDb(directory)
+  db.run("INSERT OR IGNORE INTO word_grants(token_hash,document_id,origin,issued_version,created_at) VALUES (?,?,?,?,?)",[auth.grant.token_hash,auth.grant.document_id,auth.grant.origin,auth.grant.issued_version,Date.now()])
+  const owner=claimWordEditLease(db,{document:auth.grant.document_id,tokenHash:auth.grant.token_hash,session:"delete-prepare-session"})
+  const seq=(db.query("SELECT native_sequence FROM word_edit_leases WHERE document_id = ?").get(owner.document) as {native_sequence:number}).native_sequence
+  beginWordNativeOperation(db,owner,seq,"delete-prepare",undefined,{conversationId:id,turnId:turn.id})
+  let invalidate=false
+  const preparing=new Hono()
+  installWordChat(preparing,()=>auth,{fetch:transport,engineURL:"http://synthetic.invalid",authorTableRowDeletion:async (stored,proposal,bytes)=>{
+    expect(stored.table).toEqual(table);expect(turn.rowProposal).toEqual(proposal);expect(Buffer.from(bytes).toString()).toBe("current bytes")
+    if (invalidate) db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",["other",owner.document])
+    return {kind:"table_row_delete",proposalId:proposal.id,sourceSha256:"source",table:proposal.table,rowIndex:proposal.rowIndex,cells:proposal.cells,author:"doc.haus",writerRequest:{source_sha256:"source",target_handle:"handle",author:"doc.haus"},authoredBytes:new Uint8Array([1,2]),revisions:[]}
+  }})
+  const headers={"content-type":"application/json","x-dochaus-word-session":owner.session,"x-dochaus-word-lease":owner.generation,"x-dochaus-word-base-version":current.current.id}
+  const prepare=()=>preparing.request("/word/chat/prepare",{method:"POST",headers,body:JSON.stringify({conversationId:id,turnId:turn.id,docxBase64:Buffer.from("current bytes").toString("base64"),rowProposal:{...turn.rowProposal,rowIndex:0}})})
+  try {
+    const response=await prepare();expect(response.status).toBe(200);expect((await response.json() as {kind:string,authoredBase64:string}).kind).toBe("table_row_delete")
+    invalidate=true;expect((await prepare()).status).toBe(409)
+  } finally {
+    db.run("UPDATE word_edit_leases SET native_turn = ? WHERE document_id = ?",[turn.id,owner.document]);settleWordNativeOperation(db,owner,seq+1,"delete-prepare","not-dispatched");clearWordEditLease(db,owner.document);db.close()
+  }
+})
+
+
+test("large table omits deletion guidance while retaining append guidance", async () => {
+  const id=await newConversation(), paragraphs=["Header","Value","x".repeat(4001),"Middle","Last","Row"].map((text,i)=>({id:`large-row-${i}`,text}))
+  const table={tableIndex:0,rows:[paragraphs.slice(0,2),paragraphs.slice(2,4),paragraphs.slice(4,6)]}
+  const native={...context,text:paragraphs.map(p=>p.text).join("\r"),paragraphs,table,selection:undefined}
+  modelRawOutput=JSON.stringify({answer:"Prepared.",citations:[],rowProposal:{cells:["Added","Row"],explanation:"Append",openItems:[]}})
+  try {
+    const turn=(await (await post("send",{conversationId:id,scope:"document",text:"Append a row",requestId:crypto.randomUUID(),attachments:[],mode:"redline",context:native})).json() as {turn:WordChatTurn}).turn
+    expect(turn.rowProposal?.kind).toBe("table_row_insert")
+    const prompt=sessionContext(turn.id)
+    expect(prompt).toContain("append one row");expect(prompt).not.toContain("For deleting one existing row")
+    expect(suppliedContext(prompt).table.rows).toBeUndefined()
+  } finally {modelRawOutput=undefined}
 })

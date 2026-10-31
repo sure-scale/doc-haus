@@ -6,12 +6,12 @@ import { configureConnectionRecovery, createPaneRenderer } from "./pane-render"
 import { setupLatestVersion } from "./latest-version"
 import { chatClient } from "./chat-client"
 import { mountWordChat } from "./chat-ui"
-import { captureCurrentWordContext, captureWordChatSelection, applyReviewedProposal, applyReviewedTableRow } from "./word-chat-host"
+import { captureCurrentWordContext, captureWordChatSelection, applyReviewedProposal, applyReviewedTableRow, applyWordChatRowDeletion } from "./word-chat-host"
 import { watchWordChatSelection } from "./word-chat-selection"
 import { openChatAttachments } from "./chat-attachments"
 import { preferRoomyPane } from "./feature-tabs"
 import type { WordChatPreparedAmendment } from "../../../dochaus/lib/word-chat-amendment-contract"
-import type { WordChatAuthoredTableRow } from "../../../dochaus/lib/word-chat-contract"
+import type { WordChatAuthoredTableRow, WordChatAuthoredTableRowDeletion } from "../../../dochaus/lib/word-chat-contract"
 import { createReplaceConfirmation } from "./replace-confirmation"
 import { applyWordChatIfEligible, wordChatApplyEligibility } from "./word-chat-apply"
 
@@ -85,12 +85,15 @@ async function main(): Promise<void> {
         return sync.localEdit({ conversationId: request.conversationId, turnId: request.turnId }, async identity => {
           localEditIdentity = identity
           try {
-            return await applyReviewedTableRow(proposal, () => office.host.export(), async bytes => {
+            const prepareRow = async <T>(bytes: Uint8Array): Promise<T> => {
               const chunks: string[] = []
               for (let start = 0; start < bytes.length; start += 32_768)
                 chunks.push(String.fromCharCode(...bytes.subarray(start, start + 32_768)))
-              return chat.request<WordChatAuthoredTableRow>("prepare", { ...request, docxBase64: btoa(chunks.join("")) })
-            }, () => !sync.isDisposed())
+              return chat.request<T>("prepare", { ...request, docxBase64: btoa(chunks.join("")) })
+            }
+            return proposal.kind === "table_row_delete"
+              ? await applyWordChatRowDeletion(proposal, () => office.host.export(), bytes => prepareRow<WordChatAuthoredTableRowDeletion>(bytes), () => !sync.isDisposed())
+              : await applyReviewedTableRow(proposal, () => office.host.export(), bytes => prepareRow<WordChatAuthoredTableRow>(bytes), () => !sync.isDisposed())
           } finally { localEditIdentity = undefined }
         })
       },

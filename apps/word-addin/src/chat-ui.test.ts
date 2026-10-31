@@ -3,7 +3,7 @@ import { Window } from "happy-dom"
 import { mountWordChat, type ChatHost } from "./chat-ui"
 import { ChatRequestError, type WordChatApi, type ChatAction } from "./chat-client"
 import type { WordChatSend, WordChatTurn } from "../../../dochaus/lib/word-chat-contract"
-import type { WordChatProposal, WordChatSnapshot, WordChatTableRowInsertionProposal, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatProposal, WordChatSnapshot, WordChatTableRowInsertionProposal, WordChatTableRowDeletionProposal, WordChatTableRowProposal, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import type { V2Event } from "@opencode/client"
 import { wordChatApplyEligibility } from "./word-chat-apply"
 
@@ -11,6 +11,7 @@ const passage: WordChatTarget = { id: "target-one", text: "Payment within 14 day
 const context: WordChatSnapshot = { text: passage.text, paragraphs: passage.paragraphs, saved: false, capturedAt: passage.capturedAt, truncated: false }
 const proposal: WordChatProposal = { id: "proposal-one", documentId: "document-one", before: passage.text, after: "Payment within 30 days.", explanation: "A longer payment period.", openItems: ["Confirm the intended period."], target: passage, createdAt: passage.capturedAt }
 const rowProposal: WordChatTableRowInsertionProposal = {kind:"table_row_insert",id:"row-one",documentId:"document-one",position:"end",table:{tableIndex:0,rows:[[{id:"cell-1",text:"Fee"},{id:"cell-2",text:"Ten"}]]},cells:["Tax","Five"],explanation:"Add the agreed item.",openItems:[],createdAt:passage.capturedAt}
+const deletedRow: WordChatTableRowDeletionProposal = {kind:"table_row_delete",id:"row-delete",documentId:"document-one",table:{tableIndex:0,rows:[[{id:"cell-1",text:"Fee"},{id:"cell-2",text:"Amount"}],[{id:"cell-3",text:"Retainer"},{id:"cell-4",text:"Twenty"}]]},rowIndex:1,cells:["Retainer","Twenty"],explanation:"Remove the superseded retainer.",openItems:[],createdAt:passage.capturedAt}
 function turn(input: Partial<WordChatTurn> = {}): WordChatTurn { return { id: "turn-one", conversationId: "conversation-one", requestId: "request-one", kind: "chat", scope: "document", text: "Explain payment", answer: "Payment is due in 14 days.", status: "complete", sources: [], attachments: [], createdAt: 1, ...input } }
 function fixture(overrides: { request?: (action: ChatAction, input: object) => Promise<unknown>; upload?: (conversationId: string, file: File, mode: "request" | "matter") => Promise<unknown>; events?: WordChatApi["events"]; turns?: WordChatTurn[]; host?: Partial<ChatHost>; storage?: Pick<Storage, "getItem" | "setItem"> } = {}) {
   const page = new Window({ url: "https://localhost:4612/word-addin/pane.html" })
@@ -63,6 +64,38 @@ test("row card applies once and disables all review actions while pending", asyn
     expect(f.root.querySelector('[aria-label="Table row to review"] .chat-proposal-actions')).toBeNull()
     apply.click(); expect(calls).toBe(1)
   } finally { finish(); f.restore() }
+})
+
+test("row deletion review identifies the existing row and consumes Apply once", async () => {
+  const applied: WordChatTableRowProposal[] = []
+  const f = fixture({turns:[turn({kind:"amendment",rowProposal:deletedRow})],host:{applyRow:async value => { applied.push(value) }}})
+  try {
+    await f.chat.ready
+    const card = f.root.querySelector('[aria-label="Table row to review"]')!
+    expect(card.querySelector("h3")?.textContent).toBe("Delete row")
+    expect(card.textContent).toContain("Row 2 · Table 1")
+    expect(card.textContent).toContain("Retainer")
+    expect(card.textContent).toContain("Twenty")
+    expect(card.textContent).not.toContain("End of table")
+    const apply = [...card.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === "Apply")!
+    apply.click(); apply.click(); await Bun.sleep(0)
+    expect(applied).toEqual([deletedRow])
+    expect(f.root.querySelector('[aria-label="Table row to review"] .chat-proposal-actions')).toBeNull()
+    apply.click(); expect(applied).toHaveLength(1)
+  } finally { f.restore() }
+})
+
+test("row deletion refinement keeps the reviewed source row when the cursor moves", async () => {
+  const f = fixture({turns:[turn({kind:"amendment",rowProposal:deletedRow})],host:{captureSelection:async () => structuredClone(passage)}})
+  try {
+    await f.chat.ready
+    const refine = [...f.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(b => b.textContent === "Refine")!
+    refine.click(); await f.send("Explain why this entire row is being removed.")
+    const sent = f.calls.find(call => call.action === "send")!.input as WordChatSend
+    expect(sent.rowProposal).toEqual(deletedRow)
+    expect(sent.proposal).toBeUndefined()
+    expect(sent.context.selection).toBeUndefined()
+  } finally { f.restore() }
 })
 
 test("native paragraph insertion review offers Apply without the legacy import boundary warning", async () => {

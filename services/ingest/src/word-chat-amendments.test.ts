@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
-import { authorWordChatAmendment } from "./word-chat-amendments"
+import { strToU8, zipSync } from "fflate"
+import { authorWordChatTableRowDeletion, authorWordChatAmendment } from "./word-chat-amendments"
 import { targetWordChatAmendment, type WordChatProposal } from "../../../dochaus/lib/word-chat-amendment-contract"
 
 function proposal(): WordChatProposal {
@@ -75,4 +76,25 @@ test("list plan requires the admitted snapshot and preserves its binding",async(
   await expect(authorWordChatAmendment("current capture",proposal)).rejects.toThrow("word_proposal_changed")
   await expect(authorWordChatAmendment("current capture",proposal,{...snapshot,list:{...list,id:4}})).rejects.toThrow("word_proposal_changed")
   await expect(authorWordChatAmendment("current capture",{...proposal,after:text+"\rThird\rFourth"},snapshot)).rejects.toThrow("word_proposal_changed")
+})
+
+
+test("row deletion oracle binds all current table rows and exact requested target", async () => {
+  const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main", R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  const p = (v:string) => `<w:tc><w:p><w:r><w:t>${v}</w:t></w:r></w:p></w:tc>`
+  const source = zipSync({
+    "[Content_Types].xml":strToU8('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>'),
+    "_rels/.rels":strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="main" Type="${R}/officeDocument" Target="word/document.xml"/></Relationships>`),
+    "word/_rels/document.xml.rels":strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="settings" Type="${R}/settings" Target="settings.xml"/></Relationships>`),
+    "word/settings.xml":strToU8(`<w:settings xmlns:w="${W}"/>`),
+    "word/document.xml":strToU8(`<w:document xmlns:w="${W}"><w:body><w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid><w:tr>${p("Header")}${p("Value")}</w:tr><w:tr>${p("Delete")}${p("This")}</w:tr></w:tbl><w:sectPr/></w:body></w:document>`),
+  })
+  const paragraphs = ["Header","Value","Delete","This"].map((text,i)=>({id:`p${i}`,text})), table = {tableIndex:0,rows:[paragraphs.slice(0,2),paragraphs.slice(2)]}
+  const snapshot = {text:paragraphs.map(p=>p.text).join("\r"),paragraphs,table,capturedAt:"now",saved:false,truncated:false}
+  const proposal = {kind:"table_row_delete" as const,id:"proposal",documentId:"document",explanation:"Remove",openItems:[],createdAt:"now",table,rowIndex:1,cells:["Delete","This"]}
+  const oracle = await authorWordChatTableRowDeletion(snapshot,proposal,source)
+  expect(oracle.kind).toBe("table_row_delete"); expect(oracle.rowIndex).toBe(1); expect(oracle.revisions.map(r=>r.family)).toEqual(["row_delete"])
+  await expect(authorWordChatTableRowDeletion(snapshot,{...proposal,cells:["Delete","Changed"]},source)).rejects.toThrow("word_row_proposal_changed")
+  const stale = {...table, rows:[[{...paragraphs[0]!,text:"Changed"},paragraphs[1]!],table.rows[1]!]}
+  await expect(authorWordChatTableRowDeletion({...snapshot,table:stale,paragraphs:[{...paragraphs[0]!,text:"Changed"},...paragraphs.slice(1)]},{...proposal,table:stale},source)).rejects.toThrow("word_row_source_changed")
 })

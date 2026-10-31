@@ -1792,3 +1792,27 @@ test("list capture refuses ambiguous lists and dispatch refuses a stale list", a
   expect(state.listInsertions).toBe(0)
   expect(state.modeChanges).toEqual([])
 })
+
+test("row deletion author failure is unchanged and simultaneous requests share preparation", async () => {
+  let runs = 0, calls = 0, release!: () => void
+  const word = { async run() { runs++; throw Error("must not dispatch") } } as WordChatWord
+  const host = new WordChatHost(word, () => true)
+  const proposal = { kind:"table_row_delete" as const, id:"delete-row", documentId:"doc", explanation:"Delete", openItems:[], createdAt:"now", rowIndex:1,
+    table:{tableIndex:0, rows:[[{id:"a",text:"A"}], [{id:"b",text:"B"}]]}, cells:["B"] }
+  const author = async () => { calls++; await new Promise<void>(resolve => { release = resolve }); throw Error("author failed") }
+  const first = host.applyRowDeletion(proposal, async () => new Uint8Array([1]), author)
+  const second = host.applyRowDeletion(proposal, async () => new Uint8Array([1]), author)
+  const results = Promise.allSettled([first, second])
+  await Promise.resolve(); release()
+  for (const result of await results) { expect(result.status).toBe("rejected"); if (result.status === "rejected") expect(result.reason).toMatchObject({mutationState:"unchanged"}) }
+  expect(calls).toBe(1); expect(runs).toBe(0)
+})
+
+test("row deletion rejects a tampered oracle before opening Word", async () => {
+  let runs = 0
+  const host = new WordChatHost({async run() { runs++; throw Error("must not dispatch") }} as WordChatWord, () => true)
+  const proposal = {kind:"table_row_delete" as const, id:"delete-row", documentId:"doc", explanation:"Delete", openItems:[], createdAt:"now", rowIndex:1,
+    table:{tableIndex:0, rows:[[{id:"a",text:"A"}], [{id:"b",text:"B"}]]}, cells:["B"]}
+  await expect(host.applyRowDeletion(proposal, async () => new Uint8Array([1]), async () => ({kind:"table_row_delete",proposalId:"wrong"} as never))).rejects.toMatchObject({mutationState:"unchanged"})
+  expect(runs).toBe(0)
+})

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatListInsertion, wordChatListCaptureCurrent, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
+import { targetWordChatAmendment, validWordChatFormatting, validWordChatInlineFormatting, validWordChatParagraphInsertion, validWordChatParagraphDeletion, validWordChatListInsertion, wordChatListCaptureCurrent, validWordChatTableRowInsertion, validWordChatTableRowDeletion, wordChatApplyPlan, wordChatParagraphBreaks, wordChatTableCaptureCurrent, wordChatTargetCurrent, type WordChatSnapshot } from "./word-chat-amendment-contract"
 
 test("inline formatting binds exact native UTF-16 targets without trusting model offsets", () => {
   const text = "Keep 😀 terms and terms."
@@ -236,4 +236,15 @@ test("decimal list capture and insertion bind the full contiguous sequence and l
   expect(validWordChatListInsertion(snapshot,targetWordChatAmendment(snapshot,"First")!,"First\rThird","append_list_item")).toBe(false)
   for(const bad of [{...list,members:[list.members[0]!,{...list.members[1]!,id:"one"}]},{...list,members:[list.members[0]!,{...list.members[1]!,level:1}]},{...list,members:[list.members[0]!,{...list.members[1]!,label:"3."}]},{...list,extra:true}]) expect(wordChatListCaptureCurrent(snapshot,bad)).toBe(false)
   expect(wordChatListCaptureCurrent({...snapshot,paragraphs:[paragraphs[0]!,{id:"middle",text:"other"},paragraphs[1]!]},list)).toBe(false)
+})
+
+
+test("row deletion binds exact original cells and the captured row and refuses stale or sole rows", () => {
+  const paragraphs = ["Header", "Amount", "Fee", " Ten "].map((text,i) => ({id:`cell-${i}`,text}))
+  const table = {tableIndex:0, rows:[paragraphs.slice(0,2),paragraphs.slice(2)]}
+  const context: WordChatSnapshot = {text:paragraphs.map(p=>p.text).join("\r"),paragraphs,table,capturedAt:"now",saved:false,truncated:false}
+  const proposal = {kind:"table_row_delete",id:"p",documentId:"d",explanation:"Remove",openItems:[],createdAt:"now",table,rowIndex:1,cells:["Fee"," Ten "]}
+  expect(validWordChatTableRowDeletion(context,proposal)).toBe(true)
+  for (const bad of [{...proposal,rowIndex:0},{...proposal,rowIndex:2},{...proposal,cells:["Fee","Ten"]},{...proposal,unknown:true},{...proposal,table:{...table,rows:[table.rows[1]]}}]) expect(validWordChatTableRowDeletion(context,bad)).toBe(false)
+  expect(validWordChatTableRowDeletion({...context,table:{...table,rows:[table.rows[1]!,table.rows[0]!] }},proposal)).toBe(false)
 })

@@ -180,10 +180,13 @@ this document, either across sampled passages or about the current selection.
 Ideas never apply themselves. Pause stops new preparation; ordinary chat remains
 available. Suggestions are not a complete document review.
 
-A proposed amendment shows its full before/after wording and any open items.
-**Refine** keeps the original target; **Apply** imports the reviewed change into
-Word with tracking. A changed or unsupported passage requires a fresh review.
-Apply leaves the matter's version history alone: choose **Save** to publish it.
+A proposed amendment shows its before/after wording, formatting or table-row
+change and any open items. **Refine** keeps the original target. **Apply** uses
+Word-native tracked edits for supported operations, including adding a row or
+deleting an eligible existing row. A changed or unsupported passage requires a
+fresh review. Used action buttons disappear after application.
+Apply leaves the matter's version history alone: choose **Save** to synchronize
+Word's resulting document and wait for the saved-version acknowledgement.
 Reviewed application requires current Microsoft 365 Word with WordApi 1.6;
 unsupported hosts retain chat and the existing save flow.
 

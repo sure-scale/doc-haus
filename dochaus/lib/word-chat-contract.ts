@@ -6,7 +6,7 @@ export type WordChatKind = "chat" | "amendment" | "formatting" | "suggestions"
 export type WordChatMode = "auto" | "qa" | "redline"
 export type WordChatAttachment = { kind: "source" | "playbook" | "upload"; id: string; hash: string }
 export type WordChatMaterial = WordChatAttachment & { name: string; description?: string; provenance: "saved-version" | "instructions" | "request-upload" }
-import type { WordChatSnapshot, WordChatProposal, WordChatTableRowInsertionProposal } from "./word-chat-amendment-contract"
+import type { WordChatSnapshot, WordChatProposal, WordChatTableRowInsertionProposal, WordChatTableRowProposal, WordChatTableRowDeletionProposal } from "./word-chat-amendment-contract"
 export type { WordChatProposal } from "./word-chat-amendment-contract"
 export type WordChatContext = WordChatSnapshot
 export type WordChatSource = { id: string; contentHash?: string; name: string; quote: string; location: string; provenance: "word-buffer" | "saved-version" | "instructions" | "request-upload" }
@@ -28,7 +28,7 @@ export type WordChatTurn = {
   attachments: WordChatMaterial[]
   selection?: WordChatContext["selection"]
   proposal?: WordChatProposal
-  rowProposal?: WordChatTableRowInsertionProposal
+  rowProposal?: WordChatTableRowProposal
   proposalApplied?: boolean
   suggestions?: WordChatSuggestion[]
   suggestionCoverage?: { reviewed: number; total: number }
@@ -47,7 +47,7 @@ export type WordChatSend = {
   mode?: WordChatMode
   /** Exact earlier reviewed target; refining never follows a new cursor position. */
   proposal?: WordChatProposal
-  rowProposal?: WordChatTableRowInsertionProposal
+  rowProposal?: WordChatTableRowProposal
   suggestionTarget?: "document" | "selection"
 }
 export type WordChatConversationResult = { conversation: WordChatConversation; turns: WordChatTurn[] }
@@ -58,5 +58,13 @@ export type WordChatAuthoredTableRow = {
   kind: "table_row_insert"; proposalId: string; sourceSha256: string
   table: WordChatTableRowInsertionProposal["table"]; cells: string[]; author: "doc.haus"
   writerRequest: { source_sha256: string; target_handle: string; position: "after"; cells: string[]; author: string }
+  authoredBase64: string; revisions: { id: string; family: string }[]
+}
+
+/** A verified oracle for deletion; never import it into Word. */
+export type WordChatAuthoredTableRowDeletion = {
+  kind: "table_row_delete"; proposalId: string; sourceSha256: string
+  table: WordChatTableRowDeletionProposal["table"]; rowIndex: number; cells: string[]; author: "doc.haus"
+  writerRequest: { source_sha256: string; target_handle: string; author: string }
   authoredBase64: string; revisions: { id: string; family: string }[]
 }

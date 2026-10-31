@@ -1,5 +1,5 @@
 import type { WordChatConversation, WordChatConversationResult, WordChatMaterials, WordChatMaterial, WordChatScope, WordChatSend, WordChatTurn, WordChatSuggestion, WordChatSource, WordChatPreferences } from "../../../dochaus/lib/word-chat-contract"
-import type { WordChatProposal, WordChatSnapshot, WordChatTableRowInsertionProposal, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatProposal, WordChatSnapshot, WordChatTableRowProposal, WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { wordChatApplyPlan, wordChatTargetCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { ChatRequestError, type WordChatApi } from "./chat-client"
 import { nativeEventSession, subscribeNativeChatStream } from "../../../dochaus/lib/native-chat-stream"
@@ -13,7 +13,7 @@ export type ChatHost = {
   watchSelection?(onChange: () => void): () => void
   openAttachments?(options: { conversationId: string; attached: WordChatMaterial[]; onAttach(material: WordChatMaterial): void }): Promise<void>
   apply(proposal: WordChatProposal, request: { conversationId: string; turnId: string }): Promise<unknown>
-  applyRow?(proposal: WordChatTableRowInsertionProposal, request: { conversationId: string; turnId: string }): Promise<unknown>
+  applyRow?(proposal: WordChatTableRowProposal, request: { conversationId: string; turnId: string }): Promise<unknown>
   applyEligibility(proposal: WordChatProposal): WordChatApplyEligibility
   sourceUrl?(source: WordChatSource): string | undefined
   now?: () => number
@@ -86,7 +86,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   let disposed = false, connecting = false, sending = false, uploading = false, applying = false, stopping = false, pickerOpen = false, suggestionsPaused = false
   let pending: WordChatSend | undefined, foreground: WordChatTurn | undefined, suggestion: WordChatTurn | undefined
   let refinement: WordChatProposal | undefined, suggestionEpoch = 0, suggestionCalls = 0
-  let rowRefinement: WordChatTableRowInsertionProposal | undefined
+  let rowRefinement: WordChatTableRowProposal | undefined
   let selectionCaptureEpoch = 0, selectionPending = false
   let suppressedSelectionKey = "", pickerEpoch = 0
   let cancelSelection: (() => void) | undefined, stopWatchingSelection: (() => void) | undefined
@@ -415,11 +415,14 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (!unavailable) actions.append(apply)
     actions.append(decline); card.append(actions); return card
   }
-  function rowProposalCard(proposal: WordChatTableRowInsertionProposal, turn: WordChatTurn): HTMLElement {
+  function rowProposalCard(proposal: WordChatTableRowProposal, turn: WordChatTurn): HTMLElement {
     const card = document.createElement("section"); card.className = "chat-proposal"; card.setAttribute("aria-label", "Table row to review")
     const firstRow = proposal.table.rows[0]?.map(cell => cell.text.replace(/\s+/g, " ").trim()).join(" · ") ?? ""
     const excerpt = firstRow.length > 120 ? `${firstRow.slice(0, 120)}…` : firstRow
-    card.append(line("h3", "Add row"), line("p", `End of table ${proposal.table.tableIndex + 1}`, "chat-message-meta"))
+    const deleting = proposal.kind === "table_row_delete"
+    card.append(line("h3", deleting ? "Delete row" : "Add row"), line("p", deleting
+      ? `Row ${proposal.rowIndex + 1} · Table ${proposal.table.tableIndex + 1}`
+      : `End of table ${proposal.table.tableIndex + 1}`, "chat-message-meta"))
     if (excerpt) card.append(line("p", `First row: ${excerpt}`, "chat-message-meta"))
     const list = document.createElement("ul"); list.className = "chat-format-plan"
     proposal.cells.forEach((text, index) => { const item = document.createElement("li"); item.append(line("strong", `Column ${index + 1}`), line("p", text)); list.append(item) })

@@ -1,9 +1,10 @@
-import type { WordChatAuthoredAmendment, WordChatPreparedAmendment, WordChatParagraphFormat, WordChatInlineFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget, WordChatTableRowInsertionProposal, WordChatProposal, WordChatListCapture } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { validWordChatFormatting, validWordChatInlineFormatting, targetWordChatAmendment, validWordChatTableRowInsertion, wordChatApplyPlan, wordChatTableCaptureCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
+import type { WordChatAuthoredAmendment, WordChatPreparedAmendment, WordChatParagraphFormat, WordChatInlineFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget, WordChatTableRowInsertionProposal, WordChatTableRowDeletionProposal, WordChatProposal, WordChatListCapture } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { validWordChatFormatting, validWordChatInlineFormatting, targetWordChatAmendment, validWordChatTableRowInsertion, validWordChatTableRowDeletion, wordChatApplyPlan, wordChatTableCaptureCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, sameNativeWordChatBodySnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody, verifyNativeWordChatRowRemainder, verifyReviewedWordChatRowOracle, assertNativeWordChatInlineTarget, assertNativeWordChatInlineDependencies, verifiedNativeWordChatInlineFormatting, sameNativeInlineWordChatParagraph, assertNativeInlineWordChatRevisionIds } from "./word-chat-host-ooxml"
-import type { WordChatAuthoredTableRow } from "../../../dochaus/lib/word-chat-contract"
+import type { WordChatAuthoredTableRow, WordChatAuthoredTableRowDeletion } from "../../../dochaus/lib/word-chat-contract"
 import { prepareNativeRow, queueNativeRow, type NativeRowContext } from "./word-chat-native-row"
 import { verifyNativeWordChatAddedRow } from "./word-chat-native-row-verification"
+import { assertNativeWordChatRowDeletionTarget, verifyReviewedWordChatRowDeletionOracle, verifyNativeWordChatDeletedRow } from "./word-chat-native-row-delete"
 import { normalizeNativeWordChatCommentIds as normalizeNativeWordChatAnnotationIds } from "./word-chat-native-comments"
 import { assertNativeWordChatParagraphInsertionTarget, verifyNativeWordChatParagraphInsertion } from "./word-chat-native-paragraph-insert"
 import { assertNativeWordChatParagraphDeletionTarget, verifyNativeWordChatParagraphDeletion } from "./word-chat-native-paragraph-delete"
@@ -538,6 +539,84 @@ export class WordChatHost {
     } catch (error) {
       if (this.applied.get(proposal.id)?.uncertain) throw new WordChatHostError("Word may have applied the row, but its tracked result could not be confirmed. Inspect it and use Undo if needed; do not apply it again.", "uncertain", { cause: error })
       failure(error, "Word could not prepare the reviewed row. Your document is unchanged.")
+    }
+  }
+
+  async applyRowDeletion(proposal: WordChatTableRowDeletionProposal, exportCurrent: () => Promise<Uint8Array>,
+    author: (bytes: Uint8Array) => Promise<WordChatAuthoredTableRowDeletion>, mayDispatch?: () => boolean): Promise<WordChatApplyResult> {
+    this.ready()
+    if (!this.supports("WordApiDesktop", "1.4")) throw new WordChatHostError("Deleting a reviewed row requires a supported desktop version of Word.")
+    const rows = proposal?.table?.rows
+    const snapshot: WordChatSnapshot = {text:"", paragraphs:Array.isArray(rows) ? rows.flat() : [], saved:false, capturedAt:"", truncated:false, table:proposal?.table}
+    if (!validWordChatTableRowDeletion(snapshot, proposal) || typeof exportCurrent !== "function" || typeof author !== "function") throw new WordChatHostError("Review a complete table row before deleting it. Your document is unchanged.")
+    const identity=JSON.stringify(proposal), pending=this.pending.get(proposal.id), observed=this.applied.get(proposal.id)
+    if (pending) { if (pending.identity!==identity) throw new WordChatHostError("This proposal has changed. Prepare a fresh proposal."); return pending.promise }
+    if (observed) {
+      if (observed.uncertain) throw new WordChatHostError("Word may already contain this deletion. Inspect it and use Undo if needed before preparing a fresh proposal.","uncertain")
+      if (observed.identity!==identity) throw new WordChatHostError("This proposal has changed. Prepare a fresh proposal.")
+      return {status:"already-applied",tracked:true,saved:false,authors:observed.authors}
+    }
+    const promise=this.applyRowDeletionOnce(proposal,identity,exportCurrent,author,mayDispatch)
+    this.pending.set(proposal.id,{identity,promise})
+    try { return await promise } finally { this.pending.delete(proposal.id) }
+  }
+
+  private async applyRowDeletionOnce(proposal: WordChatTableRowDeletionProposal, identity: string, exportCurrent: () => Promise<Uint8Array>,
+    author: (bytes: Uint8Array) => Promise<WordChatAuthoredTableRowDeletion>, mayDispatch?: () => boolean): Promise<WordChatApplyResult> {
+    try {
+      const source=await exportCurrent()
+      if (!(source instanceof Uint8Array) || !source.length || source.length>16*1024*1024) throw new WordChatHostError("The current Word document is too large or unavailable to prepare this row. Your document is unchanged.")
+      const oracle=await author(source)
+      await verifyReviewedWordChatRowDeletionOracle(source,oracle,proposal)
+      return await this.word.run(async context => {
+        if (!context.document.body.tables) throw captureMismatch("Word cannot read the reviewed table.")
+        const native=context as unknown as NativeRowContext, prepared=await prepareNativeRow(native,proposal.table)
+        type DeleteRow={rowIndex:number;cellCount:number;isHeader:boolean;values:string[][];delete():void}
+        const table=prepared.table as typeof prepared.table & { rows:Collection<DeleteRow>; getCell(row:number,column:number): {body:{paragraphs:Collection<Paragraph>;getRange(location:string):WordChatRange}} }
+        table.load("rowCount,isUniform,values");table.rows.load("items/rowIndex,items/cellCount,items/isHeader,items/values")
+        const all=context.document.body.paragraphs, body=context.document.body.getRange("Whole").getOoxml(), original=context.document.body.getRange("Content").getReviewedText("Original")
+        all.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+        const cells=proposal.cells.map((_,i)=>{const r=(table.getCell(proposal.rowIndex,i).body as unknown as {getRange(location:string):WordChatRange}).getRange("Content");return {current:r.getReviewedText("Current"),original:r.getReviewedText("Original")}})
+        await context.sync()
+        const inventory=all.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})), beforeXml=body.value, originalText=original.value
+        const expectedValues=proposal.table.rows.map(row=>row.map(cell=>cell.text))
+        if (!table.isUniform || table.rowCount!==proposal.table.rows.length || JSON.stringify(table.values)!==JSON.stringify(expectedValues) || table.rows.items.length!==table.rowCount || table.rows.items.some((r,i)=>r.rowIndex!==i || r.cellCount!==prepared.width) || table.rows.items[proposal.rowIndex]!.isHeader!==false || JSON.stringify(table.rows.items[proposal.rowIndex]!.values)!==JSON.stringify([proposal.cells]) || cells.some((c,i)=>c.current.value!==proposal.cells[i] || c.original.value!==proposal.cells[i])) throw captureMismatch("The reviewed row or table changed.")
+        assertNativeWordChatRowDeletionTarget(beforeXml,inventory,proposal)
+        const beforeComments=await this.documentState(context)
+        const freshBody=context.document.body.getRange("Whole").getOoxml(), freshAll=context.document.body.paragraphs
+        freshAll.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+        table.load("rowCount,isUniform,values");table.rows.load("items/rowIndex,items/cellCount,items/isHeader,items/values")
+        await context.sync()
+        const freshInventory=freshAll.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel}))
+        if (!sameNativeWordChatBodySnapshot(beforeXml,freshBody.value) || JSON.stringify(inventory)!==JSON.stringify(freshInventory) || !table.isUniform || table.rowCount!==prepared.rowCount || JSON.stringify(table.values)!==JSON.stringify(expectedValues) || table.rows.items.length!==prepared.rowCount || table.rows.items.some((r,i)=>r.rowIndex!==i || r.cellCount!==prepared.width) || table.rows.items[proposal.rowIndex]!.isHeader!==false || JSON.stringify(table.rows.items[proposal.rowIndex]!.values)!==JSON.stringify([proposal.cells])) throw captureMismatch("The reviewed table changed before deletion.")
+        assertNativeWordChatRowDeletionTarget(freshBody.value,freshInventory,proposal)
+        if (mayDispatch && !mayDispatch()) throw new WordChatHostError("The Word pane closed before the row was deleted. Your document is unchanged.")
+        this.applied.set(proposal.id,{identity,authors:[],uncertain:true})
+        context.document.changeTrackingMode="TrackAll"
+        table.rows.items[proposal.rowIndex]!.delete()
+        context.document.changeTrackingMode=prepared.tracking
+        context.document.trackFormatting=prepared.trackFormatting
+        await context.sync()
+        context.document.load("changeTrackingMode,trackFormatting")
+        table.load("rowCount,isUniform,values")
+        const afterAll=context.document.body.paragraphs, afterXml=context.document.body.getRange("Whole").getOoxml(), afterOriginal=context.document.body.getRange("Content").getReviewedText("Original")
+        afterAll.load("items/uniqueLocalId,items/text,items/tableNestingLevel")
+        const afterCells=proposal.cells.map((_,i)=>{const r=(table.getCell(proposal.rowIndex,i).body as unknown as {getRange(location:string):WordChatRange}).getRange("Content");return {current:r.getReviewedText("Current"),original:r.getReviewedText("Original")}})
+        await context.sync()
+        const tracking=context.document.changeTrackingMode, trackFormatting=context.document.trackFormatting, values=table.values.map(row=>[...row]), count=table.rowCount, uniform=table.isUniform
+        const afterInventory=afterAll.items.map(p=>({id:p.uniqueLocalId,text:p.text,tableNestingLevel:p.tableNestingLevel})), afterXmlValue=afterXml.value, bodyOriginal=afterOriginal.value
+        const reviewed=afterCells.map(c=>({current:c.current.value,original:c.original.value}))
+        const expectedAfter=expectedValues.map((row,i)=>i===proposal.rowIndex ? row.map(()=>"") : row)
+        if (tracking!==prepared.tracking || trackFormatting!==prepared.trackFormatting || !uniform || count!==prepared.rowCount || JSON.stringify(values)!==JSON.stringify(expectedAfter) || bodyOriginal!==originalText || reviewed.some((c,i)=>c.current!=="" || c.original!==proposal.cells[i])) throw new Error("Native row deletion confirmation failed")
+        const afterComments=await this.documentState(context)
+        if (JSON.stringify(beforeComments.comments)!==JSON.stringify(afterComments.comments)) throw new Error("Native row comments changed")
+        const verified=verifyNativeWordChatDeletedRow(beforeXml,afterXmlValue,inventory,afterInventory,proposal)
+        this.applied.set(proposal.id,{identity,authors:verified.authors,uncertain:false})
+        return {status:"applied",tracked:true,saved:false,authors:verified.authors}
+      })
+    } catch(error) {
+      if (this.applied.get(proposal.id)?.uncertain) throw new WordChatHostError("Word may have deleted the row, but its tracked result could not be confirmed. Inspect it and use Undo if needed; do not apply it again.","uncertain",{cause:error})
+      failure(error,"Word could not prepare the reviewed row deletion. Your document is unchanged.")
     }
   }
 
@@ -1195,3 +1274,6 @@ export const applyReviewedProposal = (proposal: import("../../../dochaus/lib/wor
 
 export const applyReviewedTableRow = (proposal: WordChatTableRowInsertionProposal, exportCurrent: () => Promise<Uint8Array>,
   author: (bytes: Uint8Array) => Promise<WordChatAuthoredTableRow>, mayDispatch?: () => boolean) => host().applyRow(proposal, exportCurrent, author, mayDispatch)
+
+export const applyWordChatRowDeletion = (proposal: WordChatTableRowDeletionProposal, exportCurrent: () => Promise<Uint8Array>,
+  author: (bytes: Uint8Array) => Promise<WordChatAuthoredTableRowDeletion>, mayDispatch?: () => boolean) => host().applyRowDeletion(proposal, exportCurrent, author, mayDispatch)

@@ -58,10 +58,23 @@ export type WordChatTableRowInsertionProposal = {
   table: WordChatTableCapture
   cells: string[]
 }
+export type WordChatTableRowDeletionProposal = {
+  kind: "table_row_delete"
+  id: string
+  documentId: string
+  explanation: string
+  openItems: string[]
+  createdAt: string
+  table: WordChatTableCapture
+  rowIndex: number
+  cells: string[]
+}
+export type WordChatTableRowProposal = WordChatTableRowInsertionProposal | WordChatTableRowDeletionProposal
 /** Additive operation type: existing paragraph proposal consumers remain unchanged. */
 export type WordChatReviewedOperation =
   | { kind: "paragraph"; proposal: WordChatProposal }
   | { kind: "table_row_insert"; proposal: WordChatTableRowInsertionProposal }
+  | { kind: "table_row_delete"; proposal: WordChatTableRowDeletionProposal }
 
 /** Validate the capture's identity and ordering against the same snapshot.
  * This does not prove table geometry or grant permission to write in Word. */
@@ -104,6 +117,19 @@ export function validWordChatTableRowInsertion(snapshot: WordChatSnapshot, value
     row.cells.length !== row.table.rows[0]!.length) return false
   return row.cells.some(cell => typeof cell === "string" && cell.length > 0) && row.cells.every(cell =>
     typeof cell === "string" && cell.length <= 4000 && cell === cell.trim() && wellFormedWordChatCell(cell) && !/[\u0000-\u001f\u007f]/.test(cell)) && row.cells.join("").length <= 24_000
+}
+/** A deletion binds the exact existing row and same-read capture. */
+export function validWordChatTableRowDeletion(snapshot: WordChatSnapshot, value: unknown): value is WordChatTableRowDeletionProposal {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const row = value as WordChatTableRowDeletionProposal
+  if (Object.keys(row).some(key => !["kind", "id", "documentId", "explanation", "openItems", "createdAt", "table", "rowIndex", "cells"].includes(key)) ||
+    row.kind !== "table_row_delete" || typeof row.id !== "string" || !row.id || typeof row.documentId !== "string" || !row.documentId ||
+    typeof row.explanation !== "string" || typeof row.createdAt !== "string" || !Array.isArray(row.openItems) || row.openItems.some(item => typeof item !== "string") ||
+    !wordChatTableCaptureCurrent(snapshot, row.table) || !wordChatTableCaptureCurrent(snapshot, snapshot.table) ||
+    row.table.tableIndex !== snapshot.table.tableIndex || row.table.rows.length !== snapshot.table.rows.length ||
+    row.table.rows.some((cells, i) => cells.length !== snapshot.table!.rows[i]!.length || cells.some((cell, j) => cell.id !== snapshot.table!.rows[i]![j]!.id || cell.text !== snapshot.table!.rows[i]![j]!.text)) || row.table.rows.length < 2 || !Number.isSafeInteger(row.rowIndex) || row.rowIndex < 0 || row.rowIndex >= row.table.rows.length ||
+    !Array.isArray(row.cells) || row.cells.length !== row.table.rows[row.rowIndex]!.length) return false
+  return row.cells.every((cell, i) => typeof cell === "string" && cell === row.table.rows[row.rowIndex]![i]!.text && cell.length <= 4000 && wellFormedWordChatCell(cell) && !/[\u0000-\u001f\u007f]/.test(cell)) && row.cells.some(cell => cell.length > 0) && row.cells.join("").length <= 24_000
 }
 function wellFormedWordChatCell(value: string): boolean {
   for (let i = 0; i < value.length; i++) {
