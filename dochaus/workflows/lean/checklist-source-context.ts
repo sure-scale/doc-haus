@@ -28,8 +28,10 @@ export function checklistProducerInputs(directory: string): { key: string; input
     // Keyed on the question id, never its position: questions.json is
     // reordered when a step's questions replace its earlier ones. The
     // question rides with its answer, so a short option answer keeps its
-    // meaning; it is model-written, so it is never the quote.
-    ...answeredQuestions(directory).flatMap(question => question.answer?.trim() ? [{
+    // meaning; it is model-written, so it is never the quote. An adopted
+    // recommendation is the drafter's judgment, not a lawyer instruction, so
+    // it is never checklist authority.
+    ...answeredQuestions(directory).flatMap(question => question.answer?.trim() && question.answer_kind !== "adopted" ? [{
       document: "request", locator: `.dochaus/lean/questions.json answer (${question.id})`,
       ...(question.question.trim() ? { question: question.question } : {}), quote: question.answer,
     }] : []),

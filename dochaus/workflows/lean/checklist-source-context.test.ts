@@ -85,16 +85,16 @@ test("each answer keeps an id-keyed locator in a stable order however questions.
   expect(checklistProducerInputs(directory)).toEqual(before)
 })
 
-test("an adopted or picked answer reaches the checklist jobs as the lawyer's own instruction with the question it answers, never as quotable question text", () => {
+test("a picked answer reaches the checklist jobs as the lawyer's own instruction with the question it answers; an adopted recommendation never does", () => {
   const { directory, put } = prepare()
   put(".dochaus/lean/questions.json", JSON.stringify({ questions: [
-    { id: "q-2", question: "ADOPTED MODEL QUESTION: which figure applies?", status: "answered", answer: "Use the later figure.", answer_kind: "adopted", option_id: "o1" },
+    { id: "q-2", question: "ADOPTED MODEL QUESTION: which figure applies?", status: "answered", answer: "Use the later figure.", answer_kind: "adopted", option_id: "o1", lawyer_words: "Use your judgment." },
     { id: "q-1", question: "PICKED MODEL QUESTION?", status: "answered", answer: "Keep the proposal open.", answer_kind: "option", option_id: "o2" },
+    { id: "q-3", question: "DECIDE FOR ME MODEL QUESTION?", status: "answered", answer: "Name the trustee.", answer_kind: "adopted", option_id: "o1" },
   ] }))
   const jobs = checklistProducerInputs(directory)
   expect(jobs.at(-1)!.input.instructions).toEqual([
     { document: "request", locator: ".dochaus/lean/questions.json answer (q-1)", question: "PICKED MODEL QUESTION?", quote: "Keep the proposal open." },
-    { document: "request", locator: ".dochaus/lean/questions.json answer (q-2)", question: "ADOPTED MODEL QUESTION: which figure applies?", quote: "Use the later figure." },
   ])
   for (const job of jobs) expect(checklistProducerInputSchema.safeParse(job.input).success).toBe(true)
   // The model-written question is never quotable authority.
