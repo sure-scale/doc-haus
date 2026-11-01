@@ -5,10 +5,12 @@ import { listJurisdictions, listMatters, type Jurisdiction, type Matter } from "
 import ModalHeader from "./ModalHeader"
 import { formatDate } from "../lib/format"
 import backdropClose from "./backdropClose"
+import { lastOpenedFirst } from "../lib/last-matter"
 
 // The "Use in a matter" picker shared by the Templates and Workflows libraries:
 // pick a matter to drop a template draft or workflow run into. Loads its own
-// matters and jurisdictions; lists newest first with the open date and any
+// matters and jurisdictions; lists the matter opened last first, then newest
+// first, with the open date and any
 // jurisdiction names so the lawyer can tell similar matters apart. onPick fires
 // with the chosen matter; the caller handles navigation.
 export default function MatterPicker({
@@ -29,7 +31,7 @@ export default function MatterPicker({
     listJurisdictions().then(setJurisdictions)
   }, [])
 
-  const sorted = matters && [...matters].sort((a, b) => b.created_at - a.created_at)
+  const sorted = matters && lastOpenedFirst(matters)
 
   return createPortal(
     <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>

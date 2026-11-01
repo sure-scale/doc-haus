@@ -15,6 +15,7 @@ import {
 } from "../api/ingest/matters"
 import { listWorkflows, type CustomWorkflow } from "../api/ingest/library"
 import { createTemplateDraft } from "../api/ingest/template-drafts"
+import { rememberLastMatter } from "../lib/last-matter"
 import { disposeInstance, listAgents } from "../api/opencode/sessions"
 import { matterClient } from "../api/opencode/client"
 import { AUTO, WORKFLOWS } from "../agents"
@@ -148,6 +149,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
     getMatter(id)
       .then((next) => {
         setMatter(next)
+        rememberLastMatter(next.id)
         setSourceRefresh((value) => value + 1)
         setLoadError(undefined)
       })

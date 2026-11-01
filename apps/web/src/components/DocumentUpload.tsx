@@ -780,7 +780,7 @@ function NeedsInput({ missing }: { missing: string[] }) {
   if (!missing.length) return null
   const fields = missing.join(", ")
   return (
-    <Tooltip label={`Still to fill: ${fields}`} describes={false}>
+    <Tooltip label={`Still to fill: ${fields}`} describes={false} around=".drafted-row">
       <span className="doc-needs-input" role="img" tabIndex={0} aria-label={`Needs input: ${fields}`}>
         Needs input
       </span>

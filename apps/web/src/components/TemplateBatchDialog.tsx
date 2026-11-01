@@ -18,6 +18,7 @@ import {
 import Dropzone from "./Dropzone"
 import ModalHeader from "./ModalHeader"
 import TemplateViewer from "./TemplateViewer"
+import { lastOpenedFirst } from "../lib/last-matter"
 import { Tooltip } from "./Tooltip"
 import { Closing } from "./useExit"
 import backdropClose from "./backdropClose"
@@ -73,7 +74,7 @@ export default function TemplateBatchDialog({ template, onClose }: { template: T
     listMatters()
       .then((list) => {
         if (!alive.current) return
-        const sorted = [...list].sort((a, b) => b.created_at - a.created_at)
+        const sorted = lastOpenedFirst(list)
         setMatters(sorted)
         setMatterId((current) => current || sorted[0]?.id || "")
       })
@@ -162,11 +163,13 @@ export default function TemplateBatchDialog({ template, onClose }: { template: T
     })
   }
 
+  const heading = `Fill ${stem(template.name)} from a spreadsheet`
   if (step === "preview" && sheet && current) {
     const rowMissingNow = shownMissing?.row === current.row ? shownMissing.missing : missing[index] ?? []
     const isSkipped = skipped.has(current.row)
     return <TemplateViewer
       name={template.name}
+      title={heading}
       loadBytes={loadBytes}
       onClose={close}
       sidebar={<PreviewRow
@@ -221,7 +224,7 @@ export default function TemplateBatchDialog({ template, onClose }: { template: T
     />
   }
 
-  return <BatchPanel title={`Fill ${stem(template.name)} from a spreadsheet`} onClose={close} focusKey={step}
+  return <BatchPanel title={heading} onClose={close} focusKey={step}
     actions={step === "match" ? <button type="button" className="primary" onClick={() => setStep("preview")}>Preview</button>
       : step === "done" && result ? <button type="button" className="primary" onClick={() => { onClose(); navigate(`/matter/${encodeURIComponent(matterId)}?view=documents`) }}>Open matter</button>
       : undefined}

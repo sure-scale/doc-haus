@@ -732,7 +732,8 @@
 .compare-hunk-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-bottom: var(--space-1); }
 .compare-untracked-tag,
 .compare-outcome-tag,
-.doc-needs-input { padding: 0 6px; border: 1px solid var(--warn-border); border-radius: var(--radius-sm); background: var(--warn-soft); color: var(--warn); font-size: 0.6875rem; font-weight: 500; letter-spacing: 0; line-height: 16px; text-transform: none; }
+/* Quiet amber text beside "Row N", not a chip, so the row keeps its neighbours' shape. */
+.doc-needs-input { color: var(--warn); font-size: 0.6875rem; font-weight: 500; letter-spacing: 0; line-height: 16px; text-transform: none; }
 /* Outcome tags read neutral; a rejected proposal and a link to an untracked edit warn. */
 .compare-outcome-tag:not(.is-warn) { border-color: var(--border); background: var(--panel); color: var(--text-secondary); }
 .compare-outcome-tag .compare-ref { font: inherit; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
@@ -814,6 +815,7 @@ button:is(.change-id, .change-ref):hover { text-decoration: underline; }
 .doc-row.is-batch .doc-batch-attention { min-height: 0; color: var(--warn); font-size: 0.6875rem; font-weight: 500; }
 .doc-children-group .drafted-row { padding-block: var(--space-2); }
 .doc-needs-input { flex: none; }
+.drafted-file-meta .doc-needs-input::before { content: "·"; margin-right: 6px; color: var(--muted); }
 .doc-needs-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .doc-children-note { padding: var(--space-1) var(--space-2); color: var(--muted); font-size: 0.6875rem; line-height: 1.5; }
 .docs-drawer .matter-files-collection .doc-row.is-child { padding: 6px var(--space-2); }
