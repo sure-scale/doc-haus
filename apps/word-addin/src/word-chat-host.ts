@@ -476,8 +476,14 @@ export class WordChatHost {
     const [text, before, through] = [selection, start, end].map(range => range.getReviewedText("Current")), texts = items.map(p => p.getRange("Content").getReviewedText("Current"))
     await context.sync()
     if (!text!.value.trim()) return
-    const target: WordChatTarget = { id: crypto.randomUUID(), text: text!.value,
-      paragraphs: items.map((p, i) => ({id: p.uniqueLocalId,text: texts[i]!.value})), startOffset: before!.value.length, endOffset: through!.value.length,
+    // Selecting a whole paragraph (a triple-click, or a drag past its end) also selects its paragraph mark.
+    // The target is the text only: end at the last paragraph's text and drop that final mark from the text.
+    const startOffset = before!.value.length, last = texts.at(-1)!.value
+    const endOffset = Math.min(through!.value.length, last.length)
+    const wanted = texts.map((t, i) => t.value.slice(i === 0 ? startOffset : 0, i === texts.length - 1 ? endOffset : undefined)).join("\r")
+    const selectedText = text!.value.length === wanted.length + 1 && /[\r\n]$/.test(text!.value) && text!.value.slice(0, -1).replace(/\n/g, "\r") === wanted ? text!.value.slice(0, -1) : text!.value
+    const target: WordChatTarget = { id: crypto.randomUUID(), text: selectedText,
+      paragraphs: items.map((p, i) => ({id: p.uniqueLocalId,text: texts[i]!.value})), startOffset, endOffset,
       saved: context.document.saved, capturedAt: new Date().toISOString() }
     validate(target)
     return target
