@@ -171,6 +171,13 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
     setBusy(undefined); setFallback(false); setRecovery(undefined); setCopyName(undefined); setPaneHint(false)
     return () => { opening.current?.abort(); window.clearTimeout(paneTimer.current) }
   }, [matterId, name])
+  // An idle pane stops reporting after a while, so a pane seen once ends the hint.
+  const paneOpen = documents.some((entry) => entry.name === name && entry.open)
+  const paneSeen = useRef(paneOpen)
+  paneSeen.current = paneOpen
+  useEffect(() => {
+    if (paneOpen) { window.clearTimeout(paneTimer.current); setPaneHint(false) }
+  }, [paneOpen])
   const toast = useToast()
   if (!/\.docx$/i.test(name)) return null
   const status = documents.find((entry) => entry.name === name)
@@ -180,7 +187,7 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
   const waitForPane = () => {
     window.clearTimeout(paneTimer.current)
     setPaneHint(false)
-    paneTimer.current = window.setTimeout(() => setPaneHint(true), 20000)
+    paneTimer.current = window.setTimeout(() => { if (!paneSeen.current) setPaneHint(true) }, 20000)
   }
   async function open() {
     if (!config?.origin) return
