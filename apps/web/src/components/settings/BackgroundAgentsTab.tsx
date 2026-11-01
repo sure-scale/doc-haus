@@ -5,9 +5,9 @@ import { ToggleRow } from "./controls"
 // Optional jobs that start without a click. Each switch saves at once; the
 // server merges top-level keys only, so the whole object is always sent.
 const AGENTS: { key: keyof BackgroundAgents; title: string; when: string; description: string }[] = [
-  { key: "chronologySuggestion", title: "Suggest a chronology", when: "When you open a matter or add documents.", description: "Checks whether a timeline of events would help and suggests one. When off, open it yourself from the matter menu." },
-  { key: "reviewCompare", title: "Compare review answers", when: "When you fill a review table.", description: "Shows which documents give the same answer to each question and which differ. When off, use Compare with AI on a column." },
-  { key: "narration", title: "Narrate drafting progress", when: "While a draft is being prepared.", description: "Adds a short plain-English update as each step finishes, and every few minutes during long steps. When off, you still see each step." },
+  { key: "chronologySuggestion", title: "Suggest a chronology", when: "When you open a matter or add documents.", description: "Checks whether a timeline of events would help and suggests one. If off, open it yourself from the matter menu." },
+  { key: "reviewCompare", title: "Compare review answers", when: "When you fill a review table.", description: "Shows which documents give the same answer to each question and which differ. If off, use Compare with AI on a column." },
+  { key: "narration", title: "Narrate drafting progress", when: "While a draft is being prepared.", description: "Adds a short plain-English update as each step finishes, and every few minutes during long steps. If off, you still see each step." },
 ]
 
 const STATES = { on: "On", off: "Off" }
