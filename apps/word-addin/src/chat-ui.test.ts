@@ -143,6 +143,13 @@ test("row uncertainty, prior application, unavailable callback and pending revie
     expect(calls).toBe(1); expect(uncertain.root.textContent).toContain("Check the change in Word")
     expect(uncertain.root.querySelector(".chat-proposal-actions")).toBeNull()
   } finally { uncertain.restore() }
+  const named = fixture({turns:[turn({kind:"amendment",rowProposal})],host:{applyRow:async () => { throw Object.assign(new Error("uncertain"),{mutationState:"uncertain",notice:"Word also changed the table’s column widths."}) }}})
+  try {
+    await named.chat.ready
+    ;[...named.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(b => b.textContent === "Apply")!.click(); await Bun.sleep(0)
+    expect(named.root.querySelector('.chat-proposal-error[role="alert"]')?.textContent).toBe("Word also changed the table’s column widths.")
+    expect(named.root.querySelector(".chat-proposal-actions")).toBeNull()
+  } finally { named.restore() }
   const prior = fixture({turns:[turn({kind:"amendment",rowProposal,proposalApplied:true})],host:{applyRow:async () => {calls++}}})
   try { await prior.chat.ready; expect(prior.root.textContent).toContain("Previously applied in Word."); expect(prior.root.querySelector(".chat-proposal-actions")).toBeNull() } finally { prior.restore() }
   const unavailable = fixture({turns:[turn({kind:"amendment",rowProposal})]})
@@ -344,6 +351,8 @@ test("a definite admission refusal lets the lawyer correct and resend the draft"
   try {
     await f.chat.ready; await f.send("Explain payment")
     expect(f.get<HTMLTextAreaElement>("message").value).toBe("Explain payment")
+    expect(f.get("activity").textContent).toBe("Remove the unavailable attachment.")
+    expect(f.get("reconnect").hidden).toBe(true)
     await f.send("Explain the current payment wording")
     expect(f.calls.filter(call => call.action === "send")).toHaveLength(2)
     expect(f.get<HTMLTextAreaElement>("message").value).toBe("")
@@ -1081,6 +1090,38 @@ test("a cached Apply callback rechecks transport availability before calling the
 })
 
 
+test("an unappliable proposal over table cells is prepared again with the cursor in that table", async () => {
+  const placed: Array<[string, boolean]> = []
+  const f = fixture({ turns: [turn({ kind: "amendment", text: "Add a tax row", proposal })], request: async action => action === "send" ? { turn: turn({ id: "turn-two", kind: "amendment", text: "Add a tax row", answer: "Prepared." }) } : undefined, host: {
+    applyEligibility: () => ({ supported: false, reason: "Word cannot safely apply this change yet. Make it directly in Word." }),
+    tableTarget: async (target, place = false) => { placed.push([target.id, place]); return true },
+  } })
+  try {
+    await f.chat.ready; await Bun.sleep(0)
+    const card = f.root.querySelector(".chat-proposal")!
+    expect(card.textContent).toContain("This change is in a table.")
+    expect([...card.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].map(b => b.textContent)).toEqual(["Prepare as table change", "Decline"])
+    ;[...card.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === "Prepare as table change")!.click()
+    await Bun.sleep(0); await Bun.sleep(0)
+    expect(placed).toEqual([[passage.id, false], [passage.id, true]])
+    expect(f.calls.filter(c => c.action === "send").map(c => (c.input as WordChatSend).text)).toEqual(["Add a tax row"])
+    expect(f.root.textContent).toContain("Prepared again as a table change.")
+  } finally { f.restore() }
+})
+
+test("an unappliable proposal outside tables keeps the plain limitation", async () => {
+  const f = fixture({ turns: [turn({ kind: "amendment", proposal })], host: {
+    applyEligibility: () => ({ supported: false, reason: "Word cannot safely apply this change yet. Make it directly in Word." }),
+    tableTarget: async () => false,
+  } })
+  try {
+    await f.chat.ready; await Bun.sleep(0)
+    const card = f.root.querySelector(".chat-proposal")!
+    expect(card.textContent).toContain("Make it directly in Word.")
+    expect([...card.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].map(b => b.textContent)).toEqual(["Refine", "Decline"])
+  } finally { f.restore() }
+})
+
 test("a reconstructed pane shows a confirmed proposal as applied", async () => {
   let writes = 0
   const f = fixture({ turns: [turn({ kind: "amendment", proposal, proposalApplied: true })], host: { apply: async () => { writes++ } } })
@@ -1162,6 +1203,20 @@ test("malformed segmented review cannot offer paragraph or row Apply", async () 
       expect(answer.textContent).not.toContain("Apply")
     } finally { f.restore() }
   }
+})
+
+test("an amendment the reviewer sends back shows the issues and questions beside the error without a card", async () => {
+  const answer = "The reviewer found these issues in the proposed change:\n- The cap figure is not supported by the matter.\n\nPlease answer:\n- What multiple of the Charges should apply?"
+  const refused = turn({ kind: "amendment", status: "complete", error: "The proposal needs revision before it can be applied. No change was applied.", answer, answerFormat: "segments-v1", answerParts: [{ type: "text", text: answer }], sources: [], proposal })
+  const f = fixture({ turns: [refused] })
+  try {
+    await f.chat.ready
+    const message = f.root.querySelector('.chat-message[data-role="assistant"]')!
+    expect(message.querySelector(".chat-answer-text")!.textContent).toBe(answer)
+    expect(message.querySelector('[role="alert"]')!.textContent).toBe(refused.error!)
+    expect(message.querySelector(".chat-proposal")).toBeNull()
+    expect([...f.root.querySelectorAll("button")].some(button => button.textContent === "Apply")).toBe(false)
+  } finally { f.restore() }
 })
 
 test("cleared segmented answers show only their running, stopped or error state", async () => {

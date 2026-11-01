@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { verifyNativeWordChatInsertedRow } from "./word-chat-native-row-verification"
+import { nativeWordChatRowRefitWidths, verifyNativeWordChatInsertedRow } from "./word-chat-native-row-verification"
 const PKG="http://schemas.microsoft.com/office/2006/xmlPackage", W="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 const wrap=(body:string, comment="Text", rsid="00112233")=>`<pkg:package xmlns:pkg="${PKG}" xmlns:w="${W}"><pkg:part pkg:name="/word/document.xml"><pkg:xmlData><w:document><w:body>${body}</w:body></w:document></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/comments.xml"><pkg:xmlData><w:comments><w:comment w:id="1" w:author="Reviewer"><w:p w:rsidR="${rsid}" w:rsidRDefault="${rsid}"><w:r><w:t>${comment}</w:t></w:r></w:p></w:comment></w:comments></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/settings.xml"><pkg:xmlData><w:settings><w:rsids><w:rsid w:val="${rsid}"/></w:rsids></w:settings></pkg:xmlData></pkg:part><pkg:part pkg:name="/word/styles.xml"><pkg:xmlData><w:styles><w:style w:styleId="Normal"/></w:styles></pkg:xmlData></pkg:part></pkg:package>`
 const stamp='w:author="Reviewer" w:date="2026-01-01T00:00:00Z"'
@@ -115,4 +115,15 @@ test("Word's no-op table, grid, row and cell records and its fixed grid-total wi
   expect(check(recorded())).toEqual({authors:["Reviewer"]})
   // The table and existing rows are the remainder check's to compare; here the new row must follow the reference row.
   for(const newRowPr of ['<w:jc w:val="right"/>','']) expect(()=>check(recorded(undefined,newRowPr))).toThrow()
+})
+test("a row add that also re-fits the table's column widths as a tracked change is named, not admitted",()=>{
+  const grid=(a:number,b:number)=>`<w:tblGrid><w:gridCol w:w="${a}"/><w:gridCol w:w="${b}"/></w:tblGrid>`
+  const table=(g:string, rows:string)=>wrap(`<w:tbl><w:tblPr/>${g}${old}${rows}</w:tbl>`)
+  const start=table(grid(2400,2400),"")
+  const refit=table(`<w:tblGrid><w:gridCol w:w="873"/><w:gridCol w:w="972"/><w:tblGridChange w:id="20"><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid></w:tblGridChange></w:tblGrid>`,row)
+  expect(nativeWordChatRowRefitWidths(start,refit,0)).toBe(true)
+  // Same widths, or a different failure, is not reported as a width re-fit.
+  expect(nativeWordChatRowRefitWidths(start,table(grid(2400,2400),row),0)).toBe(false)
+  expect(nativeWordChatRowRefitWidths(start,table(grid(873,972),row),0)).toBe(false)
+  expect(nativeWordChatRowRefitWidths(start,refit,1)).toBe(false)
 })

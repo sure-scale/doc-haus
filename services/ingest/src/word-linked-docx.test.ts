@@ -34,9 +34,12 @@ test("linking changes only extension/package parts; stripping removes the capabi
   const linked = linkedWordDocx(zipSync(original), link)
   expect(readWordLink(linked)).toEqual(link)
   const linkedParts = unzipSync(linked)
-  const reference = new DOMParser().parseFromString(strFromU8(linkedParts["word/webextensions/dochaus.xml"]), "application/xml")
-    .getElementsByTagNameNS("http://schemas.microsoft.com/office/webextensions/webextension/2010/11", "reference")[0]
+  const extension = new DOMParser().parseFromString(strFromU8(linkedParts["word/webextensions/dochaus.xml"]), "application/xml")
+  const reference = extension.getElementsByTagNameNS("http://schemas.microsoft.com/office/webextensions/webextension/2010/11", "reference")[0]
   expect(reference?.getAttribute("version")).toBe(WORD_ADDIN_VERSION)
+  // Word starts the manifest's shared runtime when the file opens, so the pane can show itself.
+  const background = extension.getElementsByTagNameNS("http://schemas.microsoft.com/office/webextensions/webextension/2010/11", "backgroundApp")[0]
+  expect([background?.getAttribute("state"), background?.getAttribute("runtimeId")]).toEqual(["1", "Pane.Url"])
   for (const [name, bytes] of Object.entries(original)) if (!name.endsWith("/") && !["_rels/.rels", "[Content_Types].xml", "word/webextensions/taskpanes.xml", "word/webextensions/_rels/taskpanes.xml.rels"].includes(name)) expect(linkedParts[name]).toEqual(bytes)
   const clean = stripWordLink(linked)
   expect(xmls(clean)).not.toContain(link.token)

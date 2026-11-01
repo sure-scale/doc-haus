@@ -2,6 +2,7 @@
 .word-controls button { white-space: nowrap; }
 .word-recovery { display: flex; flex-basis: 100%; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--warn-border); border-radius: var(--radius-md); background: var(--warn-soft); font-size: 0.8125rem; }
 .word-recovery > span { flex: 1 1 240px; }
+.word-pane-hint { flex-basis: 100%; color: var(--muted); font-size: 0.75rem; line-height: 1.5; }
 .word-controls.is-compact { gap: 6px var(--space-2); font-size: 0.6875rem; }
 .word-controls.is-compact .linklike { font-size: inherit; font-weight: 500; }
 .word-controls.is-compact button { min-height: 28px; }
@@ -9,12 +10,8 @@
 .word-revoke { color: var(--muted); }
 .word-badge { display: inline-flex; flex: none; align-items: center; padding: 1px 7px; border: 1px solid var(--accent-border); border-radius: var(--radius-pill); background: var(--accent-soft); color: var(--accent); font-size: 0.6875rem; line-height: 1.5; white-space: nowrap; }
 .word-badge.has-overlap { border-color: var(--warn-border); background: var(--warn-soft); color: var(--warn); }
-.word-setup { margin: 0 0 var(--space-3); color: var(--muted); font-size: 0.75rem; line-height: 1.55; overflow-wrap: anywhere; }
-.word-setup > button { margin-left: var(--space-2); font-size: inherit; }
-.word-setup summary { width: fit-content; cursor: pointer; color: var(--text-secondary); }
-.word-setup p { margin: var(--space-2) 0; }
 .word-warning { flex: none; margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--warn-border); border-radius: var(--radius-md); background: var(--warn-soft); color: var(--text); font-size: 0.8125rem; line-height: 1.5; overflow-wrap: anywhere; }
-.document-reader > :is(.word-setup, .word-warning) { flex: none; margin: 0 var(--space-5) var(--space-3); }
+.document-reader > .word-warning { flex: none; margin: 0 var(--space-5) var(--space-3); }
 .document-reader .viewer-bar:has(> .viewer-bar-actions > .word-controls) { flex-wrap: wrap; }
 .document-reader .viewer-bar-actions:has(> .word-controls) { max-width: 100%; flex-wrap: wrap; }
 .document-reader .viewer-bar-actions .word-open { min-height: 40px; padding: 0 var(--space-3); color: var(--text-secondary); font-size: 0.8125rem; background: transparent; border-color: transparent; }
@@ -27,5 +24,5 @@
 
 @media (forced-colors: active) {
   .word-badge, .word-warning { border-color: CanvasText; }
-  .word-setup summary, .word-controls .linklike { text-decoration: underline; }
+  .word-controls .linklike { text-decoration: underline; }
 }

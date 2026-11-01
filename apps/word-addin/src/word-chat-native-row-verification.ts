@@ -224,3 +224,16 @@ export function verifyNativeWordChatInsertedRow(beforeXml:string, afterXml:strin
 export function verifyNativeWordChatAddedRow(beforeXml:string, afterXml:string, binding:{tableIndex:number;rows:unknown[]}, cells:string[], runs?:WordChatCellRun[][]): string[] {
   return verifyNativeWordChatInsertedRow(beforeXml, afterXml, binding.tableIndex, binding.rows.length, cells, runs).authors
 }
+
+/** Whether Word, while adding a row, also re-fitted the bound table's column
+ * widths as a tracked table-format change. Word for Windows can do this after
+ * earlier tracked edits; the row is then present but cannot be confirmed, and
+ * the lawyer needs to know why. Diagnostic only: never admits the change. */
+export function nativeWordChatRowRefitWidths(beforeXml:string, afterXml:string, tableIndex:number): boolean {
+  try {
+    const table=(xml:string)=>{ const t=named(named(parts(xml).get(MAIN)!.getElementsByTagNameNS(W,"document")[0]!,"body")[0]!,"tbl")[tableIndex]; if(!t) return fail(); settleNativeWordChatTableRecords(t); return t }
+    const widths=(t:Element)=>named(t,"tblGrid").flatMap(g=>named(g,"gridCol")).map(c=>c.getAttributeNS(W,"w"))
+    const before=table(beforeXml), after=table(afterXml)
+    return JSON.stringify(widths(before))!==JSON.stringify(widths(after)) && named(named(after,"tblGrid")[0] ?? after,"tblGridChange").length===1
+  } catch { return false }
+}

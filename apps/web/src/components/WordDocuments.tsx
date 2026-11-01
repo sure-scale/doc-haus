@@ -2,7 +2,6 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { copySavedWordRecovery, fetchWordConfig, fetchWordDocuments, fetchWordOpenState, linkedWordDocument, prepareWordOpen, recoverWordEditing, type WordConfig, type WordOpenDocument } from "../api/ingest/word"
 import { humanizeError } from "../api/ingest/errors"
 import { useToast } from "./Toast"
-import { useOpenSettings } from "./settings/navigation"
 
 type WordState = {
   config?: WordConfig
@@ -12,9 +11,8 @@ type WordState = {
   refreshKey: number
   refresh: () => void
   documentCreated: () => void
-  retrySetup: () => void
 }
-const WordDocuments = createContext<WordState>({ documents: [], refreshKey: 0, refresh: () => {}, documentCreated: () => {}, retrySetup: () => {} })
+const WordDocuments = createContext<WordState>({ documents: [], refreshKey: 0, refresh: () => {}, documentCreated: () => {} })
 
 // Heartbeats only say that Word is in contact. Version identity, rather than a
 // save-time timestamp, tells the app that ingest actually received new bytes.
@@ -101,7 +99,7 @@ export function WordDocumentsProvider({ matterId, onChanged, children }: { matte
     }
   }, [matterId])
 
-  return <WordDocuments.Provider value={{ config, setupError, documents, statusError, refreshKey, refresh: () => refresh.current(), documentCreated: () => { setRefreshKey(value => value + 1); changed.current(); refresh.current() }, retrySetup: () => setSetupAttempt((value) => value + 1) }}>{children}</WordDocuments.Provider>
+  return <WordDocuments.Provider value={{ config, setupError, documents, statusError, refreshKey, refresh: () => refresh.current(), documentCreated: () => { setRefreshKey(value => value + 1); changed.current(); refresh.current() } }}>{children}</WordDocuments.Provider>
 }
 
 // A refresh never remounts the viewer or clears a typed edit request. Defer
@@ -158,20 +156,6 @@ export function wordSetupReason(config?: WordConfig, error?: string) {
   if (!config.available) return "Word is not ready. Set it up in Settings → Word add-in."
 }
 
-// Kept nearby instead of repeated on every row. It remains discoverable when
-// Word cannot be used, with the actual reason and a way to check after setup.
-export function WordSetup() {
-  const { config, setupError, retrySetup } = useContext(WordDocuments)
-  const openSettings = useOpenSettings()
-  const reason = wordSetupReason(config, setupError)
-  if (reason) return <div className="word-setup" role="status">
-    <span>{reason}</span>
-    {config && !config.available && <button type="button" className="linklike" onClick={() => openSettings("addins")}>Set up Word</button>}
-    {(config || setupError) && <button type="button" className="linklike" onClick={retrySetup}>Check again</button>}
-  </div>
-  return null
-}
-
 export function WordOpenControl({ matterId, name, disabled = false, compact = false }: { matterId: string; name: string; disabled?: boolean; compact?: boolean }) {
   const { config, setupError, documents, refresh, documentCreated } = useContext(WordDocuments)
   const [busy, setBusy] = useState<"open" | "download" | "release" | "takeover" | "copy">()
@@ -179,16 +163,32 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
   const opening = useRef<AbortController | undefined>(undefined)
   const [recovery, setRecovery] = useState<{ action: "release" | "takeover"; document: WordOpenDocument }>()
   const [copyName, setCopyName] = useState<string>()
+  // Windows Word opens its own Comments pane for a document with comments and
+  // then skips the doc.haus pane. Point to the ribbon while no pane has connected.
+  const [paneHint, setPaneHint] = useState(false)
+  const paneTimer = useRef<number | undefined>(undefined)
   useEffect(() => {
-    setBusy(undefined); setFallback(false); setRecovery(undefined); setCopyName(undefined)
-    return () => opening.current?.abort()
+    setBusy(undefined); setFallback(false); setRecovery(undefined); setCopyName(undefined); setPaneHint(false)
+    return () => { opening.current?.abort(); window.clearTimeout(paneTimer.current) }
   }, [matterId, name])
+  // An idle pane stops reporting after a while, so a pane seen once ends the hint.
+  const paneOpen = documents.some((entry) => entry.name === name && entry.open)
+  const paneSeen = useRef(paneOpen)
+  paneSeen.current = paneOpen
+  useEffect(() => {
+    if (paneOpen) { window.clearTimeout(paneTimer.current); setPaneHint(false) }
+  }, [paneOpen])
   const toast = useToast()
   if (!/\.docx$/i.test(name)) return null
   const status = documents.find((entry) => entry.name === name)
   const locked = status?.lease?.state === "other"
   const pending = status?.nativeOperation?.state === "pending"
   const available = config?.available && !setupError
+  const waitForPane = () => {
+    window.clearTimeout(paneTimer.current)
+    setPaneHint(false)
+    paneTimer.current = window.setTimeout(() => { if (!paneSeen.current) setPaneHint(true) }, 20000)
+  }
   async function open() {
     if (!config?.origin) return
     opening.current?.abort()
@@ -207,6 +207,7 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
         const state = await fetchWordOpenState(matterId, handoff.id, signal)
         if (state === "completed") {
           refresh()
+          waitForPane()
           toast("success", "Sent to Word. Keep doc.haus running while you work.")
           return
         }
@@ -230,6 +231,7 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
       a.click()
       window.setTimeout(() => URL.revokeObjectURL(url), 1000)
       refresh()
+      waitForPane()
       toast("success", `Open the downloaded ${name} in Word. Choose Save in the doc.haus pane before closing.`)
     } catch (error) {
       toast("error", humanizeError(error, `Could not open ${name} in Word.`))
@@ -265,6 +267,7 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
     {available ? <button type="button" className={compact ? "linklike word-open" : "word-open"} onClick={open} disabled={disabled || pending || busy !== undefined} aria-label={`Open ${name} in Word`} title="Open an editable linked copy in desktop Word">
       {busy === "open" ? "Opening Word…" : "Open in Word"}
     </button> : <span className="word-unavailable" title={wordSetupReason(config, setupError)}>{config || setupError ? "Word setup needed" : "Checking Word…"}</span>}
+    {paneHint && !status?.open && <span className="word-pane-hint" role="status">If the doc.haus pane isn’t showing in Word, click doc.haus on the Home tab.</span>}
     {available && fallback && <button type="button" className="linklike" onClick={download} disabled={disabled || pending || busy !== undefined}>{busy === "download" ? "Downloading…" : "Download Word copy"}</button>}
     {pending && <>
       <button type="button" className="linklike" disabled={disabled || busy !== undefined} onClick={() => setCopyName(name.replace(/\.docx$/i, " (saved copy).docx"))}>Create saved copy</button>

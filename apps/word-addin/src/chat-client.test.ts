@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { chatClient } from "./chat-client"
-import { WORD_ADDIN_VERSION } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_PROTOCOL_VERSION } from "../../../dochaus/lib/word-addin-contract"
 
 const link = { version: 1 as const, apiOrigin: "https://localhost:4612", origin: "http://localhost:4444", matter: "synthetic", matterName: "Synthetic matter", document: "draft.docx", documentName: "Draft", token: "synthetic-document-capability", baseVersion: "original" }
 
@@ -22,7 +22,7 @@ test("native SSE reader uses document-granted POST and strips all content-bearin
   expect(path).toBe(`${link.apiOrigin}/word/chat/events`); expect(path).not.toContain(link.token)
   expect(init?.method).toBe("POST"); expect(init?.credentials).toBe("omit"); expect(init?.redirect).toBe("error"); expect(init?.referrerPolicy).toBe("no-referrer")
   expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${link.token}`)
-  expect(new Headers(init?.headers).get("x-dochaus-word-version")).toBe(WORD_ADDIN_VERSION)
+  expect(new Headers(init?.headers).get("x-dochaus-word-version")).toBe(WORD_PROTOCOL_VERSION)
   expect(JSON.parse(init?.body as string)).toEqual({ conversationId: "conversation" })
   expect(received).toEqual([{ id: "connected", type: "server.connected", data: {} }, { id: "status", created: 1, type: "session.status", data: { sessionID: "turn", status: { type: "idle" } } }])
 })

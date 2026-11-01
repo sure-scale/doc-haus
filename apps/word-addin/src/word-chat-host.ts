@@ -3,7 +3,7 @@ import { validWordChatFormatting, validWordChatInlineFormatting, targetWordChatA
 import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, sameNativeWordChatBodySnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody, verifyNativeWordChatRowRemainder, verifyReviewedWordChatRowOracle, assertWordChatRowFormatNeutral, WordChatRowFormatRefusal, assertNativeWordChatInlineTarget, assertNativeWordChatInlineDependencies, verifiedNativeWordChatInlineFormatting, sameNativeInlineWordChatParagraph, assertNativeInlineWordChatRevisionIds } from "./word-chat-host-ooxml"
 import type { WordChatAuthoredTableRow, WordChatAuthoredTableRowDeletion } from "../../../dochaus/lib/word-chat-contract"
 import { prepareNativeRow, queueNativeRow, type NativeRowContext } from "./word-chat-native-row"
-import { verifyNativeWordChatAddedRow } from "./word-chat-native-row-verification"
+import { nativeWordChatRowRefitWidths, verifyNativeWordChatAddedRow } from "./word-chat-native-row-verification"
 import { assertNativeWordChatRowDeletionTarget, verifyReviewedWordChatRowDeletionOracle, verifyNativeWordChatDeletedRow } from "./word-chat-native-row-delete"
 import { normalizeNativeWordChatCommentIds as normalizeNativeWordChatAnnotationIds } from "./word-chat-native-comments"
 import { assertNativeWordChatParagraphInsertionTarget, verifyNativeWordChatParagraphInsertion } from "./word-chat-native-paragraph-insert"
@@ -28,6 +28,7 @@ type WordChatRange = {
   paragraphs: Collection<Paragraph>
   load(properties: string): void
   getRange(location?: string): WordChatRange
+  select?(selectionMode?: "Select" | "Start" | "End"): void
   expandTo(other: WordChatRange): WordChatRange
   compareLocationWith(other: WordChatRange): ClientResult<string>
   search(query: string, options: Record<string, boolean>): Collection<WordChatRange>
@@ -62,6 +63,8 @@ export type WordChatWord = { run<T>(callback: (context: WordChatContext) => Prom
 export type WordChatApplyResult = { status: "applied" | "already-applied"; tracked: true; saved: false; authors: string[]; target?: WordChatTarget }
 export type WordChatApplyInput = { proposalId: string; target: WordChatTarget; replacement: string; formatting?: WordChatParagraphFormat[]; inlineFormatting?: WordChatInlineFormat; paragraphAction?: WordChatProposal["paragraphAction"]; list?: WordChatListCapture; author: (snapshot: { ooxml: string }) => Promise<WordChatPreparedAmendment>; mayDispatch?: () => boolean }
 export class WordChatHostError extends Error {
+  /** A known cause the card shows in place of its generic check note. */
+  notice?: string
   constructor(message: string, readonly mutationState: "unchanged" | "uncertain" = "unchanged", options?: ErrorOptions) { super(message, options); this.name = "WordChatHostError" }
 }
 const LIMIT = 24_000
@@ -270,6 +273,33 @@ export class WordChatHost {
       // Read current text in a fresh Office batch; never substitute a saved copy.
       return this.readSnapshot(false, false)
     }
+  }
+  /** Whether every target paragraph is an ordinary table-cell paragraph. With
+   * `place`, the cursor moves to the first one so the next capture names that
+   * table; nothing in the document changes. Paragraph ids last only for one
+   * Word session, so after a reopen each target paragraph is found instead by
+   * its current text, which must occur exactly once in the body, in order. */
+  async tableTarget(target: WordChatTarget, place = false): Promise<boolean> {
+    if (!this.supports("WordApi", "1.6")) return false
+    return this.word.run(async context => {
+      const all = context.document.body.paragraphs
+      all.load("items/uniqueLocalId,items/tableNestingLevel")
+      await context.sync()
+      const ids = new Set(target.paragraphs.map(p => p.id))
+      let found = all.items.filter(p => ids.has(p.uniqueLocalId))
+      if (!found.length && target.paragraphs.length && target.paragraphs.every(p => p.text.trim())) {
+        const current = await nativeInventory(context, all.items)
+        const at = target.paragraphs.map(p => { const hits = current.flatMap((c, i) => c.text === p.text ? [i] : []); return hits.length === 1 ? hits[0]! : -1 })
+        if (at.every((index, i) => index >= 0 && (i === 0 || index > at[i - 1]!))) found = at.map(index => all.items[index]!)
+      }
+      if (!found.length || found.length !== ids.size || found.some(p => p.tableNestingLevel !== 1)) return false
+      if (place) {
+        const start = found[0]!.getRange("Start")
+        if (!start.select) return false
+        start.select("Start"); await context.sync()
+      }
+      return true
+    })
   }
   private async observeNativeLists(context: WordChatContext, projection: ReturnType<typeof projectNativeWordChatBody>, selected?: string[]): Promise<WordChatListCapture[]> {
     const all = context.document.body.paragraphs
@@ -560,6 +590,7 @@ export class WordChatHost {
 
   private async applyRowOnce(proposal: WordChatTableRowInsertionProposal, identity: string, exportCurrent: () => Promise<Uint8Array>,
     author: (bytes: Uint8Array) => Promise<WordChatAuthoredTableRow>, mayDispatch?: () => boolean): Promise<WordChatApplyResult> {
+    const observed: { before?: string; after?: string } = {}
     try {
       const source = await exportCurrent()
       if (!(source instanceof Uint8Array) || !source.length || source.length > 16 * 1024 * 1024) throw new WordChatHostError("The current Word document is too large or unavailable to prepare this row. Your document is unchanged.")
@@ -575,6 +606,7 @@ export class WordChatHost {
         await context.sync()
         const inventory = await nativeInventory(context, all.items)
         const beforeXml = body.value
+        observed.before = beforeXml
         const projection = projectNativeWordChatBody(beforeXml, inventory)
         const fail = () => { throw new Error("Invalid table XML") }
         const xml = new DOMParser({ errorHandler: { warning: fail, error: fail, fatalError: fail } }).parseFromString(beforeXml, "application/xml")
@@ -618,6 +650,7 @@ export class WordChatHost {
         const afterInventory = await nativeInventory(context, afterAll.items)
         const addedText = addedParagraphs.map(paragraph => afterInventory.find(p => p.id === paragraph.id)?.text)
         const observedXml = afterXml.value
+        observed.after = observedXml
         // A cell with any reviewed formatting is proved per segment below;
         // every other new cell must read uniformly plain as a whole.
         const formatted = proposal.cells.map((_, i) => proposal.runs?.[i]?.some(run => run.bold || run.italic || run.underline) ? proposal.runs[i] : undefined)
@@ -633,7 +666,12 @@ export class WordChatHost {
         return { status: "applied", tracked: true, saved: false, authors }
       })
     } catch (error) {
-      if (this.applied.get(proposal.id)?.uncertain) throw new WordChatHostError("Word may have applied the row, but its tracked result could not be confirmed. Inspect it and use Undo if needed; do not apply it again.", "uncertain", { cause: error })
+      if (this.applied.get(proposal.id)?.uncertain) {
+        const uncertain = new WordChatHostError("Word may have applied the row, but its tracked result could not be confirmed. Inspect it and use Undo if needed; do not apply it again.", "uncertain", { cause: error })
+        if (observed.before && observed.after && nativeWordChatRowRefitWidths(observed.before, observed.after, proposal.table.tableIndex))
+          uncertain.notice = "Word added the row but also changed the table’s column widths as a tracked change, so doc.haus can’t confirm it. Use Undo in Word, then add the row directly in Word."
+        throw uncertain
+      }
       if (error instanceof WordChatRowFormatRefusal) throw new WordChatHostError(error.message, "unchanged", { cause: error })
       failure(error, "Word could not prepare the reviewed row. Your document is unchanged.")
     }
@@ -1516,6 +1554,7 @@ let defaultHost: WordChatHost | undefined
 const host = () => defaultHost ??= new WordChatHost()
 export const captureCurrentWordContext = (includeSelection = false, pinned?: WordChatTarget) => host().capture(includeSelection, pinned)
 export const captureWordChatSelection = () => host().selection()
+export const wordChatTableTarget = (target: WordChatTarget, place = false) => host().tableTarget(target, place)
 export const applyReviewedProposal = (proposal: import("../../../dochaus/lib/word-chat-amendment-contract").WordChatProposal,
   author: WordChatApplyInput["author"], mayDispatch?: () => boolean) => {
   if (proposal.before !== proposal.target.text) throw new WordChatHostError("Review a fresh amendment before applying it.")

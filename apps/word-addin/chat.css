@@ -116,5 +116,16 @@
 .chat-proposal-actions button { flex: 1; }
 .chat-open-items { padding-left: 18px; color: #805311; font-size: 12px; }
 .chat-local-note { color: #17634f; font-size: 11px; }
-@media (max-width: 360px) { .pane-tabs { gap: 14px; } .chat-composer-actions button { padding-inline: 6px; } .chat-chip summary { max-width: 190px; } }
+@media (max-width: 360px) { .chat-composer-actions button { padding-inline: 6px; } .chat-chip summary { max-width: 190px; } }
+/* Short task panes (small laptop screens with Word's ribbon expanded) keep the
+   conversation readable: an idle composer is one line and grows while in use. */
+@media (max-height: 520px) {
+  .word-chat { padding-block: 4px; }
+  .chat-composer { padding: 6px; }
+  .chat-composer-context { margin-bottom: 2px; }
+  .word-chat .chat-history-toggle, .word-chat .chat-new { min-height: 32px; }
+  .word-chat textarea { min-height: 38px; }
+  .word-chat textarea:focus, .word-chat textarea:not(:placeholder-shown) { min-height: 64px; }
+  .chat-activity:empty { min-height: 0; padding: 0; }
+}
 @media (prefers-reduced-motion: reduce) { .chat-skeleton { animation: none; } }

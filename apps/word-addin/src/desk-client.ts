@@ -1,5 +1,5 @@
-import { WORD_ADDIN_VERSION, type WordDocumentLink } from "../../../dochaus/lib/word-addin-contract"
-import { WORD_UPDATE_MESSAGE, httpsOrigin } from "./client"
+import { WORD_PROTOCOL_VERSION, type WordDocumentLink } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_UPDATE_MESSAGE, httpsOrigin, reloadAfterUpdate } from "./client"
 import { isDeskRequest, type DeskRequest } from "./desk-protocol"
 import { captureSelection, showSelection } from "./selection"
 import { DeskRequestError } from "./desk-host"
@@ -39,7 +39,7 @@ export function deskRequestHandler(
         method: "POST",
         headers: {
           Authorization: `Bearer ${link.token}`,
-          "x-dochaus-word-version": WORD_ADDIN_VERSION,
+          "x-dochaus-word-version": WORD_PROTOCOL_VERSION,
           ...(!upload ? { "Content-Type": "application/json" } : {}),
         },
         body: upload ?? JSON.stringify(input.action === "open" ? { ...body, origin: browser.origin } : body),
@@ -49,7 +49,7 @@ export function deskRequestHandler(
         signal: abort.signal,
       })
       if (!response.ok) {
-        if (response.status === 426) throw new DeskRequestError(WORD_UPDATE_MESSAGE)
+        if (response.status === 426) { await reloadAfterUpdate(); throw new DeskRequestError(WORD_UPDATE_MESSAGE) }
         const value = await response.json().catch(() => null) as { message?: unknown; error?: unknown } | null
         const detail = typeof value?.message === "string" ? value.message : typeof value?.error === "string" ? value.error : undefined
         throw new DeskRequestError(detail ?? "Matter documents are unavailable. Check the document link and try again.")
