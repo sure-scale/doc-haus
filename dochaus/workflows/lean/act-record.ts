@@ -5,7 +5,7 @@ import { appendLeanEvent, leanElapsedMs } from "./events"
 import { instructionSections, listedActIssues, mergeCoverageActs, namingTexts } from "./package-coverage"
 import { nameKey, namedIn } from "./plan"
 import { retryPrompt, tagged } from "./prompts"
-import { REQUEST_SOURCE, excerpt, matterSourceIDs, quoteFound, quoteMissIssue } from "./quotes"
+import { REQUEST_SOURCE, adoptedSources, excerpt, matterSourceIDs, quoteFound, quoteMissIssue } from "./quotes"
 import { approvedResearch, researchHandoff } from "./research"
 import type { StageRun } from "./runner"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, type LeanDeps } from "./stages"
@@ -146,7 +146,8 @@ export function actRecordPack(directory: string) {
     tagged("sources", [
       "Matter documents (use these exact names with search-document and read-document, and as source names):",
       ...matterSourceIDs(directory).map(name => `- ${nameWithProvenance(name, provenance)}`),
-      `To quote the request, the lawyer's updates or answers, use the source name "${REQUEST_SOURCE}". To quote approved legal research, use its finding's "url" as the source name.`,
+      `To quote the request, the lawyer's updates or the lawyer's own answers, use the source name "${REQUEST_SOURCE}". To quote approved legal research, use its finding's "url" as the source name.`,
+      ...adoptedSources(directory).map(name => `To quote the recommendation adopted for question ${name.slice("adopted:".length)}, which the lawyer delegated, use the source name "${name}"; its words are the drafter's judgment, not the lawyer's.`),
     ].join("\n")),
     tagged("rules", [
       "- Read the matter documents you rely on with search-document or read-document.",
@@ -165,7 +166,7 @@ function replyJson(reply: string): unknown {
 const text = (row: Record<string, unknown>, key: string) => typeof row[key] === "string" ? (row[key] as string).trim() : ""
 
 /** A listing reply's rows: each a nonempty `field`, "source" and "quote", the
- * source a matter document or "request" and the quote found in it
+ * source a matter document, "request" or an adopted recommendation and the quote found in it
  * (listedActIssues). Every defect is retry feedback; the rows are returned only
  * when there is none, each once (by its text, source and quote, as the quote
  * checks normalise them). An empty list is valid. */
@@ -203,9 +204,9 @@ export function parseDeliverables(reply: string, directory: string): Checked<Del
   return checked.value ? { issues: [], value: checked.value.map(row => ({ deliverable: row.act, source: row.source, quote: row.quote })) } : { issues: checked.issues }
 }
 
-/** Sources a basis entry may name: the instructions, a matter document or an approved research finding's URL. */
+/** Sources a basis entry may name: the instructions, an adopted recommendation, a matter document or an approved research finding's URL. */
 function evidenceSources(directory: string) {
-  return [...new Set([REQUEST_SOURCE, ...matterSourceIDs(directory), ...approvedResearch(directory).map(row => row.url)])]
+  return [...new Set([REQUEST_SOURCE, ...adoptedSources(directory), ...matterSourceIDs(directory), ...approvedResearch(directory).map(row => row.url)])]
 }
 
 /** A WHO or HOW reply's entries by index: each listed act exactly once. The
@@ -260,7 +261,7 @@ function basisList(directory: string, where: string, field: string, value: unkno
     const place = `${where}: "${field}[${at}].quote"`
     return [/^https?:\/\//.test(entry.source)
       ? `${place} quotes "${excerpt(entry.quote)}" as from "${entry.source}", but those words are not in that approved research source. Copy the exact words of its finding.`
-      : quoteMissIssue(directory, place, { quote: entry.quote, source_id: entry.source }, "json")]
+      : quoteMissIssue(directory, place, { quote: entry.quote, source_id: entry.source }, "json", { adopted: true })]
   })
   return issues.length ? { issues } : { issues, value: basis }
 }
@@ -332,16 +333,17 @@ function requirementList(directory: string, where: string, value: unknown, self:
 }
 
 /** A "conflict": null (or left out) when there is none; otherwise the
- * instructions' words, from the request or a matter document, and the words
- * that require otherwise, from approved research or another matter document,
+ * instructions' words, from the request, an adopted recommendation or a matter
+ * document, and the words that require otherwise, from approved research or another matter document,
  * each one entry found in its source (basisList), and a nonempty difference. */
 function conflictValue(directory: string, where: string, value: unknown, sources: () => string[]): Checked<ActConflict | null> {
   if (value === undefined || value === null) return { issues: [], value: null }
   const shape = `${where}: "how.conflict" must be null when the instructions and the authority agree, or ${CONFLICT_SHAPE}.`
   if (!record(value) || !record(value.instruction) || !record(value.authority) || !text(value, "difference")) return { issues: [shape] }
   const documents = matterSourceIDs(directory)
-  const instruction = basisList(directory, where, "how.conflict.instruction", [value.instruction], () => [REQUEST_SOURCE, ...documents])
-  const authority = basisList(directory, where, "how.conflict.authority", [value.authority], () => sources().filter(source => source !== REQUEST_SOURCE))
+  const adopted = adoptedSources(directory)
+  const instruction = basisList(directory, where, "how.conflict.instruction", [value.instruction], () => [REQUEST_SOURCE, ...adopted, ...documents])
+  const authority = basisList(directory, where, "how.conflict.authority", [value.authority], () => sources().filter(source => source !== REQUEST_SOURCE && !adopted.includes(source)))
   const issues = [...instruction.issues, ...authority.issues]
   if (!issues.length && instruction.value![0]!.source === authority.value![0]!.source)
     issues.push(`${where}: "how.conflict" gives "${authority.value![0]!.source}" as the source of both sides. "instruction" quotes the instructions; "authority" quotes the approved research or another matter document that requires otherwise.`)

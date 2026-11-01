@@ -32,6 +32,22 @@ export function answerSource(questionID: string) { return `answer:${questionID}`
 const ANSWER_SOURCE = /^answer:\S+$/
 export function isAnswerSource(source_id: string) { return ANSWER_SOURCE.test(source_id) }
 
+/** The source name of the recommendation adopted for a question the lawyer
+ * delegated: "adopted:" and its question's id. Its words are the drafter's
+ * judgment, never the lawyer's, so "request" and answerSource never hold them. */
+export function adoptedSource(questionID: string) { return `adopted:${questionID}` }
+const ADOPTED_SOURCE = /^adopted:\S+$/
+
+/** The source names of the run's adopted recommendations, ordered by question id. */
+export function adoptedSources(directory: string) {
+  return adoptedQuestions(directory).map(question => adoptedSource(question.id))
+}
+
+function adoptedQuestions(directory: string) {
+  return readQuestions(directory).filter(question => question.status === "answered" && question.answer_kind === "adopted" && question.answer)
+    .toSorted((a, b) => a.id.localeCompare(b.id))
+}
+
 export function openItem(stage: StageID, kind: OpenItem["kind"], detail: string, ref: OpenItem["ref"]): OpenItem {
   return { id: `${stage}:${kind}:${shortHash(`${detail}\0${JSON.stringify(ref)}`)}`, stage, kind, detail, ref, status: "open" }
 }
@@ -146,7 +162,7 @@ export function quoteFound(directory: string, quote: SourceQuote) {
   if (quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE)) {
     return instructionFound(directory, quote.quote)
   }
-  const answer = answerTexts(directory, quote.source_id)
+  const answer = answerTexts(directory, quote.source_id) ?? adoptedTexts(directory, quote.source_id)
   if (answer) return lawyerWordsHold(answer, quote.quote)
   return verifyQuote({ directory, quote: quote.quote, document: quote.source_id }).found
 }
@@ -178,6 +194,14 @@ export function lawyerQuoteSource(directory: string, quote: string) {
 function answerTexts(directory: string, source_id: string) {
   if (!isAnswerSource(source_id) || matterSourceIDs(directory).includes(source_id)) return
   return lawyerPassages(directory).filter(row => row.source_id === source_id).map(row => row.text)
+}
+
+/** The adopted option's words of the question `source_id` names ([] when it
+ * names no adopted question), or undefined when it is not an adopted source
+ * name (or a matter source has that name). */
+function adoptedTexts(directory: string, source_id: string) {
+  if (!ADOPTED_SOURCE.test(source_id) || matterSourceIDs(directory).includes(source_id)) return
+  return adoptedQuestions(directory).filter(question => adoptedSource(question.id) === source_id).map(question => question.answer!)
 }
 
 /** A quotation in prose ('"words" [source: id]') passes when quoteFound does,
@@ -222,7 +246,7 @@ function elision(directory: string, quote: SourceQuote) {
     .map(row => elisionGap(researchSource(directory, row.snapshot)?.text ?? "", parts))) }
   if (quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE))
     return { parts, gap: nearestGap(lawyerWords(directory).map(text => elisionGap(text, parts, { ignoreCase: true }))) }
-  const answer = answerTexts(directory, quote.source_id)
+  const answer = answerTexts(directory, quote.source_id) ?? adoptedTexts(directory, quote.source_id)
   if (answer) return { parts, gap: nearestGap(answer.map(text => elisionGap(text, parts, { ignoreCase: true }))) }
   return { parts, gap: locateElidedQuote({ directory, parts, document: quote.source_id }) }
 }
@@ -248,15 +272,18 @@ function lawyerPassages(directory: string): { source_id: string; text: string }[
 
 /** When words quoted as the lawyer's are the run's own record (the instructions
  * list, a question an instruction settled, or an adopted recommendation),
- * where the lawyer's words are. */
-export function derivedRecordNote(directory: string, quote: string) {
+ * where the lawyer's words are. An adopted recommendation's words are pointed
+ * to their own source name (adoptedSource) where the check accepts it
+ * (`adopted`), otherwise to the request or the matter sources. */
+export function derivedRecordNote(directory: string, quote: string, { adopted: quotable = false } = {}) {
   const settled = readQuestions(directory).find(question => question.answer_kind === "instruction" && question.decided_by &&
     lawyerWordsHold([question.question, question.answer ?? "", question.decided_by.text], quote))
   if (settled?.decided_by)
     return `Those words are the run's own record of question ${settled.id}, which an instruction settled; they are not the lawyer's words. The lawyer's words behind it are "${excerpt(settled.decided_by.quote)}" in "${settled.decided_by.source_id}".`
   const adopted = readQuestions(directory).find(question => question.status === "answered" && question.answer_kind === "adopted" && lawyerWordsHold([question.answer ?? ""], quote))
   if (adopted)
-    return `Those words are the recommendation adopted for question ${adopted.id}, which the lawyer delegated; they are not the lawyer's words. Quote the lawyer's request or the matter sources that support the point instead.`
+    return `Those words are the recommendation adopted for question ${adopted.id}, which the lawyer delegated; they are not the lawyer's words. ` +
+      (quotable ? `Quote them under the source name "${adoptedSource(adopted.id)}".` : "Quote the lawyer's request or the matter sources that support the point instead.")
   return lawyerWordsHold([readLeanText(directory, INSTRUCTIONS_FILE) ?? ""], quote)
     ? "Those words are the run's list of the lawyer's instructions, not the lawyer's words; quote the words the list shows from its named source, under that source's name."
     : ""
@@ -267,15 +294,18 @@ export function derivedRecordNote(directory: string, quote: string) {
  * middle joins passages of the named source, the feedback says so and shows
  * the words it leaves out (or the source's own ellipsis, written differently),
  * or that the passages are apart. A passage beside an ellipsis that is too
- * short to locate (SHORT_QUOTE) is reported as such, not as missing. */
-export function quoteMissIssue(directory: string, where: string, quote: SourceQuote, format: "prose" | "json" = "prose") {
+ * short to locate (SHORT_QUOTE) is reported as such, not as missing. Words
+ * quoted as the lawyer's that are an adopted recommendation are pointed to its
+ * source name when the caller accepts it (`adopted`; derivedRecordNote). */
+export function quoteMissIssue(directory: string, where: string, quote: SourceQuote, format: "prose" | "json" = "prose", options: { adopted?: boolean } = {}) {
   const request = quote.source_id === REQUEST_SOURCE && !matterSourceIDs(directory).includes(REQUEST_SOURCE)
   const answer = answerTexts(directory, quote.source_id) !== undefined
+  const adopted = adoptedTexts(directory, quote.source_id) !== undefined
   const elided = elision(directory, quote)
   const gap = elided && elided.parts.length > 1 ? elided.gap : null
   if (gap) {
     const quoted = `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}".`
-    const there = request ? "the request, a user update or one of the lawyer's answers" : answer ? "that answer" : "that document"
+    const there = request ? "the request, a user update or one of the lawyer's answers" : answer ? "that answer" : adopted ? "that adopted recommendation" : "that document"
     if (gap.kind === "apart")
       return `${quoted} The quoted parts are in ${there}, but in separate passages. Quote each passage as its own quotation, without an ellipsis.`
     if (!gap.omitted)
@@ -292,9 +322,11 @@ export function quoteMissIssue(directory: string, where: string, quote: SourceQu
     short
       ? `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}". A passage around the "…" is too short to locate on its own.`
       : request
-        ? [`${where} quotes "${excerpt(quote.quote)}" as from "${REQUEST_SOURCE}", but those words are not in the request, user updates or any one of the lawyer's answers.`, derivedRecordNote(directory, quote.quote)].filter(Boolean).join(" ")
+        ? [`${where} quotes "${excerpt(quote.quote)}" as from "${REQUEST_SOURCE}", but those words are not in the request, user updates or any one of the lawyer's answers.`, derivedRecordNote(directory, quote.quote, options)].filter(Boolean).join(" ")
         : answer
-        ? `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in the lawyer's answer to that question.`
+        ? [`${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in the lawyer's answer to that question.`, derivedRecordNote(directory, quote.quote, options)].filter(Boolean).join(" ")
+        : adopted
+        ? `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in the recommendation adopted for that question.`
         : `${where} quotes "${excerpt(quote.quote)}" as from "${quote.source_id}", but those words are not in that document.`,
     elsewhere.length
       ? `They do appear in ${elsewhere.map(doc => `"${doc}"`).join(", ")}; cite that document if it is the source you meant.`

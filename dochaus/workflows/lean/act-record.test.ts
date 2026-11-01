@@ -4,14 +4,15 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import {
-  ACT_RECORD_AGENT, ACT_RECORD_SAMPLES, LEAN_ACTS_SCHEMA, actRecordBlock, actRecordPack, parseActHow, readActRecord, runActRecordStage, signerFlags,
+  ACT_RECORD_AGENT, ACT_RECORD_SAMPLES, LEAN_ACTS_SCHEMA, actRecordBlock, actRecordPack, parseActHow, parseActList, readActRecord, runActRecordStage, signerFlags,
   type ActHow, type ActRecord, type ActWho, type ListedAct, type RecordedAct,
 } from "./act-record"
 import { evidencePrompt } from "./evidence"
 import { researchHandoff } from "./research"
 import { stageInputSha } from "./runner"
 import { LEAN_MAX_RETRIES, type StageSessionPort } from "./stages"
-import { initLeanState, writeLeanText, type LeanState } from "./state"
+import { quoteFound } from "./quotes"
+import { initLeanState, writeLeanText, writeQuestions, type LeanState, type Question } from "./state"
 
 // The act record's jobs driven through runActRecordStage with a scripted model,
 // against a synthetic matter invented for these tests: a boatyard licensing a
@@ -44,7 +45,7 @@ type Reply = (job: Job, attempt: number, sample: number) => unknown
 const directories: string[] = []
 afterEach(() => directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true })))
 
-function matter(): { directory: string; state: LeanState } {
+function matter(request = REQUEST): { directory: string; state: LeanState } {
   const directory = mkdtempSync(path.join(tmpdir(), "act-record-"))
   directories.push(directory)
   mkdirSync(path.join(directory, ".dochaus"), { recursive: true, mode: 0o700 })
@@ -52,7 +53,7 @@ function matter(): { directory: string; state: LeanState } {
   db.run("CREATE TABLE chunks (doc_name TEXT, section TEXT, text TEXT, char_start INTEGER, char_end INTEGER)")
   db.query("INSERT INTO chunks VALUES (?, ?, ?, ?, ?)").run(SOURCE, "1", SOURCE_TEXT, 0, SOURCE_TEXT.length)
   db.close()
-  const state = initLeanState(directory, { request: REQUEST, ownerSessionID: "ses_owner", model: { providerID: "test", modelID: "scripted" } })
+  const state = initLeanState(directory, { request, ownerSessionID: "ses_owner", model: { providerID: "test", modelID: "scripted" } })
   return { directory, state }
 }
 
@@ -88,8 +89,9 @@ const valid: Reply = job => job === "what" ? { acts: [GRANT, APPROVE] } : job ==
   : job === "who" ? indexed("who", [GRANT_WHO, APPROVE_WHO]) : indexed("how", [GRANT_HOW, APPROVE_HOW])
 const listedOnly = (record: ActRecord | undefined) => record?.acts.map(({ act, source, quote }) => ({ act, source, quote }))
 
-async function run(reply: Reply) {
-  const { directory, state } = matter()
+async function run(reply: Reply, setup: (directory: string) => void = () => {}, request = REQUEST) {
+  const { directory, state } = matter(request)
+  setup(directory)
   const model = scripted(reply)
   const result = await runActRecordStage(directory, state, { sessions: model.port }, () => {})
   return { directory, model, result, record: readActRecord(directory) }
@@ -204,6 +206,65 @@ describe("WHO and HOW", () => {
     const reply = (edges: (number | null)[]) => JSON.stringify(indexed("how", edges.map(act => ({ ...APPROVE_HOW, requires: act === null ? [] : [{ act, need: "an earlier act", basis }] }))))
     expect(parseActHow(reply([1, 2, 0]), directory, acts).issues.join(" ")).toContain("act 0 requires act 1, act 1 requires act 2, act 2 requires act 0")
     expect(parseActHow(reply([1, 2, null]), directory, acts).issues).toEqual([])
+  })
+})
+
+describe("an adopted recommendation", () => {
+  // The lawyer delegated how the licence is granted and answered the fee
+  // question in their own words; the request itself names no act. The adopted
+  // option's words direct an act, but they are the drafter's judgment, so they
+  // are quoted under their own name, never as the lawyer's.
+  const ADOPTED = "Fenwick Boatyard Limited grants the Club a licence by one licence deed signed by both parties."
+  const OWN_WORDS = "The Club Committee approves the licence fee first."
+  const answeredAt = "2026-10-21T09:00:00.000Z"
+  const QUESTIONS: Question[] = [
+    { id: "q-grant", stage: "intake", question: "How is the licence granted?", context: "The proposal does not say.", status: "answered", kind: "judgment",
+      advice: { options: [{ id: "o1", text: ADOPTED }, { id: "o2", text: "Grant the licence by letter." }], recommendation: { option: "o1", rationale: "A deed binds both parties.", basis: [] } },
+      answer: ADOPTED, answer_kind: "adopted", option_id: "o1", answer_class: "delegated", lawyer_words: "Decide for me.", answered_at: answeredAt },
+    { id: "q-fee", stage: "intake", question: "Who approves the fee?", context: "The proposal names the Committee.", status: "answered", kind: "instruction", answer: OWN_WORDS, answered_at: answeredAt },
+  ]
+  const asked = (directory: string) => writeQuestions(directory, QUESTIONS)
+  const NO_ACT = "Prepare the storage paperwork for Fenwick Boatyard Limited and the Harbourlight Rowing Club."
+  const DIRECTED: ListedAct = { act: "grant the storage licence by deed", source: "adopted:q-grant", quote: "grants the Club a licence by one licence deed" }
+  const OWN: ListedAct = { act: "approve the licence fee", source: "request", quote: "The Club Committee approves the licence fee first" }
+  const listing = (acts: ListedAct[]) => JSON.stringify({ acts })
+
+  test("its words direct an act under its own source name on the first reply, never as the request or the lawyer's answer", async () => {
+    const who: ActWho[] = [
+      { authorised_by: ["Fenwick Boatyard Limited"], performed_by: ["Fenwick Boatyard Limited"], basis: [{ source: "adopted:q-grant", quote: DIRECTED.quote }], reason: null },
+      { authorised_by: ["the Club Committee"], performed_by: ["the Club Committee"], basis: [{ source: "request", quote: OWN.quote }], reason: null },
+    ]
+    const conflict = {
+      instruction: { source: "adopted:q-grant", quote: "one licence deed signed by both parties" },
+      authority: { source: SOURCE, quote: "The licence takes effect only once the Club Committee approves the licence fee." },
+      difference: "The adopted option has the deed take effect on signing; the proposal makes it wait for the fee approval.",
+    }
+    const how: ActHow[] = [{ ...APPROVE_HOW, conflict }, APPROVE_HOW]
+    const { directory, model, record } = await run(job => job === "what" ? { acts: [DIRECTED, OWN] } : job === "deliverables" ? { deliverables: [] }
+      : job === "who" ? indexed("who", who) : indexed("how", how), asked, NO_ACT)
+    expect(listedOnly(record)).toEqual([DIRECTED, OWN])
+    expect(record?.acts.map(act => [act.who, act.how])).toEqual([[who[0], how[0]], [who[1], how[1]]])
+    expect(record?.issues).toEqual([])
+    // Every sample passed on its first reply.
+    expect(model.asked("what")).toHaveLength(ACT_RECORD_SAMPLES)
+    expect(actRecordPack(directory)).toContain('"adopted:q-grant"')
+
+    // The same words under "request" or the question's answer are refused, and the note names the adopted source.
+    for (const source of ["request", "answer:q-grant"]) {
+      const refused = parseActList(listing([{ ...DIRECTED, source }]), directory)
+      expect(refused.value).toBeUndefined()
+      expect(refused.issues.join(" ")).toContain('"adopted:q-grant"')
+    }
+    // The adopted source holds only the adopted option's words: not the lawyer's answer, nor another question's.
+    expect(quoteFound(directory, { source_id: "adopted:q-grant", quote: "Decide for me" })).toBe(false)
+    expect(quoteFound(directory, { source_id: "adopted:q-fee", quote: OWN.quote })).toBe(false)
+    // The lawyer's own answer stays quotable as theirs.
+    expect(parseActList(listing([OWN]), directory)).toEqual({ issues: [], value: [OWN] })
+    expect(quoteFound(directory, { source_id: "answer:q-fee", quote: OWN.quote })).toBe(true)
+    // The authority side of a conflict is never the adopted option.
+    const authority = parseActHow(JSON.stringify(indexed("how", [{ ...APPROVE_HOW, conflict: { ...conflict, instruction: { source: "request", quote: OWN.quote }, authority: conflict.instruction } }, APPROVE_HOW])),
+      directory, [DIRECTED, OWN])
+    expect(authority.issues.join(" ")).toContain('"how.conflict.authority[0].source" is "adopted:q-grant"')
   })
 })
 

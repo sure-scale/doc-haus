@@ -4,7 +4,7 @@ import { readActRecord, signerFlags } from "./act-record"
 import { FIRST_DOCUMENT, nameKey, namedIn, readLeanPlan, type ActingFor, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { approvedResearch, researchHandoff } from "./research"
-import { EXCERPT, REQUEST_SOURCE, excerpt, lawyerWords, matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
+import { EXCERPT, REQUEST_SOURCE, adoptedSources, excerpt, lawyerWords, matterSourceIDs, openItem, quoteFound, quoteMissIssue } from "./quotes"
 import { answeredScopeQuestion, scopeAnswers, scopeField, scopeQuestionShows, type ScopeParties } from "./package-scope"
 import { answeredQuestionsText, hashStageInputs, questionOptions, readLeanJson, readLeanText, readQuestions, type OpenItem, type Question, type QuestionOption } from "./state"
 import { sourceText } from "./template-structure"
@@ -89,7 +89,7 @@ export function instructionSections(directory: string) {
   return [
     tagged("request", readLeanText(directory, "request.md") ?? ""),
     updates ? tagged("user_updates", `Later instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n${updates}`) : "",
-    answers ? tagged("answers", `The lawyer's answers; they remain controlling:\n${answers}`) : "",
+    answers ? tagged("answers", `The lawyer's own answers remain controlling; an adopted recommendation is the drafter's judgment, as its label says:\n${answers}`) : "",
   ]
 }
 
@@ -131,17 +131,18 @@ function listedAct(row: unknown): InstructedAct | undefined {
 }
 
 /** A listed act's defects against the matter, as retry feedback: a source that
- * is not a matter document or "request", a quote not in its source ("request"
- * is the request, updates and answers), and each party that neither the
+ * is not a matter document, "request" or an adopted recommendation
+ * (adoptedSources), a quote not in its source ("request" is the request,
+ * updates and the lawyer's own answers), and each party that neither the
  * instructions nor any matter document names. `texts` gives namingTexts, read
  * once per reply. */
 export function listedActIssues(directory: string, where: string, act: InstructedAct, texts: () => string[]) {
   const issues: string[] = []
-  const sources = [REQUEST_SOURCE, ...matterSourceIDs(directory)]
+  const sources = [REQUEST_SOURCE, ...adoptedSources(directory), ...matterSourceIDs(directory)]
   if (!sources.includes(act.source))
     issues.push(`${where} gives the source "${act.source}", which is not a matter document. Use one of ${sources.map(name => `"${name}"`).join(", ")}.`)
   else if (!quoteFound(directory, { quote: act.quote, source_id: act.source }))
-    issues.push(quoteMissIssue(directory, where, { quote: act.quote, source_id: act.source }, "json"))
+    issues.push(quoteMissIssue(directory, where, { quote: act.quote, source_id: act.source }, "json", { adopted: true }))
   for (const party of act.parties.filter(party => !texts().some(text => namedIn(text, party))))
     issues.push(`${where} names the party "${party}", but neither the request, the lawyer's updates and answers nor any matter document names that party. ` +
       "Name each party as the sources name it, and list only parties the record names ([] when it does not settle who must take the act).")

@@ -799,7 +799,7 @@ describe("coverage prompts", () => {
     for (const prompt of [placement(directory)]) {
       expect(prompt).toContain("<user_updates>\nLater instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n" +
         "Kestrel Works also returns the keys.\n</user_updates>")
-      expect(prompt).toContain("<answers>\nThe lawyer's answers; they remain controlling:\n- [q-1] Q: Who countersigns?\n  A: Wren Atelier countersigns.\n</answers>")
+      expect(prompt).toContain("<answers>\nThe lawyer's own answers remain controlling; an adopted recommendation is the drafter's judgment, as its label says:\n- [q-1] Q: Who countersigns?\n  A: Wren Atelier countersigns.\n</answers>")
       expect(prompt).not.toContain("Which schedule applies?")
     }
   })

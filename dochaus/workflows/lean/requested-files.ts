@@ -87,7 +87,7 @@ function wordsBlocks(directory: string) {
   return [
     tagged("request", readLeanText(directory, "request.md") ?? ""),
     updates ? tagged("user_updates", `Later instructions from the lawyer, in arrival order. An explicit later change supersedes the earlier instruction on that point.\n\n${updates}`) : "",
-    answers ? tagged("answers", `The lawyer's answers; they remain controlling:\n${answers}`) : "",
+    answers ? tagged("answers", `The lawyer's own answers remain controlling; an adopted recommendation is the drafter's judgment, as its label says:\n${answers}`) : "",
   ]
 }
 
