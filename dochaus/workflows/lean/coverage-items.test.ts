@@ -306,6 +306,21 @@ describe("plan coverage open items", () => {
     expect(coverageItems(directory)).toEqual([])
   })
 
+  test("a named instrument the act record gives no signatory for yields one item for that instrument, naming every act it effects", () => {
+    const directory = prepared()
+    const how = { instrument: "Deposit deed", executed_by: [], requires: [], basis: [], reason: null, conflict: null }
+    const hold = { ...recorded({ act: "hold the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works"], document: "d1" }), how }
+    const release = { ...recorded({ act: "release the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works", "the Orchard Committee"], document: "d1" }),
+      how: { ...how, instrument: "deposit  deed" } }
+    recordActs(directory, "listed", [hold, release])
+    const plan = writeLeanPlan(directory, [RELEASE], "0".repeat(64))
+    recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
+    const items = coverageItems(directory)
+    expect(items.map(item => item.detail)).toEqual(['Act record: the instrument "Deposit deed", which effects "hold the deposit" and "release the deposit", names no signatory in the matter\'s sources; ' +
+      'confirm it is executed by "Kestrel Works" and "the Orchard Committee", whose authority those acts need.'])
+    expect(gate(directory, notesNaming(items))).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [], disclosed: [expect.objectContaining({ id: items[0]!.id, status: "disclosed" })] })
+  })
+
   test("a conflict the act record states between the instructions and a source yields one item quoting both sides, in place of the act's signer item, disclosed by the notes", () => {
     const directory = prepared()
     const conflict = {

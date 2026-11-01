@@ -833,7 +833,26 @@ function actRecordItems(directory: string): OpenItem[] {
     : failed("who")
       ? [openItem("finalize", "omission", "Act record: the check of the parties whose authority each instructed act needs did not run, so no instrument's signatories were checked against them." + confirm, { repair_target: "memo" })]
       : []
-  return [...unrun, ...conflicts, ...signerFlags(record).filter(flag => flag.status === "flag" && !record.acts[flag.act]!.how?.conflict).map(({ act: index, missing }) => {
+  const flags = signerFlags(record).filter(flag => flag.status === "flag" && !record.acts[flag.act]!.how?.conflict)
+  // A named instrument the record gives no signatory for is one question about
+  // that instrument, not one per act it effects.
+  const unsigned = new Map<string, { instrument: string; acts: string[]; missing: string[] }>()
+  for (const { act: index, missing } of flags) {
+    const how = record.acts[index]!.how!
+    if (!how.instrument || how.executed_by.length) continue
+    const key = normalize(how.instrument).toLowerCase()
+    const group = unsigned.get(key) ?? { instrument: how.instrument, acts: [], missing: [] }
+    group.acts.push(record.acts[index]!.act)
+    for (const party of missing) if (!group.missing.some(name => nameKey(name) === nameKey(party))) group.missing.push(party)
+    unsigned.set(key, group)
+  }
+  const unsignedItems = [...unsigned.values()].map(({ instrument, acts, missing }) => openItem("finalize", "omission",
+    `Act record: the instrument "${instrument}", which effects ${quotedList(acts)}, names no signatory in the matter's sources; ` +
+    `confirm it is executed by ${quotedList(missing)}, whose authority ${acts.length > 1 ? "those acts need" : "the act needs"}.`, { repair_target: "memo" }))
+  return [...unrun, ...conflicts, ...unsignedItems, ...flags.filter(({ act: index }) => {
+    const how = record.acts[index]!.how!
+    return !how.instrument || how.executed_by.length > 0
+  }).map(({ act: index, missing }) => {
     const act = record.acts[index]!
     const instrument = act.how?.instrument ? `the instrument "${act.how.instrument}"` : "the instrument"
     return openItem("finalize", "omission", `Act record: ${instrument} that effects "${act.act}", directed by "${act.quote.replace(/\s+/g, " ").trim()}" [source: ${act.source}], ` +
