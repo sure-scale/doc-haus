@@ -550,7 +550,10 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       const format: unknown = turn.answerFormat, parts: unknown = turn.answerParts
       const cited = new Set<string>()
       let malformed = false
-      const suppressed = format !== undefined && (turn.status !== "complete" || Boolean(turn.error?.trim()))
+      // A completed turn with an error keeps its text-only explanation (reviewer
+      // issues, clarification questions); the service clears its sources.
+      const errored = Boolean(turn.error?.trim())
+      const suppressed = format !== undefined && (turn.status !== "complete" || errored && !Array.isArray(parts))
       if (format !== undefined) {
         if (suppressed) { /* The service clears stale answer content while not complete. */ }
         else if (format !== "segments-v1" || !Array.isArray(parts)) malformed = true
@@ -594,8 +597,9 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
         }
         answer.append(detail)
       }
-      if (!malformed && !suppressed && proposal) answer.append(proposalCard(proposal, turn))
-      else if (!malformed && !suppressed && row) answer.append(rowProposalCard(row, turn))
+      const cards = !malformed && !suppressed && !(format !== undefined && errored)
+      if (cards && proposal) answer.append(proposalCard(proposal, turn))
+      else if (cards && row) answer.append(rowProposalCard(row, turn))
       wrapper.append(answer)
       if (cached) cached.node.replaceWith(wrapper); else history.append(wrapper)
       cached = { stamp, node: wrapper }; nodes.set(turn.id, cached)
@@ -779,6 +783,9 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       // response keeps its identifier until Reconnect reconciles it.
       if (error instanceof ChatRequestError && !error.retryable) pending = undefined
       failure(error)
+      // A definite refusal (for example a changed attachment) is corrected in the
+      // draft, not by reconnecting.
+      if (error instanceof ChatRequestError && !error.retryable) button("reconnect").hidden = true
     }
     finally { sending = false; controls() }
   }

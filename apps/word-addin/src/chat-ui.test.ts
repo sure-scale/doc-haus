@@ -344,6 +344,8 @@ test("a definite admission refusal lets the lawyer correct and resend the draft"
   try {
     await f.chat.ready; await f.send("Explain payment")
     expect(f.get<HTMLTextAreaElement>("message").value).toBe("Explain payment")
+    expect(f.get("activity").textContent).toBe("Remove the unavailable attachment.")
+    expect(f.get("reconnect").hidden).toBe(true)
     await f.send("Explain the current payment wording")
     expect(f.calls.filter(call => call.action === "send")).toHaveLength(2)
     expect(f.get<HTMLTextAreaElement>("message").value).toBe("")
@@ -1194,6 +1196,20 @@ test("malformed segmented review cannot offer paragraph or row Apply", async () 
       expect(answer.textContent).not.toContain("Apply")
     } finally { f.restore() }
   }
+})
+
+test("an amendment the reviewer sends back shows the issues and questions beside the error without a card", async () => {
+  const answer = "The reviewer found these issues in the proposed change:\n- The cap figure is not supported by the matter.\n\nPlease answer:\n- What multiple of the Charges should apply?"
+  const refused = turn({ kind: "amendment", status: "complete", error: "The proposal needs revision before it can be applied. No change was applied.", answer, answerFormat: "segments-v1", answerParts: [{ type: "text", text: answer }], sources: [], proposal })
+  const f = fixture({ turns: [refused] })
+  try {
+    await f.chat.ready
+    const message = f.root.querySelector('.chat-message[data-role="assistant"]')!
+    expect(message.querySelector(".chat-answer-text")!.textContent).toBe(answer)
+    expect(message.querySelector('[role="alert"]')!.textContent).toBe(refused.error!)
+    expect(message.querySelector(".chat-proposal")).toBeNull()
+    expect([...f.root.querySelectorAll("button")].some(button => button.textContent === "Apply")).toBe(false)
+  } finally { f.restore() }
 })
 
 test("cleared segmented answers show only their running, stopped or error state", async () => {
