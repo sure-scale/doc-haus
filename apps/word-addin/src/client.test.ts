@@ -84,6 +84,8 @@ test("manifest uses the shared identity and designated auto-open pane", () => {
   expect(manifest).toContain(`<Id>${WORD_ADDIN_ID}</Id>`)
   expect(manifest).toContain(`<Version>${WORD_ADDIN_VERSION}</Version>`)
   expect(manifest).toContain("<TaskpaneId>Office.AutoShowTaskpaneWithDocument</TaskpaneId>")
+  // linkedWordDocx starts this runtime by id when a linked file opens.
+  expect(manifest).toContain('<Runtime resid="Pane.Url" lifetime="long"/>')
   expect(manifest).toContain(`<AppDomain>https://doc.haus</AppDomain>`)
   expect(manifest).toContain(`<AppDomain>${link.apiOrigin}</AppDomain>`)
   expect(manifest).toContain(wordBootstrapUrl(link.apiOrigin))

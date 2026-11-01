@@ -26,6 +26,20 @@ const renderPane = createPaneRenderer(document)
 let renderLatest: ((state: PaneState) => void) | undefined
 function render(state: PaneState): void { renderPane(state); renderLatest?.(state) }
 
+// A linked file starts the shared runtime when it opens (see linkedWordDocx).
+// Show the pane from here as well, because Word on Windows can give the dock to
+// its own Comments pane and skip the automatic doc.haus pane.
+function showPane(office: unknown): void {
+  const runtime = office as {
+    context?: { requirements?: { isSetSupported(name: string, version: string): boolean } }
+    addin?: { showAsTaskpane(): Promise<void> }
+  } | undefined
+  try {
+    if (runtime?.context?.requirements?.isSetSupported("SharedRuntime", "1.1"))
+      void runtime.addin?.showAsTaskpane().catch(() => undefined)
+  } catch { /* Older hosts open the pane from the manifest or the ribbon. */ }
+}
+
 async function main(): Promise<void> {
   // An old cached manifest may still launch this page as a separate function
   // runtime. It must not become a writer merely because its JS was refreshed.
@@ -47,6 +61,7 @@ async function main(): Promise<void> {
       element("background").hidden = true
       return
     }
+    showPane(window.Office)
     element("matter").textContent = link.matterName
     element("matter").title = `${link.matterName} · ${link.documentName}`
     const back = element<HTMLAnchorElement>("back")

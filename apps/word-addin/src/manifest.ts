@@ -28,7 +28,7 @@ export function renderManifest(origin: string): string {
   <Permissions>ReadWriteDocument</Permissions>
   <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
     <Requirements><bt:Sets DefaultMinVersion="1.1"><bt:Set Name="WordApi"/></bt:Sets></Requirements>
-    <Hosts><Host xsi:type="Document"><DesktopFormFactor>
+    <Hosts><Host xsi:type="Document"><Runtimes><Runtime resid="Pane.Url" lifetime="long"/></Runtimes><DesktopFormFactor>
       <ExtensionPoint xsi:type="PrimaryCommandSurface"><OfficeTab id="TabHome"><Group id="Dochaus.Group">
         <Label resid="Group.Label"/>
         <Icon><bt:Image size="16" resid="Icon"/><bt:Image size="32" resid="Icon"/><bt:Image size="80" resid="Icon"/></Icon>
