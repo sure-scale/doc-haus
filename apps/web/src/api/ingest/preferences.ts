@@ -99,8 +99,14 @@ export async function savePreferences(prefs: Partial<DraftingPreferences>): Prom
     signal: AbortSignal.timeout(15_000),
   })
   if (!res.ok) throw new Error(`Failed to save preferences (${res.status})`)
-  return res.json()
+  const saved: DraftingPreferences = await res.json()
+  // Settings opens over the matter page; let open pages pick up the change.
+  window.dispatchEvent(new Event(PREFERENCES_SAVED))
+  return saved
 }
+
+/** Window event fired after preferences are saved. */
+export const PREFERENCES_SAVED = "dochaus:preferences-saved"
 
 export async function testResearchConnection(service: "exa" | "courtlistener" | "courtlistener-mcp"): Promise<{ status: "verified" | "failed" | "not-configured"; message: string }> {
   const res = await fetch(`${INGEST_URL}/research/${service}/test`, { method: "POST", signal: AbortSignal.timeout(15_000) })

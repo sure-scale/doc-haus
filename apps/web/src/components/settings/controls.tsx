@@ -64,11 +64,15 @@ export function ToggleRow({
   description,
   on,
   onChange,
+  disabled,
+  states = { on: "Auto-approve", off: "Ask first" },
 }: {
   title: string
   description: string
   on: boolean
   onChange: (on: boolean) => void
+  disabled?: boolean
+  states?: { on: string; off: string }
 }) {
   return (
     <div className="settings-conn settings-toggle-row">
@@ -76,9 +80,11 @@ export function ToggleRow({
         <span className="settings-conn-name">{title}</span>
         <span className="muted">{description}</span>
       </div>
-      <span className="switch-state muted">{on ? "Auto-approve" : "Ask first"}</span>
+      <span className="switch-state muted">{on ? states.on : states.off}</span>
       <button
+        type="button"
         role="switch"
+        disabled={disabled}
         aria-checked={on}
         aria-label={title}
         className={`switch${on ? " on" : ""}`}

@@ -30,6 +30,7 @@ import { boundedEngineRequest, engineURL, type EngineRequestOptions } from "./ma
 import { listDocuments, openDb } from "./db"
 import { documentRegistryIdentity } from "./document-identity"
 import { readExtractionQuality } from "./extraction-quality"
+import { readDraftingPreferences } from "./preferences"
 import { readDocumentTarget, registeredDocumentName } from "./registered-document"
 import {
   ChronologyError,
@@ -2014,6 +2015,16 @@ export function resolveRelativeDate(
 
 const pendingAssessments = new Map<string, Promise<Chronology>>()
 
+/** The lawyer's "Suggest a chronology" background-agent switch. Unreadable
+ * preferences leave it on, matching the default. */
+function chronologySuggestionEnabled() {
+  try {
+    return readDraftingPreferences().backgroundAgents.chronologySuggestion
+  } catch {
+    return true
+  }
+}
+
 /** The relevance decision is keyed on the matter record, recorded drafting
  * instructions and sources, not on recent chat messages. */
 function assessmentKey(directory: string, sources: readonly ChronologySource[]) {
@@ -2025,7 +2036,7 @@ function assessmentKey(directory: string, sources: readonly ChronologySource[]) 
  * extracts events or uses firm practice areas as the matter's classification. */
 export async function assessChronology(directory: string, deps = defaults()): Promise<Chronology> {
   const initial = readChronology(directory)
-  if (initial.created) return initial
+  if (initial.created || !chronologySuggestionEnabled()) return initial
   const sources = chronologySources(directory)
   const key = assessmentKey(directory, sources)
   const insufficient = initial.suggestion.status === "insufficient"

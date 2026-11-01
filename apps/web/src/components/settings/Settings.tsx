@@ -7,6 +7,7 @@ import ResearchTab from "./ResearchTab"
 import StatisticsTab from "./StatisticsTab"
 import MatterDefaultsTab from "./MatterDefaultsTab"
 import ApprovalsTab from "./ApprovalsTab"
+import BackgroundAgentsTab from "./BackgroundAgentsTab"
 import AppearanceTab from "./AppearanceTab"
 import WordAddin from "./WordAddin"
 import { connectionMessage, providerHealth } from "../../api/opencode/provider-health"
@@ -23,6 +24,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "matters", label: "Matter defaults" },
   { id: "addins", label: "Word add-in" },
   { id: "approvals", label: "Approvals" },
+  { id: "background", label: "Background agents" },
   { id: "appearance", label: "Appearance" },
 ]
 
@@ -87,6 +89,7 @@ export default function Settings({ onClose, closing = false, firstRun = false, r
         {tab === "matters" && <MatterDefaultsTab onSampleAdded={() => { toast("success", "Sample matter added to your matters."); onSampleAdded?.() }} onError={(m) => toast("error", m)} onSaved={() => toast("success", "Matter settings saved.")} onBusy={setMatterBusy} />}
         {tab === "addins" && <WordAddin onBusy={setWordBusy} />}
         {tab === "approvals" && <ApprovalsTab />}
+        {tab === "background" && <BackgroundAgentsTab onSaved={(m) => toast("success", m)} />}
         {tab === "appearance" && <AppearanceTab />}
       </div><div className="settings-footer" ref={setFooter} /></SettingsFooterContext.Provider></div>
     </div>

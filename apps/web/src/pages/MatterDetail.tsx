@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useNavigate, useParams, useSearchParams } from "react-router-dom"
 import type { CompareParams } from "../api/ingest/compare"
 import { humanizeError } from "../api/ingest/errors"
-import { getPreferences } from "../api/ingest/preferences"
+import { getBackgroundAgents, getPreferences, PREFERENCES_SAVED } from "../api/ingest/preferences"
 import {
   getMatter,
   listJurisdictions,
@@ -87,7 +87,27 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
     },
     [id],
   )
-  useEffect(() => setChronologyNavigation(id, chronology), [id, chronology])
+  // The "Suggest a chronology" background agent. Unknown until loaded, so
+  // neither a relevance check nor an invitation runs on a stale guess.
+  const [suggestChronology, setSuggestChronology] = useState<boolean>()
+  useEffect(() => {
+    let live = true
+    setSuggestChronology(undefined)
+    const load = () =>
+      void getBackgroundAgents().then((agents) => {
+        if (live) setSuggestChronology(agents.chronologySuggestion)
+      })
+    load()
+    window.addEventListener(PREFERENCES_SAVED, load)
+    return () => {
+      live = false
+      window.removeEventListener(PREFERENCES_SAVED, load)
+    }
+  }, [id])
+  useEffect(
+    () => setChronologyNavigation(id, chronology, suggestChronology === true),
+    [id, chronology, suggestChronology],
+  )
   // Why the matter could not be loaded: "missing" when ingest has no such matter
   // (deleted, or a mistyped link), otherwise the readable error.
   const [loadError, setLoadError] = useState<string>()
@@ -203,17 +223,18 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
       },
       () => {},
     )
-    assessChronology(id).then(
-      (next) => {
-        if (live) receiveChronology(next)
-      },
-      () => {},
-    )
+    if (suggestChronology)
+      assessChronology(id).then(
+        (next) => {
+          if (live) receiveChronology(next)
+        },
+        () => {},
+      )
     return () => {
       live = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, chronologyContextKey, sourceRefresh])
+  }, [id, chronologyContextKey, sourceRefresh, suggestChronology])
   useEffect(() => {
     setChronology(undefined)
     setChronologyReference(undefined)
@@ -227,9 +248,9 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   useEffect(() => {
     const closed = chatWasOpen.current && !chatOpen
     chatWasOpen.current = chatOpen
-    if (!id || !closed) return
+    if (!id || !closed || !suggestChronology) return
     assessChronology(id).then(receiveChronology, () => getChronology(id).then(receiveChronology, () => {}))
-  }, [id, chatOpen, receiveChronology])
+  }, [id, chatOpen, receiveChronology, suggestChronology])
   useEffect(() => {
     if (view === "chronology") setDocumentsDrawer(false)
   }, [view])

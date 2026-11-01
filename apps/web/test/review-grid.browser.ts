@@ -129,6 +129,7 @@ try {
   let storedGrid = structuredClone(grid)
   let attorney = "  Amina Shah  "
   let preferencesFailed = false
+  let backgroundAgents: { reviewCompare?: boolean } | undefined
   let heldPreferences: import("@playwright/test").Route | undefined
   let holdPreferences = false
   let holdPut = false
@@ -173,7 +174,7 @@ try {
     }
     if (url.pathname === "/preferences") {
       if (holdPreferences) { heldPreferences = route; return }
-      return preferencesFailed ? route.fulfill({ status: 503 }) : json({ attorney, firm: "Synthetic Review LLP" })
+      return preferencesFailed ? route.fulfill({ status: 503 }) : json({ attorney, firm: "Synthetic Review LLP", ...(backgroundAgents ? { backgroundAgents } : {}) })
     }
     if (url.pathname === "/matters/matter-grid") return json({ documents: [
       { name: "Supply terms.docx" }, { name: "Side letter.docx" }, { name: "Old note.docx" },
@@ -867,6 +868,35 @@ try {
   sourceChecks["Side letter.docx::c1"] = "verified"
   storedGrid = comparedGrid()
   onExtraction = route => void route.fulfill({ status: 204 })
+
+  // With the automatic comparison switched off in Settings, a reviewed Fill
+  // fills but compares nothing and its dialog promises no comparison; the
+  // column's own Compare button stays.
+  backgroundAgents = { reviewCompare: false }
+  await page.goto(server.url.href + "?pool")
+  {
+    const head = page.locator("thead th").filter({ hasText: "What is the governing law?" })
+    await head.getByRole("button", { name: "Compare with AI", exact: true }).waitFor()
+    await primary.click()
+    const fillDialog = page.getByRole("dialog", { name: "Fill 4 cells?" })
+    await fillDialog.getByText("Fill uses AI for each cell", { exact: false }).waitFor()
+    assert.equal(await fillDialog.getByText("AI compares", { exact: false }).count(), 0, "the fill dialog promises no comparison")
+    const fillHeld: import("@playwright/test").Route[] = []
+    onExtraction = route => void fillHeld.push(route)
+    await fillDialog.getByRole("button", { name: "Start fill" }).click()
+    await toolbar.getByText(/^Filling \d/).waitFor()
+    onExtraction = route => void route.fulfill({ status: 204 })
+    await Promise.all(fillHeld.splice(0).map(route => route.fulfill({ status: 204 })))
+    await toolbar.getByText(/^Filling \d/).waitFor({ state: "detached" })
+    await page.waitForTimeout(300)
+    assert.equal(compareSessions.length, 0, "a fill compares nothing while the automatic comparison is off")
+    assert.equal(await toolbar.getByText(/Comparing/).count(), 0)
+    await head.getByRole("button", { name: "Compare with AI", exact: true }).waitFor()
+  }
+  backgroundAgents = undefined
+  storedGrid = comparedGrid()
+  console.log("PASS a reviewed Fill skips the automatic comparison when it is switched off")
+
   holdCompare = true
   compareReply = threeWay
   await page.goto(server.url.href + "?pool")

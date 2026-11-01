@@ -7,12 +7,15 @@ let state: { matterId?: string; visible: boolean; attention: boolean; updates: n
   attention: false,
   updates: 0,
 }
-export function setChronologyNavigation(matterId?: string, chronology?: Chronology) {
+/** `suggest` is the lawyer's "Suggest a chronology" switch: when off, a saved
+ * relevance result neither reveals the rail entry nor marks it. */
+export function setChronologyNavigation(matterId?: string, chronology?: Chronology, suggest = true) {
   const counters = chronology && chronologyCounters(chronology)
+  const suggested = suggest && !!chronology && !chronology.created && chronology.suggestion.status === "relevant"
   state = {
     matterId,
-    visible: !!chronology && (chronology.created || chronology.suggestion.status === "relevant"),
-    attention: !!chronology && !chronology.created && chronology.suggestion.status === "relevant",
+    visible: !!chronology && (chronology.created || suggested),
+    attention: suggested,
     updates: counters?.updates ?? 0,
   }
   listeners.forEach((listener) => listener())

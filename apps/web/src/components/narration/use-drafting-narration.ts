@@ -4,6 +4,7 @@ import type { Part } from "../../api/session-view"
 import type { Client } from "../../api/opencode/client"
 import { getMessages } from "../../api/opencode/sessions"
 import { getDraftingStatus } from "../../api/ingest/drafting-status"
+import { getBackgroundAgents } from "../../api/ingest/preferences"
 import { leanStageSessions, type LeanDraftingStatus } from "../../api/ingest/lean"
 import {
   findNarratorSession,
@@ -21,7 +22,8 @@ import { checkpointKeys, planNarration, type NarrationPlan } from "./schedule"
 // (polled), activity lines from the stage sessions' streamed parts, and the
 // narrator's updates. It only reads the run. It never continues it, answers a
 // question, retries a stage or writes run state; its one write is a prompt to
-// its own narrator session.
+// its own narrator session. With narration switched off in Settings it opens no
+// narrator session and the steps show without updates between them.
 
 const POLL_WORKING_MS = 5_000
 const POLL_SETTLED_MS = 20_000
@@ -214,6 +216,13 @@ export function useDraftingNarration({
     const since = view.lastCallAt
     view.inFlight = true
     view.lastCallAt = now
+    // Read as each update would start, so a change in Settings applies at once.
+    // A switched-off update is passed over, not saved up for later.
+    if (!(await getBackgroundAgents()).narration) {
+      plan.keys.forEach((key) => view.narrated.add(key))
+      view.inFlight = false
+      return
+    }
     setNarrating(true)
     try {
       const step = focusStep(next, plan)
