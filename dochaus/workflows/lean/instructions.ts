@@ -117,6 +117,12 @@ export function confirmationQuestionID(source_id: string) {
   return `q-${shortHash(`instructions\0${source_id}`)}`
 }
 
+/** The listed document `questionID` asks the lawyer to confirm, when it is
+ * a confirmation question (confirmationQuestions). */
+export function confirmationDocument(directory: string, questionID: string): InstructionDocument | undefined {
+  return readInstructionList(directory)?.documents.find(document => confirmationQuestionID(document.source_id) === questionID)
+}
+
 /** Each listed document's standing: followed when the lawyer's words
  * designate it or the lawyer chose (or adopted) to follow it; evidence only
  * once the confirmation question has any other answer; otherwise awaiting

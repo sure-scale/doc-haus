@@ -8,7 +8,8 @@ import { FIRST_DOCUMENT, planActingFor, stepDocument, stepStage, type StepID } f
 import { retryPrompt, tagged } from "./prompts"
 import { REQUEST_SOURCE, isAnswerSource, matterSourceIDs, quoteFound, quoteMissIssue } from "./quotes"
 import { nameWithProvenance, provenanceMapLine, sourceProvenance } from "../../lib/source-provenance"
-import { currentInstructions, INSTRUCTIONS_FILE, type Instruction } from "./instructions"
+import { confirmationDocument, currentInstructions, INSTRUCTIONS_FILE, type Instruction, type InstructionDocument } from "./instructions"
+import { sourceText } from "./template-structure"
 import { approvedResearch, researchHandoff } from "./research"
 import { LEAN_CHILD_PERMISSIONS, LEAN_MAX_RETRIES, LEAN_STAGE_AGENTS, stepSessionTitle, type LeanDeps } from "./stages"
 import { answeredQuestionsText, readLeanText, readQuestions, type LeanState, type Question, type QuestionAdvice, type QuestionOption } from "./state"
@@ -140,7 +141,39 @@ export function checkDecides(directory: string, item: Instruction, reply: string
   return quoteFound(directory, words) ? { issues: [], decides: true } : { issues: [quoteMissIssue(directory, "quote", words, "json")] }
 }
 
+const OPENING_CHARS = 1_500
+const CLOSE_CHARS = 600
+
+/** The advice prompt for a confirmation question (confirmationQuestions):
+ * only what an authorship question needs, each kind in its own tag, so the
+ * job's context stays concise. Whether to follow a document turns on who
+ * wrote it, to whom and for which work, which its opening (an email's or
+ * letter's heading) and close (a sign-off) show; the instruction list,
+ * research, the party acted for and the matter's other sources bear on other
+ * questions. The reply contract is advisePrompt's for a question with options. */
+function confirmationPrompt(directory: string, question: Question, document: InstructionDocument) {
+  const text = sourceText(directory, document.source_id).trim()
+  const opening = text.slice(0, OPENING_CHARS)
+  const close = text.length > OPENING_CHARS ? text.slice(Math.max(OPENING_CHARS, text.length - CLOSE_CHARS)) : ""
+  const updates = readLeanText(directory, "updated-notes.md")
+  const basis = '"basis":[{"source_id":"request (the request, a later instruction or the lawyer\'s answers) or the exact document name","quote":"words copied exactly from that source","relevance":"how this passage shows who wrote the document, to whom or for which work, or what the lawyer said about following it"}]'
+  return [
+    `Advise the lawyer on ONE open question raised while drafting: whether to follow ${document.source_id} as the lawyer's instructions for this work. You do not answer it; the lawyer decides. Judge it from the document itself: who wrote it, to whom, and for which work. Recommend following it when the document shows that the lawyer's client or the lawyer's own firm wrote it for this work, and treating it as evidence when it shows that someone else wrote it or that it was written for other work, or when it does not show who wrote it. The request seldom names the lawyer or their firm; that alone is no reason to treat the document as evidence. Where the request, a later instruction or an answer says whether to follow this document, recommend what it says; asking to draft from the attached documents does not say that. Quote each supporting passage exactly. The document's opening and close are below; use a targeted read-document lookup of ${document.source_id} only if they do not show who wrote it, to whom or for which work. Give a short group topic in group.`,
+    tagged("question", `Kind: ${question.kind ?? "not stated"}\n${question.question}`),
+    ...(question.context ? [tagged("context", question.context)] : []),
+    tagged("options", (question.options ?? []).map((option, index) => `${index}: ${option.text}`).join("\n")),
+    tagged("document_opening", opening || "The document's text could not be read; use read-document."),
+    ...(close ? [tagged("document_close", close)] : []),
+    tagged("request", readLeanText(directory, "request.md") ?? ""),
+    ...(updates ? [tagged("user_updates", updates)] : []),
+    tagged("answers", answeredQuestionsText(directory) || "None."),
+    `Reply with one JSON object only, including "group":"short topic": {"recommendation":{"option":0,"rationale":"why this option",${basis}}}, where "option" is the index of one of the options above; or, when no option is supported, {"unavailable":{"reason":"why no option can be recommended"}}. Do not return options of your own.`,
+  ].join("\n\n")
+}
+
 export function advisePrompt(directory: string, question: Question) {
+  const confirming = question.options ? confirmationDocument(directory, question.id) : undefined
+  if (confirming) return confirmationPrompt(directory, question, confirming)
   const row = question.pid ? readParagraphs(directory, question.document ?? FIRST_DOCUMENT).find(row => row.pid === question.pid) : undefined
   const paragraph = row && shownText(row)
   const updates = readLeanText(directory, "updated-notes.md")
