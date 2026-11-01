@@ -23,6 +23,8 @@ export type TemplateFillOptions = {
   fills?: Record<string, string>
   /** Optional component names (the text after "[optional: ") to leave out. */
   omit?: string[]
+  /** Optional component names kept with their marker still in the text, as an open item. */
+  keepMarkers?: string[]
   replaces?: { clause: string; replacement: string }[]
   /** Markdown body inserted after the template's first paragraph, which is then dropped. */
   content?: string
@@ -101,16 +103,18 @@ export async function fillTemplate(template: Uint8Array, options: TemplateFillOp
     session.deleteBlock(anchor.id)
   }
 
-  // Kept optional components lose their marker so it never reaches the draft.
-  // A marker that opens its paragraph goes with the space after it; the strip
-  // below absorbs whitespace only between words, so it would leave the text
-  // starting with a space.
+  // Kept optional components lose their marker so it never reaches the draft,
+  // unless the caller keeps it as an open item. A marker that opens its
+  // paragraph goes with the space after it; the strip below absorbs whitespace
+  // only between words, so it would leave the text starting with a space.
+  const keep = new Set(options.keepMarkers ?? [])
+  const strip = (text: string) => text.startsWith("[optional:") && !keep.has(OPTIONAL_FIELD.exec(text)?.[1] ?? "")
   for (const { match } of session.findPlaceholders(dx.PlaceholderKinds.AlternativeClause)) {
     const space = /^\s+/.exec(match.contextAfter)?.[0]
-    if (match.text.startsWith("[optional:") && space && !match.contextBefore.trim())
+    if (strip(match.text) && space && !match.contextBefore.trim())
       session.replaceTextRange(match.enclosingAnchor.id, match.text + space, "", { maxReplacements: 1 })
   }
-  session.fillPlaceholders((p) => (p.match.text.startsWith("[optional:") ? "" : null), {
+  session.fillPlaceholders((p) => (strip(p.match.text) ? "" : null), {
     kinds: dx.PlaceholderKinds.AlternativeClause,
     coalesceWhitespaceAroundEmptyFill: true,
   })
@@ -157,12 +161,13 @@ export async function fillTemplate(template: Uint8Array, options: TemplateFillOp
 /** The filled document for one row: the shared template fill, then every
  * placeholder still in it shaded so it stands out. */
 export async function fillTemplateDocx(template: Uint8Array, fill: RowFill) {
-  const omit = Object.entries(fill.include)
-    .filter(([, included]) => !included)
-    .flatMap(([key]) => {
-      const name = OPTIONAL_FIELD.exec(key)?.[1]
-      return name ? [name] : []
-    })
-  const filled = await fillTemplate(template, { fills: fill.fills, omit })
+  const names = (keys: string[]) => keys.flatMap((key) => {
+    const name = OPTIONAL_FIELD.exec(key)?.[1]
+    return name ? [name] : []
+  })
+  const omit = names(Object.entries(fill.include).filter(([, included]) => !included).map(([key]) => key))
+  // An unclear "Include" answer keeps the component and its marker, so the
+  // document shows what is still to decide.
+  const filled = await fillTemplate(template, { fills: fill.fills, omit, keepMarkers: names(fill.missingKeys) })
   return { bytes: shadeOpenItemsInDocx(filled.bytes, undefined, undefined, filled.remaining), remaining: filled.remaining }
 }

@@ -92,8 +92,9 @@ const NO = new Set(["no", "n", "false", "0", "omit", "exclude"])
 /** One row's values for the template. A fill with no usable value is missing
  * and keeps its placeholder; a value holding a bracket or a control character
  * is never written into the document (line breaks and tabs read as spaces).
- * An optional component with no column keeps the template's default (kept);
- * one whose cell is not a clear yes or no is missing and kept. */
+ * An optional component with no column or a blank cell keeps the template's
+ * default (kept); one whose cell is not a clear yes or no is missing, and is
+ * kept with its marker left in for the lawyer to resolve. */
 export function rowFill(fields: BatchField[], columns: string[], row: string[], mapping: Record<string, string | null>): RowFill {
   const fills: Record<string, string> = {}
   const include: Record<string, boolean> = {}
@@ -108,7 +109,7 @@ export function rowFill(fields: BatchField[], columns: string[], row: string[], 
     const index = column ? columns.indexOf(column) : -1
     const value = index >= 0 ? (row[index] ?? "").replace(/[\r\n\t]+/g, " ").replace(/ {2,}/g, " ").trim() : undefined
     if (field.kind === "optional") {
-      if (value === undefined) {
+      if (!value) {
         include[field.key] = true
         continue
       }

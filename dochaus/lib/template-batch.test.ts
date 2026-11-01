@@ -112,13 +112,13 @@ describe("row values", () => {
     expect(rowFill(fields, columns, ["Example\u0007 Ltd", "x", "1 May", "No"], mapping).missing).toEqual(["Client Name"])
   })
 
-  test("optional: yes/no words decide, unmapped keeps, anything else is missing and kept", () => {
+  test("optional: yes/no words decide, unmapped or blank keeps, anything else is missing and kept", () => {
     expect(rowFill(fields, columns, ["A", "B", "C", "Omit"], mapping).include).toEqual({ "[optional: Non-solicit]": false })
     expect(rowFill(fields, columns, ["A", "B", "C", "maybe"], mapping)).toMatchObject({
       include: { "[optional: Non-solicit]": true },
       missing: ["Include: Non-solicit"],
     })
-    expect(rowFill(fields, columns, ["A", "B", "C", ""], mapping).missing).toEqual(["Include: Non-solicit"])
+    expect(rowFill(fields, columns, ["A", "B", "C", ""], mapping)).toMatchObject({ include: { "[optional: Non-solicit]": true }, missing: [] })
     const unmapped = { ...mapping, "[optional: Non-solicit]": null, "[Client Address]": null }
     expect(rowFill(fields, columns, ["A", "B", "C", "no"], unmapped)).toEqual({
       fills: { "[Client Name]": "A", "[insert notice date]": "C" },
@@ -203,4 +203,12 @@ test("a kept component whose marker opens its paragraph starts with its own text
   const lines = documentText(bytes).split("\n")
   expect(lines).toContain("This request is confidential.")
   expect(lines.some((line) => /^\s+This request/.test(line))).toBe(false)
+})
+
+test("an unclear include answer keeps the component with its marker as an open item", async () => {
+  const { fields } = templateBatchFields(await placeholders(template))
+  const columns = ["Include: Non-solicit"]
+  const { bytes, remaining } = await fillTemplateDocx(template, rowFill(fields, columns, ["maybe"], autoMatch(fields, columns)))
+  expect(documentText(bytes)).toContain("[optional: Non-solicit]")
+  expect(remaining).toContain("[optional: Non-solicit]")
 })
