@@ -404,7 +404,7 @@ function PreviewRow({ position, total, sheetRow, title, missing, gaps, entered, 
 }) {
   const id = useId()
   const fieldsRef = useRef<HTMLDivElement>(null)
-  const typedAny = gaps.some((field) => entered[field.key]?.trim())
+  const typedAny = gaps.some((field) => entered[field.key]?.trim() && !enteredProblem(entered[field.key]!))
   useEffect(() => {
     if (!focusGap) return
     const inputs = [...fieldsRef.current?.querySelectorAll<HTMLInputElement>("input[type=text]") ?? []]
