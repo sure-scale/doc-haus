@@ -45,7 +45,7 @@ function widgetList(value: unknown): Widget[] {
     if (!object(item)) throw new DashboardStateError("Choose valid dashboard widgets.")
     fields(item, ["key", "widget", "pinned"])
     if (typeof item.pinned !== "boolean" || !object(item.widget)) throw new DashboardStateError("Choose valid dashboard widgets.")
-    fields(item.widget, item.widget.type === "chart" ? ["type", "title", "metric", "groupBy", "form", "period", "client", "matter", "limit", "source"] : ["type"])
+    fields(item.widget, item.widget.type === "chart" ? ["type", "title", "metric", "groupBy", "form", "period", "client", "matter", "agentGroup", "limit", "source"] : ["type"])
     const checked = checkPlan({ widgets: [item.widget] })
     if (!checked.plan) throw new DashboardStateError("One of the saved dashboard widgets cannot be displayed.")
     const widget = checked.plan.widgets[0]!

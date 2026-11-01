@@ -34,7 +34,7 @@ amounts, dates or factual claims about the user's practice.
   work. Do not delegate ready-made widgets or ask another agent to plan the
   whole dashboard.
 - Use only the catalog's metrics, groupings, periods and forms. Do not estimate
-  missing data. In particular, draft totals have no completion dates and source document totals have no reliable dates; neither can answer dated questions. Token totals follow session start dates. Do not turn a request for time
+  missing data. In particular, draft totals have no completion dates and source document totals have no reliable dates; neither can answer dated questions. Token totals follow session start dates. Spend alone is recorded per agent: use the agent or agent-group grouping or the agentGroup filter for background agent questions, and check the inventory's filters.agentGroups first. Do not turn a request for time
   recorded, revenue, profit or fee earners into AI spend without disclosing that
   the requested metric is unavailable.
 - Use exact supplied client or matter names in filters. If a requested name is

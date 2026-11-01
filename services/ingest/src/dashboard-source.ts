@@ -1,4 +1,4 @@
-import { chartData } from "../../../dochaus/lib/dashboard-chart"
+import { chartCaption, chartData } from "../../../dochaus/lib/dashboard-chart"
 import { checkPlan, type Chart } from "../../../dochaus/lib/dashboard-plan"
 import { listMatters, listPlaybooks, workspaceRoot } from "./matter"
 import { listClients } from "./clients"
@@ -8,6 +8,7 @@ import { leanDraftingStatus } from "./lean-drafting"
 import { enginePages, generationUsage, sessionUsage } from "./matter-usage"
 import { openDb, listSourceDocuments } from "./db"
 import type { DashboardData, MatterActivity, Period } from "../../../dochaus/lib/dashboard-chart"
+import { USAGE_GROUP_LABEL, type UsageGroup } from "../../../dochaus/lib/usage-agents"
 type Session = MatterActivity["sessions"][number] & { cost: number; tokens: { input: number; output: number; reasoning: number; cache?: { read: number; write: number } } }
 type Row = Omit<MatterActivity, "sessions" | "drafting"> & { sessions: Session[]; drafting?: ReturnType<typeof leanDraftingStatus>; sessionUnread: boolean; draftingUnread: boolean; documentsUnread: boolean }
 
@@ -64,11 +65,11 @@ export async function dashboardChartSource(raw: string | undefined, period: stri
 }
 function projection(chart: Chart, view: ReturnType<typeof chartData>) {
   const format = (value: number) => chart.metric === "spend" ? (value > 0 && value < .01 ? "< $0.01" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value)) : new Intl.NumberFormat("en-GB", { maximumFractionDigits: 0 }).format(value)
-  const ranked = chart.groupBy === "client" || chart.groupBy === "matter"
+  const caption = chartCaption(chart, view)
   const interval = chart.groupBy === "day" ? "day" : chart.groupBy === "week" ? "wk" : "mo"
-  const badge = ranked ? `${view.groups} ${chart.groupBy}${view.groups === 1 ? "" : "s"}` : chart.form === "line" ? `Peak: ${format(Math.max(0, ...view.points.map(point => point.value)))} / ${interval}` : ""
+  const badge = caption.count || (chart.form === "line" ? `Peak: ${format(Math.max(0, ...view.points.map(point => point.value)))} / ${interval}` : "")
   const metric = chart.metric === "spend" ? "Estimated spend · USD" : chart.metric === "conversations" ? "Conversations started" : chart.metric === "matters" ? "Matters opened" : chart.metric === "tokens" ? "Tokens · by session start" : chart.metric === "documents" ? "Source documents" : "Drafted documents"
-  return { points: view.total === 0 ? [] : view.points.map(({ key: _key, ...point }) => point), total: view.total, basis: `${metric}${view.incomplete ? " · partial" : ""}`, period: `${view.period}${chart.client ? ` · ${chart.client}` : chart.matter ? ` · ${chart.matter}` : ""}`, badge, unavailable: view.unavailable, notes: view.notes, empty: view.empty }
+  return { points: view.total === 0 ? [] : view.points.map(({ key: _key, ...point }) => point), total: view.total, basis: `${metric}${view.incomplete ? " · partial" : ""}`, period: caption.period, badge, unavailable: view.unavailable, notes: view.notes, empty: view.empty }
 }
 
 type Availability = { status: "available" | "empty" | "partial" | "unavailable"; usable: boolean; dataBacked?: boolean; reason?: string; total?: number }
@@ -161,7 +162,9 @@ export async function dashboardInventory(period: unknown, timeZone: unknown) {
     return [metric, { ...periods[metric === "documents" || metric === "drafts" ? "all" : period], periods, ...(valid.length ? { firstAt: Math.min(...valid), lastAt: Math.max(...valid) } : {}), ...(metric === "drafts" ? { note: "Latest finished run per matter; all time only." } : metric === "documents" ? { note: "Current source documents; all time only." } : metric === "tokens" ? { note: "Session totals by session start date." } : {}) }]
   }))
   const { TEMPLATES } = await import("../../../dochaus/lib/dashboard-plan")
-  return { updatedAt: snapshot.updatedAt, metrics, templates: Object.fromEntries(Object.keys(TEMPLATES).map(id => [id, templateAvailability(id, data, period, zone)])), library: libraryCounts(), filters: { clients: [...new Set(data.matters.map(row => row.matter.client?.trim()).filter((name): name is string => Boolean(name)))], matters: [...new Set(data.matters.map(row => row.matter.title))] } }
+  // Spend by agent group in the period, so the planner can offer background agent views.
+  const agentGroups = Object.fromEntries((Object.keys(USAGE_GROUP_LABEL) as UsageGroup[]).map(group => [group, { label: USAGE_GROUP_LABEL[group], ...chartAvailability({ type: "chart", title: "Total", metric: "spend", groupBy: "none", form: "stat", period: "dashboard", agentGroup: group }, data, period, zone) }]))
+  return { updatedAt: snapshot.updatedAt, metrics, templates: Object.fromEntries(Object.keys(TEMPLATES).map(id => [id, templateAvailability(id, data, period, zone)])), library: libraryCounts(), filters: { clients: [...new Set(data.matters.map(row => row.matter.client?.trim()).filter((name): name is string => Boolean(name)))], matters: [...new Set(data.matters.map(row => row.matter.title))], agentGroups } }
 }
 export async function validateDashboardSources(input: unknown) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Invalid dashboard source")

@@ -98,6 +98,57 @@ test("native paginated sessions and messages use per-message spend, with failed 
   }
 })
 
+test("spend splits by plain agent name and background agents, with Word suggestions counted as background", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "dashboard-agents-"))
+  const previous = process.env.WORKSPACE_ROOT, originalFetch = globalThis.fetch
+  process.env.WORKSPACE_ROOT = root
+  const one = createMatter("One"), two = createMatter("Two")
+  const time = Date.parse("2026-10-20T12:00:00Z")
+  const session = (id: string, dir: string, agent: string, cost: number, metadata?: Record<string, unknown>) => ({ id, location: { directory: dir }, title: id, agent, cost, ...(metadata ? { metadata } : {}), tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: time, updated: time } })
+  // "ask" carries 1 of title upkeep beyond its priced step; "ideas" is a Word suggestions run on the Q&A agent.
+  const sessions = [session("ask", one.dir, "qa", 3), session("ideas", one.dir, "qa", 1.5, { kind: "suggestions" }), session("chron", one.dir, "chronology-assess", .5), session("narr", two.dir, "narrator", 2), session("chron2", two.dir, "chronology-assess", .25)]
+  const steps: Record<string, number> = { ask: 2, ideas: 1.5, chron: .5, narr: 2, chron2: .25 }
+  globalThis.fetch = Object.assign(async (input: Parameters<typeof fetch>[0]) => {
+    const url = new URL(String(input))
+    if (url.pathname === "/api/session") return Response.json({ data: sessions.filter(row => row.location.directory === url.searchParams.get("directory")), cursor: {} })
+    const id = /^\/api\/session\/([^/]+)/.exec(url.pathname)?.[1]
+    const found = sessions.find(row => row.id === id)
+    if (found && url.pathname.endsWith("/message")) return Response.json({ data: [{ id: `m-${id}`, type: "assistant", time: { created: time }, cost: steps[id!], content: [] }], cursor: {} })
+    if (found) return Response.json({ data: found })
+    return new Response("missing", { status: 404 })
+  }, { preconnect: originalFetch.preconnect }) as typeof fetch
+  const base = { type: "chart", title: "Agents", metric: "spend", groupBy: "agent", form: "list", period: "all", source: { kind: "local-query", query: "practice-chart", version: 1 } }
+  const read = async (patch: Record<string, unknown>) => (await dashboardChartSource(JSON.stringify({ ...base, ...patch }), "all", "UTC")).data
+  const rows = (data: { points: { label: string; value: number }[] }) => data.points.map(point => [point.label, point.value])
+  try {
+    const agents = await read({})
+    expect(agents.total).toBe(7.25)
+    expect(rows(agents)).toEqual([["Narrate drafting progress", 2], ["Questions", 2], ["Suggest ideas in Word", 1.5], ["Conversation titles and compaction", 1], ["Suggest a chronology", .75]])
+    expect(agents.badge).toBe("5 agents")
+    const split = await read({ groupBy: "agent-group", form: "bars" })
+    expect(rows(split)).toEqual([["Background agents", 4.25], ["Your work", 3]])
+    expect(split.badge).toBe("")
+    const background = await read({ groupBy: "matter", agentGroup: "background" })
+    expect(background.total).toBe(4.25)
+    expect(rows(background)).toEqual([["Two", 2.25], ["One", 2]])
+    expect(background.badge).toBe("2 matters")
+    expect(background.period).toBe("All time · Background agents")
+    const word = await read({ matter: "One", agentGroup: "background" })
+    expect(rows(word)).toEqual([["Suggest ideas in Word", 1.5], ["Suggest a chronology", .5]])
+    expect(word.period).toBe("All time · One · Background agents")
+    expect((await read({ agentGroup: "work" })).total).toBe(3)
+    const inventory = await dashboardInventory("all", "UTC")
+    expect(inventory.filters.agentGroups.background).toMatchObject({ label: "Background agents", status: "available", total: 4.25 })
+    expect(inventory.filters.agentGroups.work.total).toBe(3)
+    const checks = await validateDashboardSources({ widgets: [{ ...base, groupBy: "matter", agentGroup: "background" }], period: "all", timeZone: "UTC" })
+    expect(checks.results[0]?.usable).toBe(true)
+    await expect(read({ metric: "tokens" })).rejects.toThrow("Invalid dashboard source")
+  } finally {
+    globalThis.fetch = originalFetch
+    if (previous === undefined) delete process.env.WORKSPACE_ROOT; else process.env.WORKSPACE_ROOT = previous
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test("template availability follows actual time windows and correlates draft cost to its own run", () => {
   const now = Date.now(), old = now - 400 * 86400000

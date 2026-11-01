@@ -1,4 +1,5 @@
 import type { Chart, Grouping, Metric } from "./dashboard-plan"
+import { USAGE_GROUP_LABEL, usageAgent } from "./usage-agents"
 export type Period = "month" | "last-month" | "quarter" | "all"
 export type MatterActivity = {
   matter: { id: string; title: string; client?: string; sample?: boolean; created_at: number }
@@ -55,7 +56,7 @@ export type ChartData = {
   incomplete: boolean
 }
 
-type Event = { time?: number; value: number; row: MatterActivity }
+type Event = { time?: number; value: number; row: MatterActivity; agent?: string }
 const TIME = new Set<Grouping>(["day", "week", "month"])
 const dateLabel = (time: number, month = false, zone?: string) => new Date(time).toLocaleDateString("en-GB", { timeZone: zone, ...(month ? { month: "short", year: "numeric" } : { day: "numeric", month: "short" }) })
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`
@@ -72,7 +73,7 @@ function nextBucket(time: number, group: Grouping, c: ReturnType<typeof calendar
 }
 
 function events(row: MatterActivity, metric: Metric): Event[] {
-  if (metric === "spend") return row.costs.map(({ time, cost }) => ({ time, value: cost, row }))
+  if (metric === "spend") return row.costs.map(({ time, cost, agent }) => ({ time, value: cost, row, agent }))
   if (metric === "conversations") return row.sessions.filter(isConversation).map(({ time }) => ({ time: time.created, value: 1, row }))
   if (metric === "matters") return [{ time: row.matter.created_at, value: 1, row }]
   if (metric === "documents") return [{ value: row.documents ?? 0, row }]
@@ -122,6 +123,7 @@ export function chartData(chart: Chart, data: DashboardData, dashboardPeriod: Pe
   if (chart.metric === "spend" && rows.some((row) => row.unpriced > 0)) notes.push("Some AI use has no price and is missing from this estimate.")
   const values = rows.flatMap((row) => events(row, chart.metric)).filter((entry) =>
     Number.isFinite(entry.value) && entry.value >= 0 &&
+    (chart.agentGroup === undefined || usageAgent(entry.agent).group === chart.agentGroup) &&
     (["drafts", "documents"].includes(chart.metric) || (entry.time !== undefined && Number.isFinite(entry.time) && entry.time >= range.start && entry.time < range.end)))
   const total = values.reduce((sum, entry) => sum + entry.value, 0)
   if (chart.groupBy === "none") return result([{ key: "total", label: chart.title, value: total }], total)
@@ -145,15 +147,33 @@ export function chartData(chart: Chart, data: DashboardData, dashboardPeriod: Pe
   }
   const groups = new Map<string, ChartPoint>()
   for (const entry of values) {
-    const matter = entry.row.matter
-    const key = chart.groupBy === "matter" ? matter.id : matter.client?.trim() || ""
-    const label = chart.groupBy === "matter" ? matter.title : key || "No client recorded"
+    const { key, label } = rankedGroup(entry, chart.groupBy)
     const group = groups.get(key) ?? { key, label, value: 0 }
     group.value += entry.value
     groups.set(key, group)
   }
   const sorted = [...groups.values()].filter((point) => point.value > 0).sort((a, b) => b.value - a.value || a.label.localeCompare(b.label))
   const shown = sorted.slice(0, chart.limit ?? 12)
-  if (shown.length < sorted.length) notes.push(`Showing the top ${shown.length} of ${plural(sorted.length, chart.groupBy === "client" ? "client" : "matter")}. The total includes all of them.`)
+  if (shown.length < sorted.length) notes.push(`Showing the top ${shown.length} of ${plural(sorted.length, NOUN[chart.groupBy] ?? "group")}. The total includes all of them.`)
   return result(shown, total, sorted.length)
+}
+
+// Agents with the same plain name share one row.
+function rankedGroup(entry: Event, groupBy: Grouping) {
+  const { matter } = entry.row
+  if (groupBy === "matter") return { key: matter.id, label: matter.title }
+  if (groupBy === "client") { const client = matter.client?.trim() || ""; return { key: client, label: client || "No client recorded" } }
+  const agent = usageAgent(entry.agent)
+  return groupBy === "agent" ? { key: agent.label, label: agent.label } : { key: agent.group, label: USAGE_GROUP_LABEL[agent.group] }
+}
+
+const NOUN: Partial<Record<Grouping, string>> = { matter: "matter", client: "client", agent: "agent" }
+
+// The group count and narrowing shown beside a chart, for both projections.
+export function chartCaption(chart: Chart, view: ChartData) {
+  const noun = NOUN[chart.groupBy]
+  return {
+    count: noun ? plural(view.groups, noun) : "",
+    period: [view.period, chart.client ?? chart.matter, chart.agentGroup && USAGE_GROUP_LABEL[chart.agentGroup]].filter(Boolean).join(" · "),
+  }
 }
