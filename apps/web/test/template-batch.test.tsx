@@ -73,7 +73,14 @@ async function render(read: BatchSheet, props: { matter?: string; onCreated?: ()
       else delete (globalThis as Record<string, unknown>)[name]
     }
   }
-  return { drop, button, created, requests, cleanup, text: () => document.body.textContent ?? "" }
+  // Types into a React-controlled input as a browser does.
+  const type = async (input: HTMLInputElement, value: string) => {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(browser.HTMLInputElement.prototype, "value")!.set!.call(input, value)
+      input.dispatchEvent(new browser.Event("input", { bubbles: true }) as unknown as Event)
+    })
+  }
+  return { drop, button, type, created, requests, cleanup, text: () => document.body.textContent ?? "" }
 }
 
 test("every fill field matched skips the Match step; Create counts and sends only rows not skipped", async () => {
@@ -135,6 +142,41 @@ test("opened inside a matter, it asks for no matter and creates into that one", 
     expect(refreshed).toBe(1)
     expect(view.button("View documents")).toBeDefined()
     expect(view.button("Open matter")).toBeUndefined()
+  } finally {
+    await view.cleanup()
+  }
+})
+
+test("a value the row leaves out can be typed in the preview for that row's document only", async () => {
+  const view = await render(sheet({ "[Client Name]": "Client Name", "[insert notice date]": "Notice date", "[optional: Non-solicit]": null }))
+  try {
+    await view.drop()
+    // Row 2 is complete: nothing to type.
+    expect(document.body.querySelector(".template-batch-gaps")).toBeNull()
+    // The need-input list jumps to Fabrikam with the cursor in its empty field.
+    await act(async () => { view.button("1 need input")!.click() })
+    await act(async () => { view.button(/Fabrikam LLP/)!.click() })
+    const input = document.body.querySelector<HTMLInputElement>(".template-batch-gaps input[type=text]")!
+    expect(document.activeElement).toBe(input)
+    expect(document.body.querySelector(".template-batch-gaps label")?.textContent).toBe("Notice date")
+    expect(view.text()).toContain("Used for this document only; the spreadsheet is unchanged.")
+
+    // Checked as a cell would be: a bracket is refused and the row still needs input.
+    await view.type(input, "[soon]")
+    expect(view.text()).toContain("Square brackets can't be used here.")
+    expect(view.text()).toContain("1 need input")
+
+    await view.type(input, "5 March 2026")
+    expect(view.text()).toContain("Every field is filled.")
+    expect(view.text()).toContain("3 ready")
+    expect(view.text()).not.toContain("need input")
+    // The field stays to edit once filled.
+    expect(document.body.querySelector<HTMLInputElement>(".template-batch-gaps input[type=text]")?.value).toBe("5 March 2026")
+
+    await act(async () => { view.button("Create 3 documents")!.click() })
+    const rows = (view.created[0] as { rows: { row: number; entered?: Record<string, string> }[] }).rows
+    expect(rows.find((row) => row.row === 3)?.entered).toEqual({ "[insert notice date]": "5 March 2026" })
+    expect(rows.filter((row) => row.entered)).toHaveLength(1)
   } finally {
     await view.cleanup()
   }

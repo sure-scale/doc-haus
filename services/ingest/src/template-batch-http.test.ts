@@ -122,6 +122,12 @@ test("spreadsheet batch: read, preview, sample, create, remember, refuse a chang
     expect(JSON.parse(decodeURIComponent(preview.headers.get("x-dochaus-batch-missing")!))).toEqual(["Client Address"])
     const previewText = documentText(new Uint8Array(await preview.arrayBuffer()))
     expect(previewText).toContain("addressed to Example Client 1 Ltd of [Client Address].")
+    // A value typed in the preview fills the gap.
+    const typedPreview = await post("/templates/batch/preview", { name: "Engagement Letter.docx", columns: read.columns, values: ["Example Client 1 Ltd", "", "1 January 2026", "yes"], mapping: read.mapping, entered: { "[Client Address]": "5 Typed Lane" } })
+    expect(JSON.parse(decodeURIComponent(typedPreview.headers.get("x-dochaus-batch-missing")!))).toEqual([])
+    expect(documentText(new Uint8Array(await typedPreview.arrayBuffer()))).toContain("addressed to Example Client 1 Ltd of 5 Typed Lane.")
+    const badEntry = await post("/templates/batch/preview", { name: "Engagement Letter.docx", columns: read.columns, values: [], mapping: read.mapping, entered: { "[Client Address]": 5 } })
+    expect(badEntry.status).toBe(400)
 
     // Create fifty; row 4 skipped, so forty-nine documents.
     const matter = await (await post("/matters", { title: "Batch example" })).json() as { id: string }
@@ -156,9 +162,11 @@ test("spreadsheet batch: read, preview, sample, create, remember, refuse a chang
     // matched again on the next read.
     await post(`/matters/${matter.id}/template-batches`, {
       name: read.template.name, sha256: read.template.sha256, source: "clients.csv", columns: ["Customer", "Address", "Start date", "Include: Non-solicit"],
-      rows: [{ row: 2, values: ["Example Client 1 Ltd", "1 Example Road", "1 May 2026", "yes"] }], skipped: [],
+      rows: [{ row: 2, values: ["Example Client 1 Ltd", "", "1 May 2026", "yes"], entered: { "[Client Address]": "1 Example Road" } }], skipped: [],
       mapping: { "[Client Name]": "Customer", "[Client Address]": "Address", "[insert start date]": "Start date", "[optional: Non-solicit]": "Include: Non-solicit" },
     })
+    const typedDoc = "Engagement Letter – Example Client 1 Ltd – row 002 (2).docx"
+    expect(documentText(new Uint8Array(await (await request(`/matters/${matter.id}/documents/content?name=${encodeURIComponent(typedDoc)}`)).arrayBuffer()))).toContain("addressed to Example Client 1 Ltd of 1 Example Road.")
     const again = await (await readSheet(new File(["Customer,Address,Start date\nSample Trading Ltd,2 Example Road,1 June 2026\n"], "next.csv"))).json()
     expect(again.mapping).toEqual({ "[Client Name]": "Customer", "[Client Address]": "Address", "[insert start date]": "Start date", "[optional: Non-solicit]": null })
     expect(again.remembered).toBe(true)

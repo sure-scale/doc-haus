@@ -128,6 +128,21 @@ describe("row values", () => {
       missingKeys: ["[Client Address]"],
     })
   })
+
+  test("a value typed in the preview fills only a gap, with the same checks as a cell", () => {
+    const unmapped = { ...mapping, "[Client Address]": null }
+    const typed = { "[Client Name]": "Typed Ltd", "[Client Address]": " 2 Example\nRoad ", "[insert notice date]": "[soon]", "[optional: Non-solicit]": "no" }
+    // The sheet's own name wins over a typed one; an unclear include takes the typed no.
+    expect(rowFill(fields, columns, ["Example Ltd", "", "", "maybe"], unmapped, typed)).toEqual({
+      fills: { "[Client Name]": "Example Ltd", "[Client Address]": "2 Example Road" },
+      include: { "[optional: Non-solicit]": false },
+      missing: ["Notice date"],
+      missingKeys: ["[insert notice date]"],
+    })
+    // A blank include cell keeps the default: it is no gap, so a typed answer is ignored.
+    expect(rowFill(fields, columns, ["A", "B", "C", ""], mapping, typed).include).toEqual({ "[optional: Non-solicit]": true })
+    expect(rowFill(fields, columns, ["", "B", "C", "yes"], mapping, { "[Client Name]": "x\u0007" }).missing).toEqual(["Client Name"])
+  })
 })
 
 describe("naming", () => {

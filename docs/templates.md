@@ -48,7 +48,9 @@ the template's default.
 
 Step through the preview row by row and skip any row you do not want. In the
 preview, each value filled in from the spreadsheet is highlighted; the saved
-documents carry no highlight. **Create**
+documents carry no highlight. A value the row leaves out can be typed in
+beside the preview, for that row's document only; the spreadsheet is not
+changed, and a typed value never replaces one the row already has. **Create**
 saves one Word document per row into the matter, grouped in the Documents panel
 under the template name and date. A row with a blank or unclear value is still
 created, with its placeholder or clause marker left in the text and marked

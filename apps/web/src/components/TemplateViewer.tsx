@@ -61,34 +61,42 @@ export default function TemplateViewer({
   const optional = markers.filter(isOptional)
   const redactions = markers.filter((entry) => entry.kind === "redaction")
 
+  // The viewer on screen. A new render replaces it only once ready, so a
+  // preview that changes (a value typed in) never blanks the page or loses
+  // its scroll position.
+  const shown = useRef<DocxViewer>(undefined)
+  useEffect(() => () => { shown.current?.destroy(); shown.current = undefined }, [])
   useEffect(() => {
     let cancelled = false
-    let viewer: DocxViewer | undefined
     // Render offscreen first. The embed scopes Word's body/span CSS before it
     // enters the page; raw converter HTML would restyle the surrounding app.
     const mount = document.createElement("div")
-    setReady(false)
+    if (!shown.current) {
+      setReady(false)
+      setMarkers([])
+      documentHost.current?.replaceChildren()
+    }
     setError(undefined)
-    setMarkers([])
-    documentHost.current?.replaceChildren()
     ;(loadBytes ? loadBytes() : fetchTemplateBytes(name))
       .then((bytes) => createViewer(mount, withSafeStyleValues(bytes), { wasmBasePath: "/wasm/", renderHeadersAndFooters: true }))
       .then((result) => {
         if (cancelled) { result.destroy(); return }
-        viewer = result
         removeUnsafeLinkTargets(mount)
         documentHost.current?.replaceChildren(mount)
+        shown.current?.destroy()
+        shown.current = result
         decorateMarkers(mount, fields.current?.map((p) => p.text))
         const filled = decorateFilledValues(mount)
         setMarkers(markerEntries(mount))
         setReady(true)
         rendered.current?.({ filled })
       })
-      .catch((e) => !cancelled && setError(e instanceof Error ? e.message : String(e)))
-    return () => {
-      cancelled = true
-      viewer?.destroy()
-    }
+      .catch((e) => {
+        if (cancelled) return
+        setReady(false)
+        setError(e instanceof Error ? e.message : String(e))
+      })
+    return () => { cancelled = true }
   }, [name, loadBytes])
 
   // Keep viewport overlays outside the page's width/spacing rules.
