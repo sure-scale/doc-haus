@@ -57,7 +57,7 @@ async function render(options: { load?: Partial<Agents> | "fail"; failSave?: boo
 test("missing settings show every agent on; a toggle saves the whole object at once", async () => {
   const view = await render()
   try {
-    expect(view.text()).toContain("These agents start on their own, without a click.")
+    expect(view.text()).toContain("These run by themselves while you work, without you asking.")
     expect(view.state()).toEqual({ "Suggest a chronology": true, "Compare review answers": true, "Narrate drafting progress": true })
     await view.toggle("Compare review answers")
     expect(view.puts).toEqual([{ backgroundAgents: { chronologySuggestion: true, reviewCompare: false, narration: true } }])

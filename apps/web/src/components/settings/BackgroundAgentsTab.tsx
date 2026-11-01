@@ -5,9 +5,9 @@ import { ToggleRow } from "./controls"
 // Optional jobs that start without a click. Each switch saves at once; the
 // server merges top-level keys only, so the whole object is always sent.
 const AGENTS: { key: keyof BackgroundAgents; title: string; description: string }[] = [
-  { key: "chronologySuggestion", title: "Suggest a chronology", description: "Suggests a chronology when a matter's documents would benefit from one." },
-  { key: "reviewCompare", title: "Compare review answers", description: "Groups matching answers when a review column finishes. You can still compare a column yourself." },
-  { key: "narration", title: "Narrate drafting progress", description: "Writes short notes on how a draft is going. Progress steps still show." },
+  { key: "chronologySuggestion", title: "Suggest a chronology", description: "Looks over a matter's documents and suggests building a timeline of events when one would help. When off, you can still open the chronology from the matter menu." },
+  { key: "reviewCompare", title: "Compare review answers", description: "After you fill a review table, shows which documents give the same answer to each question and which differ. When off, use Compare with AI on a column." },
+  { key: "narration", title: "Narrate drafting progress", description: "Adds short plain-English updates while a draft is being prepared. When off, you still see each step." },
 ]
 
 const STATES = { on: "On", off: "Off" }
@@ -78,7 +78,7 @@ export default function BackgroundAgentsTab({ onSaved }: { onSaved?: (text: stri
   return (
     <section className="settings-section">
       <p className="settings-hint muted">
-        These agents start on their own, without a click. Each sends matter text to your AI provider.
+        These run by themselves while you work, without you asking. Each one sends some of the matter's text to your AI provider. Turn one off to stop it.
       </p>
       {AGENTS.map((agent) => (
         <ToggleRow
