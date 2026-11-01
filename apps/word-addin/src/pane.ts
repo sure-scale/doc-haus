@@ -30,7 +30,7 @@ async function main(): Promise<void> {
   // An old cached manifest may still launch this page as a separate function
   // runtime. It must not become a writer merely because its JS was refreshed.
   if (!isCurrentPaneVersion(window.location.href)) {
-    badge.textContent = "Update needed"
+    badge.textContent = "Restart Word"
     message.textContent = WORD_UPDATE_MESSAGE
     element("actions").hidden = true
     element("background").hidden = true

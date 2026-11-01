@@ -24,7 +24,7 @@ test("stale Word clients cannot reach any token-route mutation, while current cl
         })
         expect(response.status).toBe(426)
         expect(response.headers.get("Access-Control-Allow-Origin")).toBe(origin)
-        expect(await response.json()).toMatchObject({ code: "word_addin_update_required", error: expect.stringContaining("out of date") })
+        expect(await response.json()).toMatchObject({ code: "word_addin_update_required", error: expect.stringContaining("Restart Word to finish") })
         expect(mutations).toBe(0)
       }
     }

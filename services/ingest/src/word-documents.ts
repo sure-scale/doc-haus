@@ -67,7 +67,7 @@ export async function wordCors(c: Context, next: () => Promise<void>) {
   }
   if (c.req.method !== "POST") return failure(c, 403, "word_method_refused", "The Word connection only accepts scoped document commands.")
   if (c.req.header("x-dochaus-word-version") !== WORD_ADDIN_VERSION)
-    return failure(c, 426, "word_addin_update_required", "This Word add-in is out of date. Update Word setup in doc.haus, restart Word, then open a fresh copy.")
+    return failure(c, 426, "word_addin_update_required", "doc.haus was updated. Restart Word to finish.")
   await next()
 }
 

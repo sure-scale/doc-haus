@@ -105,7 +105,7 @@ test("an outdated client receives clear update guidance without retrying", async
     requests++
     return new Response(null, { status: 426 })
   })
-  await expect(client.save(new Uint8Array([1]), "original", "generation")).rejects.toThrow("out of date")
+  await expect(client.save(new Uint8Array([1]), "original", "generation")).rejects.toThrow("Restart Word to finish")
   expect(requests).toBe(1)
 })
 

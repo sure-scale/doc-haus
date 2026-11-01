@@ -7,7 +7,7 @@ import {
 } from "../../../dochaus/lib/word-addin-contract"
 
 export const WORD_UPDATE_MESSAGE =
-  "This Word add-in is out of date. Update Word setup in doc.haus, restart Word, then open a fresh copy."
+  "doc.haus was updated. Restart Word to finish."
 
 export type LatestWordContent = { version: { id: string; number: number }; bytes: Uint8Array }
 
