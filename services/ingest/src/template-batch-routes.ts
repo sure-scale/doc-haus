@@ -92,7 +92,7 @@ export function templateBatchRoutes() {
     const columns = strings(body?.columns, "columns")
     const values = strings(body?.values, "values")
     const fill = rowFill(template.fields, columns, values, mappingOf(body?.mapping))
-    const { bytes } = await fillTemplateDocx(template.bytes, fill)
+    const { bytes } = await fillTemplateDocx(template.bytes, fill, { markFilled: true })
     return new Response(Buffer.from(bytes), {
       headers: { "Content-Type": DOCX, "X-DocHaus-Batch-Missing": encodeURIComponent(JSON.stringify(fill.missing)) },
     })

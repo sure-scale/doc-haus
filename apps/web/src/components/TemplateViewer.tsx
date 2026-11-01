@@ -4,7 +4,7 @@ import { createPortal } from "react-dom"
 import { createViewer, type DocxViewer } from "docxodus/embed"
 import { fetchTemplateBytes, type TemplatePlaceholder } from "../api/ingest/library"
 import { ModalClose } from "./ModalHeader"
-import { decorateMarkers, markerEntries, type MarkerEntry } from "./document-markers"
+import { decorateFilledValues, decorateMarkers, markerEntries, type MarkerEntry } from "./document-markers"
 import backdropClose from "./backdropClose"
 import useModalFocus from "./useModalFocus"
 import { removeUnsafeLinkTargets } from "./docx-links"
@@ -40,7 +40,8 @@ export default function TemplateViewer({
   loadBytes?: () => Promise<Uint8Array>
   sidebar?: ReactNode
   footer?: ReactNode
-  onRendered?: () => void
+  /** Called once the document shows; `filled` counts the values a batch preview filled in. */
+  onRendered?: (shown: { filled: number }) => void
 }) {
   const closing = useContext(Closing)
   const panel = useRef<HTMLDivElement>(null)
@@ -78,9 +79,10 @@ export default function TemplateViewer({
         removeUnsafeLinkTargets(mount)
         documentHost.current?.replaceChildren(mount)
         decorateMarkers(mount, fields.current?.map((p) => p.text))
+        const filled = decorateFilledValues(mount)
         setMarkers(markerEntries(mount))
         setReady(true)
-        rendered.current?.()
+        rendered.current?.({ filled })
       })
       .catch((e) => !cancelled && setError(e instanceof Error ? e.message : String(e)))
     return () => {

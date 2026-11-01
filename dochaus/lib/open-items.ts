@@ -141,6 +141,36 @@ export function shadeOpenItemsInDocx(bytes: Uint8Array, clear: (paragraph: Eleme
   return zipSync(parts, { mtime: new Date(1980, 0, 1) })
 }
 
+/** Every occurrence of the given texts shaded in `fill`, and nothing else:
+ * each run is split at a text's edges as shadeOpenItemsInDocx splits it, and a
+ * run shaded in a fill of its own keeps it. The bytes are returned themselves
+ * when nothing changes. */
+export function shadeTextsInDocx(bytes: Uint8Array, texts: readonly string[], fill: string) {
+  const parts = unzipSync(bytes)
+  const document = parts["word/document.xml"]
+  const wanted = texts.filter(Boolean)
+  if (!document || !wanted.length) return bytes
+  const doc = new DOMParser().parseFromString(strFromU8(document), "application/xml")
+  let changed = false
+  for (const paragraph of Array.from(doc.getElementsByTagNameNS(W, "p"))) {
+    const runs = paragraphRuns(paragraph)
+    const text = runs.flatMap(row => row.content.map(part => part.value)).join("")
+    const found: { start: number; end: number }[] = []
+    for (const literal of wanted)
+      for (let at = text.indexOf(literal); at >= 0; at = text.indexOf(literal, at + literal.length)) found.push({ start: at, end: at + literal.length })
+    const spans: { start: number; end: number; fill: string }[] = []
+    for (const { start, end } of found.sort((a, b) => a.start - b.start || b.end - a.end)) {
+      const last = spans.at(-1)
+      if (last && start < last.end) last.end = Math.max(last.end, end)
+      else spans.push({ start, end, fill })
+    }
+    if (spans.length) for (const row of runs) changed = shadeRun(row, spans, false) || changed
+  }
+  if (!changed) return bytes
+  parts["word/document.xml"] = strToU8(new XMLSerializer().serializeToString(doc))
+  return zipSync(parts, { mtime: new Date(1980, 0, 1) })
+}
+
 /** LEAN owns its reserved marker decoration only in selected paragraphs.
  * Normalize only an exact generated shading whose whole run is inside a parsed
  * marker. All other run properties and all unselected paragraphs stay intact. */

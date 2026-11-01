@@ -15,6 +15,7 @@ import {
 } from "./template-batch"
 import { fillTemplateDocx } from "./template-fill"
 import { OPEN_ITEM_HIGHLIGHT_FILL } from "./open-items"
+import { FILLED_VALUE_FILL } from "./marker-patterns"
 
 const templateMarkdown = [
   "# Synthetic services letter",
@@ -191,6 +192,26 @@ test("a named placeholder left unfilled is shaded", async () => {
   const shaded = [...xml.matchAll(/<w:r\b[^>]*>(?:(?!<\/w:r>)[\s\S])*?<w:shd\b[^>]*w:fill="([0-9A-F]+)"(?:(?!<\/w:r>)[\s\S])*?<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)]
     .map((match) => [match[2], match[1]])
   expect(shaded).toContainEqual(["[Client Name]", OPEN_ITEM_HIGHLIGHT_FILL])
+})
+
+function shadedTexts(bytes: Uint8Array) {
+  const xml = strFromU8(unzipSync(bytes)["word/document.xml"]!)
+  return [...xml.matchAll(/<w:r\b[^>]*>(?:(?!<\/w:r>)[\s\S])*?<w:shd\b[^>]*w:fill="([0-9A-F]+)"(?:(?!<\/w:r>)[\s\S])*?<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)]
+    .map((match) => [match[2], match[1]])
+}
+
+test("the preview marks exactly the values it filled in; a created document is never marked", async () => {
+  const { fields } = templateBatchFields(await placeholders(template))
+  const columns = ["Client Name", "Client Address"]
+  const fill = rowFill(fields, columns, ["Example Holdings Ltd", "1 Example Street"], autoMatch(fields, columns))
+  const preview = shadedTexts((await fillTemplateDocx(template, fill, { markFilled: true })).bytes)
+  expect(preview).toContainEqual(["Example Holdings Ltd", FILLED_VALUE_FILL])
+  expect(preview).toContainEqual(["1 Example Street", FILLED_VALUE_FILL])
+  expect(preview.filter(([, colour]) => colour === FILLED_VALUE_FILL).map(([text]) => text).sort()).toEqual(["1 Example Street", "Example Holdings Ltd"])
+  expect(preview).toContainEqual(["[insert notice date]", OPEN_ITEM_HIGHLIGHT_FILL])
+  const created = await fillTemplateDocx(template, fill)
+  expect(shadedTexts(created.bytes).some(([, colour]) => colour === FILLED_VALUE_FILL)).toBe(false)
+  expect(documentText(created.bytes)).toBe(documentText((await fillTemplateDocx(template, fill, { markFilled: true })).bytes))
 })
 
 test("a kept component whose marker opens its paragraph starts with its own text", async () => {

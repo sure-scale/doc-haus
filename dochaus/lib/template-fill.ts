@@ -7,7 +7,8 @@ import { withGeneratedDocxAttribution } from "./docx-attribution"
 import { numberDocxClauses } from "./docx-numbering"
 import { linkCrossReferences } from "./docx-crossrefs"
 import { withTemplateStyleIds } from "./template-seed"
-import { shadeOpenItemsInDocx } from "./open-items"
+import { shadeOpenItemsInDocx, shadeTextsInDocx } from "./open-items"
+import { FILLED_VALUE_FILL } from "./marker-patterns"
 import { OPTIONAL_FIELD, type RowFill } from "./template-batch"
 
 // The deterministic template fill: the one path that turns library template
@@ -159,8 +160,11 @@ export async function fillTemplate(template: Uint8Array, options: TemplateFillOp
 }
 
 /** The filled document for one row: the shared template fill, then every
- * placeholder still in it shaded so it stands out. */
-export async function fillTemplateDocx(template: Uint8Array, fill: RowFill) {
+ * placeholder still in it shaded so it stands out. With `markFilled` (the
+ * preview only) each placeholder it fills is shaded in FILLED_VALUE_FILL first,
+ * and the fill keeps its run's formatting, so the viewer can outline exactly
+ * the values written in; a created document is never marked. */
+export async function fillTemplateDocx(template: Uint8Array, fill: RowFill, { markFilled = false } = {}) {
   const names = (keys: string[]) => keys.flatMap((key) => {
     const name = OPTIONAL_FIELD.exec(key)?.[1]
     return name ? [name] : []
@@ -168,6 +172,7 @@ export async function fillTemplateDocx(template: Uint8Array, fill: RowFill) {
   const omit = names(Object.entries(fill.include).filter(([, included]) => !included).map(([key]) => key))
   // An unclear "Include" answer keeps the component and its marker, so the
   // document shows what is still to decide.
-  const filled = await fillTemplate(template, { fills: fill.fills, omit, keepMarkers: names(fill.missingKeys) })
+  const source = markFilled ? shadeTextsInDocx(template, Object.keys(fill.fills), FILLED_VALUE_FILL) : template
+  const filled = await fillTemplate(source, { fills: fill.fills, omit, keepMarkers: names(fill.missingKeys) })
   return { bytes: shadeOpenItemsInDocx(filled.bytes, undefined, undefined, filled.remaining), remaining: filled.remaining }
 }

@@ -65,6 +65,8 @@ export default function TemplateBatchDialog({ template, matter, onClose, onCreat
   const [index, setIndex] = useState(0)
   const [skipped, setSkipped] = useState<Set<number>>(() => new Set())
   const [shownMissing, setShownMissing] = useState<{ row: number; missing: string[] }>()
+  // Whether the row in the preview shows any value filled in from the sheet.
+  const [shownFilled, setShownFilled] = useState<{ row: number; filled: boolean }>()
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string>()
   const [result, setResult] = useState<BatchResult>()
@@ -180,12 +182,14 @@ export default function TemplateBatchDialog({ template, matter, onClose, onCreat
       title={heading}
       loadBytes={loadBytes}
       onClose={close}
+      onRendered={({ filled }) => alive.current && setShownFilled({ row: current.row, filled: filled > 0 })}
       sidebar={<PreviewRow
         position={index}
         total={rows.length}
         sheetRow={current.row}
         title={rowName(index)}
         missing={rowMissingNow}
+        filled={shownFilled?.row === current.row && shownFilled.filled}
         skipped={isSkipped}
         onStep={(delta) => setIndex((at) => Math.min(rows.length - 1, Math.max(0, at + delta)))}
         onSkip={() => toggleSkip(current.row)}
@@ -358,13 +362,15 @@ function MatchStep({ sheet, mapping, manualKeys, onMap, onRestart }: {
 }
 
 // The preview's side panel: which row is shown, whether it will be created,
-// and what it leaves to fill. Missing fields stay highlighted in the document.
-function PreviewRow({ position, total, sheetRow, title, missing, skipped, onStep, onSkip, onChangeMatching }: {
+// and what it leaves to fill. Missing fields stay highlighted in the document;
+// the values filled in from the sheet are outlined, with a one-line key.
+function PreviewRow({ position, total, sheetRow, title, missing, filled, skipped, onStep, onSkip, onChangeMatching }: {
   position: number
   total: number
   sheetRow: number
   title: string
   missing: string[]
+  filled: boolean
   skipped: boolean
   onStep: (delta: number) => void
   onSkip: () => void
@@ -394,6 +400,7 @@ function PreviewRow({ position, total, sheetRow, title, missing, skipped, onStep
     {skipped ? <p className="template-batch-status">This row will not be created.</p>
       : missing.length ? <p className="template-batch-status is-warn">Needs input: {missing.join(", ")}</p>
       : <p className="template-batch-status">Every field is filled.{onChangeMatching && " "}{onChangeMatching && <button type="button" className="linklike template-batch-change" onClick={onChangeMatching}>Change matching</button>}</p>}
+    {!skipped && filled && <p className="template-batch-key"><span className="template-batch-key-sample">Outlined</span> text is filled in from the spreadsheet.</p>}
     {(skipped || missing.length > 0) && onChangeMatching && <button type="button" className="linklike template-batch-change" onClick={onChangeMatching}>Change matching</button>}
   </div>
 }

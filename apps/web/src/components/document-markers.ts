@@ -4,6 +4,7 @@ import {
   OPTIONAL_CLAUSE_PATTERN,
   PLACEHOLDER_PATTERN,
   REDACTION_MARKER_PATTERN,
+  FILLED_VALUE_FILL,
 } from "../../../../dochaus/lib/marker-patterns"
 
 // Display-only colour coding of the product's own markers in a rendered
@@ -87,6 +88,24 @@ export function decorateMarkers(root: HTMLElement, placeholders?: string[]): Mar
     }
   }
   return counts
+}
+
+/** Outlines the values a spreadsheet batch preview filled in. The preview
+ * shades each in FILLED_VALUE_FILL (created documents never carry it); the
+ * outline takes the place of that shading. Returns how many spans it marked. */
+export function decorateFilledValues(root: HTMLElement) {
+  const [red, green, blue] = [0, 2, 4].map((at) => parseInt(FILLED_VALUE_FILL.slice(at, at + 2), 16))
+  // Browsers report the computed colour as rgb(); some DOMs keep the hex.
+  const shades = new Set([`rgb(${red}, ${green}, ${blue})`, `#${FILLED_VALUE_FILL}`.toLowerCase()])
+  const view = root.ownerDocument.defaultView
+  let count = 0
+  for (const span of root.querySelectorAll<HTMLElement>("span:not(.doc-marker)")) {
+    if (!shades.has(view?.getComputedStyle(span).backgroundColor.toLowerCase() ?? "")) continue
+    span.classList.add("doc-filled")
+    span.title = "From the spreadsheet"
+    count++
+  }
+  return count
 }
 
 /** The kind of a whole marker text (a server-listed template placeholder), by
