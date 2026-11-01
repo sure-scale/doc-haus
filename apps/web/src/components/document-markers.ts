@@ -102,7 +102,7 @@ export function decorateFilledValues(root: HTMLElement) {
   for (const span of root.querySelectorAll<HTMLElement>("span:not(.doc-marker)")) {
     if (!shades.has(view?.getComputedStyle(span).backgroundColor.toLowerCase() ?? "")) continue
     span.classList.add("doc-filled")
-    span.title = "From the spreadsheet"
+    span.title = "Filled in"
     count++
   }
   return count

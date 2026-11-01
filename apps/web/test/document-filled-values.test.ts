@@ -12,5 +12,5 @@ test("highlights exactly the spans a batch preview shaded as filled values", () 
   expect(decorateFilledValues(page)).toBe(1)
   const marked = [...page.querySelectorAll(".doc-filled")]
   expect(marked.map((span) => span.textContent)).toEqual(["Example Contact"])
-  expect(marked[0]!.getAttribute("title")).toBe("From the spreadsheet")
+  expect(marked[0]!.getAttribute("title")).toBe("Filled in")
 })

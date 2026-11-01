@@ -404,6 +404,7 @@ function PreviewRow({ position, total, sheetRow, title, missing, gaps, entered, 
 }) {
   const id = useId()
   const fieldsRef = useRef<HTMLDivElement>(null)
+  const typedAny = gaps.some((field) => entered[field.key]?.trim())
   useEffect(() => {
     if (!focusGap) return
     const inputs = [...fieldsRef.current?.querySelectorAll<HTMLInputElement>("input[type=text]") ?? []]
@@ -436,7 +437,7 @@ function PreviewRow({ position, total, sheetRow, title, missing, gaps, entered, 
       {gaps.map((field) => <GapField key={`${sheetRow}:${field.key}`} field={field} value={entered[field.key] ?? ""} onChange={(value) => onEnter(field.key, value)} />)}
       <p className="template-batch-gaps-note">Used for this document only; the spreadsheet is unchanged.</p>
     </div>}
-    {!skipped && filled && <p className="template-batch-key"><span className="template-batch-key-sample">Highlighted</span> text is filled in from the spreadsheet.</p>}
+    {!skipped && filled && <p className="template-batch-key"><span className="template-batch-key-sample">Highlighted</span> text is filled in from the spreadsheet{typedAny ? " or typed here" : ""}.</p>}
     {(skipped || missing.length > 0) && onChangeMatching && <button type="button" className="linklike template-batch-change" onClick={onChangeMatching}>Change matching</button>}
   </div>
 }
