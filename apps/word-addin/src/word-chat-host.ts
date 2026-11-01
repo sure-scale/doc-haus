@@ -1,6 +1,6 @@
 import type { WordChatAuthoredAmendment, WordChatCellRun, WordChatPreparedAmendment, WordChatParagraphFormat, WordChatInlineFormat, WordChatSnapshot, WordChatTableCapture, WordChatTarget, WordChatTableRowInsertionProposal, WordChatTableRowDeletionProposal, WordChatProposal, WordChatListCapture } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { validWordChatFormatting, validWordChatInlineFormatting, targetWordChatAmendment, validWordChatTableRowInsertion, validWordChatTableRowDeletion, wordChatApplyPlan, wordChatTableCaptureCurrent } from "../../../dochaus/lib/word-chat-amendment-contract"
-import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, sameNativeWordChatBodySnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody, verifyNativeWordChatRowRemainder, verifyReviewedWordChatRowOracle, assertWordChatRowFormatNeutral, WordChatRowFormatRefusal, assertNativeWordChatInlineTarget, assertNativeWordChatInlineDependencies, verifiedNativeWordChatInlineFormatting, sameNativeInlineWordChatParagraph, assertNativeInlineWordChatRevisionIds } from "./word-chat-host-ooxml"
+import { capturedWordChatParagraphs, importedWordChatDifference, reviewedMixedWordChatArtifact, reviewedWordChatArtifact, wordChatOoxmlDifference, sameImportedWordChat, sameWordChatInlineRevisions, sameWordChatParagraphContent, sameNativeWordChatParagraphContent, sameWordChatParagraphProperties, sameWordChatHunkFormatting, authoredWordChatWordingHunks, sameWordChatTargetSnapshot, sameNativeWordChatBodySnapshot, uniformWordChatFormatting, verifiedNativeWordChatFormatting, projectNativeWordChatBody, verifyNativeWordChatRowRemainder, verifyReviewedWordChatRowOracle, assertWordChatRowFormatNeutral, WordChatRowFormatRefusal, assertNativeWordChatInlineTarget, assertNativeWordChatInlineDependencies, verifiedNativeWordChatInlineFormatting, nativeWordChatParagraphCurrentText, sameNativeInlineWordChatParagraph, assertNativeInlineWordChatRevisionIds } from "./word-chat-host-ooxml"
 import type { WordChatAuthoredTableRow, WordChatAuthoredTableRowDeletion } from "../../../dochaus/lib/word-chat-contract"
 import { prepareNativeRow, queueNativeRow, type NativeRowContext } from "./word-chat-native-row"
 import { nativeWordChatRowRefitWidths, verifyNativeWordChatAddedRow } from "./word-chat-native-row-verification"
@@ -190,9 +190,25 @@ function hasProtectedContent(value: string, authored = false, formatting = false
 /** Windows Word's Paragraph.text keeps tracked-deleted wording; Mac Word's
  * already matches Current. Bind paragraphs to OOXML and reviewed text by Current. */
 async function nativeInventory(context: WordChatContext, items: Paragraph[]) {
-  const rows = items.map(p => ({ id: p.uniqueLocalId, current: p.getRange("Content").getReviewedText("Current"), tableNestingLevel: p.tableNestingLevel }))
+  const texts = await currentParagraphTexts(context, items)
+  return items.map((p, i) => ({ id: p.uniqueLocalId, text: texts[i]!, tableNestingLevel: p.tableNestingLevel }))
+}
+
+/** The Current wording of each paragraph. Inside a table cell Word's reviewed text keeps the
+ * tracked-deleted wording after the inserted wording ("31 July30 June 2027"), though the same
+ * text is right at body level. A cell paragraph with tracked changes (Current differs from
+ * Original) cannot be trusted that way, so its Current wording is read from its own OOXML. */
+async function currentParagraphTexts(context: WordChatContext, items: Paragraph[]): Promise<string[]> {
+  const rows = items.map(p => {
+    const range = p.getRange("Content"), cell = p.tableNestingLevel > 0
+    return { range, cell, current: range.getReviewedText("Current"), original: cell ? range.getReviewedText("Original") : undefined }
+  })
   await context.sync()
-  return rows.map(({ id, current, tableNestingLevel }) => ({ id, text: current.value, tableNestingLevel }))
+  const suspect = rows.filter(row => row.cell && row.original!.value !== row.current.value)
+  const exported = suspect.map(row => row.range.getOoxml())
+  if (suspect.length) await context.sync()
+  const fixed = new Map(suspect.map((row, i) => [row, nativeWordChatParagraphCurrentText(exported[i]!.value)] as const))
+  return rows.map(row => fixed.get(row) ?? row.current.value)
 }
 
 /** Word Find has a short-query limit. Locate boundaries with a short literal
@@ -522,18 +538,17 @@ export class WordChatHost {
    * existing comment bodies. This never includes unrelated Word metadata. */
   private async documentState(context: WordChatContext): Promise<WordChatDocumentState> {
     const body = context.document.body, all = body.paragraphs
-    all.load("items/text,items/uniqueLocalId,items/styleBuiltIn,items/spaceBefore,items/spaceAfter,items/lineSpacing")
+    all.load("items/text,items/uniqueLocalId,items/tableNestingLevel,items/styleBuiltIn,items/spaceBefore,items/spaceAfter,items/lineSpacing")
     const current = body.getRange("Content").getReviewedText("Current")
     const changes = body.getRange().getTrackedChanges()
     changes.load("items/author,items/type,items/text")
     const comments = body.getRange().getComments()
     comments.load("items/author,items/content,items/resolved")
     await context.sync()
-    const texts = all.items.map(p => p.getRange("Content").getReviewedText("Current"))
-    await context.sync()
+    const texts = await currentParagraphTexts(context, all.items)
     return {
       current: current.value,
-      paragraphs: all.items.map((p, i) => ({ id:p.uniqueLocalId, text:texts[i]!.value, style:p.styleBuiltIn, before:p.spaceBefore, after:p.spaceAfter, line:p.lineSpacing })),
+      paragraphs: all.items.map((p, i) => ({ id:p.uniqueLocalId, text:texts[i]!, style:p.styleBuiltIn, before:p.spaceBefore, after:p.spaceAfter, line:p.lineSpacing })),
       changes: changes.items.map(change => ({ author:change.author, type:change.type, text:change.text })),
       comments: comments.items.map(comment => ({ author:comment.author, content:comment.content, resolved:comment.resolved })),
     }
