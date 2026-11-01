@@ -6,7 +6,7 @@ import { act, createElement } from "react"
 
 type Agents = { chronologySuggestion: boolean; reviewCompare: boolean; narration: boolean }
 
-async function render(options: { load?: Partial<Agents> | "fail"; failSave?: boolean } = {}) {
+async function render(options: { load?: Partial<Agents> | "fail"; failSave?: boolean; wordSuggestions?: boolean } = {}) {
   const browser = new Window({ url: "http://localhost:5275" })
   const names = ["window", "document", "HTMLElement", "Node", "Event", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"] as const
   const saved = names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const)
@@ -15,7 +15,17 @@ async function render(options: { load?: Partial<Agents> | "fail"; failSave?: boo
   const originalFetch = globalThis.fetch
   const puts: unknown[] = []
   let stored: Partial<Agents> | undefined = options.load === "fail" ? undefined : options.load
+  let word = { defaultScope: "matter", suggestions: options.wordSuggestions ?? true }
   globalThis.fetch = (async (input, init) => {
+    if (String(input).endsWith("/word/chat-preferences")) {
+      if (init?.method === "PUT") {
+        const body = JSON.parse(String(init.body))
+        puts.push({ word: body })
+        if (options.failSave) return new Response("error", { status: 500 })
+        word = { ...word, ...body }
+      }
+      return Response.json(word)
+    }
     if (!String(input).endsWith("/preferences")) return new Response("not found", { status: 404 })
     if (init?.method === "PUT") {
       const body = JSON.parse(String(init.body))
@@ -58,7 +68,7 @@ test("missing settings show every agent on; a toggle saves the whole object at o
   const view = await render()
   try {
     expect(view.text()).toContain("These run by themselves while you work, without you asking.")
-    expect(view.state()).toEqual({ "Suggest a chronology": true, "Compare review answers": true, "Narrate drafting progress": true })
+    expect(view.state()).toEqual({ "Suggest a chronology": true, "Compare review answers": true, "Narrate drafting progress": true, "Suggest ideas in Word": true })
     await view.toggle("Compare review answers")
     expect(view.puts).toEqual([{ backgroundAgents: { chronologySuggestion: true, reviewCompare: false, narration: true } }])
     expect(view.state()["Compare review answers"]).toBe(false)
@@ -69,9 +79,21 @@ test("missing settings show every agent on; a toggle saves the whole object at o
 })
 
 test("saved switches load as stored", async () => {
-  const view = await render({ load: { chronologySuggestion: false, reviewCompare: true, narration: false } })
+  const view = await render({ load: { chronologySuggestion: false, reviewCompare: true, narration: false }, wordSuggestions: false })
   try {
-    expect(view.state()).toEqual({ "Suggest a chronology": false, "Compare review answers": true, "Narrate drafting progress": false })
+    expect(view.state()).toEqual({ "Suggest a chronology": false, "Compare review answers": true, "Narrate drafting progress": false, "Suggest ideas in Word": false })
+  } finally {
+    await view.cleanup()
+  }
+})
+
+test("the Word switch saves only the suggestions setting, leaving firm preferences and the Word chat scope alone", async () => {
+  const view = await render()
+  try {
+    await view.toggle("Suggest ideas in Word")
+    expect(view.puts).toEqual([{ word: { suggestions: false } }])
+    expect(view.state()["Suggest ideas in Word"]).toBe(false)
+    expect(view.toasts).toEqual(["Suggest ideas in Word turned off."])
   } finally {
     await view.cleanup()
   }

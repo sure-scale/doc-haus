@@ -18,7 +18,8 @@ test("Word chat defaults load from installation settings and save deliberate cho
     calls.push({ url: String(url), method: init?.method ?? "GET", body: init?.body })
     if (init?.method === "PUT") {
       if (fail) return Response.json({ error: "Saved settings are temporarily unavailable." }, { status: 503 })
-      preferences = JSON.parse(String(init.body))
+      // The server merges the given fields into the stored defaults.
+      preferences = { ...preferences, ...JSON.parse(String(init.body)) }
     }
     return Response.json(preferences)
   }) as typeof fetch
@@ -28,21 +29,22 @@ test("Word chat defaults load from installation settings and save deliberate cho
     expect(calls).toHaveLength(1)
     expect(calls[0]!.url).toEndWith("/word/chat-preferences")
     expect(button("Whole matter").getAttribute("aria-pressed")).toBe("true")
-    expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("false")
+    // The suggestions switch lives in Background agents, not here.
+    expect(container.querySelector('[role="switch"]')).toBeNull()
     expect(button("Save chat defaults").disabled).toBe(true)
     expect(container.textContent).not.toContain("Suggest about")
-    act(() => { button("This document").click(); (container.querySelector('[role="switch"]') as HTMLButtonElement).click() })
+    act(() => { button("This document").click() })
     expect(calls).toHaveLength(1)
     fail = true
     await act(async () => button("Save chat defaults").click())
-    expect(calls.at(-1)).toMatchObject({ method: "PUT", body: '{"defaultScope":"document","suggestions":true}' })
+    expect(calls.at(-1)).toMatchObject({ method: "PUT", body: '{"defaultScope":"document"}' })
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Saved settings are temporarily unavailable")
     expect(button("This document").getAttribute("aria-pressed")).toBe("true")
     expect(button("Save chat defaults").disabled).toBe(false)
     expect(preferences).toEqual({ defaultScope: "matter", suggestions: false })
     fail = false
     await act(async () => button("Save chat defaults").click())
-    expect(preferences).toEqual({ defaultScope: "document", suggestions: true })
+    expect(preferences).toEqual({ defaultScope: "document", suggestions: false })
     expect(container.textContent).toContain("Chat defaults saved.")
     expect(container.querySelector('[role="alert"]')).toBeNull()
     expect(button("Save chat defaults").disabled).toBe(true)
@@ -50,7 +52,6 @@ test("Word chat defaults load from installation settings and save deliberate cho
     expect(busy.at(-1)).toBe(false)
     await act(async () => root.render(createElement(WordChatDefaults, { key: "reloaded" })))
     expect(button("This document").getAttribute("aria-pressed")).toBe("true")
-    expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("true")
   } finally {
     await act(async () => root.unmount())
     container.remove(); globalThis.fetch = originalFetch

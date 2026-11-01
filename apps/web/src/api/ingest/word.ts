@@ -34,7 +34,8 @@ export async function fetchWordChatPreferences(): Promise<WordChatPreferences> {
   return chatPreferences(await response.json())
 }
 
-export async function saveWordChatPreferences(preferences: WordChatPreferences): Promise<WordChatPreferences> {
+// Saves only the fields given; the server merges them into the stored defaults.
+export async function saveWordChatPreferences(preferences: Partial<WordChatPreferences>): Promise<WordChatPreferences> {
   const response = await fetch(`${INGEST_URL}/word/chat-preferences`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(preferences), signal: AbortSignal.timeout(15_000) })
   if (!response.ok) throw new Error(await ingestError(response, "Could not save Word chat defaults"))
   return chatPreferences(await response.json())
