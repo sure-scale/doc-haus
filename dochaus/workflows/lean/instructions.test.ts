@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { writeLegalCompactionPrompt } from "../../plugin/legal/compaction"
-import { checkInstructions, confirmationQuestionID, INSTRUCTIONS_FILE } from "./instructions"
+import { checkInstructions, confirmationQuestionID, INSTRUCTIONS_FILE, instructionsPrompt } from "./instructions"
 import { enqueueLeanRequest } from "./requests"
 import { runLean } from "./runner"
 import { answeredQuestionsText, readLeanText, readQuestions, writeLeanText, writeQuestions } from "./state"
@@ -101,6 +101,14 @@ test("a document's directions wait for the lawyer's confirmation, then settle wh
   expect(readLeanText(directory, INSTRUCTIONS_FILE)).not.toContain("Awaiting")
   expect(readQuestions(directory).find(row => row.question === DELIVERY.question)).toMatchObject({ status: "answered", answer_kind: "instruction", decided_by: { source_id: SOURCE } })
 }, 120_000)
+
+test("the job is told a form's drafter-directed comments give directions to confirm, while a plain form stays evidence", () => {
+  const directory = matter()
+  writeLeanText(directory, "request.md", REQUEST)
+  const prompt = instructionsPrompt(directory)
+  expect(prompt).toContain("A document only describing a deal, a draft, a form, a term sheet or a counterparty's position gives no directions for this work")
+  expect(prompt).toContain("A draft or form whose comments or notes tell the drafter what to do in this work does give directions, in those comments or notes: list it, which only asks the lawyer whether to follow it.")
+})
 
 test("the list keeps only instructions resting on verified words from the lawyer or a listed document", () => {
   const directory = matter()
