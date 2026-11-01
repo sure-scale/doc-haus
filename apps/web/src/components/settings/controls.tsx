@@ -68,7 +68,7 @@ export function ToggleRow({
   states = { on: "Auto-approve", off: "Ask first" },
 }: {
   title: string
-  description: string
+  description: ReactNode
   on: boolean
   onChange: (on: boolean) => void
   disabled?: boolean

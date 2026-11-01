@@ -4,10 +4,10 @@ import { ToggleRow } from "./controls"
 
 // Optional jobs that start without a click. Each switch saves at once; the
 // server merges top-level keys only, so the whole object is always sent.
-const AGENTS: { key: keyof BackgroundAgents; title: string; description: string }[] = [
-  { key: "chronologySuggestion", title: "Suggest a chronology", description: "Looks over a matter's documents and suggests building a timeline of events when one would help. When off, you can still open the chronology from the matter menu." },
-  { key: "reviewCompare", title: "Compare review answers", description: "After you fill a review table, shows which documents give the same answer to each question and which differ. When off, use Compare with AI on a column." },
-  { key: "narration", title: "Narrate drafting progress", description: "Adds short plain-English updates while a draft is being prepared. When off, you still see each step." },
+const AGENTS: { key: keyof BackgroundAgents; title: string; when: string; description: string }[] = [
+  { key: "chronologySuggestion", title: "Suggest a chronology", when: "When you open a matter or add documents.", description: "Checks whether a timeline of events would help and suggests one. When off, open it yourself from the matter menu." },
+  { key: "reviewCompare", title: "Compare review answers", when: "When you fill a review table.", description: "Shows which documents give the same answer to each question and which differ. When off, use Compare with AI on a column." },
+  { key: "narration", title: "Narrate drafting progress", when: "While a draft is being prepared.", description: "Adds a short plain-English update as each step finishes, and every few minutes during long steps. When off, you still see each step." },
 ]
 
 const STATES = { on: "On", off: "Off" }
@@ -84,7 +84,7 @@ export default function BackgroundAgentsTab({ onSaved }: { onSaved?: (text: stri
         <ToggleRow
           key={agent.key}
           title={agent.title}
-          description={agent.description}
+          description={<><strong>{agent.when}</strong> {agent.description}</>}
           on={agents[agent.key]}
           states={STATES}
           disabled={saving}
