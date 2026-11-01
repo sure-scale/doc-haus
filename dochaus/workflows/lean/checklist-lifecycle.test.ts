@@ -39,7 +39,8 @@ const deferChecklistRepair = (text: string) => text.includes("ONE supplied check
 
 // `broken` adds a second requirement whose check job always fails: an integrity
 // failure, so the checklist stage blocks. `second` adds it satisfied instead,
-// and `pair` with the same result as the first.
+// and `pair` with the same result as the first. `regress` adds it satisfied
+// until a checklist repair round has run, then unsatisfied: a regression.
 // `departure` cites current draft text as a deliberate departure.
 // `review` has the first change review after the checklist round require one
 // body correction, so a change-review round replaces the checklist round.
@@ -49,7 +50,7 @@ const deferChecklistRepair = (text: string) => text.includes("ONE supplied check
 // The checker cites every row it is supplied, the target's delivery_artifacts
 // rows included; `delivery` cites only those rows: a finding about a delivered
 // file's name, format or composition.
-function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[]; indeterminate_cause?: "missing_inspection" | "not_inspectable" } = {}, options: { broken?: boolean; second?: boolean; pair?: boolean; departure?: boolean; review?: boolean; notes?: boolean; notesReview?: boolean; delivery?: boolean } = {}, replies: Record<string, Reply> = {}) {
+function model(directory: string, status: "satisfied" | "open" | "unsatisfied" | "indeterminate" = "satisfied", extra: { open_decisions?: string[]; indeterminate_cause?: "missing_inspection" | "not_inspectable" } = {}, options: { broken?: boolean; second?: boolean; pair?: boolean; regress?: boolean; departure?: boolean; review?: boolean; notes?: boolean; notesReview?: boolean; delivery?: boolean } = {}, replies: Record<string, Reply> = {}) {
   let extractedBeforeBody = false
   let checkedAfterNotes = false
   let reviewed = false
@@ -73,12 +74,13 @@ function model(directory: string, status: "satisfied" | "open" | "unsatisfied" |
       extractedBeforeBody = !existsSync(leanFile(directory, "d1/body.docx"))
       const item = { check: "The requested supply note is drafted.", basis: "directive", source_refs: input.passages, qualifications: [],
         target: options.notes ? { ...input.targets.find(target => target.document === "notes")!, treatment: "advice" } : { ...input.targets[0], treatment: "operative" } }
-      return JSON.stringify({ items: input.source.document === "request" ? [item, ...(options.broken || options.second || options.pair ? [{ ...item, check: "Payment remains due on delivery." }] : [])] : [] })
+      return JSON.stringify({ items: input.source.document === "request" ? [item, ...(options.broken || options.second || options.pair || options.regress ? [{ ...item, check: "Payment remains due on delivery." }] : [])] : [] })
     },
     [CHECKLIST_JOB_AGENTS.check]: text => {
       const input = JSON.parse(text.split("CHECK_INPUT:\n\n")[1]!) as ChecklistCheckerInput
       if (options.broken && input.item.check.startsWith("Payment")) throw new Error("Scripted read-only inspection failure")
-      if (options.second && input.item.check.startsWith("Payment")) return JSON.stringify({ item_id: input.item_id, status: "satisfied", reason: "Focused result satisfied.",
+      const regressed = options.regress && Boolean(readRepairRound(directory)?.checklist_items?.length)
+      if ((options.second || (options.regress && !regressed)) && input.item.check.startsWith("Payment")) return JSON.stringify({ item_id: input.item_id, status: "satisfied", reason: "Focused result satisfied.",
         evidence: input.current_evidence, source_refs: input.item.source_refs, inspection_scope: "Current body paragraphs only.", limitation: "Comments not inspected." })
       checkedAfterNotes = existsSync(leanFile(directory, "drafting-notes.docx")) && existsSync(leanFile(directory, "d1/body-applied.docx"))
       return JSON.stringify({ item_id: input.item_id, status, reason: `Focused result ${status}.`,
@@ -460,6 +462,22 @@ for (const [label, extra] of [["missing_inspection", { indeterminate_cause: "mis
   expect(blocked.count(CHECKLIST_JOB_AGENTS.check)).toBe(0)
   expect(focusedRepairs(blocked)).toBe(0)
 }, 120000)
+
+test("an omission first found after the checklist round gets its own repair; the repaired one is not re-armed", async () => {
+  const directory = matter()
+  // Each round's adjudicator defers in its own words, as the cumulative plan
+  // keeps the earlier round's deferral and rejects a duplicate.
+  const scripted = model(directory, "unsatisfied", {}, { regress: true }, { [AGENT["change-plan"]]: (text: string, index: number) =>
+    deferChecklistRepair(text).replace("still needs a supported correction.", `still needs a supported correction (call ${index}).`) })
+  expect((await runLean(directory, { sessions: scripted.port })).status).toBe("completed")
+  const [first, regressed] = checklistIDs(directory)
+  // One focused repair per item, in two rounds within the shared allowance.
+  expect(focusedRepairs(scripted)).toBe(2)
+  expect(readRepairRound(directory)).toMatchObject({ round: 2, substantive_attempts: 2, checklist_items: [first, regressed] })
+  expect(readLeanJson(directory, "gate.json")).toMatchObject({ status: "pass", delivery: "review_draft_with_findings", blocking: [] })
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${first}: omission not fixed by the repair round: Focused result unsatisfied.`)
+  expect(report(directory)).toContain(`Disclosed, not satisfied: ${regressed}: omission not fixed by the repair round: Focused result unsatisfied.`)
+}, 180000)
 
 test("an omission with the repair allowance used starts no round and is disclosed as such", async () => {
   const directory = matter()

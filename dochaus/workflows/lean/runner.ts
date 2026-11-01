@@ -672,13 +672,15 @@ async function runChecklistStage(directory: string, state: LeanState, deps: Lean
   if (!result.refinement_complete) details.push(...current.effective.issues)
   if (!result.extraction_complete) details.unshift("Source extraction is incomplete or stale; not every current source item was checked.")
   // An omission gets one checklist repair round, started here without a
-  // Continue: only with no integrity failure, before the run's checklist round
-  // is used (a later review round does not restore it), and within the shared
-  // substantive allowance. The walk restarts and this stage re-runs from the
-  // repaired draft.
-  const omissions = new Set(adverse.filter(row => row.class === "omission" && row.recovery === "repair" && !declined.has(row.row.item_id)).map(row => row.row.item_id))
+  // Continue: only with no integrity failure, before that item's one repair is
+  // used (a later round does not restore it), and within the shared
+  // substantive allowance. An item first found adverse after an earlier round,
+  // such as a regression that round caused, still has its own. The walk
+  // restarts and this stage re-runs from the repaired draft.
   const round = readRepairRound(directory)
-  if (!details.length && omissions.size && !repairedChecklistItems(round).size && (round?.substantive_attempts ?? 0) < LEAN_MAX_SUBSTANTIVE_REPAIRS) {
+  const repaired = repairedChecklistItems(round)
+  const omissions = new Set(adverse.filter(row => row.class === "omission" && row.recovery === "repair" && !declined.has(row.row.item_id) && !repaired.has(row.row.item_id)).map(row => row.row.item_id))
+  if (!details.length && omissions.size && (round?.substantive_attempts ?? 0) < LEAN_MAX_SUBSTANTIVE_REPAIRS) {
     const repairs = checklistRepairItems(directory, item_id => !omissions.has(item_id))
     if (repairs.length) {
       startRepairRound(directory, repairs, true)
