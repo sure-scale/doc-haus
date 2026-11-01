@@ -92,6 +92,9 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   let selectionCaptureEpoch = 0, selectionPending = false
   let suppressedSelectionKey = "", pickerEpoch = 0
   let cancelSelection: (() => void) | undefined, stopWatchingSelection: (() => void) | undefined
+  // A dropped event stream usually heals within seconds; only say so if it stays down.
+  let cancelReconnectNotice: (() => void) | undefined
+  const RECONNECT_NOTICE_MS = 8_000
   let foregroundEpoch = 0
   let materialTab: "existing" | "upload" = "existing"
   let suggestionKey = "", stableKey = "", stableAt = 0, lastSuggestion = -Infinity, lastMaterials = 0
@@ -716,7 +719,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (!disposed && conversation?.id === conversationId && epoch === foregroundEpoch && ideasEpoch === suggestionEpoch) scheduleReconciliation()
   }
   function startStream() {
-    stream?.abort(); streamEpoch++
+    stream?.abort(); streamEpoch++; cancelReconnectNotice?.(); cancelReconnectNotice = undefined
     if (disposed || !conversation || !api.events) return
     const controller = new AbortController(), conversationId = conversation.id, epoch = streamEpoch
     stream = controller
@@ -734,8 +737,12 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
         }
       },
       onSnapshot: (_id, result) => { if (current()) receiveTurn(result) },
-      onReconnect: () => { if (current()) void reconcileTurns() },
-      onDisconnect: () => { if (current() && foreground && !sending && !stopping && !applying) status("Reconnecting…") },
+      onReconnect: () => { cancelReconnectNotice?.(); cancelReconnectNotice = undefined; if (current()) void reconcileTurns() },
+      onDisconnect: () => {
+        const waiting = () => current() && foreground && !sending && !stopping && !applying
+        if (cancelReconnectNotice || !waiting()) return
+        cancelReconnectNotice = schedule(() => { cancelReconnectNotice = undefined; if (waiting()) status("Reconnecting…") }, RECONNECT_NOTICE_MS)
+      },
       onEvent: event => {
         if (event.type === "session.deleted") {
           if (nativeEventSession(event) === conversationId) { controller.abort(); failure(new Error("This conversation is no longer available. Start a new chat.")) }
@@ -996,6 +1003,6 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     root.ownerDocument.removeEventListener("click", dismissDocumentInfo)
     root.ownerDocument.removeEventListener("visibilitychange", onFocus)
     root.ownerDocument.defaultView?.removeEventListener("focus", onFocus)
-    disposed = true; streamEpoch++; stream?.abort(); foregroundEpoch++; suggestionEpoch++; selectionCaptureEpoch++; pickerEpoch++; cancelSelection?.(); stopWatchingSelection?.(); cancelMonitor?.(); cancelReconcile?.(); root.replaceChildren()
+    disposed = true; streamEpoch++; stream?.abort(); foregroundEpoch++; suggestionEpoch++; selectionCaptureEpoch++; pickerEpoch++; cancelSelection?.(); stopWatchingSelection?.(); cancelReconnectNotice?.(); cancelMonitor?.(); cancelReconcile?.(); root.replaceChildren()
   } }
 }

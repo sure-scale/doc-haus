@@ -149,11 +149,11 @@ test("revocation closes the Word event bridge and aborts the native subscription
   expect(f.disconnected()).toBe(true)
 })
 
-test("the idle fifteen-second heartbeat rechecks authorization without needing a model event", async () => {
+test("the idle five-second heartbeat, inside Bun's ten-second idle limit, rechecks authorization without needing a model event", async () => {
   const original = globalThis.setInterval
   let heartbeat: (() => void) | undefined
   const timer = spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void, delay: number) => {
-    if (delay === 15_000) heartbeat = callback
+    if (delay === 5_000) heartbeat = callback
     return original(callback, delay)
   }) as typeof setInterval)
   const f = fixture()
