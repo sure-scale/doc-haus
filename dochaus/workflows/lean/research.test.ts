@@ -18,11 +18,16 @@ import { AGENT, cleanupMatters, happyPath, matter, scriptedModel, type Reply } f
 
 afterEach(cleanupMatters)
 
-function retrieved(directory: string, text = "A party must give written notice before termination.") {
+/** One official-source retrieval of `url`, as the tool preserves it. */
+function fetched(directory: string, text: string, url = "https://example.gov/legal-notice", fetchedAt = "2026-10-12T00:00:00Z") {
   const hash = (value: string) => createHash("sha256").update(value).digest("hex")
+  return preserveResearchSourceSnapshot(directory, { status: "ok", text, extraction: "text", sourceBytes: Buffer.from(text),
+    descriptor: { originalUrl: url, finalUrl: url, host: new URL(url).host, fetchedAt, contentType: "text/plain", byteLength: Buffer.byteLength(text), bodyHash: hash(text), textHash: hash(text), textChars: text.length } }, [{ start: 0, end: text.length, text, term: "notice" }])
+}
+
+function retrieved(directory: string, text = "A party must give written notice before termination.") {
   const url = "https://example.gov/legal-notice"
-  const snapshot = preserveResearchSourceSnapshot(directory, { status: "ok", text, extraction: "text", sourceBytes: Buffer.from(text),
-    descriptor: { originalUrl: url, finalUrl: url, host: "example.gov", fetchedAt: "2026-10-12T00:00:00Z", contentType: "text/plain", byteLength: Buffer.byteLength(text), bodyHash: hash(text), textHash: hash(text), textChars: text.length } }, [{ start: 0, end: text.length, text, term: "notice" }])
+  const snapshot = fetched(directory, text, url)
   const finding = { id: "r1", claim: "The provision requires notice", title: "Notice provision", citation: "", url, snapshot: snapshot.sha256, quote: text,
     jurisdiction: "Jurisdiction supplied in intake", currentness: "Retrieved version; later changes not independently checked", limitations: "Currency remains to be confirmed" }
   return { status: "limited", findings: [finding], limitations: ["Currency remains to be confirmed"] }
@@ -59,7 +64,6 @@ test("retrieved text verifies exact quotations, while URLs, fabricated quotes an
   expect(checkResearch(directory, research)).toEqual([])
   expect(checkResearch(directory, { ...research, findings: [{ ...research.findings[0], quote: "Invented text" }] })).not.toEqual([])
   expect(checkResearch(directory, { ...research, findings: [{ ...research.findings[0], url: "https://example.gov/other" }] })).not.toEqual([])
-  expect(checkResearch(directory, { ...research, findings: [{ ...research.findings[0], snapshot: "0".repeat(64) }] })).not.toEqual([])
   expect(acceptResearchReply(directory, "research", JSON.stringify(research)).issues).toEqual([])
   expect(approvedResearch(directory)).toEqual([])
   expect(acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [], limitations: ["Currency unconfirmed"], gaps: [] })).issues).toEqual([])
@@ -70,6 +74,61 @@ test("retrieved text verifies exact quotations, while URLs, fabricated quotes an
   expect(quoteFound(directory, { source_id: research.findings[0]!.url, quote: "[o]ne party must give written notice" })).toBe(false)
   expect(citationRowsForLeanText(directory, "draft", research.findings[0]!.url)[0]?.status).toBe("verified")
   expect(researchHandoff(directory)).toContain("Currency")
+})
+
+test("the product records the retrieved source a finding's URL and quotation identify; a missing or miscopied id is no failure", () => {
+  const directory = matter()
+  const research = retrieved(directory)
+  const { snapshot, ...cited } = research.findings[0]!
+  for (const given of [cited, { ...cited, snapshot: snapshot.slice(0, 59) }, { ...cited, snapshot: "0".repeat(64) }]) {
+    expect(checkResearch(directory, { ...research, findings: [given] })).toEqual([])
+    expect(acceptResearchReply(directory, "research", JSON.stringify({ ...research, findings: [given] })).issues).toEqual([])
+    expect((readLeanJson(directory, "research.json") as typeof research).findings[0]!.snapshot).toBe(snapshot)
+  }
+  expect(readLeanText(directory, "research-context.txt")).toContain(`Source snapshot: ${snapshot}`)
+  expect(researchPrompt(directory, "research", researchBasis(directory))).not.toContain("source_snapshot")
+})
+
+test("a quotation absent from the text retrieved from its URL, or a URL never retrieved, still fails and says which", () => {
+  const directory = matter()
+  const research = retrieved(directory)
+  const { snapshot: _, ...cited } = research.findings[0]!
+  fetched(directory, "A tenant may assign with consent.", "https://example.gov/assignment")
+  const issues = (finding: Record<string, unknown>) => checkResearch(directory, { ...research, findings: [finding] })
+  // The quotation must be in the retrieved text; the URL and a real id do not stand in for it.
+  expect(issues({ ...research.findings[0], quote: "A party may terminate without notice." })).toEqual([expect.stringContaining("r1: the quotation is not in the text official-source retrieved from https://example.gov/legal-notice.")])
+  expect(issues({ ...cited, quote: "A tenant may assign with consent." })).toEqual([expect.stringContaining("These words are in the text retrieved from https://example.gov/assignment")])
+  expect(issues({ ...cited, url: "https://example.gov/never-fetched" })).toEqual([expect.stringContaining("r1: https://example.gov/never-fetched was not retrieved with official-source.")])
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ ...research, findings: [{ ...cited, quote: "Invented text" }] })).issues).not.toEqual([])
+  expect(readLeanText(directory, "research.json")).toBeUndefined()
+})
+
+test("of two retrievals of one URL that both contain the quotation, the latest is recorded; a saved matching id is kept", () => {
+  const directory = matter()
+  const text = "A party must give written notice before termination."
+  const earlier = fetched(directory, text, undefined, "2026-10-12T00:00:00Z").sha256
+  const later = fetched(directory, `${text} Notice must be in writing.`, undefined, "2026-10-13T00:00:00Z").sha256
+  fetched(directory, "Unrelated retrieved text.", undefined, "2026-10-14T00:00:00Z")
+  const research = retrieved(directory)
+  const { snapshot: _, ...cited } = research.findings[0]!
+  for (let run = 0; run < 2; run += 1) {
+    expect(acceptResearchReply(directory, "research", JSON.stringify({ ...research, findings: [cited] })).issues).toEqual([])
+    expect((readLeanJson(directory, "research.json") as typeof research).findings[0]!.snapshot).toBe(later)
+  }
+  expect(acceptResearchReply(directory, "research", JSON.stringify({ ...research, findings: [{ ...cited, snapshot: earlier }] })).issues).toEqual([])
+  expect((readLeanJson(directory, "research.json") as typeof research).findings[0]!.snapshot).toBe(earlier)
+})
+
+test("a partial retrieval cited without disclosing its completeness still fails", () => {
+  const directory = matter()
+  const hash = (value: string) => createHash("sha256").update(value).digest("hex")
+  const text = "A party must give written notice before termination."
+  const url = "https://example.gov/partial"
+  preserveResearchSourceSnapshot(directory, { status: "partial", reason: "text-truncated", text, extraction: "text", sourceBytes: Buffer.from(text),
+    descriptor: { originalUrl: url, finalUrl: url, host: "example.gov", fetchedAt: "2026-10-12T00:00:00Z", contentType: "text/plain", byteLength: Buffer.byteLength(text), bodyHash: hash(text), textHash: hash(text), textChars: text.length } }, [{ start: 0, end: text.length, text, term: "notice" }])
+  const finding = { id: "r1", claim: "Notice is required", title: "Notice provision", citation: "", url, quote: text, jurisdiction: "Supplied", currentness: "Retrieved", limitations: "" }
+  expect(checkResearch(directory, { status: "limited", findings: [finding], limitations: ["Currency unconfirmed"] })).toEqual(["r1: disclose that source extraction is partial or its completeness is unknown."])
+  expect(checkResearch(directory, { status: "limited", findings: [{ ...finding, limitations: "Extraction is partial." }], limitations: ["Currency unconfirmed"] })).toEqual([])
 })
 
 test("needed research unavailable is disclosed and cannot become execution-ready by disappearing from body", async () => {
@@ -184,7 +243,7 @@ test("research open items and the research handoff name no finding by its id", (
   const review = acceptResearchReply(directory, "research-review", JSON.stringify({ approved: ["r1"], rejected: [{ id: "r2", reason: "It repeats r1." }], limitations: ["r1: currency unconfirmed."], gaps: [] }))
   expect(review.openItems.map(item => item.detail)).toEqual(["currency unconfirmed.", "Rejected research finding: It repeats a research finding."])
   const handoff = JSON.parse(researchHandoff(directory)) as { findings: Record<string, unknown>[]; limitations: string[] }
-  expect(handoff.findings).toEqual([(({ id: _, ...row }) => row)(research.findings[0]!)])
+  expect(handoff.findings).toEqual([(({ id: _, snapshot: __, ...row }) => row)(research.findings[0]!)])
   expect(handoff.limitations).toEqual(["Currency of research findings is unconfirmed.", "currency unconfirmed.", "Rejected research finding: It repeats a research finding."])
   expect(researchHandoff(directory)).not.toMatch(/\br[12]\b/)
 })
