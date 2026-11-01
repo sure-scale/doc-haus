@@ -86,7 +86,7 @@ const REQUESTED_MEMO_CONTRACT = "requested-memo-titles-7"
  * form and the delivered notes are written again. */
 const GATE_CONTRACT = "checklist-open-delivery-6"
 /** Keys the act-record step: a change to its jobs, prompts or checks re-runs it. */
-const ACT_RECORD_CONTRACT = "act-record-4"
+const ACT_RECORD_CONTRACT = "act-record-5"
 export const LEAN_MAX_RETRIES = 3
 
 export const LEAN_STAGE_AGENTS = {

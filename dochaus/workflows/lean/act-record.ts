@@ -73,9 +73,9 @@ export type RecordedAct = ListedAct & { who: ActWho | null; how: ActHow | null }
 /** One deliverable the instructions ask for, with the words that ask for it. */
 export type Deliverable = { deliverable: string; source: string; quote: string }
 export type ActRecordJob = "what" | "verify" | "deliverables" | "who" | "how"
-/** Why a listed candidate is not a legal act: the preparation of a document,
- * the advisers' own work on the matter, or what a document is to provide. */
-export const NON_ACT_KINDS = ["document", "firm_work", "term"] as const
+/** Why a listed candidate is not a legal act: the preparation of a document
+ * or the advisers' own work on the matter. */
+export const NON_ACT_KINDS = ["document", "firm_work"] as const
 export type NonActKind = typeof NON_ACT_KINDS[number]
 /** VERIFY's reading of one candidate, by its index in the union. */
 export type ActDecision = { decision: "act" } | { decision: "same"; same_as: number } | { decision: "not_act"; kind: NonActKind; reason: string }
@@ -123,12 +123,12 @@ const VERIFY_JOB = [
   "Each candidate below was listed by a reading of the instructions as a legal act, with the words that direct it and their source. Decide whether each is one.",
   "A legal act is a step with legal effect, taken by a party, body, person, court or authority, that someone must authorise and some document must carry. " +
   "Test each candidate by asking who authorises it and which document carries it: a legal act has a sensible answer to both. " +
-  "It is something done, not what a document is to say or the work of preparing one. Whose legal step it is decides, not who does the physical work: a party's step remains an act when its advisers carry it out.",
+  "It is something done, not the work of preparing a document. Whose legal step it is decides, not who does the physical work: a party's step remains an act when its advisers carry it out.",
   'For each candidate give "verify": {"decision": ..., "same_as": ..., "kind": ..., "reason": ...}.',
   '- "decision": "act" for a legal act; "same" for the same legal step as another candidate given as "act", only worded or sourced differently; "not_act" for anything else.',
   '- "same_as": for "same", the index of the candidate it repeats; otherwise null.',
-  '- "kind": for "not_act", "document" for the preparation of a document rather than a step the document takes or records, "firm_work" for the advisers\' own work on the matter, ' +
-  'or "term" for what a document is to provide; otherwise null.',
+  '- "kind": for "not_act", "document" for the preparation of a document rather than a step the document takes or records, ' +
+  'or "firm_work" for the advisers\' own work on the matter; otherwise null.',
   '- "reason": for "not_act", why, briefly; otherwise null. Write any words you quote as "exact words" [source: exact source name].',
 ].join("\n")
 

@@ -183,6 +183,14 @@ describe("VERIFY", () => {
     expect(record?.verify?.excluded.map(row => row.act)).toEqual([COVER.act])
   })
 
+  test("a kind other than a document or the advisers' own work is retried, and the corrected kind is recorded", async () => {
+    const { model, record } = await run((job, attempt) => job === "verify" && attempt === 0
+      ? indexed("verify", [KEEP, { ...NOT_ACT, kind: "term" }, KEEP, { ...KEEP, decision: "same", same_as: 0 }])
+      : listing(job, attempt, 0))
+    expect(model.asked("verify")[1]!.text).toContain('"verify.kind" is "term". For "not_act", give one of "document", "firm_work".')
+    expect(record?.verify?.excluded).toEqual([{ ...COVER, kind: "document", reason: NOT_ACT.reason }])
+  })
+
   test("a verify that never passes keeps the whole union for WHO and HOW and records that it did not run", async () => {
     const { model, record } = await run((job, attempt) => job === "verify" ? { acts: [] } : job === "what" ? { acts: [GRANT, APPROVE] } : valid(job, attempt, 0))
     expect(model.asked("verify")).toHaveLength(LEAN_MAX_RETRIES + 1)
