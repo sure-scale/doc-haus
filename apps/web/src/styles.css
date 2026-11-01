@@ -4326,6 +4326,20 @@ button.linklike:hover:not(:disabled) {
   border: none;
 }
 
+/* A toast that already played its entry keeps still when it moves between a dialog and the page. */
+.toast-settled:not(.toast-leaving) {
+  animation: none;
+}
+
+/* On a narrow screen a modal's header (title and close) fills the top, so toasts shown inside a
+   modal dialog sit at the bottom instead. */
+@media (max-width: 700px) {
+  dialog .toast-stack {
+    top: auto;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
 @keyframes toast-in {
   from {
     opacity: 0;

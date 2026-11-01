@@ -5,7 +5,8 @@ import { createPortal } from "react-dom"
 // left-border color — success/green, warning/amber, info/blue, error/red — over
 // a white card with a soft shadow. Any component calls useToast() and fires one.
 type ToastType = "success" | "warning" | "info" | "error"
-type Toast = { id: number; type: ToastType; message: string; leaving?: boolean }
+// settled: the entry animation has run, so moving between a dialog and the page never replays it.
+type Toast = { id: number; type: ToastType; message: string; leaving?: boolean; settled?: boolean }
 
 const ToastContext = createContext<(type: ToastType, message: string) => void>(() => {})
 
@@ -77,7 +78,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       {createPortal(<div className="toast-stack">
         {toasts.map((t) => (
-          <div key={t.id} className={`toast toast-${t.type}${t.leaving ? " toast-leaving" : ""}`} role="status">
+          <div
+            key={t.id}
+            className={`toast toast-${t.type}${t.settled ? " toast-settled" : ""}${t.leaving ? " toast-leaving" : ""}`}
+            role="status"
+            onAnimationEnd={() => {
+              if (!t.settled && !t.leaving) setToasts((list) => list.map((item) => (item.id === t.id ? { ...item, settled: true } : item)))
+            }}
+          >
             <span className="toast-icon">
               <ToastIcon type={t.type} />
             </span>
