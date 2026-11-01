@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs"
 import { DOMParser } from "@xmldom/xmldom"
 import { strFromU8, unzipSync } from "fflate"
 import { renderMarkdownToDocx } from "../../lib/render"
-import { runApply, writeProjectedNumbers } from "./apply-stage"
+import { runApply, splitNumberingIssues, writeProjectedNumbers } from "./apply-stage"
 import { changeReviewPrompt, projectedChangeParagraphs } from "./change-pipeline"
 import { readParagraphs, shownText, withoutListLabel, type ParagraphRow } from "./checks"
 import { writeLeanPlan } from "./plan"
@@ -146,4 +146,47 @@ test("change review reads each amended paragraph's list number beside its text",
   await writeProjectedNumbers(directory, "d1")
   const changes = JSON.parse(/<reconciled_changes>\n([\s\S]*?)\n<\/reconciled_changes>/.exec(changeReviewPrompt(directory, "d1"))![1]!)
   expect(changes.amendments).toEqual([expect.objectContaining({ updated: "Officers. RESOLVED, that the officers are re-elected.", list_label: "2." })])
+}, 60_000)
+
+const SECTIONS = "# Supply Agreement\n\n## 1. Supply\n\n1.1 The Supplier shall supply the Goods.\n\n## 2. Price\n\n2.1 The price is fixed.\n\n2.2 Payment is due on delivery.\n\n## 3. Term\n\n3.1 This runs one year.\n"
+
+// The retry feedback for splitting the paragraph whose text starts with
+// `starts` into `parts`, and the matter it was checked in.
+async function splitFeedback(starts: string, parts: string[]) {
+  const directory = matter()
+  writeLeanPlan(directory, [{ title: "Supply Agreement", purpose: "", parts: [{ heading: "Supply", scope: "" }] }])
+  writeLeanBytes(directory, "d1/body.docx", (await renderMarkdownToDocx(SECTIONS)).bytes)
+  const rows = await paragraphRows(leanFile(directory, "d1/body.docx"))
+  writeLeanText(directory, "d1/paragraphs.json", `${JSON.stringify(rows, null, 2)}\n`)
+  const target = rows.find(row => row.text.startsWith(starts))!
+  const amendment = { id: "a1", pid: target.pid, existing_sha256: target.sha256, operation: "split" as const, updated: parts, reason: "Restructure the terms.", sources: [] }
+  return { directory, amendment, issues: await splitNumberingIssues(directory, "d1", [amendment]) }
+}
+
+// A section heading split with a later part opening with the list's next
+// number adds that section; the sections after it renumber.
+test("a later part of a split heading with the next number becomes the next section", async () => {
+  const { directory, amendment, issues } = await splitFeedback("Term", ["Interest", "3.1 Interest runs daily.", "4. Term"])
+  expect(issues).toEqual([])
+  writeLeanText(directory, "d1/changes.json", JSON.stringify({ amendments: [amendment], explanations: [], questions: [] }))
+  await writeProjectedNumbers(directory, "d1")
+  expect(projectedChangeParagraphs(directory, "d1").map(shownText).slice(6)).toEqual(["3. Interest", "3.1 Interest runs daily.", "4. Term", "4.1 This runs one year."])
+}, 60_000)
+
+// A typed number that would print as text beside the list's numbers is fed
+// back by the part it opens: the first part keeps the paragraph's number, and
+// a later part typed with another number than the list shows next (a top-level
+// number split from a clause) stays typed.
+test("a split part typed with a number the list will not give it is retry feedback", async () => {
+  const first = await splitFeedback("Payment is due", ["3. Payment", "Payment is due on delivery."])
+  expect(first.issues).toEqual([expect.stringContaining(`([${first.amendment.pid}], numbered 2.2).updated[0] begins with "3.", but the first paragraph of a split keeps the paragraph's own number 2.2`)])
+  const wrong = await splitFeedback("Term", ["Term", "5. Renewal"])
+  expect(wrong.issues).toEqual([expect.stringContaining('.updated[1] begins with "5.", which the list will not give it')])
+  const shallower = await splitFeedback("Payment is due", ["Payment is due on delivery.", "3. Late payment"])
+  expect(shallower.issues).toEqual([expect.stringContaining('.updated[1] begins with "3.", which the list will not give it')])
+}, 60_000)
+
+// A later part with no typed number is an unnumbered paragraph, as intended.
+test("an unnumbered later part of a split is no feedback", async () => {
+  expect((await splitFeedback("Payment is due", ["Payment is due:", "Interest runs daily."])).issues).toEqual([])
 }, 60_000)

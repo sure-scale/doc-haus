@@ -5,10 +5,11 @@ import { existsSync, readFileSync } from "node:fs"
 import { readDocxCommentParagraphs } from "../../lib/docx-comments"
 import { amendmentParagraphs, amendmentText } from "../../lib/drafting-amendment"
 import { askedQuestions, checkChanges, parseJsonObject, questionIssues } from "./change-checks"
+import { splitNumberingIssues } from "./apply-stage"
 import { finalBodyParagraphs, readChangeList, readParagraphs, record, type ChangeList, shownText, withTextSha, withoutListLabel } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
 import { reviewStages, earlierDocuments, readLeanPlan, type DocID } from "./plan"
-import { packageCompositionBlock, revisionPreferenceScope, stagePrompt, retryPrompt } from "./prompts"
+import { SPLIT_NUMBERING, packageCompositionBlock, revisionPreferenceScope, stagePrompt, retryPrompt } from "./prompts"
 import { excerpt, inDocument, matterSourceIDs, openItem, quoteFound, quoteMissIssue, sourceQuotes } from "./quotes"
 import { normalize, normalizeWithMap, quotePlaces, sourceReadings, verifyQuote } from "../../lib/quote-verify"
 import { changesRepairSections, documentRepairs } from "./repairs"
@@ -337,7 +338,7 @@ export function changePreparationPrompt(directory: string, document: DocID, plan
     `<previous_group_changes>\n${JSON.stringify([...(prior?.amendments ?? []), ...(prior?.withheld ?? []).map(row => row.amendment)].filter(row => pids.has(row.pid)), null, 2)}\n</previous_group_changes>`,
     "Amend the listed initial draft paragraphs, not paragraphs reconstructed from the supplied original: the original is evidence and the comparison baseline, while the listed draft is the amendment target. Use the listed group pids exactly. A scope mismatch is a preparation limitation for the reconciler, not a question for the human about internal identifiers. Ask only a genuinely indispensable human decision; never request paragraph bookkeeping from the user.",
     "Prepare this adjudicated group only. Retain unaffected wording and every supported goal; reconcile dependent paragraphs together. Supporting excerpts and the spine are retrieval guides, not authority: check each against its canonical passage and qualifications; cited source passages, when shown, are that canonical text, so retrieve further only for a definition, condition, exception or other evidence they do not contain. Other groups cannot be amended here. If the supplied scope misses a material dependency or decision, do not guess: explain the problem and ask an indispensable question when only the lawyer can decide. A final reconciler independently considers the whole body.",
-    'Reply exactly {"amendments":[{"pid":"a listed group pid","updated":"full replacement paragraph without line breaks","reason":"why and intended effect","sources":[{"source_id":"canonical source or request","quote":"exact supporting words"}]}],"questions":[]}. One explicit operation per initial pid: omit operation for one replacement string; use operation delete and updated "" to remove the paragraph only with source or settled-instruction support; use operation split and updated as an array of at least two complete nonempty paragraphs to split it. Each resulting paragraph stays one paragraph without line breaks. Never encode a deletion as a blank replacement or collapse a split to its first paragraph. Unsupported deletion retains the original wording with a new confirmation marker instead. Unsupported substantive judgment requires a new visible [open item: confirm ...] marker; sources may then be empty. A newly discovered essential unanswered question may instead be included with pid/question/kind/context and existing id when repeating, with a visible open-item amendment to its paragraph. ' + QUESTION_KIND_CONTRACT + ' Never assume an answer. No files or redlines.',
+    'Reply exactly {"amendments":[{"pid":"a listed group pid","updated":"full replacement paragraph without line breaks","reason":"why and intended effect","sources":[{"source_id":"canonical source or request","quote":"exact supporting words"}]}],"questions":[]}. One explicit operation per initial pid: omit operation for one replacement string; use operation delete and updated "" to remove the paragraph only with source or settled-instruction support; use operation split and updated as an array of at least two complete nonempty paragraphs to split it. Each resulting paragraph stays one paragraph without line breaks. ' + SPLIT_NUMBERING + ' Never encode a deletion as a blank replacement or collapse a split to its first paragraph. Unsupported deletion retains the original wording with a new confirmation marker instead. Unsupported substantive judgment requires a new visible [open item: confirm ...] marker; sources may then be empty. A newly discovered essential unanswered question may instead be included with pid/question/kind/context and existing id when repeating, with a visible open-item amendment to its paragraph. ' + QUESTION_KIND_CONTRACT + ' Never assume an answer. No files or redlines.',
   ].join("\n\n")
 }
 
@@ -376,7 +377,8 @@ export async function runChangePreparation(directory: string, state: LeanState, 
           const reply = await deps.sessions.prompt({ directory, sessionID, agent, text: index ? retryPrompt("change-prepare", failuresForGroup) : changePreparationPrompt(directory, document, plan, group) })
           const answered = performance.now()
           const check = checkChanges(directory, reply, readParagraphs(directory, document).filter(row => group.pids.includes(row.pid)), { document, withholdUnverified: index >= LEAN_MAX_RETRIES })
-          failuresForGroup = [...check.issues, ...(check.changes ? uniqueReplacementIssues(check.changes) : [])]
+          failuresForGroup = [...check.issues, ...(check.changes ? uniqueReplacementIssues(check.changes) : []),
+            ...(check.changes && index < LEAN_MAX_RETRIES ? await splitNumberingIssues(directory, document, check.changes.amendments) : [])]
           appendLeanEvent(directory, { stage: "change-prepare", document, step: group.id, event: "checker", attempt: index, issues: failuresForGroup, wait_ms: leanElapsedMs(asked, answered), check_ms: leanElapsedMs(answered) })
           progress({ feedback: failuresForGroup })
           if (!failuresForGroup.length && check.changes) {
@@ -477,7 +479,7 @@ export function changeReviewPrompt(directory: string, document: DocID) {
       : "List numbers in projected_full_body are those before apply: when the changes are applied, the list renumbers the paragraphs after a deleted or split one, and a split's later paragraphs show the numbers the list then gives them.",
     `<projected_full_body>\n${projectedChangeParagraphs(directory, document).map(row => `[${row.pid}] ${shownText(row)}`).join("\n\n")}\n</projected_full_body>`,
     ...earlierDocuments(directory, document).map(row => `<earlier_body document="${row.id}">\n${finalBodyParagraphs(directory, row.id).map(paragraph => `[${paragraph.pid}] ${shownText(paragraph)}`).join("\n\n")}\n</earlier_body>`),
-    "In reconciled_changes, `updated` excludes the paragraph's Word list number; `list_label` is the number the list prints before it, as in projected_full_body.",
+    "In reconciled_changes, `updated` excludes the paragraph's own Word list number (a split's later paragraph may open with the number it takes); `list_label` is the number the list prints before it, as in projected_full_body.",
     `<reconciled_changes>\n${changesWithListLabels(directory, document)}\n</reconciled_changes>`,
     `<adjudicated_goals>\n${adjudicated ? JSON.stringify(writerPlan(adjudicated), null, 2) : "No prior adjudication."}\n</adjudicated_goals>`,
     `<questions>\n${JSON.stringify(readQuestions(directory).map(questionContent), null, 2)}\n</questions>`,
