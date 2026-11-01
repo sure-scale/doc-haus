@@ -4,9 +4,10 @@ import { parseJsonObject } from "./change-checks"
 import { parallel } from "./checklist-flow"
 import { readParagraphs, record, shownText } from "./checks"
 import { appendLeanEvent, leanElapsedMs } from "./events"
-import { FIRST_DOCUMENT, planActingFor, stepDocument, stepStage, type StepID } from "./plan"
+import { FIRST_DOCUMENT, planActingFor, readLeanPlan, stepDocument, stepStage, type StepID } from "./plan"
 import { retryPrompt, tagged } from "./prompts"
 import { REQUEST_SOURCE, isAnswerSource, matterSourceIDs, quoteFound, quoteMissIssue } from "./quotes"
+import { matterClient } from "../../lib/matter-client"
 import { nameWithProvenance, provenanceMapLine, sourceProvenance } from "../../lib/source-provenance"
 import { confirmationDocument, currentInstructions, INSTRUCTIONS_FILE, type Instruction, type InstructionDocument } from "./instructions"
 import { sourceText } from "./template-structure"
@@ -171,13 +172,25 @@ function confirmationPrompt(directory: string, question: Question, document: Ins
   ].join("\n\n")
 }
 
+// The outline records whom the lawyer acts for in the plan: the party the request
+// names, else the matter's client. Questions asked before the outline get the
+// same precedence from the request and matter.json directly.
+function actingForAdvice(directory: string) {
+  const acting = planActingFor(directory)
+  if (acting.stated) return `The lawyer acts for: ${acting.party}.`
+  if (readLeanPlan(directory)) return "The request does not say whom the lawyer acts for; recommend what is even-handed between the parties."
+  const client = matterClient(directory)
+  return client
+    ? `The lawyer acts for: ${client} (the client recorded on the matter), unless the request, instructions or answers above name another party.`
+    : "Whom the lawyer acts for is not recorded yet; take it from the request, instructions or answers above where they say, otherwise recommend what is even-handed between the parties."
+}
+
 export function advisePrompt(directory: string, question: Question) {
   const confirming = question.options ? confirmationDocument(directory, question.id) : undefined
   if (confirming) return confirmationPrompt(directory, question, confirming)
   const row = question.pid ? readParagraphs(directory, question.document ?? FIRST_DOCUMENT).find(row => row.pid === question.pid) : undefined
   const paragraph = row && shownText(row)
   const updates = readLeanText(directory, "updated-notes.md")
-  const acting = planActingFor(directory)
   const provenanceLine = provenanceMapLine(matterSourceIDs(directory), sourceProvenance(directory))
   const basis = '"basis":[{"source_id":"request (the request, a later instruction or the lawyer\'s answers), an exact matter source name or an approved research URL","quote":"words copied exactly from that source","relevance":"why this passage applies to this question, party, document and conditions"}]'
   return [
@@ -191,7 +204,7 @@ export function advisePrompt(directory: string, question: Question) {
     ...(updates ? [tagged("user_updates", updates)] : []),
     tagged("answers", answeredQuestionsText(directory) || "None."),
     ...(readLeanText(directory, INSTRUCTIONS_FILE) ? [tagged("instructions", readLeanText(directory, INSTRUCTIONS_FILE)!)] : []),
-    tagged("acting_for", acting.stated ? `The lawyer acts for: ${acting.party}.` : "The request does not say whom the lawyer acts for; recommend what is even-handed between the parties."),
+    tagged("acting_for", actingForAdvice(directory)),
     tagged("legal_research", researchHandoff(directory)),
     `Matter source names (use these exact names with search-document and read-document): ${JSON.stringify(matterSourceIDs(directory))}`,
     ...(provenanceLine ? [provenanceLine] : []),

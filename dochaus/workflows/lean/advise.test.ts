@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { writeFileSync } from "node:fs"
+import path from "node:path"
 import { adviseQuestions, checkAdvice } from "./advise"
 import { questionIssues } from "./change-checks"
 import { openItem } from "./quotes"
@@ -89,7 +91,7 @@ describe("advising asked questions", () => {
     expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain("The request names none.")
     expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain("Draft a short supply note from the supply terms.")
     expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain(SOURCE)
-    expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain("The request does not say whom the lawyer acts for")
+    expect(prompts.find(row => row.text.includes(LAW.question))!.text).toContain("Whom the lawyer acts for is not recorded yet")
     expect(readQuestions(directory).map(row => [row.question, row.kind, row.advice])).toEqual([
       [LAW.question, "instruction", UNAVAILABLE], [SIGNATORY.question, "fact", UNAVAILABLE]])
   }, 120_000)
@@ -130,6 +132,18 @@ describe("advising asked questions", () => {
     const [advised] = await adviseQuestions(directory, readLeanState(directory)!, "d1.draft", { sessions: model.port }, [FILES])
     expect(model.prompts[0]!.text).toContain("0: As my words ask\n1: As planned")
     expect(advised).toEqual({ ...FILES, advice: { recommendation: { option: "o2", rationale: "The request names no file.", basis: [{ source_id: "request", quote: "short supply note", relevance: "The request names the supplied note, not a file name." }] } } })
+  })
+
+  test("a question asked before the outline is advised for the client recorded on the matter", async () => {
+    const directory = matter()
+    const reply = { recommendation: { option: 1, rationale: "The request names no file.", basis: [{ source_id: "request", quote: "short supply note", relevance: "The request names the supplied note." }] } }
+    const model = scriptedModel({ [AGENT.advise]: () => JSON.stringify(reply) })
+    await adviseQuestions(directory, readLeanState(directory)!, "intake", { sessions: model.port }, [FILES])
+    expect(model.prompts[0]!.text).toContain("<acting_for>\nWhom the lawyer acts for is not recorded yet")
+    // The ingest service writes matter.json; a synthetic one stands in for it.
+    writeFileSync(path.join(directory, "matter.json"), JSON.stringify({ id: "matter-fixture", name: "Supply note", client: "Northwind Supplies Ltd" }))
+    await adviseQuestions(directory, readLeanState(directory)!, "intake", { sessions: model.port }, [{ ...FILES, id: "q-client" }])
+    expect(model.prompts.at(-1)!.text).toContain("<acting_for>\nThe lawyer acts for: Northwind Supplies Ltd (the client recorded on the matter), unless")
   })
 
   test("a document's confirmation is advised from the document's own opening, the request and the answers, without the matter's other context", async () => {
