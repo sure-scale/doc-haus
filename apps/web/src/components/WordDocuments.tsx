@@ -179,9 +179,13 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
   const opening = useRef<AbortController | undefined>(undefined)
   const [recovery, setRecovery] = useState<{ action: "release" | "takeover"; document: WordOpenDocument }>()
   const [copyName, setCopyName] = useState<string>()
+  // Windows Word opens its own Comments pane for a document with comments and
+  // then skips the doc.haus pane. Point to the ribbon while no pane has connected.
+  const [paneHint, setPaneHint] = useState(false)
+  const paneTimer = useRef<number | undefined>(undefined)
   useEffect(() => {
-    setBusy(undefined); setFallback(false); setRecovery(undefined); setCopyName(undefined)
-    return () => opening.current?.abort()
+    setBusy(undefined); setFallback(false); setRecovery(undefined); setCopyName(undefined); setPaneHint(false)
+    return () => { opening.current?.abort(); window.clearTimeout(paneTimer.current) }
   }, [matterId, name])
   const toast = useToast()
   if (!/\.docx$/i.test(name)) return null
@@ -189,6 +193,11 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
   const locked = status?.lease?.state === "other"
   const pending = status?.nativeOperation?.state === "pending"
   const available = config?.available && !setupError
+  const waitForPane = () => {
+    window.clearTimeout(paneTimer.current)
+    setPaneHint(false)
+    paneTimer.current = window.setTimeout(() => setPaneHint(true), 20000)
+  }
   async function open() {
     if (!config?.origin) return
     opening.current?.abort()
@@ -207,6 +216,7 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
         const state = await fetchWordOpenState(matterId, handoff.id, signal)
         if (state === "completed") {
           refresh()
+          waitForPane()
           toast("success", "Sent to Word. Keep doc.haus running while you work.")
           return
         }
@@ -230,6 +240,7 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
       a.click()
       window.setTimeout(() => URL.revokeObjectURL(url), 1000)
       refresh()
+      waitForPane()
       toast("success", `Open the downloaded ${name} in Word. Choose Save in the doc.haus pane before closing.`)
     } catch (error) {
       toast("error", humanizeError(error, `Could not open ${name} in Word.`))
@@ -265,6 +276,7 @@ export function WordOpenControl({ matterId, name, disabled = false, compact = fa
     {available ? <button type="button" className={compact ? "linklike word-open" : "word-open"} onClick={open} disabled={disabled || pending || busy !== undefined} aria-label={`Open ${name} in Word`} title="Open an editable linked copy in desktop Word">
       {busy === "open" ? "Opening Word…" : "Open in Word"}
     </button> : <span className="word-unavailable" title={wordSetupReason(config, setupError)}>{config || setupError ? "Word setup needed" : "Checking Word…"}</span>}
+    {paneHint && !status?.open && <span className="word-pane-hint" role="status">If the doc.haus pane isn’t showing in Word, click doc.haus on the Home tab.</span>}
     {available && fallback && <button type="button" className="linklike" onClick={download} disabled={disabled || pending || busy !== undefined}>{busy === "download" ? "Downloading…" : "Download Word copy"}</button>}
     {pending && <>
       <button type="button" className="linklike" disabled={disabled || busy !== undefined} onClick={() => setCopyName(name.replace(/\.docx$/i, " (saved copy).docx"))}>Create saved copy</button>
