@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test"
-import { ConnectionError, WordClient, httpsOrigin, isCurrentPaneVersion, readLink } from "./client"
+import { ConnectionError, WordClient, httpsOrigin, isCurrentPaneVersion, readLink, reloadAfterUpdate } from "./client"
 import { renderManifest } from "./manifest"
 import { wordBootstrapUrl } from "./bootstrap-contract"
-import { WORD_ADDIN_ID, WORD_ADDIN_VERSION, type WordConnectionState } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_ADDIN_ID, WORD_ADDIN_VERSION, WORD_PROTOCOL_VERSION, type WordConnectionState } from "../../../dochaus/lib/word-addin-contract"
 
 const link = {
   version: 1 as const,
@@ -73,7 +73,7 @@ test("save uses bearer-only POST, disallows redirects, and requires a version ac
   expect(init?.credentials).toBe("omit")
   expect(init?.referrerPolicy).toBe("no-referrer")
   expect(new Headers(init?.headers).get("x-dochaus-word-base-version")).toBe("original")
-  expect(new Headers(init?.headers).get("x-dochaus-word-version")).toBe(WORD_ADDIN_VERSION)
+  expect(new Headers(init?.headers).get("x-dochaus-word-version")).toBe(WORD_PROTOCOL_VERSION)
   expect(new Headers(init?.headers).get("x-dochaus-word-lease")).toBe("generation")
   const unconfirmed = new WordClient(link, "session", async () => Response.json({ ok: true }))
   await expect(unconfirmed.save(new Uint8Array([1]), "original", "generation")).rejects.toThrow("did not confirm")
@@ -107,6 +107,22 @@ test("an outdated client receives clear update guidance without retrying", async
   })
   await expect(client.save(new Uint8Array([1]), "original", "generation")).rejects.toThrow("Restart Word to finish")
   expect(requests).toBe(1)
+})
+
+test("a pane left open across an update reloads once, then asks for a restart", async () => {
+  const stored = new Map<string, string>()
+  let reloads = 0
+  const view = {
+    sessionStorage: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => void stored.set(key, value) },
+    location: { reload: () => void reloads++ },
+  } as unknown as Window
+  let settled = false
+  void reloadAfterUpdate(view).then(() => { settled = true })
+  await Promise.resolve()
+  expect(reloads).toBe(1)
+  expect(settled).toBe(false)
+  await reloadAfterUpdate(view)
+  expect(reloads).toBe(1)
 })
 
 test("only the exact single current manifest URL version can start a pane", () => {

@@ -51,6 +51,10 @@ test("bootstrap accepts only one configured HTTPS origin and navigates a fixed c
   const officeUrl = new URL(wordBootstrapUrl(origin))
   officeUrl.searchParams.append("_host_Info", "synthetic-host-metadata")
   expect(readBootstrapOrigin(officeUrl.href)).toBe(origin)
+  // The hosted page is deployed apart from local installs: another add-in
+  // version still reaches the local pane, which checks its own version.
+  expect(readBootstrapOrigin(wordBootstrapUrl(origin).replace(`version=${WORD_ADDIN_VERSION}`, "version=9.0.0.0"))).toBe(origin)
+  expect(wordPaneUrl(origin, "9.0.0.0")).toBe(`${origin}/word-addin/pane.html?version=9.0.0.0`)
   for (const value of [
     wordBootstrapUrl(origin).replace(`version=${WORD_ADDIN_VERSION}`, "version=old"),
     `${wordBootstrapUrl(origin)}&instance=${encodeURIComponent("https://other.example")}`,
@@ -217,9 +221,9 @@ test("remote failure never claims the local launcher can start a firm server; in
   } finally { fixture.close() }
 })
 
-test("unavailable, unconfirmed, old or timed-out health never reports ready", async () => {
+test("unavailable, unconfirmed or timed-out health never reports ready", async () => {
   for (const response of [
-    Response.json({ ready: true, version: "old" }), Response.json({ ready: false, version: WORD_ADDIN_VERSION }),
+    Response.json({ ready: false, version: WORD_ADDIN_VERSION }),
     Response.json({ ready: true, version: WORD_ADDIN_VERSION }, { status: 503 }), new Response("not JSON"),
   ]) expect(await probeWordPane(origin, async () => response)).toBe(false)
   let aborted = false

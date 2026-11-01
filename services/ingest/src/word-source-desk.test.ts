@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileS
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { Document, Packer, Paragraph } from "docx"
-import { WORD_ADDIN_VERSION } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_PROTOCOL_VERSION } from "../../../dochaus/lib/word-addin-contract"
 import type { DeskComparison, DeskSourcePreview, DeskSources, DeskVersions } from "../../../dochaus/lib/word-source-desk-contract"
 import { openDb } from "./db"
 import { writeDeliverable, writeDeliverableRevision } from "./deliverable"
@@ -26,10 +26,10 @@ const token = "a".repeat(43)
 const digest = createHash("sha256").update(token).digest("hex")
 const bytes = (text: string) => Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph(text)] }] }))
 const request = (action: string, body: object = {}, headers: Record<string, string> = {}) => app.request(`/word/desk/${action}`, {
-  method: "POST", headers: { Origin: origin, Authorization: `Bearer ${token}`, "x-dochaus-word-version": WORD_ADDIN_VERSION, "content-type": "application/json", ...headers },
+  method: "POST", headers: { Origin: origin, Authorization: `Bearer ${token}`, "x-dochaus-word-version": WORD_PROTOCOL_VERSION, "content-type": "application/json", ...headers },
   body: JSON.stringify(body),
 })
-const uploadHeaders = { Origin: origin, Authorization: `Bearer ${token}`, "x-dochaus-word-version": WORD_ADDIN_VERSION }
+const uploadHeaders = { Origin: origin, Authorization: `Bearer ${token}`, "x-dochaus-word-version": WORD_PROTOCOL_VERSION }
 const uploadForm = (name: string, bytes: Uint8Array, extra?: [string, string]) => {
   const form = new FormData()
   form.set("file", new File([new Uint8Array(bytes)], name))

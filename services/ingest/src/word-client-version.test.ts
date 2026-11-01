@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { Hono } from "hono"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { WORD_ADDIN_VERSION } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_PROTOCOL_VERSION } from "../../../dochaus/lib/word-addin-contract"
 import { wordCors } from "./word-documents"
 
 test("stale Word clients cannot reach any token-route mutation, while current clients and preflight work", async () => {
@@ -34,7 +34,7 @@ test("stale Word clients cannot reach any token-route mutation, while current cl
     expect(mutations).toBe(0)
     for (const operation of ["saves", "heartbeat", "done"]) {
       expect((await app.request(`/word/${operation}`, {
-        method: "POST", headers: { Origin: origin, "x-dochaus-word-version": WORD_ADDIN_VERSION },
+        method: "POST", headers: { Origin: origin, "x-dochaus-word-version": WORD_PROTOCOL_VERSION },
       })).status).toBe(200)
     }
     expect(mutations).toBe(3)

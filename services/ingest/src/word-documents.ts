@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono"
 import { createHash, randomBytes } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 import { linkedWordDocx, MAX_WORD_UPLOAD_BYTES, stripWordLink, wordLastModifiedBy, WordPackageError } from "../../../dochaus/lib/word-linked-docx"
-import { WORD_ADDIN_VERSION, type WordOpenDocument, type WordSaveResponse, type WordConnectionState } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_PROTOCOL_VERSION, type WordOpenDocument, type WordSaveResponse, type WordConnectionState } from "../../../dochaus/lib/word-addin-contract"
 import { wordChatPath } from "../../../dochaus/lib/word-chat-contract"
 import { beginWordNativeOperation, readWordNativeOperation, settleWordNativeOperation, claimWordEditLease, clearWordEditLease, EditingLeaseError, readWordEditLease, releaseWordEditLease, renewWordEditLease, requireWordEditLease, wordLeaseState, WORD_EDIT_LEASE_TTL, type WordLeaseIdentity, type WordLeaseOwner } from "../../../dochaus/lib/word-edit-lease"
 import { withArtifactMutationLocksAsync } from "../../../dochaus/capabilities/artifacts/mutation-lock"
@@ -66,7 +66,7 @@ export async function wordCors(c: Context, next: () => Promise<void>) {
     return c.body(null, 204)
   }
   if (c.req.method !== "POST") return failure(c, 403, "word_method_refused", "The Word connection only accepts scoped document commands.")
-  if (c.req.header("x-dochaus-word-version") !== WORD_ADDIN_VERSION)
+  if (c.req.header("x-dochaus-word-version") !== WORD_PROTOCOL_VERSION)
     return failure(c, 426, "word_addin_update_required", "doc.haus was updated. Restart Word to finish.")
   await next()
 }

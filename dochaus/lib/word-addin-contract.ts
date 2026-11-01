@@ -1,7 +1,14 @@
 /** The document carries a capability for its own writes and scoped matter reads. */
 export const WORD_ADDIN_ID = "4d857d21-6e86-47af-adba-cd7a4b056302"
 export const WORD_LINK_SETTING = "dochaus.link"
+/** Word's manifest and every handed-out document name this version. Changing it
+ * breaks documents already handed out ("This add-in is no longer available" on
+ * Mac) and the hosted bootstrap, so keep it fixed. Pane changes follow
+ * WORD_PROTOCOL_VERSION instead. */
 export const WORD_ADDIN_VERSION = "1.1.2.1"
+/** The pane and the local service always ship together. Bump this when their
+ * requests change; a pane left open across an update reloads itself. */
+export const WORD_PROTOCOL_VERSION = "2"
 
 export type WordDocumentLink = {
   version: 1

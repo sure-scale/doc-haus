@@ -1,5 +1,5 @@
 import {
-  WORD_ADDIN_VERSION,
+  WORD_ADDIN_VERSION, WORD_PROTOCOL_VERSION,
   type WordConnectionState,
   type WordLeaseAction,
   type WordDocumentLink,
@@ -9,7 +9,23 @@ import {
 export const WORD_UPDATE_MESSAGE =
   "doc.haus was updated. Restart Word to finish."
 
-export type LatestWordContent = { version: { id: string; number: number }; bytes: Uint8Array }
+/** doc.haus serves the pane, so a pane left open across an update only needs a
+ * reload to match it. Reload once per update instead of interrupting the lawyer;
+ * ask for a Word restart only when the reload did not help. Returns a promise
+ * that settles only when no reload happens. */
+export function reloadAfterUpdate(view: Window | undefined = globalThis.window): Promise<void> {
+  try {
+    const key = "dochaus.word.reloaded"
+    if (view && view.sessionStorage.getItem(key) !== WORD_PROTOCOL_VERSION) {
+      view.sessionStorage.setItem(key, WORD_PROTOCOL_VERSION)
+      view.location.reload()
+      return new Promise(() => {})
+    }
+  } catch { /* Without session storage, ask for the restart instead. */ }
+  return Promise.resolve()
+}
+
+export type LatestWordContent ={ version: { id: string; number: number }; bytes: Uint8Array }
 
 export function isCurrentPaneVersion(value: string): boolean {
   try {
@@ -131,7 +147,7 @@ export class WordClient {
         headers: {
           Authorization: `Bearer ${this.link.token}`,
           "x-dochaus-word-session": this.session,
-          "x-dochaus-word-version": WORD_ADDIN_VERSION,
+          "x-dochaus-word-version": WORD_PROTOCOL_VERSION,
           "x-dochaus-word-base-version": options.base,
           ...(options.generation ? { "x-dochaus-word-lease": options.generation } : {}),
           ...(options.bytes
@@ -162,7 +178,7 @@ export class WordClient {
             )
         }
         void response.body?.cancel().catch(() => {})
-        if (response.status === 426) throw new ConnectionError(WORD_UPDATE_MESSAGE)
+        if (response.status === 426) { await reloadAfterUpdate(); throw new ConnectionError(WORD_UPDATE_MESSAGE) }
         if ([401, 403, 404, 410].includes(response.status))
           throw new ConnectionError(
             "This document's link is no longer available. Keep your Word file and open a new copy from doc.haus.",

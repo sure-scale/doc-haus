@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { WORD_ADDIN_VERSION, type WordDocumentLink } from "../../../dochaus/lib/word-addin-contract"
+import { WORD_PROTOCOL_VERSION, type WordDocumentLink } from "../../../dochaus/lib/word-addin-contract"
 import { deskRequestHandler } from "./desk-client"
 import { DeskRequestError } from "./desk-host"
 import { isDeskRequest } from "./desk-protocol"
@@ -17,7 +17,7 @@ test("desk reads use only scoped HTTPS endpoints and do not carry a save lease o
     expect(init?.redirect).toBe("error")
     const headers = new Headers(init?.headers)
     expect(headers.get("Authorization")).toBe(`Bearer ${link.token}`)
-    expect(headers.get("x-dochaus-word-version")).toBe(WORD_ADDIN_VERSION)
+    expect(headers.get("x-dochaus-word-version")).toBe(WORD_PROTOCOL_VERSION)
     expect(headers.has("x-dochaus-word-lease")).toBe(false)
     expect(headers.has("x-dochaus-word-session")).toBe(false)
     expect(JSON.parse(init?.body as string)).toEqual({ sourceId: "1", expectedHash: "a".repeat(64) })
