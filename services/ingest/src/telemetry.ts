@@ -6,9 +6,8 @@ import { enginePages, generationUsage, sessionUsage, type UsageEntry, type Usage
 
 // The Usage drawer reports provider cost as OpenCode recorded it per model
 // step (see matter-usage.ts), so its totals match the Dashboard. telemetry.db
-// supplies only what native sessions do not: tool calls and the latest context
-// size check. Native cost already reflects the provider catalogue, so saved
-// rate overrides no longer re-price this view.
+// supplies what live native sessions do not: stateless job and deleted session
+// usage, tool calls and the latest context size check.
 
 export type LeanPayload = {
   current_activity: { cost_usd: number; turns: number; since_ts: number } | null
@@ -71,7 +70,7 @@ export async function readMatterUsage(matterDir: string, signal: AbortSignal): P
     else next.set(session.id, { updated: session.time.updated, cost: session.cost || 0, entries: result.entries })
   }
   usageCache.set(matterDir, next)
-  entries.push(...generationUsage(matterDir))
+  entries.push(...generationUsage(matterDir, sessions))
   return { sessions, entries: entries.filter(used), unread }
 }
 

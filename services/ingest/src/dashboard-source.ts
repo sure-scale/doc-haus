@@ -37,7 +37,7 @@ async function loadPractice(): Promise<{ matters: Row[] }> {
         costs.push(...usage.entries)
         sessionUnread ||= usage.unread
       }
-      costs.push(...generationUsage(matter.dir))
+      costs.push(...generationUsage(matter.dir, sessions))
       const unpriced = sessions.filter(({ cost, tokens }) => !cost && ((tokens.input || 0) + (tokens.output || 0) + (tokens.reasoning || 0) + (tokens.cache?.read || 0) + (tokens.cache?.write || 0)) > 0).length
       rows[i] = { matter, sessions, drafting, documents, costs, unread: sessionUnread || draftingUnread || documentsUnread, sessionUnread, draftingUnread, documentsUnread, unpriced }
     }

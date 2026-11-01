@@ -3,26 +3,13 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import { engineV2Fetch } from "../../../dochaus/lib/engine-v2"
 import { readGenerations } from "../../../dochaus/lib/telemetry"
-import { UPKEEP_AGENT, usageAgentKey } from "../../../dochaus/lib/usage-agents"
+import { sessionUsageEntries, wholeSessionUsage, type UsageEntry, type UsageMessage, type UsageSession } from "../../../dochaus/lib/session-usage"
 import { engineURL } from "./matter-session"
 
-// One usage ledger per matter, priced as the provider reported it. Native
-// sessions carry each model step's agent, model, tokens and cost; a session's
-// cost beyond its messages is title and compaction upkeep. Stateless generation
-// jobs have no session and are read from the matter's telemetry database.
-export type UsageTokens = { input: number; output: number; reasoning: number; cache: { read: number; write: number } }
-export type UsageEntry = { time: number; cost: number; session?: string; agent: string; model?: string; tokens?: UsageTokens }
-export type UsageSession = {
-  id: string
-  parentID?: string
-  title?: string
-  agent?: string
-  metadata?: Record<string, unknown> & { dochaus_role?: unknown }
-  cost: number
-  tokens: { input: number; output: number; reasoning: number; cache?: { read: number; write: number } }
-  time: { created: number; updated: number }
-}
-type UsageMessage = { info: { cost?: number; agent?: string; providerID?: string; modelID?: string; tokens?: Partial<UsageTokens>; time: { created: number } } }
+// One usage ledger per matter, priced as the provider reported it: live native
+// sessions (dochaus/lib/session-usage.ts) plus the matter's telemetry database,
+// which keeps stateless generation jobs and sessions deleted after they ran.
+export type { UsageEntry, UsageSession, UsageTokens } from "../../../dochaus/lib/session-usage"
 
 export async function enginePages(directory: string, pathname: string, signal: AbortSignal): Promise<unknown[]> {
   let cursor: string | undefined
@@ -53,33 +40,21 @@ export async function enginePages(directory: string, pathname: string, signal: A
   throw new Error("Engine page limit reached")
 }
 
-const tokens = (value: Partial<UsageTokens> | undefined): UsageTokens => ({
-  input: value?.input || 0, output: value?.output || 0, reasoning: value?.reasoning || 0,
-  cache: { read: value?.cache?.read || 0, write: value?.cache?.write || 0 },
-})
-
 // Usage for one session. On a message read failure the whole session cost is
 // kept under the session's own agent and the caller marks the matter partial.
 export async function sessionUsage(directory: string, session: UsageSession, signal: AbortSignal): Promise<{ entries: UsageEntry[]; unread: boolean }> {
-  const whole: UsageEntry = { time: session.time.created, cost: session.cost || 0, session: session.id, agent: usageAgentKey(session.agent, session), tokens: tokens(session.tokens) }
-  if (!session.cost) return { entries: [whole], unread: false }
+  if (!session.cost) return { entries: [wholeSessionUsage(session)], unread: false }
   try {
     const messages = await enginePages(directory, `/api/session/${encodeURIComponent(session.id)}/message`, signal) as UsageMessage[]
-    const entries = messages.flatMap(({ info }): UsageEntry[] => info.cost ? [{
-      time: info.time.created, cost: info.cost, session: session.id,
-      agent: usageAgentKey(info.agent ?? session.agent, session),
-      ...(info.providerID && info.modelID ? { model: `${info.providerID}/${info.modelID}` } : {}),
-      tokens: tokens(info.tokens),
-    }] : [])
-    const rest = session.cost - entries.reduce((sum, entry) => sum + entry.cost, 0)
-    if (rest > .0001) entries.push({ time: session.time.updated, cost: rest, session: session.id, agent: UPKEEP_AGENT })
-    return { entries, unread: false }
+    return { entries: sessionUsageEntries(session, messages), unread: false }
   } catch {
-    return { entries: [whole], unread: true }
+    return { entries: [wholeSessionUsage(session)], unread: true }
   }
 }
 
-export function generationUsage(directory: string): UsageEntry[] {
+// Stored rows of a session that is still live are skipped: the live read
+// already counts it (a delete that failed after the engine kept its usage).
+export function generationUsage(directory: string, live: readonly { id: string }[] = []): UsageEntry[] {
   const file = path.join(directory, ".dochaus", "telemetry.db")
   if (!existsSync(file)) return []
   let db: Database | undefined
@@ -87,7 +62,10 @@ export function generationUsage(directory: string): UsageEntry[] {
     db = new Database(file, { readonly: true })
     const table = db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'generations'").get()
     if (!table) return []
-    return readGenerations(db).map(row => ({ time: row.ts, cost: row.cost ?? 0, agent: row.agent, ...(row.model ? { model: row.model } : {}), tokens: row.tokens }))
+    const ids = new Set(live.map(session => session.id))
+    return readGenerations(db).filter(row => !row.session || !ids.has(row.session)).map(row => ({
+      time: row.ts, cost: row.cost ?? 0, ...(row.session ? { session: row.session } : {}), agent: row.agent, ...(row.model ? { model: row.model } : {}), tokens: row.tokens,
+    }))
   } catch {
     return []
   } finally {
@@ -104,6 +82,6 @@ export async function matterUsage(directory: string, signal: AbortSignal): Promi
     entries.push(...result.entries)
     unread ||= result.unread
   }
-  entries.push(...generationUsage(directory))
+  entries.push(...generationUsage(directory, sessions))
   return { sessions, entries, unread }
 }

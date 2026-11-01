@@ -49,6 +49,7 @@ import { modelHttp } from "./model-http"
 import { probeProvider, providerTestCache, providerTestFailure, providerTestInput, unavailableModel } from "./provider-health"
 import { concurrencyProbe, runConcurrencyTest, type ConcurrencyProbe } from "./concurrency-test"
 import { limitModelClient, modelConcurrencyNode } from "./model-concurrency"
+import { keepDeletedSessionUsage } from "./deleted-session-usage"
 
 const repository = path.resolve(import.meta.dir, "../../..")
 const legal = path.join(repository, "dochaus")
@@ -283,6 +284,8 @@ await runEngine(
           if (request.method === "POST" && (/^\/api\/session\/[^/]+\/(prompt|generate)$/.test(pathname) ||
               pathname === "/api/experimental/generate" || pathname === "/api/generate"))
             return admitGeneration(request, locations, sessions, handler)
+          if (request.method === "DELETE" && /^\/api\/session\/[^/]+$/.test(pathname) && request.headers.has("x-opencode-directory"))
+            return keepDeletedSessionUsage(request, handler, workspace, password).then(() => handler(request))
           // /api/plugin stays ungated so it can report activation while it runs.
           if (request.method === "GET" && /^\/api\/(agent|skill|command|model|provider|reference|mcp)(\/|$)/.test(pathname))
             return managedReadinessResponse(request, locations).then(response => response.ok ? handler(request) : response)

@@ -327,7 +327,8 @@ function seedDb(matterDir: string) {
       reasoning_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
       cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-      cost_usd REAL
+      cost_usd REAL,
+      session_id TEXT
     );
     CREATE TABLE meta (
       key TEXT PRIMARY KEY,
