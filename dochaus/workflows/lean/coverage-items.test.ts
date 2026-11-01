@@ -286,9 +286,9 @@ describe("plan coverage open items", () => {
   test("an instrument the act record finds not executed by a party whose authority its act needs yields one item to confirm it; a signer spelt with another legal form raises none", () => {
     const directory = prepared()
     const consent = { ...recorded({ ...act, parties: ["the Orchard Committee"] }),
-      how: { instrument: "Schedule consent", executed_by: ["Kestrel Works"], requires: [], basis: [], reason: null } }
+      how: { instrument: "Schedule consent", executed_by: ["Kestrel Works"], requires: [], basis: [], reason: null, conflict: null } }
     const release = { ...recorded({ act: "release the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["Kestrel Works, L.L.C."], document: "d1" }),
-      how: { instrument: "Release letter", executed_by: ["Kestrel Works LLC"], requires: [], basis: [], reason: null } }
+      how: { instrument: "Release letter", executed_by: ["Kestrel Works LLC"], requires: [], basis: [], reason: null, conflict: null } }
     recordActs(directory, "listed", [consent, release])
     const plan = writeLeanPlan(directory, [RELEASE], "0".repeat(64))
     recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
@@ -304,6 +304,30 @@ describe("plan coverage open items", () => {
     recordActs(directory, "listed", [{ ...consent, how: { ...consent.how, executed_by: ["Kestrel Works", "The Orchard Committee"] } }, release])
     recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
     expect(coverageItems(directory)).toEqual([])
+  })
+
+  test("a conflict the act record states between the instructions and a source yields one item quoting both sides, in place of the act's signer item, disclosed by the notes", () => {
+    const directory = prepared()
+    const conflict = {
+      instruction: { source: "request", quote: "Kestrel Works then releases the deposit" },
+      authority: { source: SOURCE, quote: "Kestrel Works shall release the deposit once the Orchard Committee approves the revised schedule" },
+      difference: "The instructions have Kestrel Works release the deposit; the source makes the release wait for the committee's approval.",
+    }
+    // The committee must authorise the release, but the instructed letter is Kestrel Works' alone: a signer flag the conflict states.
+    const release = { ...recorded({ act: "release the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["the Orchard Committee"], document: "d1" }),
+      how: { instrument: "Release letter", executed_by: ["Kestrel Works"], requires: [], basis: [], reason: null, conflict } }
+    recordActs(directory, "listed", [release])
+    const plan = writeLeanPlan(directory, [RELEASE], "0".repeat(64))
+    recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
+    const items = coverageItems(directory)
+    expect(items).toEqual([expect.objectContaining({ stage: "finalize", kind: "omission", status: "open", ref: { repair_target: "memo" } })])
+    expect(items[0]!.detail).toBe('Act record: for "release the deposit", the instructions direct "Kestrel Works then releases the deposit" [source: request], ' +
+      `but "${conflict.authority.quote}" [source: ${SOURCE}] requires otherwise: ${conflict.difference} The lawyer should decide which governs.`)
+    expect(gate(directory, notesNaming(items))).toMatchObject({ status: "pass", delivery: "review_draft", blocking: [], disclosed: [expect.objectContaining({ id: items[0]!.id, status: "disclosed" })] })
+    // Without the conflict, the record raises no conflict item; only the signer flag is left to confirm.
+    recordActs(directory, "listed", [{ ...release, how: { ...release.how, conflict: null } }])
+    recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
+    expect(coverageItems(directory).map(item => item.detail)).toEqual([expect.stringContaining('Act record: the instrument "Release letter" that effects "release the deposit"')])
   })
 
   test("a changed act record leaves the saved plan's coverage stale, so the plan is checked again", () => {

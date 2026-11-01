@@ -19,7 +19,8 @@ import { initLeanState, writeLeanText, type LeanState } from "./state"
 
 const SOURCE = "storage-proposal.docx"
 const SOURCE_TEXT = "Fenwick Boatyard Limited will grant the Harbourlight Rowing Club a licence to store its boats in the north shed. " +
-  "The licence takes effect only once the Club Committee approves the licence fee."
+  "The licence takes effect only once the Club Committee approves the licence fee. " +
+  "Under the Club rules, only a general meeting of the members may approve a fee the Club pays."
 const REQUEST = "Prepare a storage licence under which Fenwick Boatyard Ltd grants the Harbourlight Rowing Club a licence to store its boats. " +
   "The Club Committee is to approve the licence fee before the licence is granted. Also prepare a short cover note for the Club."
 
@@ -33,9 +34,9 @@ const APPROVE_WHO: ActWho = { authorised_by: ["the Club Committee"], performed_b
 const GRANT_HOW: ActHow = {
   instrument: "the storage licence, its grant clause", executed_by: ["Fenwick Boatyard Limited", "Harbourlight Rowing Club"],
   requires: [{ act: 1, need: "the Club Committee's approval of the licence fee", basis: [{ source: SOURCE, quote: "The licence takes effect only once the Club Committee approves the licence fee." }] }],
-  basis: [{ source: "request", quote: "Prepare a storage licence" }], reason: null,
+  basis: [{ source: "request", quote: "Prepare a storage licence" }], reason: null, conflict: null,
 }
-const APPROVE_HOW: ActHow = { instrument: null, executed_by: [], requires: [], basis: [], reason: "The record does not say how the Club Committee records its approval." }
+const APPROVE_HOW: ActHow = { instrument: null, executed_by: [], requires: [], basis: [], reason: "The record does not say how the Club Committee records its approval.", conflict: null }
 
 type Job = "what" | "deliverables" | "who" | "how"
 type Reply = (job: Job, attempt: number, sample: number) => unknown
@@ -171,6 +172,29 @@ describe("WHO and HOW", () => {
     expect(record?.deliverables).toBeNull()
     expect(record?.issues.map(row => row.job)).toEqual(["deliverables", "how"])
     expect(record?.issues.find(row => row.job === "how")?.issues.join(" ")).toContain('"how.requires[0].act"')
+  })
+
+  test("a conflict between the instructions and a source is recorded with both quotes once each is found in its own side's source", async () => {
+    const conflict = {
+      instruction: { source: "request", quote: APPROVE.quote },
+      authority: { source: SOURCE, quote: "only a general meeting of the members may approve a fee the Club pays" },
+      difference: "The instructions have the Club Committee approve the fee; the Club rules leave that to a general meeting of the members.",
+    }
+    const approving = (attempt: number) => [
+      // The authority's words are not in the source it names.
+      { ...conflict, authority: { ...conflict.authority, quote: "the members decide every fee" } },
+      // The authority side quotes the instructions.
+      { ...conflict, authority: { source: "request", quote: "Prepare a storage licence" } },
+    ][attempt] ?? conflict
+    const { directory, model, record } = await run((job, attempt) => job !== "how" ? valid(job, attempt, 0) : indexed("how", [GRANT_HOW, { ...APPROVE_HOW, conflict: approving(attempt) }]))
+    const retries = model.asked("how").slice(1).map(prompt => prompt.text)
+    expect(retries).toHaveLength(2)
+    expect(retries[0]).toContain('"how.conflict.authority[0].quote"')
+    expect(retries[1]).toContain('"how.conflict.authority[0].source" is "request"')
+    expect(record?.acts.map(act => act.how?.conflict ?? null)).toEqual([null, conflict])
+    // The spine is shown both sides.
+    expect(actRecordBlock(directory)).toContain(
+      `   Conflict, an open item for the lawyer and not resolved here: the instructions say ${JSON.stringify(APPROVE.quote)} (request); ${SOURCE} says "${conflict.authority.quote}". ${conflict.difference}`)
   })
 
   test("requirements between listed acts are refused in a longer circle and accepted in a chain", () => {

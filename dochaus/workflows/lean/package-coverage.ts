@@ -34,8 +34,9 @@ import { sourceText } from "./template-structure"
 // An act record that lists no act gives no_acts, never "covered": the record
 // keeps the empty result, which raises no item, since most packages direct no
 // act. Each act whose instrument, as the act record reads it, is not executed
-// by every party whose authority the act needs (signerFlags) is disclosed for
-// the lawyer to confirm.
+// by every party whose authority the act needs (signerFlags), and each conflict
+// the act record states between the instructions and the authority, is
+// disclosed for the lawyer to confirm or decide.
 // What the saved plan still leaves open reaches the lawyer as open items derived
 // from that record (coverageItems), never stored. The gate reads the same record
 // (coverageCarries) to tell an instruction the plan carries from one it may
@@ -753,7 +754,7 @@ export function coverageItems(directory: string): OpenItem[] {
   const item = (detail: string) => openItem("finalize", "omission", detail, { repair_target: "memo" })
   const unknown = "so it is not known whether each act the instructions direct has a document executed by the parties who must take it. " +
     "The lawyer should confirm that each instructed act is carried by a document executed by the parties who must take it."
-  const signers = signerItems(directory)
+  const signers = actRecordItems(directory)
   // No record of the saved plan: the check never ran on it.
   if (!coverage) return plan.basis === undefined && readLeanText(directory, "coverage.json") === undefined ? signers
     : [item(`Plan coverage was not checked against the saved document plan: no current record of that check exists, ${unknown}`), ...signers]
@@ -797,20 +798,27 @@ export function coverageItems(directory: string): OpenItem[] {
   return [...new Map(items.map(row => [row.id, row])).values()]
 }
 
-/** One disclosed item per act whose instrument, as the act record reads it, is
- * not executed by every party whose authority the act needs (signerFlags). The
- * record's reading is a prompt for the lawyer to confirm, never an answer, so
- * the item asks only that and blocks nothing; an act the record cannot check
- * gives none. */
-function signerItems(directory: string): OpenItem[] {
+/** One disclosed item per act whose HOW records a conflict between the
+ * instructions and the research or sources, quoting both sides for the lawyer
+ * to decide, and one per other act whose instrument, as the act record reads
+ * it, is not executed by every party whose authority the act needs
+ * (signerFlags). The record's reading is a prompt for the lawyer to confirm,
+ * never an answer, so the item asks only that and blocks nothing; an act the
+ * record cannot check gives none. A conflict's item stands in for the act's
+ * signer item, which would ask about the same difference. */
+function actRecordItems(directory: string): OpenItem[] {
   const record = readActRecord(directory)
   if (!record) return []
-  return signerFlags(record).filter(flag => flag.status === "flag").map(({ act: index, missing }) => {
+  const quoted = (entry: { source: string; quote: string }) => `"${entry.quote.replace(/\s+/g, " ").trim()}" [source: ${entry.source}]`
+  const conflicts = record.acts.flatMap(act => act.how?.conflict ? [openItem("finalize", "omission",
+    `Act record: for "${act.act}", the instructions direct ${quoted(act.how.conflict.instruction)}, but ${quoted(act.how.conflict.authority)} requires otherwise: ` +
+    `${act.how.conflict.difference.trim()} The lawyer should decide which governs.`, { repair_target: "memo" })] : [])
+  return [...conflicts, ...signerFlags(record).filter(flag => flag.status === "flag" && !record.acts[flag.act]!.how?.conflict).map(({ act: index, missing }) => {
     const act = record.acts[index]!
     const instrument = act.how?.instrument ? `the instrument "${act.how.instrument}"` : "the instrument"
     return openItem("finalize", "omission", `Act record: ${instrument} that effects "${act.act}", directed by "${act.quote.replace(/\s+/g, " ").trim()}" [source: ${act.source}], ` +
       `is not executed by ${quotedList(missing)}, whose authority the act needs; confirm the instrument.`, { repair_target: "memo" })
-  })
+  })]
 }
 
 /** Whether the saved plan's coverage record has the planned `document` carrying

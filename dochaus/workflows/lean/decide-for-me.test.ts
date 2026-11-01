@@ -178,7 +178,8 @@ test("the same words typed or picked give the same answers text and keys; adopte
 // Form line and when part labels were planned unheaded. The checklist check, change plan, changes and change-review were
 // re-pinned when reviews were saved as typed findings (dN/<stage>.json) and the
 // change plan began keying the findings earlier documents forward to it. The
-// spine was re-pinned when it began keying the act record (acts.json). The
+// spine was re-pinned when it began keying the act record (acts.json), and the
+// acts step when its record began stating conflicts (act-record-2). The
 // same pins hold for typed or picked words; an adopted recommendation reads as
 // delegated, which moves every key that reads the answers and no other. The
 // instructions step was added, and intake and spine were re-pinned when they
@@ -193,7 +194,7 @@ const INPUTS: Record<string, string> = {
   "intake": "097361ef1ee9a3958bc6d602d33eac98ff61d441ea7aa050c405152bf241c65d",
   "research": "64a0d22c3dd780907955b2e56b3122b94ea72101092d694f899a15e2af0cb13b",
   "research-review": "f30467728cba33fbf89ff10cfba8903cd7aa9647cbd6849d4a3caf293f27a65b",
-  "acts": "e8961f845ed4a354ccae854a6e75d5670280aca539860a18c217d201f97ab720",
+  "acts": "ea3c333c5737fe8b5a7852294dbfa7cdb4e7df24a13c5fe860f70da250ee5151",
   "spine": "2202a864334a3d94bdc8736e01051643ef15f12485641538cf68eac856dc7b89",
   "d1.draft": "68f34f0d87312276c4f5d676b490753a5050865d40c0448aaae368a7d6252376",
   "d1.review": "e80f5bbe084c8ef90d2864358d2caafa09139822584fb0f12cb14d0976e76416",

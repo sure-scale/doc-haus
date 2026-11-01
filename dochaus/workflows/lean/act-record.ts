@@ -19,14 +19,18 @@ import { readLeanJson, writeLeanText, type LeanStageState, type LeanState } from
 // to be prepared or delivered. WHO names, for each listed act, the parties whose
 // approval authorises it and those who carry it out; HOW, shown each act's WHO,
 // names the instrument that effects it, its signatories and what must exist or
-// be taken first. Each job is one checked exchange: a deterministic check
+// be taken first, and records any conflict between the instructions and the
+// research or sources over who authorises or takes the act, which document
+// carries it or who signs it: both sides' words, each verified, never resolved.
+// Each job is one checked exchange: a deterministic check
 // verifies every quote in its source and every party in the record, and its
 // issues go back to the same session for a bounded retry. An empty list is a
 // valid answer, so it is never retried. A job that never passes leaves its field
 // null for every act and the record keeps that job's issues; the acts stand.
 // Nothing here judges the legal substance or supplies a party. Whether an act's
 // instrument is executed by the parties whose authority it needs is read from
-// the record when it is used (signerFlags), never stored.
+// the record when it is used (signerFlags), never stored. A recorded conflict
+// reaches the lawyer as an open item (package-coverage.ts, actRecordItems).
 //
 // Every job's prompt starts with the same pack (actRecordPack): the task line,
 // the instructions, the approved research, the source names and the rules. Only
@@ -34,7 +38,7 @@ import { readLeanJson, writeLeanText, type LeanStageState, type LeanState } from
 // owner session, so a provider can reuse the shared prefix. Matter documents are
 // named, never inlined: the jobs retrieve what they need.
 
-export const LEAN_ACTS_SCHEMA = "dochaus.lean.acts/1"
+export const LEAN_ACTS_SCHEMA = "dochaus.lean.acts/2"
 /** The one agent every act-record job runs as. */
 export const ACT_RECORD_AGENT = "lean-act-record"
 /** WHAT samples, run in parallel and joined. */
@@ -49,9 +53,15 @@ export type ListedAct = { act: string; source: string; quote: string }
 export type ActWho = { authorised_by: string[]; performed_by: string[]; basis: ActEvidence[]; reason: string | null }
 /** Something that must exist or be taken before an act: a listed act by its index, or null for anything else. */
 export type ActRequirement = { act: number | null; need: string; basis: ActEvidence[] }
+/** Where the instructions direct who authorises or takes an act, which document
+ * carries it or who signs it, and the approved research or a matter document
+ * requires otherwise: the instructions' words, the words that require
+ * otherwise and what differs. Stated for the lawyer, never resolved. */
+export type ActConflict = { instruction: ActEvidence; authority: ActEvidence; difference: string }
 /** The instrument that effects an act (null when the record does not settle
- * it), its signatories and what the act requires first. */
-export type ActHow = { instrument: string | null; executed_by: string[]; requires: ActRequirement[]; basis: ActEvidence[]; reason: string | null }
+ * it), its signatories, what the act requires first and any conflict between
+ * the instructions and the authority (null when there is none). */
+export type ActHow = { instrument: string | null; executed_by: string[]; requires: ActRequirement[]; basis: ActEvidence[]; reason: string | null; conflict: ActConflict | null }
 /** A listed act with its WHO and HOW, each null when that job never passed. */
 export type RecordedAct = ListedAct & { who: ActWho | null; how: ActHow | null }
 /** One deliverable the instructions ask for, with the words that ask for it. */
@@ -79,7 +89,8 @@ const BASIS_SHAPE = '[{"source":"...","quote":"..."}]'
 const WHAT_SHAPE = 'Reply with the JSON object only: {"acts":[{"act":"...","source":"...","quote":"..."}]}.'
 const DELIVERABLES_SHAPE = 'Reply with the JSON object only: {"deliverables":[{"deliverable":"...","source":"...","quote":"..."}]}.'
 const WHO_SHAPE = `Reply with the JSON object only: {"acts":[{"index":0,"who":{"authorised_by":["..."],"performed_by":["..."],"basis":${BASIS_SHAPE},"reason":null}}]}.`
-const HOW_SHAPE = `Reply with the JSON object only: {"acts":[{"index":0,"how":{"instrument":"...","executed_by":["..."],"requires":[{"act":null,"need":"...","basis":${BASIS_SHAPE}}],"basis":${BASIS_SHAPE},"reason":null}}]}.`
+const CONFLICT_SHAPE = '{"instruction":{"source":"...","quote":"..."},"authority":{"source":"...","quote":"..."},"difference":"..."}'
+const HOW_SHAPE = `Reply with the JSON object only: {"acts":[{"index":0,"how":{"instrument":"...","executed_by":["..."],"requires":[{"act":null,"need":"...","basis":${BASIS_SHAPE}}],"basis":${BASIS_SHAPE},"reason":null,"conflict":null}}]}.`
 const EVERY_ACT = "Give every listed act exactly once, by its index."
 
 const WHAT_JOB = [
@@ -108,15 +119,17 @@ const WHO_JOB = [
 ].join("\n")
 
 const HOW_JOB = [
-  'For each listed act below, give "how": {"instrument": ..., "executed_by": [...], "requires": [...], "basis": [evidence], "reason": ...}. Each act\'s WHO is given with it below.',
-  '- "instrument": the instrument or document that effects the act, and the part of it that takes the act; it must be one that the act\'s authorising party (its WHO "authorised_by") executes or adopts. ' +
-  "Where WHO names no authorising party, still give the instrument that effects the act. null when the record does not settle it. " +
-  'Where the instructions put the act in a document its authorising party does not execute, name the instrument that party must execute and say why in "reason".',
+  'For each listed act below, give "how": {"instrument": ..., "executed_by": [...], "requires": [...], "basis": [evidence], "reason": ..., "conflict": ...}. Each act\'s WHO is given with it below.',
+  '- "instrument": the instrument or document that effects the act, and the part of it that takes the act. ' +
+  "Where WHO names no authorising party, still give the instrument that effects the act. null when the record does not settle it.",
   '- "executed_by": every signatory of that instrument, using the WHO name for a party already named there, or [] when the record does not settle it.',
   '- "requires": the other listed acts, or other approvals or things, that must exist or be taken before this act can be effectively taken, ' +
   'each as {"act": its index, or null when it is not a listed act, "need": what is required, briefly, "basis": [evidence]}; [] when the record sets none.',
   '- "basis": the evidence for each value given.',
   '- "reason": null when instrument and executed_by are both given; otherwise what the record leaves unsettled.',
+  '- "conflict": null, unless the instructions direct who authorises or takes the act, which document carries it or who signs it, and the approved legal research or a matter document requires otherwise. ' +
+  `Then give ${CONFLICT_SHAPE}: "instruction", one evidence entry with the instructions' words that direct it; "authority", one evidence entry with the research or matter document words that require otherwise; ` +
+  '"difference", what differs, briefly. Give "instrument" and "executed_by" as the instructions direct them. The record states the difference for the lawyer; do not resolve it.',
   `- ${EVIDENCE_RULE}`,
 ].join("\n")
 
@@ -318,6 +331,23 @@ function requirementList(directory: string, where: string, value: unknown, self:
   return issues.length ? { issues } : { issues, value: requires }
 }
 
+/** A "conflict": null (or left out) when there is none; otherwise the
+ * instructions' words, from the request or a matter document, and the words
+ * that require otherwise, from approved research or another matter document,
+ * each one entry found in its source (basisList), and a nonempty difference. */
+function conflictValue(directory: string, where: string, value: unknown, sources: () => string[]): Checked<ActConflict | null> {
+  if (value === undefined || value === null) return { issues: [], value: null }
+  const shape = `${where}: "how.conflict" must be null when the instructions and the authority agree, or ${CONFLICT_SHAPE}.`
+  if (!record(value) || !record(value.instruction) || !record(value.authority) || !text(value, "difference")) return { issues: [shape] }
+  const documents = matterSourceIDs(directory)
+  const instruction = basisList(directory, where, "how.conflict.instruction", [value.instruction], () => [REQUEST_SOURCE, ...documents])
+  const authority = basisList(directory, where, "how.conflict.authority", [value.authority], () => sources().filter(source => source !== REQUEST_SOURCE))
+  const issues = [...instruction.issues, ...authority.issues]
+  if (!issues.length && instruction.value![0]!.source === authority.value![0]!.source)
+    issues.push(`${where}: "how.conflict" gives "${authority.value![0]!.source}" as the source of both sides. "instruction" quotes the instructions; "authority" quotes the approved research or another matter document that requires otherwise.`)
+  return issues.length ? { issues } : { issues, value: { instruction: instruction.value![0]!, authority: authority.value![0]!, difference: text(value, "difference") } }
+}
+
 /** The first circle of listed acts each requiring the next, searched in index
  * order, as [a, b, ..., a]; undefined when there is none. */
 function requiresCycle(edges: number[][]): number[] | undefined {
@@ -345,7 +375,8 @@ function requiresCycle(edges: number[][]): number[] | undefined {
 /** Reads the HOW reply over the listed `acts`: every act once, by its index,
  * the instrument a nonempty string or null, each signatory named in the record,
  * each requirement a need with its basis and a listed act other than itself or
- * null, each basis quote found in its source, a basis for any instrument or
+ * null, any conflict with both sides' words found in their sources
+ * (conflictValue), each basis quote found in its source, a basis for any instrument or
  * signatory given and a reason for any left unsettled. Requirements between
  * listed acts must not form a circle. Every defect is retry feedback; the values
  * are returned, in index order, only when there is none. */
@@ -367,15 +398,16 @@ export function parseActHow(reply: string, directory: string, acts: ListedAct[])
     const executed = partyList(where, "how.executed_by", how.executed_by, naming, "how.reason")
     const requires = requirementList(directory, where, how.requires, index, acts.length, allowed)
     const basis = basisList(directory, where, "how.basis", how.basis, allowed)
+    const conflict = conflictValue(directory, where, how.conflict, allowed)
     const reason = reasonValue(where, "how.reason", how.reason, [
       ...(instrument.value === null ? ['"how.instrument" is null'] : []), ...(executed.value?.length === 0 ? ['"how.executed_by" is []'] : []),
     ])
-    issues.push(...instrument.issues, ...executed.issues, ...requires.issues, ...basis.issues, ...reason.issues)
+    issues.push(...instrument.issues, ...executed.issues, ...requires.issues, ...basis.issues, ...conflict.issues, ...reason.issues)
     if ((instrument.value || executed.value?.length) && basis.value?.length === 0)
       issues.push(`${where}: "how" names ${instrument.value ? "an instrument" : "signatories"}, but "how.basis" is empty. Give at least one basis entry with the exact words that support each value given, or give null or [] with a reason where no evidence does.`)
     for (const need of requires.value ?? []) if (need.act !== null && need.act !== index) edges[index].push(need.act)
-    if (instrument.value !== undefined && executed.value && requires.value && basis.value && !reason.issues.length)
-      values.set(index, { instrument: instrument.value, executed_by: executed.value, requires: requires.value, basis: basis.value, reason: reason.value ?? null })
+    if (instrument.value !== undefined && executed.value && requires.value && basis.value && conflict.value !== undefined && !reason.issues.length)
+      values.set(index, { instrument: instrument.value, executed_by: executed.value, requires: requires.value, basis: basis.value, reason: reason.value ?? null, conflict: conflict.value })
   }
   const cycle = requiresCycle(edges)
   if (cycle) issues.push(`The "how.requires" entries form a circle: ${cycle.slice(0, -1).map((act, at) => `act ${act} requires act ${cycle[at + 1]}`).join(", ")}. ` +
@@ -402,8 +434,10 @@ const evidence = (value: unknown) => Array.isArray(value) && value.every(row => 
 const nullableText = (value: unknown) => value === null || typeof value === "string"
 const sourced = (row: unknown, field: string): row is Record<string, unknown> => record(row) && typeof row[field] === "string" && typeof row.source === "string" && typeof row.quote === "string"
 const isWho = (value: unknown) => value === null || record(value) && strings(value.authorised_by) && strings(value.performed_by) && evidence(value.basis) && nullableText(value.reason)
+const isConflict = (value: unknown) => value === null || record(value) && evidence([value.instruction]) && evidence([value.authority]) && typeof value.difference === "string"
 const isHow = (value: unknown) => value === null || record(value) && nullableText(value.instrument) && strings(value.executed_by) && evidence(value.basis) && nullableText(value.reason) &&
-  Array.isArray(value.requires) && value.requires.every(need => record(need) && (need.act === null || Number.isInteger(need.act)) && typeof need.need === "string" && evidence(need.basis))
+  Array.isArray(value.requires) && value.requires.every(need => record(need) && (need.act === null || Number.isInteger(need.act)) && typeof need.need === "string" && evidence(need.basis)) &&
+  isConflict(value.conflict)
 
 /** The saved act record; undefined when there is none or it is not in this schema's shape. */
 export function readActRecord(directory: string): ActRecord | undefined {
@@ -419,7 +453,7 @@ const ACT_RECORD_USE = "The act record is a reading of the instructions to weigh
   "where the record and the sources differ, the sources govern and the difference becomes an open item."
 
 /** The act record as the spine is shown it, built only from acts.json in a
- * fixed order: each listed act with its WHO, HOW and signer flag, then the
+ * fixed order: each listed act with its WHO, HOW, any conflict and signer flag, then the
  * deliverables. Evidence for WHO and HOW is left to retrieval. Empty when the
  * record is missing or unchecked, so the spine plans from the sources alone. */
 export function actRecordBlock(directory: string) {
@@ -437,6 +471,8 @@ export function actRecordBlock(directory: string) {
       `   Directed by ${act.source}: ${JSON.stringify(act.quote)}`,
       who ? `   WHO: authorised by ${names(who.authorised_by)}; performed by ${names(who.performed_by)}.${unsettled(who.reason)}` : "   WHO: not recorded.",
       how ? `   HOW: instrument ${how.instrument === null ? "not settled" : JSON.stringify(how.instrument)}; executed by ${names(how.executed_by)}${requires.length ? `; requires ${requires.join(", ")}` : ""}.${unsettled(how.reason)}` : "   HOW: not recorded.",
+      ...(how?.conflict ? [`   Conflict, an open item for the lawyer and not resolved here: the instructions say ${JSON.stringify(how.conflict.instruction.quote)} (${how.conflict.instruction.source}); ` +
+        `${how.conflict.authority.source} says ${JSON.stringify(how.conflict.authority.quote)}. ${how.conflict.difference}`] : []),
       ...(flag.status === "flag" ? [`   Signer flag: ${names(flag.missing)} must authorise the act but ${flag.missing.length > 1 ? "are" : "is"} not among its instrument's recorded signatories.`] : []),
     ]
   })
@@ -519,7 +555,7 @@ export async function runActRecordStage(directory: string, state: LeanState, dep
   const checkedJob = (row: Checked<unknown> | undefined) => !row ? "not_asked" : row.value ? "passed" : "failed"
   appendLeanEvent(directory, {
     stage: "acts", event: "act_record", outcome: result.status,
-    counts: { acts: result.acts.length, deliverables: result.deliverables?.length ?? 0, what_samples: samples.length, what_passed: passed.length },
+    counts: { acts: result.acts.length, deliverables: result.deliverables?.length ?? 0, what_samples: samples.length, what_passed: passed.length, conflicts: result.acts.filter(act => act.how?.conflict).length },
     jobs: { what: passed.length ? "passed" : "failed", deliverables: checkedJob(deliverables), who: checkedJob(who), how: checkedJob(how) },
   })
   return { status: "done", outputs: ["acts.json"], openItems: [] }
