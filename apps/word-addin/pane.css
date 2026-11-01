@@ -69,4 +69,5 @@ button:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px soli
 @media (max-width: 360px) { .pane-tabs { gap: 8px; } .pane-tabs button { font-size: 11px; } }
 @media (max-width: 300px) { .save-panel { padding-inline: 10px; } }
 @media (max-width: 320px) { .pane-header { grid-template-columns: minmax(0, 1fr); } .save-state { justify-content: start; } }
+@media (max-height: 520px) { .pane-header { min-height: 36px; } .pane-tabs button { min-height: 36px; padding-block: 6px; } .save-details-toggle, .save-controls .save-link { min-height: 36px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
