@@ -10,10 +10,14 @@ import { firmPracticeAreaContext } from "../../../dochaus/lib/practice-areas"
 import { detectInjection, normalizeUntrustedText } from "../../../dochaus/lib/untrusted-text"
 import { notSource, sourceTarget, wordName } from "./document-markup"
 import { sha256Hex } from "./document-versions"
-import { EngineGenerationError, generate } from "./engine-generate"
+import { EngineGenerationError, generateFor } from "./engine-generate"
+import { REPLY_DRAFTING_AGENT } from "../../../dochaus/lib/usage-agents"
 import type { MarkupDecision } from "./markup-decisions"
 import { readDraftingPreferences } from "./preferences"
 import { workspaceRoot } from "./matter"
+
+// Each stateless call records its usage in the matter's ledger.
+const generate = (directory: string, prompt: string, signal?: AbortSignal) => generateFor(REPLY_DRAFTING_AGENT, directory, prompt, signal)
 
 // A draft reply to one of the other side's comment threads (#200), for the
 // lawyer to edit and approve in the triage panel: one stateless call to the

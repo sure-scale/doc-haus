@@ -273,7 +273,7 @@ await runEngine(
           if (pathname === "/api/dochaus/ready" && request.method === "GET")
             return managedReadinessResponse(request, locations)
           if (pathname === "/api/dochaus/generate" && request.method === "POST")
-            return generateText(request, locations)
+            return generateText(request, locations, probeClient)
           if (pathname === "/api/dochaus/provider-test" && request.method === "POST")
             return testProvider(request, locations, credentials, probeClient)
           if (pathname === "/api/dochaus/concurrency-test" && request.method === "POST")
@@ -485,7 +485,8 @@ async function admitGeneration(request: Request, locations: Context.Service.Shap
   return handler(request)
 }
 
-async function generateText(request: Request, locations: Context.Service.Shape<typeof LocationServiceMap.Service>): Promise<Response> {
+async function generateText(request: Request, locations: Context.Service.Shape<typeof LocationServiceMap.Service>,
+  client: Context.Service.Shape<typeof LLMClient.Service>): Promise<Response> {
   if (password && request.headers.get("authorization") !== `Basic ${btoa(`opencode:${password}`)}`)
     return Response.json({ error: "Unauthorized" }, { status: 401 })
   const directory = request.headers.get("x-opencode-directory")
@@ -507,9 +508,11 @@ async function generateText(request: Request, locations: Context.Service.Shape<t
   try {
     const data = await runEngine(generateMatterText(body.prompt).pipe(
       Effect.provide(locations.get(Location.Ref.make({ directory: AbsolutePath.make(actual) }))),
+      // Same engine-wide model admission queue as native sessions; the usage stays with the response.
+      Effect.provideService(LLMClient.Service, client),
     ),{signal:request.signal})
-    if (tracing) void appendTrace(tracing, "generations", "stateless", { ...trace, model: data.model, text: data.text, elapsed_ms: Date.now() - began })
-    return Response.json({ data: { ...data, elapsed_ms: Date.now() - began, usage: null } })
+    if (tracing) void appendTrace(tracing, "generations", "stateless", { ...trace, model: data.model, text: data.text, usage: data.usage, elapsed_ms: Date.now() - began })
+    return Response.json({ data: { ...data, elapsed_ms: Date.now() - began } })
   } catch(error) {
     if (tracing) void appendTrace(tracing, "generations", "stateless", { ...trace, error: describeError(error), elapsed_ms: Date.now() - began })
     console.warn("[matter-generation] configured generation failed",diagnosticErrorMetadata(error))

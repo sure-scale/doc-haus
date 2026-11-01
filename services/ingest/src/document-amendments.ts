@@ -25,11 +25,15 @@ import { listNames, trackedChanges } from "./document-versions"
 import { draftingAttribution, ourAuthors } from "../../../dochaus/lib/docx-attribution"
 import { retypedListLabel, withoutListLabel } from "../../../dochaus/lib/list-label"
 import { wordChanges } from "../../../dochaus/lib/word-changes"
-import { EngineGenerationError, generate } from "./engine-generate"
+import { EngineGenerationError, generateFor } from "./engine-generate"
+import { PREPARE_CHANGES_AGENT } from "../../../dochaus/lib/usage-agents"
 import { UNTRUSTED_DOCUMENT_NOTICE } from "../../../dochaus/lib/untrusted"
 import { detectInjection, normalizeUntrustedText } from "../../../dochaus/lib/untrusted-text"
 import { firmPracticeAreaContext } from "../../../dochaus/lib/practice-areas"
 import { workspaceRoot } from "./matter"
+
+// Each stateless call records its usage in the matter's ledger.
+const generate = (directory: string, prompt: string, signal?: AbortSignal) => generateFor(PREPARE_CHANGES_AGENT, directory, prompt, signal)
 
 export class DocumentAmendmentConflictError extends Error {}
 
