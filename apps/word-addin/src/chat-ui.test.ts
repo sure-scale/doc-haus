@@ -143,6 +143,13 @@ test("row uncertainty, prior application, unavailable callback and pending revie
     expect(calls).toBe(1); expect(uncertain.root.textContent).toContain("Check the change in Word")
     expect(uncertain.root.querySelector(".chat-proposal-actions")).toBeNull()
   } finally { uncertain.restore() }
+  const named = fixture({turns:[turn({kind:"amendment",rowProposal})],host:{applyRow:async () => { throw Object.assign(new Error("uncertain"),{mutationState:"uncertain",notice:"Word also changed the table’s column widths."}) }}})
+  try {
+    await named.chat.ready
+    ;[...named.root.querySelectorAll<HTMLButtonElement>(".chat-proposal-actions button")].find(b => b.textContent === "Apply")!.click(); await Bun.sleep(0)
+    expect(named.root.querySelector('.chat-proposal-error[role="alert"]')?.textContent).toBe("Word also changed the table’s column widths.")
+    expect(named.root.querySelector(".chat-proposal-actions")).toBeNull()
+  } finally { named.restore() }
   const prior = fixture({turns:[turn({kind:"amendment",rowProposal,proposalApplied:true})],host:{applyRow:async () => {calls++}}})
   try { await prior.chat.ready; expect(prior.root.textContent).toContain("Previously applied in Word."); expect(prior.root.querySelector(".chat-proposal-actions")).toBeNull() } finally { prior.restore() }
   const unavailable = fixture({turns:[turn({kind:"amendment",rowProposal})]})

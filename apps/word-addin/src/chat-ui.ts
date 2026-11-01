@@ -97,7 +97,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   let suggestionKey = "", stableKey = "", stableAt = 0, lastSuggestion = -Infinity, lastMaterials = 0
   let cancelMonitor: (() => void) | undefined, cancelReconcile: (() => void) | undefined, monitorBusy = false
   let stream: AbortController | undefined, streamEpoch = 0, conversationEpoch = 0, metadataRequest = 0
-  const dismissed = new Set<string>(), applied = new Set<string>(), declined = new Set<string>(), uncertain = new Set<string>()
+  const dismissed = new Set<string>(), applied = new Set<string>(), declined = new Set<string>(), uncertain = new Set<string>(), uncertainNotes = new Map<string, string>()
   const proposalErrors = new Map<string, string>()
   // A wording proposal over table cells sent without table context cannot be
   // applied; the lawyer can prepare it again with the cursor in that table.
@@ -481,7 +481,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       for (const text of proposal.openItems) items.append(line("li", text)); card.append(items)
     }
     if (applied.has(proposal.id)) { const note = line("p", turn.proposalApplied ? "Previously applied in Word." : "Applied in Word. Save when you’re ready.", "chat-local-note"); note.setAttribute("role", "status"); card.append(note); return card }
-    if (uncertain.has(proposal.id)) { const note = line("p", "Check the change in Word. Use Undo if needed.", "chat-proposal-error"); note.setAttribute("role", "alert"); card.append(note); return card }
+    if (uncertain.has(proposal.id)) { const note = line("p", uncertainNotes.get(proposal.id) ?? "Check the change in Word. Use Undo if needed.", "chat-proposal-error"); note.setAttribute("role", "alert"); card.append(note); return card }
     if (declined.has(proposal.id)) { card.append(line("p", "Declined. Your document is unchanged.", "chat-message-meta")); return card }
     const error = proposalErrors.get(proposal.id)
     if (error) { const note = line("p", error, "chat-proposal-error"); note.setAttribute("role", "alert"); card.append(note) }
@@ -503,6 +503,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
         if (disposed) return
         if (error && typeof error === "object" && "mutationState" in error && error.mutationState === "uncertain") {
           uncertain.add(proposal.id); proposalErrors.delete(proposal.id)
+          if ("notice" in error && typeof error.notice === "string") uncertainNotes.set(proposal.id, error.notice)
           refinement = undefined; rowRefinement = undefined; message.placeholder = "Ask doc.haus…"
           clearSelection(); renderChips()
         } else proposalErrors.set(proposal.id, error instanceof Error ? error.message : "Word could not apply this change. Refine it and try again.")

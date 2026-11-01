@@ -2201,3 +2201,23 @@ test("list insertion refuses changed numbering dependencies before dispatch", as
     expect(state.paragraphs.map(p=>p.text)).toEqual(["Existing list item."])
   }
 })
+
+test("after a reopen, a table target found by unique current text still offers the table retry", async () => {
+  let selected: string | undefined
+  const paragraph = (id: string, text: string, tableNestingLevel = 1) => ({uniqueLocalId:id,text,tableNestingLevel,getRange() { return {getReviewedText() { return {value:text} }, select() { selected = id }} }})
+  const collection = <T>(items: T[]) => ({items,load() {}})
+  let all = [paragraph("p","Clause text.",0), paragraph("a","Name"), paragraph("b","Role")]
+  const document = {saved:false,load() {},get body() { return {paragraphs:collection(all)} }}
+  const host = new WordChatHost({run: async (fn: (context: unknown) => Promise<unknown>) => fn({document,sync:async () => {}})} as WordChatWord, () => true)
+  // Captured before the reopen: Word has since assigned new paragraph ids.
+  const target = {id:"t",text:"Name\nRole",paragraphs:[{id:"old-a",text:"Name"},{id:"old-b",text:"Role"}],startOffset:0,endOffset:9,capturedAt:"2026-11-01T00:00:00Z"} as WordChatTarget
+  expect(await host.tableTarget(target, true)).toBe(true)
+  expect(selected).toBe("a")
+  // Ambiguous, reordered or non-table text never guesses.
+  all = [paragraph("p","Name",0), paragraph("a","Name"), paragraph("b","Role")]
+  expect(await host.tableTarget(target)).toBe(false)
+  all = [paragraph("b","Role"), paragraph("a","Name")]
+  expect(await host.tableTarget(target)).toBe(false)
+  all = [paragraph("a","Name",0), paragraph("b","Role",0)]
+  expect(await host.tableTarget(target)).toBe(false)
+})
