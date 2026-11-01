@@ -7,7 +7,10 @@ import type { WordChatAuth } from "./word-chat-context"
 
 const ID = /^[A-Za-z0-9_-]{1,160}$/
 const BODY_LIMIT = 2048
-const KEEPALIVE_MS = 15_000
+// Bun closes a socket that is silent for 10 s, and both the ingest server and the
+// Word HTTPS server keep that default. A longer keepalive let every quiet stream
+// drop while the model was working, so the pane showed "Reconnecting…".
+const KEEPALIVE_MS = 5_000
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value))
 
 async function conversationInput(c: Context): Promise<string | undefined> {
