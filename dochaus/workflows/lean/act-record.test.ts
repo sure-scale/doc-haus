@@ -41,7 +41,7 @@ const GRANT_HOW: ActHow = {
 const APPROVE_HOW: ActHow = { instrument: null, executed_by: [], requires: [], basis: [], reason: "The record does not say how the Club Committee records its approval.", conflict: null }
 
 type Job = "what" | "verify" | "deliverables" | "who" | "how"
-type Reply = (job: Job, attempt: number, sample: number) => unknown
+type Reply = (job: Job, attempt: number, sample: number, prompt?: string) => unknown
 
 const directories: string[] = []
 afterEach(() => directories.splice(0).forEach(directory => rmSync(directory, { recursive: true, force: true })))
@@ -77,7 +77,7 @@ function scripted(reply: Reply) {
         jobs.set(input.sessionID, { job, sample: [...jobs.values()].filter(row => row.job === job).length })
       }
       const { job, sample } = jobs.get(input.sessionID)!
-      const value = reply(job, prompts.filter(prompt => prompt.sessionID === input.sessionID).length - 1, sample)
+      const value = reply(job, prompts.filter(prompt => prompt.sessionID === input.sessionID).length - 1, sample, input.text)
       return typeof value === "string" ? value : JSON.stringify(value)
     },
   }
@@ -250,6 +250,29 @@ describe("WHO and HOW", () => {
     // Only the WHO reply names the committee in lower case, as a JSON string.
     expect(model.asked("how")[0]!.text).toContain('"the Club Committee"')
     expect(model.asked("who")[0]!.text).not.toContain('"the Club Committee"')
+  })
+
+  test("HOW is shown the deliverables, so the parties a requested document is made by are checked as its signatories", async () => {
+    // The licence is itself a document the request asks to be prepared: its
+    // signatories are the parties the request has make it.
+    const LICENCE = { deliverable: "the storage licence", source: "request", quote: "Prepare a storage licence under which Fenwick Boatyard Ltd grants the Harbourlight Rowing Club a licence" }
+    const deliverablesShown = (prompt: string) => {
+      const json = /<deliverables>\n[^\n]*\n([\s\S]*?)\n<\/deliverables>/.exec(prompt)?.[1]
+      return json ? JSON.parse(json) as typeof LICENCE[] : []
+    }
+    const { model, record } = await run((job, attempt, _sample, prompt) => job === "deliverables" ? { deliverables: [LICENCE, NOTE] } : job !== "how" ? valid(job, attempt, 0, prompt) : (() => {
+      // The scripted model names a deliverable it was shown, on that deliverable's own words.
+      const licence = deliverablesShown(prompt ?? "").find(row => row.deliverable === LICENCE.deliverable)
+      return indexed("how", [
+        licence ? { ...GRANT_HOW, instrument: `${licence.deliverable}, its grant clause`, executed_by: ["Fenwick Boatyard Ltd", "the Harbourlight Rowing Club"], basis: [{ source: licence.source, quote: licence.quote }] }
+          : { ...GRANT_HOW, executed_by: [], basis: [], instrument: null, reason: "The record does not name the licence's signatories." },
+        APPROVE_HOW,
+      ])
+    })())
+    expect(deliverablesShown(model.asked("how")[0]!.text)).toEqual([LICENCE, NOTE])
+    expect(record?.acts[0]!.how?.executed_by).toEqual(["Fenwick Boatyard Ltd", "the Harbourlight Rowing Club"])
+    expect(record?.issues).toEqual([])
+    expect(signerFlags(record!)[0]).toEqual({ act: 0, status: "ok", missing: [] })
   })
 
   test("a job that never passes leaves its field null for every act and keeps its issues; the acts stand", async () => {

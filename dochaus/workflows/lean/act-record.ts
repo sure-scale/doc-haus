@@ -22,12 +22,14 @@ import { readLeanJson, writeLeanText, type LeanStageState, type LeanState } from
 // record (verify) and only the kept acts go on; a VERIFY that never passes
 // keeps the whole union, so a failed check never drops an act. DELIVERABLES
 // lists what the instructions ask to be prepared or delivered, alongside VERIFY
-// and blind to it. WHO names, for each listed act, the parties whose
-// approval authorises it and those who carry it out; HOW, shown each act's WHO,
-// names the instrument that effects it, its signatories and what must exist or
-// be taken first, and records any conflict between the instructions and the
-// research or sources over who authorises or takes the act, which document
-// carries it or who signs it: both sides' words, each verified, never resolved.
+// and WHO and blind to them. WHO names, for each listed act, the parties whose
+// approval authorises it and those who carry it out; HOW, shown each act's WHO
+// and the deliverables, names the instrument that effects it, its signatories
+// (for a requested document, the parties the sources have make it or be bound
+// by it) and what must exist or be taken first, and records any conflict
+// between the instructions and the research or sources over who authorises or
+// takes the act, which document carries it or who signs it: both sides' words,
+// each verified, never resolved.
 // Each job is one checked exchange: a deterministic check
 // verifies every quote in its source and every party in the record, and its
 // issues go back to the same session for a bounded retry. An empty list is a
@@ -148,16 +150,18 @@ const WHO_JOB = [
   '- "performed_by": every party who carries the act out or signs for it.',
   "- Name each party as the sources name it; give [] where the record does not settle it. Who must authorise or take an act is settled by the law and the record, not by which document the instructions put it in: " +
   "where the legal research or a source says a party of some kind must authorise or take an act of that kind, name the party of that kind the sources name.",
+  "- Where the act is a party's own act or obligation under an instrument, that party authorises it by executing the instrument: name it, with the words that make the act or obligation its own as basis.",
   '- "basis": the evidence for both lists.',
   '- "reason": null when both are given; otherwise what the record leaves unsettled.',
   `- ${EVIDENCE_RULE}`,
 ].join("\n")
 
 const HOW_JOB = [
-  'For each listed act below, give "how": {"instrument": ..., "executed_by": [...], "requires": [...], "basis": [evidence], "reason": ..., "conflict": ...}. Each act\'s WHO is given with it below.',
+  'For each listed act below, give "how": {"instrument": ..., "executed_by": [...], "requires": [...], "basis": [evidence], "reason": ..., "conflict": ...}. Each act\'s WHO is given with it below, and the deliverables the instructions ask to be prepared follow the acts.',
   '- "instrument": the instrument or document that effects the act, and the part of it that takes the act. ' +
   "Where WHO names no authorising party, still give the instrument that effects the act. null when the record does not settle it.",
   '- "executed_by": every signatory of that instrument, using the WHO name for a party already named there, or [] when the record does not settle it.',
+  "- Where the instrument is a document the instructions ask to be prepared, name that document; its signatories are the parties the instructions or sources name as making it or being bound by it, with those words as basis.",
   '- "requires": the other listed acts, or other approvals or things, that must exist or be taken before this act can be effectively taken, ' +
   'each as {"act": its index, or null when it is not a listed act, "need": what is required, briefly, "basis": [evidence]}; [] when the record sets none.',
   '- "basis": the evidence for each value given.',
@@ -575,10 +579,12 @@ export function actRecordBlock(directory: string) {
 }
 
 /** Runs the act-record jobs and writes acts.json. The WHAT samples run in
- * parallel; DELIVERABLES then runs alongside VERIFY, WHO and HOW in turn: VERIFY
- * over the union, WHO over the acts it keeps (the whole union when it never
- * passes), and HOW, shown each act's WHO (null when WHO never passed). With no
- * candidate, VERIFY is not asked; with no kept act, WHO and HOW are not asked.
+ * parallel; DELIVERABLES then runs alongside VERIFY and WHO in turn: VERIFY
+ * over the union and WHO over the acts it keeps (the whole union when it never
+ * passes). HOW waits for both and is shown each act's WHO (null when WHO never
+ * passed) and the deliverables (said to be unrecorded when that job never
+ * passed). With no candidate, VERIFY is not asked; with no kept act, WHO and
+ * HOW are not asked.
  * Each job is one checked exchange in a session of its own: up to
  * LEAN_MAX_RETRIES retries hand its check's issues back to the same session.
  * The step always settles as done: a job that never passes is recorded, not
@@ -621,8 +627,12 @@ export async function runActRecordStage(directory: string, state: LeanState, dep
   const union = mergeCoverageActs(...passed)
   const view = (acts: ListedAct[]) => acts.map((act, index) => ({ index, ...act }))
 
+  const asked = job("deliverables", [tagged("job", DELIVERABLES_JOB), contract(`${DELIVERABLES_SHAPE} Reply {"deliverables":[]} when the instructions ask for none.`)], reply => parseDeliverables(reply, directory))
+  const deliverablesShown = (rows: Deliverable[] | undefined) => tagged("deliverables", rows
+    ? `What the instructions ask to be prepared or delivered, each with the words that ask for it:\n${JSON.stringify(rows, null, 2)}`
+    : "The deliverables were not recorded: read the instructions for what they ask to be prepared.")
   const [deliverables, described] = await Promise.all([
-    job("deliverables", [tagged("job", DELIVERABLES_JOB), contract(`${DELIVERABLES_SHAPE} Reply {"deliverables":[]} when the instructions ask for none.`)], reply => parseDeliverables(reply, directory)),
+    asked,
     (async () => {
       if (!union.length) return { listed: union }
       const verify = await job("verify", [tagged("job", VERIFY_JOB), shown(view(union)), contract(`${VERIFY_SHAPE} Give every candidate exactly once, by its index.`)],
@@ -631,7 +641,7 @@ export async function runActRecordStage(directory: string, state: LeanState, dep
       const listed = verified?.acts ?? union
       if (!listed.length) return { verify, verified, listed }
       const who = await job("who", [tagged("job", WHO_JOB), shown(view(listed)), contract(`${WHO_SHAPE} ${EVERY_ACT}`)], reply => parseActWho(reply, directory, listed))
-      const how = await job("how", [tagged("job", HOW_JOB), shown(view(listed).map(act => ({ ...act, who: who.value?.[act.index] ?? null }))), contract(`${HOW_SHAPE} ${EVERY_ACT}`)],
+      const how = await job("how", [tagged("job", HOW_JOB), shown(view(listed).map(act => ({ ...act, who: who.value?.[act.index] ?? null }))), deliverablesShown((await asked).value), contract(`${HOW_SHAPE} ${EVERY_ACT}`)],
         reply => parseActHow(reply, directory, listed))
       return { verify, verified, listed, who, how }
     })(),
