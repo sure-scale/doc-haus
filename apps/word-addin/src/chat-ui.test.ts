@@ -317,6 +317,40 @@ test("Word shares native event hydration, ignores foreign sessions and keeps a d
   } finally { f.restore() }
 })
 
+const connected = (): V2Event => ({ id: "connected", created: 1, type: "server.connected", data: {} }) as V2Event
+test("a dropped event stream that recovers quickly never shows Reconnecting", async () => {
+  let subscriptions = 0
+  const events: NonNullable<WordChatApi["events"]> = (_conversationId, signal) => ({
+    async *[Symbol.asyncIterator]() {
+      const mine = ++subscriptions
+      yield connected()
+      if (mine === 1) return // the stream drops once, then comes back
+      await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }))
+    },
+  })
+  const f = fixture({ events, turns: [turn({ status: "running", answer: "" })] })
+  try {
+    await f.chat.ready
+    await Bun.sleep(150); expect(f.root.textContent).not.toContain("Reconnecting…") // dropped, retry still pending
+    await Bun.sleep(1_200); expect(subscriptions).toBeGreaterThanOrEqual(2)
+    await f.advance(20_000)
+    expect(f.root.textContent).not.toContain("Reconnecting…")
+    f.chat.dispose()
+  } finally { f.restore() }
+})
+
+test("an event stream that stays down says Reconnecting only after the grace period", async () => {
+  const events: NonNullable<WordChatApi["events"]> = () => ({ async *[Symbol.asyncIterator]() { throw new Error("offline") } })
+  const f = fixture({ events, turns: [turn({ status: "running", answer: "" })] })
+  try {
+    await f.chat.ready
+    await Bun.sleep(150)
+    await f.advance(7_000); expect(f.root.textContent).not.toContain("Reconnecting…")
+    await f.advance(1_500); expect(f.root.textContent).toContain("Reconnecting…")
+    f.chat.dispose()
+  } finally { f.restore() }
+})
+
 test("lost Send retains its frozen request identifier and context during reconnect", async () => {
   let sends = 0
   const f = fixture({ request: async (action, input) => { if (action !== "send") return; if (++sends === 1) throw new Error("Connection lost"); const body = input as WordChatSend; return { turn: turn({ requestId: body.requestId, text: body.text }) } } })
