@@ -663,8 +663,9 @@ test("recent matter instructions contain only real main-chat user admissions fro
   expect(observed.some((route) => /\/(internal|child|lean)(?:\/|$)/.test(route))).toBe(false)
 })
 
-test("main-chat instruction changes enter relevance assessment content keys without importing assistant text", async () => {
+test("main-chat instructions inform the relevance assessment but never re-trigger it on their own", async () => {
   const dir = matter()
+  source(dir, "Note.md", "A delivery account.")
   let words = "Resolve disputed shipment dates before the hearing.",
     calls = 0
   const deps = fake((input) => {
@@ -680,13 +681,36 @@ test("main-chat instruction changes enter relevance assessment content keys with
   let state = await assessChronology(dir, deps)
   expect(state.suggestion.status).toBe("relevant")
   const oldKey = state.suggestion.assessedKey
-  await assessChronology(dir, deps)
-  expect(calls).toBe(1)
   words = "This matter is only a prospective standard form template; there is no historical event question."
+  state = await assessChronology(dir, deps)
+  expect(calls).toBe(1)
+  expect(state.suggestion.status).toBe("relevant")
+  source(dir, "Later.md", "A later note.")
   state = await assessChronology(dir, deps)
   expect(calls).toBe(2)
   expect(state.suggestion.assessedKey).not.toBe(oldKey)
   expect(state.suggestion.status).toBe("irrelevant")
+})
+
+test("an insufficient relevance result is reassessed once the lawyer states the matter's purpose in chat", async () => {
+  const dir = matter()
+  let words = "",
+    calls = 0
+  const deps = fake(() => {
+    calls++
+    return JSON.stringify({ status: "relevant", reason: "The lawyer describes disputed timing." })
+  })
+  deps.engine = { fetch: nativeChat(dir, () => words) }
+  let state = await assessChronology(dir, deps)
+  expect(state.suggestion.status).toBe("insufficient")
+  const revision = state.revision
+  state = await assessChronology(dir, deps)
+  expect(state.revision).toBe(revision)
+  expect(calls).toBe(0)
+  words = "Resolve disputed shipment dates before the hearing."
+  state = await assessChronology(dir, deps)
+  expect(calls).toBe(1)
+  expect(state.suggestion.status).toBe("relevant")
 })
 
 test("overlapping relevance checks share one model job per unchanged context and still assess new sources", async () => {

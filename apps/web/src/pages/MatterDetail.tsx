@@ -220,14 +220,16 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
     setChronologyNavigation(id)
     return () => setChronologyNavigation()
   }, [id])
+  // Closing a chat may have supplied the matter's purpose, so recheck once
+  // then. Matter and source changes recheck through the effect above.
+  const chatOpen = !!chat
+  const chatWasOpen = useRef(chatOpen)
   useEffect(() => {
-    if (!id) return
-    const refreshChronology = () =>
-      assessChronology(id).then(receiveChronology, () => getChronology(id).then(receiveChronology, () => {}))
-    window.addEventListener("focus", refreshChronology)
-    if (!chat) refreshChronology()
-    return () => window.removeEventListener("focus", refreshChronology)
-  }, [id, !!chat, receiveChronology])
+    const closed = chatWasOpen.current && !chatOpen
+    chatWasOpen.current = chatOpen
+    if (!id || !closed) return
+    assessChronology(id).then(receiveChronology, () => getChronology(id).then(receiveChronology, () => {}))
+  }, [id, chatOpen, receiveChronology])
   useEffect(() => {
     if (view === "chronology") setDocumentsDrawer(false)
   }, [view])

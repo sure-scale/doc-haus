@@ -2014,25 +2014,38 @@ export function resolveRelativeDate(
 
 const pendingAssessments = new Map<string, Promise<Chronology>>()
 
+/** The relevance decision is keyed on the matter record, recorded drafting
+ * instructions and sources, not on recent chat messages. */
+function assessmentKey(directory: string, sources: readonly ChronologySource[]) {
+  const context = matterContext(directory)
+  return hash(JSON.stringify([context.title, context.instructions, context.framing, sources.map(sourceKey)]))
+}
+
 /** Bounded assessment asks only whether chronology would help. It never
  * extracts events or uses firm practice areas as the matter's classification. */
 export async function assessChronology(directory: string, deps = defaults()): Promise<Chronology> {
   const initial = readChronology(directory)
   if (initial.created) return initial
+  const sources = chronologySources(directory)
+  const key = assessmentKey(directory, sources)
+  const insufficient = initial.suggestion.status === "insufficient"
+  // A reached decision stands until the matter or its sources change. Recent
+  // chat messages inform the assessment but never re-trigger it, except to lift
+  // an "insufficient" result once the lawyer has said what the matter is for.
+  if (
+    initial.suggestion.status === "hidden" ||
+    initial.suggestion.dismissedKey === key ||
+    (initial.suggestion.assessedKey === key && !insufficient)
+  )
+    return initial
   const recent = await recentChronologyInstructions(directory, deps.engine)
   if (!recent.available) return initial
   const context = matterContext(directory, recent.instructions)
-  const sources = chronologySources(directory)
-  const key = hash(JSON.stringify([context.title, context.instructions, context.framing, sources.map(sourceKey)]))
   const current = readChronology(directory)
-  if (
-    current.created ||
-    current.suggestion.status === "hidden" ||
-    current.suggestion.assessedKey === key ||
-    current.suggestion.dismissedKey === key
-  )
+  if (current.created || current.suggestion.status === "hidden" || current.suggestion.dismissedKey === key)
     return current
   if (!sources.length && !context.instructions.trim()) {
+    if (insufficient && current.suggestion.assessedKey === key) return current
     return mutateChronology(
       directory,
       undefined,
@@ -2084,18 +2097,7 @@ export async function assessChronology(directory: string, deps = defaults()): Pr
       typeof response.reason !== "string"
     )
       throw new Error("The chronology relevance assessment was incomplete.")
-    const latestRecent = await recentChronologyInstructions(directory, deps.engine)
-    if (!latestRecent.available) return readChronology(directory)
-    const latestContext = matterContext(directory, latestRecent.instructions)
-    const latestKey = hash(
-      JSON.stringify([
-        latestContext.title,
-        latestContext.instructions,
-        latestContext.framing,
-        chronologySources(directory).map(sourceKey),
-      ]),
-    )
-    if (latestKey !== key) return readChronology(directory)
+    if (assessmentKey(directory, chronologySources(directory)) !== key) return readChronology(directory)
     return mutateChronology(
       directory,
       undefined,
