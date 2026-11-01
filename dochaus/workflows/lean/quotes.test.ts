@@ -106,6 +106,19 @@ describe("lean prose quotation reading", () => {
       .toEqual([expect.stringContaining("explanations[0].reason could not read a cited quotation")])
   })
 
+  test("unreadable citation feedback names each passage once", () => {
+    const directory = matter()
+    const sound = `The terms provide "within thirty days of the order date" [source: ${SOURCE}].`
+    const unquoted = `Delivery falls within thirty days [source: ${SOURCE}].`
+    const issues = prose(directory, [sound, unquoted, unquoted, `Payment is due monthly [source: ${SOURCE}].`].join("\n\n"))
+    expect(issues).toEqual([
+      expect.stringContaining(`in "Delivery falls within thirty days [source: ${SOURCE}]"`),
+      expect.stringContaining(`in "Payment is due monthly [source: ${SOURCE}]"`),
+    ])
+    const long = `${"Preceding words. ".repeat(30)}Delivery falls within thirty days [source: ${SOURCE}].`
+    expect(prose(directory, long)).toEqual([expect.stringMatching(new RegExp(`in "….*Delivery falls within thirty days \\[source: ${SOURCE.replace(".", "\\.")}\\]"`))])
+  })
+
   test("an overlong quotation or source name is reported rather than omitted", () => {
     const directory = matter()
     for (const text of [
