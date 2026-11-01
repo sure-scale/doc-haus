@@ -1143,6 +1143,28 @@ test("an unappliable proposal over table cells is prepared again with the cursor
   } finally { f.restore() }
 })
 
+test("a request sent from this pane that lands in a table is prepared again without a click", async () => {
+  const placed: Array<[string, boolean]> = []
+  let sends = 0
+  const f = fixture({ request: async action => {
+    if (action !== "send") return
+    sends++
+    return { turn: sends === 1 ? turn({ id: "turn-one", kind: "amendment", text: "Add a tax row", proposal }) : turn({ id: "turn-two", kind: "amendment", text: "Add a tax row", answer: "Prepared." }) }
+  }, host: {
+    applyEligibility: () => ({ supported: false, reason: "Word cannot safely apply this change yet. Make it directly in Word." }),
+    tableTarget: async (target, place = false) => { placed.push([target.id, place]); return true },
+  } })
+  try {
+    await f.chat.ready; await f.send("Add a tax row")
+    await Bun.sleep(30)
+    expect(placed).toEqual([[passage.id, false], [passage.id, true]])
+    expect(f.calls.filter(c => c.action === "send").map(c => (c.input as WordChatSend).text)).toEqual(["Add a tax row", "Add a tax row"])
+    const text = f.root.textContent ?? ""
+    expect(text).toContain("Prepared again as a table change.")
+    expect(text).not.toContain("Prepare as table change"); expect(text).not.toContain("This change is in a table.")
+  } finally { f.restore() }
+})
+
 test("an unappliable proposal outside tables keeps the plain limitation", async () => {
   const f = fixture({ turns: [turn({ kind: "amendment", proposal })], host: {
     applyEligibility: () => ({ supported: false, reason: "Word cannot safely apply this change yet. Make it directly in Word." }),

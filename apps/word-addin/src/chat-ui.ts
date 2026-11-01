@@ -105,6 +105,8 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
   // A wording proposal over table cells sent without table context cannot be
   // applied; the lawyer can prepare it again with the cursor in that table.
   const tableRetry = new Map<string, "check" | "yes" | "no" | "sent">()
+  // Turns this pane sent (not history), and proposals it prepared again as a table change by itself.
+  const sentHere = new Set<string>(), autoTable = new Set<string>()
   const nodes = new Map<string, { stamp: string; node: HTMLElement }>()
   get("document-info-content").textContent = host.documentName
   let documentInfoPinned = false
@@ -311,6 +313,15 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (rowRefinement) { rowRefinement = undefined; message.placeholder = "Ask doc.haus…" }
     renderChips()
   }
+  /** Send the same request again with the table's rows, after Word has put the cursor in that table. */
+  async function prepareAsTable(proposal: WordChatProposal, turn: WordChatTurn, auto: boolean) {
+    if (applying || sending || proposalFinished(proposal.id) || tableRetry.get(proposal.id) !== "yes") return
+    const placed = await host.tableTarget!(proposal.target, true).catch(() => false)
+    if (disposed) return
+    if (!placed) { tableRetry.set(proposal.id, "no"); proposalErrors.set(proposal.id, "Click in the table in Word, then send your request again."); renderTurns(); return }
+    tableRetry.set(proposal.id, "sent"); if (auto) autoTable.add(proposal.id)
+    clearProposalContext(proposal); message.value = turn.text; renderTurns(); void submit()
+  }
   function proposalCard(proposal: WordChatProposal, turn: WordChatTurn): HTMLElement {
     const formatting = proposal.formatting
     const inlineFormatting = proposal.inlineFormatting
@@ -324,6 +335,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     const listInsertion = nativeWordChatListInsertionEligible(proposal.target, proposal.after, proposal.paragraphAction, proposal.list, formatting, inlineFormatting)
     const unavailable = !eligibility.supported ? eligibility.reason : !plan.supported && !insertion && !deletion && !merge && !split && !listInsertion ? plan.reason : undefined
     const card = document.createElement("section"); card.className = "chat-proposal"; card.setAttribute("aria-label", split ? "Paragraph split to review" : merge ? "Paragraph join to review" : listInsertion ? "List item to review" : deletion ? "Paragraph deletion to review" : (formatting || inlineFormatting) && !wordingChanged ? "Formatting to review" : "Amendment to review")
+    if (autoTable.has(proposal.id) && tableRetry.get(proposal.id) === "sent") { card.append(line("p", "Prepared again as a table change.", "chat-message-meta")); return card }
     card.append(line("h3", split ? "Split paragraph" : merge ? "Join paragraphs" : listInsertion ? "Add list item" : deletion ? "Review deletion" : wordingChanged ? "Review amendment" : "Review formatting"))
     if (listInsertion) {
       const before = proposal.paragraphAction === "insert_list_item_before"
@@ -400,7 +412,13 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       if (state === "sent") { card.append(line("p", "Prepared again as a table change.", "chat-message-meta")); return card }
       if (!state) {
         tableRetry.set(proposal.id, "check")
-        void host.tableTarget(proposal.target).catch(() => false).then(yes => { tableRetry.set(proposal.id, yes ? "yes" : "no"); if (yes && !disposed) renderTurns() })
+        void host.tableTarget(proposal.target).catch(() => false).then(yes => {
+          tableRetry.set(proposal.id, yes ? "yes" : "no")
+          if (!yes || disposed) return
+          // A request this pane just sent went out without table context, so prepare it again for the lawyer.
+          if (sentHere.has(turn.id) && !foreground && !applying && !sending) void prepareAsTable(proposal, turn, true)
+          else renderTurns()
+        })
       }
       tableChange = state === "yes"
     }
@@ -409,13 +427,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
     if (tableChange) {
       const retarget = document.createElement("button"); retarget.type = "button"; retarget.className = "chat-send"; retarget.textContent = "Prepare as table change"
       retarget.disabled = applying || sending
-      retarget.onclick = async () => {
-        if (applying || sending || proposalFinished(proposal.id) || tableRetry.get(proposal.id) !== "yes") return
-        const placed = await host.tableTarget!(proposal.target, true).catch(() => false)
-        if (disposed) return
-        if (!placed) { tableRetry.set(proposal.id, "no"); proposalErrors.set(proposal.id, "Click in the table in Word, then send your request again."); renderTurns(); return }
-        tableRetry.set(proposal.id, "sent"); clearProposalContext(proposal); message.value = turn.text; renderTurns(); void submit()
-      }
+      retarget.onclick = () => { void prepareAsTable(proposal, turn, false) }
       const decline = document.createElement("button"); decline.type = "button"; decline.className = "chat-subtle"; decline.textContent = "Decline"; decline.disabled = applying
       decline.onclick = () => { if (applying || proposalFinished(proposal.id)) return; declined.add(proposal.id); proposalErrors.delete(proposal.id); renderTurns() }
       actions.append(retarget, decline); card.append(actions); return card
@@ -784,7 +796,7 @@ export function mountWordChat(root: HTMLElement, api: WordChatApi, host: ChatHos
       if (refinement?.id === submitted.proposal?.id) { refinement = undefined; message.placeholder = "Ask doc.haus…" }
       if (rowRefinement?.id === submitted.rowProposal?.id) { rowRefinement = undefined; message.placeholder = "Ask doc.haus…" }
       pending = undefined; renderChips()
-      updateTurn(result.turn); renderTurns(true); status(); button("reconnect").hidden = true; scheduleReconciliation()
+      sentHere.add(result.turn.id); updateTurn(result.turn); renderTurns(true); status(); button("reconnect").hidden = true; scheduleReconciliation()
       if (result.turn.status !== "running") void refreshConversationMetadata()
     } catch (error) {
       // A definite admission refusal can be corrected. An uncertain/lost
