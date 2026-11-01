@@ -16,7 +16,7 @@ import {
 import { listWorkflows, type CustomWorkflow, type Template } from "../api/ingest/library"
 import { createTemplateDraft } from "../api/ingest/template-drafts"
 import { rememberLastMatter } from "../lib/last-matter"
-import { templateDraftLink } from "../lib/template-use"
+import { TEMPLATE_DRAFT_AGENT, templateDraftLink } from "../lib/template-use"
 import TemplateStartDialog from "../components/matter/TemplateStartDialog"
 import TemplateBatchDialog from "../components/TemplateBatchDialog"
 import { disposeInstance, listAgents } from "../api/opencode/sessions"
@@ -633,6 +633,9 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
               // The draft continues in the chat, which an overlaid drawer covers.
               if (window.matchMedia("(max-width: 1199px)").matches) setDocumentsDrawer(false)
               navigate(templateDraftLink(matter.id, template.name))
+              // The agent param is already "draft" on a second start, so the
+              // load effect will not re-pin it over an assistant chosen since.
+              if (agents?.some((a) => a.name === TEMPLATE_DRAFT_AGENT)) setAgent(TEMPLATE_DRAFT_AGENT)
             }}
             onBatch={(template) => {
               setStartingTemplate(false)

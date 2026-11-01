@@ -55,6 +55,10 @@ test("a template with fields asks one or many; one with nothing to fill goes str
     await view.click(/^Board minutes/)
     expect(view.drafted).toEqual(["Board minutes.docx"])
     await view.click(/^Consent request letter/)
+    // Going back keeps focus inside the dialog, so Escape still closes it.
+    await view.click(/^Choose another template/)
+    expect(document.activeElement?.closest(".template-start")).not.toBeNull()
+    await view.click(/^Consent request letter/)
     expect(view.text()).toContain("Many from a spreadsheet")
     await view.click(/^Many from a spreadsheet/)
     expect(view.batched).toEqual(["Consent request letter.docx"])

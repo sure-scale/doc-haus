@@ -4,11 +4,13 @@ import { markerKind } from "../components/document-markers"
 // Shared by the two ways to start from a template: the Templates page (pick a
 // matter) and the matter's Documents drawer (pick a template).
 
+export const TEMPLATE_DRAFT_AGENT = "draft"
+
 /** The matter chat with draft mode pinned and the assembly prompt prefilled;
  * the lawyer reviews and sends, nothing runs on its own. */
 export function templateDraftLink(matterId: string, template: string) {
   const prompt = `Draft a new document from the template "${template}". Gather what you can from this matter's documents and our conversation first, then interview me for the remaining terms and any optional clauses before assembling it.`
-  return `/matter/${matterId}?view=chat&agent=draft&prompt=${encodeURIComponent(prompt)}`
+  return `/matter/${matterId}?view=chat&agent=${TEMPLATE_DRAFT_AGENT}&prompt=${encodeURIComponent(prompt)}`
 }
 
 /** Fields to fill and optional clauses, counted as the template viewer counts

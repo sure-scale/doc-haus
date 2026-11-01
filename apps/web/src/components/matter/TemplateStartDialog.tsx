@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from "react"
+import { useContext, useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { Link } from "react-router-dom"
 import { listTemplates, type Template } from "../../api/ingest/library"
@@ -36,6 +36,16 @@ export default function TemplateStartDialog({ onDraft, onBatch, onClose }: {
     return () => { live = false }
   }, [])
 
+  // "Choose another template" unmounts its own button; put focus back in the
+  // list so Escape and the keyboard still reach the dialog.
+  const body = useRef<HTMLDivElement>(null)
+  const returning = useRef(false)
+  useEffect(() => {
+    if (chosen || !returning.current) return
+    returning.current = false
+    body.current?.querySelector<HTMLElement>("input, button")?.focus()
+  }, [chosen])
+
   function pick(template: Template) {
     if (templateFieldCounts(template).total === 0) onDraft(template)
     else setChosen(template)
@@ -48,11 +58,11 @@ export default function TemplateStartDialog({ onDraft, onBatch, onClose }: {
     <div className={`viewer-overlay${closing ? " is-closing" : ""}`} inert={closing} {...backdropClose(() => onClose())}>
       <div className="picker-panel template-start" onClick={(event) => event.stopPropagation()}>
         <ModalHeader title="Start from a template" onClose={onClose} />
-        <div className="picker-body template-start-body">
+        <div className="picker-body template-start-body" ref={body}>
           {chosen ? <>
             <div className="template-start-chosen">
               <span className="template-start-name">{stem(chosen.name)}</span>
-              <button type="button" className="linklike" onClick={() => setChosen(undefined)}>Choose another template</button>
+              <button type="button" className="linklike" onClick={() => { returning.current = true; setChosen(undefined) }}>Choose another template</button>
             </div>
             <button type="button" className="assistant-option" autoFocus onClick={() => onDraft(chosen)}>
               <span className="assistant-name">One document</span>
