@@ -59,6 +59,19 @@ export type DraftingPreferences = {
   // starts the full run ("off"). Read by the web app and never rendered into
   // drafting.md.
   quickDraftOffer: "ask" | "auto" | "off"
+  // Settings → Background agents: optional model jobs that start without a
+  // click. Each sends matter text to the model. Read by ingest and the web app;
+  // never rendered into drafting.md.
+  backgroundAgents: BackgroundAgents
+}
+
+export type BackgroundAgents = {
+  // chronology-assess: suggests a chronology when one would help the matter.
+  chronologySuggestion: boolean
+  // review-compare: groups matching answers once a review column fills.
+  reviewCompare: boolean
+  // narrator: writes progress notes during a drafting run.
+  narration: boolean
 }
 
 /** How hard negotiated terms lean toward the lawyer's client: the firm's
@@ -105,6 +118,7 @@ export const DEFAULT_DRAFTING: DraftingPreferences = {
   notesMarking: true,
   styleTemplate: "",
   quickDraftOffer: "ask",
+  backgroundAgents: { chronologySuggestion: true, reviewCompare: true, narration: true },
 }
 
 /** Longest legend kept: a legend is one short line of page furniture. */
@@ -143,6 +157,17 @@ export function normalizePreferences(value: unknown): DraftingPreferences {
     notesMarking: input.notesMarking !== false,
     styleTemplate: normalizeStyleTemplate(input.styleTemplate),
     quickDraftOffer: input.quickDraftOffer === "auto" || input.quickDraftOffer === "off" ? input.quickDraftOffer : DEFAULT_DRAFTING.quickDraftOffer,
+    backgroundAgents: normalizeBackgroundAgents(input.backgroundAgents),
+  }
+}
+
+/** Every background agent stays on unless the firm switched it off. */
+export function normalizeBackgroundAgents(input: unknown): BackgroundAgents {
+  const value = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {}
+  return {
+    chronologySuggestion: value.chronologySuggestion !== false,
+    reviewCompare: value.reviewCompare !== false,
+    narration: value.narration !== false,
   }
 }
 

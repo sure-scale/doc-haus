@@ -41,6 +41,8 @@ export type DraftingPreferences = {
   // ("ask"), starts one without asking ("auto") or always starts the full run
   // ("off"). Never sent to the model.
   quickDraftOffer: "ask" | "auto" | "off"
+  // Settings → Background agents. Optional jobs that start without a click.
+  backgroundAgents: BackgroundAgents
 }
 
 /** How hard negotiated terms lean toward the client: the firm's setting, which
@@ -68,6 +70,19 @@ export type TelemetryPreferences = {
   retention_days: number
   retention_days_source?: "user" | "default"
   rate_overrides: Record<string, RateOverride>
+}
+
+export type BackgroundAgents = { chronologySuggestion: boolean; reviewCompare: boolean; narration: boolean }
+
+/** Current background-agent switches. Missing or unreadable preferences leave
+ * every agent on, matching the server default. */
+export async function getBackgroundAgents(): Promise<BackgroundAgents> {
+  const saved = await getPreferences().then((prefs) => prefs.backgroundAgents, () => undefined)
+  return {
+    chronologySuggestion: saved?.chronologySuggestion !== false,
+    reviewCompare: saved?.reviewCompare !== false,
+    narration: saved?.narration !== false,
+  }
 }
 
 export async function getPreferences(): Promise<DraftingPreferences> {
