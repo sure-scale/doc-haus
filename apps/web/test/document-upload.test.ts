@@ -253,3 +253,47 @@ test("the documents list nests each extracted document once under its parent, at
     ["A.eml", ["B.eml"]],
   ])
 })
+
+// Documents filled from one template and a spreadsheet (#208) list once, in
+// one folder entry; only rows that left fields empty say they need input.
+test("a spreadsheet batch lists its documents once, under one folder with their count", () => {
+  const batch = (row: number, missing: string[] = []) => ({ id: "b1", folder: "NDA – 2026-10-31", row, source: "Clients.xlsx", missing })
+  const member = (id: number, name: string, row: number, missing?: string[]): Document =>
+    ({ id, name, doc_path: `/m/${name}`, created_at: 100 + id, role: "deliverable", batch: batch(row, missing) })
+  const documents: Document[] = [
+    member(1, "NDA – Acme Ltd – row 002.docx", 2),
+    member(2, "NDA – row 003.docx", 3, ["Client Name", "Notice date"]),
+    member(3, "NDA – Birch LLP – row 004.docx", 4),
+    { id: 4, name: "Lease.docx", doc_path: "/m/Lease.docx", created_at: 50, role: "deliverable" },
+    { id: 5, name: "Brief.docx", doc_path: "/m/Brief.docx", created_at: 60, role: "source" },
+  ]
+  const html = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {} }))
+  const text = html.replace(/<[^>]+>/g, "")
+  expect(text.match(/NDA – 2026-10-31/g)).toHaveLength(1)
+  expect(text).toContain("NDA – 2026-10-313 documents from Clients.xlsx1 needs input")
+  // Each member once, inside the folder's group, in spreadsheet row order.
+  const group = html.match(/<div id="doc-batch-b1" role="group" aria-label="Documents in NDA – 2026-10-31">([\s\S]*?)<\/ul><\/div>/)?.[1] ?? ""
+  const names = [...group.matchAll(/<span class="drafted-name-text">([^<]*)<\/span>/g)].map(([, name]) => name)
+  // Known by the value that tells it apart; a row without one keeps its file name.
+  expect(names).toEqual(["Acme Ltd", "NDA – row 003.docx", "Birch LLP"])
+  expect(group).toContain('title="Open NDA – Acme Ltd – row 002.docx"')
+  for (const name of names) expect(text.split(name!).length - 1).toBe(1)
+  expect(group).toContain('title="From spreadsheet row 3 of Clients.xlsx">Row 3</span>')
+  // A generated document outside any batch still lists on its own.
+  expect(group).not.toContain("Lease.docx")
+  expect(text).toContain("Lease.docx")
+  // Only the row that left fields empty needs input, with the fields named.
+  expect([...html.matchAll(/<span class="doc-needs-input"[^>]*aria-label="([^"]*)"[^>]*>Needs input<\/span>/g)].map(([, label]) => label))
+    .toEqual(["Needs input: Client Name, Notice date"])
+})
+
+test("a long spreadsheet batch starts closed behind a toggle", () => {
+  const documents: Document[] = Array.from({ length: 7 }, (_, index) => ({
+    id: index + 1, name: `NDA – row ${index + 2}.docx`, doc_path: `/m/NDA – row ${index + 2}.docx`, created_at: index + 1, role: "deliverable" as const,
+    batch: { id: "b2", folder: "NDA – 2026-10-31", row: index + 2, source: "Clients.csv", missing: [] },
+  }))
+  const html = renderToStaticMarkup(createElement(DocumentUpload, { matterId: "m", documents, onUploaded: () => {}, onView: () => {} }))
+  expect(html.replace(/<[^>]+>/g, "")).toContain("NDA – 2026-10-317 documents from Clients.csv")
+  expect(html).toMatch(/<button type="button" class="doc-children-toggle" aria-expanded="false" aria-controls="doc-batch-b2">[\s\S]*?Show documents<\/button>/)
+  expect(html).not.toContain("NDA – row 2.docx")
+})

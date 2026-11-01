@@ -79,8 +79,10 @@ function highlightRunOpenItems(run: string) {
  * from the first to start (the longest of those starting together) to the
  * last to end, so an open item naming a placeholder ("[open item: … [TBC] …]")
  * stays one open item. A blank, bare or bracketed ("___", "[____]"), takes the
- * field fill, every other marker the open-item fill. */
-export function shadedMarkerSpans(text: string) {
+ * field fill, every other marker the open-item fill. `literals` adds markers
+ * the patterns do not know, matched as exact text (a template's own named
+ * placeholders still unfilled, such as "[Client Name]"). */
+export function shadedMarkerSpans(text: string, literals: readonly string[] = []) {
   const found: { start: number; end: number }[] = []
   const pattern = new RegExp(OPEN_ITEM_RE.source, "gi")
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
@@ -99,6 +101,9 @@ export function shadedMarkerSpans(text: string) {
   }
   for (const placeholder of [PLACEHOLDER_PATTERN, INSTRUCTION_COMMENT_PATTERN])
     for (const match of text.matchAll(placeholder)) found.push({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length })
+  for (const literal of literals)
+    for (let at = literal ? text.indexOf(literal) : -1; at >= 0; at = text.indexOf(literal, at + literal.length))
+      found.push({ start: at, end: at + literal.length })
   const spans: { start: number; end: number; fill: string }[] = []
   for (const { start, end } of found.sort((a, b) => a.start - b.start || b.end - a.end)) {
     const last = spans.at(-1)
@@ -118,7 +123,7 @@ export function shadedMarkerSpans(text: string) {
  * Every other formatting is kept, and a run shaded in a fill of its own
  * (ownShading) is left as it is. The bytes are returned themselves when
  * nothing changes. */
-export function shadeOpenItemsInDocx(bytes: Uint8Array, clear: (paragraph: Element) => boolean = () => false, select: (paragraph: Element) => boolean = () => true) {
+export function shadeOpenItemsInDocx(bytes: Uint8Array, clear: (paragraph: Element) => boolean = () => false, select: (paragraph: Element) => boolean = () => true, literals: readonly string[] = []) {
   const parts = unzipSync(bytes)
   const document = parts["word/document.xml"]
   if (!document) return bytes
@@ -127,7 +132,7 @@ export function shadeOpenItemsInDocx(bytes: Uint8Array, clear: (paragraph: Eleme
   for (const paragraph of Array.from(doc.getElementsByTagNameNS(W, "p"))) {
     if (!select(paragraph)) continue
     const runs = paragraphRuns(paragraph)
-    const spans = shadedMarkerSpans(runs.flatMap(row => row.content.map(part => part.value)).join(""))
+    const spans = shadedMarkerSpans(runs.flatMap(row => row.content.map(part => part.value)).join(""), literals)
     const clearing = clear(paragraph)
     if (spans.length || clearing) for (const row of runs) changed = shadeRun(row, spans, clearing) || changed
   }

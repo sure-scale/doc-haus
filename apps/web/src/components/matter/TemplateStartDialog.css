@@ -1,0 +1,9 @@
+/* Start from a template (TemplateStartDialog.tsx): the shared picker panel,
+   with a search field once the library is long and the chosen template's
+   name above its two ways to continue. */
+.picker-body.template-start-body { gap: var(--space-2); padding: var(--space-4) var(--space-5) var(--space-5); }
+.template-start-search { width: 100%; margin-bottom: var(--space-2); }
+.template-start-chosen { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--space-1) var(--space-3); margin-bottom: var(--space-2); }
+.template-start-name { font: var(--md-sys-typescale-title-medium); color: var(--text); overflow-wrap: anywhere; }
+.template-start-chosen .linklike { min-height: 0; font-size: .85rem; }
+.template-start-body .assistant-desc { color: var(--text-secondary); }

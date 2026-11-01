@@ -1,0 +1,92 @@
+/* Fill from spreadsheet (TemplateBatchDialog.tsx). Choose, Match and Done use
+   the picker panel; the preview uses the template reader with its own side
+   panel and footer. */
+
+/* Templates row: "Use" keeps the row's quiet primary-container look as a split. */
+.library-collection .list-row-actions .template-use { display: inline-flex; }
+.library-collection .template-use .split-button { --split-outer: 18px; }
+.library-collection .template-use .split-button > button { min-height: 36px; padding: 6px var(--space-3); border-color: transparent; background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); font-size: .85rem; }
+.library-collection .template-use .split-button > .split-button-toggle { padding: 0 var(--space-2); }
+.library-collection .template-use .split-button > button:hover:not(:disabled) { border-color: transparent; background: var(--accent-soft-hover); }
+.library-collection .template-use .split-button-menu button { color: var(--text); font-size: .85rem; }
+
+.picker-panel.template-batch { max-width: 560px; }
+/* Compound selector: the base .picker-body rule in styles.css loads later. The
+   side padding matches the dialog title's. */
+.picker-body.template-batch-body { gap: var(--space-5); padding: var(--space-5) var(--space-5) var(--space-6); }
+.template-batch-body h2 { margin: 0; font: var(--md-sys-typescale-title-large); color: var(--text); }
+.template-batch-body h2:focus { outline: none; }
+.template-batch-body h2:focus-visible { outline: 2px solid var(--md-sys-state-focus); outline-offset: 4px; border-radius: var(--radius-sm); }
+.template-batch-body p { margin: 0; line-height: 1.6; }
+.template-batch-actions { display: flex; flex: none; justify-content: flex-end; gap: var(--space-2); padding: var(--space-4) var(--space-6); border-top: 1px solid var(--border-soft); }
+
+.template-batch-field { display: grid; gap: var(--space-2); }
+.template-batch-field label, .template-batch-match label { font: var(--md-sys-typescale-label-large); color: var(--text); }
+.template-batch-field select, .template-batch-match select { width: 100%; min-width: 0; }
+.template-batch-drop { display: grid; gap: var(--space-3); }
+.template-batch-drop .dropzone { padding: var(--space-7) var(--space-5); }
+.template-batch-link { justify-self: start; color: var(--accent); font-size: .85rem; text-decoration: none; }
+.template-batch-link:hover { text-decoration: underline; }
+.template-batch-link:focus-visible { outline: 2px solid var(--md-sys-state-focus); outline-offset: 2px; border-radius: var(--radius-sm); }
+.template-batch-error { margin: 0; color: var(--danger); font-size: .85rem; line-height: 1.6; }
+
+.template-batch-intro { display: grid; gap: var(--space-2); }
+.template-batch-intro p { color: var(--text-secondary); font-size: .9rem; }
+.template-batch-match { display: grid; gap: var(--space-4); margin: 0; padding: 0; list-style: none; }
+.template-batch-match li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); align-items: center; gap: var(--space-4); overflow-wrap: anywhere; }
+.template-batch-meta { color: var(--text-secondary); font-size: .85rem; line-height: 1.6; }
+.template-batch-restart { align-self: flex-start; min-height: 0; margin-top: calc(-1 * var(--space-3)); font-size: .85rem; }
+.template-batch-quiet { border-bottom: 1px dotted currentColor; cursor: help; }
+.template-batch-quiet:focus-visible { outline: 2px solid var(--md-sys-state-focus); outline-offset: 2px; border-radius: 2px; }
+.template-batch-quiet.is-warn { color: var(--warn); }
+.template-batch-pairs { display: grid; gap: 2px; }
+
+/* Preview side panel: the row shown, then whether and how it will be created. */
+.template-batch-row { display: flex; flex-direction: column; gap: var(--space-4); padding-top: var(--space-5); overflow-wrap: anywhere; }
+.template-batch-stepper { display: flex; align-items: center; gap: var(--space-2); }
+.template-batch-step { display: inline-grid; place-items: center; width: 40px; height: 40px; min-height: 40px; padding: 0; border-color: var(--border); border-radius: 50%; background: var(--panel); color: var(--text-secondary); }
+.template-batch-step:active:not(:disabled) { border-radius: 50%; }
+.template-batch-position { min-width: 6ch; text-align: center; font: var(--md-sys-typescale-title-medium); font-variant-numeric: tabular-nums; color: var(--text); }
+.template-batch-who { display: grid; gap: 2px; }
+.template-batch-identity { overflow-wrap: anywhere; font: var(--md-sys-typescale-title-large); color: var(--text); }
+.template-batch-sheet-row { color: var(--text-secondary); font-size: .85rem; }
+.template-batch-skip { display: flex; align-items: center; gap: var(--space-3); }
+.template-batch-skip label { cursor: pointer; font-size: .9rem; }
+.template-batch-status { margin: 0; color: var(--text-secondary); font-size: .85rem; line-height: 1.6; }
+.template-batch-status.is-warn { padding: var(--space-2) var(--space-3); border: 1px solid var(--warn-border); border-radius: var(--radius-md); background: var(--warn-soft); color: var(--warn); }
+.template-batch-change { align-self: flex-start; min-height: 0; font-size: .85rem; }
+.template-batch-status .template-batch-change { font-size: inherit; }
+
+/* Preview footer: the counts, then the one action. Its row lists open above it. */
+.template-reader-footer:has(> .template-batch-footer) { overflow: visible; }
+.template-batch-footer { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3) var(--space-5); }
+.template-batch-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); margin: 0; color: var(--text-secondary); font-size: .9rem; }
+.template-batch-summary .linklike { min-height: 0; font-size: inherit; }
+.template-batch-footer > .primary { margin-left: auto; }
+.template-batch-footer > .template-batch-error { flex: 1 1 100%; }
+.template-batch-menu { position: relative; display: inline-flex; }
+.template-batch-menu .template-batch-menu-list { top: auto; right: auto; bottom: calc(100% + 6px); left: 0; max-height: min(320px, 50vh); overflow-y: auto; }
+.template-batch-menu .template-batch-menu-list[hidden] { display: none; }
+
+.template-batch-done { display: grid; justify-items: start; gap: var(--space-3); }
+.template-batch-done-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); }
+.template-batch-done p { color: var(--text-secondary); font-size: .9rem; }
+.template-batch-done .template-batch-quiet { font-size: .9rem; }
+
+@media (max-width: 760px) {
+  .picker-body.template-batch-body { padding: var(--space-5); gap: var(--space-5); }
+  .template-batch-actions { padding: var(--space-3) var(--space-5); padding-bottom: max(var(--space-3), env(safe-area-inset-bottom)); }
+  .template-batch-actions > .primary { flex: 1; }
+  .template-batch-match li { grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
+  /* The row controls sit above the document, so the stepper stays in reach. */
+  .template-reader:has(.template-batch-row) .changes-panel { order: -1; border-top: 0; border-bottom: 1px solid var(--border); }
+  /* Compact on a phone, so the document keeps most of the screen. */
+  .template-batch-row { gap: var(--space-3); padding-top: var(--space-3); padding-bottom: var(--space-3); }
+  .template-batch-footer > .primary { flex: 1 1 100%; margin-left: 0; }
+}
+@media (pointer: coarse) {
+  .library-collection .template-use .split-button { --split-outer: 22px; }
+  .library-collection .template-use .split-button > button { min-height: max(44px, calc(44px / var(--ui-scale))); }
+  .template-batch-step { width: max(44px, calc(44px / var(--ui-scale))); height: max(44px, calc(44px / var(--ui-scale))); }
+  .template-batch-link { display: inline-flex; align-items: center; min-height: 44px; }
+}

@@ -13,8 +13,12 @@ import {
   type MatterDetail as Detail,
   type Playbook,
 } from "../api/ingest/matters"
-import { listWorkflows, type CustomWorkflow } from "../api/ingest/library"
+import { listWorkflows, type CustomWorkflow, type Template } from "../api/ingest/library"
 import { createTemplateDraft } from "../api/ingest/template-drafts"
+import { rememberLastMatter } from "../lib/last-matter"
+import { TEMPLATE_DRAFT_AGENT, templateDraftLink } from "../lib/template-use"
+import TemplateStartDialog from "../components/matter/TemplateStartDialog"
+import TemplateBatchDialog from "../components/TemplateBatchDialog"
 import { disposeInstance, listAgents } from "../api/opencode/sessions"
 import { matterClient } from "../api/opencode/client"
 import { AUTO, WORKFLOWS } from "../agents"
@@ -107,6 +111,9 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
   const [recordingConflicts, setRecordingConflicts] = useState(false)
   const [attorney, setAttorney] = useState<string>()
   const [comparing, setComparing] = useState<{ name: string; fromViewer?: boolean }>()
+  // Start from a template: choosing one, then filling many from a spreadsheet.
+  const [startingTemplate, setStartingTemplate] = useState(false)
+  const [batching, setBatching] = useState<Template>()
   const [blackline, setBlackline] = useState<CompareParams>()
   // A version blackline opened from the viewer's versions list returns there
   // when closed, with the list showing.
@@ -148,6 +155,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
     getMatter(id)
       .then((next) => {
         setMatter(next)
+        rememberLastMatter(next.id)
         setSourceRefresh((value) => value + 1)
         setLoadError(undefined)
       })
@@ -559,6 +567,7 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
             setViewing(name)
           }}
           onCompare={(name) => setComparing({ name })}
+          onStartFromTemplate={() => setStartingTemplate(true)}
         />
       )}
 
@@ -612,6 +621,33 @@ export default function MatterDetail({ onSessionsChanged }: { onSessionsChanged:
             }
             creatingTemplate={creatingTemplate}
           />
+        )}
+      </Exit>
+
+      <Exit when={startingTemplate}>
+        {() => (
+          <TemplateStartDialog
+            onClose={() => setStartingTemplate(false)}
+            onDraft={(template) => {
+              setStartingTemplate(false)
+              // The draft continues in the chat, which an overlaid drawer covers.
+              if (window.matchMedia("(max-width: 1199px)").matches) setDocumentsDrawer(false)
+              navigate(templateDraftLink(matter.id, template.name))
+              // The agent param is already "draft" on a second start, so the
+              // load effect will not re-pin it over an assistant chosen since.
+              if (agents?.some((a) => a.name === TEMPLATE_DRAFT_AGENT)) setAgent(TEMPLATE_DRAFT_AGENT)
+            }}
+            onBatch={(template) => {
+              setStartingTemplate(false)
+              setBatching(template)
+            }}
+          />
+        )}
+      </Exit>
+
+      <Exit when={batching}>
+        {(batching) => (
+          <TemplateBatchDialog template={batching} matter={matter.id} onCreated={refresh} onClose={() => setBatching(undefined)} />
         )}
       </Exit>
 

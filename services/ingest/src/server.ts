@@ -13,6 +13,7 @@ import { wordHttpsConfiguration } from "./word-configuration"
 import { stripWordLink } from "../../../dochaus/lib/word-linked-docx"
 import { assertMatterWordEditsAllowed, assertWordEditAllowed, EditingLeaseError, type WordLeaseWriteOptions } from "../../../dochaus/lib/word-edit-lease"
 import { templateDraftRoutes } from "./template-drafts"
+import { templateBatchRoutes, withTemplateBatches } from "./template-batch-routes"
 import { registeredCombinedParts } from "./combined-output"
 import { documentLabelRoutes } from "./document-labels"
 import { pdfPassageRoutes } from "./pdf-page"
@@ -168,7 +169,7 @@ process.on("unhandledRejection", (reason) => {
 // on localhost; a wildcard would let any site in a user's browser hit this
 // service. Non-browser callers (curl, the opencode server) send no Origin and are
 // unaffected.
-const localCors = cors({ origin: (origin) => (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null), exposeHeaders: ["X-DocHaus-Revision-Notice", "X-DocHaus-Export-Name", "X-DocHaus-Chronology-Revision"] })
+const localCors = cors({ origin: (origin) => (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ? origin : null), exposeHeaders: ["X-DocHaus-Revision-Notice", "X-DocHaus-Export-Name", "X-DocHaus-Chronology-Revision", "X-DocHaus-Batch-Missing"] })
 app.use("*", async (c, next) => {
   if (wordTokenPath(c.req.path)) return wordCors(c, next)
   if (/^Bearer /i.test(c.req.header("Authorization") ?? ""))
@@ -527,11 +528,11 @@ app.get("/matters/:id", async (c) => {
       // documents that have unreviewed changes waiting.
       // Each source's extraction quality (#239) goes out as `quality`; one
       // ingested before the gate has none.
-      const documents = withEmailLinks(db, (listDocuments(db) as { doc_path: string; name: string; extraction_quality: string | null }[]).map(({ extraction_quality, ...d }) => ({
+      const documents = await withTemplateBatches(matter.dir, withEmailLinks(db, (listDocuments(db) as { doc_path: string; name: string; extraction_quality: string | null }[]).map(({ extraction_quality, ...d }) => ({
         ...d,
         ...(extraction_quality ? { quality: readExtractionQuality(extraction_quality) } : {}),
         pending: counts[documentRegistryIdentity(d.doc_path)] ?? 0,
-      })))
+      }))))
       return c.json({ ...matter, documents })
     } finally {
       db.close()
@@ -1108,6 +1109,9 @@ app.get("/templates/text", async (c) => {
   if (!existsSync(file)) return c.notFound()
   return c.json({ text: await extractDocumentText(file, Buffer.from(await Bun.file(file).bytes())) })
 })
+
+// Many documents from one template and a spreadsheet (template-batch-routes.ts).
+app.route("/", templateBatchRoutes())
 
 // Serve a template's .docx bytes so the dochaus draft-document tool can fill it,
 // mirroring the matter document content route.
