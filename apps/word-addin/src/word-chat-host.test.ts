@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { WordChatHost, WordChatHostError, type WordChatContext, type WordChatWord, type WordChatApplyInput } from "./word-chat-host"
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom"
-import { validWordChatFormatting, type WordChatAuthoredAmendment, type WordChatParagraphFormat, type WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
+import { validWordChatFormatting, wordChatTargetCurrent, type WordChatAuthoredAmendment, type WordChatParagraphFormat, type WordChatTarget } from "../../../dochaus/lib/word-chat-amendment-contract"
 import { wordChanges } from "../../../dochaus/lib/word-changes"
 
 // This integration uses the real Bun/shared writer without pulling its server
@@ -521,6 +521,24 @@ test("current context reads unsaved body without requiring a selection and empty
   expect(await host.selection()).toBeUndefined()
   expect(state.writes).toHaveLength(0)
   expect(state.selected).toBe(0)
+})
+
+test("selecting a whole paragraph with its paragraph mark yields the paragraph text and a current target", async () => {
+  const { state, host } = office(["First clause.", "Second clause.", "Third clause."])
+  const first = "First clause."
+  for (const end of [first.length, first.length + 1]) { // text only, then text plus its paragraph mark
+    state.selection = [0, end]
+    const target = (await host.selection())!
+    expect(target.text).toBe(first)
+    expect(target.paragraphs.map(p => p.text)).toEqual([first])
+    expect([target.startOffset, target.endOffset]).toEqual([0, first.length])
+    expect(wordChatTargetCurrent(await host.capture(false, target), target)).toBe(true)
+  }
+  // Two paragraphs, the second with its mark: the break between them stays, the final mark does not.
+  state.selection = [0, `${first}\rSecond clause.`.length + 1]
+  const both = (await host.selection())!
+  expect(both.text).toBe(`${first}\rSecond clause.`)
+  expect(wordChatTargetCurrent(await host.capture(false, both), both)).toBe(true)
 })
 
 test("scoped OOXML imports stop before authoring or mutation while document-wide numbering safety is unresolved", async () => {
