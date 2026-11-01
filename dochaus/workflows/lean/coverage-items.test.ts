@@ -50,7 +50,7 @@ function prepared() {
 
 /** Writes the run's act record, as its acts step leaves it. */
 const recordActs = (directory: string, status: ActRecord["status"], acts: ActRecord["acts"] = []) =>
-  writeLeanText(directory, "acts.json", JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status, acts, deliverables: [], issues: [] }))
+  writeLeanText(directory, "acts.json", JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status, acts, verify: null, deliverables: [], issues: [] }))
 /** `act` as the act record lists it, taken under its parties' authority. */
 const recorded = ({ act: name, source, quote, parties }: CoverageAct): ActRecord["acts"][number] =>
   ({ act: name, source, quote, who: { authorised_by: parties, performed_by: [], basis: [], reason: null }, how: null })
@@ -328,6 +328,30 @@ describe("plan coverage open items", () => {
     recordActs(directory, "listed", [{ ...release, how: { ...release.how, conflict: null } }])
     recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
     expect(coverageItems(directory).map(item => item.detail)).toEqual([expect.stringContaining('Act record: the instrument "Release letter" that effects "release the deposit"')])
+  })
+
+  test("conflicts on the same instruction and authority words yield one item naming every act they affect", () => {
+    const directory = prepared()
+    const conflict = {
+      instruction: { source: "request", quote: "Kestrel Works then releases the deposit" },
+      authority: { source: SOURCE, quote: "Kestrel Works shall release the deposit once the Orchard Committee approves the revised schedule" },
+      difference: "The instructions have Kestrel Works release the deposit; the source makes the release wait for the committee's approval.",
+    }
+    const how = { instrument: "Release letter", executed_by: ["Kestrel Works"], requires: [], basis: [], reason: null, conflict }
+    const release = { ...recorded({ act: "release the deposit", source: "request", quote: "Kestrel Works then releases the deposit", parties: ["the Orchard Committee"], document: "d1" }), how }
+    // The same step listed twice, the second time with its words spaced differently on both sides.
+    const again = { ...release, act: "pay the deposit back", how: { ...how, conflict: { ...conflict, instruction: { ...conflict.instruction, quote: `  ${conflict.instruction.quote}` },
+      authority: { ...conflict.authority, quote: conflict.authority.quote.replace(" once ", "  once ") }, difference: "Worded another way." } } }
+    const other = { ...recorded({ ...act, parties: ["the Orchard Committee"] }), how: { ...how, instrument: "Schedule consent", conflict: { ...conflict, authority: { source: SOURCE, quote: "Kestrel Works shall release the deposit" } } } }
+    recordActs(directory, "listed", [release, other, again])
+    const plan = writeLeanPlan(directory, [RELEASE], "0".repeat(64))
+    recordCoverage(directory, plan, "covered", [{ ...act, parties: ["Kestrel Works"] }], [])
+    expect(coverageItems(directory).map(item => item.detail)).toEqual([
+      'Act record: for "release the deposit" and "pay the deposit back", the instructions direct "Kestrel Works then releases the deposit" [source: request], ' +
+      `but "${conflict.authority.quote}" [source: ${SOURCE}] requires otherwise: ${conflict.difference} The lawyer should decide which governs.`,
+      `Act record: for "${act.act}", the instructions direct "Kestrel Works then releases the deposit" [source: request], ` +
+      `but "Kestrel Works shall release the deposit" [source: ${SOURCE}] requires otherwise: ${conflict.difference} The lawyer should decide which governs.`,
+    ])
   })
 
   test("a changed act record leaves the saved plan's coverage stale, so the plan is checked again", () => {

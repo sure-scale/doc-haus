@@ -102,17 +102,19 @@ export function scriptedModel(replies: Record<string, Reply>) {
   return { port, prompts, sessions, count, counts: () => [AGENT.draft, AGENT.review, AGENT.changes, AGENT.finalize].map(count) }
 }
 
-export type ActRecordJob = "what" | "deliverables" | "who" | "how"
+export type ActRecordJob = "what" | "verify" | "deliverables" | "who" | "how"
 
 /** Which act-record job a first prompt asks, by the reply shape its contract gives. */
 export function actRecordJob(prompt: string): ActRecordJob {
-  return prompt.includes('{"index":0,"how":{') ? "how" : prompt.includes('{"index":0,"who":{') ? "who" : prompt.includes('{"deliverables":[') ? "deliverables" : "what"
+  return prompt.includes('{"index":0,"how":{') ? "how" : prompt.includes('{"index":0,"who":{') ? "who" : prompt.includes('{"index":0,"verify":{') ? "verify"
+    : prompt.includes('{"deliverables":[') ? "deliverables" : "what"
 }
 
 /** The act-record agent scripted per job: each job's session is told apart by
  * its first prompt, and a retry in the same session answers as that job. A
- * job without its own reply gets the default: WHAT lists no act, DELIVERABLES
- * none, and WHO and HOW leave every act they are shown unsettled. */
+ * job without its own reply gets the default: WHAT lists no act, VERIFY keeps
+ * every candidate as a distinct act, DELIVERABLES none, and WHO and HOW leave
+ * every act they are shown unsettled. */
 export function actRecordJobs(replies: Partial<Record<ActRecordJob, Reply>>): Reply {
   const jobs = new Map<string | undefined, ActRecordJob>()
   const unsettled = (prompt: string, field: "who" | "how") => JSON.stringify({ acts: listedActs(prompt).map(({ index }) => ({ index, [field]: field === "who"
@@ -120,6 +122,7 @@ export function actRecordJobs(replies: Partial<Record<ActRecordJob, Reply>>): Re
     : { instrument: null, executed_by: [], requires: [], basis: [], reason: "The scripted record does not settle the instrument." } })) })
   const defaults: Record<ActRecordJob, Reply> = {
     what: () => JSON.stringify({ acts: [] }),
+    verify: prompt => JSON.stringify({ acts: listedActs(prompt).map(({ index }) => ({ index, verify: { decision: "act", same_as: null, kind: null, reason: null } })) }),
     deliverables: () => JSON.stringify({ deliverables: [] }),
     who: prompt => unsettled(prompt, "who"),
     how: prompt => unsettled(prompt, "how"),
@@ -131,7 +134,7 @@ export function actRecordJobs(replies: Partial<Record<ActRecordJob, Reply>>): Re
   }
 }
 
-/** The acts a coverage placement or act-record WHO or HOW prompt lists, by index. */
+/** The acts a coverage placement or act-record VERIFY, WHO or HOW prompt lists, by index. */
 export function listedActs(prompt: string) {
   const json = /<acts>\n([\s\S]*?)\n<\/acts>/.exec(prompt)?.[1]
   if (!json) throw new Error("The prompt lists no acts.")

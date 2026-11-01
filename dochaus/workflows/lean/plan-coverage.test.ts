@@ -43,7 +43,7 @@ type RecordedAct = { act: string; source: string; quote: string; parties: string
 /** Writes the run's act record, as its acts step would: each act taken under
  * the authority of its parties. An empty list is a record that found none. */
 const recordActs = (directory: string, acts: RecordedAct[]) => writeLeanText(directory, "acts.json", JSON.stringify({
-  schema: LEAN_ACTS_SCHEMA, status: acts.length ? "listed" : "none", deliverables: [], issues: [],
+  schema: LEAN_ACTS_SCHEMA, status: acts.length ? "listed" : "none", verify: null, deliverables: [], issues: [],
   acts: acts.map(({ act, source, quote, parties }) => ({ act, source, quote, who: { authorised_by: parties, performed_by: [], basis: [], reason: null }, how: null })),
 }))
 
@@ -181,7 +181,7 @@ describe("plan coverage at the outline step", () => {
   }, 60_000)
 
   test("an act record that is missing or unchecked leaves coverage unchecked: no act is placed and the plan is still saved", async () => {
-    for (const record of [undefined, JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status: "unchecked", acts: [], deliverables: [], issues: [{ job: "what", issues: ["The listing never passed its check."] }] })]) {
+    for (const record of [undefined, JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status: "unchecked", acts: [], verify: null, deliverables: [], issues: [{ job: "what", issues: ["The listing never passed its check."] }] })]) {
       const { directory, state } = prepared()
       if (record) writeLeanText(directory, "acts.json", record)
       else rmSync(leanFile(directory, "acts.json"))

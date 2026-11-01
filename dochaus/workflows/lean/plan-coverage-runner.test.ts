@@ -198,12 +198,12 @@ describe("plan coverage through the run", () => {
     expect(readLeanCoverage(none.directory)).toMatchObject({ status: "no_acts", acts: [], issues: [] })
     expect(readLeanCoverage(one.directory)).toMatchObject({ status: "covered", acts: [expect.objectContaining({ act: release.act, document: "d1" })], issues: [] })
     // No revision or checker retry, and the same model calls in the same order, but for the
-    // listed act's WHO and HOW jobs and its one placement: with no act listed there is nothing
-    // to describe or place, so none of them is asked.
+    // listed act's VERIFY, WHO and HOW jobs and its one placement: with no act listed there is
+    // nothing to verify, describe or place, so none of them is asked.
     for (const { model } of [none, one]) expect(model.prompts.filter(prompt => prompt.text.startsWith(REVISE))).toEqual([])
     expect([none.model.count(AGENT.coverage), one.model.count(AGENT.coverage)]).toEqual([0, 1])
-    expect([none.model.count(AGENT.acts), one.model.count(AGENT.acts)]).toEqual([ACT_RECORD_SAMPLES + 1, ACT_RECORD_SAMPLES + 3])
-    const described = (prompt: { agent: string; text: string }) => prompt.agent === AGENT.acts && ["who", "how"].includes(actRecordJob(prompt.text))
+    expect([none.model.count(AGENT.acts), one.model.count(AGENT.acts)]).toEqual([ACT_RECORD_SAMPLES + 1, ACT_RECORD_SAMPLES + 4])
+    const described = (prompt: { agent: string; text: string }) => prompt.agent === AGENT.acts && ["verify", "who", "how"].includes(actRecordJob(prompt.text))
     expect(one.model.prompts.filter(prompt => prompt.agent !== AGENT.coverage && !described(prompt)).map(prompt => prompt.agent)).toEqual(none.model.prompts.map(prompt => prompt.agent))
     expect(readQuestions(one.directory)).toEqual([])
     expect(coverageItems(one.directory)).toEqual([])

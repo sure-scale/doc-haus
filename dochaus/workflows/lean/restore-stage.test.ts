@@ -93,7 +93,7 @@ test("restoring puts back the plan's coverage record with the plan, and restorin
   const directory = leanFixtureMatter("lean-restore-")
   directories.push(directory)
   // The run's act record lists no act the lawyer's instructions direct.
-  writeLeanText(directory, "acts.json", JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status: "none", acts: [], deliverables: [], issues: [] }))
+  writeLeanText(directory, "acts.json", JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status: "none", acts: [], verify: null, deliverables: [], issues: [] }))
   expect((await runLean(directory, { sessions: scriptedLeanModel().port })).status).toBe("completed")
   const record = readFileSync(leanFile(directory, "coverage.json"), "utf8")
   expect(JSON.parse(record)).toMatchObject({ status: "no_acts" })

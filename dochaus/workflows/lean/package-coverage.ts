@@ -1,6 +1,6 @@
 import { normalize, normalizeWithMap, sourceReadings } from "../../lib/quote-verify"
 import { TOOL_SYNTAX_ISSUE, printedToolCall, record } from "./checks"
-import { readActRecord, signerFlags } from "./act-record"
+import { readActRecord, signerFlags, type ActRecord } from "./act-record"
 import { FIRST_DOCUMENT, nameKey, namedIn, readLeanPlan, type ActingFor, type DocID, type PlannedDocument } from "./plan"
 import { tagged } from "./prompts"
 import { approvedResearch, researchHandoff } from "./research"
@@ -799,9 +799,11 @@ export function coverageItems(directory: string): OpenItem[] {
   return [...new Map(items.map(row => [row.id, row])).values()]
 }
 
-/** One disclosed item per act whose HOW records a conflict between the
+/** One disclosed item per conflict the acts' HOW records between the
  * instructions and the research or sources, quoting both sides for the lawyer
- * to decide, and one per other act whose instrument, as the act record reads
+ * to decide: conflicts on the same instruction and authority words are one
+ * item naming every act they affect, with the first act's difference. One more
+ * per other act whose instrument, as the act record reads
  * it, is not executed by every party whose authority the act needs
  * (signerFlags). The record's reading is a prompt for the lawyer to confirm,
  * never an answer, so the item asks only that and blocks nothing; an act the
@@ -811,9 +813,18 @@ function actRecordItems(directory: string): OpenItem[] {
   const record = readActRecord(directory)
   if (!record) return []
   const quoted = (entry: { source: string; quote: string }) => `"${entry.quote.replace(/\s+/g, " ").trim()}" [source: ${entry.source}]`
-  const conflicts = record.acts.flatMap(act => act.how?.conflict ? [openItem("finalize", "omission",
-    `Act record: for "${act.act}", the instructions direct ${quoted(act.how.conflict.instruction)}, but ${quoted(act.how.conflict.authority)} requires otherwise: ` +
-    `${act.how.conflict.difference.trim()} The lawyer should decide which governs.`, { repair_target: "memo" })] : [])
+  const grouped = new Map<string, { acts: string[]; conflict: NonNullable<NonNullable<ActRecord["acts"][number]["how"]>["conflict"]> }>()
+  for (const act of record.acts) {
+    const conflict = act.how?.conflict
+    if (!conflict) continue
+    const key = JSON.stringify([conflict.instruction.source, normalize(conflict.instruction.quote), conflict.authority.source, normalize(conflict.authority.quote)])
+    const group = grouped.get(key)
+    if (group) { if (!group.acts.includes(act.act)) group.acts.push(act.act) }
+    else grouped.set(key, { acts: [act.act], conflict })
+  }
+  const conflicts = [...grouped.values()].map(({ acts, conflict }) => openItem("finalize", "omission",
+    `Act record: for ${quotedList(acts)}, the instructions direct ${quoted(conflict.instruction)}, but ${quoted(conflict.authority)} requires otherwise: ` +
+    `${conflict.difference.trim()} The lawyer should decide which governs.`, { repair_target: "memo" }))
   return [...conflicts, ...signerFlags(record).filter(flag => flag.status === "flag" && !record.acts[flag.act]!.how?.conflict).map(({ act: index, missing }) => {
     const act = record.acts[index]!
     const instrument = act.how?.instrument ? `the instrument "${act.how.instrument}"` : "the instrument"

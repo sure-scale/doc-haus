@@ -36,7 +36,7 @@ function matter() {
   db.close()
   const state = initLeanState(directory, { request: "Draft a short notice letter.", ownerSessionID: "ses_owner", model: null })
   // The run's act record lists no act the lawyer's instructions direct.
-  writeLeanText(directory, "acts.json", JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status: "none", acts: [], deliverables: [], issues: [] }))
+  writeLeanText(directory, "acts.json", JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status: "none", acts: [], verify: null, deliverables: [], issues: [] }))
   return { directory, state }
 }
 

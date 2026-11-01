@@ -41,8 +41,9 @@ export type LeanEventName =
   | "paragraphs"
   /** The act-record step's record (act-record.ts): its status ("listed",
    * "none" or "unchecked") as `outcome`, how many acts and deliverables it
-   * records, how many WHAT samples passed and how many acts record a conflict as `counts`, and whether each job
-   * passed its check as `jobs`. */
+   * records, how many WHAT samples passed, how many candidates their union held
+   * and how many VERIFY excluded or merged, and how many acts record a conflict
+   * as `counts`, and whether each job passed its check as `jobs`. */
   | "act_record"
 
 export type LeanEvent = {

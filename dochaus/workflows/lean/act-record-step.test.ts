@@ -33,8 +33,8 @@ test("the acts step runs once, after research review and before the spine, and r
   expect(readActRecord(directory)?.status).toBe("none")
   expect(readLeanEvents(directory).filter(event => event.event === "act_record")).toEqual([expect.objectContaining({
     stage: "acts", outcome: "none",
-    counts: { acts: 0, deliverables: 0, what_samples: ACT_RECORD_SAMPLES, what_passed: ACT_RECORD_SAMPLES, conflicts: 0 },
-    jobs: { what: "passed", deliverables: "passed", who: "not_asked", how: "not_asked" },
+    counts: { acts: 0, deliverables: 0, what_samples: ACT_RECORD_SAMPLES, what_passed: ACT_RECORD_SAMPLES, candidates: 0, excluded: 0, merged: 0, conflicts: 0 },
+    jobs: { what: "passed", verify: "not_asked", deliverables: "passed", who: "not_asked", how: "not_asked" },
   })])
 })
 
@@ -51,7 +51,7 @@ test("a listed act is described by WHO and HOW before the spine", async () => {
   const record = readActRecord(directory)
   expect(record?.status).toBe("listed")
   expect(record?.acts).toEqual([expect.objectContaining({ ...act, who: expect.objectContaining({ authorised_by: [] }), how: expect.objectContaining({ instrument: null }) })])
-  expect(model.count(AGENT.acts)).toBe(UNLISTED_JOBS + 2)
+  expect(model.count(AGENT.acts)).toBe(UNLISTED_JOBS + 3)
   // The spine plans with the record in view.
   const spine = model.prompts.find(prompt => prompt.agent === AGENT.spine)!.text
   expect(spine).toContain(`1. ${JSON.stringify(act.act)}\n   Directed by request: ${JSON.stringify(act.quote)}`)

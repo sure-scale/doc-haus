@@ -39,7 +39,7 @@ const GRANT_HOW: ActHow = {
 }
 const APPROVE_HOW: ActHow = { instrument: null, executed_by: [], requires: [], basis: [], reason: "The record does not say how the Club Committee records its approval.", conflict: null }
 
-type Job = "what" | "deliverables" | "who" | "how"
+type Job = "what" | "verify" | "deliverables" | "who" | "how"
 type Reply = (job: Job, attempt: number, sample: number) => unknown
 
 const directories: string[] = []
@@ -71,6 +71,7 @@ function scripted(reply: Reply) {
       prompts.push(input)
       if (!jobs.has(input.sessionID)) {
         const job: Job = input.text.includes('{"index":0,"how":{') ? "how" : input.text.includes('{"index":0,"who":{') ? "who"
+          : input.text.includes('{"index":0,"verify":{') ? "verify"
           : input.text.includes('{"deliverables":[') ? "deliverables" : "what"
         jobs.set(input.sessionID, { job, sample: [...jobs.values()].filter(row => row.job === job).length })
       }
@@ -83,9 +84,11 @@ function scripted(reply: Reply) {
   return { port, sessions, prompts, asked }
 }
 
-const indexed = <T>(field: "who" | "how", values: T[]) => ({ acts: values.map((value, index) => ({ index, [field]: value })) })
-/** Every job answered validly: both acts listed, the note asked for, WHO and HOW settled. */
+const indexed = <T>(field: "verify" | "who" | "how", values: T[]) => ({ acts: values.map((value, index) => ({ index, [field]: value })) })
+const KEEP = { decision: "act", same_as: null, kind: null, reason: null }
+/** Every job answered validly: both acts listed and kept, the note asked for, WHO and HOW settled. */
 const valid: Reply = job => job === "what" ? { acts: [GRANT, APPROVE] } : job === "deliverables" ? { deliverables: [NOTE] }
+  : job === "verify" ? indexed("verify", [KEEP, KEEP])
   : job === "who" ? indexed("who", [GRANT_WHO, APPROVE_WHO]) : indexed("how", [GRANT_HOW, APPROVE_HOW])
 const listedOnly = (record: ActRecord | undefined) => record?.acts.map(({ act, source, quote }) => ({ act, source, quote }))
 
@@ -118,7 +121,7 @@ describe("WHAT samples", () => {
 
   test("samples that all list nothing record none, and WHO and HOW are not asked", async () => {
     const { model, record } = await run(job => job === "what" ? { acts: [] } : { deliverables: [] })
-    expect(record).toEqual({ schema: LEAN_ACTS_SCHEMA, status: "none", acts: [], deliverables: [], issues: [] })
+    expect(record).toEqual({ schema: LEAN_ACTS_SCHEMA, status: "none", acts: [], verify: null, deliverables: [], issues: [] })
     expect(model.asked("what")).toHaveLength(ACT_RECORD_SAMPLES)
     expect([model.asked("who"), model.asked("how")]).toEqual([[], []])
   })
@@ -130,6 +133,64 @@ describe("WHAT samples", () => {
     expect(record?.issues.map(row => row.job)).toEqual(["what"])
     expect(record?.issues[0].issues.join(" ")).toContain("words the lawyer never wrote")
     expect(record?.deliverables).toEqual([NOTE])
+  })
+})
+
+describe("VERIFY", () => {
+  // The same grant, directed again by the proposal's words: the union keeps both, as their sources differ.
+  const GRANT_AGAIN: ListedAct = { act: "grant the boat storage licence", source: SOURCE, quote: "Fenwick Boatyard Limited will grant the Harbourlight Rowing Club a licence" }
+  const COVER: ListedAct = { act: "prepare a cover note for the Club", source: "request", quote: NOTE.quote }
+  const candidates = [GRANT, COVER, APPROVE, GRANT_AGAIN]
+  const NOT_ACT = { decision: "not_act", same_as: null, kind: "document", reason: `The request asks for a note to be written: "${NOTE.quote}" [source: request]. Nothing is authorised or carried by it.` }
+  const decided = indexed("verify", [KEEP, NOT_ACT, KEEP, { ...KEEP, decision: "same", same_as: 0 }])
+  const listing: Reply = (job, attempt) => job === "what" ? { acts: candidates } : job === "verify" ? decided : valid(job, attempt, 0)
+
+  test("a candidate that is not an act is recorded as excluded with its kind and reason, a repeat is merged, and neither reaches WHO or HOW", async () => {
+    const { model, record } = await run(listing)
+    expect(record?.status).toBe("listed")
+    expect(listedOnly(record)).toEqual([GRANT, APPROVE])
+    expect(record?.verify).toEqual({ excluded: [{ ...COVER, kind: "document", reason: NOT_ACT.reason }], merged: [{ ...GRANT_AGAIN, into: 0 }] })
+    expect(record?.acts.map(act => [act.who, act.how])).toEqual([[GRANT_WHO, GRANT_HOW], [APPROVE_WHO, APPROVE_HOW]])
+    // VERIFY sees every candidate; WHO and HOW see only the kept acts.
+    expect(model.asked("verify")).toHaveLength(1)
+    expect(model.asked("verify")[0]!.text).toContain(JSON.stringify(COVER.act))
+    for (const job of ["who", "how"] as const) {
+      const shown = model.asked(job)[0]!.text
+      expect([shown.includes(JSON.stringify(COVER.act)), shown.includes(JSON.stringify(GRANT_AGAIN.act)), shown.includes(JSON.stringify(APPROVE.act))]).toEqual([false, false, true])
+    }
+  })
+
+  test("every candidate excluded records none, keeping the exclusions, and WHO and HOW are not asked", async () => {
+    const { model, record } = await run((job, attempt) => job === "what" ? { acts: [COVER] } : job === "verify" ? indexed("verify", [NOT_ACT]) : valid(job, attempt, 0))
+    expect(record?.status).toBe("none")
+    expect(record?.acts).toEqual([])
+    expect(record?.verify?.excluded).toEqual([{ ...COVER, kind: "document", reason: NOT_ACT.reason }])
+    expect([model.asked("who"), model.asked("how")]).toEqual([[], []])
+  })
+
+  test("an unknown candidate index, a repeat of a candidate that is not kept or an unverifiable quote in a reason is retried naming it", async () => {
+    const wrong = [
+      { acts: [...decided.acts, { index: 7, verify: KEEP }] },
+      indexed("verify", [KEEP, NOT_ACT, KEEP, { ...KEEP, decision: "same", same_as: 1 }]),
+      indexed("verify", [KEEP, { ...NOT_ACT, reason: 'The request says "write the Club a friendly letter" [source: request].' }, KEEP, { ...KEEP, decision: "same", same_as: 0 }]),
+    ]
+    const { model, record } = await run((job, attempt) => job === "verify" ? wrong[attempt] ?? decided : listing(job, attempt, 0))
+    const retries = model.asked("verify").slice(1).map(prompt => prompt.text)
+    expect(retries).toHaveLength(3)
+    expect(retries[0]).toContain('gives "index": 7, which is not the index of a listed act')
+    expect(retries[1]).toContain('"verify.same_as" is 1')
+    expect(retries[2]).toContain("write the Club a friendly letter")
+    expect(record?.verify?.excluded.map(row => row.act)).toEqual([COVER.act])
+  })
+
+  test("a verify that never passes keeps the whole union for WHO and HOW and records that it did not run", async () => {
+    const { model, record } = await run((job, attempt) => job === "verify" ? { acts: [] } : job === "what" ? { acts: [GRANT, APPROVE] } : valid(job, attempt, 0))
+    expect(model.asked("verify")).toHaveLength(LEAN_MAX_RETRIES + 1)
+    expect(record?.status).toBe("listed")
+    expect(listedOnly(record)).toEqual([GRANT, APPROVE])
+    expect(record?.verify).toBeNull()
+    expect(record?.issues.map(row => row.job)).toEqual(["verify"])
+    expect(record?.acts.map(act => [act.who, act.how])).toEqual([[GRANT_WHO, GRANT_HOW], [APPROVE_WHO, APPROVE_HOW]])
   })
 })
 
@@ -241,7 +302,7 @@ describe("an adopted recommendation", () => {
     }
     const how: ActHow[] = [{ ...APPROVE_HOW, conflict }, APPROVE_HOW]
     const { directory, model, record } = await run(job => job === "what" ? { acts: [DIRECTED, OWN] } : job === "deliverables" ? { deliverables: [] }
-      : job === "who" ? indexed("who", who) : indexed("how", how), asked, NO_ACT)
+      : job === "verify" ? indexed("verify", [KEEP, KEEP]) : job === "who" ? indexed("who", who) : indexed("how", how), asked, NO_ACT)
     expect(listedOnly(record)).toEqual([DIRECTED, OWN])
     expect(record?.acts.map(act => [act.who, act.how])).toEqual([[who[0], how[0]], [who[1], how[1]]])
     expect(record?.issues).toEqual([])
@@ -272,7 +333,7 @@ describe("signer flags", () => {
   const act = (who: ActWho | null, how: ActHow | null): RecordedAct => ({ ...GRANT, who, how })
   const who = (...authorised_by: string[]): ActWho => ({ ...GRANT_WHO, authorised_by })
   const how = (...executed_by: string[]): ActHow => ({ ...GRANT_HOW, executed_by })
-  const flags = (...acts: RecordedAct[]) => signerFlags({ schema: LEAN_ACTS_SCHEMA, status: "listed", acts, deliverables: [], issues: [] })
+  const flags = (...acts: RecordedAct[]) => signerFlags({ schema: LEAN_ACTS_SCHEMA, status: "listed", acts, verify: null, deliverables: [], issues: [] })
 
   test("an instrument its authorising parties sign is ok, whatever the spelling of their legal form", () => {
     expect(flags(
@@ -304,10 +365,10 @@ test("every act-record prompt starts with the same pack, runs as the same agent 
   const pack = actRecordPack(directory)
   const first = [...new Map(model.prompts.map(prompt => [prompt.sessionID, prompt] as const)).keys()]
     .map(sessionID => model.prompts.find(prompt => prompt.sessionID === sessionID)!.text)
-  expect(first).toHaveLength(ACT_RECORD_SAMPLES + 3)
+  expect(first).toHaveLength(ACT_RECORD_SAMPLES + 4)
   for (const text of first) expect(text.startsWith(`${pack}\n\n`)).toBe(true)
   // The tails differ by job only: one for every WHAT sample, one each for the others.
-  expect(new Set(first.map(text => text.slice(pack.length))).size).toBe(4)
+  expect(new Set(first.map(text => text.slice(pack.length))).size).toBe(5)
   expect(new Set(model.sessions.map(session => `${session.agent} ${session.parentID}`))).toEqual(new Set([`${ACT_RECORD_AGENT} ses_owner`]))
   expect(new Set(model.prompts.map(prompt => prompt.agent))).toEqual(new Set([ACT_RECORD_AGENT]))
   expect(pack).toContain(SOURCE)

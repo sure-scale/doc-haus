@@ -94,7 +94,7 @@ const replies = (extra: Record<string, Reply> = {}): Record<string, Reply> => ({
 /** Writes the run's act record listing `acts`, each taken under its parties'
  * authority; an empty list is a record that found none. */
 const recordActs = (directory: string, acts: CoverageAct[]) => writeLeanText(directory, "acts.json", JSON.stringify({
-  schema: LEAN_ACTS_SCHEMA, status: acts.length ? "listed" : "none", deliverables: [], issues: [],
+  schema: LEAN_ACTS_SCHEMA, status: acts.length ? "listed" : "none", verify: null, deliverables: [], issues: [],
   acts: acts.map(({ act, source, quote, parties }) => ({ act, source, quote, who: { authorised_by: parties, performed_by: [], basis: [], reason: null }, how: null })),
 }))
 /** The act record lists `acts`, written for a test of the step alone and
@@ -195,7 +195,7 @@ describe("the plan step's package-scope question", () => {
 
   test("unchecked coverage, from an act record never checked or a placement reply that never passes, never blocks and the plan is saved; the same outline checked and uncovered blocks", async () => {
     const neverListed = prepared()
-    writeLeanText(neverListed, "acts.json", JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status: "unchecked", acts: [], deliverables: [], issues: [{ job: "what", issues: ["The listing never passed its check."] }] }))
+    writeLeanText(neverListed, "acts.json", JSON.stringify({ schema: LEAN_ACTS_SCHEMA, status: "unchecked", acts: [], verify: null, deliverables: [], issues: [{ job: "what", issues: ["The listing never passed its check."] }] }))
     const neverPlaced = prepared()
     for (const [unchecked, placements] of [[neverListed, 0], [neverPlaced, LEAN_MAX_RETRIES + 1]] as const) {
       const model = scriptedModel({ [AGENT.draft]: outliner(ONE), ...placementJob(() => "The plan looks complete.") })
