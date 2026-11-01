@@ -74,13 +74,13 @@ export default function TelemetryPanel({ matterId, sessionID }: Props) {
   }
 
   const live = Boolean(lean?.current_activity)
-  // A model missing from the rate card contributes nothing to the sums, so any
-  // total that may include it is a lower bound, never a confident $0.00. When
-  // nothing is priced the ledger counts turns only and says so once.
-  const unknown = lean?.unknown_models ?? []
-  const unpriced = unknown.length > 0 && (lean?.matter_total.cost_usd ?? 0) <= 0
-  const money = (value: number) => (unpriced ? "" : formatCost(value, unknown.length > 0))
-  const total = !lean ? "—" : unpriced ? `${lean.matter_total.turns} turns` : money(lean.matter_total.cost_usd)
+  // A model call whose provider reported no cost adds nothing to the sums, so
+  // any total that may include one is a lower bound, never a confident $0.00.
+  // When nothing is priced the ledger counts calls only and says so once.
+  const unpricedCalls = lean?.unpriced_turns ?? 0
+  const unpriced = unpricedCalls > 0 && (lean?.matter_total.cost_usd ?? 0) <= 0
+  const money = (value: number) => (unpriced ? "" : formatCost(value, unpricedCalls > 0))
+  const total = !lean ? "—" : unpriced ? calls(lean.matter_total.turns) : money(lean.matter_total.cost_usd)
 
   return (
     <div className="rail-strip-item">
@@ -118,25 +118,23 @@ export default function TelemetryPanel({ matterId, sessionID }: Props) {
             <div className="telemetry-drawer-body">
               <TelemetrySection title="Overview">
                 <dl className="telemetry-ledger">
-                  <Metric label="Current activity" cost={lean?.current_activity ? money(lean.current_activity.cost_usd) : "—"} note={lean?.current_activity ? `${lean.current_activity.turns} turns` : "idle"} live={live} />
-                  <Metric label="Today" cost={lean ? money(lean.today.cost_usd) : "—"} note={lean ? `${lean.today.turns} turns` : ""} />
-                  <Metric label="Matter total" cost={lean ? money(lean.matter_total.cost_usd) : "—"} note={lean ? `${lean.matter_total.turns} turns · ${lean.matter_total.sessions} sessions` : ""} />
+                  <Metric label="Current activity" cost={lean?.current_activity ? money(lean.current_activity.cost_usd) : "—"} note={lean?.current_activity ? calls(lean.current_activity.turns) : "idle"} live={live} />
+                  <Metric label="Today" cost={lean ? money(lean.today.cost_usd) : "—"} note={lean ? calls(lean.today.turns) : ""} />
+                  <Metric label="Matter total" cost={lean ? money(lean.matter_total.cost_usd) : "—"} note={lean ? calls(lean.matter_total.turns) : ""} />
                 </dl>
-                {(lean?.rate_card_as_of || unknown.length > 0) && (
-                  <div className="telemetry-foot">
-                    {unknown.length > 0 && <p className="telemetry-unpriced">
-                      {unpriced ? "Cost not available for the models used." : "Totals leave out usage from models without a published rate."}
-                    </p>}
-                    {unknown.length > 0 && <p>No published rate: {unknown.join(", ")}</p>}
-                    {lean?.rate_card_as_of && <p>Rates as of {lean.rate_card_as_of}</p>}
-                  </div>
-                )}
+                <div className="telemetry-foot">
+                  <p>Cost as reported by your model provider.</p>
+                  {unpricedCalls > 0 && <p className="telemetry-unpriced">
+                    {unpriced ? "Your provider reported no cost for the models used." : `Totals leave out ${calls(unpricedCalls)} with no reported cost.`}
+                  </p>}
+                  {lean?.partial && <p className="telemetry-unpriced">Some conversations could not be read, so totals may be low.</p>}
+                </div>
               </TelemetrySection>
 
               {lean?.current_session && <TelemetrySection title={sessionID ? "Current conversation" : "Latest conversation"}>
                 <dl className="telemetry-ledger">
                   <Metric label="Estimated input tokens" cost={number(lean.current_session.tokens)} note="" />
-                  <Metric label="Agent" cost={lean.current_session.agent} note="" />
+                  <Metric label="Assistant" cost={lean.current_session.label} note="" />
                   <Metric label="Model" cost={lean.current_session.model} note="" />
                   <Metric label="Context" cost={{ ok: "Normal usage", warn: "High usage", fail: "Very high usage" }[lean.current_session.status]} note="" />
                 </dl>
@@ -149,13 +147,25 @@ export default function TelemetryPanel({ matterId, sessionID }: Props) {
                   <Sparkline points={detail.sparkline} />
                 </TelemetrySection>
 
-                <TelemetrySection title="Cost split">
-                  {detail.by_agent.some((row) => row.cost_usd > 0) ? <CostDonut rows={detail.by_agent} money={money} /> : undefined}
+                <TelemetrySection title="Background agents and your work">
+                  {detail.by_group.some((row) => row.cost_usd > 0) ? <CostDonut rows={detail.by_group.map((row) => ({ key: row.group, label: row.label, cost_usd: row.cost_usd }))} money={money} /> : undefined}
+                </TelemetrySection>
+
+                <TelemetrySection title="By task">
+                  {detail.by_agent.length ? detail.by_group.map((group) => {
+                    const rows = detail.by_agent.filter((row) => row.group === group.group)
+                    return rows.length ? <div key={group.group} className="telemetry-group">
+                      <h4 className="telemetry-group-title">{group.label}</h4>
+                      {rows.map((row) => (
+                        <BarRow key={row.agent} label={row.label} value={money(row.cost_usd)} meta={[row.turns ? calls(row.turns) : "", row.tool_calls ? `${number(row.tool_calls)} tool ${row.tool_calls === 1 ? "use" : "uses"}` : ""].filter(Boolean).join(" · ")} fraction={row.cost_usd / maxBy(detail.by_agent, (r) => r.cost_usd)} />
+                      ))}
+                    </div> : null
+                  }) : undefined}
                 </TelemetrySection>
 
                 <TelemetrySection title="By model">
                   {detail.by_model.length ? detail.by_model.map((row) => (
-                    <BarRow key={row.model} label={row.model} value={unknown.includes(row.model) && row.cost_usd <= 0 ? "Cost unavailable" : formatCost(row.cost_usd, unknown.includes(row.model))} meta={`${row.turns} turns`} fraction={row.cost_usd / maxBy(detail.by_model, (r) => r.cost_usd)} />
+                    <BarRow key={row.model ?? ""} label={row.model ?? "Model not reported"} value={row.unpriced_turns && row.cost_usd <= 0 ? "Cost not reported" : formatCost(row.cost_usd, row.unpriced_turns > 0)} meta={calls(row.turns)} fraction={row.cost_usd / maxBy(detail.by_model, (r) => r.cost_usd)} />
                   )) : undefined}
                 </TelemetrySection>
 
@@ -165,20 +175,14 @@ export default function TelemetryPanel({ matterId, sessionID }: Props) {
                   )) : undefined}
                 </TelemetrySection>
 
-                <TelemetrySection title="By agent">
-                  {detail.by_agent.length ? detail.by_agent.map((row) => (
-                    <BarRow key={row.agent} label={row.agent} value={money(row.cost_usd)} meta={`${row.turns} turns · ${row.tool_calls} tools`} fraction={row.cost_usd / maxBy(detail.by_agent, (r) => r.cost_usd)} />
-                  )) : undefined}
-                </TelemetrySection>
-
-                <TelemetrySection title="Recent turns">
+                <TelemetrySection title="Recent model calls">
                   {detail.recent_turns.length ? <ul className="telemetry-recent">
                     {detail.recent_turns.map((row, index) => <li key={`${row.ts}-${index}`}>
                       <div className="telemetry-bar-head">
-                        <span className="telemetry-bar-label">{row.agent}</span>
-                        <span className="telemetry-bar-value">{row.cost_usd === null ? "Cost unavailable" : money(row.cost_usd)}</span>
+                        <span className="telemetry-bar-label">{row.label}</span>
+                        <span className="telemetry-bar-value">{row.cost_usd === null ? "Cost not reported" : money(row.cost_usd)}</span>
                       </div>
-                      <span className="telemetry-bar-meta">{row.model} · {number(row.tokens)} input tokens · {row.status}</span>
+                      <span className="telemetry-bar-meta">{row.model ?? "Model not reported"} · {number(row.tokens)} tokens</span>
                       <time className="telemetry-bar-meta" dateTime={new Date(row.ts).toISOString()}>{new Date(row.ts).toLocaleString()}</time>
                     </li>)}
                   </ul> : undefined}
@@ -188,10 +192,10 @@ export default function TelemetryPanel({ matterId, sessionID }: Props) {
                   {detail.recent_sessions.length ? <ul className="telemetry-recent">
                     {detail.recent_sessions.map((row) => <li key={row.id}>
                       <div className="telemetry-bar-head">
-                        <span className="telemetry-bar-label">{row.agent}</span>
+                        <span className="telemetry-bar-label">{row.title || row.label}</span>
                         <span className="telemetry-bar-value">{money(row.cost_usd)}</span>
                       </div>
-                      <span className="telemetry-bar-meta">{row.status}</span>
+                      {row.title && <span className="telemetry-bar-meta">{row.label}</span>}
                       <time className="telemetry-bar-meta" dateTime={new Date(row.last_activity_at).toISOString()}>{new Date(row.last_activity_at).toLocaleString()}</time>
                     </li>)}
                   </ul> : undefined}
@@ -235,8 +239,9 @@ function BarRow({ label, value, meta, fraction }: { label: string; value: string
 
 const DONUT_COLORS = ["#2d4a3e", "#8a5a1a", "#5d7a6d", "#b98a4a", "#a3b3ab", "#44443f", "#c4d2cb", "#6b6b66"]
 
-function CostDonut({ rows, money }: { rows: Array<{ agent: string; cost_usd: number }>; money: (value: number) => string }) {
-  const slices = rows.filter((row) => row.cost_usd > 0).sort((a, b) => b.cost_usd - a.cost_usd)
+// Slices keep the caller's order so each group keeps its colour.
+function CostDonut({ rows, money }: { rows: Array<{ key: string; label: string; cost_usd: number }>; money: (value: number) => string }) {
+  const slices = rows.filter((row) => row.cost_usd > 0)
   const total = slices.reduce((sum, row) => sum + row.cost_usd, 0)
   const radius = 60
   const circumference = 2 * Math.PI * radius
@@ -244,13 +249,13 @@ function CostDonut({ rows, money }: { rows: Array<{ agent: string; cost_usd: num
 
   return (
     <div className="telemetry-donut">
-      <svg className="telemetry-donut-svg" viewBox="0 0 160 160" role="img" aria-label="Cost split by agent">
+      <svg className="telemetry-donut-svg" viewBox="0 0 160 160" role="img" aria-label="Cost split between background agents and your work">
         <g transform="rotate(-90 80 80)">
           {slices.map((row, index) => {
             const length = (row.cost_usd / total) * circumference
             const dash = (
               <circle
-                key={row.agent}
+                key={row.key}
                 cx="80"
                 cy="80"
                 r={radius}
@@ -270,9 +275,9 @@ function CostDonut({ rows, money }: { rows: Array<{ agent: string; cost_usd: num
       </svg>
       <ul className="telemetry-donut-legend">
         {slices.map((row, index) => (
-          <li key={row.agent}>
+          <li key={row.key}>
             <span className="telemetry-donut-swatch" style={{ background: DONUT_COLORS[index % DONUT_COLORS.length] }} aria-hidden />
-            <span className="telemetry-donut-name">{row.agent}</span>
+            <span className="telemetry-donut-name">{row.label}</span>
             <span className="telemetry-donut-pct">{Math.round((row.cost_usd / total) * 100)}%</span>
             <span className="telemetry-donut-cost">{money(row.cost_usd)}</span>
           </li>
@@ -305,6 +310,10 @@ function TelemetrySection({ title, children }: { title: string; children: ReactN
 
 function maxBy<T>(rows: T[], pick: (row: T) => number) {
   return Math.max(...rows.map(pick), 0) || 1
+}
+
+function calls(count: number) {
+  return `${number(count)} model ${count === 1 ? "call" : "calls"}`
 }
 
 function number(value: number) {

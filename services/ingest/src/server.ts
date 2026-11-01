@@ -557,16 +557,18 @@ app.delete("/matters/:id/sessions/:sessionID", async (c) => {
   }
 })
 
-app.get("/matters/:id/telemetry", (c) =>
-  c.json(readLeanPayload(matterDir(c.req.param("id")), {
+// Usage reads native session cost from the engine; a slow engine must not
+// hold the polling Usage button open.
+app.get("/matters/:id/telemetry", async (c) =>
+  c.json(await readLeanPayload(matterDir(c.req.param("id")), {
     session: c.req.query("session") ?? undefined,
-    rateOverrides: readDraftingPreferences().telemetry.rate_overrides,
+    signal: AbortSignal.timeout(10_000),
   })),
 )
 
-app.get("/matters/:id/telemetry/detail", (c) => c.json(readDetailPayload(matterDir(c.req.param("id")), readDraftingPreferences().telemetry.rate_overrides)))
+app.get("/matters/:id/telemetry/detail", async (c) => c.json(await readDetailPayload(matterDir(c.req.param("id")), AbortSignal.timeout(10_000))))
 
-app.get("/matters/:id/telemetry/storage", (c) => c.json(readStoragePayload([matterDir(c.req.param("id"))], readDraftingPreferences().telemetry.rate_overrides)))
+app.get("/matters/:id/telemetry/storage", (c) => c.json(readStoragePayload([matterDir(c.req.param("id"))])))
 
 app.get("/matters/:id/drafting-status", (c) => {
   return c.json(leanDraftingStatus(matterDir(c.req.param("id"))) ?? null)
@@ -647,7 +649,7 @@ app.route("/matters", documentMarkupRoutes({
 }))
 app.route("/matters", leanDraftingRoutes({ directory: matterDir }))
 
-app.get("/telemetry/storage", (c) => c.json(readStoragePayload(listMatters().map((m) => m.dir), readDraftingPreferences().telemetry.rate_overrides)))
+app.get("/telemetry/storage", (c) => c.json(readStoragePayload(listMatters().map((m) => m.dir))))
 
 app.delete("/matters/:id/telemetry", (c) => {
   const dir = matterDir(c.req.param("id"))

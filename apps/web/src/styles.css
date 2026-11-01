@@ -1473,6 +1473,17 @@ li.list-row {
   text-transform: uppercase;
 }
 
+/* By task: background agents and the lawyer's own work, each under a quiet
+   heading. */
+.telemetry-group + .telemetry-group { margin-top: var(--space-4); }
+
+.telemetry-group-title {
+  margin: 0 0 var(--space-2);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 /* Spend sparkline rendered as flexed CSS bars rather than ASCII glyphs. */
 .telemetry-spark {
   display: flex;
