@@ -164,7 +164,8 @@ export async function readDetailPayload(matterDir: string, signal: AbortSignal):
       const agent = usageAgent(session.agent, session)
       return {
         id: session.id,
-        title: session.title ?? "",
+        // Job sessions carry a system "doc.haus" title; their task name says it.
+        title: /^doc\.haus/i.test(session.title ?? "") ? "" : session.title ?? "",
         agent: agent.key,
         label: agent.label,
         group: agent.group,

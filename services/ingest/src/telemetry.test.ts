@@ -109,7 +109,7 @@ test("background agents and Word suggestions are split from the lawyer's own wor
   fakeEngine(dir, [
     { id: "chat", agent: "qa", cost: 0.4, updated: now - 1_000, messages: [{ id: "m1", time: now - 1_000, cost: 0.4, agent: "qa", model: "synthetic/strong" }] },
     { id: "words", agent: "qa", metadata: { kind: "suggestions" }, cost: 0.2, updated: now - 2_000, messages: [{ id: "m2", time: now - 2_000, cost: 0.2, agent: "qa", model: "synthetic/fast" }] },
-    { id: "story", agent: "narrator", cost: 0.1, updated: now - 3_000, messages: [{ id: "m3", time: now - 3_000, cost: 0.1, agent: "narrator", model: "synthetic/fast" }] },
+    { id: "story", agent: "narrator", title: "doc.haus narrator", cost: 0.1, updated: now - 3_000, messages: [{ id: "m3", time: now - 3_000, cost: 0.1, agent: "narrator", model: "synthetic/fast" }] },
   ])
 
   const detail = await readDetailPayload(dir, signal())
@@ -123,10 +123,10 @@ test("background agents and Word suggestions are split from the lawyer's own wor
     { tool: "read-document", label: "Read document", calls: 2, total_duration_ms: 40, avg_duration_ms: 20 },
     { tool: "record-key-date", label: "Record key date", calls: 1, total_duration_ms: 5, avg_duration_ms: 5 },
   ])
-  expect(detail.recent_sessions.map(({ id, label, group }) => ({ id, label, group }))).toEqual([
-    { id: "chat", label: "Questions", group: "work" },
-    { id: "words", label: "Suggest ideas in Word", group: "background" },
-    { id: "story", label: "Narrate drafting progress", group: "background" },
+  expect(detail.recent_sessions.map(({ id, title, label, group }) => ({ id, title, label, group }))).toEqual([
+    { id: "chat", title: "chat", label: "Questions", group: "work" },
+    { id: "words", title: "words", label: "Suggest ideas in Word", group: "background" },
+    { id: "story", title: "", label: "Narrate drafting progress", group: "background" },
   ])
 })
 

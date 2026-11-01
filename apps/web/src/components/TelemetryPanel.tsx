@@ -188,7 +188,7 @@ export default function TelemetryPanel({ matterId, sessionID }: Props) {
                   </ul> : undefined}
                 </TelemetrySection>
 
-                <TelemetrySection title="Recent conversations">
+                <TelemetrySection title="Recent activity">
                   {detail.recent_sessions.length ? <ul className="telemetry-recent">
                     {detail.recent_sessions.map((row) => <li key={row.id}>
                       <div className="telemetry-bar-head">
