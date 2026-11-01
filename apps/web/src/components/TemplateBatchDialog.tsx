@@ -25,8 +25,8 @@ import backdropClose from "./backdropClose"
 import "./TemplateBatchDialog.css"
 
 // "Fill from spreadsheet": one document per spreadsheet row from a library
-// template, filled by ingest without any model. Choose a matter and drop a
-// spreadsheet; match only the fields that did not match a column by name;
+// template, filled by ingest without any model. Choose a matter (unless it
+// was opened from inside one) and drop a spreadsheet; match only the fields that did not match a column by name;
 // preview each row as the filled document; create them all into one folder
 // in the matter. Rows are identified by their own spreadsheet row number.
 type Step = "choose" | "match" | "preview" | "done"
@@ -44,11 +44,17 @@ function identifyingColumn(fields: BatchField[], mapping: BatchMapping, preferre
   return field ? mapping[field.key] ?? null : null
 }
 
-export default function TemplateBatchDialog({ template, onClose }: { template: Template; onClose: () => void }) {
+export default function TemplateBatchDialog({ template, matter, onClose, onCreated }: {
+  template: Template
+  /** Opened from inside this matter: no matter to choose, and Done returns to it. */
+  matter?: string
+  onClose: () => void
+  onCreated?: () => void
+}) {
   const navigate = useNavigate()
   const [step, setStep] = useState<Step>("choose")
   const [matters, setMatters] = useState<Matter[]>()
-  const [matterId, setMatterId] = useState("")
+  const [matterId, setMatterId] = useState(matter ?? "")
   const [reading, setReading] = useState(false)
   const [error, setError] = useState<string>()
   const [sheet, setSheet] = useState<BatchSheet>()
@@ -71,6 +77,7 @@ export default function TemplateBatchDialog({ template, onClose }: { template: T
   }, [])
 
   useEffect(() => {
+    if (matter) return
     listMatters()
       .then((list) => {
         if (!alive.current) return
@@ -146,6 +153,7 @@ export default function TemplateBatchDialog({ template, onClose }: { template: T
         mapping,
       })
       if (!alive.current) return
+      onCreated?.()
       setResult(done)
       setStep("done")
     } catch (cause) {
@@ -226,12 +234,14 @@ export default function TemplateBatchDialog({ template, onClose }: { template: T
 
   return <BatchPanel title={heading} onClose={close} focusKey={step}
     actions={step === "match" ? <button type="button" className="primary" onClick={() => setStep("preview")}>Preview</button>
-      : step === "done" && result ? <button type="button" className="primary" onClick={() => { onClose(); navigate(`/matter/${encodeURIComponent(matterId)}?view=documents`) }}>Open matter</button>
+      : step === "done" && result ? matter ? <button type="button" className="primary" onClick={onClose}>View documents</button>
+        : <button type="button" className="primary" onClick={() => { onClose(); navigate(`/matter/${encodeURIComponent(matterId)}?view=documents`) }}>Open matter</button>
       : undefined}
   >
     {step === "choose" && <ChooseStep
       template={template}
-      matters={matters}
+      matters={matter ? undefined : matters}
+      fixed={Boolean(matter)}
       matterId={matterId}
       onMatter={setMatterId}
       reading={reading}
@@ -272,9 +282,10 @@ function BatchPanel({ title, actions, focusKey, onClose, children }: { title: st
   )
 }
 
-function ChooseStep({ template, matters, matterId, onMatter, reading, error, onFiles }: {
+function ChooseStep({ template, matters, fixed, matterId, onMatter, reading, error, onFiles }: {
   template: Template
   matters?: Matter[]
+  fixed: boolean
   matterId: string
   onMatter: (id: string) => void
   reading: boolean
@@ -284,13 +295,13 @@ function ChooseStep({ template, matters, matterId, onMatter, reading, error, onF
   const id = useId()
   if (matters && matters.length === 0) return <p className="muted">No matters yet. Create one from the sidebar first.</p>
   return <>
-    <div className="template-batch-field">
+    {!fixed && <div className="template-batch-field">
       <label htmlFor={id}>Matter</label>
       <select id={id} value={matterId} disabled={!matters || reading} onChange={(event) => onMatter(event.target.value)}>
         {!matters && <option value="">Loading matters…</option>}
         {matters?.map((matter) => <option key={matter.id} value={matter.id}>{matter.reference ? `${matter.reference} — ` : ""}{matter.title}</option>)}
       </select>
-    </div>
+    </div>}
     <div className="template-batch-drop">
       <Dropzone
         accept=".csv,.xlsx,.xls"

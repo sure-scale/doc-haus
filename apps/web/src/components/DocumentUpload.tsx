@@ -75,6 +75,7 @@ export default function DocumentUpload({
   incoming,
   onIncoming,
   onCompare,
+  onStartFromTemplate,
 }: {
   matterId: string
   documents: Document[]
@@ -87,6 +88,8 @@ export default function DocumentUpload({
   onIncoming?: () => void
   // Compare a Word file with another version of it.
   onCompare?: (name: string) => void
+  // Draft from a library template into this matter.
+  onStartFromTemplate?: () => void
 }) {
   const [uploads, setUploads] = useState<Upload[]>([])
   const [removing, setRemoving] = useState<string>()
@@ -575,6 +578,7 @@ export default function DocumentUpload({
           title={working > 0 ? `Uploading ${working} document${working === 1 ? "" : "s"}…` : "Upload documents"}
         />
         <p>Drop Word, PDF, email, Excel, Markdown or zip files here, or click to browse.</p>
+        {onStartFromTemplate && <button type="button" className="linklike docs-drawer-template" onClick={onStartFromTemplate}>Start from a template</button>}
       </footer>
       {review && <UploadReviewDialog
         reviewId={review.key}

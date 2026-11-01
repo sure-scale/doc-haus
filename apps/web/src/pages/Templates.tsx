@@ -13,7 +13,7 @@ import { useToast } from "../components/Toast"
 import Dropzone from "../components/Dropzone"
 import { humanizeError } from "../api/ingest/errors"
 import TemplateViewer from "../components/TemplateViewer"
-import { markerKind } from "../components/document-markers"
+import { templateDraftLink, templateFieldCounts, templateFieldSummary } from "../lib/template-use"
 import MatterPicker from "../components/MatterPicker"
 import { Exit } from "../components/useExit"
 import ChatPanel from "../components/ChatPanel"
@@ -156,8 +156,7 @@ export default function Templates() {
   // prompt prefilled — the lawyer reviews and sends; nothing auto-runs.
   function useTemplate(t: Template, m: Matter) {
     setUsing(undefined)
-    const prompt = `Draft a new document from the template "${t.name}". Gather what you can from this matter's documents and our conversation first, then interview me for the remaining terms and any optional clauses before assembling it.`
-    navigate(`/matter/${m.id}?view=chat&agent=draft&prompt=${encodeURIComponent(prompt)}`)
+    navigate(templateDraftLink(m.id, t.name))
   }
 
   const visible = [...templates].sort((a, b) => a.name.localeCompare(b.name))
@@ -220,11 +219,7 @@ export default function Templates() {
         ) : (
           <ul className="matter-list">
             {visible.map((t) => {
-              // As the viewer's side panel counts them: a [REDACTED] mark is a
-              // redaction, not a placeholder to fill.
-              const markers = t.placeholders.filter((p) => markerKind(p.text) !== "redaction")
-              const optional = markers.filter((p) => /^\[optional:/i.test(p.text)).length
-              const fills = markers.length - optional
+              const fields = templateFieldCounts(t).total
               return (
                 <li
                   key={t.name}
@@ -263,10 +258,7 @@ export default function Templates() {
                           {t.description || "Add description"}
                         </button>
                       )}
-                      <span className="list-row-date">
-                        {fills} placeholder{fills === 1 ? "" : "s"}
-                        {optional > 0 && `, ${optional} optional clause${optional === 1 ? "" : "s"}`}
-                      </span>
+                      <span className="list-row-date">{templateFieldSummary(t)}</span>
                     </span>
                   </div>
                   <div className="list-row-actions">
@@ -278,8 +270,8 @@ export default function Templates() {
                         toggleLabel={`More ways to use ${t.name}`}
                         items={[{
                           label: "Fill from spreadsheet…",
-                          title: markers.length ? "Create one document per spreadsheet row" : "This template has no fields to fill",
-                          disabled: markers.length === 0,
+                          title: fields ? "Create one document per spreadsheet row" : "This template has no fields to fill",
+                          disabled: fields === 0,
                           onSelect: () => setBatching(t),
                         }]}
                       />

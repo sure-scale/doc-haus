@@ -27,7 +27,7 @@ const sheet = (mapping: BatchSheet["mapping"]): BatchSheet => ({
   source: "clients.csv",
 })
 
-async function render(read: BatchSheet) {
+async function render(read: BatchSheet, props: { matter?: string; onCreated?: () => void } = {}) {
   const browser = new Window({ url: "http://localhost:5275" })
   const names = ["window", "document", "HTMLElement", "HTMLDialogElement", "Node", "Event", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"] as const
   const saved = names.map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const)
@@ -35,8 +35,10 @@ async function render(read: BatchSheet) {
     value: name === "IS_REACT_ACT_ENVIRONMENT" ? true : browser[name as keyof Window] }])))
   const originalFetch = globalThis.fetch
   const created: unknown[] = []
+  const requests: string[] = []
   globalThis.fetch = (async (input, init) => {
     const url = String(input)
+    requests.push(url)
     if (url.endsWith("/matters")) return Response.json([{ id: "m1", title: "Supplier NDAs", dir: "/m1", created_at: 2 }])
     if (url.endsWith("/templates/batch/read")) return Response.json(read)
     if (url.endsWith("/templates/batch/preview")) return new Response(new Uint8Array([1]), { headers: { "x-dochaus-batch-missing": encodeURIComponent("[]") } })
@@ -53,7 +55,7 @@ async function render(read: BatchSheet) {
   const root = createRoot(container)
   await act(async () => {
     // StrictMode as in main.tsx: its double mount once dropped every result.
-    root.render(createElement(StrictMode, null, createElement(MemoryRouter, null, createElement(TemplateBatchDialog, { template: { name: "Mutual NDA.docx", description: "", placeholders: [] }, onClose: () => {} }))))
+    root.render(createElement(StrictMode, null, createElement(MemoryRouter, null, createElement(TemplateBatchDialog, { template: { name: "Mutual NDA.docx", description: "", placeholders: [] }, onClose: () => {}, ...props }))))
   })
   const drop = async () => {
     const input = document.body.querySelector<HTMLInputElement>("input[type=file]")!
@@ -71,7 +73,7 @@ async function render(read: BatchSheet) {
       else delete (globalThis as Record<string, unknown>)[name]
     }
   }
-  return { drop, button, created, cleanup, text: () => document.body.textContent ?? "" }
+  return { drop, button, created, requests, cleanup, text: () => document.body.textContent ?? "" }
 }
 
 test("every fill field matched skips the Match step; Create counts and sends only rows not skipped", async () => {
@@ -116,6 +118,23 @@ test("an unmatched fill field asks only about that field, then previews", async 
     expect(view.text()).toContain("0 ready")
     expect(view.text()).toContain("3 need input")
     expect(view.button("Change matching")).toBeDefined()
+  } finally {
+    await view.cleanup()
+  }
+})
+
+test("opened inside a matter, it asks for no matter and creates into that one", async () => {
+  let refreshed = 0
+  const view = await render(sheet({ "[Client Name]": "Client Name", "[insert notice date]": "Notice date", "[optional: Non-solicit]": null }), { matter: "m1", onCreated: () => { refreshed++ } })
+  try {
+    expect(document.body.querySelector("select")).toBeNull()
+    expect(view.requests.some(url => url.endsWith("/matters"))).toBe(false)
+    await view.drop()
+    await act(async () => { view.button("Create 3 documents")!.click() })
+    expect(view.created).toHaveLength(1)
+    expect(refreshed).toBe(1)
+    expect(view.button("View documents")).toBeDefined()
+    expect(view.button("Open matter")).toBeUndefined()
   } finally {
     await view.cleanup()
   }

@@ -19,6 +19,7 @@ export default function DocumentsDrawer({
   onUploaded,
   onView,
   onCompare,
+  onStartFromTemplate,
   closing = false,
   restored = false,
 }: {
@@ -32,6 +33,7 @@ export default function DocumentsDrawer({
   onUploaded: () => void
   onView: (name: string) => void
   onCompare?: (name: string) => void
+  onStartFromTemplate?: () => void
   // Set while the drawer plays its exit (see useExit).
   closing?: boolean
   // Open since the matter loaded: shown in place, without the slide-in.
@@ -106,6 +108,7 @@ export default function DocumentsDrawer({
           incoming={incoming}
           onIncoming={onIncoming}
           onCompare={onCompare}
+          onStartFromTemplate={onStartFromTemplate}
         />
       </aside>
     </>,
