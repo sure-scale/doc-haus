@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react"
+import { createPortal } from "react-dom"
 
 // App-wide toasts: transient notifications stacked top-centre. Type sets the
 // left-border color — success/green, warning/amber, info/blue, error/red — over
@@ -12,11 +13,27 @@ export function useToast() {
   return useContext(ToastContext)
 }
 
+// A native modal dialog (showModal) sits in the browser's top layer, above any z-index, and makes
+// the rest of the page inert. Toasts fired while one is open render inside the topmost one so they
+// are seen and announced; null means the page itself.
+function topModal(): HTMLDialogElement | null {
+  const open = [...document.querySelectorAll<HTMLDialogElement>("dialog[open]")]
+  for (let index = open.length - 1; index >= 0; index--) {
+    try {
+      if (open[index].matches(":modal")) return open[index]
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
 // Monotonic id source — unique within a session without Date.now().
 let counter = 0
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([])
+  const [host, setHost] = useState<HTMLDialogElement | null>(null)
   const timers = useRef(new Set<ReturnType<typeof setTimeout>>())
   useEffect(() => () => {
     for (const timer of timers.current) clearTimeout(timer)
@@ -35,9 +52,19 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setToasts((list) => list.map((t) => (t.id === id ? { ...t, leaving: true } : t)))
     schedule(() => setToasts((list) => list.filter((t) => t.id !== id)), 180)
   }, [schedule])
+  // While toasts show, follow modal dialogs closing (close does not bubble, so listen in capture)
+  // so a toast fired inside one moves back to the page instead of vanishing with it.
+  const showing = toasts.length > 0
+  useEffect(() => {
+    if (!showing) return
+    const follow = () => setHost(topModal())
+    document.addEventListener("close", follow, true)
+    return () => document.removeEventListener("close", follow, true)
+  }, [showing])
   const notify = useCallback(
     (type: ToastType, message: string) => {
       const id = ++counter
+      setHost(topModal())
       setToasts((list) => [...list, { id, type, message }])
       // Errors linger longer; they tend to carry something the user must read.
       schedule(() => dismiss(id), type === "error" ? 8000 : 5000)
@@ -48,7 +75,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={notify}>
       {children}
-      <div className="toast-stack">
+      {createPortal(<div className="toast-stack">
         {toasts.map((t) => (
           <div key={t.id} className={`toast toast-${t.type}${t.leaving ? " toast-leaving" : ""}`} role="status">
             <span className="toast-icon">
@@ -60,7 +87,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             </button>
           </div>
         ))}
-      </div>
+      </div>, host?.isConnected ? host : document.body)}
     </ToastContext.Provider>
   )
 }
